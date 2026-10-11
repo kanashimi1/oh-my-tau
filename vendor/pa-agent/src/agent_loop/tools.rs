@@ -12,6 +12,7 @@ use crate::types::{
 
 use super::run::clone_context;
 use super::tool_call::{
+    is_non_blank,
     create_tool_result_message, emit_tool_execution_end, emit_tool_result_message,
     execute_prepared_tool_call, finalize_executed_tool_call, prepare_tool_call,
 };
@@ -20,12 +21,28 @@ use super::{AgentEventSink, AgentLoopConfig};
 pub(crate) struct ExecutedToolCallBatch {
     pub(crate) messages: Vec<ToolResultMessage>,
     pub(crate) terminate: bool,
+    /// Joined passive context of the batch, delivered after its tool results.
+    pub(crate) additional_context: Option<String>,
+    /// Finalized calls (carrying any `beforeToolCall` argument revision), in source order.
+    pub(crate) tool_calls: Vec<ToolCall>,
 }
 
 pub(crate) struct FinalizedToolCallOutcome {
     pub(crate) tool_call: ToolCall,
     pub(crate) result: AgentToolResult,
     pub(crate) is_error: bool,
+    pub(crate) additional_context: Vec<String>,
+}
+
+/// Join passive context values in order, dropping blanks and repeats of an
+/// earlier value (compared trimmed; the first original is kept).
+fn join_additional_context<'a>(values: impl Iterator<Item = &'a String>) -> Option<String> {
+    let mut seen = std::collections::HashSet::new();
+    let kept: Vec<&str> = values
+        .filter(|v| is_non_blank(v) && seen.insert(v.trim()))
+        .map(String::as_str)
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("\n\n"))
 }
 
 pub(crate) async fn execute_tool_calls(
@@ -107,6 +124,7 @@ async fn execute_tool_calls_sequential(
                 tool_call: tool_call.clone(),
                 result,
                 is_error,
+                additional_context: Vec::new(),
             },
             Preparation::Prepared(prepared) => {
                 let executed = execute_prepared_tool_call(&prepared, signal, emit).await;
@@ -135,7 +153,11 @@ async fn execute_tool_calls_sequential(
 
     Ok(ExecutedToolCallBatch {
         messages,
+        tool_calls: finalized_calls.iter().map(|f| f.tool_call.clone()).collect(),
         terminate: should_terminate_tool_batch(&finalized_calls),
+        additional_context: join_additional_context(
+            finalized_calls.iter().flat_map(|f| &f.additional_context),
+        ),
     })
 }
 
@@ -182,6 +204,7 @@ async fn execute_tool_calls_parallel(
                     tool_call: tool_call.clone(),
                     result,
                     is_error,
+                    additional_context: Vec::new(),
                 };
                 emit_tool_execution_end(&finalized, emit).await?;
                 entries.push(TaskOrOutcome::Outcome(Box::new(finalized)));
@@ -196,6 +219,7 @@ async fn execute_tool_calls_parallel(
                     tool_call: prepared.tool_call.clone(),
                     tool: Arc::clone(&prepared.tool),
                     args: prepared.args.clone(),
+                    additional_context: prepared.additional_context.clone(),
                 };
                 let handle = tokio::spawn(async move {
                     let executed =
@@ -240,7 +264,16 @@ async fn execute_tool_calls_parallel(
 
     Ok(ExecutedToolCallBatch {
         messages,
+        tool_calls: ordered_finalized_calls
+            .iter()
+            .map(|f| f.tool_call.clone())
+            .collect(),
         terminate: should_terminate_tool_batch(&ordered_finalized_calls),
+        additional_context: join_additional_context(
+            ordered_finalized_calls
+                .iter()
+                .flat_map(|f| &f.additional_context),
+        ),
     })
 }
 
@@ -256,6 +289,8 @@ pub(crate) struct PreparedToolCall {
     pub(crate) tool_call: ToolCall,
     pub(crate) tool: Arc<dyn AgentTool>,
     pub(crate) args: serde_json::Value,
+    /// Passive context from `beforeToolCall`, released after a non-error result.
+    pub(crate) additional_context: Option<String>,
 }
 
 fn should_terminate_tool_batch(finalized_calls: &[FinalizedToolCallOutcome]) -> bool {

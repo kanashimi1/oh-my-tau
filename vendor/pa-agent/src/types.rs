@@ -573,6 +573,13 @@ pub enum AgentEvent {
 pub struct BeforeToolCallResult {
     pub block: bool,
     pub reason: Option<String>,
+    /// Revised tool arguments; revalidated against the tool schema and used
+    /// for execution. Ignored when `block` is set.
+    pub args: Option<serde_json::Value>,
+    /// Passive context delivered as a `developer` message after the batch's
+    /// tool results, only when the call finishes without error. Ignored when
+    /// `block` is set.
+    pub additional_context: Option<String>,
 }
 
 /// Partial override returned from `afterToolCall` (field-by-field merge, no
@@ -586,6 +593,9 @@ pub struct AfterToolCallResult {
     /// termination only happens when every finalized tool result in the batch
     /// sets this to true.
     pub terminate: Option<bool>,
+    /// Passive context delivered as a `developer` message after the batch's
+    /// tool results (regardless of the call's error state).
+    pub additional_context: Option<String>,
 }
 
 /// Context passed to `beforeToolCall` after arguments are validated.

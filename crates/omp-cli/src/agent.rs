@@ -11,7 +11,10 @@ use std::sync::{Arc, RwLock};
 
 use crate::adapter::{json_round_trip, switchable_stream_fn, ProviderTarget};
 use crate::model::Selected;
-use crate::tools::builtin_tools;
+use crate::tools::{builtin_tools, edit_mode_for};
+
+/// Shared slot the provider stream reads its target from; `set_model` swaps it.
+pub type Target = Arc<RwLock<Option<ProviderTarget>>>;
 
 const BASE_PROMPT: &str = "You are a coding agent running in a terminal. Use the available tools (bash, read, write, edit, grep, glob) to complete the user's task; prefer reading before editing and verify results by running them. Be concise.";
 
@@ -53,29 +56,33 @@ pub fn system_prompt(cwd: &Path) -> String {
     )
 }
 
-/// Build an agent for `cwd` using the selected model.
+/// Build an agent for `cwd` using the selected model, plus the provider
+/// target slot a live `set_model` swaps.
 ///
 /// # Errors
 /// Fails when the model cannot cross the pa-ai/pa-agent boundary.
-pub fn build_agent(cwd: &Path, selected: Selected) -> Result<Agent> {
+pub fn build_agent(cwd: &Path, selected: Selected) -> Result<(Agent, Target)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
-    Ok(Agent::new(AgentOptions {
+    let tools = builtin_tools(cwd, edit_mode_for(&selected.model.id));
+    let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
+        api_key: selected.api_key,
+        model: selected.model,
+        service_tier: None,
+        headers: selected.headers,
+    })));
+    let agent = Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some(system_prompt(cwd)),
             model: Some(agent_model),
             thinking_level: Some(selected.thinking),
-            tools: Some(builtin_tools(cwd)),
+            tools: Some(tools),
             messages: None,
         },
-        stream_fn: Some(switchable_stream_fn(Arc::new(RwLock::new(Some(ProviderTarget {
-            api_key: selected.api_key,
-            model: selected.model,
-            service_tier: None,
-            headers: selected.headers,
-        }))))),
+        stream_fn: Some(switchable_stream_fn(target.clone())),
         ..AgentOptions::default()
-    }))
+    });
+    Ok((agent, target))
 }
 
 /// Concatenated text of the last assistant message, plus its error (if any).

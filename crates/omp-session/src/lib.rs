@@ -1,17 +1,22 @@
 //! omp session files (JSONL, format v3) on top of `pa_types::session::FileEntry`.
 //!
 //! The entry model is prime-agent's (MIT, derived from the same pi lineage as omp); this crate adds
-//! what omp needs around it: a line-preserving reader, a writer that chains `id`/`parentId` the way
-//! omp's session manager does, and a round-trip checker used against real `~/.omp/agent/sessions`.
+//! what omp needs around it: typed models for the omp-only entry kinds ([`entries`]), a
+//! line-preserving reader, a writer that chains `id`/`parentId` the way omp's session manager does,
+//! and a round-trip checker used against real `~/.omp/agent/sessions`.
 
+pub mod entries;
+
+use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use pa_types::session::{AgentMessage, EntryBase, FileEntry};
+use pa_types::session::{AgentMessage, FileEntry};
 use serde_json::{json, Map, Value};
 
+pub use entries::{OmpEntry, OmpMessage};
 pub use pa_types::session;
 
 pub const SESSION_VERSION: u32 = 3;
@@ -22,22 +27,76 @@ pub struct Line {
     pub entry: FileEntry,
 }
 
-/// Read every non-empty line. Lines that are not JSON objects are an error (omp never writes them).
+impl Line {
+    /// The line in omp's own typed shape, when it is one of the kinds [`OmpEntry`] models.
+    #[must_use]
+    pub fn omp(&self) -> Option<OmpEntry> {
+        OmpEntry::parse(&self.raw)
+    }
+}
+
+/// A record skipped by the lenient loader (omp's `parseJsonlLenient`): not a JSON object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Malformed {
+    /// 1-based line number in the file.
+    pub line_no: usize,
+    /// The line, lossily decoded.
+    pub raw: String,
+}
+
+/// A loaded session file, like omp's `SessionLoadResult`.
+pub struct Loaded {
+    /// Parsed lines in file order, including the title slot line when present.
+    pub lines: Vec<Line>,
+    /// Skipped records. omp counts these, and rewrites the file when any exist.
+    pub malformed: Vec<Malformed>,
+    /// The fixed-width title slot, when the first line is one.
+    pub title_slot: Option<entries::TitleSlot>,
+    /// Non-empty data without a valid leading `session` header (title slot excluded); with no
+    /// parsable record at all, true when something malformed was skipped.
+    pub invalid_header: bool,
+}
+
+/// Load a session file the way omp's loader does: blank lines are ignored, records that are not
+/// JSON objects (NUL-padded tails, truncated writes, binary noise) are skipped and reported, and
+/// invalid UTF-8 is decoded lossily.
 ///
 /// # Errors
-/// I/O failure, or a line that is not a JSON object.
-pub fn read(path: &Path) -> Result<Vec<Line>> {
+/// I/O failure.
+pub fn load(path: &Path) -> Result<Loaded> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut out = Vec::new();
-    for (n, line) in BufReader::new(file).lines().enumerate() {
-        let raw = line.with_context(|| format!("{}:{}", path.display(), n + 1))?;
+    let mut lines = Vec::new();
+    let mut malformed = Vec::new();
+    for (n, chunk) in BufReader::new(file).split(b'\n').enumerate() {
+        let bytes = chunk.with_context(|| format!("{}:{}", path.display(), n + 1))?;
+        let text = String::from_utf8_lossy(&bytes);
+        let raw = text.strip_suffix('\r').unwrap_or(&text).to_owned();
         if raw.trim().is_empty() {
             continue;
         }
-        let entry: FileEntry = serde_json::from_str(&raw).with_context(|| format!("{}:{}", path.display(), n + 1))?;
-        out.push(Line { raw, entry });
+        match serde_json::from_str::<FileEntry>(&raw) {
+            Ok(entry) => lines.push(Line { raw, entry }),
+            Err(_) => malformed.push(Malformed { line_no: n + 1, raw }),
+        }
     }
-    Ok(out)
+    let title_slot = lines.first().and_then(|l| match l.omp() {
+        Some(OmpEntry::Title(slot)) if slot.v == 1 => Some(slot),
+        _ => None,
+    });
+    let mut body = lines.iter().skip(usize::from(title_slot.is_some()));
+    let invalid_header = match body.next() {
+        Some(l) => !matches!(&l.entry, FileEntry::Header { header } if !header.id.is_empty()),
+        None => !malformed.is_empty(),
+    };
+    Ok(Loaded { lines, malformed, title_slot, invalid_header })
+}
+
+/// [`load`] without the diagnostics: the parsed lines, malformed records skipped.
+///
+/// # Errors
+/// I/O failure.
+pub fn read(path: &Path) -> Result<Vec<Line>> {
+    Ok(load(path)?.lines)
 }
 
 /// Append-only writer producing files omp itself can open: v3 header first, then entries whose
@@ -46,22 +105,43 @@ pub struct SessionWriter {
     file: File,
     path: PathBuf,
     last_id: Option<String>,
+    ids: HashSet<String>,
 }
 
 impl SessionWriter {
-    /// Create `<dir>/<iso-timestamp>_<id>.jsonl` with a v3 header (omp's naming scheme).
+    /// Open `<dir>/<iso-timestamp>_<id>.jsonl` for append (omp's naming scheme and flag `'a'`). A new
+    /// or empty file gets the v3 header; an existing one is continued: its ids are loaded (for
+    /// collision checks) and the last entry becomes the parent of the next append.
     ///
     /// # Errors
-    /// I/O failure creating the directory or file.
+    /// I/O failure creating the directory or opening the file.
     pub fn create(dir: &Path, cwd: &str, session_id: &str, timestamp_iso: &str) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let stamp = timestamp_iso.replace([':', '.'], "-");
         let path = dir.join(format!("{stamp}_{session_id}.jsonl"));
-        let file = OpenOptions::new().create_new(true).append(true).open(&path)
-            .with_context(|| format!("create {}", path.display()))?;
-        let mut w = Self { file, path, last_id: None };
-        w.write_value(&json!({"type": "session", "version": SESSION_VERSION, "id": session_id, "timestamp": timestamp_iso, "cwd": cwd}))?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)
+            .with_context(|| format!("open {}", path.display()))?;
+        let mut w = Self { file, path, last_id: None, ids: HashSet::new() };
+        if w.file.metadata()?.len() == 0 {
+            w.write_value(&json!({"type": "session", "version": SESSION_VERSION, "id": session_id, "timestamp": timestamp_iso, "cwd": cwd}))?;
+        } else {
+            w.load_existing()?;
+        }
         Ok(w)
+    }
+
+    /// Record ids of an existing file (skipping lines that are not JSON objects) and its last entry.
+    fn load_existing(&mut self) -> Result<()> {
+        let file = File::open(&self.path).with_context(|| format!("open {}", self.path.display()))?;
+        for line in BufReader::new(file).split(b'\n') {
+            let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(&line?) else { continue };
+            let Some(id) = obj.get("id").and_then(Value::as_str) else { continue };
+            self.ids.insert(id.to_owned());
+            if obj.get("type").and_then(Value::as_str) != Some("session") {
+                self.last_id = Some(id.to_owned());
+            }
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -74,50 +154,213 @@ impl SessionWriter {
     /// # Errors
     /// Serialization or I/O failure.
     pub fn append_message(&mut self, message: &AgentMessage, timestamp_iso: &str) -> Result<String> {
-        // Serialize through the typed entry (not a Value detour) so field order matches omp's writer.
-        let id = new_entry_id();
-        let entry = FileEntry::Message {
-            message: message.clone(),
-            base: EntryBase { id: Some(id.clone()), parent_id: self.last_id.clone(), timestamp: Some(timestamp_iso.into()), rest: Map::new() },
-        };
-        let mut line = serde_json::to_string(&entry)?;
-        line.push('\n');
-        self.file.write_all(line.as_bytes())?;
-        self.last_id = Some(id.clone());
-        Ok(id)
+        self.append_omp_message(OmpMessage::from_agent(message)?, timestamp_iso)
+    }
+
+    /// Append a `message` entry carrying any omp message shape (`developer`, `pythonExecution`, or a
+    /// message with extra `usage` counters).
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_omp_message(&mut self, message: OmpMessage, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::Message(Box::new(entries::MessageEntry { id, parent_id, timestamp, message, rest: Map::new() }))
+        })
+    }
+
+    /// Append `model_change` (`model` is `provider/modelId`).
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_model_change(&mut self, model: &str, role: Option<&str>, resolved_model_is_fallback: bool, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::ModelChange(entries::ModelChange {
+                id, parent_id, timestamp,
+                model: model.to_owned(),
+                role: role.map(str::to_owned),
+                resolved_model_is_fallback: Some(resolved_model_is_fallback),
+                rest: Map::new(),
+            })
+        })
+    }
+
+    /// Append `thinking_level_change`; absent levels are written as explicit nulls, as omp does.
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_thinking_level_change(&mut self, thinking_level: Option<&str>, configured: Option<&str>, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::ThinkingLevelChange(entries::ThinkingLevelChange {
+                id, parent_id, timestamp,
+                thinking_level: Some(thinking_level.map(str::to_owned)),
+                configured: Some(configured.map(str::to_owned)),
+                rest: Map::new(),
+            })
+        })
+    }
+
+    /// Append `mode_change` (`mode` is `"none"` when leaving a mode).
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_mode_change(&mut self, mode: &str, data: Option<Value>, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::ModeChange(entries::ModeChange { id, parent_id, timestamp, mode: mode.to_owned(), data, rest: Map::new() })
+        })
+    }
+
+    /// Append `title_change` (`source` is `"auto"` or `"user"`).
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_title_change(&mut self, title: &str, source: &str, previous_title: Option<&str>, trigger: Option<&str>, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::TitleChange(entries::TitleChange {
+                id, parent_id, timestamp,
+                title: title.to_owned(),
+                previous_title: previous_title.filter(|p| !p.is_empty()).map(str::to_owned),
+                source: source.to_owned(),
+                trigger: trigger.filter(|t| !t.is_empty()).map(str::to_owned),
+                rest: Map::new(),
+            })
+        })
+    }
+
+    /// Append `ttsr_injection`.
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_ttsr_injection(&mut self, injected_rules: &[String], timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::TtsrInjection(entries::TtsrInjection { id, parent_id, timestamp, injected_rules: injected_rules.to_vec(), rest: Map::new() })
+        })
+    }
+
+    /// Append `credential_pin`.
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_credential_pin(&mut self, provider: &str, hash: &str, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::CredentialPin(entries::CredentialPin { id, parent_id, timestamp, provider: provider.to_owned(), hash: hash.to_owned(), rest: Map::new() })
+        })
+    }
+
+    /// Append `reset_boundary` (the `/clear` marker).
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_reset_boundary(&mut self, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            OmpEntry::ResetBoundary(entries::ResetBoundary { id, parent_id, timestamp, rest: Map::new() })
+        })
+    }
+
+    /// Append `model_usage` for a call outside the transcript. `entry.id`/`parent_id`/`timestamp` are
+    /// overwritten with generated values.
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_model_usage(&mut self, mut entry: entries::ModelUsage, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            entry.id = id;
+            entry.parent_id = parent_id;
+            entry.timestamp = timestamp;
+            OmpEntry::ModelUsage(Box::new(entry))
+        })
+    }
+
+    /// Append `session_init` (subagent initial context). `entry.id`/`parent_id`/`timestamp` are
+    /// overwritten with generated values.
+    ///
+    /// # Errors
+    /// Serialization or I/O failure.
+    pub fn append_session_init(&mut self, mut entry: entries::SessionInit, timestamp_iso: &str) -> Result<String> {
+        self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
+            entry.id = id;
+            entry.parent_id = parent_id;
+            entry.timestamp = timestamp;
+            OmpEntry::SessionInit(Box::new(entry))
+        })
     }
 
     /// Append any entry kind (`compaction`, `custom_message`, `model_change`, ...). `payload` holds
-    /// the kind-specific fields; `type`, `id`, `parentId` and `timestamp` are filled in here.
+    /// the kind-specific fields; `type`, `id`, `parentId` and `timestamp` are generated here and win
+    /// over same-named payload keys (as in omp, where the fresh fields are spread first).
     ///
     /// # Errors
-    /// `payload` is not a JSON object, or I/O failure.
+    /// `payload` is not a JSON object, an omp-modeled kind whose payload does not match its schema,
+    /// or I/O failure.
     pub fn append_entry(&mut self, kind: &str, payload: Value, timestamp_iso: &str) -> Result<String> {
         let Value::Object(fields) = payload else { anyhow::bail!("entry payload must be an object") };
-        let id = new_entry_id();
+        let id = self.fresh_id();
         let mut obj = Map::new();
         obj.insert("type".into(), Value::String(kind.into()));
         obj.insert("id".into(), Value::String(id.clone()));
         obj.insert("parentId".into(), self.last_id.clone().map_or(Value::Null, Value::String));
         obj.insert("timestamp".into(), Value::String(timestamp_iso.into()));
-        obj.extend(fields);
-        self.write_value(&Value::Object(obj))?;
-        self.last_id = Some(id.clone());
+        obj.extend(fields.into_iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "id" | "parentId" | "timestamp")));
+        let obj = Value::Object(obj);
+        // Through a typed entry (never a Value detour) so field order matches omp's writer: omp
+        // kinds via `OmpEntry`; the rest via `FileEntry` (unmodeled kinds keep construction order).
+        let line = match serde_json::from_value::<OmpEntry>(obj.clone()) {
+            Ok(entry) => entries::to_js_string(&entry)?,
+            Err(e) if entries::STRICT_KINDS.contains(&kind) => {
+                return Err(anyhow::Error::from(e).context(format!("{kind} entry payload does not match its schema")));
+            }
+            Err(_) => {
+                let entry: FileEntry = serde_json::from_value(obj).with_context(|| format!("{kind} entry payload does not match its schema"))?;
+                entries::to_js_string(&entry)?
+            }
+        };
+        self.push_line(&line, &id)?;
         Ok(id)
+    }
+
+    /// Build an entry with a fresh id chained to the previous one, write it, advance the chain.
+    fn append_typed(&mut self, timestamp_iso: &str, build: impl FnOnce(String, Option<String>, String) -> OmpEntry) -> Result<String> {
+        let id = self.fresh_id();
+        let entry = build(id.clone(), self.last_id.clone(), timestamp_iso.to_owned());
+        let line = entry.to_line()?;
+        self.push_line(&line, &id)?;
+        Ok(id)
+    }
+
+    fn fresh_id(&self) -> String {
+        generate_id(|id| self.ids.contains(id), rand_u32)
+    }
+
+    fn push_line(&mut self, line: &str, id: &str) -> Result<()> {
+        let mut buf = String::with_capacity(line.len() + 1);
+        buf.push_str(line);
+        buf.push('\n');
+        self.file.write_all(buf.as_bytes())?;
+        self.ids.insert(id.to_owned());
+        self.last_id = Some(id.to_owned());
+        Ok(())
     }
 
     fn write_value(&mut self, v: &Value) -> Result<()> {
         let mut line = serde_json::to_string(v)?;
         line.push('\n');
         self.file.write_all(line.as_bytes())?;
+        if let Some(id) = v.get("id").and_then(Value::as_str) {
+            self.ids.insert(id.to_owned());
+        }
         Ok(())
     }
 }
 
-/// omp entry ids are 8 lowercase hex chars.
-fn new_entry_id() -> String {
-    let n: u32 = rand_u32();
-    format!("{n:08x}")
+/// omp entry ids are 8 lowercase hex chars (`crypto.randomUUID().slice(-8)`), collision-checked
+/// against `has` up to 100 times, then a longer 16-hex id (omp falls back to a full snowflake id).
+fn generate_id(has: impl Fn(&str) -> bool, mut next: impl FnMut() -> u32) -> String {
+    for _ in 0..100 {
+        let id = format!("{:08x}", next());
+        if !has(&id) {
+            return id;
+        }
+    }
+    format!("{:08x}{:08x}", next(), next())
 }
 
 fn rand_u32() -> u32 {
@@ -143,13 +386,23 @@ pub enum RoundTrip {
     Unknown,
 }
 
+/// Re-serialize a line through its typed model: omp's own ([`OmpEntry`]) when it has one, otherwise
+/// prime-agent's `FileEntry`.
+#[must_use]
+pub fn reserialize(line: &Line) -> Option<String> {
+    match line.omp() {
+        Some(omp) => omp.to_line().ok(),
+        None => entries::to_js_string(&line.entry).ok(),
+    }
+}
+
 #[must_use]
 pub fn round_trip(line: &Line) -> RoundTrip {
-    let Ok(back) = serde_json::to_string(&line.entry) else { return RoundTrip::Changed };
+    let Some(back) = reserialize(line) else { return RoundTrip::Changed };
     if back == line.raw {
         return RoundTrip::Exact;
     }
-    if matches!(line.entry, FileEntry::Unknown { .. }) {
+    if line.omp().is_none() && matches!(line.entry, FileEntry::Unknown { .. }) {
         return RoundTrip::Unknown;
     }
     let a: Option<Value> = serde_json::from_str(&line.raw).ok();
@@ -164,7 +417,7 @@ pub fn unknown_reason(raw: &str) -> Option<String> {
     let kind = v.get("type")?.as_str()?.to_owned();
     if kind == "message" {
         let msg = v.get("message")?.clone();
-        return serde_json::from_value::<AgentMessage>(msg).err().map(|e| format!("message: {e}"));
+        return serde_json::from_value::<OmpMessage>(msg).err().map(|e| format!("message: {e}"));
     }
     Some(format!("type={kind}"))
 }
@@ -205,13 +458,33 @@ fn walk(a: &Value, b: &Value, path: String, out: &mut Vec<String>, limit: usize)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+
+    const T0: &str = "2026-10-11T00:00:00.000Z";
+    const T1: &str = "2026-10-11T00:00:01.000Z";
+
+    fn tmp() -> PathBuf {
+        std::env::temp_dir().join(format!("omp-session-test-{}", rand_u32()))
+    }
+
+    fn writer(dir: &Path) -> SessionWriter {
+        SessionWriter::create(dir, "/tmp", "01a00000-0000-7000-8000-000000000000", T0).unwrap()
+    }
+
+    fn raws(w: &SessionWriter) -> Vec<String> {
+        std::fs::read_to_string(w.path()).unwrap().lines().map(str::to_owned).collect()
+    }
+
+    fn line(raw: &str) -> Line {
+        Line { raw: raw.to_owned(), entry: serde_json::from_str(raw).unwrap() }
+    }
 
     #[test]
     fn writer_output_reads_back_and_chains_parents() {
-        let dir = std::env::temp_dir().join(format!("omp-session-test-{}", rand_u32()));
-        let mut w = SessionWriter::create(&dir, "/tmp", "01a00000-0000-7000-8000-000000000000", "2026-10-11T00:00:00.000Z").unwrap();
+        let dir = tmp();
+        let mut w = writer(&dir);
         let msg: AgentMessage = serde_json::from_value(json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1})).unwrap();
-        let first = w.append_message(&msg, "2026-10-11T00:00:01.000Z").unwrap();
+        let first = w.append_message(&msg, T1).unwrap();
         w.append_entry("custom_message", json!({"customType": "note", "content": "x", "display": false}), "2026-10-11T00:00:02.000Z").unwrap();
         let lines = read(w.path()).unwrap();
         assert_eq!(lines.len(), 3);
@@ -223,6 +496,182 @@ mod tests {
         for l in &lines {
             assert_eq!(round_trip(l), RoundTrip::Exact, "{}", l.raw);
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn typed_helpers_write_omp_field_order() {
+        let dir = tmp();
+        let mut w = writer(&dir);
+        let a = w.append_model_change("zai/glm-5.3-flash", None, false, T1).unwrap();
+        w.append_thinking_level_change(None, None, T1).unwrap();
+        w.append_mode_change("plan", Some(json!({"planFilePath": "/p.md"})), T1).unwrap();
+        w.append_title_change("Name", "user", Some("Old"), None, T1).unwrap();
+        w.append_ttsr_injection(&["ts-no-any".to_owned()], T1).unwrap();
+        w.append_credential_pin("anthropic", "ab12", T1).unwrap();
+        w.append_reset_boundary(T1).unwrap();
+        let got = raws(&w);
+        let id = |i: usize| serde_json::from_str::<Value>(&got[i]).unwrap()["id"].as_str().unwrap().to_owned();
+        assert_eq!(got[1], format!(r#"{{"type":"model_change","id":"{a}","parentId":null,"timestamp":"{T1}","model":"zai/glm-5.3-flash","resolvedModelIsFallback":false}}"#));
+        assert_eq!(got[2], format!(r#"{{"type":"thinking_level_change","id":"{}","parentId":"{a}","timestamp":"{T1}","thinkingLevel":null,"configured":null}}"#, id(2)));
+        assert!(got[3].ends_with(r#""mode":"plan","data":{"planFilePath":"/p.md"}}"#), "{}", got[3]);
+        assert!(got[4].ends_with(r#""title":"Name","previousTitle":"Old","source":"user"}"#), "{}", got[4]);
+        assert!(got[5].ends_with(r#""injectedRules":["ts-no-any"]}"#), "{}", got[5]);
+        assert!(got[6].ends_with(r#""provider":"anthropic","hash":"ab12"}"#), "{}", got[6]);
+        assert!(got[7].ends_with(&format!(r#""timestamp":"{T1}"}}"#)), "{}", got[7]);
+        for l in read(w.path()).unwrap() {
+            assert!(l.omp().is_some() || matches!(l.entry, FileEntry::Header { .. }), "{}", l.raw);
+            assert_eq!(round_trip(&l), RoundTrip::Exact, "{}", l.raw);
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn omp_shapes_round_trip_without_loss() {
+        let cases = [
+            r#"{"type":"title","v":1,"title":"x","source":"auto","updatedAt":"2026-10-06T16:15:06.242Z","pad":"   "}"#,
+            r#"{"type":"model_change","id":"f30ba933","parentId":null,"timestamp":"t","model":"zai/glm-5.3-flash","role":"smol","resolvedModelIsFallback":true}"#,
+            r#"{"type":"thinking_level_change","id":"a","parentId":"b","timestamp":"t","thinkingLevel":null,"configured":"high"}"#,
+            r#"{"type":"model_usage","id":"a","parentId":"b","timestamp":"t","purpose":"p","role":"judge","api":"x","provider":"y","model":"m","usage":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"reasoningTokens":1,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","errorMessage":"boom","futureField":[1]}"#,
+            r#"{"type":"session_init","id":"a","parentId":"b","timestamp":"t","systemPrompt":"s","task":"t","tools":["bash"],"agent":"scout","outputSchema":null,"isolated":false}"#,
+            r#"{"type":"mode_change","id":"a","parentId":"b","timestamp":"t","mode":"none"}"#,
+            r#"{"type":"message","id":"a","parentId":"b","timestamp":"t","message":{"role":"developer","content":[{"type":"text","text":"hi"}],"attribution":"agent","timestamp":1791303322752,"synthetic":true}}"#,
+            r#"{"type":"message","id":"a","parentId":"b","timestamp":"t","message":{"role":"pythonExecution","code":"1","output":"1","exitCode":0,"cancelled":false,"truncated":false,"timestamp":5,"excludeFromContext":true}}"#,
+            r#"{"type":"message","id":"a","parentId":"b","timestamp":"t","message":{"role":"assistant","content":[],"api":"x","provider":"y","model":"m","usage":{"input":7,"output":3,"cacheRead":0,"cacheWrite":16,"totalTokens":26,"reasoningTokens":354,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0},"cttl":{"ephemeral1h":16587}},"stopReason":"stop","timestamp":2}}"#,
+            r#"{"type":"custom","customType":"x","data":{"a":3.75e-7,"b":0.00000375},"id":"a","parentId":"b","timestamp":"t"}"#,
+            r#"{"type":"custom_message","customType":"x","content":"c","display":true,"details":{"k":1},"attribution":"agent","id":"a","parentId":null,"timestamp":"t"}"#,
+            r#"{"type":"compaction","id":"a","parentId":"b","timestamp":"t","summary":"s","shortSummary":"ss","firstKeptEntryId":"f","tokensBefore":10,"tokensAfter":5,"method":"m","details":{"x":1},"fromExtension":false,"preserveData":{"y":2}}"#,
+            r#"{"type":"branch_summary","id":"a","parentId":"b","timestamp":"t","fromId":"f","summary":"s","fromExtension":true}"#,
+            r#"{"type":"service_tier_change","id":"a","parentId":"b","timestamp":"t","serviceTier":null}"#,
+            r#"{"type":"message","id":"a","parentId":"b","timestamp":"t","message":{"role":"assistant","content":[{"type":"text","text":"x"}],"api":"x","provider":"y","model":"m","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0.00000375,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"stop","timestamp":2,"responseId":"r","duration":5}}"#,
+            r#"{"type":"message","id":"a","parentId":"b","timestamp":"t","message":{"role":"toolResult","toolCallId":"c","toolName":"bash","content":[{"type":"text","text":"x"}],"isError":false,"useless":true,"timestamp":2}}"#,
+        ];
+        for raw in cases {
+            let l = line(raw);
+            assert!(l.omp().is_some(), "not modeled: {raw}");
+            assert_eq!(round_trip(&l), RoundTrip::Exact, "{raw}");
+        }
+    }
+
+    #[test]
+    fn load_skips_malformed_records_like_omp() {
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let slot = entries::serialize_title_slot("T", Some("auto"), "2026-10-11T00:00:00.000Z").unwrap();
+        let header = r#"{"type":"session","version":3,"id":"s1","timestamp":"t","cwd":"/"}"#;
+        let ok = r#"{"type":"model_change","id":"a","parentId":null,"timestamp":"t","model":"zai/glm"}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(slot.as_bytes());
+        bytes.extend_from_slice(format!("{header}\n\n").as_bytes());
+        bytes.extend_from_slice(&[0u8; 32]);
+        bytes.extend_from_slice(format!("\n{ok}\n   \n{{\"type\":\"mess\n[1,2]\n").as_bytes());
+        bytes.extend_from_slice(&[0xff, 0xfe]);
+        bytes.extend_from_slice(format!(" broken\n{ok}").as_bytes());
+        std::fs::write(&path, bytes).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.lines.len(), 4, "slot + header + 2 valid");
+        assert_eq!(loaded.malformed.iter().map(|m| m.line_no).collect::<Vec<_>>(), vec![4, 7, 8, 9]);
+        assert_eq!(loaded.title_slot.as_ref().map(|s| s.title.as_str()), Some("T"));
+        assert!(!loaded.invalid_header);
+        assert_eq!(read(&path).unwrap().len(), 4);
+        std::fs::write(&path, "garbage\n").unwrap();
+        let bad = load(&path).unwrap();
+        assert!(bad.lines.is_empty() && bad.invalid_header);
+        std::fs::write(&path, format!("{ok}\n")).unwrap();
+        assert!(load(&path).unwrap().invalid_header, "first record is not a session header");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn from_agent_writes_omp_key_order() {
+        let msg: AgentMessage = serde_json::from_value(json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1})).unwrap();
+        let line = OmpEntry::Message(Box::new(entries::MessageEntry {
+            id: "a".into(), parent_id: None, timestamp: "t".into(), message: OmpMessage::from_agent(&msg).unwrap(), rest: Map::new(),
+        }))
+        .to_line()
+        .unwrap();
+        assert_eq!(line, r#"{"type":"message","id":"a","parentId":null,"timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1}}"#);
+        assert_eq!(OmpEntry::parse(&line).unwrap().to_line().unwrap(), line);
+        let Some(OmpEntry::Message(m)) = OmpEntry::parse(&line) else { panic!("not a message") };
+        assert_eq!(m.message.to_agent(), Some(msg));
+    }
+
+    #[test]
+    fn title_slot_is_256_bytes() {
+        let s = entries::serialize_title_slot("Заголовок", Some("auto"), "2026-10-09T22:09:38.413Z").unwrap();
+        assert_eq!(s.len(), entries::TITLE_SLOT_BYTES);
+        assert!(s.ends_with('\n'));
+        let long = entries::serialize_title_slot(&"я".repeat(500), None, "2026-10-09T22:09:38.413Z").unwrap();
+        assert_eq!(long.len(), entries::TITLE_SLOT_BYTES);
+        assert!(OmpEntry::parse(long.trim_end_matches('\n')).is_some());
+    }
+
+    #[test]
+    fn strict_kind_with_bad_payload_is_an_error() {
+        let dir = tmp();
+        let mut w = writer(&dir);
+        assert!(w.append_entry("model_change", json!({"provider": "zai"}), T1).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn append_entry_generated_fields_win_over_payload() {
+        let dir = tmp();
+        let mut w = writer(&dir);
+        let first = w.append_entry("mode_change", json!({"mode": "plan"}), T1).unwrap();
+        let id = w
+            .append_entry("mode_change", json!({"type": "message", "id": "evil", "parentId": "evil", "timestamp": "evil", "mode": "none"}), "2026-10-11T00:00:02.000Z")
+            .unwrap();
+        let v: Value = serde_json::from_str(raws(&w).last().unwrap()).unwrap();
+        assert_eq!(v["type"], "mode_change");
+        assert_eq!(v["id"], json!(id));
+        assert_ne!(id, "evil");
+        assert_eq!(v["parentId"], json!(first));
+        assert_eq!(v["timestamp"], "2026-10-11T00:00:02.000Z");
+        assert_eq!(v["mode"], "none");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn generate_id_retries_on_collision_then_falls_back_to_longer_id() {
+        let calls = Cell::new(0u32);
+        // First two draws collide, the third is free.
+        let id = generate_id(|id| id == "00000001" || id == "00000002", || { calls.set(calls.get() + 1); calls.get() });
+        assert_eq!(id, "00000003");
+        // Every 8-hex id is taken: 100 draws, then a 16-hex fallback.
+        let draws = Cell::new(0u32);
+        let id = generate_id(|id| id.len() == 8, || { draws.set(draws.get() + 1); 7 });
+        assert_eq!(id.len(), 16);
+        assert_eq!(draws.get(), 102);
+    }
+
+    #[test]
+    fn writer_never_reuses_an_existing_id() {
+        let dir = tmp();
+        let mut w = writer(&dir);
+        let mut seen = HashSet::new();
+        for _ in 0..200 {
+            assert!(seen.insert(w.append_reset_boundary(T1).unwrap()));
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn create_continues_an_existing_file_like_open_with_flag_a() {
+        let dir = tmp();
+        let mut w = writer(&dir);
+        let last = w.append_reset_boundary(T1).unwrap();
+        let before = raws(&w);
+        let mut again = writer(&dir);
+        assert_eq!(again.path(), w.path());
+        assert_eq!(raws(&again), before, "header must not be rewritten");
+        let next = again.append_reset_boundary("2026-10-11T00:00:02.000Z").unwrap();
+        assert!(again.ids.contains(&last));
+        let v: Value = serde_json::from_str(raws(&again).last().unwrap()).unwrap();
+        assert_eq!(v["parentId"], json!(last));
+        assert_eq!(v["id"], json!(next));
+        assert_eq!(read(again.path()).unwrap().len(), 3);
         std::fs::remove_dir_all(dir).ok();
     }
 }

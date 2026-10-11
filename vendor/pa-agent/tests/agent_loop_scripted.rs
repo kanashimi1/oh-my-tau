@@ -13,8 +13,8 @@ use pa_agent::agent_loop::{run_agent_loop_continue, AgentEventSink, AgentLoopCon
 use pa_agent::scripted::ScriptedProvider;
 use pa_agent::stream::AssistantMessageEvent;
 use pa_agent::types::{
-    AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult, AgentToolUpdateCallback,
-    AssistantContent, AssistantMessage, Message, Model, StopReason, TextContent, ToolExecutionMode,
+    AfterToolCallResult, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult, AgentToolUpdateCallback,
+    AssistantContent, AssistantMessage, BeforeToolCallResult, Message, Model, StopReason, TextContent, ToolExecutionMode,
     ToolResultContent, ToolResultMessage, UserContent,
 };
 
@@ -711,4 +711,186 @@ fn scripted_event_shapes_round_trip_through_the_event_enum() {
         pa_agent::scripted::ScriptStep::Event(event)
             if matches!(**event, AssistantMessageEvent::Error { .. })
     )));
+}
+
+/// Agent with `before_tool_call`/`after_tool_call` hooks wired to the scripted provider.
+async fn hooked_agent(
+    tools: Vec<Arc<dyn AgentTool>>,
+    before: pa_agent::agent_loop::BeforeToolCallFn,
+    after: Option<pa_agent::agent_loop::AfterToolCallFn>,
+) -> (Agent, Arc<ScriptedProvider>) {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    let agent = Agent::new(AgentOptions {
+        initial_state: pa_agent::agent::AgentInitialState {
+            tools: Some(tools),
+            ..Default::default()
+        },
+        stream_fn: Some(provider.stream_fn()),
+        before_tool_call: Some(before),
+        after_tool_call: after,
+        ..Default::default()
+    });
+    agent.set_model(test_model()).await;
+    (agent, provider)
+}
+
+fn developer_text(message: &AgentMessage) -> String {
+    match message {
+        AgentMessage::Custom(custom) => {
+            assert_eq!(custom.role, "developer");
+            assert_eq!(custom.payload["attribution"], "agent");
+            custom.payload["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+        other @ AgentMessage::Standard(_) => panic!("expected developer message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn before_tool_call_rewrites_args_and_attaches_context_after_results() {
+    let echo = EchoTool::new("echo");
+    let before: pa_agent::agent_loop::BeforeToolCallFn = Arc::new(|_ctx, _signal| {
+        Box::pin(async {
+            Ok(Some(BeforeToolCallResult {
+                args: Some(serde_json::json!({ "text": "rewritten" })),
+                additional_context: Some("pre-note".into()),
+                ..Default::default()
+            }))
+        })
+    });
+    let after: pa_agent::agent_loop::AfterToolCallFn = Arc::new(|ctx, _signal| {
+        // after hook sees the revised args
+        assert_eq!(ctx.args["text"], "rewritten");
+        Box::pin(async {
+            Ok(Some(AfterToolCallResult {
+                additional_context: Some("post-note".into()),
+                ..Default::default()
+            }))
+        })
+    });
+    let (agent, provider) = hooked_agent(vec![echo.clone()], before, Some(after)).await;
+    provider.push_tool_call_turn(
+        None,
+        vec![("call-1", "echo", serde_json::json!({ "text": "original" }))],
+    );
+    provider.push_text_turn("done");
+
+    agent.prompt("go").await.unwrap();
+    agent.wait_for_idle().await;
+
+    let state = agent.state().await;
+    // user, assistant(toolUse), toolResult, developer(context), assistant(final)
+    assert_eq!(state.messages.len(), 5);
+    let result = tool_result(&state.messages[2]);
+    assert_eq!(single_text(&result.content), "echo:rewritten");
+    // tool-reported (after) context precedes the hook's (before), joined by a blank line
+    assert_eq!(developer_text(&state.messages[3]), "post-note\n\npre-note");
+    assert!(matches!(
+        &state.messages[4],
+        AgentMessage::Standard(Message::Assistant(_))
+    ));
+}
+
+#[tokio::test]
+async fn before_tool_call_context_is_dropped_for_errors_and_blocks_ignore_rewrites() {
+    let failing = EchoTool::with_options("fail", 0, true);
+    let echo = EchoTool::new("echo");
+    let before: pa_agent::agent_loop::BeforeToolCallFn = Arc::new(|ctx, _signal| {
+        let block = ctx.tool_call.name == "echo";
+        Box::pin(async move {
+            Ok(Some(BeforeToolCallResult {
+                block,
+                reason: block.then(|| "nope".to_string()),
+                args: Some(serde_json::json!({ "text": "rewritten" })),
+                additional_context: Some("pre-note".into()),
+            }))
+        })
+    });
+    let (agent, provider) = hooked_agent(vec![failing, echo.clone()], before, None).await;
+    provider.push_tool_call_turn(
+        None,
+        vec![
+            ("c1", "fail", serde_json::json!({ "text": "x" })),
+            ("c2", "echo", serde_json::json!({ "text": "y" })),
+        ],
+    );
+    provider.push_text_turn("done");
+
+    agent.prompt("go").await.unwrap();
+    agent.wait_for_idle().await;
+
+    assert_eq!(echo.calls.load(Ordering::SeqCst), 0, "blocked call must not run");
+    let state = agent.state().await;
+    // user, assistant, 2 tool results, final assistant: no developer message at all
+    assert_eq!(state.messages.len(), 5);
+    assert!(state.messages[2..4]
+        .iter()
+        .all(|m| tool_result(m).is_error));
+    assert_eq!(single_text(&tool_result(&state.messages[3]).content), "nope");
+}
+
+#[tokio::test]
+async fn parallel_context_is_joined_into_one_developer_message_after_all_results() {
+    let echo = EchoTool::new("echo");
+    let before: pa_agent::agent_loop::BeforeToolCallFn = Arc::new(|_ctx, _signal| {
+        Box::pin(async {
+            Ok(Some(BeforeToolCallResult {
+                additional_context: Some("same".into()),
+                ..Default::default()
+            }))
+        })
+    });
+    let (agent, provider) = hooked_agent(vec![echo], before, None).await;
+    provider.push_tool_call_turn(
+        None,
+        vec![
+            ("c1", "echo", serde_json::json!({ "text": "a" })),
+            ("c2", "echo", serde_json::json!({ "text": "b" })),
+        ],
+    );
+    provider.push_text_turn("done");
+
+    agent.prompt("go").await.unwrap();
+    agent.wait_for_idle().await;
+
+    let state = agent.state().await;
+    // user, assistant, result, result, developer (duplicates collapsed), final
+    assert_eq!(state.messages.len(), 6);
+    assert_eq!(tool_result(&state.messages[2]).tool_call_id, "c1");
+    assert_eq!(tool_result(&state.messages[3]).tool_call_id, "c2");
+    assert_eq!(developer_text(&state.messages[4]), "same");
+}
+
+#[tokio::test]
+async fn default_conversion_delivers_developer_context_to_the_next_request() {
+    let echo = EchoTool::new("echo");
+    let before: pa_agent::agent_loop::BeforeToolCallFn = Arc::new(|_ctx, _signal| {
+        Box::pin(async {
+            Ok(Some(BeforeToolCallResult {
+                additional_context: Some("remember this".into()),
+                ..Default::default()
+            }))
+        })
+    });
+    let (agent, provider) = hooked_agent(vec![echo], before, None).await;
+    provider.push_tool_call_turn(
+        None,
+        vec![("c1", "echo", serde_json::json!({ "text": "a" }))],
+    );
+    provider.push_text_turn("done");
+    agent.prompt("go").await.unwrap();
+    agent.wait_for_idle().await;
+
+    let second = &provider.calls()[1];
+    // user, assistant, toolResult, then the context after the results
+    assert!(matches!(&second.messages[2], Message::ToolResult(_)));
+    match &second.messages[3] {
+        Message::User(user) => assert!(
+            matches!(&user.content, UserContent::Text(t) if t == "remember this"),
+            "{user:?}"
+        ),
+        other => panic!("expected context message, got {other:?}"),
+    }
 }

@@ -5,6 +5,11 @@ members = [
     "vendor/pa-ai",
     "vendor/pa-models",
     "vendor/pa-agent",
+    "vendor/pi-edit",
+    "vendor/pi-ast",
+    "vendor/pi-diff",
+    "vendor/pi-walker",
+    "vendor/pi-vfs",
     "crates/*",
 ]
 

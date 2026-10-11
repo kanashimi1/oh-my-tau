@@ -37,6 +37,8 @@ struct StreamingState {
     output: AssistantMessage,
     text_block: Option<usize>,
     thinking_block: Option<usize>,
+    /// Blocks whose `*_end` event was already emitted when a different block kind started.
+    ended_blocks: std::collections::HashSet<usize>,
     tool_call_blocks_by_index: HashMap<u64, usize>,
     tool_call_blocks_by_id: HashMap<String, usize>,
     tool_call_partial_args: HashMap<usize, StreamingJsonAccumulator>,
@@ -56,6 +58,7 @@ impl StreamingState {
             output,
             text_block: None,
             thinking_block: None,
+            ended_blocks: std::collections::HashSet::new(),
             tool_call_blocks_by_index: HashMap::new(),
             tool_call_blocks_by_id: HashMap::new(),
             tool_call_partial_args: HashMap::new(),
@@ -68,10 +71,35 @@ impl StreamingState {
         }
     }
 
+    /// Close the open text/thinking block (port of `finishCurrentBlock` on block switch).
+    fn close_text_and_thinking(&mut self, writer: &AssistantMessageEventWriter) {
+        if let Some(index) = self.text_block.take() {
+            if let Some(AssistantContent::Text(text)) = self.output.content.get(index) {
+                writer.push(AssistantMessageEvent::TextEnd {
+                    content_index: index as u64,
+                    content: text.text.clone(),
+                    partial: self.output.clone(),
+                });
+            }
+            self.ended_blocks.insert(index);
+        }
+        if let Some(index) = self.thinking_block.take() {
+            if let Some(AssistantContent::Thinking(thinking)) = self.output.content.get(index) {
+                writer.push(AssistantMessageEvent::ThinkingEnd {
+                    content_index: index as u64,
+                    content: thinking.thinking.clone(),
+                    partial: self.output.clone(),
+                });
+            }
+            self.ended_blocks.insert(index);
+        }
+    }
+
     fn ensure_text_block(&mut self, writer: &AssistantMessageEventWriter) -> usize {
         if let Some(index) = self.text_block {
             return index;
         }
+        self.close_text_and_thinking(writer);
         self.output
             .content
             .push(AssistantContent::Text(TextContent {
@@ -96,6 +124,7 @@ impl StreamingState {
         if let Some(index) = self.thinking_block {
             return index;
         }
+        self.close_text_and_thinking(writer);
         self.output
             .content
             .push(AssistantContent::Thinking(ThinkingContent {
@@ -135,6 +164,7 @@ impl StreamingState {
             }
             return index;
         }
+        self.close_text_and_thinking(writer);
         self.output
             .content
             .push(AssistantContent::ToolCall(ToolCall {
@@ -162,6 +192,9 @@ impl StreamingState {
 /// Finish all open blocks, emitting `*_end` events (port of `finishBlock`).
 fn finish_blocks(state: &mut StreamingState, writer: &AssistantMessageEventWriter) {
     for index in 0..state.output.content.len() {
+        if state.ended_blocks.contains(&index) {
+            continue;
+        }
         match &state.output.content[index] {
             AssistantContent::Text(text) => writer.push(AssistantMessageEvent::TextEnd {
                 content_index: index as u64,

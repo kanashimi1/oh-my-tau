@@ -1,0 +1,17 @@
+[package]
+name = "pi-vfs"
+version = "18.9.1"
+edition = "2024"
+license = "MIT"
+authors = ["Stencil Labs, Inc."]
+description = "Vendored from can1357/oh-my-pi (MIT), see ../LICENSE-oh-my-pi."
+
+[dependencies]
+async-trait = "0.1"
+parking_lot = "0.12"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+xattr = "1.6"

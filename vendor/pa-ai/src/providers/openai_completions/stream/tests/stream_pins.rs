@@ -204,3 +204,53 @@ async fn reasoning_content_deltas_assemble_the_thinking_block_with_the_field_sig
     );
     assert_eq!(message.stop_reason, StopReason::Stop);
 }
+
+/// pi-ai semantics: a block closes when a block of a different kind starts, so the event order is
+/// `thinking_start thinking_delta+ thinking_end text_start text_delta+ text_end done`.
+#[tokio::test]
+async fn thinking_block_ends_before_text_block_starts() {
+    let chunk = |delta: Value, finish: Value| {
+        json!({
+            "id": "c1", "object": "chat.completion.chunk", "model": "internal/glm-5.3-fast",
+            "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }]
+        })
+    };
+    let body = sse_body(&[
+        chunk(json!({ "reasoning_content": "think " }), Value::Null),
+        chunk(json!({ "reasoning_content": "more" }), Value::Null),
+        chunk(json!({ "content": "hel" }), Value::Null),
+        chunk(json!({ "content": "lo" }), Value::Null),
+        chunk(json!({}), json!("stop")),
+    ]);
+    let (events, message) = stream_events(glm_fast_model(), body).await;
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|event| match event {
+            AssistantMessageEvent::Start { .. } => "start",
+            AssistantMessageEvent::ThinkingStart { .. } => "thinking_start",
+            AssistantMessageEvent::ThinkingDelta { .. } => "thinking_delta",
+            AssistantMessageEvent::ThinkingEnd { .. } => "thinking_end",
+            AssistantMessageEvent::TextStart { .. } => "text_start",
+            AssistantMessageEvent::TextDelta { .. } => "text_delta",
+            AssistantMessageEvent::TextEnd { .. } => "text_end",
+            AssistantMessageEvent::Done { .. } => "done",
+            other => panic!("unexpected event {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "start",
+            "thinking_start",
+            "thinking_delta",
+            "thinking_delta",
+            "thinking_end",
+            "text_start",
+            "text_delta",
+            "text_delta",
+            "text_end",
+            "done"
+        ]
+    );
+    assert_eq!(message.content.len(), 2);
+}

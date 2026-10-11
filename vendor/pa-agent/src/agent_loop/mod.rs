@@ -9,7 +9,7 @@ use crate::abort::AbortSignal;
 use crate::types::{
     AfterToolCallContext, AfterToolCallResult, AgentEvent, AgentMessage, BeforeToolCallContext,
     BeforeToolCallResult, GetContinuationMessagesContext, Message, Model,
-    ShouldStopAfterTurnContext, ThinkingLevel, ToolExecutionMode,
+    ShouldStopAfterTurnContext, ThinkingLevel, ToolExecutionMode, UserContent, UserMessage,
 };
 
 /// Sink receiving the loop's events. The loop awaits every emission, so
@@ -146,17 +146,23 @@ impl AgentLoopConfig {
             Box::pin(async move {
                 Ok(messages
                     .into_iter()
-                    .filter(|m| {
-                        matches!(
-                            m,
-                            AgentMessage::Standard(
-                                Message::User(_) | Message::Assistant(_) | Message::ToolResult(_),
-                            )
-                        )
-                    })
-                    .map(|m| match m {
-                        AgentMessage::Standard(message) => message,
-                        AgentMessage::Custom(_) => unreachable!("filtered above"),
+                    .filter_map(|m| match m {
+                        AgentMessage::Standard(message) => Some(message),
+                        // Passive tool context (`developer` role) reaches the model as user text.
+                        AgentMessage::Custom(custom) if custom.role == "developer" => {
+                            let text = custom.payload["content"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|part| part["text"].as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            Some(Message::User(UserMessage {
+                                content: UserContent::Text(text),
+                                timestamp: custom.payload["timestamp"].as_i64().unwrap_or_default(),
+                            }))
+                        }
+                        AgentMessage::Custom(_) => None,
                     })
                     .collect())
             })

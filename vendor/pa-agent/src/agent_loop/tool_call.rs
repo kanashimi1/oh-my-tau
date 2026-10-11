@@ -76,6 +76,9 @@ async fn prepare_tool_call_inner(
     )
     .map_err(anyhow::Error::msg)?;
 
+    let mut final_args = validated_args.clone();
+    let mut final_call = tool_call.clone();
+    let mut additional_context = None;
     if let Some(before_tool_call) = config.before_tool_call.as_ref() {
         let before_result = race_with_abort(
             before_tool_call(
@@ -99,12 +102,27 @@ async fn prepare_tool_call_inner(
                 is_error: true,
             });
         }
+        if let Some(before) = before_result {
+            additional_context = before.additional_context.filter(|c| is_non_blank(c));
+            if let Some(revised) = before.args {
+                // A hook revision is untrusted input to the tool schema; bake
+                // it into the call so downstream sees a single version.
+                final_args = crate::validation::validate_tool_arguments(
+                    tool_call.name.as_str(),
+                    tool.parameters(),
+                    &revised,
+                )
+                .map_err(anyhow::Error::msg)?;
+                final_call.arguments = revised;
+            }
+        }
     }
 
     Ok(Preparation::Prepared(PreparedToolCall {
-        tool_call: tool_call.clone(),
+        tool_call: final_call,
         tool: Arc::clone(tool),
-        args: validated_args,
+        args: final_args,
+        additional_context,
     }))
 }
 
@@ -235,6 +253,10 @@ fn error_tool_result(signal: Option<&AbortSignal>, error: &anyhow::Error) -> Age
     }
 }
 
+pub(crate) fn is_non_blank(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
 /// Apply the `afterToolCall` overrides.
 pub(crate) async fn finalize_executed_tool_call(
     current_context: &AgentContext,
@@ -246,6 +268,7 @@ pub(crate) async fn finalize_executed_tool_call(
 ) -> anyhow::Result<FinalizedToolCallOutcome> {
     let mut result = executed.result;
     let mut is_error = executed.is_error;
+    let mut reported_context: Vec<String> = Vec::new();
 
     if let Some(after_tool_call) = config.after_tool_call.as_ref() {
         let after_result = race_with_abort(
@@ -279,6 +302,7 @@ pub(crate) async fn finalize_executed_tool_call(
                 if let Some(error) = overrides.is_error {
                     is_error = error;
                 }
+                reported_context.extend(overrides.additional_context);
                 result = merged;
             }
             Ok(None) => {}
@@ -289,10 +313,16 @@ pub(crate) async fn finalize_executed_tool_call(
         }
     }
 
+    // Tool-reported context precedes the hook's; hook context needs a
+    // non-error final result (TS `joinAdditionalContext` order).
+    if !is_error {
+        reported_context.extend(prepared.additional_context.clone());
+    }
     Ok(FinalizedToolCallOutcome {
         tool_call: prepared.tool_call.clone(),
         result,
         is_error,
+        additional_context: reported_context,
     })
 }
 

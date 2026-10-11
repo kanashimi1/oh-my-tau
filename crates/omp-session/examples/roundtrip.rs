@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use omp_session::{diff_paths, read, round_trip, unknown_reason, RoundTrip};
+use omp_session::{diff_paths, load, reserialize, round_trip, unknown_reason, RoundTrip};
 
 fn files(p: &Path, out: &mut Vec<PathBuf>) {
     if p.is_dir() {
@@ -24,11 +24,16 @@ fn main() {
     }
     let (mut counts, mut by_kind, mut reasons, mut changed): (BTreeMap<String, u64>, BTreeMap<(String, String), u64>, BTreeMap<String, u64>, BTreeMap<String, u64>) = Default::default();
     let mut examples: Vec<String> = Vec::new();
-    let (mut bad_files, mut bytes) = (0u64, 0u64);
+    let (mut bad_files, mut bytes, mut malformed_lines, mut malformed_files, mut bad_header) = (0u64, 0u64, 0u64, 0u64, 0u64);
     for p in &paths {
         bytes += std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        let lines = match read(p) {
-            Ok(l) => l,
+        let lines = match load(p) {
+            Ok(l) => {
+                malformed_lines += l.malformed.len() as u64;
+                malformed_files += u64::from(!l.malformed.is_empty());
+                bad_header += u64::from(l.invalid_header);
+                l.lines
+            }
             Err(e) => { bad_files += 1; if examples.len() < show { examples.push(format!("READ FAIL {e:#}")); } continue; }
         };
         for l in &lines {
@@ -43,7 +48,7 @@ fn main() {
                 },
                 RoundTrip::Changed => {
                     let a: serde_json::Value = serde_json::from_str(&l.raw).unwrap_or_default();
-                    let b: serde_json::Value = serde_json::to_value(&l.entry).unwrap_or_default();
+                    let b: serde_json::Value = reserialize(l).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
                     for d in diff_paths(&a, &b, 3) {
                         let key: String = d.chars().take(120).collect();
                         *changed.entry(format!("{kind}: {key}")).or_default() += 1;
@@ -53,7 +58,7 @@ fn main() {
             }
         }
     }
-    println!("files {} ({:.1} GB), unreadable {bad_files}", paths.len(), bytes as f64 / 1e9);
+    println!("files {} ({:.1} GB), unreadable {bad_files}, files with malformed lines {malformed_files} ({malformed_lines} lines skipped), invalid header {bad_header}", paths.len(), bytes as f64 / 1e9);
     println!("lines by outcome: {counts:?}");
     println!("\nby entry type:");
     for ((k, o), n) in &by_kind { println!("  {k:24} {o:10} {n}"); }

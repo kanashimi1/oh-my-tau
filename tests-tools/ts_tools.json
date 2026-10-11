@@ -1,0 +1,191 @@
+[
+	{
+		"name": "read",
+		"description_first_line": "Use `read` for static web; browser only if needed.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string",
+					"description": "Local path, internal URI, or URL; selectors inline."
+				}
+			},
+			"required": [
+				"path"
+			]
+		}
+	},
+	{
+		"name": "bash",
+		"description_first_line": "Persistent shell: one fact command/pipeline; dependencies use `&&`.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"command": {
+					"type": "string"
+				},
+				"timeout": {
+					"type": "number",
+					"description": "timeout in seconds; 0 disables the command deadline; nonzero values are clamped to 1-3600"
+				},
+				"cwd": {
+					"type": "string"
+				},
+				"pty": {
+					"type": "boolean"
+				},
+				"async": {
+					"type": "boolean"
+				},
+				"name": {
+					"type": "string",
+					"maxLength": 48
+				},
+				"ready": {
+					"type": "object",
+					"properties": {
+						"log": {
+							"type": "string"
+						},
+						"port": {
+							"type": "number"
+						},
+						"host": {
+							"type": "string"
+						},
+						"timeout": {
+							"type": "number"
+						}
+					}
+				}
+			},
+			"required": [
+				"command"
+			]
+		}
+	},
+	{
+		"name": "edit",
+		"description_first_line": "Single file string replacement; fuzzy whitespace matching.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				},
+				"old_string": {
+					"type": "string"
+				},
+				"new_string": {
+					"type": "string"
+				},
+				"replace_all": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"path",
+				"old_string",
+				"new_string"
+			]
+		}
+	},
+	{
+		"name": "glob",
+		"description_first_line": "Glob files/dirs: `;`-separated paths or internal URLs (`local://*.md`, `omp://**/*.md`); default workspace root.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				},
+				"hidden": {
+					"type": "boolean"
+				},
+				"gitignore": {
+					"type": "boolean"
+				},
+				"limit": {
+					"type": "number"
+				}
+			}
+		}
+	},
+	{
+		"name": "grep",
+		"description_first_line": "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"pattern": {
+					"type": "string"
+				},
+				"path": {
+					"type": "string"
+				},
+				"case": {
+					"type": "boolean"
+				},
+				"gitignore": {
+					"type": "boolean"
+				},
+				"skip": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"pattern"
+			]
+		}
+	},
+	{
+		"name": "find",
+		"description_first_line": "Describe behavior, get implementing files and line ranges. MUST use first for unknown locations; known strings/regex/symbols → `grep`, names → `glob`.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string"
+				},
+				"grep_keywords": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"path": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"query",
+				"grep_keywords"
+			]
+		}
+	},
+	{
+		"name": "write",
+		"description_first_line": "SHOULD `edit` existing files; `write` for required new files or whole-file replacement. NEVER create docs or emojis unless requested.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				},
+				"content": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"path"
+			]
+		}
+	}
+]

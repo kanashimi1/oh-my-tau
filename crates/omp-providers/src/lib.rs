@@ -9,7 +9,11 @@
 //! * credentials: `models.yml` `apiKey` -> env vars -> `agent.db` `auth_credentials`
 //!   (api keys and non-expired OAuth access tokens; OAuth is never refreshed here).
 
-use std::collections::BTreeMap;
+mod command;
+mod fallback;
+mod judge;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -17,6 +21,30 @@ use serde_json::{json, Map, Value};
 
 pub use pa_ai::types::{Context, Model, ModelThinkingLevel, SimpleStreamOptions, StreamOptions};
 pub use pa_ai::AssistantMessageEventStream;
+
+pub use command::{invalidate as invalidate_command_value, resolve_config_value};
+pub use fallback::{
+    fallback_cooldown_ms, is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, ActiveFallback,
+    CandidateOptions, FallbackConfig, FallbackState, FallbackWalker, ModelLookup, RateLimitReason, RestorePlan,
+    RetryConfig, RevertPolicy,
+};
+pub use judge::{
+    judge, judge_native, judgment_route, resolve_judge, resolve_judge_chain, JudgeCandidate, JudgeKind,
+    JudgeRequest, JudgeResult, JudgeUsage, CachedAnswers, JudgmentCache, judgment_cache_path, stable_json,
+};
+
+/// Where the effective thinking level came from (omp `pickInitialThinkingLevel` order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThinkingSource {
+    /// `:level` suffix, `--thinking`, or the level in the role's selector.
+    Selector,
+    /// The model catalog's `thinking.defaultLevel`.
+    ModelDefault,
+    /// `defaultThinkingLevel` in `config.yml` (omp default: `high`).
+    ConfigDefault,
+    /// Non-reasoning model or no controllable effort: nothing is sent.
+    None,
+}
 
 /// A model reference resolved to everything needed to call it.
 #[derive(Debug, Clone)]
@@ -32,8 +60,22 @@ pub struct ResolvedModel {
     pub context_window: u64,
     pub max_tokens: u64,
     pub reasoning: bool,
-    /// Thinking level from the `:suffix` (or role); `None` = provider default / `auto`.
+    /// Effective thinking level, resolved as omp does: selector suffix / role level, else the
+    /// model's catalog default, else `defaultThinkingLevel` (`auto` resolves to a provisional
+    /// level, see `thinking_auto`), clamped to the model's effort ladder. `None` = send nothing.
     pub thinking: Option<ModelThinkingLevel>,
+    /// The selector/config asked for `auto` thinking (omp then re-classifies each turn; `thinking`
+    /// holds the provisional level).
+    pub thinking_auto: bool,
+    pub thinking_source: ThinkingSource,
+    /// The selector this model was asked for, role-expanded (`provider/id[:level]`).
+    pub selector: String,
+    /// Role name when resolved through `modelRoles` (chain-key hint for fallbacks).
+    pub role: Option<String>,
+    /// `retry.fallbackChains` candidates after this model, in order (selectors; see
+    /// [`FallbackWalker`] to resolve them lazily).
+    pub fallbacks: Vec<String>,
+    pub retry: RetryConfig,
     /// Full pa-ai model descriptor (what `to_pa_model` returns).
     pub model: Model,
 }
@@ -89,15 +131,27 @@ pub async fn stream(
     pa_ai::stream_simple(&m.model, &context, Some(o)).map_err(|e| anyhow!("{e:?}"))
 }
 
+/// Walker over the fallback chain of `m` (see [`FallbackWalker`]); `dir` must be the agent dir `m` came from.
+#[must_use]
+pub fn fallback_walker(dir: &AgentDir, m: &ResolvedModel) -> FallbackWalker {
+    FallbackWalker::new(dir.clone(), m.fallbacks.clone())
+}
+
 /// [`resolve`] with an explicit agent dir (tests, `--agent-dir`).
 ///
 /// # Errors
 /// See [`resolve`].
 pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     let cfg = Config::load(&dir.0)?;
-    let (provider, id, thinking) = parse_ref(&cfg, model_ref, 0)?;
+    let (provider, id, selected) = parse_ref(&cfg, model_ref, 0)?;
     let (mut model, meta) = find_model(&dir.0, &cfg, &provider, &id)?;
-    let thinking = adjust_thinking(thinking, meta.as_ref());
+    let (thinking, thinking_auto, thinking_source) = pick_thinking(selected, &model, meta.as_ref(), cfg.default_thinking);
+    let role = {
+        let base = split_level(model_ref.trim()).0;
+        (!base.contains('/')).then(|| base.to_string())
+    };
+    let selector = role_selector(&cfg, model_ref);
+    let fallbacks = cfg.fallback(&dir.0).candidates(&selector, role.as_deref());
     apply_overrides(&cfg, &provider, &mut model);
     // omp "pseudo apis" that are plain OpenAI-compatible chat endpoints.
     if model.api == "openrouter" {
@@ -119,9 +173,10 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
             headers.push((k.clone(), v.clone()));
         }
     }
-    if !headers.is_empty() {
-        model.headers = Some(headers.iter().cloned().collect());
-    }
+    // `!command` header values run through the shell; empty / failed values are omitted.
+    let headers: Vec<(String, String)> =
+        headers.into_iter().filter_map(|(k, v)| Some((k, resolve_config_value(&v)?))).collect();
+    model.headers = (!headers.is_empty()).then(|| headers.iter().cloned().collect());
     Ok(ResolvedModel {
         provider: model.provider.clone(),
         id: model.id.clone(),
@@ -133,41 +188,84 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
         max_tokens: model.max_tokens,
         reasoning: model.reasoning,
         thinking,
+        thinking_auto,
+        thinking_source,
+        selector,
+        role,
+        fallbacks,
+        retry: cfg.retry.clone(),
         model,
     })
 }
 
 // ---------------------------------------------------------------- ref parsing
 
-fn parse_level(s: &str) -> Option<Option<ModelThinkingLevel>> {
-    use ModelThinkingLevel as L;
-    Some(match s {
-        "auto" | "inherit" => None,
-        "off" | "none" => Some(L::Off),
-        "minimal" => Some(L::Minimal),
-        "low" => Some(L::Low),
-        "medium" => Some(L::Medium),
-        "high" => Some(L::High),
-        "xhigh" => Some(L::Xhigh),
-        "max" => Some(L::Max),
-        _ => return None,
-    })
+/// A thinking selector as written in a `:suffix`, role value or `defaultThinkingLevel`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Sel {
+    /// omp's session-level `auto`: classify per turn.
+    Auto,
+    Inherit,
+    Level(ModelThinkingLevel),
 }
 
-type Parsed = (String, String, Option<ModelThinkingLevel>);
+/// Exact names plus omp's unambiguous (>= 2 char) abbreviations (`med`, `hi`, `xhi`).
+fn parse_sel(s: &str) -> Option<Sel> {
+    use ModelThinkingLevel as L;
+    const NAMES: [(&str, Sel); 9] = [
+        ("inherit", Sel::Inherit),
+        ("off", Sel::Level(L::Off)),
+        ("minimal", Sel::Level(L::Minimal)),
+        ("low", Sel::Level(L::Low)),
+        ("medium", Sel::Level(L::Medium)),
+        ("high", Sel::Level(L::High)),
+        ("xhigh", Sel::Level(L::Xhigh)),
+        ("max", Sel::Level(L::Max)),
+        ("auto", Sel::Auto),
+    ];
+    if s == "none" {
+        return Some(Sel::Level(L::Off));
+    }
+    if let Some((_, v)) = NAMES.iter().find(|(n, _)| *n == s) {
+        return Some(*v);
+    }
+    if s.len() < 2 {
+        return None;
+    }
+    let mut it = NAMES.iter().filter(|(n, _)| n.starts_with(s));
+    match (it.next(), it.next()) {
+        (Some((_, v)), None) => Some(*v),
+        _ => None,
+    }
+}
+
+/// Concrete effort name (catalog `efforts` / `defaultLevel`).
+fn effort(s: &str) -> Option<ModelThinkingLevel> {
+    match parse_sel(s)? {
+        Sel::Level(l) => Some(l),
+        _ => None,
+    }
+}
+
+/// Split a trailing `:level` off a selector; a non-level suffix stays in the id.
+pub(crate) fn split_level(s: &str) -> (&str, Option<Sel>) {
+    match s.rsplit_once(':') {
+        Some((b, suffix)) => match parse_sel(suffix) {
+            Some(sel) => (b, Some(sel)),
+            None => (s, None),
+        },
+        None => (s, None),
+    }
+}
+
+type Parsed = (String, String, Option<Sel>);
 
 fn parse_ref(cfg: &Config, model_ref: &str, depth: u8) -> Result<Parsed> {
     let model_ref = model_ref.trim();
-    let (base, thinking_override) = match model_ref.rsplit_once(':') {
-        Some((b, suffix)) => match parse_level(suffix) {
-            Some(level) => (b, Some(level)),
-            None => (model_ref, None),
-        },
-        None => (model_ref, None),
-    };
+    let (base, thinking_override) = split_level(model_ref);
     if let Some((provider, id)) = base.split_once('/') {
         if !provider.is_empty() && !id.is_empty() {
-            return Ok((provider.to_string(), id.to_string(), thinking_override.flatten()));
+            return Ok((provider.to_string(), id.to_string(), thinking_override));
         }
     }
     // Role name.
@@ -179,7 +277,23 @@ fn parse_ref(cfg: &Config, model_ref: &str, depth: u8) -> Result<Parsed> {
         .get(base)
         .ok_or_else(|| anyhow!("'{model_ref}' is neither 'provider/id' nor a modelRoles role ({:?})", cfg.roles.keys().collect::<Vec<_>>()))?;
     let (p, i, t) = parse_ref(cfg, target, depth + 1)?;
-    Ok((p, i, thinking_override.map_or(t, |o| o)))
+    Ok((p, i, thinking_override.or(t)))
+}
+
+/// The selector string a ref stands for: role value for a role, else the ref itself.
+fn role_selector(cfg: &Config, model_ref: &str) -> String {
+    let (base, level) = split_level(model_ref.trim());
+    match cfg.roles.get(base) {
+        Some(target) if !base.contains('/') => {
+            let mut s = role_selector(cfg, target);
+            if level.is_some() {
+                // an explicit suffix on the role ref replaces the role's own level
+                s = format!("{}:{}", split_level(&s).0, model_ref.trim().rsplit(':').next().unwrap_or_default());
+            }
+            s
+        }
+        _ => model_ref.trim().to_string(),
+    }
 }
 
 // ---------------------------------------------------------------- config
@@ -187,6 +301,11 @@ fn parse_ref(cfg: &Config, model_ref: &str, depth: u8) -> Result<Parsed> {
 struct Config {
     roles: BTreeMap<String, String>,
     providers: Map<String, Value>,
+    /// `defaultThinkingLevel` (omp default `high`).
+    default_thinking: Sel,
+    retry: RetryConfig,
+    /// `retry.fallbackChains` in file order.
+    chains: Vec<(String, Vec<String>)>,
 }
 
 impl Config {
@@ -208,23 +327,49 @@ impl Config {
             .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
             .unwrap_or_default();
         let providers = models.get("providers").and_then(Value::as_object).cloned().unwrap_or_default();
-        Ok(Self { roles, providers })
+        let default_thinking = config
+            .get("defaultThinkingLevel")
+            .and_then(Value::as_str)
+            .and_then(parse_sel)
+            .filter(|s| *s != Sel::Inherit)
+            .unwrap_or(Sel::Level(ModelThinkingLevel::High));
+        // Re-read as YAML to keep chain order (serde_json maps sort keys).
+        let ordered: serde_yaml_ng::Value = std::fs::read_to_string(dir.join("config.yml"))
+            .ok()
+            .and_then(|t| serde_yaml_ng::from_str(&t).ok())
+            .unwrap_or(serde_yaml_ng::Value::Null);
+        let retry_yaml = ordered.get("retry");
+        let chains = retry_yaml
+            .and_then(|r| r.get("fallbackChains"))
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| {
+                        let list = v.as_sequence()?.iter().filter_map(|e| e.as_str().map(str::to_string)).collect();
+                        Some((k.as_str()?.to_string(), list))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Self { roles, providers, default_thinking, retry: RetryConfig::from_yaml(retry_yaml), chains })
+    }
+
+    fn fallback(&self, dir: &Path) -> FallbackConfig {
+        let mut known_providers: BTreeSet<String> = self.providers.keys().cloned().collect();
+        known_providers.extend(
+            ["anthropic", "openai", "openai-codex", "google", "zai", "kimi-code", "openrouter", "opencode-zen"].map(String::from),
+        );
+        FallbackConfig { chains: self.chains.clone(), roles: self.roles.clone(), known_providers, model_exists: Some(fallback::ModelLookup::catalog(dir)) }
     }
 
     fn provider(&self, p: &str) -> Option<&Map<String, Value>> {
         self.providers.get(p).and_then(Value::as_object)
     }
 
-    /// `apiKey` from models.yml: an env var name if that var is set, else the literal.
+    /// `apiKey` from models.yml: `!command` stdout, an env var name if that var is set, else the literal.
     fn provider_key(&self, p: &str) -> Option<String> {
         let raw = self.provider(p)?.get("apiKey")?.as_str()?;
-        if raw.is_empty() || raw.starts_with('!') {
-            return None; // shell-command keys are not executed by this port
-        }
-        match std::env::var(raw) {
-            Ok(v) if !v.is_empty() => Some(v),
-            _ => Some(raw.to_string()),
-        }
+        resolve_config_value(raw)
     }
 }
 
@@ -291,30 +436,85 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
     Ok((model, meta))
 }
 
-/// omp's catalog `thinking` metadata: `efforts` (supported levels), `requiresEffort`
-/// (reasoning cannot be disabled) and `defaultLevel`. Clamp the requested level to a
-/// supported effort and fill the default when the model requires one.
-fn adjust_thinking(level: Option<ModelThinkingLevel>, meta: Option<&Value>) -> Option<ModelThinkingLevel> {
-    use ModelThinkingLevel as L;
-    let Some(meta) = meta else { return level };
-    let efforts: Vec<L> = meta
-        .get("efforts")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|e| parse_level(e.as_str()?).flatten()).collect())
-        .unwrap_or_default();
-    let requires = meta.get("requiresEffort").and_then(Value::as_bool).unwrap_or(false);
-    let default = meta.get("defaultLevel").and_then(Value::as_str).and_then(|s| parse_level(s).flatten());
-    let level = match level {
-        None if requires => default,
-        Some(L::Off) if requires => default.or(efforts.first().copied()),
-        other => other,
+/// Effective thinking level for a model, in omp's order (`sdk.ts` `pickInitialThinkingLevel`):
+/// selector level → catalog `thinking.defaultLevel` → `defaultThinkingLevel` → clamp to the
+/// model (`resolveThinkingLevelForModel` / `resolveProvisionalAutoLevel`).
+/// Returns `(level, auto, source)`.
+fn pick_thinking(
+    selected: Option<Sel>,
+    model: &Model,
+    meta: Option<&Value>,
+    config_default: Sel,
+) -> (Option<ModelThinkingLevel>, bool, ThinkingSource) {
+    let model_default = meta.and_then(|m| m.get("defaultLevel")).and_then(Value::as_str).and_then(effort);
+    let (sel, source) = match selected {
+        Some(Sel::Inherit) | None => match model_default {
+            Some(l) => (Sel::Level(l), ThinkingSource::ModelDefault),
+            None => (config_default, ThinkingSource::ConfigDefault),
+        },
+        Some(s) => (s, ThinkingSource::Selector),
     };
-    let Some(l) = level else { return None };
-    if l == L::Off || efforts.is_empty() || efforts.contains(&l) {
+    if !model.reasoning {
+        return (None, false, ThinkingSource::None);
+    }
+    match sel {
+        Sel::Auto => {
+            let level = provisional_auto(meta, model_default);
+            (level, true, if level.is_some() { source } else { ThinkingSource::None })
+        }
+        Sel::Inherit => (None, false, ThinkingSource::None),
+        Sel::Level(l) => {
+            let level = clamp_level(l, meta, model_default);
+            (level, false, if level.is_some() { source } else { ThinkingSource::None })
+        }
+    }
+}
+
+fn efforts_of(meta: Option<&Value>) -> Option<Vec<ModelThinkingLevel>> {
+    let a = meta?.get("efforts")?.as_array()?;
+    Some(a.iter().filter_map(|e| effort(e.as_str()?)).filter(|l| *l != ModelThinkingLevel::Off).collect())
+}
+
+/// `clampThinkingLevelForModel`: the highest supported effort not above the request, else the lowest
+/// supported. `off` stays `off` unless the model `requiresEffort`. Without catalog metadata the
+/// level passes through; with an empty effort list there is nothing to control.
+fn clamp_level(l: ModelThinkingLevel, meta: Option<&Value>, model_default: Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel> {
+    use ModelThinkingLevel as L;
+    let requires = meta.and_then(|m| m.get("requiresEffort")).and_then(Value::as_bool).unwrap_or(false);
+    let efforts = efforts_of(meta);
+    let l = if l == L::Off && requires { model_default.or_else(|| efforts.as_ref().and_then(|e| e.iter().copied().min()))? } else { l };
+    if l == L::Off {
         return Some(l);
     }
-    // nearest supported: next higher, else highest lower
-    efforts.iter().copied().filter(|e| *e > l).min().or_else(|| efforts.iter().copied().max()).or(Some(l))
+    let Some(mut efforts) = efforts else { return Some(l) };
+    efforts.sort();
+    if efforts.contains(&l) {
+        return Some(l);
+    }
+    efforts.iter().copied().filter(|e| *e < l).max().or_else(|| efforts.first().copied())
+}
+
+/// `resolveProvisionalAutoLevel`: model default (max → xhigh, fallback high), floored at `low`,
+/// capped at `xhigh`, within the model's efforts.
+fn provisional_auto(meta: Option<&Value>, model_default: Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel> {
+    use ModelThinkingLevel as L;
+    let preferred = match model_default.unwrap_or(L::High) {
+        L::Max => L::Xhigh,
+        o => o,
+    };
+    let mut pool: Vec<L> = efforts_of(meta).unwrap_or_else(|| vec![L::Minimal, L::Low, L::Medium, L::High, L::Xhigh, L::Max]);
+    pool.sort();
+    let floored: Vec<L> = pool.iter().copied().filter(|e| *e >= L::Low).collect();
+    let floored = if floored.is_empty() { pool } else { floored };
+    let capped: Vec<L> = floored.into_iter().filter(|e| *e <= L::Xhigh).collect();
+    let mut chosen = *capped.first()?;
+    for c in capped {
+        if c > preferred {
+            break;
+        }
+        chosen = c;
+    }
+    Some(chosen)
 }
 
 fn custom_model(provider: &str, pcfg: &Map<String, Value>, entry: &Value) -> Result<Model> {
@@ -486,7 +686,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             t.path().join("models.yml"),
-            "providers:\n  zz:\n    baseUrl: http://127.0.0.1:1/v1\n    apiKey: literal-key\n    api: openai-completions\n    headers:\n      X-A: b\n    models:\n      - id: m1\n        name: M One\n        contextWindow: 32768\n        maxTokens: 8192\n    modelOverrides:\n      m1:\n        maxTokens: 100\n  anthropic:\n    baseUrl: http://localhost:9/anthropic\n",
+            "providers:\n  zz:\n    baseUrl: http://127.0.0.1:1/v1\n    apiKey: literal-key\n    api: openai-completions\n    headers:\n      X-A: b\n    models:\n      - id: m1\n        name: M One\n        reasoning: true\n        contextWindow: 32768\n        maxTokens: 8192\n    modelOverrides:\n      m1:\n        maxTokens: 100\n  anthropic:\n    baseUrl: http://localhost:9/anthropic\n",
         )
         .unwrap();
         let dir = AgentDir(t.path().to_path_buf());
@@ -503,7 +703,7 @@ mod tests {
         assert_eq!(m.context_window, 32768);
         assert_eq!(m.max_tokens, 100); // modelOverrides
         assert_eq!(m.headers, vec![("X-A".to_string(), "b".to_string())]);
-        assert_eq!(m.thinking, None);
+        assert_eq!(m.thinking, Some(ModelThinkingLevel::High)); // config default for a reasoning model
         assert_eq!(to_pa_model(&m).max_tokens, 100);
     }
 
@@ -537,13 +737,101 @@ mod tests {
         let id = pa_ai::models_generated::get_models("groq")[0].id.clone();
         let m = resolve_in(&dir, &format!("groq/{id}")).unwrap();
         assert_eq!(m.base_url, "http://localhost:9/v1");
-        let meta = json!({"efforts":["low","high","max"],"requiresEffort":true,"defaultLevel":"max"});
+    }
+
+    #[test]
+    fn clamp_follows_omp_semantics() {
         use ModelThinkingLevel as L;
-        assert_eq!(adjust_thinking(None, Some(&meta)), Some(L::Max));
-        assert_eq!(adjust_thinking(Some(L::Off), Some(&meta)), Some(L::Max));
-        assert_eq!(adjust_thinking(Some(L::Minimal), Some(&meta)), Some(L::Low));
-        assert_eq!(adjust_thinking(Some(L::Medium), Some(&meta)), Some(L::High));
-        assert_eq!(adjust_thinking(Some(L::Medium), None), Some(L::Medium));
+        let meta = json!({"efforts":["low","high","max"],"requiresEffort":true,"defaultLevel":"max"});
+        let m = Some(&meta);
+        let dm = Some(L::Max);
+        assert_eq!(clamp_level(L::Off, m, dm), Some(L::Max));
+        assert_eq!(clamp_level(L::Minimal, m, dm), Some(L::Low)); // below ladder -> lowest
+        assert_eq!(clamp_level(L::Medium, m, dm), Some(L::Low)); // highest supported not above
+        assert_eq!(clamp_level(L::Xhigh, m, dm), Some(L::High));
+        assert_eq!(clamp_level(L::Medium, None, None), Some(L::Medium));
+        assert_eq!(clamp_level(L::Off, None, None), Some(L::Off));
+        assert_eq!(provisional_auto(m, dm), Some(L::High)); // max -> xhigh -> highest supported <= xhigh
+        assert_eq!(provisional_auto(None, None), Some(L::High));
+    }
+
+    #[test]
+    fn thinking_precedence_and_sources() {
+        use ModelThinkingLevel as L;
+        let (_t, dir) = fixture();
+        // no suffix, no catalog default -> config default (omp default: high), reasoning model
+        let m = resolve_in(&dir, "zz/m1").unwrap();
+        assert_eq!((m.thinking, m.thinking_source), (Some(L::High), ThinkingSource::ConfigDefault));
+        // selector beats everything
+        let m = resolve_in(&dir, "zz/m1:low").unwrap();
+        assert_eq!((m.thinking, m.thinking_source), (Some(L::Low), ThinkingSource::Selector));
+        // abbreviations as in omp
+        assert_eq!(resolve_in(&dir, "zz/m1:med").unwrap().thinking, Some(L::Medium));
+        // explicit auto -> provisional level + flag
+        let m = resolve_in(&dir, "zz/m1:auto").unwrap();
+        assert_eq!((m.thinking, m.thinking_auto), (Some(L::High), true));
+        // non-reasoning model sends nothing
+        std::fs::write(
+            dir.0.join("models.yml"),
+            "providers:\n  zz:\n    baseUrl: http://127.0.0.1:1/v1\n    apiKey: k\n    models:\n      - id: plain\n",
+        )
+        .unwrap();
+        let m = resolve_in(&dir, "zz/plain:high").unwrap();
+        assert_eq!((m.thinking, m.thinking_source), (None, ThinkingSource::None));
+    }
+
+    #[test]
+    fn config_default_thinking_and_fallback_chain_from_yaml() {
+        use ModelThinkingLevel as L;
+        let (_t, dir) = fixture();
+        std::fs::write(
+            dir.0.join("config.yml"),
+            "defaultThinkingLevel: low\nmodelRoles:\n  smol: zz/m1:minimal\n  judge: zz/m1\nretry:\n  maxRetries: 3\n  fallbackChains:\n    smol:\n      - zz/m2\n      - zz/m3\n",
+        )
+        .unwrap();
+        let m = resolve_in(&dir, "zz/m1").unwrap();
+        assert_eq!(m.thinking, Some(L::Low));
+        assert_eq!(m.retry.max_retries, 3);
+        assert_eq!(m.fallbacks, ["zz/m2", "zz/m3"]); // m1 is smol's primary: its chain follows the model
+        let m = resolve_in(&dir, "smol").unwrap();
+        assert_eq!((m.role.as_deref(), m.selector.as_str()), (Some("smol"), "zz/m1:minimal"));
+        assert_eq!(m.fallbacks, ["zz/m2", "zz/m3"]);
+        let mut w = fallback_walker(&dir, &m);
+        assert_eq!(w.next_model().unwrap().id, "m2"); // synthesized from provider baseUrl
+        assert_eq!(w.pending(), ["zz/m3"]);
+    }
+
+    #[test]
+    fn judge_chain_native_cutoff() {
+        let (_t, dir) = fixture();
+        std::fs::write(
+            dir.0.join("models.yml"),
+            "providers:\n  nat:\n    baseUrl: https://x.test/api/alpha/\n    apiKey: k\n    api: openrouter-decisions\n    models:\n      - id: j1\n  chat:\n    baseUrl: http://c.test/v1\n    apiKey: k\n    models:\n      - id: c1\n  nokey:\n    baseUrl: http://n.test/v1\n    models:\n      - id: n1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.0.join("config.yml"),
+            "modelRoles:\n  judge: chat/c1\nretry:\n  fallbackChains:\n    judge:\n      - nat/j1\n      - chat/c2\n      - nokey/n1\n      - nat/j2\n",
+        )
+        .unwrap();
+        let chain = resolve_judge_chain(&dir).unwrap();
+        let got: Vec<_> = chain.iter().map(|c| (c.kind, c.model.id.as_str())).collect();
+        // chat/c1 (online), then first native j1; chat/c2 dropped by the native cutoff, nokey skipped.
+        assert_eq!(got, [(JudgeKind::Online, "c1"), (JudgeKind::Native, "j1"), (JudgeKind::Native, "j2")]);
+        assert_eq!(chain[1].url.as_deref(), Some("https://x.test/api/alpha/decisions"));
+    }
+
+    #[test]
+    fn command_api_key_and_headers() {
+        let (_t, dir) = fixture();
+        std::fs::write(
+            dir.0.join("models.yml"),
+            "providers:\n  zz:\n    baseUrl: http://127.0.0.1:1/v1\n    apiKey: \"!echo cmd-key\"\n    headers:\n      X-T: \"!echo hv\"\n      X-Bad: \"!exit 1\"\n    models:\n      - id: m1\n",
+        )
+        .unwrap();
+        let m = resolve_in(&dir, "zz/m1").unwrap();
+        assert_eq!(m.api_key.as_deref(), Some("cmd-key"));
+        assert_eq!(m.headers, vec![("X-T".to_string(), "hv".to_string())]);
     }
 
     #[test]

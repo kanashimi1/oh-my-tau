@@ -70,14 +70,17 @@ fn stream_event_snapshots() {
     while let std::task::Poll::Ready(Some(event)) = reader.poll_next_event(&mut cx) {
         snapshots.push(serde_json::to_value(event).unwrap());
     }
-    assert_eq!(snapshots.len(), 13);
+    assert_eq!(snapshots.len(), 15);
     assert_eq!(snapshots[0]["type"], "text_start");
     assert_eq!(snapshots[0]["partial"]["content"][0]["text"], "");
     assert_eq!(snapshots[1]["partial"]["content"][0]["text"], "hello");
-    assert_eq!(snapshots[7]["partial"]["content"][0]["text"], "hello world");
+    // The thinking block closes the first text block; later text opens a fresh block.
+    assert_eq!(snapshots[2]["type"], "text_end");
+    assert_eq!(snapshots[5]["type"], "thinking_end");
+    assert_eq!(snapshots[9]["partial"]["content"][3]["text"], " world");
     assert_eq!(
         snapshots.last().unwrap()["partial"]["content"][0]["text"],
-        "hello world"
+        "hello"
     );
     if std::env::var_os("PA_STREAM_PARITY_DUMP").is_some() {
         println!(

@@ -43,6 +43,44 @@ pub fn assistant_event(e: &Ev) -> Value {
     }
 }
 
+/// Stamps `messageId` on message lifecycle frames (one id shared by the
+/// start, updates and end of a message) and marks terminal run ends, like
+/// omp's session event forwarder.
+#[derive(Default)]
+pub struct Framer {
+    counter: u64,
+    current: Option<String>,
+}
+
+impl Framer {
+    pub fn frame(&mut self, e: &AgentEvent) -> Value {
+        let mut v = frame(e);
+        let is_message = matches!(
+            e,
+            AgentEvent::MessageStart { .. } | AgentEvent::MessageUpdate { .. } | AgentEvent::MessageEnd { .. }
+        );
+        if matches!(e, AgentEvent::MessageStart { .. }) {
+            self.counter += 1;
+            self.current = Some(format!("msg-{:016x}", self.counter));
+        }
+        if is_message {
+            if let (Some(id), Some(obj)) = (&self.current, v.as_object_mut()) {
+                obj.insert("messageId".into(), Value::String(id.clone()));
+            }
+        }
+        if matches!(e, AgentEvent::MessageEnd { .. }) {
+            self.current = None;
+        }
+        if matches!(e, AgentEvent::AgentEnd { .. }) {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("isTerminal".into(), Value::Bool(true));
+                obj.insert("yielded".into(), Value::Bool(true));
+            }
+        }
+        v
+    }
+}
+
 #[must_use]
 pub fn frame(e: &AgentEvent) -> Value {
     match e {

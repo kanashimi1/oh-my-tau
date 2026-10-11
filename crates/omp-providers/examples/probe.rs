@@ -19,6 +19,28 @@ async fn main() -> anyhow::Result<()> {
         if m.api_key.is_some() { "set" } else { "MISSING" },
         m.thinking
     );
+    eprintln!(
+        "[thinking] level={:?} source={:?} auto={}  selector={} role={:?}",
+        m.thinking, m.thinking_source, m.thinking_auto, m.selector, m.role
+    );
+    eprintln!("[retry] {:?}", m.retry);
+    eprintln!("[fallbacks] {:?}", m.fallbacks);
+    if let Ok(chain) = omp_providers::resolve_judge_chain(&omp_providers::AgentDir::default()) {
+        for c in chain {
+            eprintln!(
+                "[judge] {:?} {}/{} api={} url={:?} key={}",
+                c.kind,
+                c.model.provider,
+                c.model.id,
+                c.model.api,
+                c.url,
+                if c.model.api_key.is_some() { "set" } else { "MISSING" }
+            );
+        }
+    }
+    if std::env::var_os("PROBE_NO_STREAM").is_some() {
+        return Ok(());
+    }
     let ctx = Context {
         system_prompt: None,
         messages: vec![Message::User(UserMessage {

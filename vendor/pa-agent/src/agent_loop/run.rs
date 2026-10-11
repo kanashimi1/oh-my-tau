@@ -5,8 +5,8 @@
 use crate::abort::AbortSignal;
 use crate::stream::StreamFn;
 use crate::types::{
-    AgentContext, AgentEvent, AgentMessage, ShouldStopAfterTurnContext, StopReason, ToolCall,
-    ToolResultMessage,
+    AgentContext, AgentEvent, AgentMessage, AssistantContent, AssistantMessage, Message,
+    ShouldStopAfterTurnContext, StopReason, ToolCall, ToolResultMessage,
 };
 
 use super::abort::{
@@ -15,6 +15,35 @@ use super::abort::{
 use super::response::stream_assistant_response;
 use super::tools::execute_tool_calls;
 use super::{AgentEventSink, AgentLoopConfig};
+
+/// Copy revised arguments from finalized calls onto the assistant message's tool calls.
+fn bake_revised_arguments(message: &mut AssistantMessage, finalized: &[ToolCall]) -> bool {
+    let mut changed = false;
+    for content in &mut message.content {
+        if let AssistantContent::ToolCall(call) = content {
+            if let Some(done) = finalized
+                .iter()
+                .find(|f| f.id == call.id && f.arguments != call.arguments)
+            {
+                call.arguments.clone_from(&done.arguments);
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+/// Developer message carrying passive tool context (TS `createAdditionalContextMessage`).
+pub(crate) fn create_additional_context_message(text: &str) -> AgentMessage {
+    AgentMessage::Custom(crate::types::CustomAgentMessage {
+        role: "developer".to_string(),
+        payload: serde_json::json!({
+            "content": [{"type": "text", "text": text}],
+            "attribution": "agent",
+            "timestamp": crate::now_ms(),
+        }),
+    })
+}
 
 // Direct port of the TS turn loop.
 #[allow(clippy::too_many_lines)]
@@ -69,7 +98,7 @@ pub(crate) async fn run_loop(
                 }
             }
 
-            let message =
+            let mut message =
                 stream_assistant_response(current_context, config, signal, emit, stream_fn).await?;
             new_messages.push(AgentMessage::from(message.clone()));
 
@@ -99,6 +128,21 @@ pub(crate) async fn run_loop(
             if !tool_calls.is_empty() {
                 let executed_tool_batch =
                     execute_tool_calls(current_context, &message, config, signal, emit).await?;
+                // A `beforeToolCall` revision is baked into the assistant message itself so
+                // history (and the next provider request) holds a single version of the call.
+                if bake_revised_arguments(&mut message, &executed_tool_batch.tool_calls) {
+                    let baked = AgentMessage::from(message.clone());
+                    if let Some(last) = current_context.messages.last_mut() {
+                        *last = baked.clone();
+                    }
+                    if let Some(entry) = new_messages
+                        .iter_mut()
+                        .rev()
+                        .find(|m| matches!(m, AgentMessage::Standard(Message::Assistant(_))))
+                    {
+                        *entry = baked;
+                    }
+                }
                 tool_results.extend(executed_tool_batch.messages);
                 has_more_tool_calls = !executed_tool_batch.terminate;
 
@@ -107,6 +151,19 @@ pub(crate) async fn run_loop(
                         .messages
                         .push(AgentMessage::from(result.clone()));
                     new_messages.push(AgentMessage::from(result.clone()));
+                }
+                if let Some(text) = executed_tool_batch.additional_context {
+                    let context_message = create_additional_context_message(&text);
+                    emit(AgentEvent::MessageStart {
+                        message: context_message.clone(),
+                    })
+                    .await?;
+                    emit(AgentEvent::MessageEnd {
+                        message: context_message.clone(),
+                    })
+                    .await?;
+                    current_context.messages.push(context_message.clone());
+                    new_messages.push(context_message);
                 }
             }
 
