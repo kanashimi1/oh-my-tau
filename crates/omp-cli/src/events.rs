@@ -8,6 +8,34 @@ fn to_value<T: serde::Serialize>(v: &T) -> Value {
     serde_json::to_value(v).unwrap_or(Value::Null)
 }
 
+/// Wire form of a message. omp stamps `attribution: "user"` on user-typed turns (after `content`).
+#[must_use]
+pub fn message_value(m: &AgentMessage) -> Value {
+    let mut v = to_value(m);
+    stamp_attribution(&mut v);
+    v
+}
+
+/// Add `attribution: "user"` to a user-role message value that lacks it.
+pub fn stamp_attribution(v: &mut Value) {
+    let Some(obj) = v.as_object_mut() else { return };
+    if obj.get("role").and_then(Value::as_str) != Some("user") || obj.contains_key("attribution") {
+        return;
+    }
+    // Keep omp's key order (role, content, attribution, timestamp) regardless of map ordering.
+    let entries: Vec<(String, Value)> = std::mem::take(obj).into_iter().collect();
+    for (k, val) in entries {
+        let is_content = k == "content";
+        obj.insert(k, val);
+        if is_content {
+            obj.insert("attribution".into(), Value::String("user".into()));
+        }
+    }
+    if !obj.contains_key("attribution") {
+        obj.insert("attribution".into(), Value::String("user".into()));
+    }
+}
+
 fn stop_reason(r: &pa_agent::types::StopReason) -> Value {
     to_value(r)
 }
@@ -85,18 +113,20 @@ impl Framer {
 pub fn frame(e: &AgentEvent) -> Value {
     match e {
         AgentEvent::AgentStart => json!({"type":"agent_start"}),
-        AgentEvent::AgentEnd { messages } => json!({"type":"agent_end","messages":to_value(messages)}),
+        AgentEvent::AgentEnd { messages } => {
+            json!({"type":"agent_end","messages":messages.iter().map(message_value).collect::<Vec<_>>()})
+        }
         AgentEvent::TurnStart => json!({"type":"turn_start"}),
         AgentEvent::TurnEnd { message, tool_results } => {
-            json!({"type":"turn_end","message":to_value(message),"toolResults":to_value(tool_results)})
+            json!({"type":"turn_end","message":message_value(message),"toolResults":to_value(tool_results)})
         }
-        AgentEvent::MessageStart { message } => json!({"type":"message_start","message":to_value(message)}),
+        AgentEvent::MessageStart { message } => json!({"type":"message_start","message":message_value(message)}),
         AgentEvent::MessageUpdate { message, assistant_message_event } => json!({
             "type":"message_update",
             "message": to_value::<AgentMessage>(message),
             "assistantMessageEvent": assistant_event(assistant_message_event),
         }),
-        AgentEvent::MessageEnd { message } => json!({"type":"message_end","message":to_value(message)}),
+        AgentEvent::MessageEnd { message } => json!({"type":"message_end","message":message_value(message)}),
         AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
             json!({"type":"tool_execution_start","toolCallId":tool_call_id,"toolName":tool_name,"args":args})
         }

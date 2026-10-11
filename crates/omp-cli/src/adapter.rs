@@ -120,6 +120,51 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
     )
 }
 
+/// The reasoning level sent with a request. `off` on a model that always thinks (catalog
+/// `thinking.requiresEffort`, e.g. zai glm) goes out as that model's lowest effort instead of a
+/// disable toggle the provider rejects.
+fn reasoning_for_request(model: &Model, level: ThinkingLevel) -> Option<pa_types::ai::ModelThinkingLevel> {
+    if level == ThinkingLevel::Off {
+        if let Some(lowest) = crate::model::always_thinking_floor(&model.provider, &model.id) {
+            return Some(model_thinking_level(lowest));
+        }
+    }
+    Some(model_thinking_level(level))
+}
+
+/// GLM-5.x on a z.ai host (`thinkingFormat: "zai"` + `zaiReasoningEffortDialect`) wants
+/// `thinking: {type: "enabled"}` and `reasoning_effort` on the wire; pa-ai's zai arm only sends
+/// `enable_thinking`, which z.ai answers without reasoning. Patch the payload here.
+fn zai_effort_hook(model: &Model, effort: Option<pa_types::ai::ModelThinkingLevel>) -> Option<pa_ai::types::OnPayloadHook> {
+    let effort = effort.filter(|e| *e != pa_types::ai::ModelThinkingLevel::Off)?;
+    let compat = serde_json::to_value(model).ok()?.get("compat")?.clone();
+    let flag = |k: &str| compat.get(k) == Some(&serde_json::Value::Bool(true));
+    if compat.get("thinkingFormat").and_then(serde_json::Value::as_str) != Some("zai")
+        || !flag("zaiReasoningEffortDialect")
+        || !flag("supportsReasoningEffort")
+    {
+        return None;
+    }
+    let wire = effort.wire_name().to_string();
+    Some(Arc::new(move |mut payload: serde_json::Value, _m: &Model| {
+        if let Some(o) = payload.as_object_mut() {
+            o.insert("thinking".into(), serde_json::json!({"type": "enabled"}));
+            o.insert("reasoning_effort".into(), serde_json::json!(wire));
+        }
+        Some(payload)
+    }))
+}
+
+fn chain_payload_hooks(
+    first: Option<pa_ai::types::OnPayloadHook>,
+    second: Option<pa_ai::types::OnPayloadHook>,
+) -> Option<pa_ai::types::OnPayloadHook> {
+    match (first, second) {
+        (Some(a), Some(b)) => Some(Arc::new(move |p: serde_json::Value, m: &Model| b(a(p, m)?, m))),
+        (a, b) => a.or(b),
+    }
+}
+
 /// Stream one completion against `model` with `api_key` and the auth-resolved
 /// request `headers`: the per-request tail the switchable seams and the CLI's
 /// route-authoritative variant share.
@@ -162,7 +207,10 @@ pub fn stream_once(
             session_id: options.session_id.clone(),
             // The loop-level request hooks cross the crate boundary here: the payload
             // hook may replace the wire payload, the response hook observes headers.
-            on_payload: options.on_payload.map(agent_payload_hook_to_ai),
+            on_payload: chain_payload_hooks(
+                zai_effort_hook(model, reasoning_for_request(model, options.reasoning)),
+                options.on_payload.map(agent_payload_hook_to_ai),
+            ),
             on_response: options.on_response.map(agent_response_hook_to_ai),
             // StreamOptions carries a plain map; the target's ordered
             // (BTreeMap) resolution converts here, with the request's own
@@ -181,7 +229,7 @@ pub fn stream_once(
             metadata: None,
             timeout_ms: None,
         },
-        reasoning: Some(model_thinking_level(options.reasoning)),
+        reasoning: reasoning_for_request(model, options.reasoning),
         thinking_budgets: None,
     };
     let stream = pa_ai::stream_simple(model, &ai_context, Some(stream_options))

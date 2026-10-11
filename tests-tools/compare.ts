@@ -54,8 +54,8 @@ function parseRustTools(): ToolDef[] {
 	const editSrc = readFileSync(RUST_EDIT, "utf8");
 	const replacePrompt = readFileSync(EDIT_REPLACE_PROMPT, "utf8");
 
-	// Inline literal tools: read, bash, glob, grep, write.
-	const names = ["read", "bash", "glob", "grep", "write"];
+	// Inline literal tools: read, bash, glob, grep, write, find.
+	const names = ["read", "bash", "glob", "grep", "write", "find"];
 	const defs: ToolDef[] = names.map(name => ({
 		name,
 		description_first_line: "(from tools.rs, see description const)",

@@ -77,6 +77,222 @@ fn queue_mode_field(cmd: &Value) -> Result<QueueMode, CmdError> {
     }
 }
 
+const OAUTH_PROVIDERS: [(&str, &str); 80] = [
+    ("openai-codex", "ChatGPT Plus/Pro (Codex Subscription)"),
+    ("anthropic", "Anthropic (Claude Pro/Max)"),
+    ("zai", "Z.AI (GLM Coding Plan)"),
+    ("zai-coding-plan", "Z.AI (GLM Coding Plan · Sign in)"),
+    ("kimi-code", "Kimi Code"),
+    ("openrouter", "OpenRouter"),
+    ("github-copilot", "GitHub Copilot"),
+    ("cursor", "Cursor (Claude, GPT, etc.)"),
+    ("devin", "Devin"),
+    ("google-antigravity", "Antigravity (Gemini 3, Claude, GPT-OSS)"),
+    ("google-gemini-cli", "Google Cloud Code Assist (Gemini CLI)"),
+    ("openai-codex-device", "ChatGPT Plus/Pro (Codex, headless/device)"),
+    ("xai", "xAI API"),
+    ("xai-oauth", "xAI Grok OAuth (SuperGrok or X Premium+)"),
+    ("gitlab-duo", "GitLab Duo Non-Agentic"),
+    ("gitlab-duo-agent", "GitLab Duo Agent"),
+    ("alibaba-coding-plan", "Alibaba Coding Plan"),
+    ("alibaba-token-plan", "QwenCloud Token Plan"),
+    ("aiand", "ai&"),
+    ("abliteration", "Abliteration"),
+    ("zhipu-coding-plan", "Zhipu Coding Plan (智谱)"),
+    ("umans", "Umans AI Coding Plan"),
+    ("qwen-portal", "Qwen Portal"),
+    ("sakana", "Sakana AI"),
+    ("minimax-code", "MiniMax Token Plan (International)"),
+    ("minimax-code-cn", "MiniMax Token Plan (China)"),
+    ("xiaomi", "Xiaomi MiMo"),
+    ("xiaomi-token-plan-sgp", "Xiaomi Token Plan (Singapore)"),
+    ("xiaomi-token-plan-ams", "Xiaomi Token Plan (Europe)"),
+    ("xiaomi-token-plan-cn", "Xiaomi Token Plan (China)"),
+    ("firepass", "Fire Pass (Fireworks subscription)"),
+    ("cline-pass", "ClinePass"),
+    ("factory-droid", "Factory Droid"),
+    ("commandcode", "Command Code"),
+    ("charm-hyper", "Charm Hyper"),
+    ("deepseek", "DeepSeek"),
+    ("stepfun", "StepFun"),
+    ("muse-code", "Muse Code (Subscription)"),
+    ("meta", "Meta Model API"),
+    ("moonshot", "Moonshot (Kimi API)"),
+    ("cerebras", "Cerebras"),
+    ("baseten", "Baseten"),
+    ("helmcode", "Helmcode"),
+    ("fireworks", "Fireworks"),
+    ("together", "Together"),
+    ("nvidia", "NVIDIA"),
+    ("novita", "Novita"),
+    ("deepinfra", "DeepInfra"),
+    ("huggingface", "Hugging Face Inference"),
+    ("perplexity", "Perplexity (Pro/Max)"),
+    ("qianfan", "Qianfan"),
+    ("venice", "Venice"),
+    ("siliconflow", "SiliconFlow"),
+    ("siliconflow-cn", "SiliconFlow (China)"),
+    ("synthetic", "Synthetic"),
+    ("nanogpt", "NanoGPT"),
+    ("wafer-serverless", "Wafer Serverless (pay-as-you-go)"),
+    ("coreweave", "CoreWeave Serverless Inference"),
+    ("vercel-ai-gateway", "Vercel AI Gateway"),
+    ("cloudflare-ai-gateway", "Cloudflare AI Gateway"),
+    ("litellm", "LiteLLM"),
+    ("kilo", "Kilo Gateway"),
+    ("zenmux", "ZenMux"),
+    ("opencode-zen", "OpenCode Zen"),
+    ("opencode-go", "OpenCode Go"),
+    ("yolo-auto", "Yolo-Auto"),
+    ("tavily", "Tavily"),
+    ("kagi", "Kagi"),
+    ("exa", "Exa"),
+    ("parallel", "Parallel"),
+    ("typesafe", "TypeSafe"),
+    ("ollama", "Ollama (Local OpenAI-compatible)"),
+    ("ollama-cloud", "Ollama Cloud"),
+    ("lm-studio", "LM Studio (Local OpenAI-compatible)"),
+    ("llama.cpp", "llama.cpp (Local OpenAI-compatible)"),
+    ("vllm", "vLLM (Local OpenAI-compatible)"),
+    ("gmi-cloud", "GMI Cloud"),
+    ("stencil", "Stencil (invite only)"),
+    ("singularityapi-dev", "SingularityAPI"),
+    ("singularityapi-tech", "SingularityAPI Reserved Lanes"),
+];
+
+/// `goal` with no goal runtime behind it: the answers omp gives while no goal exists.
+fn goal(cmd: &Value) -> CmdResult {
+    let empty = || ok(json!({"goal": null, "state": null}));
+    match cmd.get("op").and_then(Value::as_str) {
+        Some("get" | "pause" | "drop") => empty(),
+        Some("create") => {
+            if cmd.get("objective").and_then(Value::as_str).is_none_or(|o| o.trim().is_empty()) {
+                return Err(CmdError::new("objective is required when op=create"));
+            }
+            if let Some(b) = cmd.get("token_budget") {
+                if !b.as_f64().is_some_and(|n| n.fract() == 0.0 && n > 0.0) {
+                    return Err(CmdError::new("token_budget must be a positive integer when provided"));
+                }
+            }
+            Err(unsupported("Goal mode"))
+        }
+        Some("resume") => Err(CmdError::new("No paused goal to resume.")),
+        other => Err(CmdError::new(format!(
+            "Unknown goal op: {}",
+            other.map_or_else(|| "undefined".to_string(), str::to_string)
+        ))),
+    }
+}
+
+/// `set_host_tools`: omp's validation, then the no-bridge answer (an empty set is a plain success).
+fn set_host_tools(cmd: &Value) -> CmdResult {
+    let tools = cmd.get("tools").and_then(Value::as_array).ok_or_else(|| CmdError::new("tools must be an array"))?;
+    for (index, tool) in tools.iter().enumerate() {
+        let name = tool.get("name").and_then(Value::as_str).map_or("", str::trim);
+        if name.is_empty() {
+            return Err(CmdError::new(format!("Host tool at index {index} must provide a non-empty name")));
+        }
+        if tool.get("description").and_then(Value::as_str).is_none_or(|d| d.trim().is_empty()) {
+            return Err(CmdError::new(format!("Host tool \"{name}\" must provide a non-empty description")));
+        }
+        if !tool.get("parameters").is_some_and(Value::is_object) {
+            return Err(CmdError::new(format!("Host tool \"{name}\" must provide a JSON Schema object")));
+        }
+    }
+    if tools.is_empty() {
+        return ok(json!({"toolNames": []}));
+    }
+    Err(unsupported("Host tools"))
+}
+
+/// `set_host_uri_schemes`: omp's scheme validation, then the no-bridge answer.
+fn set_host_uri_schemes(cmd: &Value) -> CmdResult {
+    let schemes = cmd.get("schemes").and_then(Value::as_array).ok_or_else(|| CmdError::new("schemes must be an array"))?;
+    for raw in schemes {
+        let scheme = raw.get("scheme").and_then(Value::as_str).map_or_else(String::new, |s| s.trim().to_lowercase());
+        if scheme.is_empty() {
+            return Err(CmdError::new("Host URI scheme must be a non-empty string"));
+        }
+        let mut chars = scheme.chars();
+        let valid = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'));
+        if !valid {
+            let shown = raw.get("scheme").and_then(Value::as_str).unwrap_or("");
+            return Err(CmdError::new(format!("Host URI scheme contains invalid characters: {shown}")));
+        }
+    }
+    if schemes.is_empty() {
+        return ok(json!({"schemes": []}));
+    }
+    Err(unsupported("Host URI schemes"))
+}
+
+fn subagent_id<'a>(cmd: &'a Value, _command: &str) -> Result<&'a str, CmdError> {
+    cmd.get("subagentId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| CmdError::new("`subagentId` must be a non-empty string."))
+}
+
+/// `get_subagent_messages` against an always-empty subagent roster.
+fn subagent_messages(cmd: &Value) -> CmdResult {
+    if let Some(from) = cmd.get("fromByte") {
+        if !from.as_f64().is_some_and(f64::is_finite) {
+            return Err(CmdError::new("fromByte must be a finite number"));
+        }
+    }
+    if let Some(id) = cmd.get("subagentId").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        return Err(CmdError::new(format!("Unknown subagent or session file unavailable: {id}")));
+    }
+    if cmd.get("sessionFile").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+        return Err(CmdError::new("Unknown subagent session file"));
+    }
+    Err(CmdError::new("get_subagent_messages requires subagentId or sessionFile"))
+}
+
+/// `predict_word*` validation: `text` string, `cursor` an integer UTF-16 offset within it.
+fn text_cursor(cmd: &Value) -> Result<(), CmdError> {
+    let text = cmd.get("text").and_then(Value::as_str);
+    let cursor = cmd.get("cursor").and_then(Value::as_f64);
+    match (text, cursor) {
+        (Some(t), Some(c))
+            if c.fract() == 0.0 && c >= 0.0 && c <= f64::from(u32::try_from(t.encode_utf16().count()).unwrap_or(u32::MAX)) =>
+        {
+            Ok(())
+        }
+        _ => Err(CmdError::new("cursor must be an integer UTF-16 offset within text")),
+    }
+}
+
+/// `get_login_providers`: omp's OAuth registry; `authenticated` = a credential source resolves.
+fn login_providers() -> Vec<Value> {
+    OAUTH_PROVIDERS
+        .iter()
+        .map(|(id, name)| {
+            let from_models = pa_ai::models_generated::get_models(id)
+                .first()
+                .is_some_and(|m| omp_providers::resolve(&format!("{id}/{}", m.id)).is_ok_and(|r| r.api_key.is_some()));
+            let authenticated = from_models || pa_ai::env_api_keys::get_env_api_key(id).is_some();
+            json!({"id": id, "name": name, "available": true, "authenticated": authenticated})
+        })
+        .collect()
+}
+
+/// `images` of a prompt command: `[{type: "image", data, mimeType}]`.
+fn images(cmd: &Value) -> Vec<pa_agent::types::ImageContent> {
+    cmd.get("images")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|i| {
+            Some(pa_agent::types::ImageContent {
+                data: i.get("data")?.as_str()?.to_string(),
+                mime_type: i.get("mimeType")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn ok(data: Value) -> CmdResult {
     Ok(Some(data))
 }
@@ -96,7 +312,7 @@ async fn cycle_model(rt: &Runtime) -> CmdResult {
         .position(|m| info.get("provider") == Some(&json!(m.provider.to_string())) && info.get("id") == Some(&json!(m.id)))
         .unwrap_or(0);
     let next = &models[(idx + 1) % models.len()];
-    let model = rt.set_model(&next.provider.to_string(), &next.id).await?;
+    let model = rt.cycle_to(&next.provider.to_string(), &next.id).await?;
     let level = rt.agent.state().await.thinking_level;
     ok(json!({"model": model, "thinkingLevel": level_name(level), "isScoped": false}))
 }
@@ -191,7 +407,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         },
         "prompt" => {
             let message = str_field(cmd, "message")?;
-            rt.prompt(cmd.get("id").cloned(), message, cmd.get("streamingBehavior").and_then(Value::as_str))
+            rt.prompt(cmd.get("id").cloned(), message, cmd.get("streamingBehavior").and_then(Value::as_str), images(cmd))
                 .await?;
             none()
         }
@@ -222,11 +438,12 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "abort_and_prompt" => {
             let message = str_field(cmd, "message")?.to_string();
+            let images = images(cmd);
             rt.abort().await;
             let task_rt = rt.clone();
             let id = cmd.get("id").cloned();
             tokio::spawn(async move {
-                if let Err(e) = task_rt.prompt(id.clone(), &message, None).await {
+                if let Err(e) = task_rt.prompt(id.clone(), &message, None, images).await {
                     task_rt.send(response(id.as_ref(), "abort_and_prompt", Err(CmdError::new(e.message.clone()))));
                     let mut f = json!({"type":"prompt_result","agentInvoked":false,"status":"error",
                         "error":{"message":e.message,"retryable":false},"sessionSettled":true});
@@ -269,7 +486,18 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 "sessionFile": rt.session_file().display().to_string(),
             }))
         }
-        "branch" | "fork" => Err(unsupported("Session tree navigation")),
+        "branch" | "fork" => {
+            if kind == "branch" {
+                str_field(cmd, "entryId")?;
+            }
+            if rt.agent.state().await.is_streaming {
+                return Err(CmdError::coded(
+                    format!("Cannot {kind} the session while session maintenance or user work is still running"),
+                    "session_busy",
+                ));
+            }
+            Err(unsupported("Session tree navigation"))
+        }
         "get_state" => ok(rt.state().await),
         "set_fast_mode" => {
             if bool_field(cmd, "enabled")? {
@@ -278,12 +506,12 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 ok(json!({"enabled": false, "active": false}))
             }
         }
-        "goal" => Err(unsupported("Goal mode")),
+        "goal" => goal(cmd),
         "set_ask_dialog" => {
             let enabled = rt.set(|s| s.ask_dialog(cmd.get("enabled").and_then(Value::as_bool) == Some(true)));
             ok(json!({"enabled": enabled}))
         }
-        "get_available_commands" => ok(json!({"commands": []})),
+        "get_available_commands" => ok(json!({"commands": rt.available_commands()})),
         "get_entries" => {
             let entries = rt.entries().map_err(CmdError::from)?;
             let leaf = entries.last().and_then(|e| e.get("id").cloned()).unwrap_or(Value::Null);
@@ -309,8 +537,8 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             rt.set(|s| s.todo_phases(phases));
             ok(json!({"todoPhases": rt.set(|s| s.todo_phases_value())}))
         }
-        "set_host_tools" => Err(unsupported("Host tools")),
-        "set_host_uri_schemes" => Err(unsupported("Host URI schemes")),
+        "set_host_tools" => set_host_tools(cmd),
+        "set_host_uri_schemes" => set_host_uri_schemes(cmd),
         "set_subagent_subscription" => {
             let level = str_field(cmd, "level")?;
             if !matches!(level, "off" | "progress" | "events") {
@@ -339,10 +567,21 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             ok(data)
         }
         "get_subagents" => ok(json!({"subagents": []})),
-        "get_subagent_messages" => Err(CmdError::new("Subagent not found")),
-        "cancel_subagent" => ok(json!({"cancelled": false})),
-        "steer_subagent" => Err(CmdError::new("Subagent not found")),
-        "live_start" | "live_stop" | "live_mute" => Err(unsupported("Live voice")),
+        "get_subagent_messages" => subagent_messages(cmd),
+        "cancel_subagent" => {
+            subagent_id(cmd, "cancel_subagent")?;
+            ok(json!({"cancelled": false}))
+        }
+        "steer_subagent" => {
+            let id = subagent_id(cmd, "steer_subagent")?;
+            if cmd.get("message").and_then(Value::as_str).is_none_or(|m| m.trim().is_empty()) {
+                return Err(CmdError::new("`message` is required for steer_subagent."));
+            }
+            Err(CmdError::new(format!("Subagent not running: {id}")))
+        }
+        "live_start" => Err(unsupported("Live voice")),
+        "live_stop" => none(),
+        "live_mute" => Err(CmdError::new("No live session is active")),
         "set_model" => {
             let provider = str_field(cmd, "provider")?;
             let model_id = str_field(cmd, "modelId")?;
@@ -401,7 +640,12 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             rt.set(|s| s.interrupt_mode(mode));
             none()
         }
-        "compact" => Err(unsupported("Compaction")),
+        "compact" => {
+            if rt.agent.state().await.messages.is_empty() {
+                return Err(CmdError::new("Nothing to compact (session too small)"));
+            }
+            Err(unsupported("Compaction"))
+        }
         "set_auto_compaction" => {
             let enabled = bool_field(cmd, "enabled")?;
             rt.set(|s| s.auto_compaction(enabled));
@@ -418,16 +662,26 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "set_auto_retry" => {
             let enabled = bool_field(cmd, "enabled")?;
-            rt.set(|s| s.auto_retry(enabled));
+            rt.set_auto_retry(enabled);
             none()
         }
-        "abort_retry" => none(),
+        "abort_retry" => {
+            rt.abort_retry();
+            none()
+        }
         "abort_bash" => {
             rt.set(|s| s.abort_bash());
             none()
         }
         "get_session_stats" => ok(rt.session_stats().await),
-        "export_html" => Err(unsupported("HTML export")),
+        "export_html" => {
+            if let Some(v) = cmd.get("outputPath") {
+                if !v.is_string() {
+                    return Err(CmdError::new("outputPath must be a string"));
+                }
+            }
+            Err(unsupported("HTML export"))
+        }
         "get_branch_messages" => {
             let entries = rt.entries().map_err(CmdError::from)?;
             ok(json!({"messages": branch_messages(&entries)}))
@@ -443,7 +697,12 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             rt.set_session_name(&name).map_err(CmdError::from)?;
             none()
         }
-        "handoff" => Err(unsupported("Handoff")),
+        "handoff" => {
+            if rt.agent.state().await.is_streaming {
+                return Err(CmdError::new("Cannot hand off while a response is in progress"));
+            }
+            Err(unsupported("Handoff"))
+        }
         "get_messages" => ok(json!({"messages": rt.messages().await})),
         "get_messages_page" => {
             if rt.agent.state().await.is_streaming {
@@ -465,34 +724,275 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 .map(Some)
                 .map_err(|e| CmdError { message: e.message, code: e.code })
         }
-        "get_login_providers" => Err(unsupported("OAuth login")),
-        "login" => Err(unsupported("OAuth login")),
-        "predict_word" => ok(json!({"suffix": null})),
-        "predict_word_feedback" => none(),
+        "get_login_providers" => ok(json!({"providers": login_providers()})),
+        "login" => {
+            let provider = str_field(cmd, "providerId")?;
+            if !OAUTH_PROVIDERS.iter().any(|(id, _)| *id == provider) {
+                return Err(CmdError::new(format!("Unknown OAuth provider: {provider}")));
+            }
+            Err(CmdError::new(format!(
+                "Provider '{provider}' requires interactive prompts which are not supported in RPC mode. Use the terminal UI to log in."
+            )))
+        }
+        "predict_word" => {
+            text_cursor(cmd)?;
+            ok(json!({"suffix": null}))
+        }
+        "predict_word_feedback" => {
+            text_cursor(cmd)?;
+            if cmd.get("suggestion").is_none_or(|v| !v.is_string()) || cmd.get("accepted").is_none_or(|v| !v.is_boolean()) {
+                return Err(CmdError::new("suggestion must be a string and accepted a boolean"));
+            }
+            none()
+        }
         other => Err(CmdError::new(format!("Unknown command: {other}"))),
     }
 }
+
+const RPC_CHUNK_PAYLOAD_BYTES: usize = 256 * 1024;
+const METADATA_STRING_CAP: usize = 1024;
+const STRING_ELISION_RESERVE: usize = 80;
+/// `(stringCap, arrayLimit, objectLimit)` per shrink pass, as omp's `SHRINK_PASSES`.
+const SHRINK_PASSES: [(usize, usize, usize); 7] = [
+    (256 * 1024, 512, 512),
+    (64 * 1024, 256, 256),
+    (16 * 1024, 128, 128),
+    (4 * 1024, 64, 64),
+    (1024, 32, 32),
+    (256, 8, 16),
+    (64, 1, 8),
+];
+
+fn base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for c in bytes.chunks(3) {
+        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+fn shrink_string(s: &str, cap: usize) -> String {
+    let len = s.chars().count();
+    if len <= cap {
+        return s.to_string();
+    }
+    let head = cap.saturating_sub(STRING_ELISION_RESERVE);
+    let kept: String = s.chars().take(head).collect();
+    format!("{kept}\n…[{} chars elided for RPC frame]", len - head)
+}
+
+fn shrink_value(v: &Value, (string_cap, array_limit, object_limit): (usize, usize, usize)) -> Value {
+    let pass = (string_cap, array_limit, object_limit);
+    match v {
+        Value::String(s) => Value::String(shrink_string(s, string_cap)),
+        Value::Array(a) => {
+            let keep = a.len().min(array_limit);
+            let mut out: Vec<Value> = a.iter().take(keep).map(|e| shrink_value(e, pass)).collect();
+            if keep < a.len() {
+                out.push(json!(format!("…[{} more items elided for RPC frame]", a.len() - keep)));
+            }
+            Value::Array(out)
+        }
+        Value::Object(o) => {
+            let keep = o.len().min(object_limit);
+            let mut out = Map::new();
+            for (k, e) in o.iter().take(keep) {
+                out.insert(k.clone(), shrink_value(e, pass));
+            }
+            if keep < o.len() {
+                out.insert("rpcFrameElidedKeys".into(), json!(o.len() - keep));
+            }
+            Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+/// `overflowFrame`: what replaces a frame that cannot fit the transport at all.
+fn overflow_frame(frame: &Value) -> Value {
+    let cap = |v: Option<&Value>| v.and_then(Value::as_str).map(|s| shrink_string(s, METADATA_STRING_CAP));
+    match frame.get("type").and_then(Value::as_str) {
+        Some("response") => {
+            let mut m = Map::new();
+            if let Some(id) = cap(frame.get("id")) {
+                m.insert("id".into(), json!(id));
+            }
+            m.insert("type".into(), json!("response"));
+            m.insert("command".into(), json!(cap(frame.get("command")).unwrap_or_else(|| "unknown".into())));
+            m.insert("success".into(), json!(false));
+            m.insert("error".into(), json!("RPC response exceeded the transport limit"));
+            Value::Object(m)
+        }
+        Some("agent_end") => json!({
+            "type": "agent_end",
+            "messages": [],
+            "messageCount": frame.get("messageCount").and_then(Value::as_u64).unwrap_or(0),
+        }),
+        original => {
+            let mut m = Map::new();
+            m.insert("type".into(), json!("rpc_frame_error"));
+            if let Some(t) = original {
+                m.insert("originalType".into(), json!(shrink_string(t, METADATA_STRING_CAP)));
+            }
+            m.insert("error".into(), json!("RPC frame exceeded the transport limit"));
+            Value::Object(m)
+        }
+    }
+}
+
+/// Port of omp's `RpcFrameEncoder`: keeps every physical line within `MAX_FRAME_BYTES`
+/// (protocol v1: shrink / compact / replace; v2: `rpc_chunk` sequences).
+struct FrameEncoder {
+    version: u8,
+    streamed: Vec<Value>,
+    chunks: u64,
+}
+
+impl FrameEncoder {
+    fn new() -> Self {
+        Self { version: 1, streamed: Vec::new(), chunks: 0 }
+    }
+
+    fn fits(json: &str) -> bool {
+        (json.len() as u64) < MAX_FRAME_BYTES
+    }
+
+    /// `agent_end` minus the messages the client already received as `message_end` frames.
+    fn compact_terminal(&self, frame: &Value) -> Value {
+        let Some(messages) = frame.get("messages").and_then(Value::as_array).filter(|_| frame.get("type") == Some(&json!("agent_end"))) else {
+            return frame.clone();
+        };
+        let mut streamed = 0;
+        while streamed < self.streamed.len().min(messages.len()) && self.streamed[streamed] == messages[streamed] {
+            streamed += 1;
+        }
+        let mut out = frame.clone();
+        out["messages"] = json!(messages[streamed..]);
+        out["messageCount"] = json!(messages.len());
+        out
+    }
+
+    fn encode_v1(&self, frame: &Value, json: &str) -> String {
+        if Self::fits(json) {
+            return json.to_string();
+        }
+        if frame.get("type") == Some(&json!("response")) {
+            return overflow_frame(frame).to_string();
+        }
+        let compacted = self.compact_terminal(frame);
+        let json = compacted.to_string();
+        if Self::fits(&json) {
+            return json;
+        }
+        for pass in SHRINK_PASSES {
+            let shrunk = shrink_value(&compacted, pass).to_string();
+            if Self::fits(&shrunk) {
+                return shrunk;
+            }
+        }
+        overflow_frame(&compacted).to_string()
+    }
+
+    /// Physical JSONL lines (without newlines) for one logical frame.
+    fn encode(&mut self, frame: &Value) -> Vec<String> {
+        let kind = frame.get("type").and_then(Value::as_str);
+        if kind == Some("agent_start") {
+            self.streamed.clear();
+        }
+        let json = frame.to_string();
+        let lines = if self.version == 2 && !Self::fits(&json) {
+            let compacted = self.compact_terminal(frame);
+            let cjson = compacted.to_string();
+            if Self::fits(&cjson) {
+                vec![cjson]
+            } else if cjson.len() as u64 > MAX_REASSEMBLED_BYTES {
+                vec![overflow_frame(&compacted).to_string()]
+            } else {
+                self.chunks += 1;
+                let id = format!("rpc-{}", self.chunks);
+                let bytes = cjson.as_bytes();
+                let count = bytes.len().div_ceil(RPC_CHUNK_PAYLOAD_BYTES);
+                bytes
+                    .chunks(RPC_CHUNK_PAYLOAD_BYTES)
+                    .enumerate()
+                    .map(|(index, part)| {
+                        json!({"type": "rpc_chunk", "chunkId": id, "index": index, "count": count,
+                               "byteLength": bytes.len(), "data": base64(part)})
+                        .to_string()
+                    })
+                    .collect()
+            }
+        } else {
+            vec![self.encode_v1(frame, &json)]
+        };
+        match kind {
+            Some("message_end") => {
+                if let Some(m) = frame.get("message") {
+                    self.streamed.push(m.clone());
+                }
+            }
+            Some("agent_end") if frame.get("willContinue") != Some(&json!(true)) => self.streamed.clear(),
+            _ => {}
+        }
+        if kind == Some("response")
+            && frame.get("command") == Some(&json!("negotiate_protocol"))
+            && frame.get("success") == Some(&json!(true))
+        {
+            self.version = 2;
+        }
+        lines
+    }
+}
+
+/// Hook run once the runtime exists, before the `ready` frame (extension host start-up).
+pub type OnStart = Box<dyn FnOnce(Arc<Runtime>) + Send>;
 
 /// Run the RPC loop until stdin closes.
 ///
 /// # Errors
 /// Fails on stdin read errors.
 pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistence) -> Result<()> {
+    run_with(agent, target, cwd, persist, None).await
+}
+
+/// [`run`] with a start-up hook (see [`OnStart`]).
+///
+/// # Errors
+/// Fails on stdin read errors.
+pub async fn run_with(
+    agent: Agent,
+    target: Target,
+    cwd: PathBuf,
+    persist: Persistence,
+    on_start: Option<OnStart>,
+) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     let agent = Arc::new(agent);
     let rt = Runtime::start(agent.clone(), target, cwd, persist, tx.clone()).await;
 
     let writer = tokio::spawn(async move {
         let mut out = tokio::io::stdout();
+        let mut encoder = FrameEncoder::new();
         while let Some(v) = rx.recv().await {
-            let mut line = v.to_string();
-            line.push('\n');
-            if out.write_all(line.as_bytes()).await.is_err() || out.flush().await.is_err() {
+            let mut buf = String::new();
+            for line in encoder.encode(&v) {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+            if out.write_all(buf.as_bytes()).await.is_err() || out.flush().await.is_err() {
                 break;
             }
         }
     });
 
+    if let Some(hook) = on_start {
+        hook(rt.clone());
+    }
     rt.send(json!({
         "type": "ready",
         "protocolVersion": 1,
@@ -500,7 +1000,8 @@ pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistenc
         "maxFrameBytes": MAX_FRAME_BYTES,
         "maxReassembledFrameBytes": MAX_REASSEMBLED_BYTES,
     }));
-    rt.send(json!({"type": "available_commands_update", "commands": []}));
+    rt.announce_commands();
+    rt.announce_commands();
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut background = tokio::task::JoinSet::new();
@@ -547,4 +1048,122 @@ pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistenc
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     writer.abort();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn big_response(id: &str) -> Value {
+        json!({"id": id, "type": "response", "command": "get_available_models", "success": true,
+               "data": {"models": [{"blob": "x".repeat(1_100_000)}]}})
+    }
+
+    #[test]
+    fn protocol_v1_replaces_an_oversized_response_with_omp_error() {
+        let mut enc = FrameEncoder::new();
+        let lines = enc.encode(&big_response("g2"));
+        assert_eq!(lines.len(), 1);
+        let v: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(
+            v,
+            json!({"id": "g2", "type": "response", "command": "get_available_models", "success": false,
+                   "error": "RPC response exceeded the transport limit"})
+        );
+    }
+
+    #[test]
+    fn protocol_v1_shrinks_oversized_events_to_fit() {
+        let mut enc = FrameEncoder::new();
+        let frame = json!({"type": "tool_execution_end", "toolCallId": "t", "result": {"output": "y".repeat(2_000_000)}});
+        let lines = enc.encode(&frame);
+        assert!((lines[0].len() as u64) < MAX_FRAME_BYTES);
+        let v: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(v["type"], "tool_execution_end");
+        assert!(v["result"]["output"].as_str().unwrap().contains("chars elided for RPC frame"));
+    }
+
+    #[test]
+    fn protocol_v2_chunks_reassemble_to_the_original_frame() {
+        let mut enc = FrameEncoder::new();
+        let negotiated = json!({"id": "n", "type": "response", "command": "negotiate_protocol", "success": true, "data": {"protocolVersion": 2}});
+        assert_eq!(enc.encode(&negotiated).len(), 1);
+        let frame = big_response("g2");
+        let lines = enc.encode(&frame);
+        assert!(lines.len() > 1);
+        let mut bytes = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let c: Value = serde_json::from_str(line).unwrap();
+            assert_eq!((c["type"].clone(), c["index"].clone(), c["count"].clone()), (json!("rpc_chunk"), json!(i), json!(lines.len())));
+            assert!((line.len() as u64) < MAX_FRAME_BYTES);
+            bytes.extend(unbase64(c["data"].as_str().unwrap()));
+            assert_eq!(c["byteLength"], frame.to_string().len());
+        }
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), frame);
+    }
+
+    #[test]
+    fn terminal_agent_end_drops_messages_already_streamed() {
+        let mut enc = FrameEncoder::new();
+        let big = json!({"role": "assistant", "content": [{"type": "text", "text": "z".repeat(700_000)}]});
+        let other = json!({"role": "assistant", "content": [{"type": "text", "text": "w".repeat(700_000)}]});
+        enc.encode(&json!({"type": "agent_start"}));
+        enc.encode(&json!({"type": "message_end", "message": big}));
+        let lines = enc.encode(&json!({"type": "agent_end", "messages": [big, other.clone()], "isTerminal": true}));
+        let v: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(v["messageCount"], 2);
+        assert_eq!(v["messages"], json!([other]));
+    }
+
+    fn unbase64(s: &str) -> Vec<u8> {
+        const T: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let vals: Vec<u32> = s.bytes().filter(|b| *b != b'=').map(|b| T.find(b as char).unwrap() as u32).collect();
+        let mut out = Vec::new();
+        for c in vals.chunks(4) {
+            let n = c.iter().enumerate().fold(0u32, |a, (i, v)| a | (v << (18 - 6 * i)));
+            out.push((n >> 16) as u8);
+            if c.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if c.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn unsupported_commands_follow_omp_validation_and_error_shapes() {
+        assert_eq!(goal(&json!({"op": "get"})).unwrap(), Some(json!({"goal": null, "state": null})));
+        assert_eq!(goal(&json!({"op": "resume"})).unwrap_err().message, "No paused goal to resume.");
+        assert_eq!(goal(&json!({"op": "create"})).unwrap_err().message, "objective is required when op=create");
+        assert_eq!(
+            goal(&json!({"op": "create", "objective": "x", "token_budget": 0})).unwrap_err().message,
+            "token_budget must be a positive integer when provided"
+        );
+        assert_eq!(goal(&json!({"op": "nope"})).unwrap_err().message, "Unknown goal op: nope");
+        assert_eq!(
+            set_host_tools(&json!({"tools": [{"name": " ", "description": "d", "parameters": {}}]})).unwrap_err().message,
+            "Host tool at index 0 must provide a non-empty name"
+        );
+        assert_eq!(
+            set_host_tools(&json!({"tools": [{"name": "t", "description": "d", "parameters": []}]})).unwrap_err().message,
+            "Host tool \"t\" must provide a JSON Schema object"
+        );
+        assert_eq!(set_host_tools(&json!({"tools": []})).unwrap(), Some(json!({"toolNames": []})));
+        assert_eq!(
+            set_host_uri_schemes(&json!({"schemes": [{"scheme": "1bad"}]})).unwrap_err().message,
+            "Host URI scheme contains invalid characters: 1bad"
+        );
+        assert_eq!(subagent_messages(&json!({})).unwrap_err().message, "get_subagent_messages requires subagentId or sessionFile");
+        assert_eq!(
+            subagent_messages(&json!({"subagentId": "s1"})).unwrap_err().message,
+            "Unknown subagent or session file unavailable: s1"
+        );
+        assert!(text_cursor(&json!({"text": "héllo", "cursor": 5})).is_ok());
+        assert_eq!(
+            text_cursor(&json!({"text": "hi", "cursor": 3})).unwrap_err().message,
+            "cursor must be an integer UTF-16 offset within text"
+        );
+    }
 }

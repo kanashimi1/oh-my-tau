@@ -91,3 +91,83 @@ pub fn select(model_ref: Option<&str>) -> Result<Selected> {
         headers: None,
     })
 }
+
+/// Catalog metadata omp's `Model` carries beyond pa-ai's descriptor, in catalog key order.
+const CATALOG_EXTRA_KEYS: [&str; 7] =
+    ["int", "tps", "thinking", "identity", "requiresGlyphTokenization", "tokenizer", "supportsComputerUse"];
+
+fn catalog_path() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("OMP_RS_CATALOG") {
+        return Some(p.into());
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(std::path::PathBuf::from(home).join(".bun/install/global/node_modules/@oh-my-pi/pi-catalog/src/models.json"))
+}
+
+fn catalog() -> Option<&'static serde_json::Value> {
+    static CATALOG: std::sync::OnceLock<Option<serde_json::Value>> = std::sync::OnceLock::new();
+    CATALOG
+        .get_or_init(|| serde_json::from_slice(&std::fs::read(catalog_path()?).ok()?).ok())
+        .as_ref()
+}
+
+/// `int`/`tps`/`thinking`/`identity`/`tokenizer`/... of `provider/id` from omp's bundled
+/// catalog (`pi-catalog/src/models.json`; override the path with `OMP_RS_CATALOG`).
+/// `None` when the catalog is not installed or lists no such model.
+#[must_use]
+pub fn catalog_extras(provider: &str, id: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
+    let entry = catalog()?.get(provider)?.get(id)?;
+    let extras: Vec<_> = CATALOG_EXTRA_KEYS
+        .iter()
+        .filter_map(|k| entry.get(*k).map(|v| (*k, v.clone())))
+        .collect();
+    (!extras.is_empty()).then_some(extras)
+}
+
+fn parse_effort(s: &str) -> Option<ThinkingLevel> {
+    parse_thinking(s)
+}
+
+/// Catalog `thinking.efforts` of `provider/id` (least to most intensive), when listed.
+#[must_use]
+pub fn catalog_efforts(provider: &str, id: &str) -> Option<Vec<ThinkingLevel>> {
+    let thinking = catalog_extras(provider, id)?.into_iter().find(|(k, _)| *k == "thinking")?.1;
+    let efforts: Vec<_> = thinking.get("efforts")?.as_array()?.iter().filter_map(|e| parse_effort(e.as_str()?)).collect();
+    (!efforts.is_empty()).then_some(efforts)
+}
+
+/// Lowest effort of a model that cannot think "off" (`thinking.requiresEffort`).
+#[must_use]
+pub fn always_thinking_floor(provider: &str, id: &str) -> Option<ThinkingLevel> {
+    let thinking = catalog_extras(provider, id)?.into_iter().find(|(k, _)| *k == "thinking")?.1;
+    if thinking.get("requiresEffort") != Some(&serde_json::Value::Bool(true)) {
+        return None;
+    }
+    catalog_efforts(provider, id)?.into_iter().next()
+}
+
+fn ladder_index(l: ThinkingLevel) -> usize {
+    [ThinkingLevel::Off, ThinkingLevel::Minimal, ThinkingLevel::Low, ThinkingLevel::Medium, ThinkingLevel::High, ThinkingLevel::Xhigh, ThinkingLevel::Max]
+        .iter()
+        .position(|x| *x == l)
+        .unwrap_or(0)
+}
+
+/// `resolveThinkingLevelForModel`: `off` stays; otherwise the nearest higher supported effort,
+/// else the nearest lower one (catalog efforts when listed, else the pa-ai capability map).
+#[must_use]
+pub fn clamp_level(model: &pa_types::ai::Model, level: ThinkingLevel) -> ThinkingLevel {
+    if level == ThinkingLevel::Off {
+        return level;
+    }
+    match catalog_efforts(&model.provider, &model.id) {
+        Some(efforts) if !efforts.contains(&level) => efforts
+            .iter()
+            .copied()
+            .find(|e| ladder_index(*e) > ladder_index(level))
+            .or_else(|| efforts.iter().rev().copied().find(|e| ladder_index(*e) < ladder_index(level)))
+            .unwrap_or(level),
+        Some(_) => level,
+        None => map_level(pa_types::ai::clamp_thinking_level(model, crate::adapter::model_thinking_level(level))),
+    }
+}

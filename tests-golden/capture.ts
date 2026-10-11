@@ -53,7 +53,7 @@ function run(name: string, steps: Step[]): Promise<number> {
 	const [bin, args] =
 		target === "ts"
 			? ["omp", ["--mode", "rpc", "--no-session", "--model", MODEL]]
-			: [resolve(here, binArg ?? "../target/debug/omp-rs"), ["--mode", "rpc", "--model", MODEL]]; // omp-rs rejects --no-session
+			: [resolve(here, binArg ?? "../target/debug/omp-rs"), ["--mode", "rpc", "--no-session", "--model", MODEL]];
 	const rows: { dir: string; frame: unknown }[] = [];
 	const child = spawn(bin, args, { stdio: ["pipe", "pipe", "ignore"], cwd: here });
 	let buf = "";

@@ -219,6 +219,9 @@ fn truncate_columns(line: &str) -> String {
 /// Missing path, unreadable file, binary content or invalid selector.
 pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let raw_path = super::util::str_arg(args, "path")?;
+    if let Some(rest) = raw_path.strip_prefix("proc://") {
+        return super::jobs::read_proc(env, rest);
+    }
     let (path_part, sel) = split_path_and_sel(raw_path, &env.cwd)?;
     let absolute = resolve_to_cwd(&path_part, &env.cwd);
     let meta = std::fs::metadata(&absolute)
@@ -574,6 +577,19 @@ mod tests {
         assert_eq!(raw, "line 2\nline 3\n\n[2 more lines in file. Use a.txt:4 to continue]");
         let tail = text_of(&read(&e, &serde_json::json!({"path": "a.txt:-2"})).unwrap());
         assert!(tail.contains("4:line 4\n5:line 5"), "{tail}");
+    }
+
+    #[test]
+    fn hashline_output_matches_ts_natives() {
+        // Same fixture and TS formatting functions (bun cross-check, 2026-10-12):
+        //   hashlineFileHash → "0793", hashlineFormatHeader → "[a.txt#0793]",
+        //   rows via formatNumberedLine → "N:line".
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n").unwrap();
+        let e = env(dir.path());
+        let out = text_of(&read(&e, &serde_json::json!({"path": "a.txt"})).unwrap());
+        let expected = "[a.txt#0793]\n1:line 1\n2:line 2\n3:line 3\n4:line 4\n5:line 5";
+        assert_eq!(out, expected, "omp-rs read output diverged from TS formatting");
     }
 
     #[test]
