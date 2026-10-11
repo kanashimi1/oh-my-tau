@@ -5,3 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+pa-types = { workspace = true }
+pa-ai = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+serde_yaml_ng = "0.10"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+futures = { workspace = true }
+tempfile = "3"
