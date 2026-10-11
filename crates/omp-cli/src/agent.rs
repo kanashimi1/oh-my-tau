@@ -16,7 +16,7 @@ use crate::tools::builtin_tools;
 const BASE_PROMPT: &str = "You are a coding agent running in a terminal. Use the available tools (bash, read, write, edit, grep, glob) to complete the user's task; prefer reading before editing and verify results by running them. Be concise.";
 
 /// Days since 1970-01-01 to (year, month, day), civil calendar.
-fn civil(days: i64) -> (i64, u32, u32) {
+pub fn civil(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);

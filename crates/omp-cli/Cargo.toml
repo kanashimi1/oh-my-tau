@@ -21,3 +21,5 @@ regex = "1"
 ignore = "0.4"
 globset = "0.4"
 omp-providers = { path = "../omp-providers" }
+omp-session = { path = "../omp-session" }
+rand = "0.8"

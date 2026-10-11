@@ -4,6 +4,7 @@ mod adapter;
 mod agent;
 mod events;
 mod model;
+mod persist;
 mod rpc;
 mod tools;
 
@@ -48,6 +49,10 @@ async fn main() -> Result<()> {
     let selected = model::select(args.model.as_deref())?;
     let agent = agent::build_agent(&cwd, selected)?;
 
+    let session = persist::attach(&agent, &cwd).await;
+    if let Err(e) = &session {
+        eprintln!("omp-rs: session persistence disabled: {e:#}");
+    }
     if args.mode.as_deref() == Some("rpc") {
         return rpc::run(agent).await;
     }
@@ -56,6 +61,9 @@ async fn main() -> Result<()> {
     };
     agent.prompt(prompt.as_str()).await?;
     let state = agent.state().await;
+    if let Ok((_, path)) = &session {
+        eprintln!("session: {}", path.display());
+    }
     match agent::last_assistant(&state.messages) {
         Some((_, Some(err))) => {
             eprintln!("error: {err}");
