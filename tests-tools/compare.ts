@@ -21,7 +21,7 @@ interface ToolDef {
 }
 
 /** Tools compared byte-for-byte (canonical JSON + full description), not just per-param. */
-const STRICT_TOOLS = new Set(["todo", "ask"]);
+const STRICT_TOOLS = new Set(["todo", "ask", "checkpoint", "rewind", "wait", "think", "yield", "goal"]);
 
 /** Recursively sort object keys so JSON equality ignores key order. */
 function canonical(value: unknown): unknown {
@@ -137,6 +137,32 @@ function parseRustTools(): ToolDef[] {
 		const first = wsDesc ? (JSON.parse(`"${wsDesc[1]}"`) as string).split("\n", 1)[0] ?? "" : "";
 		defs.find(d => d.name === "web_search")!.description_first_line = first;
 	}
+	// lsp: schema from `pub fn schema()`; description from a raw-string DESCRIPTION const.
+	{
+		const lspSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/lsp.rs"), "utf8");
+		const at = lspSrc.indexOf("pub fn schema()");
+		const lspDesc = /pub const DESCRIPTION: &str = r#"([\s\S]*?)"#;/.exec(lspSrc);
+		const first = lspDesc ? (lspDesc[1] ?? "").split("\n", 1)[0] ?? "" : "";
+		defs.push({
+			name: "lsp",
+			description_first_line: first,
+			parameters: JSON.parse(jsonLiteralAt(lspSrc, at)) as Record<string, unknown>,
+		});
+	}
+	// wait/think/yield/goal: schema in the module (`pub fn schema()`); description
+	// is an escaped-string `DESCRIPTION` const (yield_tool.rs holds omp's `yield`).
+	for (const [name, file] of [["wait", "crates/omp-cli/src/tools/wait.rs"], ["think", "crates/omp-cli/src/tools/think.rs"], ["yield", "crates/omp-cli/src/tools/yield_tool.rs"], ["goal", "crates/omp-cli/src/tools/goal.rs"]] as const) {
+		const mod = readFileSync(join(ROOT, file), "utf8");
+		const at = mod.indexOf("pub fn schema()");
+		const desc = /const DESCRIPTION: &str = "((?:[^"\\]|\\.)*)";/.exec(mod);
+		const full = desc ? (JSON.parse(`"${desc[1]}"`) as string) : "";
+		defs.push({
+			name,
+			description_first_line: full.split("\n", 1)[0] ?? "",
+			description: full,
+			parameters: JSON.parse(jsonLiteralAt(mod, at)) as Record<string, unknown>,
+		});
+	}
 	// edit: `edit::schema(edit_mode)` + `pi_edit::description(edit_mode)`; compare the
 	// Replace mode, the omp-rs default for glm-style models.
 	// verify we grabbed the Replace arm: it follows `EditMode::Replace => json!(`
@@ -166,6 +192,23 @@ function parseRustTools(): ToolDef[] {
 				description_first_line: fullDesc.split("\n", 1)[0] ?? "",
 				description: fullDesc,
 				parameters: JSON.parse(jsonLiteralAt(src, at)) as Record<string, unknown>,
+			});
+		}
+	}
+	// checkpoint/rewind: schemas as `pub fn schema_<name>()`; descriptions as raw-string consts.
+	{
+		const ckptSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/checkpoint.rs"), "utf8");
+		for (const [name, fn, constName] of [["checkpoint", "schema_checkpoint", "CHECKPOINT_DESCRIPTION"], ["rewind", "schema_rewind", "REWIND_DESCRIPTION"]] as const) {
+			const at = ckptSrc.indexOf(`pub fn ${fn}()`);
+			if (at < 0) throw new Error(`${fn} not found in checkpoint.rs`);
+			const cre = new RegExp(`pub const ${constName}: &str = r#"(([\\s\\S]*?))"#;`);
+			const cm = cre.exec(ckptSrc);
+			const fullDesc = cm?.[1] ?? "";
+			defs.push({
+				name,
+				description_first_line: fullDesc.split("\n", 1)[0] ?? "",
+				description: fullDesc,
+				parameters: JSON.parse(jsonLiteralAt(ckptSrc, at)) as Record<string, unknown>,
 			});
 		}
 	}

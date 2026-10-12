@@ -9,6 +9,7 @@ name = "omp-rs"
 path = "src/main.rs"
 
 [dependencies]
+omp-urls = { path = "../omp-urls" }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,6 +28,8 @@ omp-compact = { path = "../omp-compact" }
 omp-task = { path = "../omp-task" }
 omp-eval = { path = "../omp-eval" }
 omp-mcp = { path = "../omp-mcp" }
+omp-lsp = { path = "../omp-lsp" }
+tracing = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
 serde_yaml_ng = "0.10"
 rand = "0.8"
@@ -38,6 +41,12 @@ grep-searcher = "0.1"
 pi-ast = { path = "../../vendor/pi-ast" }
 pi-edit = { path = "../../vendor/pi-edit" }
 pi-walker = { path = "../../vendor/pi-walker" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+
+omp-settings = { path = "../omp-settings" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
+flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"

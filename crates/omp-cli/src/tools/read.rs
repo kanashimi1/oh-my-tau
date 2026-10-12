@@ -5,8 +5,11 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, OnceLock};
 use std::time::SystemTime;
+
+use omp_urls::spec::InternalResource;
+use omp_urls::{Registry, UrlCtx, UrlTarget};
 
 use anyhow::{bail, Context, Result};
 use pa_agent::types::AgentToolResult;
@@ -235,6 +238,9 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if let Some(rest) = raw_path.strip_prefix("proc://") {
         return super::jobs::read_proc(env, rest);
     }
+    if let Some(result) = read_internal_url(env, raw_path)? {
+        return Ok(result);
+    }
     let (path_part, sel) = split_path_and_sel(raw_path, &env.cwd)?;
     let absolute = resolve_to_cwd(&path_part, &env.cwd);
     let meta = std::fs::metadata(&absolute)
@@ -244,6 +250,26 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     }
     if !meta.is_file() {
         bail!("Cannot read '{path_part}': it is a special file, not a regular file or directory.");
+    }
+    if matches!(sel, Selector::None) && crate::images::looks_like_image(&absolute) {
+        let (image, note) = crate::images::read_image_detailed(&absolute, &Default::default())
+            .map_err(|e| anyhow::anyhow!("Cannot read '{path_part}': {e}"))?;
+        let mut text = format!(
+            "Read image file [{}].",
+            format_path_relative_to_cwd(&absolute, &env.cwd, false)
+        );
+        if let Some(note) = note {
+            text.push('\n');
+            text.push_str(&note);
+        }
+        return Ok(AgentToolResult {
+            content: vec![
+                pa_agent::types::ToolResultContent::Text(pa_agent::types::TextContent { text, text_signature: None }),
+                pa_agent::types::ToolResultContent::Image(image),
+            ],
+            details: serde_json::Value::Null,
+            terminate: None,
+        });
     }
     let bytes = std::fs::read(&absolute).with_context(|| format!("cannot read {path_part}"))?;
     if bytes.contains(&0) {
@@ -255,14 +281,41 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let text = String::from_utf8_lossy(&bytes);
     let (_, without_bom) = strip_bom(&text);
     let normalized = normalize_to_lf(without_bom);
-    let lines = addressable_lines(&normalized);
+    let selector_base = path_part;
+    let display = format_path_relative_to_cwd(&absolute, &env.cwd, false);
+    let display = if Path::new(&display).is_absolute() {
+        shorten_path(&display)
+    } else {
+        display
+    };
+    format_read_output(env, &normalized, &sel, &selector_base, &display, env.hashline, Some(&absolute))
+}
+
+/// Format already-in-memory text the way omp's read pipeline does: selector
+/// windows, optional hashline header + numbered rows, continuation hints.
+/// `store_key` is the snapshot key for hashline recording (`None` for URLs
+/// with no local backing).
+///
+/// # Errors
+/// Never fails; the Result mirrors the tool surface.
+fn format_read_output(
+    env: &Env,
+    normalized: &str,
+    sel: &Selector,
+    selector_base: &str,
+    display: &str,
+    hashline: bool,
+    store_key: Option<&Path>,
+) -> Result<AgentToolResult> {
+    let lines = addressable_lines(normalized);
     let total = lines.len();
-    let raw = is_raw(&sel);
-    let hash_lines = !raw && env.hashline;
+    let raw = is_raw(sel);
+    let hash_lines = !raw && hashline;
 
     // Resolve the selector against the line count.
     let sel = match sel {
         Selector::Tail { count, raw } => {
+            let (count, raw) = (*count, *raw);
             let start = total.saturating_sub(count) + 1;
             Selector::Lines {
                 ranges: vec![LineRange {
@@ -272,20 +325,12 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
                 raw,
             }
         }
-        other => other,
+        other => other.clone(),
     };
     let ranges: Vec<LineRange> = match &sel {
         Selector::Lines { ranges, .. } => ranges.clone(),
         _ => Vec::new(),
     };
-    let selector_base = path_part;
-    let display = format_path_relative_to_cwd(&absolute, &env.cwd, false);
-    let display = if Path::new(&display).is_absolute() {
-        shorten_path(&display)
-    } else {
-        display
-    };
-
     let mut body = String::new();
     let mut rows = 0usize;
     let mut last_shown = 0usize; // 1-indexed last displayed line
@@ -299,12 +344,15 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             .iter()
             .map(|r| {
                 let requested_start = r.start - 1;
-                let lead = if !raw && r.start > 1 {
+                // Context expansion only feeds hashline anchors (TS
+                // `expandRangeWithContext`); raw/immutable reads show the
+                // exact requested window.
+                let lead = if hash_lines && !raw && r.start > 1 {
                     LEADING_CONTEXT.min(requested_start)
                 } else {
                     0
                 };
-                let trail = if !raw && r.end.is_some() {
+                let trail = if hash_lines && !raw && r.end.is_some() {
                     TRAILING_CONTEXT
                 } else {
                     0
@@ -368,19 +416,25 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
 
     let mut out = String::new();
     if hash_lines && rows > 0 {
-        let key = canonical_key(&absolute);
-        let tag = env.store.record(&key, &normalized, None);
-        let seen = seen_lines_from_body(&body);
-        env.store.record_seen_lines(&key, &tag, &seen);
-        let _ = writeln!(out, "[{display}#{tag}]");
+        if let Some(absolute) = store_key {
+            let key = canonical_key(absolute);
+            let tag = env.store.record(&key, normalized, None);
+            let seen = seen_lines_from_body(&body);
+            env.store.record_seen_lines(&key, &tag, &seen);
+            let _ = writeln!(out, "[{display}#{tag}]");
+        } else {
+            let _ = writeln!(out, "[{display}]");
+        }
     } else if raw && rows > 0 {
         // A raw read emits no header, but records the displayed range.
-        let key = canonical_key(&absolute);
-        let first = windows.first().map_or(0, |w| w.0) + 1;
-        let seen: Vec<u32> = (first..=last_shown)
-            .filter_map(|n| u32::try_from(n).ok())
-            .collect();
-        env.store.record(&key, &normalized, Some(&seen));
+        if let Some(absolute) = store_key {
+            let key = canonical_key(absolute);
+            let first = windows.first().map_or(0, |w| w.0) + 1;
+            let seen: Vec<u32> = (first..=last_shown)
+                .filter_map(|n| u32::try_from(n).ok())
+                .collect();
+            env.store.record(&key, normalized, Some(&seen));
+        }
     }
     out.push_str(&body);
 
@@ -401,6 +455,150 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         );
     }
     Ok(AgentToolResult::text(out))
+}
+
+// ------------------------------------------------------------- internal URLs
+
+/// Process-global scheme registry (TS `InternalUrlRouter.instance()`).
+pub(crate) fn url_registry() -> &'static Registry {
+    static REG: OnceLock<Registry> = OnceLock::new();
+    REG.get_or_init(|| {
+        let mut reg = Registry::new();
+        omp_urls::schemes::register_all(&mut reg);
+        reg
+    })
+}
+
+/// Per-call provider context pinned to the caller's session (TS
+/// `sessionResolveContext`).
+pub(crate) fn url_ctx(env: &Env) -> UrlCtx {
+    UrlCtx {
+        session_file: omp_urls::global_session_file(),
+        cwd: Some(env.cwd.clone()),
+        skip_directory_listing: false,
+    }
+}
+
+/// TS read.ts invalid-selector message for internal URLs.
+fn invalid_url_selector(sel: &str, path: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "Invalid selector ':{sel}' on '{path}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100)."
+    )
+}
+
+/// Route a `scheme://` read through the internal URL registry (TS read.ts
+/// internal-URL dispatch). `Ok(None)` means the input is not a registered URL.
+///
+/// # Errors
+/// Invalid selector, or provider resolve/format failures.
+fn read_internal_url(env: &Env, raw_path: &str) -> Result<Option<AgentToolResult>> {
+    let reg = url_registry();
+    let normalized = reg.normalize(raw_path);
+    if !reg.can_handle(&normalized) {
+        return Ok(None);
+    }
+    let (bare, sel_str) = reg.split(&normalized);
+    let parsed = match &sel_str {
+        Some(sel) => match parse_sel(sel) {
+            Ok(parsed) if !matches!(parsed, Selector::None) => parsed,
+            _ => return Err(invalid_url_selector(sel, &bare)),
+        },
+        None => Selector::None,
+    };
+    let ctx = url_ctx(env);
+    let target = reg.target(&normalized, &ctx)?;
+    let Some(target) = target else { return Ok(None) };
+
+    match target {
+        UrlTarget::File { url, spec, path, .. } => {
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_dir() => read_directory(&path, &parsed).map(Some),
+                Ok(meta) if meta.is_file() => {
+                    let bytes =
+                        std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+                    if bytes.contains(&0) {
+                        bail!("Cannot read '{}': binary file ({}).", url.raw_href, format_bytes(bytes.len()));
+                    }
+                    let text = String::from_utf8_lossy(&bytes);
+                    let (_, without_bom) = strip_bom(&text);
+                    let normalized_text = normalize_to_lf(without_bom);
+                    // Immutable resources never mint hashline anchors.
+                    let hashline = env.hashline && !spec.immutable;
+                    format_read_output(
+                        env,
+                        &normalized_text,
+                        &parsed,
+                        &url.raw_href,
+                        &url.raw_href,
+                        hashline,
+                        Some(&path),
+                    )
+                    .map(Some)
+                }
+                // The located file vanished: the provider owns the canonical error.
+                _ => resolve_resource(env, reg, &bare, &ctx, &parsed),
+            }
+        }
+        UrlTarget::Resource { url, .. } => resolve_resource(env, reg, &url.raw_href, &ctx, &parsed),
+    }
+}
+
+/// Resolve a resource target and format it with the read selector (TS
+/// `#handleInternalUrl` → `buildInMemorySelectorResult`).
+fn resolve_resource(
+    env: &Env,
+    reg: &'static Registry,
+    url: &str,
+    ctx: &UrlCtx,
+    parsed: &Selector,
+) -> Result<Option<AgentToolResult>> {
+    let resource: InternalResource = reg.resolve(url, ctx)?;
+    let immutable = resource.immutable.unwrap_or(false);
+    let hashline = env.hashline && !immutable;
+    if resource.is_directory {
+        return Ok(Some(slice_listing(&resource.content, parsed, url)));
+    }
+    format_read_output(env, &resource.content, parsed, url, url, hashline, None).map(Some)
+}
+
+/// Slice a rendered directory-style listing by a single-range or tail
+/// selector (TS `#readDirectory`'s listing slice).
+fn slice_listing(content: &str, sel: &Selector, selector_base: &str) -> AgentToolResult {
+    let all: Vec<&str> = content.split('\n').collect();
+    let (start, limit) = match sel {
+        Selector::Lines { ranges, .. } => ranges.first().map_or((0, None), |r| {
+            (r.start.saturating_sub(1), r.end.map(|e| e - r.start + 1))
+        }),
+        Selector::Tail { count, .. } => {
+            let start = all.len().saturating_sub(*count);
+            (start, Some(all.len() - start))
+        }
+        Selector::None | Selector::Raw => (0, None),
+    };
+    if start >= all.len() {
+        let suggestion = if all.is_empty() {
+            "The listing is empty.".to_string()
+        } else {
+            format!("Use :1 to read from the start, or :{} to read the last line.", all.len())
+        };
+        return AgentToolResult::text(format!(
+            "Line {} is beyond end of listing ({} lines total). {suggestion}",
+            start + 1,
+            all.len()
+        ));
+    }
+    let end = limit.map_or(all.len(), |l| (start + l).min(all.len()));
+    let mut text = all[start..end].join("\n");
+    if end < all.len() {
+        let _ = write!(
+            text,
+            "\n\n[{} more lines in listing. Use :{} to continue]",
+            all.len() - end,
+            end + 1
+        );
+    }
+    let _ = selector_base;
+    AgentToolResult::text(text)
 }
 
 // ------------------------------------------------------------- directories
@@ -613,6 +811,20 @@ mod tests {
     use super::*;
     use crate::tools::Env;
 
+    /// Install a fake session store (`<tmp>/sess.jsonl` + artifacts dir
+    /// `<tmp>/sess/`) and return the tempdir guard. URL tests share the
+    /// process-global session file, so they take this lock to avoid races.
+    static URL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn session_store() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let session_file = dir.path().join("sess.jsonl");
+        std::fs::write(&session_file, "{\"type\":\"session\",\"version\":3,\"id\":\"sess\"}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("sess")).unwrap();
+        omp_urls::set_global_session_file(Some(session_file));
+        dir
+    }
+
     fn env(dir: &Path) -> Env {
         Env::new(dir, true)
     }
@@ -766,4 +978,80 @@ mod tests {
             "{out}"
         );
     }
-}
+    #[test]
+    fn reads_artifact_url_with_selector() {
+        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _store = session_store();
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = _store.path().join("sess");
+        std::fs::write(artifacts.join("3.log"), "l1\nl2\nl3\nl4\n").unwrap();
+        let env = Env::new(dir.path(), false);
+        let out = text_of(&read(&env, &serde_json::json!({"path": "artifact://3:2-3"})).unwrap());
+        // Immutable scheme: raw display, exact window (no context expansion);
+        // a range ending before EOF carries the continuation hint like TS.
+        assert_eq!(out, "l2\nl3\n\n[1 more lines in file. Use artifact://3:4 to continue]");
+    }
+
+    #[test]
+    fn reads_agent_url_markdown() {
+        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _store = session_store();
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = _store.path().join("sess");
+        std::fs::write(artifacts.join("Worker.md"), "report body\n").unwrap();
+        let env = Env::new(dir.path(), false);
+        let out = text_of(&read(&env, &serde_json::json!({"path": "agent://Worker"})).unwrap());
+        assert_eq!(out, "report body");
+    }
+
+    #[test]
+    fn reads_history_index_and_local_file() {
+        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _store = session_store();
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = _store.path().join("sess");
+        std::fs::write(
+            artifacts.join("Agent.jsonl"),
+            "{\"type\":\"session\",\"version\":3,\"id\":\"a\"}\n",
+        ).unwrap();
+        std::fs::create_dir_all(artifacts.join("local")).unwrap();
+        std::fs::write(artifacts.join("local/notes.txt"), "scratch\n").unwrap();
+        let env = Env::new(dir.path(), false);
+
+        let out = text_of(&read(&env, &serde_json::json!({"path": "history://"})).unwrap());
+        assert!(out.starts_with("# Agents"));
+        assert!(out.contains("| Agent | on disk |"));
+
+        let out = text_of(&read(&env, &serde_json::json!({"path": "local://notes.txt"})).unwrap());
+        assert_eq!(out, "scratch");
+    }
+
+    #[test]
+    fn invalid_url_selector_names_the_url() {
+        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _store = session_store();
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = _store.path().join("sess");
+        std::fs::write(artifacts.join("1.log"), "x\n").unwrap();
+        let env = Env::new(dir.path(), false);
+        // "bogus" is not selector-shaped, so nothing peels and the numeric-ID
+        // error surfaces — TS behavior for unregistered selector chunks.
+        let err = read(&env, &serde_json::json!({"path": "artifact://1:bogus"})).unwrap_err();
+        assert_eq!(err.to_string(), "artifact:// ID must be numeric, got: 1:bogus");
+        // A selector-shaped but malformed chunk peels, then errors as a selector.
+        let err = read(&env, &serde_json::json!({"path": "artifact://1:2-3:raw:-100-5"})).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Invalid selector ':2-3:raw:-100-5' on 'artifact://1'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100)."
+        );
+    }
+
+    #[test]
+    fn unknown_scheme_falls_through_to_filesystem() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "plain\n").unwrap();
+        let env = Env::new(dir.path(), false);
+        // Not a registered scheme: the existing path pipeline answers.
+        let out = text_of(&read(&env, &serde_json::json!({"path": "f.txt"})).unwrap());
+        assert!(out.contains("plain"));
+    }}

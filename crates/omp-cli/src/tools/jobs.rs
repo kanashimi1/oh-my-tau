@@ -160,7 +160,7 @@ impl JobRegistry {
         }
     }
 
-    fn sorted(&self) -> Vec<(String, Job)> {
+    pub fn sorted(&self) -> Vec<(String, Job)> {
         let inner = self.inner.lock().expect("job registry poisoned");
         let mut v: Vec<(String, Job)> = inner
             .jobs
@@ -194,7 +194,7 @@ impl JobRegistry {
             .cloned()
     }
 
-    fn services_sorted(&self) -> Vec<(String, Arc<Mutex<Service>>)> {
+    pub fn services_sorted(&self) -> Vec<(String, Arc<Mutex<Service>>)> {
         let inner = self.inner.lock().expect("job registry poisoned");
         let mut v: Vec<(String, Arc<Mutex<Service>>)> = inner
             .services

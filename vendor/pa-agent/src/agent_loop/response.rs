@@ -324,6 +324,10 @@ fn finalize_message(
     context: &AgentContext,
     timing: &Timing,
 ) {
+    // TS's aborted message is fresh: no credential/timing/commit stamps at all.
+    if message.stop_reason == StopReason::Aborted {
+        return;
+    }
     stamp_credential(message, config);
     if message.meta.duration.is_none() {
         message.meta.duration = Some(timing.started.elapsed().as_secs_f64() * 1000.0);

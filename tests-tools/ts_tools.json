@@ -563,5 +563,195 @@
 				"query"
 			]
 		}
+	},
+	{
+		"name": "wait",
+		"description_first_line": "Wait only when blocked with nothing else to do.",
+		"description": "Wait only when blocked with nothing else to do.\nBlocks on background jobs/services you started; returns on the first result, a message sent to you, or a steering interrupt; a safety cap returns a still-running snapshot.\nNothing you started running? Errors; NEVER wait on other agents.\nResults and messages auto-deliver. NEVER poll while work remains.",
+		"parameters": {
+			"type": "object",
+			"properties": {}
+		}
+	},
+	{
+		"name": "think",
+		"description_first_line": "private scratchpad; not shown to user",
+		"description": "private scratchpad; not shown to user",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"thoughts": {
+					"type": "string",
+					"description": "private scratchpad; not shown to user"
+				}
+			},
+			"required": [
+				"thoughts"
+			],
+			"additionalProperties": false,
+			"description": "private scratchpad; not shown to user"
+		}
+	},
+	{
+		"name": "yield",
+		"description_first_line": "Submit subagent output: `{ data: <your output> }` for success, `{ error: \"message\" }` for failure. Never both; never a bare payload outside `data`.",
+		"description": "Submit subagent output: `{ data: <your output> }` for success, `{ error: \"message\" }` for failure. Never both; never a bare payload outside `data`.\n\nOmit `type` for the usual single terminal structured result. Pass `type: [\"section\"]` to submit an incremental, non-terminal section that accumulates.\nPass `type: \"result\"` to finalize; when `data` is omitted, your last assistant turn becomes the raw final result.",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"description": "submit data or error",
+			"properties": {
+				"type": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"minItems": 1,
+							"items": {
+								"type": "string"
+							}
+						}
+					],
+					"description": "Optional result type. A non-empty string array is incremental; a string is terminal."
+				},
+				"data": {
+					"type": "object",
+					"additionalProperties": true,
+					"description": "Structured JSON output (no schema specified)"
+				},
+				"error": {
+					"type": "string",
+					"description": "Failure reason; mutually exclusive with data"
+				}
+			},
+			"required": []
+		}
+	},
+	{
+		"name": "goal",
+		"description_first_line": "Manage active goal-mode objective.",
+		"description": "Manage active goal-mode objective.\n\nSingle `op` field:\n- `create`: starts goal; enables goal mode. Requires `objective`; optional positive `token_budget`. Only when no goal exists and none is paused.\n- `get`: returns current active/paused goal and remaining token budget.\n- `resume`: re-activates paused goal for continued work.\n- `complete`: marks goal complete only when actually done and every deliverable verified against current evidence. NEVER because budget low or turn ending.\n- `drop`: discards current goal without completing it.\n\nPaused goal from `get` → MUST `resume` before continuing work.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"op": {
+					"enum": [
+						"create",
+						"get",
+						"complete",
+						"resume",
+						"drop"
+					],
+					"type": "string",
+					"description": "goal operation"
+				},
+				"objective": {
+					"type": "string",
+					"description": "goal objective"
+				},
+				"token_budget": {
+					"type": "integer",
+					"description": "token budget"
+				}
+			},
+			"required": [
+				"op"
+			]
+		}
+	},
+	{
+		"name": "checkpoint",
+		"description_first_line": "Context checkpoint: before exploratory work; later `rewind`, retaining only concise report.",
+		"description": "Context checkpoint: before exploratory work; later `rewind`, retaining only concise report.\n\nUse for investigations with many intermediate tool calls (`read`/`grep`/`glob`/`lsp`/etc.) to minimize subsequent context cost.\n\nRules:\n- MUST `rewind` before yielding after starting a checkpoint.\n- NEVER `checkpoint` while another checkpoint active.\n- Subagents: disabled by default. Enable: agent-definition `tools:` frontmatter lists `checkpoint` or `rewind`; sister tool auto-included; requires `checkpoint.enabled` setting.\n\nTypical flow:\n1. `checkpoint(goal: …)`\n2. Exploratory work\n3. `rewind(report: …)` with concise findings\n\nAfter `rewind`: intermediate checkpoint messages removed from active context; replaced by report.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"goal": {
+					"type": "string",
+					"description": "investigation goal"
+				}
+			},
+			"required": [
+				"goal"
+			]
+		}
+	},
+	{
+		"name": "rewind",
+		"description_first_line": "End the active checkpoint; rewind context to it, replacing intermediate exploration with your report.",
+		"description": "End the active checkpoint; rewind context to it, replacing intermediate exploration with your report.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"report": {
+					"type": "string",
+					"description": "investigation findings"
+				}
+			},
+			"required": [
+				"report"
+			]
+		}
+	},
+	{
+		"name": "lsp",
+		"description_first_line": "Symbol-aware code intelligence from language servers — navigation, refactors, and diagnostics where text tools miss callsites.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"action": {
+					"enum": [
+						"diagnostics",
+						"definition",
+						"references",
+						"hover",
+						"symbols",
+						"rename",
+						"rename_file",
+						"code_actions",
+						"type_definition",
+						"implementation",
+						"status",
+						"reload",
+						"capabilities",
+						"request"
+					],
+					"type": "string"
+				},
+				"file": {
+					"type": "string"
+				},
+				"line": {
+					"type": "number"
+				},
+				"symbol": {
+					"type": "string"
+				},
+				"query": {
+					"type": "string"
+				},
+				"new_name": {
+					"type": "string"
+				},
+				"apply": {
+					"type": "boolean"
+				},
+				"timeout": {
+					"type": "number",
+					"minimum": 5,
+					"maximum": 300,
+					"description": "Timeout in seconds (default 20; range 5–300)."
+				},
+				"payload": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"action"
+			],
+			"additionalProperties": false
+		}
 	}
 ]

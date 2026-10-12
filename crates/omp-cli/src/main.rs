@@ -2,142 +2,246 @@
 
 mod adapter;
 mod agent;
+mod cli;
 mod compact;
 mod events;
 mod ext;
+mod images;
 mod model;
 mod paging;
 mod persist;
 mod rpc;
 mod runtime;
+pub mod subcmd;
 mod sysprompt;
 mod tools;
 mod tree;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
+use cli::{Args, Resume};
 
-#[allow(clippy::struct_excessive_bools)] // CLI flag struct mirroring omp's parsed argv shape
-struct Args {
-    print: bool,
-    prompt: Option<String>,
-    model: Option<String>,
-    cwd: Option<PathBuf>,
-    mode: Option<String>,
-    no_session: bool,
-    no_extensions: bool,
-    extension: Vec<PathBuf>,
-    thinking: Option<String>,
-    system_prompt: Option<String>,
-    append_system_prompt: Option<String>,
-    tools_csv: Option<String>,
-    dump_system_prompt: bool,
-}
+const HELP: &str = r#"usage: omp-rs [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
+       [--provider <name>] [--api-key <key>] [--smol <m>] [--slow <m>] [--plan <m>]
+       [--cwd DIR] [--add-dir DIR]... [--config FILE]... [--session-dir DIR]
+       [-c|--continue] [-r|--resume [ID]] [--fork ID] [--from-claude] [--from-codex]
+       [--thinking off|minimal|low|medium|high|xhigh|max|auto] [--tools a,b] [--no-tools]
+       [--models a,b] [--max-time 600|10m|1h] [--print-thoughts] [--hide-thinking]
+       [--system-prompt TEXT] [--system-prompt-template FILE] [--append-system-prompt TEXT]
+       [-e|--extension PATH]... [--hook PATH]... [--trusted-extension ABS]...
+       [--no-extensions] [--no-session] [--no-skills] [--no-rules] [--no-title]
+       [--no-lsp] [--no-pty] [--no-ui] [--allow-home] [--auto-approve|--yolo]
+       [--approval-mode always-ask|write|yolo] [--export FILE] [--version] [--] <prompt...|@file>
+
+Session control (headless: pass a session id prefix or path; bare --resume needs
+the interactive picker, which omp-rs does not have):
+  -c, --continue       continue the newest previous session
+  -r, --resume [ID]    resume a session (also --session)
+  --fork ID            fork a session into a fresh file
+
+Flags parsed for TS parity whose subsystems are not in omp-rs (no-op or
+reported, see GapInventory): --config, --add-dir, --smol/--slow/--plan,
+--models, --service-tier, --prewalk*/--plan-yolo*, --skills/--no-skills,
+--no-rules, --no-title, --no-lsp, --no-pty, --advisor, --external-thinking,
+--hide-thinking, --auto-approve/--approval-mode, --profile, --alias.
+"#;
 
 fn parse_args() -> Result<Args> {
-    parse_from(std::env::args().skip(1))
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // CLI subcommands (TS cli-commands.ts): a leading non-flag token naming a
+    // known subcommand dispatches before flag parsing.
+    if let Some(name) = argv.first().filter(|a| !a.starts_with('-')) {
+        if subcmd::known(name) {
+            match subcmd::run(name, &argv[1..]) {
+                Ok(code) => std::process::exit(code),
+                Err(e) => {
+                    eprintln!("Error: {e:#}");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+    cli::parse_from(argv.into_iter())
 }
 
-/// Parse CLI arguments, matching the TS omp CLI: `-p/--print` is a boolean
-/// flag and the prompt comes from positional message arguments (joined with a
-/// space). `@<path>` positional args attach a text file's contents to the
-/// prompt; `--` ends flag parsing.
-fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
-    let mut a = Args {
-        print: false,
-        prompt: None,
-        model: None,
-        cwd: None,
-        mode: None,
-        no_session: false,
-        no_extensions: false,
-        extension: Vec::new(),
-        thinking: None,
-        system_prompt: None,
-        append_system_prompt: None,
-        tools_csv: None,
-        dump_system_prompt: false,
-    };
-    let mut messages: Vec<String> = Vec::new();
-    let mut it = it.peekable();
-    let mut flags_done = false;
-    while let Some(arg) = it.next() {
-        if flags_done {
-            messages.push(arg);
+/// Directory sessions are stored in/looked up from, honoring --session-dir
+/// (mirrors `persist::sessions_dir`, which is private to that module).
+fn sessions_dir(cwd: &Path, session_dir: Option<&Path>) -> Result<PathBuf> {
+    if let Some(d) = session_dir {
+        return Ok(d.to_path_buf());
+    }
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    let slug = cwd.display().to_string().replace('/', "-");
+    Ok(PathBuf::from(home).join(".omp-rs/sessions").join(slug))
+}
+
+/// Resolve a `--resume ID`/`--fork ID` value to a session file: an existing
+/// path wins; otherwise match the session id prefix inside `dir`.
+fn resolve_session(dir: &Path, value: &str) -> Option<PathBuf> {
+    let as_path = PathBuf::from(value);
+    if as_path.is_file() {
+        return Some(as_path);
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        if arg == "--" {
-            flags_done = true;
+        let Ok(first) = std::fs::read_to_string(&path) else {
             continue;
-        }
-        if !arg.starts_with('-') || arg == "-" {
-            push_message(&mut messages, arg)?;
-            continue;
-        }
-        let mut value = |name: &str| {
-            it.next()
-                .ok_or_else(|| anyhow::anyhow!("{name} needs a value"))
         };
-        match arg.as_str() {
-            "-p" | "--print" => a.print = true,
-            "--model" => a.model = Some(value("--model")?),
-            "--cwd" => a.cwd = Some(PathBuf::from(value("--cwd")?)),
-            "--mode" => a.mode = Some(value("--mode")?),
-            "--thinking" => a.thinking = Some(value("--thinking")?),
-            "--extension" => a.extension.push(PathBuf::from(value("--extension")?)),
-            "--no-session" => a.no_session = true,
-            "--system-prompt" => a.system_prompt = Some(value("--system-prompt")?),
-            "--append-system-prompt" => {
-                a.append_system_prompt = Some(value("--append-system-prompt")?);
-            }
-            "--tools" => a.tools_csv = Some(value("--tools")?),
-            "--dump-system-prompt" => a.dump_system_prompt = true,
-            "--no-extensions" => a.no_extensions = true,
-            "-h" | "--help" => {
-                println!(
-                    "usage: omp-rs -p [--model provider/id[:thinking]] [--cwd DIR]\n       [--thinking off|minimal|low|medium|high|xhigh|max] [--extension <path>]...\n       [--no-extensions] [--no-session] [--] <prompt...|@file>\n       omp-rs --mode rpc [--model ...] [--cwd DIR]"
-                );
-                std::process::exit(0);
-            }
-            other => bail!("unknown argument: {other}"),
+        let id = first
+            .lines()
+            .take(5)
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .find(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("session"))
+            .and_then(|v| v.get("id").and_then(serde_json::Value::as_str).map(ToString::to_string));
+        if id.is_some_and(|id| id.starts_with(value)) {
+            return Some(path);
         }
     }
-    if !messages.is_empty() {
-        a.prompt = Some(messages.join(" "));
-    }
-    Ok(a)
+    None
 }
 
-/// Append a positional message, expanding `@<path>` text-file attachments the
-/// way the TS CLI combines them into the initial prompt.
-fn push_message(messages: &mut Vec<String>, arg: String) -> Result<()> {
-    if let Some(path) = arg.strip_prefix('@') {
-        if !path.is_empty() && std::path::Path::new(path).is_file() {
-            let text = std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("cannot read @{path}: {e}"))?;
-            messages.push(text);
-            return Ok(());
+/// Resolve the session-source flags (--resume/--session/--continue/--fork) to
+/// a session file to load, or None to start fresh.
+fn resolve_resume_target(
+    resume: Option<&Resume>,
+    continue_prev: bool,
+    fork: Option<&str>,
+    dir: &Path,
+) -> Result<Option<PathBuf>> {
+    if let Some(fork) = fork {
+        return match resolve_session(dir, fork) {
+            Some(p) => Ok(Some(p)),
+            None => bail!(
+                "Session \"{fork}\" not found.\nRun `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."
+            ),
+        };
+    }
+    match resume {
+        Some(Resume::Id(value)) => match resolve_session(dir, value) {
+            Some(p) => Ok(Some(p)),
+            None => bail!(
+                "Session \"{value}\" not found.\nRun `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."
+            ),
+        },
+        Some(Resume::Yes) => bail!(
+            "omp-rs: bare --resume needs the interactive session picker; pass a session id prefix or path"
+        ),
+        None => {
+            if continue_prev {
+                // TS starts a fresh session when there is no previous one.
+                Ok(runtime::newest_session(dir))
+            } else {
+                Ok(None)
+            }
         }
     }
-    messages.push(arg);
-    Ok(())
+}
+
+fn usage_err(msg: &str) -> anyhow::Error {
+    anyhow::anyhow!("{msg}\nRun `omp --help` for available flags.")
 }
 
 #[tokio::main]
-#[allow(clippy::too_many_lines)] // argv parse + dispatch; splitting would only add hops
 async fn main() -> Result<()> {
-    let args = parse_args()?;
-    let cwd = match args.cwd {
+    let mut args = parse_args()?;
+    if args.help {
+        print!("{HELP}");
+        return Ok(());
+    }
+    if args.version {
+        println!("omp-rs/{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    // Flags of subsystems omp-rs does not have: omp's exact error where one
+    // exists, otherwise an explicit unsupported message.
+    if args.goal.is_some() {
+        return Err(usage_err("--goal requires an interactive terminal (not --print or --mode)."));
+    }
+    if args.alias.is_some() && args.profile.is_none() && std::env::var_os("OMP_PROFILE").is_none() {
+        return Err(usage_err("--alias requires --profile <name> or OMP_PROFILE"));
+    }
+    if args.profile.is_some() {
+        bail!("omp-rs: --profile is not supported (no profile subsystem)");
+    }
+    if let Some(path) = args.export.clone() {
+        if !Path::new(&path).is_file() {
+            // omp's exact error for a missing export source.
+            bail!("File not found: {path}");
+        }
+        // TS exports the session to HTML and exits; the `export` subcommand
+        // owns the exporter.
+        return match subcmd::run("export", &[path]) {
+            Ok(code) => {
+                std::process::exit(code);
+            }
+            Err(e) => Err(e),
+        };
+    }
+    if args.from_claude || args.from_codex {
+        bail!("omp-rs: --from-claude/--from-codex are not supported (no importer subsystem)");
+    }
+    match args.mode.as_deref() {
+        Some("acp") | Some("rpc-ui") => {
+            bail!("omp-rs: --mode {} is not supported (no {} subsystem)", args.mode.as_deref().unwrap(), if args.mode.as_deref() == Some("acp") { "acp" } else { "rpc-ui" });
+        }
+        _ => {}
+    }
+    if !args.config.is_empty() || !args.add_dir.is_empty() {
+        eprintln!(
+            "omp-rs: --config/--add-dir parsed but their subsystems are not in omp-rs; ignored"
+        );
+    }
+
+    let mut cwd = match args.cwd {
         Some(c) => c.canonicalize()?,
         None => std::env::current_dir()?,
     };
+    // TS guard: launching in $HOME without --allow-home switches to a temp dir
+    // so sessions and tool runs never treat the home directory as a project.
+    if !args.allow_home {
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            if cwd == home.canonicalize().unwrap_or(home) {
+                eprintln!("omp-rs: started in ~; switching to a temp dir (pass --allow-home to stay)");
+                cwd = std::env::temp_dir();
+            }
+        }
+    }
+    let add_dirs: Vec<PathBuf> = args
+        .add_dir
+        .iter()
+        .map(|d| d.canonicalize().unwrap_or_else(|_| d.clone()))
+        .collect();
+    drop(add_dirs); // parsed for parity; no workspace-subsystem consumer yet
+
+    // Role model selection: expose omp's PI_*_MODEL env contract so any
+    // role-aware subsystem (task/prewalk/plan ports) picks these up.
+    for (flag, value) in [("--smol", &args.smol), ("--slow", &args.slow), ("--plan", &args.plan)] {
+        if let Some(v) = value {
+            let key = format!(
+                "OMP_RS_{}_MODEL",
+                flag.trim_start_matches("--").to_uppercase()
+            );
+            std::env::set_var(key, v);
+        }
+    }
+
     // System prompt options are assembled before model selection so
     // `--dump-system-prompt` can run without a provider.
+    let tools_csv = if args.no_tools {
+        // Restrict to nothing: the --tools filter retains only named tools.
+        Some("__none__".to_string())
+    } else {
+        args.tools_csv.clone()
+    };
     let sp_opts = sysprompt::Options {
         system_prompt: args.system_prompt.clone(),
         append_system_prompt: args.append_system_prompt.clone(),
-        tools_csv: args.tools_csv.clone(),
+        tools_csv,
         subagent: false,
         model: args.model.clone().unwrap_or_default(),
         generated_append: Vec::new(),
@@ -159,16 +263,36 @@ async fn main() -> Result<()> {
         }
         return Ok(());
     }
-    let mut selected = model::select(args.model.as_deref()).await?;
+
+    // Model reference: --model wins; a bare id is prefixed with --provider
+    // (omp's legacy `--provider` flag); --provider alone names the provider.
+    let reference = match (&args.model, &args.provider) {
+        (Some(m), Some(p)) if !m.contains('/') => Some(format!("{p}/{m}")),
+        (Some(m), _) => Some(m.clone()),
+        (None, Some(p)) => Some(p.clone()),
+        (None, None) => None,
+    };
+    let mut selected = model::select(reference.as_deref()).await?;
+    if let Some(key) = args.api_key.clone() {
+        selected.api_key = Some(key);
+    }
     if let Some(level) = args.thinking.as_deref() {
-        selected.thinking = runtime::parse_level(level)
-            .ok_or_else(|| anyhow::anyhow!("unknown thinking level: {level}"))?;
+        if level != "auto" {
+            selected.thinking = runtime::parse_level(level)
+                .ok_or_else(|| anyhow::anyhow!("unknown thinking level: {level}"))?;
+        }
     }
 
     // Extension host: hooks + tools feed agent construction, so it starts first.
     let mut extensions: Option<std::sync::Arc<ext::Extensions>> = None;
     if !args.no_extensions {
-        match ext::Extensions::start(&cwd, &args.extension).await {
+        let extra: Vec<PathBuf> = args
+            .extension
+            .iter()
+            .cloned()
+            .chain(args.hooks.iter().map(PathBuf::from))
+            .collect();
+        match ext::Extensions::start(&cwd, &extra).await {
             Ok(e) => extensions = Some(e),
             Err(e) => eprintln!("omp-rs: extensions disabled: {e:#}"),
         }
@@ -181,6 +305,11 @@ async fn main() -> Result<()> {
         agent::build_agent(&cwd, selected, extra_tools, extensions.as_ref(), &sp_opts)?;
 
     let session = persist::attach_with(&agent, &cwd, args.no_session).await;
+    // Resolve internal URLs (local://, artifact://, agent://, history://)
+    // against this session's artifacts dir.
+    if let Ok(p) = &session {
+        omp_urls::set_global_session_file(p.file());
+    }
     if let (Some(e), Ok(p)) = (extensions.as_ref(), &session) {
         let model = agent.state().await.model;
         let model_ref = format!("{}/{}", model.provider, model.id);
@@ -192,8 +321,32 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Session-source flags: --resume/--session/--continue/--fork load a
+    // previous transcript; --session-dir relocates the session store.
+    let resume_target = if args.mode.as_deref() == Some("rpc") {
+        None // the rpc runtime owns session lifecycle
+    } else {
+        let dir = sessions_dir(&cwd, args.session_dir.as_deref())?;
+        std::fs::create_dir_all(&dir).ok();
+        let target = resolve_resume_target(
+            args.resume.as_ref(),
+            args.continue_prev,
+            args.fork.as_deref(),
+            &dir,
+        )?;
+        if args.session_dir.is_some() {
+            if let Ok(p) = &session {
+                p.start_new(&cwd, args.session_dir.as_deref())?;
+            }
+        }
+        target
+    };
+
     if args.mode.as_deref() == Some("rpc") {
         let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
+        if let Some(e) = extensions.as_ref() {
+            crate::rpc::slash::set_extensions(e.clone());
+        }
         let result = match extensions.as_ref() {
             Some(e) => rpc::run_with(agent, target, cwd, persistence, Some(e.rpc_on_start())).await,
             None => rpc::run(agent, target, cwd, persistence).await,
@@ -216,20 +369,110 @@ async fn main() -> Result<()> {
         let _ = headless;
         bail!("nothing to do: pass a prompt (e.g. -p \"...\") or --mode rpc");
     };
+    let session = session.ok();
+    let session_path = session.as_ref().map(persist::Persistence::path);
+    let mode_json = args.mode.as_deref() == Some("json");
+    let print_thoughts = args.print_thoughts;
+    let images = std::mem::take(&mut args.images);
 
-    let messages = if let Ok(p) = session {
-        if let Some(e) = extensions.as_ref() {
-            e.session_start().await;
-        }
-        if let Some(f) = p.file() {
-            eprintln!("session: {}", f.display());
-        }
-        match extensions.as_ref() {
-            Some(e) => run_print_with_extensions(agent, target, cwd, p, &prompt, Some(e)).await?,
-            None => runtime::run_print(agent, target, cwd, p, &prompt).await?,
+    let run = run_print(
+        agent,
+        target,
+        cwd,
+        session,
+        resume_target,
+        prompt,
+        images,
+        extensions.as_ref(),
+    );
+    let messages = if let Some(secs) = args.max_time {
+        match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), run).await {
+            Ok(r) => r?,
+            Err(_) => {
+                if let Some(e) = &extensions {
+                    e.shutdown().await;
+                }
+                eprintln!("omp-rs: stopped after --max-time {:?}", args.max_time_raw.as_deref().unwrap_or(""));
+                std::process::exit(124);
+            }
         }
     } else {
-        let prompt = match extensions.as_ref() {
+        run.await?
+    };
+    if let Some(e) = &extensions {
+        e.shutdown().await;
+    }
+
+    if mode_json {
+        // TS json mode: the session transcript as JSON lines on stdout.
+        if let Some(p) = &session_path {
+            if let Ok(text) = std::fs::read_to_string(p) {
+                print!("{text}");
+            }
+        }
+        return Ok(());
+    }
+    match agent::last_assistant(&messages) {
+        Some((_, Some(err))) => {
+            eprintln!("error: {err}");
+            std::process::exit(1);
+        }
+        Some((text, None)) => {
+            if print_thoughts {
+                if let Some(thinking) = last_thinking(&messages) {
+                    println!("{thinking}");
+                }
+            }
+            println!("{text}");
+        }
+        None => bail!("no assistant response"),
+    }
+    Ok(())
+}
+
+/// Thinking blocks of the last assistant message (`--print-thoughts`).
+fn last_thinking(messages: &[pa_agent::types::AgentMessage]) -> Option<String> {
+    use pa_agent::types::{AgentMessage};
+    use pa_agent::types::{AssistantContent, Message};
+    messages.iter().rev().find_map(|m| match m {
+        AgentMessage::Standard(Message::Assistant(a)) => {
+            let thinking = a
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    AssistantContent::Thinking(t) => Some(t.thinking.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (!thinking.is_empty()).then_some(thinking)
+        }
+        _ => None,
+    })
+}
+
+/// Print-mode run: extension lifecycle hook points, optional session resume
+/// (`--resume`/`--continue`/`--fork`), then the single prompt.
+async fn run_print(
+    agent: pa_agent::agent::Agent,
+    target: agent::Target,
+    cwd: PathBuf,
+    persist: Option<persist::Persistence>,
+    resume: Option<PathBuf>,
+    prompt: String,
+    images: Vec<pa_agent::types::ImageContent>,
+    extensions: Option<&std::sync::Arc<ext::Extensions>>,
+) -> Result<Vec<pa_agent::types::AgentMessage>> {
+    let Some(persist) = persist else {
+        // No session persistence: replaying a transcript is impossible; a
+        // direct one-shot prompt matches the old ephemeral behavior.
+        if resume.is_some() {
+            eprintln!("omp-rs: resume ignored: session persistence unavailable");
+        }
+        if !images.is_empty() {
+            eprintln!("omp-rs: image attachments require session persistence; dropped");
+        }
+        let prompt = match extensions {
             Some(e) => match e.before_prompt(&agent, &prompt).await {
                 Ok(ext::PromptGate::Run(text)) => text,
                 Ok(ext::PromptGate::Handled) => String::new(),
@@ -238,117 +481,56 @@ async fn main() -> Result<()> {
                     prompt.clone()
                 }
             },
-            None => prompt.clone(),
+            None => prompt,
         };
         if !prompt.is_empty() {
             agent.prompt(prompt.as_str()).await?;
         }
-        agent.state().await.messages
+        return Ok(agent.state().await.messages);
     };
-    if let Some(e) = &extensions {
-        e.shutdown().await;
+    if let Some(e) = extensions {
+        e.session_start().await;
     }
-    match agent::last_assistant(&messages) {
-        Some((_, Some(err))) => {
-            eprintln!("error: {err}");
-            std::process::exit(1);
-        }
-        Some((text, None)) => println!("{text}"),
-        None => bail!("no assistant response"),
+    if let Some(f) = persist.file() {
+        eprintln!("session: {}", f.display());
     }
-    Ok(())
-}
-
-/// Print-mode run with the extension host attached: runtime hook points
-/// (serve loop, lifecycle forwarding) plus the pre-prompt lifecycle events.
-async fn run_print_with_extensions(
-    agent: pa_agent::agent::Agent,
-    target: agent::Target,
-    cwd: PathBuf,
-    persist: persist::Persistence,
-    prompt: &str,
-    extensions: Option<&std::sync::Arc<ext::Extensions>>,
-) -> Result<Vec<pa_agent::types::AgentMessage>> {
     let agent = std::sync::Arc::new(agent);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     drop(rx);
     let rt = runtime::Runtime::start(agent.clone(), target, cwd, persist, tx).await;
     if let Some(e) = extensions {
         e.attach(rt.clone());
-        let prompt = match e.before_prompt(&agent, prompt).await {
+        crate::rpc::slash::set_extensions(e.clone());
+    }
+    if let Some(path) = resume {
+        rt.load_session(&path, None).await?;
+    }
+    // Slash-command dispatch in print mode (TS runs these through the same
+    // dispatcher as the TUI); a matched command handles or rewrites the prompt.
+    let mut prompt = prompt;
+    match crate::rpc::slash::try_dispatch(&rt, &prompt).await {
+        crate::rpc::slash::Outcome::Handled { .. } | crate::rpc::slash::Outcome::ExtensionHandled => {
+            prompt = String::new()
+        }
+        crate::rpc::slash::Outcome::Prompt(expanded) => prompt = expanded,
+        crate::rpc::slash::Outcome::NotSlash => {}
+    }
+    let prompt = match extensions {
+        Some(e) => match e.before_prompt(&agent, &prompt).await {
             Ok(ext::PromptGate::Run(text)) => text,
             Ok(ext::PromptGate::Handled) => String::new(),
             Err(e) => {
                 eprintln!("omp-rs: extension input: {e:#}");
-                prompt.to_string()
+                prompt.clone()
             }
-        };
-        if !prompt.is_empty() {
-            rt.prompt(None, &prompt, None, Vec::new())
-                .await
-                .map_err(|e| anyhow::anyhow!(e.message))?;
-        }
-    } else {
-        rt.prompt(None, prompt, None, Vec::new())
+        },
+        None => prompt,
+    };
+    if !prompt.is_empty() || !images.is_empty() {
+        rt.prompt(None, &prompt, None, images)
             .await
             .map_err(|e| anyhow::anyhow!(e.message))?;
     }
     rt.wait_settled().await;
     Ok(agent.state().await.messages)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parse(argv: &[&str]) -> Result<Args> {
-        parse_from(argv.iter().copied().map(ToString::to_string))
-    }
-
-    /// TS parity: `-p` is a boolean flag; the prompt is positional, so flags
-    /// may follow it (`omp-rs -p --no-session --model X "do X"`).
-    #[test]
-    fn print_flag_is_boolean_and_prompt_is_positional() {
-        let a = parse(&["-p", "--no-session", "--model", "zai/glm-5.3-flash", "do X"]).unwrap();
-        assert!(a.print);
-        assert!(a.no_session);
-        assert_eq!(a.model.as_deref(), Some("zai/glm-5.3-flash"));
-        assert_eq!(a.prompt.as_deref(), Some("do X"));
-    }
-
-    /// Old `-p "prompt"` invocation parses identically under flag semantics.
-    #[test]
-    fn print_flag_with_direct_prompt_still_works() {
-        let a = parse(&["-p", "hello world"]).unwrap();
-        assert!(a.print);
-        assert_eq!(a.prompt.as_deref(), Some("hello world"));
-    }
-
-    #[test]
-    fn multiple_positional_messages_are_joined() {
-        let a = parse(&["-p", "first", "second"]).unwrap();
-        assert_eq!(a.prompt.as_deref(), Some("first second"));
-    }
-
-    #[test]
-    fn at_file_expands_into_prompt() {
-        let dir = std::env::temp_dir();
-        let f = dir.join(format!("omp-rs-parse-test-{}", std::process::id()));
-        std::fs::write(&f, "file contents\n").unwrap();
-        let arg = format!("@{}", f.display());
-        let a = parse(&["-p", &arg, "tail"]).unwrap();
-        assert_eq!(a.prompt.as_deref(), Some("file contents\n tail"));
-        std::fs::remove_file(&f).unwrap();
-    }
-
-    #[test]
-    fn double_dash_ends_flag_parsing() {
-        let a = parse(&["-p", "--", "--not-a-flag"]).unwrap();
-        assert_eq!(a.prompt.as_deref(), Some("--not-a-flag"));
-    }
-
-    #[test]
-    fn unknown_flag_still_errors() {
-        assert!(parse(&["--nosession", "x"]).is_err());
-    }
 }

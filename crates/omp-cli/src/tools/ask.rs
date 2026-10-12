@@ -11,10 +11,11 @@
 //! Not ported yet: the select/editor fallback used when the host never opts in
 //! to the rich dialog (`set_ask_dialog`), images in answers, and `chat` results.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use pa_agent::abort::AbortSignal;
+use pa_agent::abort::{is_abort_error, race_with_abort, AbortSignal};
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
 use pa_agent::BoxFut;
 use serde::Deserialize;
@@ -31,7 +32,29 @@ const DESCRIPTION: &str = r#"Ask only for materially different tradeoffs the use
 /// Labels the runtime adds to every question; options may not reuse them.
 const RESERVED_LABELS: [&str; 3] = ["Other (type your own)", "Chat about this", "Next →"];
 
-/// Host transport for the rich ask dialog.
+/// Rows the runtime appends to the degraded select prompts (omp `OTHER_OPTION`
+/// and `getDoneOptionLabel()` with the default theme's success symbol).
+const OTHER_OPTION_LABEL: &str = "Other (type your own)";
+const DONE_SELECTING_LABEL: &str = "\u{2714} Done selecting";
+const RECOMMENDED_SUFFIX: &str = " (Recommended)";
+
+/// One selectable row in the degraded `select` prompt. The host renders the
+/// fields; the tool only forwards them.
+#[allow(dead_code)] // consumed by the host UI implementation
+#[derive(Debug, Clone)]
+pub struct SelectOption {
+    pub label: String,
+    pub description: Option<String>,
+}
+
+fn select_option(label: &str) -> SelectOption {
+    SelectOption {
+        label: label.to_string(),
+        description: None,
+    }
+}
+
+/// Host transport for the rich ask dialog (omp `extensionUi`).
 pub trait AskUi: Send + Sync {
     /// Present `questions` (the frame's `questions` array) with an optional
     /// deadline in milliseconds, and resolve with the answer frame: the
@@ -42,6 +65,35 @@ pub trait AskUi: Send + Sync {
         questions: Value,
         timeout_ms: Option<u64>,
     ) -> BoxFut<'static, Result<Option<Value>>>;
+
+    /// Whether the host provides the rich ask dialog (omp
+    /// `extensionUi.askDialog`). When `false`, the tool degrades to the
+    /// [`AskUi::select`]/[`AskUi::editor`] prompts.
+    fn has_ask_dialog(&self) -> bool {
+        true
+    }
+
+    /// Show a select prompt; resolves with the picked label, `Ok(None)` on
+    /// cancel. `checked` are the pre-checked option indices (multi-select);
+    /// `initial_index` is the cursor start.
+    fn select(
+        &self,
+        prompt: String,
+        options: Vec<SelectOption>,
+        multi: bool,
+        checked: Vec<usize>,
+        initial_index: Option<usize>,
+    ) -> BoxFut<'static, Result<Option<String>>> {
+        let _ = (prompt, options, multi, checked, initial_index);
+        Box::pin(async { Err(anyhow!("select is not supported by this host")) })
+    }
+
+    /// Show a single-line editor prompt; resolves with the typed text,
+    /// `Ok(None)` on cancel.
+    fn editor(&self, title: String) -> BoxFut<'static, Result<Option<String>>> {
+        let _ = title;
+        Box::pin(async { Err(anyhow!("editor is not supported by this host")) })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -410,8 +462,229 @@ fn cancelled() -> anyhow::Error {
     anyhow!("Ask tool was cancelled by the user")
 }
 
+/// Navigation controls for the degraded prompts (omp `NavigationControls`).
+/// Arrow-key back/forward navigation is not supported by the [`AskUi`]
+/// `select` seam, so degraded multi-question runs proceed sequentially.
+#[derive(Debug, Clone, Default)]
+struct Navigation {
+    allow_forward: bool,
+    progress: Option<String>,
+}
+
+/// Result of one degraded-prompt question (omp `SelectionResult`).
+#[derive(Debug, Clone, Default)]
+struct Selection {
+    selected: Vec<String>,
+    custom: Option<String>,
+    cancelled: bool,
+}
+
+/// omp's clamping of the `recommended` index onto the option list; the count
+/// is tiny, so the casts cannot lose information.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn clamp_recommended(recommended: f64, option_count: usize) -> Option<usize> {
+    let last = option_count.checked_sub(1)?;
+    (recommended.is_finite() && recommended >= 0.0 && recommended <= last as f64)
+        .then_some(recommended as usize)
+}
+
+/// The label omp shows for a fallback option (recommended index badged).
+fn display_label(option: &OptionItem, recommended: Option<usize>, index: usize) -> String {
+    if recommended == Some(index) && !option.label.ends_with(RECOMMENDED_SUFFIX) {
+        format!("{}{RECOMMENDED_SUFFIX}", option.label)
+    } else {
+        option.label.clone()
+    }
+}
+
 impl AskTool {
-    async fn run(&self, raw: Value) -> Result<AgentToolResult> {
+    /// omp `askSingleQuestion` on the degraded select/editor path. The
+    /// `ask.timeout` setting is not ported, so `timedOut` stays false and the
+    /// timeout auto-selection never triggers. Multi-select loops until the
+    /// user picks the "Done selecting" row, custom input, or cancels.
+    #[allow(clippy::too_many_lines)] // faithful port of omp's branching ask loop
+    async fn ask_single(
+        ui: &dyn AskUi,
+        question: &QuestionItem,
+        signal: &AbortSignal,
+        previous: Option<&QuestionResult>,
+        mut navigation: Navigation,
+    ) -> Result<Selection> {
+        let multi = question.multi.unwrap_or(false);
+        let mut selected: Vec<String> = previous.map(|p| p.selected.clone()).unwrap_or_default();
+        let mut custom: Option<String> = previous.and_then(|p| p.custom.clone());
+        let base_prompt = match navigation.progress.take() {
+            Some(progress) => format!("{} ({progress})", question.question),
+            None => question.question.clone(),
+        };
+        let recommended = question
+            .recommended
+            .and_then(|r| clamp_recommended(r, question.options.len()));
+        loop {
+            let prompt = if multi && !selected.is_empty() {
+                format!("({} selected) {base_prompt}", selected.len())
+            } else {
+                base_prompt.clone()
+            };
+            if multi {
+                let mut options: Vec<SelectOption> = question
+                    .options
+                    .iter()
+                    .map(|o| SelectOption {
+                        label: o.label.clone(),
+                        description: o.description.clone(),
+                    })
+                    .collect();
+                if !navigation.allow_forward && !selected.is_empty() {
+                    options.push(select_option(DONE_SELECTING_LABEL));
+                }
+                options.push(select_option(OTHER_OPTION_LABEL));
+                let checked: Vec<usize> = question
+                    .options
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, o)| selected.contains(&o.label))
+                    .map(|(i, _)| i)
+                    .collect();
+                let fut = ui.select(prompt.clone(), options, true, checked, None);
+                match Self::race_static(fut, signal).await? {
+                    None => {
+                        return Ok(Selection {
+                            selected,
+                            custom,
+                            cancelled: true,
+                        });
+                    }
+                    Some(choice) if choice == DONE_SELECTING_LABEL => break,
+                    Some(choice) if choice == OTHER_OPTION_LABEL => {
+                        let fut = ui.editor(prompt);
+                        if let Some(input) = Self::race_static(fut, signal).await? {
+                            custom = Some(input);
+                            break;
+                        }
+                    }
+                    Some(label) => {
+                        if let Some(pos) = selected.iter().position(|s| *s == label) {
+                            selected.remove(pos);
+                        } else {
+                            selected.push(label);
+                        }
+                    }
+                }
+            } else {
+                let mut options: Vec<SelectOption> = question
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| SelectOption {
+                        label: display_label(o, recommended, i),
+                        description: o.description.clone(),
+                    })
+                    .collect();
+                let initial = selected
+                    .first()
+                    .and_then(|first| question.options.iter().position(|o| &o.label == first))
+                    .or(if custom.is_some() {
+                        Some(question.options.len())
+                    } else {
+                        recommended
+                    });
+                options.push(select_option(OTHER_OPTION_LABEL));
+                let fut = ui.select(prompt, options, false, Vec::new(), initial);
+                match Self::race_static(fut, signal).await? {
+                    None => {
+                        return Ok(Selection {
+                            selected,
+                            custom,
+                            cancelled: true,
+                        });
+                    }
+                    Some(choice) if choice == OTHER_OPTION_LABEL => {
+                        let fut = ui.editor(base_prompt.clone());
+                        if let Some(input) = Self::race_static(fut, signal).await? {
+                            custom = Some(input);
+                            selected.clear();
+                            break;
+                        }
+                    }
+                    Some(display) => {
+                        let picked = question
+                            .options
+                            .iter()
+                            .enumerate()
+                            .find(|(i, o)| display_label(o, recommended, *i) == display)
+                            .map(|(_, o)| o.label.clone())
+                            .or_else(|| {
+                                display
+                                    .strip_suffix(RECOMMENDED_SUFFIX)
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or(display);
+                        selected = vec![picked];
+                        custom = None;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(Selection {
+            selected,
+            custom,
+            cancelled: false,
+        })
+    }
+
+    /// Await `fut`, mapping an abort into omp's `ToolAbortError` message.
+    async fn race_static<T>(
+        fut: impl Future<Output = Result<T>>,
+        signal: &AbortSignal,
+    ) -> Result<T> {
+        match race_with_abort(fut, signal).await {
+            Ok(inner) => inner,
+            Err(err) if is_abort_error(&err) => Err(anyhow!("Ask input was cancelled")),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Degraded path (omp's non-`askDialog` branch): sequential per-question
+    /// select prompts, multi-select via the "Done selecting" loop.
+    async fn run_fallback(
+        &self,
+        ui: &dyn AskUi,
+        questions: &[QuestionItem],
+        signal: &AbortSignal,
+    ) -> Result<AgentToolResult> {
+        let mut results: Vec<QuestionResult> = Vec::with_capacity(questions.len());
+        for (index, question) in questions.iter().enumerate() {
+            let selection = Self::ask_single(
+                ui,
+                question,
+                signal,
+                results.get(index),
+                Navigation::default(),
+            )
+            .await?;
+            if selection.cancelled {
+                return Err(cancelled());
+            }
+            results.push(QuestionResult {
+                id: question.id.clone(),
+                question: question.question.clone(),
+                options: question.options.iter().map(|o| o.label.clone()).collect(),
+                multi: question.multi.unwrap_or(false),
+                selected: selection.selected,
+                custom: selection.custom,
+                timed_out: false,
+            });
+        }
+        render_results(&results)
+    }
+
+    async fn run(&self, raw: Value, signal: &AbortSignal) -> Result<AgentToolResult> {
         let Some(ui) = self.ui.clone() else {
             return Err(anyhow!("Ask tool requires interactive mode"));
         };
@@ -419,46 +692,52 @@ impl AskTool {
         if let Some(text) = validate_questions(&params.questions) {
             return Ok(AgentToolResult::text(text));
         }
+        // Hosts without the rich dialog degrade to the select/editor prompts
+        // (omp checks `extensionUi.askDialog` presence).
+        if !ui.has_ask_dialog() {
+            return self.run_fallback(ui.as_ref(), &params.questions, signal).await;
+        }
         let frame: Vec<Value> = params.questions.iter().map(frame_question).collect();
-        let response = ui.ask(Value::Array(frame), None).await?;
+        let fut = ui.ask(Value::Array(frame), None);
+        let response = Self::race_static(fut, signal).await?;
         let Some(results) = results_from_response(&params.questions, response)? else {
             return Err(cancelled());
         };
-        if results.len() != params.questions.len() {
-            return Err(anyhow!(
-                "Ask dialog returned a result count that does not match the requested questions"
-            ));
-        }
-        if let [single] = results.as_slice() {
-            if !single.timed_out
-                && !single.multi
-                && single.selected.is_empty()
-                && single.custom.is_none()
-            {
-                return Err(cancelled());
-            }
-            let text = format_single_response(single);
-            let details = json!({
-                "question": single.question,
-                "options": single.options,
-                "multi": single.multi,
-                "selectedOptions": single.selected,
-                "customInput": single.custom,
-                "timedOut": single.timed_out.then_some(true),
-            });
-            return Ok(result_with_text(text, details));
-        }
-        let text = format!(
-            "User answers:\n{}",
-            results
-                .iter()
-                .map(format_question_result)
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
-        let details = json!({"results": results.iter().map(result_json).collect::<Vec<_>>()});
-        Ok(result_with_text(text, details))
+        render_results(&results)
     }
+}
+
+/// Text + details for a finished ask round (rich dialog and degraded path).
+fn render_results(results: &[QuestionResult]) -> Result<AgentToolResult> {
+    if let [single] = results {
+        if !single.timed_out
+            && !single.multi
+            && single.selected.is_empty()
+            && single.custom.is_none()
+        {
+            return Err(cancelled());
+        }
+        let text = format_single_response(single);
+        let details = json!({
+            "question": single.question,
+            "options": single.options,
+            "multi": single.multi,
+            "selectedOptions": single.selected,
+            "customInput": single.custom,
+            "timedOut": single.timed_out.then_some(true),
+        });
+        return Ok(result_with_text(text, details));
+    }
+    let text = format!(
+        "User answers:\n{}",
+        results
+            .iter()
+            .map(format_question_result)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let details = json!({"results": results.iter().map(result_json).collect::<Vec<_>>()});
+    Ok(result_with_text(text, details))
 }
 
 fn result_with_text(text: String, details: Value) -> AgentToolResult {
@@ -496,10 +775,10 @@ impl AgentTool for AskTool {
         self: Arc<Self>,
         _tool_call_id: String,
         params: Value,
-        _signal: AbortSignal,
+        signal: AbortSignal,
         _on_update: AgentToolUpdateCallback,
     ) -> BoxFut<'static, Result<AgentToolResult>> {
-        Box::pin(async move { self.run(params).await })
+        Box::pin(async move { self.run(params, &signal).await })
     }
 }
 
@@ -524,6 +803,8 @@ pub fn schema() -> Value {
 #[cfg(test)]
 mod tests {
     use parking_lot::Mutex;
+
+    use pa_agent::abort::AbortController;
 
     use super::*;
 
@@ -571,7 +852,7 @@ mod tests {
             schema: schema(),
             ui: None,
         }
-        .run(storage_args())
+        .run(storage_args(), &AbortSignal::never())
         .await
         .unwrap_err();
         assert_eq!(err.to_string(), "Ask tool requires interactive mode");
@@ -582,7 +863,7 @@ mod tests {
         let (ui, tool) = fake(Some(
             json!({"answers": [{"id": "storage", "selectedOptions": ["SQLite"]}]}),
         ));
-        let result = tool.run(storage_args()).await.unwrap();
+        let result = tool.run(storage_args(), &AbortSignal::never()).await.unwrap();
         assert_eq!(
             result.content,
             vec![ToolResultContent::text("User selected: SQLite")]
@@ -605,14 +886,14 @@ mod tests {
     async fn cancel_and_empty_single_select_are_cancellations() {
         let (_, tool) = fake(Some(json!({"cancelled": true})));
         assert_eq!(
-            tool.run(storage_args()).await.unwrap_err().to_string(),
+            tool.run(storage_args(), &AbortSignal::never()).await.unwrap_err().to_string(),
             "Ask tool was cancelled by the user"
         );
         let (_, tool) = fake(Some(
             json!({"answers": [{"id": "storage", "selectedOptions": []}]}),
         ));
         assert_eq!(
-            tool.run(storage_args()).await.unwrap_err().to_string(),
+            tool.run(storage_args(), &AbortSignal::never()).await.unwrap_err().to_string(),
             "Ask tool was cancelled by the user"
         );
     }
@@ -622,7 +903,7 @@ mod tests {
         let (_, tool) = fake(Some(json!({"cancelled": true, "timedOut": true})));
         let mut args = storage_args();
         args["questions"][0]["recommended"] = json!(1);
-        let result = tool.run(args).await.unwrap();
+        let result = tool.run(args, &AbortSignal::never()).await.unwrap();
         assert_eq!(
             result.content,
             vec![ToolResultContent::text(
@@ -643,7 +924,7 @@ mod tests {
             {"id": "b", "selectedOptions": ["p", "q"]}
         ]});
         let (_, tool) = fake(Some(response));
-        let result = tool.run(args).await.unwrap();
+        let result = tool.run(args, &AbortSignal::never()).await.unwrap();
         assert_eq!(
             result.content,
             vec![ToolResultContent::text(
@@ -658,13 +939,13 @@ mod tests {
         let (_, tool) = fake(Some(
             json!({"answers": [{"id": "storage", "selectedOptions": ["Nope"]}]}),
         ));
-        let err = tool.run(storage_args()).await.unwrap_err().to_string();
+        let err = tool.run(storage_args(), &AbortSignal::never()).await.unwrap_err().to_string();
         assert_eq!(
             err,
             "Ask dialog answer \"storage\" selected unknown option \"Nope\""
         );
         let (_, tool) = fake(Some(json!({"answers": []})));
-        assert!(tool.run(storage_args()).await.is_err());
+        assert!(tool.run(storage_args(), &AbortSignal::never()).await.is_err());
     }
 
     #[tokio::test]
@@ -672,17 +953,133 @@ mod tests {
         let (_, tool) = fake(None);
         let reserved =
             json!({"questions": [{"id": "a", "question": "?", "options": [{"label": "Next →"}]}]});
-        assert!(tool.run(reserved).await.is_err());
+        assert!(tool.run(reserved, &AbortSignal::never()).await.is_err());
         let dup = json!({"questions": [
             {"id": "a", "question": "?", "options": [{"label": "x"}]},
             {"id": "a", "question": "?", "options": [{"label": "y"}]}
         ]});
-        let result = tool.run(dup).await.unwrap();
+        let result = tool.run(dup, &AbortSignal::never()).await.unwrap();
         assert_eq!(
             result.content,
             vec![ToolResultContent::text(
                 "Error: question ids must be unique: \"a\""
             )]
         );
+    }
+
+    /// Degraded-path double: scripted select/editor answers, no rich dialog.
+    struct ScriptedUi {
+        selects: Mutex<Vec<Option<&'static str>>>,
+        editors: Mutex<Vec<Option<&'static str>>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl AskUi for ScriptedUi {
+        fn ask(
+            &self,
+            _questions: Value,
+            _timeout_ms: Option<u64>,
+        ) -> BoxFut<'static, Result<Option<Value>>> {
+            Box::pin(async { Err(anyhow!("rich dialog not expected")) })
+        }
+        fn has_ask_dialog(&self) -> bool {
+            false
+        }
+        fn select(
+            &self,
+            prompt: String,
+            _options: Vec<SelectOption>,
+            _multi: bool,
+            _checked: Vec<usize>,
+            _initial_index: Option<usize>,
+        ) -> BoxFut<'static, Result<Option<String>>> {
+            self.calls.lock().push(prompt);
+            let next = self.selects.lock().pop();
+            Box::pin(async move { Ok(next.flatten().map(str::to_string)) })
+        }
+        fn editor(&self, title: String) -> BoxFut<'static, Result<Option<String>>> {
+            self.calls.lock().push(title);
+            let next = self.editors.lock().pop();
+            Box::pin(async move { Ok(next.flatten().map(str::to_string)) })
+        }
+    }
+
+    fn scripted(
+        selects: Vec<Option<&'static str>>,
+        editors: Vec<Option<&'static str>>,
+    ) -> AskTool {
+        AskTool {
+            schema: schema(),
+            ui: Some(Arc::new(ScriptedUi {
+                selects: Mutex::new(selects.into_iter().rev().collect()),
+                editors: Mutex::new(editors.into_iter().rev().collect()),
+                calls: Mutex::new(Vec::new()),
+            })),
+        }
+    }
+
+    fn multi_args() -> Value {
+        json!({"questions": [{
+            "id": "m", "question": "Pick", "multi": true,
+            "options": [{"label": "a"}, {"label": "b"}]
+        }]})
+    }
+
+    #[tokio::test]
+    async fn degraded_multi_select_loops_until_done() {
+        let tool = scripted(vec![Some("a"), Some("b"), Some("\u{2714} Done selecting")], vec![]);
+        let result = tool.run(multi_args(), &AbortSignal::never()).await.unwrap();
+        assert_eq!(
+            result.content,
+            vec![ToolResultContent::text("User selected: a, b")]
+        );
+        assert_eq!(result.details["selectedOptions"], json!(["a", "b"]));
+    }
+
+    #[tokio::test]
+    async fn degraded_multi_select_custom_input_ends_loop() {
+        let tool = scripted(vec![Some("Other (type your own)")], vec![Some("write it")]);
+        let result = tool.run(multi_args(), &AbortSignal::never()).await.unwrap();
+        assert_eq!(result.details["customInput"], json!("write it"));
+    }
+
+    #[tokio::test]
+    async fn degraded_select_cancel_is_error() {
+        let tool = scripted(vec![None], vec![]);
+        let err = tool
+            .run(multi_args(), &AbortSignal::never())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Ask tool was cancelled by the user");
+    }
+
+    #[tokio::test]
+    async fn degraded_single_select_maps_recommended_suffix_back() {
+        let tool = AskTool {
+            schema: schema(),
+            ui: Some(Arc::new(ScriptedUi {
+                selects: Mutex::new(vec![Some("b (Recommended)")]),
+                editors: Mutex::new(Vec::new()),
+                calls: Mutex::new(Vec::new()),
+            })),
+        };
+        let args = json!({"questions": [{
+            "id": "s", "question": "Pick", "recommended": 1,
+            "options": [{"label": "a"}, {"label": "b"}]
+        }]});
+        let result = tool.run(args, &AbortSignal::never()).await.unwrap();
+        assert_eq!(result.details["selectedOptions"], json!(["b"]));
+    }
+
+    #[tokio::test]
+    async fn abort_while_waiting_is_reported_as_cancelled_input() {
+        let controller = AbortController::new();
+        controller.abort();
+        let tool = scripted(vec![Some("a")], vec![]);
+        let err = tool
+            .run(multi_args(), &controller.signal())
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "Ask input was cancelled");
     }
 }

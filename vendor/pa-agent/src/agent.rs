@@ -698,16 +698,22 @@ impl AgentInner {
     }
 
     /// Drains queued steering/follow-up messages as a run. Returns whether
-    /// a run was started.
-    async fn run_queued_messages(self: &Arc<Self>) -> anyhow::Result<bool> {
+    /// a run was started. `started` fires once the run registers (a dropped
+    /// receiver means the run never started).
+    async fn run_queued_messages(
+        self: &Arc<Self>,
+        started: Option<tokio::sync::oneshot::Sender<()>>,
+    ) -> anyhow::Result<bool> {
         let queued_steering = self.steering_queue.lock().unwrap().drain();
         if !queued_steering.is_empty() {
-            self.run_prompt_messages(queued_steering, true).await?;
+            self.run_prompt_messages_with_start_signal(queued_steering, true, started)
+                .await?;
             return Ok(true);
         }
         let queued_follow_ups = self.follow_up_queue.lock().unwrap().drain();
         if !queued_follow_ups.is_empty() {
-            self.run_prompt_messages(queued_follow_ups, false).await?;
+            self.run_prompt_messages_with_start_signal(queued_follow_ups, false, started)
+                .await?;
             return Ok(true);
         }
         Ok(false)
@@ -895,6 +901,11 @@ impl Agent {
 
     pub async fn set_tools(&self, tools: Vec<Arc<dyn AgentTool>>) {
         self.inner.shared.lock().await.state.tools = tools;
+    }
+
+    /// Current tool list (read-modify-write with [`Agent::set_tools`]).
+    pub async fn tools(&self) -> Vec<Arc<dyn AgentTool>> {
+        self.inner.shared.lock().await.state.tools.clone()
     }
 
     pub async fn set_messages(&self, messages: Vec<AgentMessage>) {
@@ -1183,6 +1194,49 @@ impl Agent {
             .expect("a dropped start signal answers with the refusal"))
     }
 
+    /// [`Self::continue_run`] that returns once the queued-message run has
+    /// registered, letting the caller act on the live run (e.g. propagate an
+    /// abort into it). Fails the same way as [`Self::continue_run`] when there
+    /// is nothing to continue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`AgentContinueError`] in `anyhow::Error`, or an error when
+    /// the queued run never started.
+    pub async fn continue_run_until_accepted(&self) -> anyhow::Result<()> {
+        let queued_only = {
+            let shared = self.inner.shared.lock().await;
+            let last = shared.state.messages.last();
+            match last {
+                None => true,
+                Some(m) => matches!(m.role(), "assistant" | "custom"),
+            }
+        };
+        if !queued_only {
+            return self.continue_run().await;
+        }
+        if !self.has_queued_messages() {
+            return Err(anyhow::Error::new(AgentContinueError::new(
+                AgentContinueErrorCode::NothingToContinue,
+                "No messages to continue from",
+            )));
+        }
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (failed_tx, failed_rx) = tokio::sync::oneshot::channel::<anyhow::Error>();
+        let inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            if let Err(error) = inner.run_queued_messages(Some(started_tx)).await {
+                let _ = failed_tx.send(error);
+            }
+        });
+        if started_rx.await.is_ok() {
+            return Ok(());
+        }
+        Err(failed_rx
+            .await
+            .unwrap_or_else(|_| anyhow::anyhow!("queued run failed to start")))
+    }
+
     /// Continue from the current context.
     ///
     /// Downcast failures with `error.downcast_ref::<AgentContinueError>()`.
@@ -1209,7 +1263,7 @@ impl Agent {
         };
 
         let Some(last_message) = last_message else {
-            if self.inner.run_queued_messages().await? {
+            if self.inner.run_queued_messages(None).await? {
                 return Ok(());
             }
             return Err(anyhow::Error::new(AgentContinueError::new(
@@ -1220,7 +1274,7 @@ impl Agent {
 
         let role = last_message.role().to_string();
         if role == "assistant" {
-            if self.inner.run_queued_messages().await? {
+            if self.inner.run_queued_messages(None).await? {
                 return Ok(());
             }
             return Err(anyhow::Error::new(AgentContinueError::new(
@@ -1229,7 +1283,7 @@ impl Agent {
             )));
         }
 
-        if role == "custom" && self.inner.run_queued_messages().await? {
+        if role == "custom" && self.inner.run_queued_messages(None).await? {
             return Ok(());
         }
 

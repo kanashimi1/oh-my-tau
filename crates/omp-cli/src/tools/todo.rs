@@ -630,10 +630,10 @@ fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> S
 /// Rebuild the todo phases from transcript entries (omp
 /// `getLatestTodoPhasesFromEntries`): the latest successful, state-changing
 /// `todo` tool result (or `user_todo_edit` custom entry) on the branch.
-/// Entries are the JSON session entries in branch order.
+/// Entries are the JSON session entries in branch order. The runtime calls
+/// this on session load/fork and builds the tool via [`tool_with_session`].
 #[must_use]
-#[allow(dead_code)] // transcript->todo rebuild (resume path), exercised by tests
-fn phases_from_entries(entries: &[Value]) -> Vec<TodoPhase> {
+pub fn phases_from_entries(entries: &[Value]) -> Vec<TodoPhase> {
     for entry in entries.iter().rev() {
         if let Some(phases) = canonical_phases(entry) {
             return phases;
@@ -679,6 +679,8 @@ fn parse_phases(value: &Value) -> Option<Vec<TodoPhase>> {
 pub struct TodoTool {
     schema: Value,
     state: Mutex<Vec<TodoPhase>>,
+    /// omp reports `"session"` when a session file exists, `"memory"` otherwise.
+    storage: &'static str,
 }
 
 impl TodoTool {
@@ -686,9 +688,21 @@ impl TodoTool {
     /// transcript with [`phases_from_entries`] on resume).
     #[must_use]
     pub fn with_phases(phases: Vec<TodoPhase>) -> Self {
+        Self::with_session(phases, Some("session"))
+    }
+
+    /// A tool with explicit storage reporting: `session_file` mirrors omp's
+    /// `session.getSessionFile()` (`Some` → `"session"`, `None` → `"memory"`).
+    #[must_use]
+    pub fn with_session(phases: Vec<TodoPhase>, session_file: Option<&str>) -> Self {
         Self {
             schema: schema(),
             state: Mutex::new(phases),
+            storage: if session_file.is_some() {
+                "session"
+            } else {
+                "memory"
+            },
         }
     }
 
@@ -725,7 +739,7 @@ impl TodoTool {
         let mut details = json!({
             "op": entry.op.as_str(),
             "phases": effective,
-            "storage": "session",
+            "storage": self.storage,
         });
         if !completed.is_empty() {
             details["completedTasks"] = json!(completed);
@@ -848,6 +862,33 @@ mod tests {
             }]
         );
         assert_eq!(phases_from_entries(&entries[..2])[0].name, "Old");
+    }
+
+    #[test]
+    fn storage_reflects_session_file_presence() {
+        let init = json!({"op": "init", "list": [{"phase": "P", "items": ["a"]}]});
+        let with_file = TodoTool::with_session(Vec::new(), Some("/tmp/s.jsonl"));
+        assert_eq!(with_file.run(&init).unwrap().details["storage"], json!("session"));
+        let no_file = TodoTool::with_session(Vec::new(), None);
+        assert_eq!(no_file.run(&init).unwrap().details["storage"], json!("memory"));
+    }
+
+    #[test]
+    fn rehydrated_tool_continues_from_transcript_state() {
+        let entries = vec![
+            json!({"type": "message", "message": {"role": "toolResult", "toolName": "todo", "isError": false,
+                "details": {"op": "init", "phases": [{"name": "P", "tasks": [
+                    {"content": "a", "status": "completed"},
+                    {"content": "b", "status": "pending"}]}]}}}),
+        ];
+        let tool = TodoTool::with_session(phases_from_entries(&entries), Some("s.jsonl"));
+        let result = tool.run(&json!({"op": "done", "task": "b"})).unwrap();
+        assert_eq!(result.details["op"], json!("done"));
+        let phases = result.details["phases"].as_array().unwrap();
+        assert_eq!(phases[0]["tasks"][1]["status"], json!("completed"));
+        // State unknown to a fresh tool resolves after rehydration.
+        let fresh = TodoTool::with_phases(Vec::new());
+        assert!(fresh.run(&json!({"op": "done", "task": "b"})).is_err());
     }
 
     #[test]

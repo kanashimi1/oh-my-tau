@@ -23,6 +23,10 @@ import { AstEditTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-m
 import { TodoTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/todo.ts";
 import { AskTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/ask.ts";
 import { WebSearchTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/web/search";
+import { WaitTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/wait";
+import { ThinkTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/think";
+import { YieldTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/yield";
+import { GoalTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/goals/tools/goal-tool";
 
 // Minimal ToolSession stub: tools only read config/description state here, never
 // execute. Declared structurally so no omp types need to be imported.
@@ -61,7 +65,7 @@ interface ToolLike {
 	parameters: unknown;
 }
 
-const NAMES = ["read", "bash", "edit", "glob", "grep", "find", "write", "task", "eval", "todo", "ask", "ast_grep", "ast_edit", "web_search"];
+const NAMES = ["read", "bash", "edit", "glob", "grep", "find", "write", "task", "eval", "todo", "ask", "ast_grep", "ast_edit", "web_search", "wait", "think", "yield", "goal"];
 
 const session = stubSession();
 const factories: Array<(s: StubSession) => ToolLike> = [
@@ -82,6 +86,10 @@ const factories: Array<(s: StubSession) => ToolLike> = [
 	s => new AstGrepTool(session as any),
 	s => new AstEditTool(session as any),
 	s => new WebSearchTool(s),
+	s => new WaitTool(s as any),
+	s => new ThinkTool(),
+	s => new YieldTool({ ...s, outputSchema: undefined } as any),
+	s => new GoalTool(s as any),
 ];
 
 function permissiveStub(): any {

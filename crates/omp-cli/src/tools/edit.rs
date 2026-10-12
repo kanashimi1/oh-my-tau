@@ -141,6 +141,26 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let Some(content) = args.get("content").and_then(Value::as_str) else {
         bail!("`content` is required to write {raw}");
     };
+    // Route internal URLs through the scheme registry (TS write tool
+    // `writeTarget` + `peelWriteSelector`).
+    let registry = super::read::url_registry();
+    let normalized = registry.normalize(raw);
+    if registry.can_handle(&normalized) {
+        let (url_path, sel) = registry.split(&normalized);
+        if let Some(sel) = sel {
+            if !sel.eq_ignore_ascii_case("raw") && !sel.eq_ignore_ascii_case("conflicts") {
+                bail!(
+                    "write does not accept the trailing selector \":{sel}\" \u{2014} it addresses a whole file. Remove \":{sel}\", or if the filename truly ends with it, percent-encode the \":\" as %3A."
+                );
+            }
+        }
+        registry.write(&url_path, content, &super::read::url_ctx(env))?;
+        return Ok(AgentToolResult::text(format!(
+            "Successfully wrote {} bytes to {}",
+            content.len(),
+            url_path
+        )));
+    }
     let path = resolve_to_cwd(raw, &env.cwd);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

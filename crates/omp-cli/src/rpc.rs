@@ -6,13 +6,16 @@
 //! depend on subsystems omp-rs lacks answer `success: false` with an omp-style
 //! error message (see `unsupported`).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::Result;
 use pa_agent::abort::AbortController;
 use pa_agent::agent::{Agent, QueueMode};
+use pa_agent::BoxFut;
 use pa_agent::types::ThinkingLevel;
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -26,8 +29,128 @@ use crate::runtime::{
     CmdResult, Runtime,
 };
 use crate::tools::bash as shell;
+use crate::tools::{AskUi, SelectOption};
+
+#[path = "slash.rs"]
+pub mod slash;
 
 const MAX_FRAME_BYTES: u64 = 1_048_576;
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Pending RPC ask-UI dialogs (`extension_ui_request` id → waiter).
+static PENDING_UI_REQUESTS: LazyLock<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Mirrors the `set_ask_dialog` RPC command (TS `askDialogEnabled`).
+static ASK_DIALOG_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// RPC transport for the `ask` tool dialog (TS `RpcExtensionUIContext`):
+/// emits `extension_ui_request` frames and resolves from the matching
+/// `extension_ui_response` (routed by id in the run loop).
+struct RpcAskUi;
+
+impl RpcAskUi {
+    /// Send one dialog frame and await its response. `Ok(None)` = the dialog
+    /// was cancelled/timed out (TS resolves `undefined`).
+    async fn request(method: &str, mut frame: Map<String, Value>) -> Result<Option<Value>> {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
+        let id = format!("ui-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0));
+        let timeout_ms = frame.get("timeout").and_then(Value::as_u64);
+        frame.insert("id".into(), json!(id));
+        frame.insert("type".into(), json!("extension_ui_request"));
+        frame.insert("method".into(), json!(method));
+        lock(&PENDING_UI_REQUESTS).insert(id.clone(), tx);
+        // Emit through the runtime's frame channel via a task-local runtime;
+        // `RpcAskUi` is only constructed inside the RPC loop.
+        RUNTIME_TX.with(|tx| {
+            if let Some(tx) = &*tx.borrow() {
+                tx.send(Value::Object(frame)).ok();
+            }
+        });
+        let wait = async {
+            match rx.await {
+                Ok(response) => Ok(Some(response)),
+                Err(_) => Err(anyhow::anyhow!("ask dialog dropped")),
+            }
+        };
+        let result = match timeout_ms {
+            Some(ms) => match tokio::time::timeout(std::time::Duration::from_millis(ms), wait).await {
+                Ok(r) => r,
+                Err(_) => Ok(Some(json!({"cancelled": true, "timedOut": true}))),
+            },
+            None => wait.await,
+        };
+        lock(&PENDING_UI_REQUESTS).remove(&id);
+        result
+    }
+}
+
+thread_local! {
+    /// Frame channel of the active RPC loop (set in `run_with`).
+    static RUNTIME_TX: std::cell::RefCell<Option<mpsc::UnboundedSender<Value>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+impl AskUi for RpcAskUi {
+    fn has_ask_dialog(&self) -> bool {
+        ASK_DIALOG_ENABLED.load(Ordering::SeqCst)
+    }
+
+    fn ask(
+        &self,
+        questions: Value,
+        timeout_ms: Option<u64>,
+    ) -> BoxFut<'static, anyhow::Result<Option<Value>>> {
+        Box::pin(async move {
+            let mut frame = Map::new();
+            frame.insert("questions".into(), questions);
+            if let Some(ms) = timeout_ms {
+                frame.insert("timeout".into(), json!(ms));
+            }
+            // Cancelled responses are passed through: the tool interprets
+            // `cancelled`/`timedOut` (TS `parseAskDialogResponse`).
+            Self::request("ask", frame).await
+        })
+    }
+
+    fn select(
+        &self,
+        prompt: String,
+        options: Vec<SelectOption>,
+        _multi: bool,
+        _checked: Vec<usize>,
+        _initial_index: Option<usize>,
+    ) -> BoxFut<'static, anyhow::Result<Option<String>>> {
+        Box::pin(async move {
+            let labels: Vec<String> =
+                options.iter().map(|o| o.label.clone()).collect();
+            let mut frame = Map::new();
+            frame.insert("title".into(), json!(prompt));
+            frame.insert("options".into(), json!(labels));
+            let details: Vec<Value> = options
+                .iter()
+                .map(|o| match &o.description {
+                    Some(d) if !d.trim().is_empty() => json!({"description": d}),
+                    _ => json!({}),
+                })
+                .collect();
+            if details.iter().any(|d| !d.as_object().is_none_or(Map::is_empty)) {
+                frame.insert("optionDetails".into(), json!(details));
+            }
+            Ok(Self::request("select", frame)
+                .await?
+                .and_then(|v| v.get("value").cloned())
+                .and_then(|v| v.as_str().map(str::to_string)))
+        })
+    }
+}
+
 const MAX_REASSEMBLED_BYTES: u64 = 67_108_864;
 const CACHE_WARMING_MODES: [&str; 3] = ["off", "streaming", "idle"];
 
@@ -479,14 +602,42 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         },
         "prompt" => {
             let message = str_field(cmd, "message")?;
-            rt.prompt(
-                cmd.get("id").cloned(),
-                message,
-                cmd.get("streamingBehavior").and_then(Value::as_str),
-                images(cmd),
-            )
-            .await?;
-            none()
+            match slash::try_dispatch(rt, message).await {
+                slash::Outcome::Handled { agent_invoked } => ok(json!({"agentInvoked": agent_invoked})),
+                slash::Outcome::ExtensionHandled => {
+                    // TS: the extension consumed the prompt inside session.prompt;
+                    // the response carries no data and a completed prompt_result
+                    // follows the response frame.
+                    let task_rt = Arc::clone(rt);
+                    let id = cmd.get("id").cloned();
+                    tokio::spawn(async move {
+                        tokio::task::yield_now().await;
+                        let mut f = json!({"type":"prompt_result","agentInvoked":false,
+                            "status":"completed","sessionSettled":true});
+                        if let Some(id) = id {
+                            f["id"] = id;
+                        }
+                        task_rt.send(f);
+                    });
+                    none()
+                }
+                slash::Outcome::Prompt(rewritten) => {
+                    rt.prompt(cmd.get("id").cloned(), &rewritten,
+                        cmd.get("streamingBehavior").and_then(Value::as_str), images(cmd))
+                        .await?;
+                    none()
+                }
+                slash::Outcome::NotSlash => {
+                    rt.prompt(
+                        cmd.get("id").cloned(),
+                        message,
+                        cmd.get("streamingBehavior").and_then(Value::as_str),
+                        images(cmd),
+                    )
+                    .await?;
+                    none()
+                }
+            }
         }
         "steer" | "follow_up" => {
             let message = str_field(cmd, "message")?;
@@ -579,11 +730,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                     "session_busy",
                 ));
             }
-            if kind == "branch" {
+            let result = if kind == "branch" {
                 crate::tree::branch(&Arc::clone(rt), entry_id.unwrap_or_default()).await
             } else {
                 crate::tree::fork(&Arc::clone(rt), entry_id).await
-            }
+            };
+            rt.publish_session_file();
+            result
         }
         "get_state" => ok(rt.state().await),
         "set_fast_mode" => {
@@ -599,9 +752,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "set_ask_dialog" => {
             let enabled =
                 rt.set(|s| s.ask_dialog(cmd.get("enabled").and_then(Value::as_bool) == Some(true)));
+            ASK_DIALOG_ENABLED.store(
+                cmd.get("enabled").and_then(Value::as_bool) == Some(true),
+                Ordering::SeqCst,
+            );
             ok(json!({"enabled": enabled}))
         }
-        "get_available_commands" => ok(json!({"commands": rt.available_commands()})),
+        "get_available_commands" => ok(json!({"commands": slash::available_commands(rt).await})),
         "get_entries" => {
             let entries = rt.entries().map_err(CmdError::from)?;
             let leaf = entries
@@ -1169,8 +1326,18 @@ pub async fn run_with(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     let agent = Arc::new(agent);
+    RUNTIME_TX.with(|slot| *slot.borrow_mut() = Some(tx.clone()));
     let rt = Runtime::start(agent.clone(), target, cwd, persist, tx.clone()).await;
 
+    // The `ask` tool gets the RPC dialog transport (TS: rich `askDialog` once
+    // the client sends `set_ask_dialog`, `select`/`editor` frames otherwise).
+    {
+        let mut tools = rt.agent.state().await.tools.clone();
+        if let Some(slot) = tools.iter_mut().find(|t| t.name() == "ask") {
+            *slot = crate::tools::tool_with_ui(Arc::new(RpcAskUi));
+            rt.agent.set_tools(tools).await;
+        }
+    }
     let writer = tokio::spawn(async move {
         let mut out = tokio::io::stdout();
         let mut encoder = FrameEncoder::new();
@@ -1197,7 +1364,11 @@ pub async fn run_with(
         "maxReassembledFrameBytes": MAX_REASSEMBLED_BYTES,
     }));
     rt.announce_commands();
-    rt.announce_commands();
+    let dynamic = slash::dynamic_commands(&rt).await;
+    if !dynamic.is_empty() {
+        rt.set_available_commands(dynamic);
+        rt.announce_commands();
+    }
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut background = tokio::task::JoinSet::new();
@@ -1227,9 +1398,19 @@ pub async fn run_with(
             }
         };
         let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
+        if kind == "extension_ui_response" {
+            // Resolve a pending ask-UI dialog (see `RpcAskUi`).
+            if let Some(id) = cmd.get("id").and_then(Value::as_str) {
+                let tx = lock(&PENDING_UI_REQUESTS).remove(id);
+                if let Some(tx) = tx {
+                    let _ = tx.send(cmd.clone());
+                }
+            }
+            continue;
+        }
         if matches!(
             kind,
-            "extension_ui_response" | "host_tool_result" | "host_tool_update" | "host_uri_result"
+            "host_tool_result" | "host_tool_update" | "host_uri_result"
         ) {
             continue; // side-channel frames for sub-protocols this server never opens
         }
@@ -1421,5 +1602,56 @@ mod tests {
                 .message,
             "cursor must be an integer UTF-16 offset within text"
         );
+    }
+}
+
+#[cfg(test)]
+mod ask_ui_tests {
+    use super::*;
+
+    /// The pending-dialog registry is process-global; serialize the tests.
+    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[tokio::test]
+    async fn ask_ui_resolves_from_extension_ui_response() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let questions = json!([{"id": "q1", "schema": {}}]);
+        let ui = RpcAskUi;
+        ASK_DIALOG_ENABLED.store(true, Ordering::SeqCst);
+        // `RpcAskUi` is a zero-sized handle; build a fresh one inside the task
+        // instead of moving the outer `ui` (used for assertions below).
+        let ui_task = tokio::spawn(async { AskUi::ask(&RpcAskUi, questions, None).await });
+        // Wait for the request frame, then answer it.
+        let id = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                tokio::task::yield_now().await;
+                let pending = lock(&PENDING_UI_REQUESTS);
+                if let Some(key) = pending.keys().next().cloned() {
+                    return key;
+                }
+            }
+        })
+        .await
+        .expect("pending dialog registered");
+        let response = json!({"type": "extension_ui_response", "id": id,
+            "answers": [{"id": "q1", "value": "ok"}]});
+        let tx = lock(&PENDING_UI_REQUESTS).remove(&id).expect("waiter");
+        let _ = tx.send(response);
+        let result = ui_task.await.unwrap().unwrap().unwrap();
+        assert_eq!(result["answers"][0]["value"], json!("ok"));
+        ASK_DIALOG_ENABLED.store(false, Ordering::SeqCst);
+        assert!(!AskUi::has_ask_dialog(&ui));
+    }
+
+    #[tokio::test]
+    async fn ask_ui_times_out_with_timed_out_frame() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let ui = RpcAskUi;
+        let mut frame = Map::new();
+        frame.insert("questions".into(), json!([]));
+        frame.insert("timeout".into(), json!(50));
+        let result = RpcAskUi::request("ask", frame).await.unwrap().unwrap();
+        assert_eq!(result["cancelled"], json!(true));
+        assert_eq!(result["timedOut"], json!(true));
     }
 }

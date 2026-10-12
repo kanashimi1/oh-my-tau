@@ -120,6 +120,9 @@ pub struct Runtime {
     compacting: std::sync::atomic::AtomicBool,
     /// Injected summarizer (default: the live model).
     summarizer: Mutex<Option<crate::compact::SummarizeFn>>,
+    /// Set by `abort()` (TS `#advisors.autoResumeSuppressed`): a follow-up-only
+    /// queued-message drain stays suppressed until the next explicit user prompt.
+    user_interrupt: std::sync::atomic::AtomicBool,
 }
 
 /// Outcome of the retry pass over a failed turn.
@@ -267,10 +270,12 @@ impl Runtime {
             announced: std::sync::atomic::AtomicBool::new(false),
             settled: tokio::sync::Notify::new(),
             retry_task: Mutex::new(None),
+            user_interrupt: std::sync::atomic::AtomicBool::new(false),
             compaction: Mutex::new(compaction),
             compacting: std::sync::atomic::AtomicBool::new(false),
             summarizer: Mutex::new(None),
         });
+        rt.publish_session_file();
         rt.record_model_state().await;
         let listener = rt.clone();
         let sub = rt
@@ -286,6 +291,13 @@ impl Runtime {
 
     pub fn send(&self, frame: Value) {
         let _ = self.out.send(frame);
+    }
+
+    /// Publish the live session file to `omp-urls` (URL resolution cache
+    /// scoping); `None` under `--no-session`. Call at every session-file
+    /// attach point (start, `new_session`, `load_session`, fork/branch).
+    pub fn publish_session_file(&self) {
+        omp_urls::set_global_session_file(self.persist.file());
     }
 
     /// Session preamble omp writes: `model_change` then `thinking_level_change`.
@@ -420,6 +432,7 @@ impl Runtime {
                 rt.emit_event(frame);
                 rt.run_auto_compaction().await;
                 rt.report_prompts(&run_outcome(&messages));
+                rt.drain_stranded_queue();
             });
             return;
         }
@@ -465,6 +478,61 @@ impl Runtime {
         let outcome = run_outcome(&messages);
         self.emit_event(frame);
         self.report_prompts(&outcome);
+        self.drain_stranded_queue();
+    }
+
+    /// TS `#drainStrandedQueuedMessages` + `#canAutoContinueForFollowUp`: once the
+    /// session settles, a steer/follow-up stranded after the loop's final queue poll
+    /// (e.g. by an abort) starts a fresh turn via `Agent::continue_run`. A
+    /// follow-up-only resume stays suppressed after a user interrupt until the next
+    /// explicit prompt; a queued steer always resumes (it injects before the first
+    /// provider call, so any tail is valid). A drain that settles a user interrupt
+    /// inherits the still-aborted session signal (TS): the resumed turn stops
+    /// immediately, so the queued follow-up is never polled by it.
+    fn drain_stranded_queue(self: &Arc<Self>) {
+        let (steering, _follow) = self.queued();
+        let interrupted = self
+            .user_interrupt
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if steering.is_empty() && interrupted {
+            return;
+        }
+        let rt = self.clone();
+        tokio::spawn(async move {
+            rt.agent.wait_for_idle().await;
+            if !rt.agent.has_queued_messages() {
+                return;
+            }
+            if interrupted {
+                // The drain run inherits the user interrupt (TS: the queued
+                // turn runs under the still-aborted session signal). Abort on
+                // its first assistant message so the stream takes the graceful
+                // aborted-message path (`content: []`) and the queued
+                // follow-up is never polled.
+                let agent = rt.agent.clone();
+                let sub = agent
+                    .clone()
+                    .subscribe(move |event, _| {
+                        if matches!(
+                            &event,
+                            AgentEvent::MessageStart { message }
+                                if message.role() == "assistant"
+                        ) {
+                            agent.abort();
+                        }
+                        Box::pin(async { Ok(()) })
+                    })
+                    .await;
+                let agent = rt.agent.clone();
+                tokio::spawn(async move {
+                    agent.wait_for_idle().await;
+                    drop(sub);
+                });
+            }
+            if rt.agent.continue_run_until_accepted().await.is_err() {
+                return;
+            }
+        });
     }
 
     /// Retry saga for a failed turn (`#handleRetryableError`), then continue the run.
@@ -752,6 +820,8 @@ impl Runtime {
             self.emit_queue_update();
             return Ok(());
         }
+        self.user_interrupt
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         // A new prompt supersedes a pending retry (and waits until the old turn is settled).
         self.cancel_retry_and_wait().await;
         self.maybe_restore_primary().await;
@@ -790,6 +860,8 @@ impl Runtime {
 
     /// Abort the run and wait until the agent is idle.
     pub async fn abort(&self) {
+        self.user_interrupt
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.abort_retry();
         self.agent.abort();
         self.agent.wait_for_idle().await;
@@ -1000,6 +1072,23 @@ impl Runtime {
 
     // ------------------------------------------------------------ session
 
+    /// Rebuild the `todo` tool from session entries (`&[]` = fresh session),
+    /// matching omp's resume rehydration.
+    pub async fn rehydrate_todo_tool(&self, entries: &[Value]) {
+        let session_file = self.persist.file().map(|p| p.display().to_string());
+        let todo: Arc<dyn pa_agent::types::AgentTool> = Arc::new(
+            crate::tools::TodoTool::with_session(
+                crate::tools::phases_from_entries(entries),
+                session_file.as_deref(),
+            ),
+        );
+        let mut tools = self.agent.tools().await;
+        if let Some(slot) = tools.iter().position(|t| t.name() == "todo") {
+            tools[slot] = todo;
+            self.agent.set_tools(tools).await;
+        }
+    }
+
     /// Clear the conversation and start a fresh session file.
     pub async fn new_session(&self, dir: Option<&Path>) -> Result<()> {
         self.cancel_retry_and_wait().await;
@@ -1007,6 +1096,8 @@ impl Runtime {
         self.agent.wait_for_idle().await;
         self.agent.reset().await;
         self.persist.start_new(&self.cwd, dir)?;
+        self.publish_session_file();
+        self.rehydrate_todo_tool(&[]).await;
         {
             let mut st = lock(&self.settings);
             st.session_name = None;
@@ -1056,6 +1147,7 @@ impl Runtime {
         self.agent.wait_for_idle().await;
         self.agent.reset().await;
         self.persist.start_new(&self.cwd, dir)?;
+        self.publish_session_file();
         self.record_model_state().await;
         if compacted {
             crate::compact::seed_entries(&self.persist, &entries)?;
@@ -1073,6 +1165,7 @@ impl Runtime {
             }
         }
         self.agent.set_messages(messages).await;
+        self.rehydrate_todo_tool(&entries).await;
         lock(&self.prompts).open.clear();
         Ok(())
     }

@@ -90,6 +90,8 @@ pub(crate) fn create_aborted_assistant_message(
         stop_reason_raw: None,
         error_message: Some(ABORT_ERROR_MESSAGE.to_string()),
         timestamp: crate::now_ms(),
-        meta: partial_message.map(|p| p.meta.clone()).unwrap_or_default(),
+        // TS's synthesized aborted message is fresh: no credential/timing meta
+        // even when a partial streamed (goldens show no `credentialId` here).
+        meta: crate::types::AssistantMeta::default(),
     }
 }

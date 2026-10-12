@@ -5,9 +5,10 @@
 //! sessions, hashline mode included) and the file walks are `pi-walker`.
 //! Failures are returned as `Err` so the agent loop reports `isError: true`.
 
-mod ask;
+pub mod ask;
 mod ast;
 pub mod bash;
+mod checkpoint;
 mod edit;
 mod eval;
 mod find;
@@ -17,9 +18,15 @@ mod read;
 mod search;
 mod task;
 mod todo;
+pub use todo::{phases_from_entries, TodoTool};
 mod tree;
 mod util;
+mod lsp;
 mod web_search;
+mod goal;
+mod think;
+mod wait;
+mod yield_tool;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -226,6 +233,7 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             task::schema(),
             Arc::new(|env, args, _| Box::pin(task::task(env, args))),
         ),
+        wait::tool(env.clone()),
         mk(
             "eval",
             eval::DESCRIPTION.to_string(),
@@ -247,7 +255,19 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
         ask::tool(),
         todo::tool(),
         web_search::tool(),
+        lsp::tool(env.clone()),
+        checkpoint::checkpoint_tool(),
+        checkpoint::rewind_tool(),
     ]
+}
+
+/// omp `HIDDEN_TOOLS` (`HIDDEN_TOOL_NAMES = ["yield", "goal", "think"]`, order as
+/// registered in omp's `HIDDEN_TOOLS` map): constructed for a session only when
+/// the corresponding mode is active and never listed as visible built-ins.
+#[must_use]
+#[allow(dead_code)] // session-assembly wiring (goal mode / subagent runs) pending
+pub fn hidden_tools() -> Vec<Arc<dyn AgentTool>> {
+    vec![think::tool(), yield_tool::tool(), goal::tool()]
 }
 
 #[cfg(test)]
@@ -281,12 +301,16 @@ mod tests {
                 "write",
                 "find",
                 "task",
+                "wait",
                 "eval",
                 "ast_grep",
                 "ast_edit",
                 "ask",
                 "todo",
-                "web_search"
+                "web_search",
+                "lsp",
+                "checkpoint",
+                "rewind"
             ]
         );
         let edit = tools.iter().find(|t| t.name() == "edit").unwrap();
@@ -359,3 +383,5 @@ mod tests {
         );
     }
 }
+
+pub use ask::{AskUi, SelectOption, tool_with_ui};

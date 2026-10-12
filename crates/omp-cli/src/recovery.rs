@@ -1536,4 +1536,76 @@ mod tests {
             "executor blocked during the slow key: {ticks_during} ticks"
         );
     }
+
+    /// TS `#drainStrandedQueuedMessages`: an abort leaves a queued steer/follow-up
+    /// stranded with no loop left to poll it, so the idle session starts a fresh turn
+    /// for the steer. A follow-up-only remainder stays suppressed after the user
+    /// interrupt (`#canAutoContinueForFollowUp` + `autoResumeSuppressed`).
+    #[tokio::test]
+    async fn abort_drains_queued_steer_into_a_fresh_turn() {
+        let mut h = harness_with(
+            |provider| {
+                provider.push_stalled_turn("partial");
+                // The drain turn stalls without content; the inherited user
+                // interrupt aborts it into the graceful `content: []` shape.
+                provider.push_stalled_turn("");
+            },
+            cfg(&["p/a"]),
+        )
+        .await;
+        h.rt
+            .prompt(None, "hello", None, Vec::new())
+            .await
+            .expect("prompt");
+        // Wait until the stalled turn is actually streaming.
+        wait_for(&mut h.rx, |f| {
+            f["type"] == "message_update" && f["assistantMessageEvent"]["type"] == "text_delta"
+        })
+        .await;
+        h.rt.steer("more detail");
+        h.rt.follow_up("and more");
+        h.rt.abort().await;
+
+        let mut agent_starts = 1; // the first run already started
+        let mut second_turn_user = false;
+        let mut second_turn_ended = false;
+        let deadline = tokio::time::sleep(Duration::from_secs(20));
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                _ = &mut deadline => break,
+                frame = h.rx.recv() => {
+                    let f = frame.expect("open");
+                    match f["type"].as_str() {
+                        Some("agent_start") => agent_starts += 1,
+                        Some("message_start") => {
+                            if f["message"]["role"] == json!("user")
+                                && json!(f["message"]["content"]) == json!("more detail")
+                            {
+                                second_turn_user = true;
+                            }
+                        }
+                        Some("agent_end") if second_turn_user => second_turn_ended = true,
+                        _ => {}
+                    }
+                }
+            }
+        }
+        assert_eq!(agent_starts, 2, "queued steer must start exactly one fresh turn");
+        assert!(second_turn_user, "the drained turn carries the steer message");
+        assert!(second_turn_ended, "the drained turn settles");
+    }
+
+    /// Read frames until `pred` matches (30 s guard).
+    async fn wait_for(rx: &mut UnboundedReceiver<Value>, pred: impl Fn(&Value) -> bool) {
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .expect("frame in time")
+                .expect("open");
+            if pred(&f) {
+                return;
+            }
+        }
+    }
 }
