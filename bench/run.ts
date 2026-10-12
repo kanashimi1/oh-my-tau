@@ -158,13 +158,23 @@ async function startMock(logSuffix: string): Promise<void> {
     stderr: "inherit",
   });
   writeFileSync(join(BENCH_DIR, "tmp", "edit-target.txt"), "alpha-bravo-charlie\n");
-  // wait until the provider actually answers (spawn + bind can take >1s)
+  // wait until OUR provider answers (spawn + bind can take >1s). A foreign process on the port
+  // (e.g. a stale mock from an earlier run) answers with a different mock_log: fail loudly
+  // instead of silently benchmarking against it.
   for (let i = 0; i < 200; i++) {
     try {
       const res = await fetch(`http://127.0.0.1:${MOCK_PORT}/v1/models`);
-      if (res.ok) return;
-    } catch {
+      if (res.ok) {
+        const body = (await res.json()) as { mock_log?: string };
+        if (body.mock_log === mockLog) return;
+        throw new Error(`port ${MOCK_PORT} is held by a foreign mock (log ${body.mock_log ?? "?"}); kill it and rerun`);
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("foreign mock")) throw e;
       /* not up yet */
+    }
+    if (mockProc?.exitCode !== null && mockProc?.exitCode !== undefined) {
+      throw new Error(`mock provider exited with code ${mockProc.exitCode} (port ${MOCK_PORT} busy?)`);
     }
     await Bun.sleep(100);
   }

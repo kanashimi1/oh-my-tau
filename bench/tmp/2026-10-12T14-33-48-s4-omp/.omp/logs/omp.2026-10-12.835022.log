@@ -1,0 +1,1 @@
+{"timestamp":"2026-10-12T17:35:47.257+03:00","level":"debug","pid":835022,"message":"global proxy fetch not installed","reason":"PI_PROXY unset","env":{"NO_PROXY":"127.0.0.1,localhost,::1,auth.kimi.com,api.kimi.com"}}

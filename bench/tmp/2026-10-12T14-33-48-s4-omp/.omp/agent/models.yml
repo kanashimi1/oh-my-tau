@@ -1,0 +1,38 @@
+providers:
+  mock:
+    baseUrl: http://127.0.0.1:48731/v1
+    apiKey: mock-key-not-a-secret
+    api: openai-completions
+    models:
+      - id: text
+        name: mock text
+        contextWindow: 128000
+        maxTokens: 4096
+      - id: toolturn
+        name: mock 5-tool turn
+        contextWindow: 128000
+        maxTokens: 4096
+      - id: bench-read
+        name: mock bench read
+        contextWindow: 128000
+        maxTokens: 4096
+      - id: bench-grep
+        name: mock bench grep
+        contextWindow: 128000
+        maxTokens: 4096
+      - id: bench-glob
+        name: mock bench glob
+        contextWindow: 128000
+        maxTokens: 4096
+      - id: bench-find
+        name: mock bench find
+        contextWindow: 128000
+        maxTokens: 4096
+      - id: bench-edit
+        name: mock bench edit
+        contextWindow: 128000
+        maxTokens: 4096
+      - id: bench-bash
+        name: mock bench bash
+        contextWindow: 128000
+        maxTokens: 4096

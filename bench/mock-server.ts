@@ -121,6 +121,8 @@ Bun.serve({
       const ids = ["text", "toolturn", "bench-read", "bench-grep", "bench-glob", "bench-find", "bench-edit", "bench-bash"];
       return Response.json({
         object: "list",
+        // identity: the harness checks this to make sure it is talking to the mock it just spawned
+        mock_log: process.env.MOCK_LOG ?? "",
         data: ids.map((id) => ({ id: `mock/${id}`, object: "model", created: 0, owned_by: "mock" })),
       });
     }
