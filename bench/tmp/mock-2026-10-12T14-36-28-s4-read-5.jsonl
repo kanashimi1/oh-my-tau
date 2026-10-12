@@ -1,0 +1,8 @@
+{"t":1791816114330,"kind":"req","model":"bench-read","n_messages":2}
+{"t":1791816114331,"kind":"resp_end","model":"bench-read"}
+{"t":1791816114337,"kind":"req","model":"bench-read","n_messages":4}
+{"t":1791816114338,"kind":"resp_end","model":"bench-read"}
+{"t":1791816176282,"kind":"req","model":"bench-read","n_messages":2}
+{"t":1791816176284,"kind":"resp_end","model":"bench-read"}
+{"t":1791816176393,"kind":"req","model":"bench-read","n_messages":4}
+{"t":1791816176393,"kind":"resp_end","model":"bench-read"}

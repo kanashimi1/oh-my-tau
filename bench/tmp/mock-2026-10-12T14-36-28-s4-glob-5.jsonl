@@ -1,0 +1,8 @@
+{"t":1791816130735,"kind":"req","model":"bench-glob","n_messages":2}
+{"t":1791816130736,"kind":"resp_end","model":"bench-glob"}
+{"t":1791816130739,"kind":"req","model":"bench-glob","n_messages":4}
+{"t":1791816130740,"kind":"resp_end","model":"bench-glob"}
+{"t":1791816240281,"kind":"req","model":"bench-glob","n_messages":2}
+{"t":1791816240283,"kind":"resp_end","model":"bench-glob"}
+{"t":1791816240372,"kind":"req","model":"bench-glob","n_messages":4}
+{"t":1791816240372,"kind":"resp_end","model":"bench-glob"}

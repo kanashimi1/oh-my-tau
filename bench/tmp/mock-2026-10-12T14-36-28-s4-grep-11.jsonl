@@ -1,0 +1,8 @@
+{"t":1791816126636,"kind":"req","model":"bench-grep","n_messages":2}
+{"t":1791816126637,"kind":"resp_end","model":"bench-grep"}
+{"t":1791816126657,"kind":"req","model":"bench-grep","n_messages":4}
+{"t":1791816126657,"kind":"resp_end","model":"bench-grep"}
+{"t":1791816224868,"kind":"req","model":"bench-grep","n_messages":2}
+{"t":1791816224869,"kind":"resp_end","model":"bench-grep"}
+{"t":1791816225008,"kind":"req","model":"bench-grep","n_messages":4}
+{"t":1791816225008,"kind":"resp_end","model":"bench-grep"}
