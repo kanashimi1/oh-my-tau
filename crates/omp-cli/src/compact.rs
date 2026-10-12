@@ -677,7 +677,7 @@ mod tests {
         .join("\n");
         std::fs::write(&file, body).unwrap();
 
-        let mut h = harness(0).await;
+        let h = harness(0).await;
         let (fake, _) = fake_summarizer("LOCAL SUMMARY");
         h.rt.set_summarizer(Some(fake));
         h.rt.set_compaction_settings(CompactionSettings {
