@@ -1,6 +1,6 @@
 //! Emit-latency micro-bench: load the user's extensions, then time N repeated
 //! `tool_result` emits and report the median. Used to compare per-event cost
-//! between the stdio host (default) and the shared daemon (OMP_EXT_TEST_SHARED=1).
+//! between the stdio host (default) and the shared daemon (`OMP_EXT_TEST_SHARED=1`).
 //!
 //! `cargo run -p omp-ext --example emit_bench -- [extensions_dir] [n]`
 

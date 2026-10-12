@@ -410,12 +410,9 @@ mod tests {
     /// real 5618-model `models.json`, and the typed [`Catalog`] must agree exactly.
     #[test]
     fn catalog_matches_value_reference_parse() {
-        let path = match catalog_path() {
-            Some(p) => p,
-            None => {
-                eprintln!("catalog not installed; skipping");
-                return;
-            }
+        let Some(path) = catalog_path() else {
+            eprintln!("catalog not installed; skipping");
+            return;
         };
         let bytes = std::fs::read(&path).expect("read catalog");
         let reference: serde_json::Value = serde_json::from_slice(&bytes).expect("value parse");

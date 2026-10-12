@@ -896,7 +896,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn append_seeded_line_rewrites_links_and_keeps_payload_bytes() {
         let dir = std::env::temp_dir().join(format!("omp-rs-seed-{}-{:08x}", std::process::id(), rand_u32()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -949,6 +948,7 @@ mod tests {
         assert!(top_level_string_members("").is_none());
     }
 
+    #[test]
     fn generate_id_retries_on_collision_then_falls_back_to_longer_id() {
         let calls = Cell::new(0u32);
         // First two draws collide, the third is free.

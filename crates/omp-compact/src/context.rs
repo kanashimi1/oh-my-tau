@@ -611,7 +611,7 @@ pub fn build_session_context_owned(
             take_context_message(e, &mut messages);
         }
     } else {
-        for e in path.iter_mut() {
+        for e in &mut path {
             take_context_message(e, &mut messages);
         }
     }
@@ -683,7 +683,7 @@ fn branch_path_owned(entries: Vec<Value>, leaf: Leaf<'_>) -> Vec<Value> {
 }
 
 /// Move a branch entry's context message out, leaving non-emitting entries
-/// (custom, reset_boundary, bookkeeping, shims) intact for the later scans.
+/// (custom, `reset_boundary`, bookkeeping, shims) intact for the later scans.
 fn take_context_message(entry: &mut Value, messages: &mut Vec<Value>) {
     if matches!(
         entry_type(entry),

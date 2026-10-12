@@ -721,7 +721,7 @@ mod tests {
             .lock()
             .await
             .as_ref()
-            .and_then(|c| c.id())
+            .and_then(tokio::process::Child::id)
             .expect("child pid");
         assert!(pid_alive(pid));
         let incoming = host.take_incoming().expect("incoming is available once");

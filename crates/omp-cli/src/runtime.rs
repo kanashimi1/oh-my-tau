@@ -1414,7 +1414,9 @@ impl Runtime {
                 // The compaction marker lives on another branch: the rebuild
                 // replays the whole branch through `context_message` — keep it
                 // verbatim rather than shim what may be emitted.
-                full.iter_mut().for_each(|f| *f = true);
+                for f in full.iter_mut() {
+                    *f = true;
+                }
             }
             // Bookkeeping entries feed the state accumulation from anywhere on
             // the branch; `context_notes` scans the custom entries after the
@@ -1431,27 +1433,14 @@ impl Runtime {
                 .iter()
                 .position(|r| r.kind == omp_session::index::EntryKind::ModelChange)
                 .unwrap_or(branch.len());
-            let mut entries: Vec<Value> = Vec::with_capacity(branch.len());
-            index.for_each_line(path, &branch, |r, raw| {
-                let pos = entries.len();
-                let value = if full[pos] {
-                    serde_json::from_str::<Value>(raw)
-                        .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?
-                } else if r.kind == omp_session::index::EntryKind::Message && pos < head_until {
-                    message_head_shim(r, raw)
-                } else if r.kind == omp_session::index::EntryKind::Custom
-                    && pos >= notes_after
-                    && custom_type(raw).as_deref()
-                        == Some(omp_compact::context::CONTEXT_NOTES_ENTRY_TYPE)
-                {
-                    serde_json::from_str::<Value>(raw)
-                        .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?
-                } else {
-                    link_shim(r)
-                };
-                entries.push(value);
-                Ok(())
-            })?;
+            let entries = materialize_reduced_branch(
+                &index,
+                path,
+                &branch,
+                &full,
+                notes_after,
+                head_until,
+            )?;
             // Rebuild first, then release the entry DOM before converting:
             // the context messages and the typed messages never coexist with
             // the full reduced tree.
@@ -1459,7 +1448,7 @@ impl Runtime {
             // the context, so the two never coexist (resume stays low-RSS).
             let ctx = omp_compact::build_session_context_owned(entries, omp_compact::Leaf::Last)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            messages = crate::compact::context_messages(ctx);
+            messages = crate::compact::context_messages(&ctx);
         } else {
             // No compaction on the journal: messages deserialize straight from
             // the raw lines, one pass, no entry DOM at all.
@@ -1472,32 +1461,8 @@ impl Runtime {
                 Ok(())
             })?;
         }
-        // Todo phases (TS `getLatestTodoPhasesFromEntries(getBranch())`): scan
-        // the branch newest-first, parsing lines only until the latest
-        // state-changing todo entry — typically the tail, so almost nothing.
-        let mut phases = None;
-        let rev: Vec<u32> = branch.iter().rev().copied().collect();
-        index.for_each_line(path, &rev, |r, raw| {
-            if phases.is_none()
-                && matches!(
-                    r.kind,
-                    omp_session::index::EntryKind::Message | omp_session::index::EntryKind::Custom
-                )
-                // Cheap pre-filter: a state-changing todo entry mentions the
-                // todo tool or the edit custom type; everything else is
-                // skipped without building its DOM.
-                && (raw.contains("\"toolName\":\"todo\"")
-                    || raw.contains("\"customType\":\"user_todo_edit\""))
-            {
-                if let Ok(v) = serde_json::from_str::<Value>(raw) {
-                    let p = crate::tools::phases_from_entries(std::slice::from_ref(&v));
-                    if !p.is_empty() {
-                        phases = Some(p);
-                    }
-                }
-            }
-            Ok(())
-        })?;
+        // Todo phases (TS `getLatestTodoPhasesFromEntries(getBranch())`).
+        let phases = latest_todo_phases(&index, path, &branch)?;
         rss_trace!("loaded");
         self.agent.abort();
         self.agent.wait_for_idle().await;
@@ -1529,7 +1494,7 @@ impl Runtime {
         rss_trace!("swapped");
         let session_file = self.persist.file().map(|p| p.display().to_string());
         self.swap_todo_tool(Arc::new(crate::tools::TodoTool::with_session(
-            phases.unwrap_or_default(),
+            phases,
             session_file.as_deref(),
         )))
         .await;
@@ -1538,7 +1503,78 @@ impl Runtime {
         lock(&self.prompts).open.clear();
         Ok(())
     }
+}
 
+/// Materialize the reduced branch for the context rebuild: `full` entries and
+/// context-note custom entries parse for real, pre-head message entries become
+/// head-only shims, everything else a link-only shim — so the DOM the rebuild
+/// works on stays the size of the context, not of the journal.
+fn materialize_reduced_branch(
+    index: &omp_session::index::SessionIndex,
+    path: &Path,
+    branch: &[u32],
+    full: &[bool],
+    notes_after: usize,
+    head_until: usize,
+) -> Result<Vec<Value>> {
+    let mut entries: Vec<Value> = Vec::with_capacity(branch.len());
+    index.for_each_line(path, branch, |r, raw| {
+        let pos = entries.len();
+        let value = if full[pos] {
+            serde_json::from_str::<Value>(raw)
+                .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?
+        } else if r.kind == omp_session::index::EntryKind::Message && pos < head_until {
+            message_head_shim(r, raw)
+        } else if r.kind == omp_session::index::EntryKind::Custom
+            && pos >= notes_after
+            && custom_type(raw).as_deref()
+                == Some(omp_compact::context::CONTEXT_NOTES_ENTRY_TYPE)
+        {
+            serde_json::from_str::<Value>(raw)
+                .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?
+        } else {
+            link_shim(r)
+        };
+        entries.push(value);
+        Ok(())
+    })?;
+    Ok(entries)
+}
+
+/// Latest todo phases: scan the branch newest-first, parsing lines only until
+/// the latest state-changing todo entry — typically the tail, so almost nothing.
+fn latest_todo_phases(
+    index: &omp_session::index::SessionIndex,
+    path: &Path,
+    branch: &[u32],
+) -> Result<Vec<crate::tools::TodoPhase>> {
+    let mut phases: Option<Vec<crate::tools::TodoPhase>> = None;
+    let rev: Vec<u32> = branch.iter().rev().copied().collect();
+    index.for_each_line(path, &rev, |r, raw| {
+        if phases.is_none()
+            && matches!(
+                r.kind,
+                omp_session::index::EntryKind::Message | omp_session::index::EntryKind::Custom
+            )
+            // Cheap pre-filter: a state-changing todo entry mentions the
+            // todo tool or the edit custom type; everything else is
+            // skipped without building its DOM.
+            && (raw.contains("\"toolName\":\"todo\"")
+                || raw.contains("\"customType\":\"user_todo_edit\""))
+        {
+            if let Ok(v) = serde_json::from_str::<Value>(raw) {
+                let p = crate::tools::phases_from_entries(std::slice::from_ref(&v));
+                if !p.is_empty() {
+                    phases = Some(p);
+                }
+            }
+        }
+        Ok(())
+    })?;
+    Ok(phases.unwrap_or_default())
+}
+
+impl Runtime {
     pub fn set_session_name(&self, name: &str) -> Result<()> {
         let previous = lock(&self.settings).session_name.clone();
         self.persist

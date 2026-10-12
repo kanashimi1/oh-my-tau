@@ -175,13 +175,13 @@ pub fn load_settings_from(dir: &Path) -> CompactionSettings {
 pub fn rebuild_context(entries: &[Value]) -> Result<Vec<AgentMessage>> {
     let path = branch_path(entries, Leaf::Last);
     let ctx = build_session_context_path(&path).map_err(|e| anyhow!("{e}"))?;
-    Ok(context_messages(ctx))
+    Ok(context_messages(&ctx))
 }
 
 /// `SessionContext` → typed agent messages: each context message is converted
 /// and deserialized one at a time, so the converted LLM-shape `Value` never
 /// coexists with the whole list (resume stays low-RSS).
-pub fn context_messages(ctx: omp_compact::SessionContext) -> Vec<AgentMessage> {
+pub fn context_messages(ctx: &omp_compact::SessionContext) -> Vec<AgentMessage> {
     ctx.messages
         .iter()
         .filter_map(|m| {
@@ -443,48 +443,9 @@ pub async fn compact_now(
     summary_params.context_window = params.context_window;
     summary_params.custom_instructions = params.custom_instructions;
     let result = omp_compact::compact(completer, &prep, &summary_params).await?;
-    let ts = iso_from_ms(i64::try_from(now_ms()).unwrap_or(0));
-    let leaf_id = heads
-        .last()
-        .map_or("", |h| h.id.as_str())
-        .to_owned();
-    let rebuild_entry = synthetic_compaction_entry(
-        &format!("{leaf_id}:compaction"),
-        if leaf_id.is_empty() {
-            None
-        } else {
-            Some(&leaf_id)
-        },
-        &ts,
-        &result,
-        Some("soft"),
-    );
-    // Post-compaction rebuild view: the kept tail (moved out of the region by
-    // `plan_region`) is re-parented to the synthetic entry, mirroring the file
-    // the append is about to write.
-    let compaction_id = rebuild_entry
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let mut kept_entries = kept_entries;
-    if let (Some(id), Some(first)) = (compaction_id, kept_entries.first_mut()) {
-        if let Some(obj) = first.as_object_mut() {
-            obj.insert("parentId".into(), id.into());
-        }
-    }
-    let mut view: Vec<Value> = Vec::with_capacity(kept_entries.len() + 1);
-    view.push(rebuild_entry);
-    view.extend(kept_entries);
-    let view_refs: Vec<&Value> = view.iter().collect();
-    let tokens_after = project_tokens_after(
-        &view_refs,
-        &result,
-        Some("soft"),
-        &ts,
-        params.non_message_tokens,
-        &tokenizer,
-    )
-    .ok();
+    let leaf_id = heads.last().map_or("", |h| h.id.as_str()).to_owned();
+    let (ts, view, tokens_after) =
+        build_rebuild_view(&leaf_id, &result, kept_entries, params.non_message_tokens, &tokenizer);
     let options = ApplyOptions {
         method: Some("soft".to_owned()),
         tokens_after,
@@ -504,6 +465,50 @@ pub async fn compact_now(
         data["preserveData"] = p.clone();
     }
     Ok((result, data, view))
+}
+
+/// Build the synthetic compaction entry plus the post-compaction rebuild view
+/// (the kept tail re-parented to it, mirroring the file the append writes) and
+/// the projected token count for that view.
+fn build_rebuild_view(
+    leaf_id: &str,
+    result: &omp_compact::summary::CompactionResult,
+    kept_entries: Vec<Value>,
+    non_message_tokens: u64,
+    tokenizer: &dyn omp_compact::Tokenizer,
+) -> (String, Vec<Value>, Option<u64>) {
+    let ts = iso_from_ms(i64::try_from(now_ms()).unwrap_or(0));
+    let rebuild_entry = synthetic_compaction_entry(
+        &format!("{leaf_id}:compaction"),
+        if leaf_id.is_empty() { None } else { Some(leaf_id) },
+        &ts,
+        result,
+        Some("soft"),
+    );
+    let compaction_id = rebuild_entry
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut kept_entries = kept_entries;
+    if let (Some(id), Some(first)) = (compaction_id, kept_entries.first_mut()) {
+        if let Some(obj) = first.as_object_mut() {
+            obj.insert("parentId".into(), id.into());
+        }
+    }
+    let mut view: Vec<Value> = Vec::with_capacity(kept_entries.len() + 1);
+    view.push(rebuild_entry);
+    view.extend(kept_entries);
+    let view_refs: Vec<&Value> = view.iter().collect();
+    let tokens_after = project_tokens_after(
+        &view_refs,
+        result,
+        Some("soft"),
+        &ts,
+        non_message_tokens,
+        tokenizer,
+    )
+    .ok();
+    (ts, view, tokens_after)
 }
 
 /// Parse one branch entry fully, on demand.

@@ -441,7 +441,7 @@ pub fn plan_region(
     let kept_entries = region.split_off(kept_start);
     let recent_messages: Vec<Value> = kept_entries
         .iter()
-        .filter_map(|e| entry_message(e))
+        .filter_map(entry_message)
         .collect();
 
     let mut messages: Vec<Value> = Vec::with_capacity(kept_start);

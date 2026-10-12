@@ -103,7 +103,7 @@ pub fn host_script() -> Option<PathBuf> {
 /// `$OMP_AGENT_DIR/ext-shared.sock`, else `~/.omp/agent/ext-shared.sock`.
 /// Returns `None` (per-session stdio host) when the flag is unset or "0".
 fn shared_socket_path() -> Option<PathBuf> {
-    if !std::env::var_os("OMP_RS_EXT_SHARED").is_some_and(|v| v != "0") {
+    if std::env::var_os("OMP_RS_EXT_SHARED").is_none_or(|v| v == "0") {
         return None;
     }
     if let Ok(p) = std::env::var("OMP_RS_EXT_SOCKET") {

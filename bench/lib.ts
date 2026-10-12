@@ -313,7 +313,7 @@ export class RpcClient {
       cwd: opts.cwd,
       env: { ...process.env, ...opts.env } as Record<string, string>,
       stdout: "pipe",
-      stderr: "pipe",
+      stderr: process.env.BENCH_STDERR_INHERIT ? "inherit" : "pipe",
       stdin: "pipe",
     });
     const client = new RpcClient(proc);

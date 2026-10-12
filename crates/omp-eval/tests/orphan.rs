@@ -1,5 +1,5 @@
 //! Orphan-kernel regression: a runner (python `while True: pass`, bun
-//! `for(;;){}`) must die within ~2 s of its host being SIGKILLed, even while
+//! `for(;;){}`) must die within ~2 s of its host being `SIGKILLed`, even while
 //! a cell is busy. The helper is the test binary itself, re-exec'd with
 //! `OMP_ORPHAN_KIND` set; it starts a kernel, records the runner pid, and
 //! parks in a busy cell until the parent test SIGKILLs it.
@@ -48,7 +48,7 @@ fn orphan_helper_entry() {
         other => panic!("unknown kind {other}"),
     });
     // Park until the parent SIGKILLs this helper.
-    std::thread::sleep(Duration::from_secs(120));
+    std::thread::sleep(Duration::from_mins(2));
     let _ = worker.join();
 }
 

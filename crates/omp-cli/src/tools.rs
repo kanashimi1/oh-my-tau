@@ -18,7 +18,7 @@ mod read;
 mod search;
 mod task;
 mod todo;
-pub use todo::{phases_from_entries, TodoTool};
+pub use todo::{phases_from_entries, TodoPhase, TodoTool};
 mod tree;
 mod util;
 mod lsp;

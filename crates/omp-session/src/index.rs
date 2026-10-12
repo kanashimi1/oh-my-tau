@@ -416,10 +416,13 @@ mod tests {
     #[test]
     fn load_branch_parses_only_requested_lines() {
         let big = "x".repeat(4096);
+        let msg = format!(
+            r#"{{"type":"message","id":"a","parentId":"hdr","timestamp":"t","message":{{"role":"user","content":[{{"type":"text","text":"{big}"}}]}}}}"#
+        );
         let body = format!(
             "{}\n{}\n{}\n",
             r#"{"type":"session","version":3,"id":"hdr","timestamp":"t","cwd":"/tmp"}"#,
-            format!(r#"{{"type":"message","id":"a","parentId":"hdr","timestamp":"t","message":{{"role":"user","content":[{{"type":"text","text":"{big}"}}]}}}}"#),
+            msg,
             r#"{"type":"message","id":"b","parentId":"a","timestamp":"t"}"#,
         );
         let path = tmpfile("load-branch", &body);
