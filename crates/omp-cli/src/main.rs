@@ -455,10 +455,22 @@ fn last_thinking(messages: &[pa_agent::types::AgentMessage]) -> Option<String> {
 /// process static (it never drops), so `shutdown_all` must run explicitly on
 /// every exit path instead of relying on `kill_on_drop`.
 fn shutdown_lsp() {
-    let _ = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map(|rt| rt.block_on(omp_lsp::client::shutdown_all()));
+    // Exit paths run inside the main tokio runtime: parking the worker via
+    // `block_in_place` and driving the shutdown on the entered runtime (a
+    // fresh runtime's block_on would panic with "Cannot start a runtime from
+    // within a runtime"). From non-runtime contexts (tests) fall back to a
+    // scratch current-thread runtime.
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| {
+            handle.block_on(omp_lsp::client::shutdown_all());
+        }),
+        Err(_) => {
+            let _ = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map(|rt| rt.block_on(omp_lsp::client::shutdown_all()));
+        }
+    }
 }
 
 /// `shutdown_lsp` + `process::exit` (the only way main may terminate).
