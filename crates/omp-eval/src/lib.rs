@@ -17,11 +17,20 @@
 //! concatenation of stdout/stderr chunks plus the trailing-expression repr,
 //! and errors append the runner's traceback lines (runner frames filtered,
 //! caret-style for cell syntax errors).
+//!
+//! Orphan protection: every runner is spawned in its own process group
+//! (`process_group(0)`), and the runners run an internal parent watchdog
+//! (ppid polling in Python, a Bun Worker in JS) that hard-exits when the
+//! host process dies — even mid-cell — so a `SIGKILL`ed host cannot leak
+//! spinning kernels. The host escalates to `kill(-pgid, SIGKILL)` (whole
+//! group, so user-spawned subprocesses of a cell die too) when a runner
+//! refuses a graceful shutdown, and on the JS timeout path.
 
 #![allow(clippy::missing_errors_doc)] // single io::Error failure mode; per-call docs add noise
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::os::unix::process::CommandExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -215,6 +224,10 @@ impl KernelProcess {
         let mut child = Command::new(program)
             .args(args)
             .current_dir(cwd)
+            // Own process group: the host can kill the runner plus any
+            // subprocesses it spawned (kill(-pgid)) without touching the
+            // host's own group.
+            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -251,8 +264,32 @@ impl KernelProcess {
     pub(crate) fn settle_exit(&mut self) {
         let _ = self.stdin.write_all(b"{\"type\": \"exit\"}\n");
         let _ = self.stdin.flush();
+        // Grant a short grace for the runner's main loop to see the exit
+        // request, then escalate to killing the whole process group.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if self.child.try_wait().expect("try_wait").is_some() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.kill_group();
         // Child::wait closes stdin on return, unblocking the runner's main loop
         let _ = self.child.wait();
+    }
+
+    /// SIGKILL the runner's whole process group (`process_group(0)` makes the
+    /// pgid equal the runner's pid), so cells that spawned subprocesses do not
+    /// leak them.
+    pub(crate) fn kill_group(&mut self) {
+        // Negative pid targets the runner's own process group; nix::kill is
+        // a safe wrapper (the workspace forbids `unsafe`, and none is needed).
+        if let Ok(pid) = i32::try_from(self.child.id()) {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(-pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
     }
 }
 
@@ -540,6 +577,17 @@ impl PythonKernel {
             Some(p) => p.child.try_wait().expect("try_wait").is_none(),
             None => false,
         }
+    }
+
+    /// Runner process id while the kernel is running, else `None`
+    /// (introspection/test aid).
+    ///
+    /// # Panics
+    /// Panics if the kernel mutex is poisoned.
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        let guard = self.process.lock().expect("kernel lock");
+        guard.as_ref().map(|p| p.child.id())
     }
 
     /// Interpreter path this kernel was started with.

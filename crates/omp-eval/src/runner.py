@@ -40,6 +40,7 @@ import os
 import signal
 import sys
 import threading
+import time
 import traceback
 
 _PROTO = sys.__stdout__
@@ -56,6 +57,26 @@ ESCALATION_SECONDS = 5.0
 # Process-global (not thread-local): the watchdog thread must observe the
 # main thread's completion. The GIL makes plain bool reads/writes safe here.
 _CELL_DONE = True
+
+
+# Parent watchdog: when the host process dies (SIGKILL included), this
+# runner must exit promptly even while a cell is busy — an orphaned kernel
+# keeps its interpreter, memory and any busy-loop CPU forever otherwise.
+_PARENT_PID = os.getppid()
+
+
+def _watch_parent() -> None:
+    # os.getppid() changes to 1 (or a subreaper) once the parent is reaped;
+    # time.sleep releases the GIL, so a busy cell cannot delay detection.
+    while os.getppid() == _PARENT_PID:
+        time.sleep(0.2)
+    os._exit(0)
+
+
+def _start_parent_watchdog() -> None:
+    threading.Thread(
+        target=_watch_parent, name="omp-parent-watchdog", daemon=True
+    ).start()
 
 
 def _emit(frame: dict) -> None:
@@ -253,6 +274,7 @@ def _run_cell(
 
 
 def main() -> None:
+    _start_parent_watchdog()
     for line in sys.stdin:
         line = line.strip()
         if not line:

@@ -144,7 +144,7 @@ async fn local_compact_does_not_carry_remote_preserve_data_forward() {
         keep_recent_tokens: 30,
         ..CompactionSettings::default()
     };
-    let prep = plan_compaction(&entries, &settings, &ByteEstimate)
+    let prep = plan_compaction(&entries.iter().collect::<Vec<_>>(), &settings, &ByteEstimate)
         .unwrap()
         .unwrap();
     assert!(prep.previous_preserve_data.is_some());
@@ -178,7 +178,7 @@ async fn compact_runs_summary_flow_through_injected_completer() {
         keep_recent_tokens: 30,
         ..CompactionSettings::default()
     };
-    let prep = plan_compaction(&entries, &settings, &ByteEstimate)
+    let prep = plan_compaction(&entries.iter().collect::<Vec<_>>(), &settings, &ByteEstimate)
         .unwrap()
         .unwrap();
     assert_eq!(prep.first_kept_entry_id, "u2");
@@ -297,6 +297,42 @@ fn invalid_native_payload_replays_like_local_compaction() {
     assert_eq!(ctx.messages[0]["role"], "compactionSummary");
     assert!(ctx.messages[0].get("providerPayload").is_none());
     assert_eq!(ctx.messages.len(), 3);
+}
+
+/// The owned resume rebuild must produce the exact context the borrowed
+/// `build_session_context` builds — across the local, remote, reset and
+/// branch-summary layouts (shims on the resume path change nothing here).
+#[test]
+fn owned_rebuild_matches_borrowed() {
+    for fixture in [
+        session(),
+        {
+            let mut e = session();
+            e.push(json!({"type":"compaction","id":"k1","parentId":"a2","timestamp":"2026-01-01T00:00:05.000Z","summary":"S","firstKeptEntryId":"u2","tokensBefore":1,"preserveData":{"openaiRemoteCompaction":{"items":[{"role":"user"}]}},"providerReplayThroughEntryId":"a1"}));
+            e
+        },
+        {
+            let mut e = session();
+            e.push(json!({"type":"reset_boundary","id":"rb","parentId":"a2","timestamp":"2026-01-01T00:00:04.000Z"}));
+            e.push(json!({"type":"message","id":"u3","parentId":"rb","timestamp":"2026-01-01T00:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"after reset"}]}}));
+            e
+        },
+        {
+            let mut e = session();
+            e.push(json!({"type":"branch_summary","id":"bs","parentId":"a2","timestamp":"2026-01-01T00:00:04.000Z","summary":"branched","fromId":"a1"}));
+            e
+        },
+        {
+            let mut e = session();
+            e.push(json!({"type":"custom","id":"n1","parentId":"a2","timestamp":"2026-01-01T00:00:03.500Z","customType":"experimental_context_notes","data":{"version":1,"text":"notes"}}));
+            e
+        },
+    ] {
+        let borrowed =
+            omp_compact::build_session_context(&fixture, omp_compact::Leaf::Last).unwrap();
+        let owned = omp_compact::build_session_context_owned(fixture.clone(), omp_compact::Leaf::Last).unwrap();
+        assert_eq!(borrowed, owned, "owned rebuild diverged: {fixture:?}");
+    }
 }
 
 #[test]

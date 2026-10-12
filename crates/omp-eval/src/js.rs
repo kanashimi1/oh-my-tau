@@ -146,7 +146,7 @@ impl JsKernel {
                     // kill, so do it explicitly; otherwise a sync-spinning
                     // cell would leak a live subprocess.
                     if let Some(mut p) = self.process.lock().expect("kernel lock").take() {
-                        let _ = p.child.kill();
+                        p.kill_group();
                         drop(p);
                     }
                     return Ok(CellResult::partial(
@@ -160,7 +160,7 @@ impl JsKernel {
                     // Worker died or wedged mid-cell: make sure it is reaped,
                     // then report like omp so the caller recreates the kernel.
                     if let Some(mut p) = self.process.lock().expect("kernel lock").take() {
-                        let _ = p.child.kill();
+                        p.kill_group();
                         drop(p);
                     }
                     return Ok(CellResult::partial(
@@ -180,8 +180,9 @@ impl JsKernel {
             .as_mut()
             .is_some_and(|p| p.child.try_wait().expect("try_wait").is_none());
         if !alive {
-            if let Some(mut p) = guard.take() {
-                let _ = p.child.kill();
+            // try_wait() already reaped the dead runner above, so no kill is
+            // needed (and none is safe: the pid could have been recycled).
+            if let Some(p) = guard.take() {
                 drop(p);
             }
             *guard = Some(KernelProcess::spawn(&self.runtime, &["-e", RUNNER_JS], &self.cwd)?);
@@ -211,6 +212,17 @@ impl JsKernel {
             Some(p) => p.child.try_wait().expect("try_wait").is_none(),
             None => false,
         }
+    }
+
+    /// Runner process id while the kernel is running, else `None`
+    /// (introspection/test aid).
+    ///
+    /// # Panics
+    /// Panics if the kernel mutex is poisoned.
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        let guard = self.process.lock().expect("kernel lock");
+        guard.as_ref().map(|p| p.child.id())
     }
 
     /// Runtime command this kernel was started with.

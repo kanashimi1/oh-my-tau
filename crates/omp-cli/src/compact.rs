@@ -12,14 +12,12 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context as _, Result};
 use omp_compact::context::branch_path;
-use omp_compact::settings::{
-    calculate_context_tokens, compaction_context_tokens, last_assistant_usage,
-};
-use omp_compact::tokens::{count_messages, CountOptions};
+use omp_compact::settings::{calculate_context_tokens, compaction_context_tokens};
+use omp_compact::tokens::CountOptions;
 use omp_compact::{
-    build_session_context, convert_to_llm, plan_compaction, project_tokens_after, should_compact,
-    ApplyOptions, ByteEstimate, CompactionResult, CompactionSettings, Completer, Leaf,
-    SummaryParams, SummaryRequest,
+    build_session_context_path, plan_boundary, plan_region, project_tokens_after, should_compact,
+    synthetic_compaction_entry, ApplyOptions, ByteEstimate, BoundaryEntry, CompactionResult,
+    CompactionSettings, Completer, Leaf, SummaryParams, SummaryRequest,
 };
 use pa_agent::types::AgentMessage;
 use pa_types::ai::{AssistantMessage, Model};
@@ -175,11 +173,22 @@ pub fn load_settings_from(dir: &Path) -> CompactionSettings {
 /// # Errors
 /// The latest compaction carries a payload this port cannot replay (remote/snapcompact/...).
 pub fn rebuild_context(entries: &[Value]) -> Result<Vec<AgentMessage>> {
-    let ctx = build_session_context(entries, Leaf::Last).map_err(|e| anyhow!("{e}"))?;
-    Ok(convert_to_llm(&ctx.messages)
-        .into_iter()
-        .filter_map(|m| serde_json::from_value::<AgentMessage>(m).ok())
-        .collect())
+    let path = branch_path(entries, Leaf::Last);
+    let ctx = build_session_context_path(&path).map_err(|e| anyhow!("{e}"))?;
+    Ok(context_messages(ctx))
+}
+
+/// `SessionContext` → typed agent messages: each context message is converted
+/// and deserialized one at a time, so the converted LLM-shape `Value` never
+/// coexists with the whole list (resume stays low-RSS).
+pub fn context_messages(ctx: omp_compact::SessionContext) -> Vec<AgentMessage> {
+    ctx.messages
+        .iter()
+        .filter_map(|m| {
+            let converted = omp_compact::convert_message(m)?;
+            serde_json::from_value::<AgentMessage>(converted).ok()
+        })
+        .collect()
 }
 
 /// Summarizer calls over `pa-ai` against the live model.
@@ -286,32 +295,144 @@ fn now_ms() -> u64 {
     u64::try_from(pa_agent::now_ms()).unwrap_or(0)
 }
 
+/// The cheap per-line scan for [`plan_boundary`]: top-level links plus the
+/// small fields the boundary decision reads; message bodies and payloads are
+/// not retained.
+#[derive(serde::Deserialize)]
+struct PlanHead {
+    #[serde(rename = "type", default)]
+    kind: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(rename = "firstKeptEntryId", default)]
+    first_kept: Option<String>,
+    #[serde(rename = "providerReplayThroughEntryId", default)]
+    replay_through: Option<String>,
+    #[serde(default)]
+    preserve_data: Option<PreserveHead>,
+    #[serde(default)]
+    message: Option<PlanHeadMessage>,
+}
+
+#[derive(serde::Deserialize)]
+struct PreserveHead {
+    #[serde(rename = "openaiRemoteCompaction", default)]
+    openai_remote: Option<OpenAiRemoteHead>,
+}
+
+#[derive(serde::Deserialize)]
+struct OpenAiRemoteHead {
+    /// Only the array check is needed; the payload itself can be large and
+    /// is never retained here.
+    #[serde(rename = "replacementHistory", default)]
+    replacement_history: Option<Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct PlanHeadMessage {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(rename = "stopReason", default)]
+    stop_reason: Option<String>,
+    #[serde(default)]
+    usage: Option<Value>,
+}
+
+/// Scan the branch's raw lines into content-free [`BoundaryEntry`] headers.
+fn scan_boundary_entries(
+    path: &Path,
+    index: &omp_session::index::SessionIndex,
+    branch: &[u32],
+) -> Result<Vec<BoundaryEntry>> {
+    let mut out = Vec::with_capacity(branch.len());
+    index.for_each_line(path, branch, |_, raw| {
+        let head: PlanHead = serde_json::from_str(raw)
+            .with_context(|| format!("boundary scan: malformed entry line: {raw:.120}"))?;
+        out.push(BoundaryEntry {
+            entry_type: head.kind.unwrap_or_default(),
+            id: head.id.unwrap_or_default(),
+            replay_through: head.replay_through,
+            first_kept: head.first_kept,
+            preserve_data: None, // injected from the fully parsed previous entry
+            remote_replacement: head
+                .preserve_data
+                .and_then(|p| p.openai_remote)
+                .and_then(|o| o.replacement_history)
+                .is_some_and(|v| v.is_array()),
+            summary: head.summary,
+            timestamp: head.timestamp,
+            message_role: head.message.as_ref().and_then(|m| m.role.as_deref().map(str::to_owned)),
+            stop_reason: head.message.as_ref().and_then(|m| m.stop_reason.clone()),
+            usage: head.message.and_then(|m| m.usage),
+        });
+        Ok(())
+    })?;
+    Ok(out)
+}
+
 /// Plan, summarize and commit one compaction of the live session; `Ok` carries the rpc `compact`
-/// result (`summary`, `shortSummary`, `firstKeptEntryId`, `tokensBefore`, `details`, `preserveData`).
-/// The caller re-reads the session file and swaps the agent's messages via [`rebuild_context`].
+/// result (`summary`, `shortSummary`, `firstKeptEntryId`, `tokensBefore`, `details`, `preserveData`)
+/// and the post-compaction rebuild view (`compaction` entry + kept tail) for [`rebuild_context`].
+///
+/// The journal is scanned once for structure (index + headers) and only the
+/// compactable region is fully parsed — the pre-boundary history never becomes
+/// a `Value` DOM, which keeps a compaction of a large session within budget.
 ///
 /// # Errors
 /// Nothing to compact / already compacted (TS messages), summarization failure, unsupported
 /// previous compaction payload, or a write failure.
 pub async fn compact_now(
     persist: &Persistence,
-    entries: &[Value],
+    path: &Path,
     completer: &impl Completer,
     params: &CompactParams<'_>,
-) -> Result<(CompactionResult, Value)> {
-    let branch: Vec<Value> = branch_path(entries, Leaf::Last)
-        .into_iter()
-        .cloned()
-        .collect();
-    let tokenizer = ByteEstimate;
-    let prep = plan_compaction(&branch, params.settings, &tokenizer).map_err(|e| anyhow!("{e}"))?;
-    let Some(prep) = prep else {
-        if branch
-            .last()
-            .is_some_and(|e| e.get("type").and_then(Value::as_str) == Some("compaction"))
-        {
+) -> Result<(CompactionResult, Value, Vec<Value>)> {
+    let index = omp_session::index::SessionIndex::load(path)
+        .with_context(|| format!("index {}", path.display()))?;
+    let branch = index.branch();
+    let heads = scan_boundary_entries(path, &index, &branch)?;
+    let Some(mut boundary) = plan_boundary(&heads, params.settings) else {
+        if heads.last().is_some_and(|h| h.entry_type == "compaction") {
             return Err(anyhow!("Already compacted"));
         }
+        return Err(anyhow!("Nothing to compact (session too small)"));
+    };
+    // Fully parse only the compactable region (and the previous compaction
+    // entry, whose preserveData the summary request carries forward).
+    let mut region: Vec<Value> = Vec::new();
+    index
+        .for_each_line(path, &branch[boundary.boundary_start..], |_, raw| {
+            region.push(
+                serde_json::from_str(raw)
+                    .with_context(|| format!("region parse: malformed entry line: {raw:.120}"))?,
+            );
+            Ok(())
+        })
+        .with_context(|| format!("read {}", path.display()))?;
+    let previous: Option<Value> = boundary
+        .prev_compaction_idx
+        .map(|i| load_one(path, &index, branch[i]))
+        .transpose()?;
+    if let (Some(prev), b) = (&previous, &mut boundary) {
+        b.previous_preserve_data = prev
+            .get("preserveData")
+            .filter(|d| !d.is_null())
+            .cloned();
+    }
+    let tokenizer = ByteEstimate;
+    let (prep, kept_entries) = plan_region(
+        region,
+        &boundary,
+        previous.as_ref(),
+        params.settings,
+        &tokenizer,
+    )
+    .map_err(|e| anyhow!("{e}"))?;
+    let Some(prep) = prep else {
         return Err(anyhow!("Nothing to compact (session too small)"));
     };
     let mut summary_params = SummaryParams::new(now_ms()).for_model(params.model_id);
@@ -323,8 +444,40 @@ pub async fn compact_now(
     summary_params.custom_instructions = params.custom_instructions;
     let result = omp_compact::compact(completer, &prep, &summary_params).await?;
     let ts = iso_from_ms(i64::try_from(now_ms()).unwrap_or(0));
+    let leaf_id = heads
+        .last()
+        .map_or("", |h| h.id.as_str())
+        .to_owned();
+    let rebuild_entry = synthetic_compaction_entry(
+        &format!("{leaf_id}:compaction"),
+        if leaf_id.is_empty() {
+            None
+        } else {
+            Some(&leaf_id)
+        },
+        &ts,
+        &result,
+        Some("soft"),
+    );
+    // Post-compaction rebuild view: the kept tail (moved out of the region by
+    // `plan_region`) is re-parented to the synthetic entry, mirroring the file
+    // the append is about to write.
+    let compaction_id = rebuild_entry
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let mut kept_entries = kept_entries;
+    if let (Some(id), Some(first)) = (compaction_id, kept_entries.first_mut()) {
+        if let Some(obj) = first.as_object_mut() {
+            obj.insert("parentId".into(), id.into());
+        }
+    }
+    let mut view: Vec<Value> = Vec::with_capacity(kept_entries.len() + 1);
+    view.push(rebuild_entry);
+    view.extend(kept_entries);
+    let view_refs: Vec<&Value> = view.iter().collect();
     let tokens_after = project_tokens_after(
-        &branch,
+        &view_refs,
         &result,
         Some("soft"),
         &ts,
@@ -350,91 +503,122 @@ pub async fn compact_now(
     if let Some(p) = &result.preserve_data {
         data["preserveData"] = p.clone();
     }
-    Ok((result, data))
+    Ok((result, data, view))
+}
+
+/// Parse one branch entry fully, on demand.
+fn load_one(
+    path: &Path,
+    index: &omp_session::index::SessionIndex,
+    at: u32,
+) -> Result<Value> {
+    let mut out = None;
+    index.for_each_line(path, &[at], |_, raw| {
+        out = Some(serde_json::from_str(raw).context("entry parse")?);
+        Ok(())
+    })?;
+    out.ok_or_else(|| anyhow!("entry {at} vanished"))
 }
 
 /// The post-turn threshold decision (`checkCompaction`, case "threshold"): the provider-billed
 /// context of the newest successful assistant turn after the latest compaction, floored by the
 /// local estimate of the rebuilt context, against `resolveThresholdTokens`.
 #[must_use]
-pub fn auto_check(entries: &[Value], context_window: u64, settings: &CompactionSettings) -> bool {
+/// Local token estimate of the live typed context (`rebuild_estimate`
+/// equivalent: `count_message` over every context message) — the threshold
+/// check's stored-conversation floor without touching the journal.
+///
+/// An assistant turn that predates the latest compaction carries stale usage;
+/// the caller passes the newest usable usage separately.
+pub fn estimate_context_tokens(messages: &[AgentMessage]) -> u64 {
+    messages
+        .iter()
+        .map(|m| {
+            serde_json::to_value(m).map_or(0, |v| {
+                omp_compact::tokens::count_message(&ByteEstimate, &v, CountOptions::default())
+            })
+        })
+        .sum()
+}
+
+/// The threshold decision (`checkCompaction`, case "threshold"): the
+/// provider-billed context of the newest successful assistant turn, floored by
+/// the local estimate of the live context, against `resolveThresholdTokens`.
+pub fn auto_check(
+    usage: Option<Value>,
+    stored_estimate: u64,
+    context_window: u64,
+    settings: &CompactionSettings,
+) -> bool {
     if !settings.enabled || context_window == 0 {
         return false;
     }
-    let branch: Vec<Value> = branch_path(entries, Leaf::Last)
-        .into_iter()
-        .cloned()
-        .collect();
-    let after = branch
-        .iter()
-        .rposition(|e| e.get("type").and_then(Value::as_str) == Some("compaction"))
-        .map_or(0, |i| i + 1);
-    // An assistant turn that predates the latest compaction carries stale usage.
-    let usage = last_assistant_usage(&branch[after..]).map_or(0, calculate_context_tokens);
-    let stored = rebuild_estimate(&branch);
+    let billed = usage.map_or(0, |v| calculate_context_tokens(&v));
     should_compact(
-        compaction_context_tokens(usage, stored),
+        compaction_context_tokens(billed, stored_estimate),
         context_window,
         settings,
     )
 }
 
-fn rebuild_estimate(branch: &[Value]) -> u64 {
-    build_session_context(branch, Leaf::Last).map_or(0, |ctx| {
-        count_messages(
-            &ByteEstimate,
-            &convert_to_llm(&ctx.messages),
-            CountOptions::default(),
-        )
+/// Copy the active branch of the session at `path` into the (fresh) live session file so
+/// its `compaction` entries keep working: fresh ids chained to the writer's leaf,
+/// `firstKeptEntryId` / `providerReplayThroughEntryId` remapped to the copied ids. The
+/// seed works on the raw journal lines — payload bytes stay verbatim, no `Value` DOM is
+/// built for the branch — which keeps resuming a large session cheap; lines the rewriter
+/// cannot patch fall back to the DOM path per entry.
+///
+/// # Errors
+/// An entry line cannot be read, rewritten or written.
+pub fn seed_branch(persist: &Persistence, index: &omp_session::index::SessionIndex, path: &std::path::Path) -> Result<()> {
+    let branch = index.branch();
+    let mut remap = std::collections::HashMap::<String, String>::new();
+    index.for_each_line(path, &branch, |r, raw| {
+        let old_id = r.id.to_string();
+        let new_id = persist
+            .with_writer(|w| w.append_seeded_line(raw, &remap))
+            .or_else(|_| seed_entry_dom(persist, raw, &remap))?;
+        remap.insert(old_id, new_id);
+        Ok(())
     })
 }
 
-/// Copy the active branch of a loaded session into the (fresh) live session file so its
-/// `compaction` entries keep working: ids are regenerated by the writer, `firstKeptEntryId` is
-/// remapped to the copied entry. Model/thinking changes and other bookkeeping entries come along.
-///
-/// # Errors
-/// An entry does not fit its schema or the write failed.
-pub fn seed_entries(persist: &Persistence, entries: &[Value]) -> Result<()> {
-    let mut ids = std::collections::HashMap::<String, String>::new();
-    for entry in branch_path(entries, Leaf::Last) {
-        let Some(kind) = entry.get("type").and_then(Value::as_str) else {
+/// DOM fallback for one seeded entry (rare: only lines the raw rewriter rejects).
+/// Mirrors the previous seeding behaviour: fields copied from the parsed entry,
+/// link fields regenerated by the writer, remap keys rewritten through `remap`.
+fn seed_entry_dom(
+    persist: &Persistence,
+    raw: &str,
+    remap: &std::collections::HashMap<String, String>,
+) -> Result<String> {
+    let entry: Value = serde_json::from_str(raw)?;
+    let obj = entry.as_object().ok_or_else(|| anyhow::anyhow!("entry is not an object"))?;
+    let kind = obj
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("entry has no type"))?;
+    let mut fields = serde_json::Map::with_capacity(obj.len());
+    for (k, v) in obj {
+        if matches!(k.as_str(), "type" | "id" | "parentId" | "timestamp") {
             continue;
-        };
-        // Build the payload from references: no deep clone of the whole entry.
-        let Some(obj) = entry.as_object() else {
-            continue;
-        };
-        let mut fields = serde_json::Map::with_capacity(obj.len());
-        for (k, v) in obj {
-            if matches!(k.as_str(), "type" | "id" | "parentId" | "timestamp") {
-                continue;
-            }
-            fields.insert(k.clone(), v.clone());
         }
-        let old_id = entry
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let ts = entry
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        for key in ["firstKeptEntryId", "providerReplayThroughEntryId"] {
-            if let Some(mapped) = fields
-                .get(key)
-                .and_then(Value::as_str)
-                .and_then(|id| ids.get(id))
-            {
-                fields.insert(key.to_owned(), Value::String(mapped.clone()));
-            }
-        }
-        let new_id = persist.with_writer(|w| w.append_entry(kind, Value::Object(fields), &ts))?;
-        ids.insert(old_id, new_id);
+        fields.insert(k.clone(), v.clone());
     }
-    Ok(())
+    for key in ["firstKeptEntryId", "providerReplayThroughEntryId"] {
+        if let Some(mapped) = fields
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(|id| remap.get(id))
+        {
+            fields.insert(key.to_owned(), Value::String(mapped.clone()));
+        }
+    }
+    let ts = obj
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    persist.with_writer(|w| w.append_entry(kind, Value::Object(fields), &ts))
 }
 
 #[cfg(test)]
@@ -721,6 +905,65 @@ mod tests {
                 .contains("after-boundary reply")),
             "kept tail survives the local compaction: {rebuilt:?}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The lazy resume shims the pre-compaction history (link-only stand-ins)
+    /// but must rebuild the exact context the full-parse rebuild produces.
+    #[tokio::test]
+    async fn resume_with_lazy_shims_matches_full_parse_rebuild() {
+        let dir = std::env::temp_dir().join(format!("omp-rs-lazy-shim-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("lazy-shim.jsonl");
+        let msg = |id: &str, parent: &str, ts: &str, role: &str, text: &str| {
+            format!(
+                r#"{{"type":"message","id":"{id}","parentId":"{parent}","timestamp":"{ts}","message":{{"role":"{role}","provider":"p","model":"a","content":[{{"type":"text","text":"{text}"}}],"stopReason":"stop","timestamp":1}}}}"#
+            )
+        };
+        let mut body = vec![
+            r#"{"type":"session","version":3,"id":"hdr","timestamp":"2026-10-01T00:00:00.000Z","cwd":"/tmp"}"#.to_string(),
+        ];
+        // Pre-compaction history: long-abandoned turns, including an assistant
+        // turn that seeded the default model inference.
+        let mut prev = "hdr".to_string();
+        for i in 0..30 {
+            let id = format!("pre{i:02}");
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            body.push(msg(&id, &prev, "2026-10-01T00:01:00.000Z", role, &format!("history turn {i} {}", "h".repeat(200))));
+            prev = id;
+        }
+        body.push(msg("kept1", &prev, "2026-10-01T00:02:00.000Z", "user", "kept request"));
+        body.push(msg("kept2", "kept1", "2026-10-01T00:02:05.000Z", "assistant", "kept reply"));
+        body.push(
+            r#"{"type":"compaction","id":"cmp1","parentId":"kept2","timestamp":"2026-10-01T00:03:00.000Z","summary":"SHIM SUMMARY","shortSummary":"shim","firstKeptEntryId":"kept1","tokensBefore":"9000","tokensAfter":"900","method":"soft","details":{"kind":"local"}}"#
+                .to_string(),
+        );
+        body.push(msg("post1", "cmp1", "2026-10-01T00:04:00.000Z", "user", "post request"));
+        body.push(msg("post2", "post1", "2026-10-01T00:04:05.000Z", "assistant", "post reply"));
+        std::fs::write(&file, body.join("\n")).unwrap();
+
+        let expected = rebuild_context(&crate::runtime::read_entries(&file).unwrap()).unwrap();
+        let h = harness(0).await;
+        h.rt.load_session(&file, None).await.expect("lazy resume");
+        let live = h.rt.messages().await;
+        assert_eq!(live.len(), expected.len(), "shimmed rebuild == full-parse rebuild");
+        assert!(
+            live.iter()
+                .any(|m| m.to_string().contains("SHIM SUMMARY")),
+            "summary first: {live:?}"
+        );
+        assert!(
+            live.iter().any(|m| m.to_string().contains("post request")),
+            "post-compaction tail kept: {live:?}"
+        );
+        assert!(
+            live.iter()
+                .all(|m| !m.to_string().contains("history turn")),
+            "pre-compaction history stays summarized: {live:?}"
+        );
+        // The seeded continuation file must rebuild to the same context.
+        let seeded = h.rt.entries().expect("seeded entries");
+        assert_eq!(rebuild_context(&seeded).unwrap().len(), expected.len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

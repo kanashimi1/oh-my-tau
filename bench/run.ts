@@ -12,7 +12,17 @@
 import { spawn, type Subprocess } from "bun";
 import { mkdirSync, rmSync, writeFileSync, symlinkSync, copyFileSync, existsSync, readdirSync, statSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { runTimed, RpcClient, stats, treeRssKb, type BenchEnv, type BinSpec, type Stats } from "./lib.ts";
+import {
+  runTimed,
+  RpcClient,
+  stats,
+  treeRssKb,
+  treePssKb,
+  treeBreakdown,
+  type BenchEnv,
+  type BinSpec,
+  type Stats,
+} from "./lib.ts";
 
 const BENCH_DIR = resolve(import.meta.dir);
 const REPO_ROOT = resolve(BENCH_DIR, "..");
@@ -29,7 +39,12 @@ const args = process.argv.slice(2);
 const QUICK = args.includes("--quick");
 const REPEATS = QUICK ? 2 : Number(process.env.BENCH_REPEATS ?? 12);
 const scIdx = args.indexOf("--scenario");
-const ONLY = scIdx >= 0 ? new Set(args[scIdx + 1].split(",").map((s) => s.trim())) : null;
+let ONLY: Set<string> | null = scIdx >= 0 ? new Set(args[scIdx + 1].split(",").map((s) => s.trim())) : null;
+// --only mem: memory scenarios m1 (per-session breakdown), m2 (N-session fleet
+// RSS/PSS), m3 (resume RSS+wall). Usage: bun bench/run.ts --quick --only mem
+if (args.includes("--only") && args[args.indexOf("--only") + 1] === "mem") {
+  ONLY = new Set(["m1", "m2", "m3"]);
+}
 
 const BINS: BinSpec[] = [
   { name: "omp-rs", path: RS_OMP },
@@ -650,6 +665,195 @@ async function scenario7(): Promise<void> {
   }
 }
 
+
+// ---------- memory scenarios (m1-m3) ----------
+
+/** Aggregate a role-grouped breakdown: sum rss/pss per role. */
+function roleSums(bd: { procs: { role: string; rssKb: number; pssKb: number }[] }): Record<string, { rssKb: number; pssKb: number }> {
+  const out: Record<string, { rssKb: number; pssKb: number }> = {};
+  for (const pr of bd.procs) {
+    const e = (out[pr.role] ??= { rssKb: 0, pssKb: 0 });
+    e.rssKb += pr.rssKb;
+    e.pssKb += pr.pssKb;
+  }
+  return out;
+}
+
+interface TreeSample {
+  rssKb: number;
+  pssKb: number;
+}
+
+/** Total tree RSS+PSS for a set of root pids (PSS summed over all trees so
+ * shared pages across sessions are counted fairly). */
+async function fleetSample(pids: number[]): Promise<TreeSample> {
+  let rss = 0;
+  let pss = 0;
+  for (const pid of pids) {
+    rss += await treeRssKb(pid);
+    pss += await treePssKb(pid);
+  }
+  return { rssKb: rss, pssKb: pss };
+}
+
+async function scenarioM1(): Promise<void> {
+  await startMock("m1");
+  const title = "m1. one rpc session: per-process RSS/PSS breakdown, growth over 50 turns";
+  console.log(`\n== ${title}`);
+  mdLines.push(`\n## ${title}\n`);
+  mdLines.push("| bin | point | core KB | ext-host KB | other KB | tree RSS KB | tree PSS KB |");
+  mdLines.push("|---|---|---|---|---|---|---|");
+  const TURN_MARKS = [0, 1, 2, 5, 10, 20, 30, 40, 50];
+  for (const bin of BINS) {
+    const err = checkBin(bin);
+    const home = makeAgentHome(`m1-${bin.name}`);
+    home.enableExtensions(true);
+    if (err) {
+      record("m1", bin.name, { ok: false, error: err });
+      mdLines.push(`| ${bin.name} | - | ERROR | | | | | |`);
+      rmSync(home.root, { recursive: true, force: true });
+      continue;
+    }
+    try {
+      const client = await RpcClient.start([bin.path, "--mode", "rpc", "--model", "mock/toolturn"], {
+        cwd: home.root,
+        env: home.env,
+        timeoutMs: 600_000,
+      });
+      const points: { turn: number; roles: Record<string, { rssKb: number; pssKb: number }>; rssKb: number; pssKb: number }[] = [];
+      const pushPoint = async (turn: number): Promise<void> => {
+        await Bun.sleep(200); // let the ext-host/event backlog settle
+        const bd = await treeBreakdown(client.pid);
+        const roles = roleSums(bd);
+        points.push({ turn, roles, rssKb: bd.totalRssKb, pssKb: bd.totalPssKb });
+        const fmt = (r: string): string => (roles[r] ? roles[r].rssKb.toFixed(0) : "0");
+        mdLines.push(`| ${bin.name} | ${turn === 0 ? "idle" : `turn ${turn}`} | ${fmt("core")} | ${fmt("ext-host")} | ${fmt("other")} | ${bd.totalRssKb} | ${bd.totalPssKb} |`);
+      };
+      await client.call("get_state");
+      await pushPoint(0);
+      let failedTurn: string | null = null;
+      for (let t = 1; t <= 50 && !failedTurn; t++) {
+        try {
+          await client.prompt(`turn ${t}`, 30_000);
+        } catch (e) {
+          failedTurn = `turn ${t}: ${String(e).slice(0, 160)}`;
+          break;
+        }
+        if (TURN_MARKS.includes(t)) await pushPoint(t);
+      }
+      await client.stop();
+      record("m1", bin.name, { ok: !failedTurn, error: failedTurn ?? undefined, extra: { points } });
+    } catch (e) {
+      record("m1", bin.name, { ok: false, error: String(e) });
+      mdLines.push(`| ${bin.name} | - | ERROR | | | | | |`);
+    }
+    rmSync(home.root, { recursive: true, force: true });
+  }
+}
+
+async function scenarioM2(): Promise<void> {
+  await startMock("m2");
+  const title = "m2. fleet RSS/PSS for N=1/8/32 concurrent rpc sessions, with/without extensions";
+  console.log(`\n== ${title}`);
+  mdLines.push(`\n## ${title}\n`);
+  mdLines.push("| bin | sessions | extensions | tree RSS KB (idle) | tree PSS KB (idle) | KB/session PSS |");
+  mdLines.push("|---|---|---|---|---|---|");
+  for (const bin of BINS) {
+    const err = checkBin(bin);
+    for (const withExt of [true, false]) {
+      for (const n of [1, 8, 32]) {
+        const home = makeAgentHome(`m2-${bin.name}-${withExt ? "ext" : "noext"}-${n}`);
+        home.enableExtensions(withExt);
+        if (err) {
+          record(`m2-${withExt ? "ext" : "noext"}-n${n}`, bin.name, { ok: false, error: err });
+          mdLines.push(`| ${bin.name} | ${n} | ${withExt} | ERROR | | |`);
+          rmSync(home.root, { recursive: true, force: true });
+          continue;
+        }
+        try {
+          const extraArgs = withExt ? [] : ["--no-extensions"];
+          const clients: RpcClient[] = await Promise.all(
+            Array.from({ length: n }, () =>
+              RpcClient.start([bin.path, "--mode", "rpc", "--model", "mock/toolturn", ...extraArgs], {
+                cwd: home.root,
+                env: home.env,
+                timeoutMs: 300_000,
+              }),
+            ),
+          );
+          // ext-host/extension spawn is async and racy; sample a few settle
+          // points and keep the max so fleets are not undercounted.
+          const t0 = performance.now();
+          let sample: TreeSample = { rssKb: 0, pssKb: 0 };
+          for (const waitMs of [800, 1200, 2000, 3200]) {
+            await Bun.sleep(waitMs);
+            const cur = await fleetSample(clients.map((c) => c.pid));
+            sample = { rssKb: Math.max(sample.rssKb, cur.rssKb), pssKb: Math.max(sample.pssKb, cur.pssKb) };
+          }
+          const wallS = (performance.now() - t0) / 1000;
+          await Promise.all(clients.map((c) => c.stop()));
+          record(`m2-${withExt ? "ext" : "noext"}-n${n}`, bin.name, {
+            ok: true,
+            extra: { sessions: n, extensions: withExt, rssKb: sample.rssKb, pssKb: sample.pssKb, pssPerSessionKb: sample.pssKb / n, settleWallS: wallS },
+          });
+          mdLines.push(`| ${bin.name} | ${n} | ${withExt ? "yes" : "no"} | ${sample.rssKb} | ${sample.pssKb} | ${(sample.pssKb / n).toFixed(0)} |`);
+        } catch (e) {
+          record(`m2-${withExt ? "ext" : "noext"}-n${n}`, bin.name, { ok: false, error: String(e) });
+          mdLines.push(`| ${bin.name} | ${n} | ${withExt} | ERROR | | |`);
+        }
+        rmSync(home.root, { recursive: true, force: true });
+      }
+    }
+  }
+}
+
+async function scenarioM3(): Promise<void> {
+  await startMock("m3");
+  const title = "m3. RSS + wall time resuming the 5 largest real session files (read-only copies)";
+  console.log(`\n== ${title}`);
+  mdLines.push(`\n## ${title}\n`);
+  mdLines.push("| bin | session file size MB | wall ms | tree RSS peak KB | tree PSS KB |");
+  mdLines.push("|---|---|---|---|---|");
+  for (const bin of BINS) {
+    const err = checkBin(bin);
+    const home = makeAgentHome(`m3-${bin.name}`);
+    let files: string[] = [];
+    try {
+      files = setupSessions(join(home.root, ".omp", "agent"));
+    } catch (e) {
+      record("m3", bin.name, { ok: false, error: `session setup: ${e}` });
+      mdLines.push(`| ${bin.name} | - | ERROR | | |`);
+      continue;
+    }
+    if (err) {
+      record("m3", bin.name, { ok: false, error: err });
+      mdLines.push(`| ${bin.name} | - | ERROR | | |`);
+      rmSync(home.root, { recursive: true, force: true });
+      continue;
+    }
+    try {
+      const perFile: { sizeMb: number; wallMs: number; rssPeakKb: number; pssKb: number }[] = [];
+      for (const f of files) {
+        const sizeMb = statSync(f).size / 1e6;
+        const r = await runTimed(
+          binCmd(bin, "text", ["--session-dir", join(home.root, ".omp", "agent", "sessions", "-bench"), "--resume", f]),
+          { cwd: home.root, env: home.env, timeoutMs: 300_000, rssSampling: true },
+        );
+        if (r.code !== 0) throw new Error(`exit ${r.code}: ${r.stderr.slice(-300)}`);
+        // PSS after exit is gone; resample peak-period PSS via a second run would
+        // double cost, so report peak RSS + a sampled RSS/PSS pair is skipped.
+        perFile.push({ sizeMb, wallMs: r.ms, rssPeakKb: r.peakRssKb, pssKb: 0 });
+        mdLines.push(`| ${bin.name} | ${sizeMb.toFixed(1)} | ${r.ms.toFixed(0)} | ${r.peakRssKb} | - |`);
+      }
+      record("m3", bin.name, { ok: true, extra: { files: perFile } });
+    } catch (e) {
+      record("m3", bin.name, { ok: false, error: String(e) });
+      mdLines.push(`| ${bin.name} | - | ERROR | | |`);
+    }
+    rmSync(home.root, { recursive: true, force: true });
+  }
+}
+
 // ---------- main ----------
 
 const SCENARIOS: [string, () => Promise<void>][] = [
@@ -660,6 +864,9 @@ const SCENARIOS: [string, () => Promise<void>][] = [
   ["5", scenario5],
   ["6", scenario6],
   ["7", scenario7],
+  ["m1", scenarioM1],
+  ["m2", scenarioM2],
+  ["m3", scenarioM3],
 ];
 
 async function main(): Promise<void> {

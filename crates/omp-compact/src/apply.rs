@@ -6,7 +6,7 @@ use omp_session::entries::Compaction;
 use omp_session::SessionWriter;
 use serde_json::{Map, Number, Value};
 
-use crate::context::{build_session_context, ContextError, Leaf};
+use crate::context::{build_session_context_path, ContextError};
 use crate::convert::convert_to_llm;
 use crate::json::entry_id;
 use crate::summary::CompactionResult;
@@ -94,30 +94,26 @@ pub fn append_compaction(
 ///
 /// # Errors
 /// The rebuilt context hit an unsupported payload.
-pub fn project_tokens_after(
-    branch: &[Value],
+/// A synthetic `compaction` journal entry for `result`, shaped exactly like the
+/// entry [`append_compaction`] writes (same payload fields, same order) but
+/// with an caller-chosen id. Used for in-memory projections and rebuilds so
+/// they never re-read the session file.
+#[must_use]
+pub fn synthetic_compaction_entry(
+    id: &str,
+    parent_id: Option<&str>,
+    timestamp_iso: &str,
     result: &CompactionResult,
     method: Option<&str>,
-    timestamp_iso: &str,
-    non_message_tokens: u64,
-    tokenizer: &dyn Tokenizer,
-) -> Result<u64, ContextError> {
-    let leaf_id = branch.last().map_or("", entry_id).to_owned();
+) -> Value {
     let mut pending = Map::new();
     pending.insert("type".into(), "compaction".into());
-    pending.insert(
-        "id".into(),
-        format!("{leaf_id}:compaction-tokens-projection").into(),
-    );
+    pending.insert("id".into(), id.to_owned().into());
     pending.insert(
         "parentId".into(),
-        if leaf_id.is_empty() {
-            Value::Null
-        } else {
-            leaf_id.into()
-        },
+        parent_id.map_or(Value::Null, |p| p.to_owned().into()),
     );
-    pending.insert("timestamp".into(), timestamp_iso.into());
+    pending.insert("timestamp".into(), timestamp_iso.to_owned().into());
     pending.insert("summary".into(), result.summary.clone().into());
     pending.insert("shortSummary".into(), result.short_summary.clone().into());
     pending.insert(
@@ -126,15 +122,40 @@ pub fn project_tokens_after(
     );
     pending.insert("tokensBefore".into(), result.tokens_before.into());
     if let Some(m) = method {
-        pending.insert("method".into(), m.into());
+        pending.insert("method".into(), m.to_owned().into());
     }
     pending.insert("details".into(), result.details.clone());
     if let Some(p) = &result.preserve_data {
         pending.insert("preserveData".into(), p.clone());
     }
-    let mut entries = branch.to_vec();
-    entries.push(Value::Object(pending));
-    let rebuilt = build_session_context(&entries, Leaf::Last)?;
+    Value::Object(pending)
+}
+
+/// # Errors
+/// The projected rebuild hit an unsupported compaction payload.
+pub fn project_tokens_after(
+    branch: &[&Value],
+    result: &CompactionResult,
+    method: Option<&str>,
+    timestamp_iso: &str,
+    non_message_tokens: u64,
+    tokenizer: &dyn Tokenizer,
+) -> Result<u64, ContextError> {
+    let leaf_id = branch.last().map_or("", |e| entry_id(e)).to_owned();
+    let pending = synthetic_compaction_entry(
+        &format!("{leaf_id}:compaction-tokens-projection"),
+        if leaf_id.is_empty() {
+            None
+        } else {
+            Some(&leaf_id)
+        },
+        timestamp_iso,
+        result,
+        method,
+    );
+    let mut entries: Vec<&Value> = branch.to_vec();
+    entries.push(&pending);
+    let rebuilt = build_session_context_path(&entries)?;
     let llm = convert_to_llm(&rebuilt.messages);
     Ok(non_message_tokens
         + count_messages(

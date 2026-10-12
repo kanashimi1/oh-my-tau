@@ -44,6 +44,25 @@ const path = require("node:path");
 let currentId = null;
 let executionCount = 0;
 
+// --- parent watchdog --------------------------------------------------------
+// When the host process dies (SIGKILL included) this runner must exit
+// promptly even while a cell is spinning synchronously: the main thread is
+// then unreachable, so a Worker thread (real OS thread) polls the parent pid
+// and SIGKILLs the process — the signal lands regardless of what the main
+// thread is doing.
+try {
+  const { Worker } = require("node:worker_threads");
+  const ppid = process.ppid;
+  const w = new Worker(
+    "setInterval(() => { if (process.ppid !== " + ppid + ") process.kill(process.pid, 'SIGKILL'); }, 250);",
+    { eval: true },
+  );
+  // Unref so the watchdog never keeps the runner alive on its own.
+  w.unref();
+} catch {
+  // worker_threads unavailable: rely on host-side cleanup and stdin EOF.
+}
+
 function emit(frame) {
   // The protocol channel owns fd 1 exclusively (user code that grabs
   // process.stdout is forwarded to fd 2 below), so write raw.

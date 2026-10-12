@@ -278,6 +278,14 @@ pub async fn attach_with(agent: &Agent, cwd: &Path, ephemeral: bool) -> Result<P
             let deferred = deferred.clone();
             move |event, _| {
                 if let AgentEvent::MessageEnd { message } = &event {
+                    let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
+                    if trace {
+                        crate::runtime::turn_trace!(
+                            "[turn-trace] persist-begin role={} rss={}kB",
+                            message.role(),
+                            crate::runtime::rss_kb()
+                        );
+                    }
                     let converted = Ok::<_, anyhow::Error>(crate::events::message_value(message))
                         .and_then(|v| {
                             serde_json::from_value::<pa_types::session::AgentMessage>(v)
@@ -288,6 +296,12 @@ pub async fn attach_with(agent: &Agent, cwd: &Path, ephemeral: bool) -> Result<P
                             let held = defer_errors.load(Ordering::SeqCst)
                                 && matches!(message, pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::Assistant(a))
                                     if a.stop_reason == pa_agent::types::StopReason::Error);
+                            if trace {
+                                crate::runtime::turn_trace!(
+                                    "[turn-trace] persist-converted rss={}kB",
+                                    crate::runtime::rss_kb()
+                                );
+                            }
                             if held {
                                 *deferred.lock().unwrap() = Some((m, message.timestamp()));
                             } else {

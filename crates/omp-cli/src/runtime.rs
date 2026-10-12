@@ -140,6 +140,30 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// RSS of this process (`VmRSS` kB) — used by the `OMP_RS_TURN_TRACE` diagnostic.
+pub(crate) fn rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("VmRSS:"))
+                .and_then(|l| l.trim().strip_suffix(" kB"))
+                .and_then(|n| n.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// `OMP_RS_TURN_TRACE=1`: stderr line per traced step, for turn-phase
+/// allocation attribution (peak-RSS tuning). Off by default, zero cost.
+macro_rules! turn_trace {
+    ($($arg:tt)*) => {
+        if std::env::var_os("OMP_RS_TURN_TRACE").is_some() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+pub(crate) use turn_trace;
+
 pub fn level_name(level: ThinkingLevel) -> &'static str {
     match level {
         ThinkingLevel::Off => "off",
@@ -374,7 +398,31 @@ impl Runtime {
     }
 
     fn on_event(self: &Arc<Self>, event: &AgentEvent) {
+        let ev_kind = match event {
+            AgentEvent::MessageUpdate { .. } => "message_update",
+            AgentEvent::MessageEnd { message } => match message.role() {
+                "user" => "message_end:user",
+                "assistant" => "message_end:assistant",
+                _ => "message_end:toolResult",
+            },
+            AgentEvent::AgentEnd { .. } => "agent_end",
+            AgentEvent::TurnEnd { .. } => "turn_end",
+            AgentEvent::AgentStart => "agent_start",
+            AgentEvent::TurnStart => "turn_start",
+            AgentEvent::MessageStart { .. } => "message_start",
+            AgentEvent::ToolExecutionStart { .. } => "tool_execution_start",
+            AgentEvent::ToolExecutionUpdate { .. } => "tool_execution_update",
+            AgentEvent::ToolExecutionEnd { .. } => "tool_execution_end",
+        };
+        let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
+        if trace {
+            turn_trace!("[turn-trace] event={ev_kind} rss={}kB", rss_kb());
+        }
         let frame = lock(&self.framer).frame(event);
+        if trace {
+            let n = serde_json::to_string(&frame).map_or(0, |s| s.len());
+            turn_trace!("[turn-trace] framed={ev_kind} frame_json={n}B rss={}kB", rss_kb());
+        }
         if let AgentEvent::AgentEnd { messages } = event {
             self.on_agent_end(frame, messages);
             return;
@@ -546,6 +594,14 @@ impl Runtime {
     fn on_agent_end(self: &Arc<Self>, frame: Value, messages: &[AgentMessage]) {
         self.emit_queue_update();
         let failed = last_assistant_msg(messages).and_then(FailedTurn::from_message);
+        // Cheap pre-check only; the threshold decision itself (`checkCompaction`)
+        // runs on the live typed context inside the task, off the agent's state
+        // lock — no journal DOM is built for a turn that will not compact.
+        let auto_maybe = failed.is_none()
+            && !self.compacting.load(std::sync::atomic::Ordering::SeqCst)
+            && lock(&self.settings).auto_compaction
+            && last_assistant_msg(messages)
+                .is_some_and(|a| !matches!(a.stop_reason, StopReason::Error | StopReason::Aborted));
         if let Some(f) = failed.filter(|f| lock(&self.recovery).is_retryable(f)) {
             let rt = self.clone();
             let messages = messages.to_vec();
@@ -555,15 +611,19 @@ impl Runtime {
             *lock(&self.retry_task) = Some(handle);
             return;
         }
-        if self.auto_compaction_due(messages) {
+        if auto_maybe {
             let rt = self.clone();
             let messages = messages.to_vec();
             // Like `recover`: the listener runs under the agent's state lock.
             tokio::spawn(async move {
-                rt.emit_event(frame);
-                rt.run_auto_compaction().await;
-                rt.report_prompts(&run_outcome(&messages));
-                rt.drain_stranded_queue();
+                if rt.auto_compaction_due().await {
+                    rt.emit_event(frame);
+                    rt.run_auto_compaction().await;
+                    rt.report_prompts(&run_outcome(&messages));
+                    rt.drain_stranded_queue();
+                } else {
+                    rt.settle_terminal(frame, &messages, None);
+                }
             });
             return;
         }
@@ -572,6 +632,7 @@ impl Runtime {
 
     /// Final `agent_end` of a prompt: persist/close failure bookkeeping, then `prompt_result`s.
     fn settle_terminal(
+
         self: &Arc<Self>,
         mut frame: Value,
         messages: &[AgentMessage],
@@ -882,6 +943,15 @@ impl Runtime {
         let rt = self.clone();
         let outcome = outcome.clone();
         tokio::spawn(async move {
+            // `prompt_result` must never precede run cleanup (`is_streaming =
+            // false`, run slot taken): a client that fires its next prompt on
+            // prompt_result otherwise races the still-registered run and gets
+            // spurious "Agent is already processing" rejections — near-certain
+            // with extensions, where the AgentEnd listener chain (ext-host RPC)
+            // outlasts the 2 ms delay below. Wait for the run to actually
+            // settle first, then keep omp's one-tick delay so the command
+            // response still goes out before the result frame.
+            rt.agent.wait_for_idle().await;
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
             rt.report_prompts_now(&outcome, claimed);
         });
@@ -969,7 +1039,8 @@ impl Runtime {
             text: message.to_string(),
             images,
         };
-        if let Err(e) = self.agent.prompt_until_accepted(input).await {
+        let pua = self.agent.prompt_until_accepted(input).await;
+        if let Err(e) = pua {
             lock(&self.prompts)
                 .open
                 .retain(|t| !(t.starts_at_begin == starts && t.id == id && !t.waiting));
@@ -1206,12 +1277,15 @@ impl Runtime {
     /// matching omp's resume rehydration.
     pub async fn rehydrate_todo_tool(&self, entries: &[Value]) {
         let session_file = self.persist.file().map(|p| p.display().to_string());
-        let todo: Arc<dyn pa_agent::types::AgentTool> = Arc::new(
-            crate::tools::TodoTool::with_session(
-                crate::tools::phases_from_entries(entries),
-                session_file.as_deref(),
-            ),
-        );
+        self.swap_todo_tool(Arc::new(crate::tools::TodoTool::with_session(
+            crate::tools::phases_from_entries(entries),
+            session_file.as_deref(),
+        )))
+        .await;
+    }
+
+    /// Install `todo` as the agent's todo tool (no-op when the tool list has none).
+    async fn swap_todo_tool(&self, todo: Arc<dyn pa_agent::types::AgentTool>) {
         let mut tools = self.agent.tools().await;
         if let Some(slot) = tools.iter().position(|t| t.name() == "todo") {
             tools[slot] = todo;
@@ -1241,40 +1315,190 @@ impl Runtime {
     /// Load `path`'s messages into the agent. The continuation is written to a
     /// fresh session file seeded with the loaded history (the writer is
     /// append-only and cannot reopen an existing file).
+    ///
+    /// Resume is lazy like omp's: the journal is scanned once into a link index
+    /// ([`omp_session::index::SessionIndex`]) and only the active branch — TS
+    /// `SessionEntryIndex.pathTo(leaf)`, root → leaf — is materialized, parsed
+    /// on demand from the raw lines. Non-compacted sessions never build the
+    /// entry DOM at all: messages deserialize straight from the line text.
     pub async fn load_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
         self.cancel_retry_and_wait().await;
-        // One parse per line (`read_values`); malformed records are skipped
-        // leniently like omp's loader, not fatal.
-        let values = omp_session::read_values(path)
+        macro_rules! rss_trace {
+            ($label:expr) => {
+                if std::env::var_os("OMP_RS_RESUME_TRACE").is_some() {
+                    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                        let rss = status.lines().find_map(|l| l.strip_prefix("VmRSS:")).unwrap_or("?");
+                        let hwm = status.lines().find_map(|l| l.strip_prefix("VmHWM:")).unwrap_or("?");
+                        eprintln!("[resume-trace] {} rss={} hwm={}", $label, rss.trim(), hwm.trim());
+                    }
+                }
+            };
+        }
+        rss_trace!("start");
+        let index = omp_session::index::SessionIndex::load(path)
             .with_context(|| format!("cannot read session {}", path.display()))?;
-        // A compacted session resumes with the rebuilt context (summary + kept tail), not the raw log.
-        let compacted = values.iter().any(|e| {
+        // A compacted session resumes with the rebuilt context (summary + kept tail),
+        // not the raw log; checked over the whole journal like the old loader.
+        let compacted = index.refs.iter().any(|r| {
             matches!(
-                e.get("type").and_then(Value::as_str),
-                Some("compaction" | "reset_boundary" | "branch_summary")
+                r.kind,
+                omp_session::index::EntryKind::Compaction
+                    | omp_session::index::EntryKind::ResetBoundary
+                    | omp_session::index::EntryKind::BranchSummary
             )
         });
-        let mut entries = Vec::with_capacity(values.len());
+        let branch = index.branch();
+        let brefs: Vec<&omp_session::index::EntryRef> =
+            branch.iter().map(|&i| &index.refs[i as usize]).collect();
         let mut messages = Vec::new();
-        for v in values {
-            if !compacted && v.get("type").and_then(Value::as_str) == Some("message") {
-                if let Some(m) = v.get("message") {
-                    // Borrowed deserialize: no deep clone of the message payload.
-                    if let Ok(m) = <AgentMessage as serde::Deserialize>::deserialize(m) {
-                        messages.push(m);
+        // Reduced branch for the context rebuild: the rebuild reads the latest
+        // compaction, the bookkeeping entries (state accumulation walks the
+        // whole branch), and the emitted ranges (kept tail + post-compaction,
+        // or post-reset) — but never the pre-compaction history again. Entries
+        // outside those ranges become link-only shims, so the DOM the rebuild
+        // works on stays the size of the context, not of the journal.
+        if compacted {
+            let reset_pos = brefs
+                .iter()
+                .rposition(|r| r.kind == omp_session::index::EntryKind::ResetBoundary);
+            let compaction_pos = brefs
+                .iter()
+                .rposition(|r| r.kind == omp_session::index::EntryKind::Compaction);
+            let after_reset = match (reset_pos, compaction_pos) {
+                (Some(r), Some(c)) => r > c,
+                (Some(_), None) => true,
+                _ => false,
+            };
+            let mut full = vec![false; branch.len()];
+            if after_reset {
+                for f in full.iter_mut().skip(reset_pos.unwrap() + 1) {
+                    *f = true;
+                }
+            } else if let Some(cp) = compaction_pos {
+                // The compaction entry alone decides the kept range.
+                let cv = index
+                    .load_branch(path, &branch[cp..=cp], true)?
+                    .into_iter()
+                    .next()
+                    .and_then(|l| l.value)
+                    .ok_or_else(|| anyhow::anyhow!("compaction entry vanished"))?;
+                let remote = omp_compact::openai_remote_payload(&cv);
+                let anthropic = omp_compact::anthropic_compaction_payload(&cv);
+                let has_replacement = remote
+                    .as_ref()
+                    .and_then(|p| p.get("items"))
+                    .is_some_and(Value::is_array);
+                let id_pos = |id: &str| brefs.iter().position(|r| &*r.id == id);
+                let first_kept = cv
+                    .get("firstKeptEntryId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let kept_start = if has_replacement {
+                    None
+                } else if anthropic.is_some() && first_kept.is_empty() {
+                    cv.get("providerReplayThroughEntryId")
+                        .and_then(Value::as_str)
+                        .and_then(|id| id_pos(id).map(|i| i + 1))
+                } else {
+                    id_pos(first_kept)
+                };
+                if let Some(start) = kept_start.filter(|&s| s < cp) {
+                    for f in full.iter_mut().take(cp).skip(start) {
+                        *f = true;
+                    }
+                }
+                for f in full.iter_mut().skip(cp) {
+                    *f = true;
+                }
+            } else {
+                // The compaction marker lives on another branch: the rebuild
+                // replays the whole branch through `context_message` — keep it
+                // verbatim rather than shim what may be emitted.
+                full.iter_mut().for_each(|f| *f = true);
+            }
+            // Bookkeeping entries feed the state accumulation from anywhere on
+            // the branch; `context_notes` scans the custom entries after the
+            // last reset boundary.
+            let notes_after = reset_pos.map_or(0, |r| r + 1);
+            for (i, r) in brefs.iter().enumerate() {
+                if is_bookkeeping(r.kind) {
+                    full[i] = true;
+                }
+            }
+            // Message entries feed the default-model inference only until the
+            // first model_change; earlier ones get a head-only shim.
+            let head_until = brefs
+                .iter()
+                .position(|r| r.kind == omp_session::index::EntryKind::ModelChange)
+                .unwrap_or(branch.len());
+            let mut entries: Vec<Value> = Vec::with_capacity(branch.len());
+            index.for_each_line(path, &branch, |r, raw| {
+                let pos = entries.len();
+                let value = if full[pos] {
+                    serde_json::from_str::<Value>(raw)
+                        .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?
+                } else if r.kind == omp_session::index::EntryKind::Message && pos < head_until {
+                    message_head_shim(r, raw)
+                } else if r.kind == omp_session::index::EntryKind::Custom
+                    && pos >= notes_after
+                    && custom_type(raw).as_deref()
+                        == Some(omp_compact::context::CONTEXT_NOTES_ENTRY_TYPE)
+                {
+                    serde_json::from_str::<Value>(raw)
+                        .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?
+                } else {
+                    link_shim(r)
+                };
+                entries.push(value);
+                Ok(())
+            })?;
+            // Rebuild first, then release the entry DOM before converting:
+            // the context messages and the typed messages never coexist with
+            // the full reduced tree.
+            // Owned rebuild: message payloads move out of the reduced tree into
+            // the context, so the two never coexist (resume stays low-RSS).
+            let ctx = omp_compact::build_session_context_owned(entries, omp_compact::Leaf::Last)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            messages = crate::compact::context_messages(ctx);
+        } else {
+            // No compaction on the journal: messages deserialize straight from
+            // the raw lines, one pass, no entry DOM at all.
+            index.for_each_line(path, &branch, |r, raw| {
+                if r.kind == omp_session::index::EntryKind::Message {
+                    if let Ok(envelope) = serde_json::from_str::<MessageEnvelope>(raw) {
+                        messages.push(envelope.message);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        // Todo phases (TS `getLatestTodoPhasesFromEntries(getBranch())`): scan
+        // the branch newest-first, parsing lines only until the latest
+        // state-changing todo entry — typically the tail, so almost nothing.
+        let mut phases = None;
+        let rev: Vec<u32> = branch.iter().rev().copied().collect();
+        index.for_each_line(path, &rev, |r, raw| {
+            if phases.is_none()
+                && matches!(
+                    r.kind,
+                    omp_session::index::EntryKind::Message | omp_session::index::EntryKind::Custom
+                )
+                // Cheap pre-filter: a state-changing todo entry mentions the
+                // todo tool or the edit custom type; everything else is
+                // skipped without building its DOM.
+                && (raw.contains("\"toolName\":\"todo\"")
+                    || raw.contains("\"customType\":\"user_todo_edit\""))
+            {
+                if let Ok(v) = serde_json::from_str::<Value>(raw) {
+                    let p = crate::tools::phases_from_entries(std::slice::from_ref(&v));
+                    if !p.is_empty() {
+                        phases = Some(p);
                     }
                 }
             }
-            if v.get("type")
-                .and_then(Value::as_str)
-                .is_some_and(|t| t != "session")
-            {
-                entries.push(v);
-            }
-        }
-        if compacted {
-            messages = crate::compact::rebuild_context(&entries)?;
-        }
+            Ok(())
+        })?;
+        rss_trace!("loaded");
         self.agent.abort();
         self.agent.wait_for_idle().await;
         self.agent.reset().await;
@@ -1282,7 +1506,7 @@ impl Runtime {
         self.publish_session_file();
         self.record_model_state().await;
         if compacted {
-            crate::compact::seed_entries(&self.persist, &entries)?;
+            crate::compact::seed_branch(&self.persist, &index, path)?;
         } else {
             for m in &messages {
                 let converted = serde_json::to_value(m)
@@ -1296,8 +1520,21 @@ impl Runtime {
                 }
             }
         }
+        rss_trace!("seeded");
+        rss_trace!("pre-set");
+        if std::env::var_os("OMP_RS_RESUME_TRACE").is_some() {
+            let json = serde_json::to_string(&messages).unwrap_or_default();
+            eprintln!("[resume-trace] messages: n={} json={}B sizeof={}B", messages.len(), json.len(), std::mem::size_of_val(&messages));
+        }
+        rss_trace!("swapped");
+        let session_file = self.persist.file().map(|p| p.display().to_string());
+        self.swap_todo_tool(Arc::new(crate::tools::TodoTool::with_session(
+            phases.unwrap_or_default(),
+            session_file.as_deref(),
+        )))
+        .await;
         self.agent.set_messages(messages).await;
-        self.rehydrate_todo_tool(&entries).await;
+        rss_trace!("messages-set");
         lock(&self.prompts).open.clear();
         Ok(())
     }
@@ -1365,8 +1602,9 @@ impl Runtime {
     }
 
     async fn compact_inner(&self, custom_instructions: Option<&str>) -> Result<Value, CmdError> {
+        let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
+        turn_trace!("[turn-trace] compact-begin rss={}kB", rss_kb());
         let summarizer = self.summarizer()?;
-        let entries = self.entries()?;
         let st = self.agent.state().await;
         let settings = lock(&self.compaction).clone();
         let non_message_tokens =
@@ -1379,33 +1617,58 @@ impl Runtime {
             custom_instructions,
             non_message_tokens,
         };
-        let (_, data) =
-            crate::compact::compact_now(&self.persist, &entries, &summarizer, &params).await?;
-        let rebuilt = crate::compact::rebuild_context(&self.entries()?)?;
+        if trace {
+            turn_trace!("[turn-trace] compact-planned rss={}kB", rss_kb());
+        }
+        let (_result, data, view) = crate::compact::compact_now(
+            &self.persist,
+            &self.persist.path(),
+            &summarizer,
+            &params,
+        )
+        .await?;
+        if trace {
+            turn_trace!("[turn-trace] compact-summarized rss={}kB", rss_kb());
+        }
+        let rebuilt = crate::compact::rebuild_context(&view)?;
+        if trace {
+            turn_trace!("[turn-trace] compact-rebuilt rss={}kB", rss_kb());
+        }
         self.agent.set_messages(rebuilt).await;
+        if trace {
+            turn_trace!("[turn-trace] compact-set rss={}kB", rss_kb());
+        }
         self.agent
             .set_compaction_epoch(self.agent.compaction_epoch() + 1);
         Ok(data)
     }
 
     /// Post-turn threshold check (`checkCompaction`): auto-compaction is on, the turn succeeded and
-    /// the provider-billed / stored context crossed `resolveThresholdTokens`.
-    fn auto_compaction_due(&self, messages: &[AgentMessage]) -> bool {
-        if self.compacting.load(std::sync::atomic::Ordering::SeqCst)
-            || !lock(&self.settings).auto_compaction
-        {
-            return false;
-        }
-        if last_assistant_msg(messages)
-            .is_none_or(|a| matches!(a.stop_reason, StopReason::Error | StopReason::Aborted))
-        {
-            return false;
-        }
+    /// the provider-billed / stored context crossed `resolveThresholdTokens`. The provider side
+    /// comes from the newest settled assistant message, the stored floor from a token estimate
+    /// over the live typed context — no journal parse.
+    async fn auto_compaction_due(&self) -> bool {
         let mut settings = lock(&self.compaction).clone();
         settings.enabled = true;
-        self.entries().is_ok_and(|entries| {
-            crate::compact::auto_check(&entries, self.live_window(), &settings)
-        })
+        let window = self.live_window();
+        if !settings.enabled || window == 0 {
+            return false;
+        }
+        let st = self.agent.state().await;
+        let usage = st
+            .messages
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                AgentMessage::Standard(Message::Assistant(a))
+                    if !matches!(a.stop_reason, StopReason::Error | StopReason::Aborted) =>
+                {
+                    serde_json::to_value(&a.usage).ok()
+                }
+                _ => None,
+            });
+        let stored = crate::compact::estimate_context_tokens(&st.messages);
+        crate::compact::auto_check(usage, stored, window, &settings)
     }
 
     /// The threshold compaction pass with its `auto_compaction_start` / `auto_compaction_end` events.
@@ -1809,6 +2072,94 @@ pub fn model_info(model: &pa_types::ai::Model) -> Value {
         }
     }
     v
+}
+
+/// Borrowed view of a `message` entry line: deserializing the envelope straight
+/// from the raw journal text yields the entry's `AgentMessage` without building
+/// the entry's `Value` DOM (lazy resume).
+#[derive(serde::Deserialize)]
+struct MessageEnvelope {
+    message: AgentMessage,
+}
+
+/// Head-only view of a `message` entry: enough for the context rebuild's
+/// default-model inference (`role`/`provider`/`model`) without the payload.
+#[derive(serde::Deserialize)]
+struct MessageHead {
+    #[serde(default)]
+    message: Option<MessageHeadFields>,
+}
+
+#[derive(serde::Deserialize)]
+struct MessageHeadFields {
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CustomHead {
+    #[serde(rename = "customType", default)]
+    custom_type: Option<String>,
+}
+
+/// Bookkeeping entry kinds whose full payload the context-state accumulation
+/// reads from anywhere on the branch (all small).
+fn is_bookkeeping(kind: omp_session::index::EntryKind) -> bool {
+    matches!(
+        kind,
+        omp_session::index::EntryKind::ThinkingLevelChange
+            | omp_session::index::EntryKind::ModelChange
+            | omp_session::index::EntryKind::ServiceTierChange
+            | omp_session::index::EntryKind::TtsrInjection
+            | omp_session::index::EntryKind::ModeChange
+    )
+}
+
+/// Link-only stand-in for a branch entry the context rebuild never reads
+/// beyond its `type`/`id`/`timestamp` (pre-history messages, old compactions,
+/// labels, ...). Keeps the reduced branch layout-identical to the journal.
+fn link_shim(r: &omp_session::index::EntryRef) -> Value {
+    let mut o = serde_json::Map::with_capacity(3);
+    o.insert("type".into(), r.type_name.to_string().into());
+    if !r.id.is_empty() {
+        o.insert("id".into(), r.id.to_string().into());
+    }
+    if !r.timestamp.is_empty() {
+        o.insert("timestamp".into(), r.timestamp.to_string().into());
+    }
+    Value::Object(o)
+}
+
+/// A message shim carrying just the fields the rebuild's state accumulation
+/// looks at (`message.role`/`provider`/`model` for the default-model inference).
+fn message_head_shim(r: &omp_session::index::EntryRef, raw: &str) -> Value {
+    let mut shim = link_shim(r);
+    let Ok(head) = serde_json::from_str::<MessageHead>(raw) else {
+        return shim;
+    };
+    if let Some(m) = head.message {
+        let mut msg = serde_json::Map::with_capacity(3);
+        if let Some(role) = m.role {
+            msg.insert("role".into(), role.into());
+        }
+        if let Some(provider) = m.provider {
+            msg.insert("provider".into(), provider.into());
+        }
+        if let Some(model) = m.model {
+            msg.insert("model".into(), model.into());
+        }
+        shim["message"] = Value::Object(msg);
+    }
+    shim
+}
+
+/// The `customType` of a `custom` entry line, when it parses as one.
+fn custom_type(raw: &str) -> Option<String> {
+    serde_json::from_str::<CustomHead>(raw).ok()?.custom_type
 }
 
 pub fn read_entries(path: &Path) -> Result<Vec<Value>> {

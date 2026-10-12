@@ -1,0 +1,258 @@
+{
+  "ts": "2026-10-12T15-19-37",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s2-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 197348,
+            "p95": 197348,
+            "min": 197348,
+            "max": 197348
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 196440,
+              "p95": 196440,
+              "min": 196440,
+              "max": 196440
+            },
+            "sessions": 1
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 518036,
+            "p95": 518036,
+            "min": 518036,
+            "max": 518036
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 493168,
+              "p95": 493168,
+              "min": 493168,
+              "max": 493168
+            },
+            "sessions": 1
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 194312,
+            "p95": 194312,
+            "min": 194312,
+            "max": 194312
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 764436,
+              "p95": 764436,
+              "min": 764436,
+              "max": 764436
+            },
+            "sessions": 4
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 514324,
+            "p95": 514324,
+            "min": 514324,
+            "max": 514324
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 1985596,
+              "p95": 1985596,
+              "min": 1985596,
+              "max": 1985596
+            },
+            "sessions": 4
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 196172,
+            "p95": 196172,
+            "min": 196172,
+            "max": 196172
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 3030908,
+              "p95": 3030908,
+              "min": 3030908,
+              "max": 3030908
+            },
+            "sessions": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 482364,
+            "p95": 482364,
+            "min": 482364,
+            "max": 482364
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 7370284,
+              "p95": 7370284,
+              "min": 7370284,
+              "max": 7370284
+            },
+            "sessions": 16
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s3",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 156.93162000000302,
+            "p95": 190.19155600000522,
+            "min": 156.93162000000302,
+            "max": 190.19155600000522
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 2,
+              "median": 8,
+              "p95": 17,
+              "min": 8,
+              "max": 17
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 477.2653229999996,
+            "p95": 1421.8662629999963,
+            "min": 477.2653229999996,
+            "max": 1421.8662629999963
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 6,
+              "median": 230,
+              "p95": 6821,
+              "min": 8,
+              "max": 6821
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 221.30049000000872,
+            "p95": 221.30049000000872,
+            "min": 221.30049000000872,
+            "max": 221.30049000000872
+          },
+          "extra": {
+            "turnsPerSec": 18.074971275480873
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 2502.9157609999966,
+            "p95": 2502.9157609999966,
+            "min": 2502.9157609999966,
+            "max": 2502.9157609999966
+          },
+          "extra": {
+            "turnsPerSec": 1.5981360868501102
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 489.0485009999975,
+            "p95": 489.0485009999975,
+            "min": 489.0485009999975,
+            "max": 489.0485009999975
+          },
+          "extra": {
+            "turnsPerSec": 32.71659143680738
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 6610.094119999994,
+            "p95": 6610.094119999994,
+            "min": 6610.094119999994,
+            "max": 6610.094119999994
+          },
+          "extra": {
+            "turnsPerSec": 2.420540420383608
+          }
+        }
+      }
+    }
+  ]
+}

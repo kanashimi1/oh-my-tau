@@ -1,0 +1,421 @@
+{
+  "ts": "2026-10-12T16-00-22",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "m1",
+      "bins": {
+        "omp-rs": {
+          "ok": false,
+          "error": "turn 5: Error: prompt timed out after 30000ms",
+          "extra": {
+            "points": [
+              {
+                "turn": 0,
+                "roles": {
+                  "core": {
+                    "rssKb": 103040,
+                    "pssKb": 100831
+                  },
+                  "ext-host": {
+                    "rssKb": 82636,
+                    "pssKb": 45136
+                  }
+                },
+                "rssKb": 185676,
+                "pssKb": 145967
+              },
+              {
+                "turn": 1,
+                "roles": {
+                  "core": {
+                    "rssKb": 100428,
+                    "pssKb": 98204
+                  },
+                  "ext-host": {
+                    "rssKb": 90988,
+                    "pssKb": 51422
+                  }
+                },
+                "rssKb": 191416,
+                "pssKb": 149626
+              },
+              {
+                "turn": 2,
+                "roles": {
+                  "core": {
+                    "rssKb": 100588,
+                    "pssKb": 98364
+                  },
+                  "ext-host": {
+                    "rssKb": 88084,
+                    "pssKb": 48517
+                  }
+                },
+                "rssKb": 188672,
+                "pssKb": 146881
+              }
+            ]
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "points": [
+              {
+                "turn": 0,
+                "roles": {
+                  "core": {
+                    "rssKb": 412712,
+                    "pssKb": 361305
+                  }
+                },
+                "rssKb": 412712,
+                "pssKb": 361305
+              },
+              {
+                "turn": 1,
+                "roles": {
+                  "core": {
+                    "rssKb": 522256,
+                    "pssKb": 467015
+                  }
+                },
+                "rssKb": 522256,
+                "pssKb": 467015
+              },
+              {
+                "turn": 2,
+                "roles": {
+                  "core": {
+                    "rssKb": 522264,
+                    "pssKb": 467021
+                  }
+                },
+                "rssKb": 522264,
+                "pssKb": 467021
+              },
+              {
+                "turn": 5,
+                "roles": {
+                  "core": {
+                    "rssKb": 504276,
+                    "pssKb": 449011
+                  }
+                },
+                "rssKb": 504276,
+                "pssKb": 449011
+              },
+              {
+                "turn": 10,
+                "roles": {
+                  "core": {
+                    "rssKb": 587648,
+                    "pssKb": 532383
+                  }
+                },
+                "rssKb": 587648,
+                "pssKb": 532383
+              },
+              {
+                "turn": 20,
+                "roles": {
+                  "core": {
+                    "rssKb": 590008,
+                    "pssKb": 534743
+                  }
+                },
+                "rssKb": 590008,
+                "pssKb": 534743
+              },
+              {
+                "turn": 30,
+                "roles": {
+                  "core": {
+                    "rssKb": 587176,
+                    "pssKb": 531908
+                  }
+                },
+                "rssKb": 587176,
+                "pssKb": 531908
+              },
+              {
+                "turn": 40,
+                "roles": {
+                  "core": {
+                    "rssKb": 577892,
+                    "pssKb": 522616
+                  }
+                },
+                "rssKb": 577892,
+                "pssKb": 522616
+              },
+              {
+                "turn": 50,
+                "roles": {
+                  "core": {
+                    "rssKb": 582416,
+                    "pssKb": 527148
+                  }
+                },
+                "rssKb": 582416,
+                "pssKb": 527148
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": true,
+            "rssKb": 98152,
+            "pssKb": 58381,
+            "pssPerSessionKb": 58381,
+            "settleWallS": 7.286124465000001
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": true,
+            "rssKb": 539476,
+            "pssKb": 487620,
+            "pssPerSessionKb": 487620,
+            "settleWallS": 7.2653646169999995
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n8",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": true,
+            "rssKb": 767160,
+            "pssKb": 333783,
+            "pssPerSessionKb": 41722.875,
+            "settleWallS": 7.376775458000004
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": true,
+            "rssKb": 3734644,
+            "pssKb": 3244877,
+            "pssPerSessionKb": 405609.625,
+            "settleWallS": 7.6453683089999975
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n32",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": true,
+            "rssKb": 3004148,
+            "pssKb": 1169623,
+            "pssPerSessionKb": 36550.71875,
+            "settleWallS": 7.505589380999998
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": true,
+            "rssKb": 14572196,
+            "pssKb": 12515808,
+            "pssPerSessionKb": 391119,
+            "settleWallS": 8.73562897000002
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": false,
+            "rssKb": 14428,
+            "pssKb": 12294,
+            "pssPerSessionKb": 12294,
+            "settleWallS": 7.223861092000006
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": false,
+            "rssKb": 499836,
+            "pssKb": 450190,
+            "pssPerSessionKb": 450190,
+            "settleWallS": 7.26494194400002
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n8",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": false,
+            "rssKb": 114600,
+            "pssKb": 33468,
+            "pssPerSessionKb": 4183.5,
+            "settleWallS": 7.237978500999991
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": false,
+            "rssKb": 3576132,
+            "pssKb": 3108773,
+            "pssPerSessionKb": 388596.625,
+            "settleWallS": 7.945412150000018
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n32",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": false,
+            "rssKb": 464616,
+            "pssKb": 100489,
+            "pssPerSessionKb": 3140.28125,
+            "settleWallS": 7.282454352
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": false,
+            "rssKb": 14304592,
+            "pssKb": 12342035,
+            "pssPerSessionKb": 385688.59375,
+            "settleWallS": 9.018432197999996
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m3",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "files": [
+              {
+                "sizeMb": 39.462321,
+                "wallMs": 2504.2368120000174,
+                "rssPeakKb": 677592,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 30.63574,
+                "wallMs": 2178.6414569999906,
+                "rssPeakKb": 539748,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 24.111546,
+                "wallMs": 1919.6127940000151,
+                "rssPeakKb": 433536,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 19.166189,
+                "wallMs": 726.8463869999978,
+                "rssPeakKb": 300700,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 16.771504,
+                "wallMs": 794.2077470000077,
+                "rssPeakKb": 277568,
+                "pssKb": 0
+              }
+            ]
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "files": [
+              {
+                "sizeMb": 39.462321,
+                "wallMs": 3195.8115080000134,
+                "rssPeakKb": 547276,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 30.63574,
+                "wallMs": 2645.004289000004,
+                "rssPeakKb": 539880,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 24.111546,
+                "wallMs": 2336.658250999986,
+                "rssPeakKb": 507484,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 19.166189,
+                "wallMs": 4467.00768900002,
+                "rssPeakKb": 473948,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 16.771504,
+                "wallMs": 13173.575267999986,
+                "rssPeakKb": 603512,
+                "pssKb": 0
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

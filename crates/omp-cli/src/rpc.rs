@@ -1251,10 +1251,24 @@ impl FrameEncoder {
     /// Physical JSONL lines (without newlines) for one logical frame.
     fn encode(&mut self, frame: &Value) -> Vec<String> {
         let kind = frame.get("type").and_then(Value::as_str);
+        let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
+        if trace {
+            crate::runtime::turn_trace!(
+                "[turn-trace] encode kind={kind:?} rss={}kB",
+                crate::runtime::rss_kb()
+            );
+        }
         if kind == Some("agent_start") {
             self.streamed.clear();
         }
         let json = frame.to_string();
+        if trace {
+            crate::runtime::turn_trace!(
+                "[turn-trace] encoded kind={kind:?} json={}B rss={}kB",
+                json.len(),
+                crate::runtime::rss_kb()
+            );
+        }
         let lines = if self.version == 2 && !Self::fits(&json) {
             let compacted = self.compact_terminal(frame);
             let cjson = compacted.to_string();

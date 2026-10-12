@@ -193,6 +193,18 @@ pub fn build_session_context(
     leaf: Leaf<'_>,
 ) -> Result<SessionContext, ContextError> {
     let path = branch_path(entries, leaf);
+    build_session_context_path(&path)
+}
+
+/// [`build_session_context`] over an already-resolved leaf branch (cheap
+/// `&Value` refs — no entry DOM is cloned for the walk). Compaction planning
+/// and the post-commit token projection use this so a compaction pass never
+/// duplicates the whole entry list.
+///
+/// # Errors
+/// [`ContextError::Unsupported`] when the latest compaction is an `experimental-context-rollover`.
+#[allow(clippy::too_many_lines)] // one sequential context-derivation pass (was build_session_context)
+pub fn build_session_context_path(path: &[&Value]) -> Result<SessionContext, ContextError> {
     let mut ctx = SessionContext {
         mode: "none".to_owned(),
         thinking_level: Some("off".to_owned()),
@@ -205,7 +217,7 @@ pub fn build_session_context(
     let mut has_explicit_default_model = false;
     let mut compaction: Option<&Value> = None;
     let mut ttsr: Vec<String> = Vec::new();
-    for entry in &path {
+    for entry in path {
         match entry_type(entry) {
             "thinking_level_change" => {
                 let level = entry.get("thinkingLevel").and_then(Value::as_str);
@@ -383,7 +395,7 @@ pub fn build_session_context(
         messages.extend(path.iter().filter_map(|e| context_message(e)));
     }
 
-    if let Some((text, source)) = context_notes(&path) {
+    if let Some((text, source)) = context_notes(path) {
         let rendered = prompts::render(prompts::CONTEXT_NOTES, &[("notes", text)])
             .trim()
             .to_owned();
@@ -407,6 +419,366 @@ pub fn build_session_context(
     Ok(ctx)
 }
 
+/// Owned variant of [`build_session_context`]: consumes the branch and *moves*
+/// message payloads into the context instead of cloning them. Semantics are
+/// identical (see the parity test in `tests/units.rs`); resume uses this so the
+/// entry DOM and the rebuilt context never coexist.
+///
+/// # Errors
+/// [`ContextError::Unsupported`] when the latest compaction is an `experimental-context-rollover`.
+#[allow(clippy::too_many_lines)]
+pub fn build_session_context_owned(
+    entries: Vec<Value>,
+    leaf: Leaf<'_>,
+) -> Result<SessionContext, ContextError> {
+    let mut path = branch_path_owned(entries, leaf);
+    let mut ctx = SessionContext {
+        mode: "none".to_owned(),
+        thinking_level: Some("off".to_owned()),
+        ..SessionContext::default()
+    };
+    if path.is_empty() {
+        return Ok(ctx);
+    }
+
+    let mut has_explicit_default_model = false;
+    let mut compaction_idx: Option<usize> = None;
+    let mut ttsr: Vec<String> = Vec::new();
+    for (i, entry) in path.iter().enumerate() {
+        match entry_type(entry) {
+            "thinking_level_change" => {
+                let level = entry.get("thinkingLevel").and_then(Value::as_str);
+                ctx.thinking_level = Some(level.unwrap_or("off").to_owned());
+                ctx.configured_thinking_level = entry
+                    .get("configured")
+                    .and_then(Value::as_str)
+                    .or(level)
+                    .map(str::to_owned);
+            }
+            "model_change" => {
+                if let Some(model) = str_field(entry, "model").filter(|m| !m.is_empty()) {
+                    let role = str_field(entry, "role").unwrap_or("default");
+                    ctx.models.insert(role.to_owned(), model.into());
+                    if role == "default" {
+                        has_explicit_default_model = true;
+                    }
+                }
+            }
+            "service_tier_change" => {
+                ctx.service_tier = entry.get("serviceTier").filter(|v| !v.is_null()).cloned();
+            }
+            "message" => {
+                if let Some(m) = entry
+                    .get("message")
+                    .filter(|m| message_role(m) == "assistant")
+                {
+                    if !has_explicit_default_model {
+                        let provider = str_field(m, "provider").unwrap_or("undefined");
+                        let model = str_field(m, "model").unwrap_or("undefined");
+                        ctx.models
+                            .insert("default".to_owned(), format!("{provider}/{model}").into());
+                    }
+                }
+            }
+            "compaction" => compaction_idx = Some(i),
+            "ttsr_injection" => {
+                for rule in entry
+                    .get("injectedRules")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
+                    if !ttsr.iter().any(|r| r == rule) {
+                        ttsr.push(rule.to_owned());
+                    }
+                }
+            }
+            "mode_change" => {
+                str_field(entry, "mode")
+                    .unwrap_or("none")
+                    .clone_into(&mut ctx.mode);
+                ctx.mode_data = entry.get("data").filter(|d| !d.is_null()).cloned();
+            }
+            _ => {}
+        }
+    }
+    ctx.injected_ttsr_rules = ttsr;
+
+    let reset_idx = path.iter().rposition(|e| entry_type(e) == "reset_boundary");
+    let mut messages: Vec<Value> = Vec::new();
+
+    let after_reset = match (reset_idx, compaction_idx) {
+        (Some(r), Some(c)) => r > c,
+        (Some(_), None) => true,
+        _ => false,
+    };
+    if after_reset {
+        let r = reset_idx.unwrap_or(0);
+        for e in path.iter_mut().skip(r + 1) {
+            take_context_message(e, &mut messages);
+        }
+    } else if let Some(ci) = compaction_idx {
+        // Rollover recovery (re-asking the discarded turn prefix from the
+        // branch journal) is not ported.
+        if path[ci].get("details").and_then(|d| str_field(d, "kind"))
+            == Some("experimental-context-rollover")
+        {
+            return Err(ContextError::Unsupported("experimental-context-rollover"));
+        }
+        let remote = native::openai_remote_payload(&path[ci]);
+        let anthropic = native::anthropic_compaction_payload(&path[ci]);
+        let provider_payload = remote.clone().or_else(|| anthropic.clone());
+        let remote_replacement_history = remote
+            .as_ref()
+            .and_then(|p| p.get("items"))
+            .filter(|i| i.is_array());
+
+        // A natively replayed summary must not invalidate the retained tail's
+        // bound thinking: predate the rewrite marker to just before the first
+        // retained entry instead of the commit timestamp.
+        let history_rewrite_at = if anthropic.is_some() {
+            let first_kept_idx = path.iter().position(|e| {
+                entry_id(e) == str_field(&path[ci], "firstKeptEntryId").unwrap_or("")
+            });
+            let snapshot_idx = if str_field(&path[ci], "firstKeptEntryId") == Some("") {
+                str_field(&path[ci], "providerReplayThroughEntryId")
+                    .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+            } else {
+                None
+            };
+            let first_retained = (first_kept_idx
+                .filter(|&i| i < ci)
+                .map(|i| &path[i]))
+            .or_else(|| {
+                snapshot_idx
+                    .filter(|&i| i + 1 < ci)
+                    .map(|i| &path[i + 1])
+            })
+            .or(path.get(ci + 1));
+            first_retained
+                .and_then(|e| str_field(e, "timestamp"))
+                .and_then(parse_iso_ms)
+                .map(|ms| ms_value(Some(ms - 1)))
+        } else {
+            None
+        };
+
+        // Re-attach any archived snapcompact frames so the model can keep
+        // reading the archived history after every context rebuild.
+        let blocks = native::get_preserved_archive(path[ci].get("preserveData"))
+            .map(|archive| native::history_blocks_for_context(&archive))
+            .filter(|b| !b.is_empty());
+        messages.push(create_compaction_summary_message_ext(
+            &path[ci],
+            provider_payload,
+            blocks,
+            history_rewrite_at,
+        ));
+
+        // The remote replacement payload (OpenAI remote compaction) carries
+        // the kept turns for the LLM context only; without it, replay the kept
+        // tail from the entries (Anthropic with an empty `firstKeptEntryId`
+        // falls back to the provider snapshot entry).
+        if remote_replacement_history.is_none() {
+            let first_kept_idx = path.iter().enumerate().position(|(i, e)| {
+                i < ci && entry_id(e) == str_field(&path[ci], "firstKeptEntryId").unwrap_or("")
+            });
+            let snapshot_idx =
+                if anthropic.is_some() && str_field(&path[ci], "firstKeptEntryId") == Some("") {
+                    str_field(&path[ci], "providerReplayThroughEntryId")
+                        .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+                } else {
+                    None
+                };
+            let retained_start = first_kept_idx.or_else(|| snapshot_idx.map(|i| i + 1));
+            if let Some(start) = retained_start.filter(|&s| s < ci) {
+                for e in path.iter_mut().take(ci).skip(start) {
+                    take_context_message(e, &mut messages);
+                }
+            }
+        } else if let Some(replay_through) =
+            str_field(&path[ci], "providerReplayThroughEntryId")
+                .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+        {
+            if replay_through < ci {
+                for e in path.iter_mut().take(ci).skip(replay_through + 1) {
+                    take_context_message(e, &mut messages);
+                }
+            }
+        }
+        for e in path.iter_mut().skip(ci + 1) {
+            take_context_message(e, &mut messages);
+        }
+    } else {
+        for e in path.iter_mut() {
+            take_context_message(e, &mut messages);
+        }
+    }
+
+    if let Some((text, source)) = context_notes(&path.iter().collect::<Vec<_>>()) {
+        let rendered = prompts::render(prompts::CONTEXT_NOTES, &[("notes", text)])
+            .trim()
+            .to_owned();
+        if !text.is_empty() && !rendered.is_empty() {
+            let mut m = Map::new();
+            m.insert("role".into(), "custom".into());
+            m.insert("customType".into(), CONTEXT_NOTES_ENTRY_TYPE.into());
+            m.insert("content".into(), rendered.into());
+            m.insert("display".into(), false.into());
+            m.insert(
+                "timestamp".into(),
+                ms_value(str_field(source, "timestamp").and_then(parse_iso_ms)),
+            );
+            messages.insert(0, Value::Object(m));
+        }
+    }
+
+    strip_dangling_tool_calls(&mut messages);
+    drop_failed_assistant_turns(&mut messages);
+    ctx.messages = messages;
+    Ok(ctx)
+}
+
+/// Root→leaf path for the owned builder: same walk as [`branch_path`], but the
+/// entries are moved out of the input instead of referenced.
+fn branch_path_owned(entries: Vec<Value>, leaf: Leaf<'_>) -> Vec<Value> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let mut by_id: HashMap<String, usize> = HashMap::with_capacity(entries.len());
+    for (i, e) in entries.iter().enumerate() {
+        by_id.insert(entry_id(e).to_owned(), i);
+    }
+    let start = match leaf {
+        Leaf::Before => return Vec::new(),
+        Leaf::Id(id) => by_id.get(id).copied().unwrap_or(entries.len() - 1),
+        Leaf::Last => entries.len() - 1,
+    };
+    let mut idx_path = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut cur = Some(start);
+    while let Some(i) = cur {
+        if !seen.insert(i) {
+            break;
+        }
+        idx_path.push(i);
+        let parent = entries[i]
+            .get("parentId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        cur = if parent.is_empty() {
+            None
+        } else {
+            by_id.get(&parent).copied()
+        };
+    }
+    let mut slots: Vec<Option<Value>> = entries.into_iter().map(Some).collect();
+    idx_path
+        .iter()
+        .rev()
+        .map(|&i| slots[i].take().expect("path indices are unique"))
+        .collect()
+}
+
+/// Move a branch entry's context message out, leaving non-emitting entries
+/// (custom, reset_boundary, bookkeeping, shims) intact for the later scans.
+fn take_context_message(entry: &mut Value, messages: &mut Vec<Value>) {
+    if matches!(
+        entry_type(entry),
+        "message" | "custom_message" | "branch_summary"
+    ) {
+        if let Some(m) = context_message_owned(std::mem::take(entry)) {
+            messages.push(m);
+        }
+    }
+}
+
+/// Owned `appendMessage`: moves the payload out of the entry instead of cloning
+/// (`message.message`, `custom_message.content`, ...).
+fn context_message_owned(entry: Value) -> Option<Value> {
+    match entry_type(&entry) {
+        "message" => {
+            let keep = entry.get("message").is_some_and(|message| {
+                !(message_role(message) == "assistant"
+                    && (truthy(message.get("retryRecovery")) || is_empty_error_turn(message)))
+            });
+            if !keep {
+                return None;
+            }
+            let Value::Object(mut map) = entry else {
+                return None;
+            };
+            map.remove("message")
+        }
+        "custom_message" => {
+            let custom_type = str_field(&entry, "customType");
+            if custom_type == Some(PREWALK_PLAN_MESSAGE_TYPE)
+                || custom_type == Some(VIBE_MODE_CONTEXT_MESSAGE_TYPE)
+            {
+                return None;
+            }
+            custom_message_from_entry_owned(entry)
+        }
+        "branch_summary" if truthy(entry.get("summary")) => Some(create_branch_summary_message(
+            str_field(&entry, "summary").unwrap_or(""),
+            str_field(&entry, "fromId").unwrap_or(""),
+            str_field(&entry, "timestamp").unwrap_or(""),
+        )),
+        _ => None,
+    }
+}
+
+/// `custom_message_from_entry` with the content/details moved out of the entry.
+fn custom_message_from_entry_owned(entry: Value) -> Option<Value> {
+    const DEFAULT_CUSTOM_MESSAGE_TYPE: &str = "custom-message";
+    let Value::Object(mut map) = entry else {
+        return None;
+    };
+    let content = map.get("content")?;
+    if !(content.is_string() || content.is_array()) {
+        return None;
+    }
+    let custom_type = map
+        .get("customType")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_CUSTOM_MESSAGE_TYPE)
+        .to_owned();
+    let mut m = Map::new();
+    m.insert("role".into(), "custom".into());
+    m.insert("customType".into(), custom_type.into());
+    m.insert("content".into(), map.remove("content")?);
+    m.insert(
+        "display".into(),
+        map.get("display")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            .into(),
+    );
+    if let Some(details) = map.remove("details").filter(|d| !d.is_null()) {
+        m.insert("details".into(), details);
+    }
+    if map.get("attribution").is_some_and(|a| !a.is_null()) {
+        let attribution = if map.get("attribution").and_then(Value::as_str) == Some("user") {
+            "user"
+        } else {
+            "agent"
+        };
+        m.insert("attribution".into(), attribution.into());
+    }
+    m.insert(
+        "timestamp".into(),
+        ms_value(
+            map.get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_iso_ms),
+        ),
+    );
+    Some(Value::Object(m))
+}
+
 /// Strip `toolCall` blocks with no matching `toolResult` anywhere in the context, together with
 /// `redactedThinking` and thinking signatures of the rewritten turn; drop turns left empty.
 fn strip_dangling_tool_calls(messages: &mut Vec<Value>) {
@@ -423,14 +795,18 @@ fn strip_dangling_tool_calls(messages: &mut Vec<Value>) {
         if message_role(&messages[i]) != "assistant" {
             continue;
         }
+        if !messages[i]
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| blocks.iter().any(is_dangling))
+        {
+            continue;
+        }
         let blocks = messages[i]
             .get("content")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        if !blocks.iter().any(is_dangling) {
-            continue;
-        }
         let normalized: Vec<Value> = blocks
             .into_iter()
             .filter(|b| !is_dangling(b) && str_field(b, "type") != Some("redactedThinking"))

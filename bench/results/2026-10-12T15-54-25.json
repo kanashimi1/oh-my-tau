@@ -1,0 +1,108 @@
+{
+  "ts": "2026-10-12T15-54-25",
+  "quick": false,
+  "repeats": 12,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "m1",
+      "bins": {
+        "omp-rs": {
+          "ok": false,
+          "error": "turn 12: Error: prompt timed out after 30000ms",
+          "extra": {
+            "points": [
+              {
+                "turn": 0,
+                "roles": {
+                  "core": {
+                    "rssKb": 102996,
+                    "pssKb": 100733
+                  },
+                  "other": {
+                    "rssKb": 99756,
+                    "pssKb": 53752
+                  }
+                },
+                "rssKb": 202752,
+                "pssKb": 154485
+              },
+              {
+                "turn": 1,
+                "roles": {
+                  "core": {
+                    "rssKb": 100328,
+                    "pssKb": 98064
+                  },
+                  "other": {
+                    "rssKb": 104844,
+                    "pssKb": 57641
+                  }
+                },
+                "rssKb": 205172,
+                "pssKb": 155705
+              },
+              {
+                "turn": 2,
+                "roles": {
+                  "core": {
+                    "rssKb": 100636,
+                    "pssKb": 98372
+                  },
+                  "other": {
+                    "rssKb": 101120,
+                    "pssKb": 53917
+                  }
+                },
+                "rssKb": 201756,
+                "pssKb": 152289
+              },
+              {
+                "turn": 5,
+                "roles": {
+                  "core": {
+                    "rssKb": 101040,
+                    "pssKb": 98776
+                  },
+                  "other": {
+                    "rssKb": 103384,
+                    "pssKb": 56062
+                  }
+                },
+                "rssKb": 204424,
+                "pssKb": 154838
+              },
+              {
+                "turn": 10,
+                "roles": {
+                  "core": {
+                    "rssKb": 101604,
+                    "pssKb": 99340
+                  },
+                  "other": {
+                    "rssKb": 108052,
+                    "pssKb": 58797
+                  }
+                },
+                "rssKb": 209656,
+                "pssKb": 158137
+              }
+            ]
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: ENOENT: no such file or directory, posix_spawn '/nonexistent'"
+        }
+      }
+    }
+  ]
+}

@@ -160,6 +160,16 @@ impl ExtHost {
     /// Fails when the process cannot be spawned.
     pub fn spawn(cfg: &HostConfig) -> Result<Arc<Self>> {
         let mut cmd = Command::new(&cfg.bun);
+        // `--smol` trades more frequent GC for a smaller heap footprint
+        // (~3-4 MB per session; measured 92.8 → 87.0 MB peak on the 36-extension
+        // suite). Per-event cost impact measured at parity by bench s6.
+        // Opt out with OMP_EXT_NO_SMOL=1 (e.g. older bun without the flag).
+        // Only passed to a real `bun` binary — tests substitute fake runners.
+        if std::env::var_os("OMP_EXT_NO_SMOL").is_none()
+            && cfg.bun.rsplit('/').next().is_some_and(|b| b == "bun" || b.starts_with("bun-"))
+        {
+            cmd.arg("--smol");
+        }
         cmd.arg(&cfg.host_script)
             .env("HOOK_TRACE", "0")
             .stdin(Stdio::piped())

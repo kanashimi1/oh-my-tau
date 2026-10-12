@@ -27,14 +27,22 @@ interface Ext {
   label?: string;
 }
 
-const TIMEOUT_MS = Number(process.env.OMP_EXT_TIMEOUT_MS) || 30_000;
+// Per-session mutable: the shared daemon runs one Worker per session, and each
+// Worker gets its own module instance of this file, so module-level state is
+// per-session exactly as in separate processes. `load` may additionally
+// override TIMEOUT_MS/TRACE per session (the daemon's env is shared).
+let TIMEOUT_MS = Number(process.env.OMP_EXT_TIMEOUT_MS) || 30_000;
 const SHUTDOWN_TIMEOUT_MS = 2_000;
-const TRACE = process.env.OMP_EXT_TRACE;
+let TRACE = process.env.OMP_EXT_TRACE;
 const PKG_ROOT =
   process.env.OMP_PKG_ROOT ?? join(homedir(), ".bun/install/global/node_modules/@oh-my-pi/pi-coding-agent");
 
 // ---------------------------------------------------------------- transport
-const out = (msg: Json) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...msg })}\n`);
+// In stdio mode `send` writes to stdout; in shared-daemon Worker mode it posts
+// the line to the daemon, which writes it to the session's unix socket.
+let emitLine: (line: string) => void = () => {};
+let closeSession: (() => void) | null = null;
+const out = (msg: Json) => emitLine(`${JSON.stringify({ jsonrpc: "2.0", ...msg })}\n`);
 // Extensions (and libs they import) log to stdout; the channel is stdout, so route console.* to stderr.
 const toStderr = (...a: unknown[]) => process.stderr.write(`${a.map(String).join(" ")}\n`);
 console.log = toStderr;
@@ -63,8 +71,32 @@ const flagValues = new Map<string, boolean | string>();
 const providers = new Map<string, { name: string; config: Json; extension: string }>();
 let state: Json = { cwd: process.cwd(), hasUI: false, agentKind: "main", branch: [] };
 let ctxCache: unknown;
+
+// ---------------------------------------------------------------- schema libs (lazy)
+// `api.typebox` / `api.zod` are imported synchronously on FIRST access (Bun's
+// `require` handles TS/ESM). Eagerly importing them at `load` costs ~39 MB RSS
+// (omptype + pi-ai's schema barrel) in every session, including sessions whose
+// extensions never touch either. typebox is a vendored copy of omp's
+// legacy-typebox.ts that pulls two leaf functions instead of pi-ai's whole
+// schema index (see legacy-typebox.ts). zod resolution is anchored at the omp
+// package so it resolves exactly as omp's own import would.
+import { createRequire } from "node:module";
+const ompRequire = createRequire(join(PKG_ROOT, "src", "extensibility", "noop.js"));
 let typebox: unknown;
 let zod: unknown;
+function loadSchemaLib(which: "typebox" | "zod"): unknown {
+  if (which === "typebox" ? typebox !== undefined : zod !== undefined) return which === "typebox" ? typebox : zod;
+  let mod: unknown;
+  try {
+    mod = which === "typebox" ? require("./legacy-typebox.ts") : ompRequire("@oh-my-pi/omptype/zod");
+  } catch (e) {
+    log("warn", `${which} unavailable (api.${which} undefined): ${e instanceof Error ? e.message : e}`);
+    return undefined;
+  }
+  if (which === "typebox") typebox = mod;
+  else zod = mod;
+  return mod;
+}
 
 const events = {
   on(ch: string, fn: (d: unknown) => void) {
@@ -216,10 +248,10 @@ function makeApi(ext: Ext) {
       error: (m: string, x?: Json) => log("error", m, x),
     },
     get typebox() {
-      return typebox;
+      return loadSchemaLib("typebox");
     },
     get zod() {
-      return zod;
+      return loadSchemaLib("zod");
     },
     events,
     pi: {},
@@ -322,14 +354,10 @@ async function loadOne(path: string): Promise<{ ext?: Ext; error?: string }> {
 async function load(p: Json) {
   if (p.ctx) state = { ...state, ...(p.ctx as Json) };
   if (typeof p.cwd === "string") state.cwd = p.cwd;
-  for (const [key, mod] of [["typebox", "legacy-typebox.ts"], ["zod", ""]] as const) {
-    try {
-      if (key === "typebox") typebox = await import(join(PKG_ROOT, "src/extensibility", mod));
-      else zod = await import(join(PKG_ROOT, "node_modules/@oh-my-pi/omptype/zod")).catch(() => import("@oh-my-pi/omptype/zod"));
-    } catch (e) {
-      if (key === "typebox") log("warn", `typebox unavailable (api.typebox undefined): ${e}`);
-    }
-  }
+  // Shared-daemon mode: the daemon's env is process-wide, so per-session
+  // handler budget and trace file travel with the load request.
+  if (typeof p.timeoutMs === "number" && p.timeoutMs > 0) TIMEOUT_MS = p.timeoutMs;
+  if (typeof p.trace === "string") TRACE = p.trace;
   const paths = (p.paths as string[] | undefined) ?? discover(String(p.dir ?? join(homedir(), ".omp/agent/extensions")));
   const loaded: Json[] = [];
   const errors: Json[] = [];
@@ -670,7 +698,9 @@ async function dispatch(method: string, p: Json): Promise<unknown> {
       events.emit(String(p.channel), p.data);
       return true;
     case "shutdown":
-      setTimeout(() => process.exit(0), 20);
+      // In a shared-daemon Worker, process.exit would kill every session;
+      // close the session transport instead (daemon terminates this Worker).
+      setTimeout(() => (closeSession ? closeSession() : process.exit(0)), 20);
       return true;
     default:
       throw rpcError(-32601, `method not found: ${method}`);
@@ -707,15 +737,45 @@ async function onMessage(line: string) {
 process.on("uncaughtException", (e) => log("error", `uncaughtException: ${e instanceof Error ? (e.stack ?? e.message) : e}`));
 process.on("unhandledRejection", (e) => log("error", `unhandledRejection: ${e instanceof Error ? (e.stack ?? e.message) : e}`));
 
-let buf = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk: string) => {
-  buf += chunk;
-  let i: number;
-  while ((i = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, i).trim();
-    buf = buf.slice(i + 1);
-    if (line) void onMessage(line);
-  }
-});
-process.stdin.on("end", () => process.exit(0));
+/** Byte-stream -> line-message transport used by both entry points. */
+export interface SessionTransport {
+  /** Send one newline-terminated JSON-RPC line to the core. */
+  send(line: string): void;
+  /** Called with each raw incoming chunk (newline framing happens here). */
+  onData(cb: (chunk: string) => void): void;
+  /** Input ended / core disconnected: the session is over. */
+  onClose?(cb: () => void): void;
+  /** Host-initiated session end (shutdown RPC): close this session only. */
+  close?(): void;
+}
+
+/**
+ * Start serving one session on `t`. Each call creates no explicit state -- the
+ * module-level state above belongs to the importing isolate, so a fresh Worker
+ * per session gets isolation equivalent to a separate process.
+ */
+export function startSession(t: SessionTransport): void {
+  emitLine = t.send;
+  closeSession = t.close ?? null;
+  let buf = "";
+  t.onData((chunk: string) => {
+    buf += chunk;
+    let i: number;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, i).trim();
+      buf = buf.slice(i + 1);
+      if (line) void onMessage(line);
+    }
+  });
+  t.onClose?.(() => process.exit(0));
+}
+
+if (import.meta.main) {
+  // stdio entry point (one bun process per session; the default).
+  process.stdin.setEncoding("utf8");
+  startSession({
+    send: (line) => process.stdout.write(line),
+    onData: (cb) => process.stdin.on("data", cb),
+    onClose: (cb) => process.stdin.on("end", cb),
+  });
+}

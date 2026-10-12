@@ -118,8 +118,46 @@ fn catalog_path() -> Option<std::path::PathBuf> {
     )
 }
 
-fn catalog() -> Option<&'static serde_json::Value> {
-    static CATALOG: std::sync::OnceLock<Option<serde_json::Value>> = std::sync::OnceLock::new();
+/// One catalog model reduced to the [`CATALOG_EXTRA_KEYS`] fields. serde skips every other
+/// field while parsing, so the 11.8 MB `models.json` never materializes as a full `Value` tree
+/// (that tree used to stay resident for the process lifetime: ~80 MB per session).
+#[derive(serde::Deserialize)]
+struct CatalogEntry {
+    int: Option<serde_json::Value>,
+    tps: Option<serde_json::Value>,
+    thinking: Option<serde_json::Value>,
+    identity: Option<serde_json::Value>,
+    #[serde(rename = "requiresGlyphTokenization")]
+    requires_glyph_tokenization: Option<serde_json::Value>,
+    tokenizer: Option<serde_json::Value>,
+    #[serde(rename = "supportsComputerUse")]
+    supports_computer_use: Option<serde_json::Value>,
+}
+
+impl CatalogEntry {
+    /// Present extras in [`CATALOG_EXTRA_KEYS`] order (catalog key order).
+    fn extras(&self) -> Vec<(&'static str, serde_json::Value)> {
+        let fields = [
+            &self.int,
+            &self.tps,
+            &self.thinking,
+            &self.identity,
+            &self.requires_glyph_tokenization,
+            &self.tokenizer,
+            &self.supports_computer_use,
+        ];
+        CATALOG_EXTRA_KEYS
+            .iter()
+            .zip(fields)
+            .filter_map(|(k, v)| v.as_ref().map(|v| (*k, v.clone())))
+            .collect()
+    }
+}
+
+type Catalog = std::collections::HashMap<String, std::collections::HashMap<String, CatalogEntry>>;
+
+fn catalog() -> Option<&'static Catalog> {
+    static CATALOG: std::sync::OnceLock<Option<Catalog>> = std::sync::OnceLock::new();
     CATALOG
         .get_or_init(|| serde_json::from_slice(&std::fs::read(catalog_path()?).ok()?).ok())
         .as_ref()
@@ -130,11 +168,7 @@ fn catalog() -> Option<&'static serde_json::Value> {
 /// `None` when the catalog is not installed or lists no such model.
 #[must_use]
 pub fn catalog_extras(provider: &str, id: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
-    let entry = catalog()?.get(provider)?.get(id)?;
-    let extras: Vec<_> = CATALOG_EXTRA_KEYS
-        .iter()
-        .filter_map(|k| entry.get(*k).map(|v| (*k, v.clone())))
-        .collect();
+    let extras = catalog()?.get(provider)?.get(id)?.extras();
     (!extras.is_empty()).then_some(extras)
 }
 
@@ -211,5 +245,57 @@ pub fn clamp_level(model: &pa_types::ai::Model, level: ThinkingLevel) -> Thinkin
             model,
             crate::adapter::model_thinking_level(level),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reference: untyped `Value` parse of the catalog (the pre-fix implementation),
+    /// reduced to the `CATALOG_EXTRA_KEYS` fields. Must cover every provider/id of the
+    /// real 5618-model `models.json`, and the typed [`Catalog`] must agree exactly.
+    #[test]
+    fn catalog_matches_value_reference_parse() {
+        let path = match catalog_path() {
+            Some(p) => p,
+            None => {
+                eprintln!("catalog not installed; skipping");
+                return;
+            }
+        };
+        let bytes = std::fs::read(&path).expect("read catalog");
+        let reference: serde_json::Value = serde_json::from_slice(&bytes).expect("value parse");
+        let reference = reference.as_object().expect("catalog is an object");
+        let mut models = 0usize;
+        for (provider, ids) in reference {
+            let ids = ids.as_object().expect("provider is an object");
+            for (id, entry) in ids {
+                models += 1;
+                let expected: Vec<(&'static str, serde_json::Value)> = CATALOG_EXTRA_KEYS
+                    .iter()
+                    .filter_map(|k| {
+                        entry.get(*k).map(|v| (*k, v.clone())).filter(|(_, v)| !v.is_null())
+                    })
+                    .collect();
+                let got = catalog()
+                    .and_then(|c| c.get(provider))
+                    .and_then(|m| m.get(id))
+                    .map(CatalogEntry::extras)
+                    .unwrap_or_default();
+                assert_eq!(
+                    expected, got,
+                    "mismatch for {provider}/{id}: typed catalog parse diverged from Value reference"
+                );
+                if !expected.is_empty() {
+                    assert!(
+                        catalog_extras(provider, id).is_some(),
+                        "{provider}/{id}: catalog_extras must be Some for a non-empty entry"
+                    );
+                }
+            }
+        }
+        assert_eq!(models, 5618, "expected the full 5618-model catalog");
+        assert!(catalog().is_some(), "typed catalog must be installed");
     }
 }

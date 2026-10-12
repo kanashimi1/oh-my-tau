@@ -22,6 +22,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use cli::{Args, Resume};
 
+// mimalloc instead of glibc malloc: glibc's per-thread arenas retain the
+// ~90 MB one-time first-turn churn (cross-thread JSON emit between the
+// ext-host pipe tasks and the agent loop) indefinitely; mimalloc returns
+// freed segments promptly. Measured: see runs/omp-rust/reports/AllocMem.md.
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const HELP: &str = r"usage: omp-rs [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
        [--provider <name>] [--api-key <key>] [--smol <m>] [--slow <m>] [--plan <m>]
        [--cwd DIR] [--add-dir DIR]... [--config FILE]... [--session-dir DIR]

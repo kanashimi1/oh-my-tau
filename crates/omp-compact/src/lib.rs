@@ -41,10 +41,19 @@ pub mod settings;
 pub mod summary;
 pub mod tokens;
 
-pub use apply::{append_compaction, compaction_entry, project_tokens_after, ApplyOptions};
-pub use context::{build_session_context, latest_compaction, ContextError, Leaf, SessionContext};
+pub use apply::{
+    append_compaction, compaction_entry, project_tokens_after, synthetic_compaction_entry,
+    ApplyOptions,
+};
+pub use context::{
+    build_session_context, build_session_context_owned, build_session_context_path,
+    latest_compaction, ContextError, Leaf, SessionContext,
+};
 pub use convert::{convert_message, convert_to_llm};
-pub use cut::{find_cut_point, plan_compaction, CompactionPreparation, CutPoint, PlanError};
+pub use cut::{
+    find_cut_point, plan_boundary, plan_compaction, plan_region, BoundaryEntry,
+    CompactionBoundary, CompactionPreparation, CutPoint, PlanError,
+};
 pub use handoff::{
     append_handoff, generate_handoff_from_context, handoff_compaction_entry,
     handoff_summary_from_document, render_handoff_prompt, HandoffCommit,

@@ -49,20 +49,18 @@ fn json_string(v: &Value) -> String {
     omp_session::entries::to_js_string(v).unwrap_or_else(|_| "null".to_owned())
 }
 
-fn content_blocks(
-    content: &Value,
-    fragments: &mut Vec<String>,
-    extra: &mut u64,
-    t: &dyn Tokenizer,
-) {
+/// Sum token estimates over text fragments without collecting them: identical
+/// results to buffering `String`s, but no per-message text is cloned (this runs
+/// over the whole session context at every post-turn threshold check).
+fn content_blocks(content: &Value, total: &mut u64, extra: &mut u64, t: &dyn Tokenizer) {
     match content {
-        Value::String(s) => fragments.push(s.clone()),
+        Value::String(s) => *total += t.count_text(s),
         Value::Array(blocks) => {
             for block in blocks {
                 match str_field(block, "type") {
                     Some("text") => {
                         if let Some(text) = str_field(block, "text").filter(|s| !s.is_empty()) {
-                            fragments.push(text.to_owned());
+                            *total += t.count_text(text);
                         }
                     }
                     Some("image") => *extra += t.count_image(block),
@@ -79,17 +77,16 @@ fn content_blocks(
 /// role counts as 0).
 #[must_use]
 pub fn count_message(t: &dyn Tokenizer, message: &Value, options: CountOptions) -> u64 {
-    let mut fragments: Vec<String> = Vec::new();
+    let mut total = 0u64;
     let mut extra = 0u64;
-    let sum = |fragments: &[String]| fragments.iter().map(|f| t.count_text(f)).sum::<u64>();
     match message_role(message) {
         "bashExecution" => {
             for key in ["command", "output"] {
                 if let Some(s) = str_field(message, key) {
-                    fragments.push(s.to_owned());
+                    total += t.count_text(s);
                 }
             }
-            return sum(&fragments);
+            return total;
         }
         "assistant" => {
             for block in message
@@ -100,34 +97,34 @@ pub fn count_message(t: &dyn Tokenizer, message: &Value, options: CountOptions) 
             {
                 match str_field(block, "type") {
                     Some("text") => {
-                        fragments.push(str_field(block, "text").unwrap_or("").to_owned());
+                        total += t.count_text(str_field(block, "text").unwrap_or(""));
                     }
                     Some("thinking") => {
-                        fragments.push(str_field(block, "thinking").unwrap_or("").to_owned());
+                        total += t.count_text(str_field(block, "thinking").unwrap_or(""));
                         if let Some(sig) =
                             str_field(block, "thinkingSignature").filter(|s| !s.is_empty())
                         {
                             if !options.exclude_encrypted_reasoning {
-                                fragments.push(sig.to_owned());
+                                total += t.count_text(sig);
                             }
                         }
                     }
                     Some("toolCall") => {
-                        fragments.push(str_field(block, "name").unwrap_or("").to_owned());
-                        fragments.push(
-                            block
+                        total += t.count_text(str_field(block, "name").unwrap_or(""));
+                        total += t.count_text(
+                            &block
                                 .get("arguments")
                                 .map_or_else(|| "null".to_owned(), json_string),
                         );
                     }
                     Some("redactedThinking") => {
                         if !options.exclude_encrypted_reasoning {
-                            fragments.push(str_field(block, "data").unwrap_or("").to_owned());
+                            total += t.count_text(str_field(block, "data").unwrap_or(""));
                         }
                     }
                     Some("anthropicServerTool") if !options.exclude_encrypted_reasoning => {
-                        fragments.push(
-                            block
+                        total += t.count_text(
+                            &block
                                 .get("block")
                                 .map_or_else(|| "null".to_owned(), json_string),
                         );
@@ -138,16 +135,16 @@ pub fn count_message(t: &dyn Tokenizer, message: &Value, options: CountOptions) 
         }
         "user" | "developer" | "custom" | "hookMessage" | "toolResult" => {
             if let Some(content) = message.get("content") {
-                content_blocks(content, &mut fragments, &mut extra, t);
+                content_blocks(content, &mut total, &mut extra, t);
             }
         }
         role @ ("branchSummary" | "compactionSummary") => {
-            fragments.push(str_field(message, "summary").unwrap_or("").to_owned());
+            total += t.count_text(str_field(message, "summary").unwrap_or(""));
             if role == "compactionSummary" {
                 if let Some(blocks) = message.get("blocks").and_then(Value::as_array) {
                     for block in blocks {
                         if str_field(block, "type") == Some("text") {
-                            fragments.push(str_field(block, "text").unwrap_or("").to_owned());
+                            total += t.count_text(str_field(block, "text").unwrap_or(""));
                         } else {
                             extra += FRAME_TOKEN_ESTIMATE;
                         }
@@ -159,7 +156,7 @@ pub fn count_message(t: &dyn Tokenizer, message: &Value, options: CountOptions) 
         }
         _ => return 0,
     }
-    extra + sum(&fragments)
+    extra + total
 }
 
 /// Sum of [`count_message`] over `messages`.

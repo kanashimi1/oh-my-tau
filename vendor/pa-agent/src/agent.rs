@@ -354,50 +354,63 @@ impl AgentInner {
     }
 
     async fn process_events(self: &Arc<Self>, event: AgentEvent) -> anyhow::Result<()> {
-        let mut shared = self.shared.lock().await;
-
-        match &event {
-            AgentEvent::MessageStart { message } => {
-                shared.state.streaming_message = Some(Arc::new(message.clone()));
-            }
-            AgentEvent::MessageUpdate { message, .. } => {
-                shared.state.streaming_message = Some(Arc::clone(message));
-            }
-            AgentEvent::MessageEnd { message } => {
-                shared.state.streaming_message = None;
-                shared.state.messages.push(message.clone());
-            }
-            AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
-                shared.state.pending_tool_calls.insert(tool_call_id.clone());
-            }
-            AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
-                shared.state.pending_tool_calls.remove(tool_call_id);
-            }
-            AgentEvent::TurnEnd { message, .. } => {
-                if let AgentMessage::Standard(crate::types::Message::Assistant(assistant)) = message
-                {
-                    if let Some(error_message) = &assistant.error_message {
-                        shared.state.error_message = Some(error_message.clone());
+        // Reduce the event into state strictly serialized under the lock,
+        // then drop the guard before awaiting anything below.
+        {
+            let mut shared = self.shared.lock().await;
+            match &event {
+                AgentEvent::MessageStart { message } => {
+                    shared.state.streaming_message = Some(Arc::new(message.clone()));
+                }
+                AgentEvent::MessageUpdate { message, .. } => {
+                    shared.state.streaming_message = Some(Arc::clone(message));
+                }
+                AgentEvent::MessageEnd { message } => {
+                    shared.state.streaming_message = None;
+                    shared.state.messages.push(message.clone());
+                }
+                AgentEvent::ToolExecutionStart { tool_call_id, .. } => {
+                    shared.state.pending_tool_calls.insert(tool_call_id.clone());
+                }
+                AgentEvent::ToolExecutionEnd { tool_call_id, .. } => {
+                    shared.state.pending_tool_calls.remove(tool_call_id);
+                }
+                AgentEvent::TurnEnd { message, .. } => {
+                    if let AgentMessage::Standard(crate::types::Message::Assistant(assistant)) =
+                        message
+                    {
+                        if let Some(error_message) = &assistant.error_message {
+                            shared.state.error_message = Some(error_message.clone());
+                        }
                     }
                 }
+                AgentEvent::AgentEnd { .. } => {
+                    shared.state.streaming_message = None;
+                }
+                AgentEvent::AgentStart
+                | AgentEvent::TurnStart
+                | AgentEvent::ToolExecutionUpdate { .. } => {}
             }
-            AgentEvent::AgentEnd { .. } => {
-                shared.state.streaming_message = None;
-            }
-            AgentEvent::AgentStart
-            | AgentEvent::TurnStart
-            | AgentEvent::ToolExecutionUpdate { .. } => {}
         }
 
         let Some(signal) = self.current_signal() else {
             return Err(anyhow::anyhow!("Agent listener invoked outside active run"));
         };
 
-        let listeners: Vec<AgentEventListener> = shared
-            .listeners
-            .iter()
-            .map(|(_, listener)| Arc::clone(listener))
-            .collect();
+        // Snapshot the listener chain and drop the `shared` guard BEFORE
+        // awaiting anything: listeners may call back into the agent (state
+        // reads, steering queues, send_message), and awaiting them while
+        // holding the lock deadlocks turn N+1's run task against turn N's
+        // event dispatch. State reduction above still happens strictly
+        // serialized under the lock, preserving per-event ordering.
+        let listeners: Vec<AgentEventListener> = {
+            let shared = self.shared.lock().await;
+            shared
+                .listeners
+                .iter()
+                .map(|(_, listener)| Arc::clone(listener))
+                .collect()
+        };
         for listener in listeners {
             listener(event.clone(), signal.clone()).await?;
         }

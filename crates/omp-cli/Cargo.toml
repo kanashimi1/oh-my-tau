@@ -9,6 +9,7 @@ name = "omp-rs"
 path = "src/main.rs"
 
 [dependencies]
+mimalloc = "0.1"
 omp-urls = { path = "../omp-urls" }
 anyhow.workspace = true
 serde.workspace = true

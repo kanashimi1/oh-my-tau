@@ -6,6 +6,7 @@
 //! and a round-trip checker used against real `~/.omp/agent/sessions`.
 
 pub mod entries;
+pub mod index;
 pub mod tree;
 
 use std::collections::HashSet;
@@ -350,6 +351,48 @@ impl SessionWriter {
         Ok(id)
     }
 
+    /// Seed from a raw entry line of another session file (resume): the payload
+    /// bytes stay verbatim — only the top-level `id` (fresh), `parentId` (chained
+    /// to the current leaf) and, through `remap`, `firstKeptEntryId` /
+    /// `providerReplayThroughEntryId` are rewritten. This is what makes resuming
+    /// a large session cheap: no `Value` DOM is ever built for the seeded branch.
+    ///
+    /// # Errors
+    /// `raw` is not a JSON object line whose top-level fields can be rewritten.
+    pub fn append_seeded_line(&mut self, raw: &str, remap: &std::collections::HashMap<String, String>) -> Result<String> {
+        let members = top_level_string_members(raw)
+            .ok_or_else(|| anyhow::anyhow!("entry line is not a rewriteable JSON object"))?;
+        let new_id = self.fresh_id();
+        let parent = self.leaf.clone().map_or_else(|| "null".to_owned(), |l| format!("\"{l}\""));
+        let mut replacements: Vec<(usize, usize, String)> = Vec::with_capacity(3);
+        for (key, vs, ve, escaped) in members {
+            if escaped {
+                continue; // an escaped id field is not worth guessing: caller falls back to the DOM path
+            }
+            match key.as_str() {
+                "id" => replacements.push((vs, ve, format!("\"{new_id}\""))),
+                "parentId" => replacements.push((vs, ve, parent.clone())),
+                "firstKeptEntryId" | "providerReplayThroughEntryId" => {
+                    if let Some(mapped) = remap.get(&raw[vs + 1..ve - 1]) {
+                        replacements.push((vs, ve, format!("\"{mapped}\"")));
+                    }
+                }
+                _ => {}
+            }
+        }
+        replacements.sort_by_key(|(start, _, _)| *start);
+        let mut line = String::with_capacity(raw.len() + replacements.len() * 8);
+        let mut pos = 0;
+        for (vs, ve, text) in &replacements {
+            line.push_str(&raw[pos..*vs]);
+            line.push_str(text);
+            pos = *ve;
+        }
+        line.push_str(&raw[pos..]);
+        self.push_line(&line, &new_id)?;
+        Ok(new_id)
+    }
+
     /// Build an entry with a fresh id chained to the previous one, write it, advance the chain.
     fn append_typed(&mut self, timestamp_iso: &str, build: impl FnOnce(String, Option<String>, String) -> OmpEntry) -> Result<String> {
         let id = self.fresh_id();
@@ -434,6 +477,152 @@ fn generate_id(has: impl Fn(&str) -> bool, mut next: impl FnMut() -> u32) -> Str
         }
     }
     format!("{:08x}{:08x}", next(), next())
+}
+
+/// Scan one JSON object line for its top-level string members: returns
+/// `(key, value_start, value_end, value_has_escapes)` byte spans (`value_*`
+/// include the quotes). Returns `None` when the line is not exactly one JSON
+/// object. Used by [`SessionWriter::append_seeded_line`] to rewrite id links
+/// in place without building a `Value`.
+fn top_level_string_members(line: &str) -> Option<Vec<(String, usize, usize, bool)>> {
+    let b = line.as_bytes();
+    let mut i = 0usize;
+    let skip_ws = |i: &mut usize| {
+        while b.get(*i).is_some_and(u8::is_ascii_whitespace) {
+            *i += 1;
+        }
+    };
+    skip_ws(&mut i);
+    if b.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    let mut out = Vec::new();
+    loop {
+        skip_ws(&mut i);
+        match b.get(i) {
+            Some(b'}') => {
+                i += 1;
+                skip_ws(&mut i);
+                return (i == b.len()).then_some(out);
+            }
+            Some(b'"') => {
+                let (ks, ke) = scan_json_string(b, i)?;
+                let key = unescape(&line[ks..ke - 1]);
+                i = ke;
+                skip_ws(&mut i);
+                if b.get(i) != Some(&b':') {
+                    return None;
+                }
+                i += 1;
+                skip_ws(&mut i);
+                match b.get(i) {
+                    Some(b'"') => {
+                        let (vs, ve) = scan_json_string(b, i)?;
+                        let escaped = line[vs..ve - 1].contains('\\');
+                        out.push((key, vs - 1, ve, escaped));
+                        i = ve;
+                    }
+                    Some(b'{' | b'[') => {
+                        i = skip_json_value(b, i)?;
+                    }
+                    Some(_) => {
+                        // number / true / false / null: up to the next , } ] at any depth
+                        let start = i;
+                        while let Some(&c) = b.get(i) {
+                            if matches!(c, b',' | b'}' | b']') {
+                                break;
+                            }
+                            i += 1;
+                        }
+                        if i == start {
+                            return None;
+                        }
+                    }
+                    None => return None,
+                }
+                skip_ws(&mut i);
+                match b.get(i) {
+                    Some(b',') => i += 1,
+                    Some(b'}') => {}
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Byte span of a JSON string starting at `b[start] == b'"'`: returns
+/// `(content_start, end_inclusive_past_quote)`.
+fn scan_json_string(b: &[u8], start: usize) -> Option<(usize, usize)> {
+    if b.get(start) != Some(&b'"') {
+        return None;
+    }
+    let mut j = start + 1;
+    while let Some(&c) = b.get(j) {
+        match c {
+            b'\\' => j += 2,
+            b'"' => return Some((start + 1, j + 1)),
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// Position past the balanced JSON value starting at `b[start]` (object or array).
+fn skip_json_value(b: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut i = start;
+    while let Some(&c) = b.get(i) {
+        match c {
+            b'"' => {
+                let (_, end) = scan_json_string(b, i)?;
+                i = end;
+                continue;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Unescape a JSON string body (the content between quotes). Unknown escapes
+/// keep their character, matching `serde_json`'s lossy handling.
+fn unescape(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_owned();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some('b') => out.push('\u{8}'),
+            Some('f') => out.push('\u{c}'),
+            Some('u') => {
+                let hex: String = chars.by_ref().take(4).collect();
+                out.push(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32).unwrap_or('\u{fffd}'));
+            }
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
 }
 
 fn rand_u32() -> u32 {
@@ -707,6 +896,59 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn append_seeded_line_rewrites_links_and_keeps_payload_bytes() {
+        let dir = std::env::temp_dir().join(format!("omp-rs-seed-{}-{:08x}", std::process::id(), rand_u32()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut w = SessionWriter::create(&dir, "/tmp", "sess", "2026-10-12T00-00-00-000Z").unwrap();
+        let first = w
+            .append_seeded_line(
+                r#"{"type":"message","id":"old1","parentId":"hdr","timestamp":"t1","message":{"role":"user","content":[{"type":"text","text":"kept \u00e9 verbatim"}]}}"#,
+                &Default::default(),
+            )
+            .unwrap();
+        let mut remap = std::collections::HashMap::new();
+        remap.insert("old1".to_owned(), first.clone());
+        remap.insert("nope".to_owned(), "x".to_owned());
+        let second = w
+            .append_seeded_line(
+                r#"{"type":"compaction","id":"old2","parentId":"old1","timestamp":"t2","summary":"s","firstKeptEntryId":"old1","providerReplayThroughEntryId":"nope","preserveData":{"nested":{"id":"not-top-level"}}}"#,
+                &remap,
+            )
+            .unwrap();
+        let path = w.path().to_path_buf();
+        drop(w);
+        let text = std::fs::read_to_string(path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], r#"{"type":"session","version":3,"id":"sess","timestamp":"2026-10-12T00-00-00-000Z","cwd":"/tmp"}"#);
+        let a: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(a["id"], first);
+        assert_eq!(a["parentId"], Value::Null, "first seeded entry is a root, like the old DOM seeder");
+        assert_eq!(a["timestamp"], "t1");
+        assert_eq!(a["message"]["content"][0]["text"], "kept é verbatim");
+        let b: Value = serde_json::from_str(lines[2]).unwrap();
+        assert_eq!(b["id"], second);
+        assert_eq!(b["parentId"], first);
+        assert_eq!(b["firstKeptEntryId"], first, "remapped through the copy map");
+        assert_eq!(b["providerReplayThroughEntryId"], "x", "mapped links follow the copy map");
+        assert_eq!(b["preserveData"]["nested"]["id"], "not-top-level", "nested ids untouched");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn top_level_string_members_scans_nested_and_escaped_shapes() {
+        let m = top_level_string_members(
+            r#"{"type":"custom","id":"a","data":{"k":"v"},"list":[{"id":"inner"}],"note":"q\"x","n":42,"b":true,"z":null}"#,
+        )
+        .expect("scans");
+        let by_key: std::collections::HashMap<_, _> = m.iter().map(|(k, s, e, _)| (k.as_str(), (*s, *e))).collect();
+        assert_eq!(by_key["id"], (22, 25));
+        assert_eq!(by_key["note"], (74, 80));
+        assert!(top_level_string_members("[1,2]").is_none());
+        assert!(top_level_string_members("{\"a\":1} trailing").is_none());
+        assert!(top_level_string_members("").is_none());
+    }
+
     fn generate_id_retries_on_collision_then_falls_back_to_longer_id() {
         let calls = Cell::new(0u32);
         // First two draws collide, the third is free.

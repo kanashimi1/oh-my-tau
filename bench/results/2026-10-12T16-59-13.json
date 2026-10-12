@@ -1,0 +1,123 @@
+{
+  "ts": "2026-10-12T16-59-13",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48751,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s3",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 275.99249199999986,
+            "p95": 475.4692850000001,
+            "min": 275.99249199999986,
+            "max": 475.4692850000001
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 2,
+              "median": 14,
+              "p95": 80,
+              "min": 14,
+              "max": 80
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 3339.994167,
+            "p95": 3732.3255019999997,
+            "min": 3339.994167,
+            "max": 3732.3255019999997
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 6,
+              "median": 1334,
+              "p95": 28125,
+              "min": 14,
+              "max": 28125
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 722.2688689999995,
+            "p95": 722.2688689999995,
+            "min": 722.2688689999995,
+            "max": 722.2688689999995
+          },
+          "extra": {
+            "turnsPerSec": 5.538103844262465
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 1993.3137050000005,
+            "p95": 1993.3137050000005,
+            "min": 1993.3137050000005,
+            "max": 1993.3137050000005
+          },
+          "extra": {
+            "turnsPerSec": 2.0067087232513656
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 740.2054619999981,
+            "p95": 740.2054619999981,
+            "min": 740.2054619999981,
+            "max": 740.2054619999981
+          },
+          "extra": {
+            "turnsPerSec": 21.615620015514075
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 37586.148177,
+            "p95": 37586.148177,
+            "min": 37586.148177,
+            "max": 37586.148177
+          },
+          "extra": {
+            "turnsPerSec": 0.4256887384323898
+          }
+        }
+      }
+    }
+  ]
+}

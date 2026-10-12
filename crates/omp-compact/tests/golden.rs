@@ -57,7 +57,8 @@ fn cut_points_match_ts() {
             keep_recent_tokens: keep,
             ..CompactionSettings::default()
         };
-        let plan = plan_compaction(before, &settings, &ByteEstimate).unwrap();
+        let before_refs = before.iter().collect::<Vec<_>>();
+        let plan = plan_compaction(&before_refs, &settings, &ByteEstimate).unwrap();
         let exp = &case["plan"];
         let plan = plan.unwrap_or_else(|| panic!("keep={keep}: expected a plan"));
         assert_eq!(

@@ -82,7 +82,7 @@ pub fn calculate_prompt_tokens(usage: &Value) -> u64 {
 
 /// `getLastAssistantUsage`: usage of the newest assistant message that did not abort or fail.
 #[must_use]
-pub fn last_assistant_usage(entries: &[Value]) -> Option<&Value> {
+pub fn last_assistant_usage<'a>(entries: &[&'a Value]) -> Option<&'a Value> {
     entries.iter().rev().find_map(|entry| {
         if crate::json::entry_type(entry) != "message" {
             return None;
