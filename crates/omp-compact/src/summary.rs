@@ -386,7 +386,9 @@ pub struct CompactionResult {
     pub tokens_before: u64,
     /// `{ readFiles, modifiedFiles }`.
     pub details: Value,
-    /// Previous compaction's `preserveData`, carried forward.
+    /// This compaction's own `preserveData` (only the cumulative snapcompact
+    /// archive carries forward; a stale provider-native payload must not —
+    /// TS keeps `result.preserveData` here, never `previousPreserveData`).
     pub preserve_data: Option<Value>,
 }
 
@@ -465,6 +467,17 @@ pub async fn compact(
         first_kept_entry_id: preparation.first_kept_entry_id.clone(),
         tokens_before: preparation.tokens_before,
         details: json!({ "readFiles": read_files, "modifiedFiles": modified_files }),
-        preserve_data: preparation.previous_preserve_data.clone(),
+        // TS (`session-maintenance.ts`, local summary path) writes only the
+        // new result's own preserveData. Blindly cloning the previous entry's
+        // payload re-stamps a stale `openaiRemoteCompaction` onto a locally
+        // summarized entry; the context rebuild then trusts that payload for
+        // the kept tail and replays nothing, dropping every message after the
+        // boundary (observed as "no assistant response" after auto-compaction
+        // on a resumed session). Only the cumulative snapcompact archive slot
+        // carries forward.
+        preserve_data: preparation.previous_preserve_data.as_ref().and_then(|p| {
+            p.get("snapcompact")
+                .map(|archive| serde_json::json!({ "snapcompact": archive.clone() }))
+        }),
     })
 }

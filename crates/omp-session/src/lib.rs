@@ -100,6 +100,31 @@ pub fn read(path: &Path) -> Result<Vec<Line>> {
     Ok(load(path)?.lines)
 }
 
+/// One parse per line straight into `Value` (object records only, malformed
+/// skipped), for consumers that need the entry tree itself (resume/rebuild):
+/// [`load`]/`read` parse every line twice (typed entry + caller's `Value`).
+///
+/// # Errors
+/// I/O failure.
+pub fn read_values(path: &Path) -> Result<Vec<Value>> {
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut out = Vec::new();
+    for (n, chunk) in BufReader::new(file).split(b'\n').enumerate() {
+        let bytes = chunk.with_context(|| format!("{}:{}", path.display(), n + 1))?;
+        let text = String::from_utf8_lossy(&bytes);
+        let raw = text.strip_suffix('\r').unwrap_or(&text);
+        if raw.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(raw) {
+            if v.is_object() {
+                out.push(v);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Append-only writer producing files omp itself can open: v3 header first, then entries whose
 /// `parentId` is the previous entry's `id` (a linear branch, as omp writes without /tree navigation).
 pub struct SessionWriter {
@@ -309,7 +334,9 @@ impl SessionWriter {
         let obj = Value::Object(obj);
         // Through a typed entry (never a Value detour) so field order matches omp's writer: omp
         // kinds via `OmpEntry`; the rest via `FileEntry` (unmodeled kinds keep construction order).
-        let line = match serde_json::from_value::<OmpEntry>(obj.clone()) {
+        // The typed parse borrows (`Deserialize for &Value`): seeding a resumed session clones
+        // nothing here — a consuming `from_value` would force a deep clone of every payload.
+        let line = match <OmpEntry as serde::Deserialize>::deserialize(&obj) {
             Ok(entry) => entries::to_js_string(&entry)?,
             Err(e) if entries::STRICT_KINDS.contains(&kind) => {
                 return Err(anyhow::Error::from(e).context(format!("{kind} entry payload does not match its schema")));

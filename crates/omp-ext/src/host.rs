@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -142,6 +142,10 @@ struct Incoming {
 
 /// Connection to a running extension host.
 pub struct ExtHost {
+    /// Event types with at least one handler across all loaded extensions,
+    /// learned from `load` (mirrors the TS runner's `hasHandlers` gate).
+    /// `None` = not loaded yet / unknown: send everything.
+    subscribed: Mutex<Option<HashSet<String>>>,
     stdin: tokio::sync::Mutex<ChildStdin>,
     child: tokio::sync::Mutex<Child>,
     pending: Pending,
@@ -179,6 +183,7 @@ impl ExtHost {
         let pending: Pending = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
         let host = Arc::new(Self {
+            subscribed: Mutex::new(None),
             stdin: tokio::sync::Mutex::new(stdin),
             child: tokio::sync::Mutex::new(child),
             pending: pending.clone(),
@@ -308,7 +313,19 @@ impl ExtHost {
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
-        Ok(serde_json::from_value(self.request("load", p).await?)?)
+        let result: LoadResult = serde_json::from_value(self.request("load", p).await?)?;
+        let subscribed: HashSet<String> = result
+            .loaded
+            .iter()
+            .flat_map(|e| e.handlers.iter())
+            .filter(|(_, n)| **n > 0)
+            .map(|(ty, _)| ty.clone())
+            .collect();
+        *self
+            .subscribed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(subscribed);
+        Ok(result)
     }
 
     /// Emit an omp event (`{"type": ..., ...}`); `ctx` merges into the host's session state
@@ -317,6 +334,24 @@ impl ExtHost {
     /// # Errors
     /// Transport failure. Handler failures are reported in [`EmitResult::handlers`]/`errors`.
     pub async fn emit(&self, event: Value, ctx: Option<Value>) -> Result<EmitResult> {
+        // `hasHandlers` gate (TS agent-session): when no loaded extension
+        // subscribes to this event type, the host would run zero handlers and
+        // return `{result: null, handlers: [], errors: []}` — the default
+        // below. Skip the round-trip. `session_shutdown` always goes through:
+        // the host clears extension timers even with no handlers, and a `ctx`
+        // merge is a side effect we must not drop.
+        if ctx.is_none() {
+            let subscribed = self
+                .subscribed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(subscribed) = subscribed.as_ref() {
+                let ty = event.get("type").and_then(Value::as_str).unwrap_or("");
+                if ty != "session_shutdown" && !subscribed.contains(ty) {
+                    return Ok(EmitResult::default());
+                }
+            }
+        }
         let mut p = json!({ "event": event });
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;

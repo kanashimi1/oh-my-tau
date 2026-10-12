@@ -402,7 +402,10 @@ const joinCtx = (xs: string[]) => {
 
 async function emit(p: Json) {
   if (p.ctx) state = { ...state, ...(p.ctx as Json) };
-  const event = structuredClone(p.event as Json);
+  // No structuredClone: like the TS runner, every handler for this emit sees
+  // this same object (handler-side mutations are visible to later handlers,
+  // and the core's copy is independent — it came off the wire).
+  const event = p.event as Json;
   const type = String(event.type);
   const timeoutMs = Number(p.timeoutMs) || TIMEOUT_MS;
   const rec: HandlerRecord[] = [];

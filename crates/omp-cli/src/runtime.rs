@@ -1243,15 +1243,24 @@ impl Runtime {
     /// append-only and cannot reopen an existing file).
     pub async fn load_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
         self.cancel_retry_and_wait().await;
-        let lines = omp_session::read(path)
+        // One parse per line (`read_values`); malformed records are skipped
+        // leniently like omp's loader, not fatal.
+        let values = omp_session::read_values(path)
             .with_context(|| format!("cannot read session {}", path.display()))?;
-        let mut entries = Vec::new();
+        // A compacted session resumes with the rebuilt context (summary + kept tail), not the raw log.
+        let compacted = values.iter().any(|e| {
+            matches!(
+                e.get("type").and_then(Value::as_str),
+                Some("compaction" | "reset_boundary" | "branch_summary")
+            )
+        });
+        let mut entries = Vec::with_capacity(values.len());
         let mut messages = Vec::new();
-        for l in &lines {
-            let v: Value = serde_json::from_str(&l.raw)?;
-            if v.get("type").and_then(Value::as_str) == Some("message") {
+        for v in values {
+            if !compacted && v.get("type").and_then(Value::as_str) == Some("message") {
                 if let Some(m) = v.get("message") {
-                    if let Ok(m) = serde_json::from_value::<AgentMessage>(m.clone()) {
+                    // Borrowed deserialize: no deep clone of the message payload.
+                    if let Ok(m) = <AgentMessage as serde::Deserialize>::deserialize(m) {
                         messages.push(m);
                     }
                 }
@@ -1263,13 +1272,6 @@ impl Runtime {
                 entries.push(v);
             }
         }
-        // A compacted session resumes with the rebuilt context (summary + kept tail), not the raw log.
-        let compacted = entries.iter().any(|e| {
-            matches!(
-                e.get("type").and_then(Value::as_str),
-                Some("compaction" | "reset_boundary" | "branch_summary")
-            )
-        });
         if compacted {
             messages = crate::compact::rebuild_context(&entries)?;
         }

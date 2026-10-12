@@ -1,0 +1,214 @@
+{
+  "ts": "2026-10-12T11-55-24",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s2-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 198212,
+            "p95": 198212,
+            "min": 198212,
+            "max": 198212
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 195296,
+              "p95": 195296,
+              "min": 195296,
+              "max": 195296
+            },
+            "sessions": 1
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 544412,
+            "p95": 544412,
+            "min": 544412,
+            "max": 544412
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 488776,
+              "p95": 488776,
+              "min": 488776,
+              "max": 488776
+            },
+            "sessions": 1
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 192848,
+            "p95": 192848,
+            "min": 192848,
+            "max": 192848
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 763384,
+              "p95": 763384,
+              "min": 763384,
+              "max": 763384
+            },
+            "sessions": 4
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 486020,
+            "p95": 486020,
+            "min": 486020,
+            "max": 486020
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 1913732,
+              "p95": 1913732,
+              "min": 1913732,
+              "max": 1913732
+            },
+            "sessions": 4
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 194228,
+            "p95": 194228,
+            "min": 194228,
+            "max": 194228
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 3047628,
+              "p95": 3047628,
+              "min": 3047628,
+              "max": 3047628
+            },
+            "sessions": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 484300,
+            "p95": 484300,
+            "min": 484300,
+            "max": 484300
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 7493836,
+              "p95": 7493836,
+              "min": 7493836,
+              "max": 7493836
+            },
+            "sessions": 16
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-false",
+      "bins": {
+        "omp-rs": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 3628.473637999996,
+            "p95": 5751.808441000001,
+            "min": 3628.473637999996,
+            "max": 5751.808441000001
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-true",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 1065.1590609999985,
+            "p95": 1146.4887929999968,
+            "min": 1065.1590609999985,
+            "max": 1146.4887929999968
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 3628.0487330000033,
+            "p95": 6023.35424299998,
+            "min": 3628.0487330000033,
+            "max": 6023.35424299998
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-delta",
+      "bins": {
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": -0.42490499999257736,
+            "p95": -0.42490499999257736,
+            "min": -0.42490499999257736,
+            "max": -0.42490499999257736
+          },
+          "extra": {
+            "perEventMs": -0.026556562499536085,
+            "assumedEventsPerTurn": 16
+          }
+        }
+      }
+    }
+  ]
+}

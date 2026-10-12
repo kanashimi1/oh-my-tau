@@ -379,6 +379,7 @@ async fn main() -> Result<()> {
         cwd,
         session,
         resume_target,
+        args.session_dir.clone(),
         prompt,
         images,
         extensions.as_ref(),
@@ -488,6 +489,7 @@ async fn run_print(
     cwd: PathBuf,
     persist: Option<persist::Persistence>,
     resume: Option<PathBuf>,
+    session_dir: Option<PathBuf>,
     prompt: String,
     images: Vec<pa_agent::types::ImageContent>,
     extensions: Option<&std::sync::Arc<ext::Extensions>>,
@@ -532,7 +534,10 @@ async fn run_print(
         crate::rpc::slash::set_extensions(e.clone());
     }
     if let Some(path) = resume {
-        rt.load_session(&path, None).await?;
+        // `--session-dir` relocates the session store: the resumed transcript
+        // continues in the same dir the launch already switched to (without
+        // this, load_session's start_new fell back to the default store).
+        rt.load_session(&path, session_dir.as_deref()).await?;
     }
     // Slash-command dispatch in print mode (TS runs these through the same
     // dispatcher as the TUI); a matched command handles or rewrites the prompt.

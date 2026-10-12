@@ -59,7 +59,9 @@ pub fn labels_in_effect(entries: &[Value]) -> HashMap<String, String> {
         if entry.get("type").and_then(Value::as_str) != Some("label") {
             continue;
         }
-        let Some(target) = entry.get("targetId").and_then(Value::as_str) else { continue };
+        let Some(target) = entry.get("targetId").and_then(Value::as_str) else {
+            continue;
+        };
         match entry.get("label").and_then(Value::as_str) {
             Some(label) if !label.is_empty() => labels.insert(target.to_owned(), label.to_owned()),
             _ => labels.remove(target),
@@ -77,7 +79,9 @@ pub fn build_tree(entries: &[Value]) -> Vec<TreeNode> {
     let labels = labels_in_effect(entries);
     let mut nodes: HashMap<&str, TreeNode> = HashMap::with_capacity(entries.len());
     for entry in entries {
-        let (Some(id), _) = links(entry) else { continue };
+        let (Some(id), _) = links(entry) else {
+            continue;
+        };
         nodes.insert(
             id,
             TreeNode {
@@ -92,7 +96,9 @@ pub fn build_tree(entries: &[Value]) -> Vec<TreeNode> {
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut roots: Vec<&str> = Vec::new();
     for entry in entries {
-        let (Some(id), parent) = links(entry) else { continue };
+        let (Some(id), parent) = links(entry) else {
+            continue;
+        };
         match parent {
             None => roots.push(id),
             Some(p) if p == id => roots.push(id),
@@ -101,29 +107,47 @@ pub fn build_tree(entries: &[Value]) -> Vec<TreeNode> {
         }
     }
 
-    fn sort_level(nodes: &mut HashMap<&str, TreeNode>, children: &HashMap<&str, Vec<&str>>, id: &str) -> TreeNode {
+    fn sort_level(
+        nodes: &mut HashMap<&str, TreeNode>,
+        children: &HashMap<&str, Vec<&str>>,
+        id: &str,
+    ) -> TreeNode {
         let mut node = nodes.remove(id).expect("node indexed before building");
         let mut kids: Vec<TreeNode> = children
             .get(id)
             .map(|ids| ids.iter().map(|c| sort_level(nodes, children, c)).collect())
             .unwrap_or_default();
         kids.sort_by(|a, b| {
-            let ta = a.entry.get("timestamp").and_then(Value::as_str).unwrap_or("");
-            let tb = b.entry.get("timestamp").and_then(Value::as_str).unwrap_or("");
+            let ta = a
+                .entry
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let tb = b
+                .entry
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             ta.cmp(tb)
         });
         node.children = kids;
         node
     }
 
-    roots.drain(..).map(|id| sort_level(&mut nodes, &children, id)).collect()
+    roots
+        .drain(..)
+        .map(|id| sort_level(&mut nodes, &children, id))
+        .collect()
 }
 
 /// The leaf the loader reconstructs: the id of the last physical journal entry
 /// (`SessionEntryIndex.insert` advances the leaf on every entry), `None` for an empty session.
 #[must_use]
 pub fn leaf_id(entries: &[Value]) -> Option<&str> {
-    entries.iter().rev().find_map(|e| e.get("id").and_then(Value::as_str))
+    entries
+        .iter()
+        .rev()
+        .find_map(|e| e.get("id").and_then(Value::as_str))
 }
 
 /// Root-to-leaf branch path for `leaf` (TS `SessionEntryIndex.pathTo` / `getBranch`):
@@ -188,19 +212,20 @@ pub fn branch_summary_entry(
 /// (TS `collectEntriesForBranchSummary`): everything on the old branch from the leaf back to
 /// (excluding) the deepest common ancestor of the two branch paths.
 #[must_use]
-pub fn entries_for_branch_summary<'a>(entries: &'a [Value], old_leaf: &str, target: &str) -> (Vec<&'a Value>, Option<String>) {
+pub fn entries_for_branch_summary<'a>(
+    entries: &'a [Value],
+    old_leaf: &str,
+    target: &str,
+) -> (Vec<&'a Value>, Option<String>) {
     let old_path: std::collections::HashSet<&str> = branch_path(entries, old_leaf)
         .iter()
         .filter_map(|e| e.get("id").and_then(Value::as_str))
         .collect();
     let target_path = branch_path(entries, target);
-    let common = target_path
-        .iter()
-        .rev()
-        .find_map(|e| {
-            let id = e.get("id").and_then(Value::as_str)?;
-            old_path.contains(id).then(|| id.to_owned())
-        });
+    let common = target_path.iter().rev().find_map(|e| {
+        let id = e.get("id").and_then(Value::as_str)?;
+        old_path.contains(id).then(|| id.to_owned())
+    });
 
     let mut abandoned = Vec::new();
     let mut current = Some(old_leaf);
@@ -208,7 +233,12 @@ pub fn entries_for_branch_summary<'a>(entries: &'a [Value], old_leaf: &str, targ
         if Some(id) == common.as_deref() {
             break;
         }
-        let Some(entry) = entries.iter().find(|e| e.get("id").and_then(Value::as_str) == Some(id)) else { break };
+        let Some(entry) = entries
+            .iter()
+            .find(|e| e.get("id").and_then(Value::as_str) == Some(id))
+        else {
+            break;
+        };
         abandoned.push(entry);
         current = entry.get("parentId").and_then(Value::as_str);
     }
@@ -236,7 +266,10 @@ pub fn user_message_text(entry: &Value) -> Option<String> {
         Value::Array(parts) => Some(
             parts
                 .iter()
-                .filter_map(|p| (p.get("type")? == "text").then(|| p.get("text")?.as_str().map(str::to_owned))?)
+                .filter_map(|p| {
+                    (p.get("type")? == "text")
+                        .then(|| p.get("text")?.as_str().map(str::to_owned))?
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
         ),
@@ -296,7 +329,13 @@ mod tests {
         // Abandoned-path collection from leaf c navigating to d: common ancestor a, so [b, c].
         let (abandoned, common) = entries_for_branch_summary(&entries, "c", "d");
         assert_eq!(common.as_deref(), Some("a"));
-        assert_eq!(abandoned.iter().filter_map(|e| e.get("id").and_then(Value::as_str)).collect::<Vec<_>>(), vec!["b", "c"]);
+        assert_eq!(
+            abandoned
+                .iter()
+                .filter_map(|e| e.get("id").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
     }
 
     /// Orphan (broken parent chain) and self-parent become roots, like TS.
@@ -334,10 +373,27 @@ mod tests {
     /// branch_summary entry shape matches TS `branchWithSummary` (key order and fromId="root").
     #[test]
     fn branch_summary_entry_shape() {
-        let v = branch_summary_entry("s1", Some("a"), "2026-10-01T00:00:00.000Z", "done", None, None);
+        let v = branch_summary_entry(
+            "s1",
+            Some("a"),
+            "2026-10-01T00:00:00.000Z",
+            "done",
+            None,
+            None,
+        );
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, vec!["type", "id", "parentId", "timestamp", "fromId", "summary"]);
-        let root = branch_summary_entry("s2", None, "t", "summary", Some(json!({"readFiles": []})), Some(true));
+        assert_eq!(
+            keys,
+            vec!["type", "id", "parentId", "timestamp", "fromId", "summary"]
+        );
+        let root = branch_summary_entry(
+            "s2",
+            None,
+            "t",
+            "summary",
+            Some(json!({"readFiles": []})),
+            Some(true),
+        );
         assert_eq!(root["fromId"], json!("root"));
         assert_eq!(root["parentId"], Value::Null);
         assert_eq!(root["details"], json!({"readFiles": []}));

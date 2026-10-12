@@ -401,22 +401,27 @@ pub fn seed_entries(persist: &Persistence, entries: &[Value]) -> Result<()> {
         let Some(kind) = entry.get("type").and_then(Value::as_str) else {
             continue;
         };
-        let Some(Value::Object(mut fields)) = Some(entry.clone()) else {
+        // Build the payload from references: no deep clone of the whole entry.
+        let Some(obj) = entry.as_object() else {
             continue;
         };
-        let old_id = fields
+        let mut fields = serde_json::Map::with_capacity(obj.len());
+        for (k, v) in obj {
+            if matches!(k.as_str(), "type" | "id" | "parentId" | "timestamp") {
+                continue;
+            }
+            fields.insert(k.clone(), v.clone());
+        }
+        let old_id = entry
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        let ts = fields
+        let ts = entry
             .get("timestamp")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        for k in ["type", "id", "parentId", "timestamp"] {
-            fields.remove(k);
-        }
         for key in ["firstKeptEntryId", "providerReplayThroughEntryId"] {
             if let Some(mapped) = fields
                 .get(key)
@@ -641,6 +646,82 @@ mod tests {
             "firstKeptEntryId remapped to the new file"
         );
         assert_eq!(rebuild_context(&seeded).unwrap().len(), expected.len());
+    }
+
+    /// s5 regression (39.5 MB real session): resuming a session whose latest
+    /// compaction carries a provider-native (`openaiRemoteCompaction`)
+    /// `preserveData`, then compacting locally, must not re-stamp the stale
+    /// remote payload onto the new entry — the context rebuild trusts that
+    /// payload for the kept tail and replays nothing, which surfaced as
+    /// `Error: no assistant response` on resume.
+    #[tokio::test]
+    async fn resume_over_remote_compaction_then_local_compact_keeps_tail() {
+        let dir = std::env::temp_dir().join(format!("omp-rs-s5-regression-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s5-redacted.jsonl");
+        let msg = |id: &str, parent: &str, ts: &str, role: &str, text: &str| {
+            format!(
+                r#"{{"type":"message","id":"{id}","parentId":"{parent}","timestamp":"{ts}","message":{{"role":"{role}","content":[{{"type":"text","text":"{text}"}}],"stopReason":"stop","timestamp":1}}}}"#
+            )
+        };
+        let body = [
+            r#"{"type":"session","version":3,"id":"s5redacted","timestamp":"2026-09-11T00:31:09.193Z","cwd":"/tmp"}"#.to_string(),
+            msg("u1", "s5redacted", "2026-09-11T00:33:01.083Z", "user", "first request"),
+            msg("a1", "u1", "2026-09-11T00:33:05.083Z", "assistant", "first reply"),
+            // Previous provider-native (remote) compaction boundary, as written
+            // by omp for the real s5 session (payload redacted).
+            r#"{"type":"compaction","id":"c9","parentId":"a1","timestamp":"2026-09-11T01:30:12.437Z","summary":"Remote compaction preserved provider-native history for this session.","shortSummary":"remote","firstKeptEntryId":"u1","tokensBefore":"90000","tokensAfter":"9000","method":"remote","preserveData":{"openaiRemoteCompaction":{"version":"v2","provider":"openai","replacementHistory":[{"id":"cmp_x"}]},"snapcompact":{"historyBlocks":[{"id":"f1"}],"frameDataBytes":3}}}"#.to_string(),
+            msg("u2", "c9", "2026-09-11T02:00:00.000Z", "user", &format!("after-boundary request {}", "x".repeat(200))),
+            msg("a2", "u2", "2026-09-11T02:00:05.000Z", "assistant", &format!("after-boundary reply {}", "y".repeat(200))),
+        ]
+        .join("\n");
+        std::fs::write(&file, body).unwrap();
+
+        let mut h = harness(0).await;
+        let (fake, _) = fake_summarizer("LOCAL SUMMARY");
+        h.rt.set_summarizer(Some(fake));
+        h.rt.set_compaction_settings(CompactionSettings {
+            enabled: false,
+            ..small_keep()
+        });
+
+        // Resume: the rebuilt context is the remote summary plus the tail.
+        h.rt.load_session(&file, None)
+            .await
+            .expect("load s5-shaped session");
+        let live = h.rt.messages().await;
+        assert!(
+            !live.is_empty(),
+            "resume of the s5-shaped session yields a context"
+        );
+        assert!(
+            live.iter()
+                .any(|m| m.to_string().contains("after-boundary request")),
+            "kept tail is part of the resumed context: {live:?}"
+        );
+
+        // A local compaction of the resumed session must not carry the stale
+        // remote payload forward; the rebuilt context keeps the tail.
+        h.rt.compact(None).await.expect("local compaction");
+        let entries = h.rt.entries().expect("entries");
+        let new_compaction = entries
+            .iter()
+            .rev()
+            .find(|e| e["type"] == "compaction")
+            .expect("new compaction entry");
+        let preserve = &new_compaction["preserveData"];
+        assert!(
+            preserve.get("openaiRemoteCompaction").is_none() || preserve.is_null(),
+            "stale remote payload must not be re-stamped: {preserve}"
+        );
+        let rebuilt = rebuild_context(&entries).expect("rebuild after local compaction");
+        assert!(
+            rebuilt.iter().any(|m| serde_json::to_string(m)
+                .unwrap_or_default()
+                .contains("after-boundary reply")),
+            "kept tail survives the local compaction: {rebuilt:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

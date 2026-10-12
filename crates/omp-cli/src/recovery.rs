@@ -1553,8 +1553,7 @@ mod tests {
             cfg(&["p/a"]),
         )
         .await;
-        h.rt
-            .prompt(None, "hello", None, Vec::new())
+        h.rt.prompt(None, "hello", None, Vec::new())
             .await
             .expect("prompt");
         // Wait until the stalled turn is actually streaming.
@@ -1591,8 +1590,14 @@ mod tests {
                 }
             }
         }
-        assert_eq!(agent_starts, 2, "queued steer must start exactly one fresh turn");
-        assert!(second_turn_user, "the drained turn carries the steer message");
+        assert_eq!(
+            agent_starts, 2,
+            "queued steer must start exactly one fresh turn"
+        );
+        assert!(
+            second_turn_user,
+            "the drained turn carries the steer message"
+        );
         assert!(second_turn_ended, "the drained turn settles");
     }
 

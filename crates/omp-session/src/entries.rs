@@ -18,7 +18,9 @@ use serde_json::ser::Formatter;
 use serde_json::{Map, Number, Value};
 
 /// Deserialize a field that distinguishes "absent" (outer `None`) from explicit `null` (`Some(None)`).
-fn nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+fn nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
     Option::<T>::deserialize(d).map(Some)
 }
 
@@ -283,7 +285,11 @@ pub struct PythonExecutionMessage {
     pub role: String,
     pub code: String,
     pub output: String,
-    #[serde(default, deserialize_with = "keep_null", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "keep_null",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub exit_code: Option<Value>,
     pub cancelled: bool,
     pub truncated: bool,
@@ -335,8 +341,12 @@ impl<'de> Deserialize<'de> for OmpMessage {
             return Err(D::Error::custom("message is not a JSON object"));
         };
         match map.get("role").and_then(Value::as_str) {
-            Some("developer") => serde_json::from_value(Value::Object(map)).map(Self::Developer).map_err(D::Error::custom),
-            Some("pythonExecution") => serde_json::from_value(Value::Object(map)).map(Self::PythonExecution).map_err(D::Error::custom),
+            Some("developer") => serde_json::from_value(Value::Object(map))
+                .map(Self::Developer)
+                .map_err(D::Error::custom),
+            Some("pythonExecution") => serde_json::from_value(Value::Object(map))
+                .map(Self::PythonExecution)
+                .map_err(D::Error::custom),
             Some(_) => Ok(Self::Agent(map)),
             None => Err(D::Error::custom("message has no role")),
         }
@@ -367,16 +377,52 @@ fn pull_front(map: &mut Map<String, Value>, keys: &[&str]) {
 
 /// omp's key order for messages built from typed values (assistant/user/toolResult, content blocks, usage).
 fn canonicalize_message(map: &mut Map<String, Value>) {
-    let role = map.get("role").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let role = map
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     match role.as_str() {
-        "assistant" => pull_front(map, &["role", "content", "api", "provider", "model", "usage", "stopReason", "timestamp"]),
-        "user" => pull_front(map, &["role", "content", "steering", "attribution", "timestamp"]),
-        "toolResult" => pull_front(map, &["role", "toolCallId", "toolName", "content", "details", "isError", "useless", "timestamp", "prunedAt"]),
+        "assistant" => pull_front(
+            map,
+            &[
+                "role",
+                "content",
+                "api",
+                "provider",
+                "model",
+                "usage",
+                "stopReason",
+                "timestamp",
+            ],
+        ),
+        "user" => pull_front(
+            map,
+            &["role", "content", "steering", "attribution", "timestamp"],
+        ),
+        "toolResult" => pull_front(
+            map,
+            &[
+                "role",
+                "toolCallId",
+                "toolName",
+                "content",
+                "details",
+                "isError",
+                "useless",
+                "timestamp",
+                "prunedAt",
+            ],
+        ),
         _ => {}
     }
     if let Some(Value::Array(blocks)) = map.get_mut("content") {
         for block in blocks.iter_mut().filter_map(Value::as_object_mut) {
-            let kind = block.get("type").and_then(Value::as_str).unwrap_or_default().to_owned();
+            let kind = block
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
             match kind.as_str() {
                 "toolCall" => pull_front(block, &["type", "id", "name", "arguments"]),
                 "thinking" => pull_front(block, &["type", "thinking", "thinkingSignature"]),
@@ -386,7 +432,19 @@ fn canonicalize_message(map: &mut Map<String, Value>) {
         }
     }
     if let Some(Value::Object(usage)) = map.get_mut("usage") {
-        pull_front(usage, &["input", "output", "cacheRead", "cacheWrite", "totalTokens", "reasoningTokens", "cost", "cttl"]);
+        pull_front(
+            usage,
+            &[
+                "input",
+                "output",
+                "cacheRead",
+                "cacheWrite",
+                "totalTokens",
+                "reasoningTokens",
+                "cost",
+                "cttl",
+            ],
+        );
     }
 }
 
@@ -523,7 +581,10 @@ fn js_number(v: f64) -> String {
     let n = exp + 1;
     let sign = if v < 0.0 { "-" } else { "" };
     let body = if k <= n && n <= 21 {
-        format!("{digits}{}", "0".repeat(usize::try_from(n - k).unwrap_or(0)))
+        format!(
+            "{digits}{}",
+            "0".repeat(usize::try_from(n - k).unwrap_or(0))
+        )
     } else if 0 < n && n <= 21 {
         let (int, frac) = digits.split_at(usize::try_from(n).unwrap_or(0));
         format!("{int}.{frac}")
@@ -532,7 +593,11 @@ fn js_number(v: f64) -> String {
     } else {
         let e = n - 1;
         let (first, rest) = digits.split_at(1);
-        let frac = if rest.is_empty() { String::new() } else { format!(".{rest}") };
+        let frac = if rest.is_empty() {
+            String::new()
+        } else {
+            format!(".{rest}")
+        };
         format!("{first}{frac}e{}{}", if e < 0 { "-" } else { "+" }, e.abs())
     };
     format!("{sign}{body}")
@@ -556,7 +621,11 @@ pub const TITLE_SLOT_BYTES: usize = 256;
 ///
 /// # Errors
 /// Serialization failure, or `updated_at`/`source` too long for the slot.
-pub fn serialize_title_slot(title: &str, source: Option<&str>, updated_at: &str) -> anyhow::Result<String> {
+pub fn serialize_title_slot(
+    title: &str,
+    source: Option<&str>,
+    updated_at: &str,
+) -> anyhow::Result<String> {
     let line = |t: &str, pad: usize| -> anyhow::Result<String> {
         let slot = TitleSlot {
             v: 1,
@@ -577,7 +646,10 @@ pub fn serialize_title_slot(title: &str, source: Option<&str>, updated_at: &str)
         if base.len() <= TITLE_SLOT_BYTES {
             return line(&t, TITLE_SLOT_BYTES - base.len());
         }
-        anyhow::ensure!(chars.pop().is_some(), "title slot metadata exceeds {TITLE_SLOT_BYTES} bytes");
+        anyhow::ensure!(
+            chars.pop().is_some(),
+            "title slot metadata exceeds {TITLE_SLOT_BYTES} bytes"
+        );
     }
 }
 

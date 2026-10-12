@@ -1,0 +1,186 @@
+{
+  "ts": "2026-10-12T12-17-06",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48912,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s2-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 195524,
+            "p95": 195524,
+            "min": 195524,
+            "max": 195524
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 194828,
+              "p95": 194828,
+              "min": 194828,
+              "max": 194828
+            },
+            "sessions": 1
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "s2-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 194016,
+            "p95": 194016,
+            "min": 194016,
+            "max": 194016
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 758772,
+              "p95": 758772,
+              "min": 758772,
+              "max": 758772
+            },
+            "sessions": 4
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "s2-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 191848,
+            "p95": 191848,
+            "min": 191848,
+            "max": 191848
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 2976304,
+              "p95": 2976304,
+              "min": 2976304,
+              "max": 2976304
+            },
+            "sessions": 16
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "s6-false",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 365.94579800008796,
+            "p95": 592.2337579999585,
+            "min": 365.94579800008796,
+            "max": 592.2337579999585
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 3017.6854169999715,
+            "p95": 5541.72487499984,
+            "min": 3017.6854169999715,
+            "max": 5541.72487499984
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-true",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 965.1130310001317,
+            "p95": 1091.864365000045,
+            "min": 965.1130310001317,
+            "max": 1091.864365000045
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 4248.0224399999715,
+            "p95": 4872.761782000074,
+            "min": 4248.0224399999715,
+            "max": 4872.761782000074
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-delta",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 599.1672330000438,
+            "p95": 599.1672330000438,
+            "min": 599.1672330000438,
+            "max": 599.1672330000438
+          },
+          "extra": {
+            "perEventMs": 37.447952062502736,
+            "assumedEventsPerTurn": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 1230.337023,
+            "p95": 1230.337023,
+            "min": 1230.337023,
+            "max": 1230.337023
+          },
+          "extra": {
+            "perEventMs": 76.8960639375,
+            "assumedEventsPerTurn": 16
+          }
+        }
+      }
+    }
+  ]
+}

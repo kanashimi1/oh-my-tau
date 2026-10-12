@@ -116,6 +116,61 @@ fn session() -> Vec<Value> {
     ]
 }
 
+/// Bench finding (s5): a local summary must not re-stamp the previous
+/// compaction's provider-native payload onto the new entry. TS writes only
+/// the new result's own `preserveData`; carrying `openaiRemoteCompaction`
+/// forward made the context rebuild trust the stale payload for the kept
+/// tail and replay nothing — the just-finished turn vanished ("no assistant
+/// response"). Only the cumulative snapcompact archive slot carries forward.
+#[tokio::test]
+async fn local_compact_does_not_carry_remote_preserve_data_forward() {
+    let mut entries = session();
+    // A previous provider-native compaction boundary, followed by a new turn.
+    entries.push(json!({
+        "type": "compaction", "id": "c9", "parentId": "a2",
+        "timestamp": "2026-01-01T00:00:05.000Z",
+        "summary": "old summary", "shortSummary": "old",
+        "firstKeptEntryId": "u2", "tokensBefore": "110", "tokensAfter": "10",
+        "method": "remote",
+        "preserveData": {
+            "openaiRemoteCompaction": {"version": "v2", "replacementHistory": [{"id": "cmp_x"}]},
+            "snapcompact": {"historyBlocks": [{"id": "f1"}], "frameDataBytes": 3}
+        }
+    }));
+    entries.push(json!({"type":"message","id":"u3","parentId":"c9","timestamp":"2026-01-01T00:00:06.000Z","message":{"role":"user","content":[{"type":"text","text":"third request"}],"timestamp":7}}));
+    entries.push(json!({"type":"message","id":"a3","parentId":"u3","timestamp":"2026-01-01T00:00:07.000Z","message":{"role":"assistant","content":[{"type":"text","text":"third reply"}],"stopReason":"stop","timestamp":8}}));
+
+    let settings = CompactionSettings {
+        keep_recent_tokens: 30,
+        ..CompactionSettings::default()
+    };
+    let prep = plan_compaction(&entries, &settings, &ByteEstimate)
+        .unwrap()
+        .unwrap();
+    assert!(prep.previous_preserve_data.is_some());
+
+    let completer = |req: SummaryRequest| {
+        let text = if req.kind == SummaryKind::CompactionShortSummary {
+            "short"
+        } else {
+            "## Goal\nthe goal"
+        };
+        async move { Ok(reply(text)) }
+    };
+    let result = compact(&completer, &prep, &SummaryParams::new(42))
+        .await
+        .unwrap();
+    let preserve = result
+        .preserve_data
+        .as_ref()
+        .expect("snapcompact archive carries forward");
+    assert!(
+        preserve.get("openaiRemoteCompaction").is_none(),
+        "stale remote payload must not be re-stamped: {preserve}"
+    );
+    assert!(preserve.get("snapcompact").is_some(), "{preserve}");
+}
+
 #[tokio::test]
 async fn compact_runs_summary_flow_through_injected_completer() {
     let entries = session();
