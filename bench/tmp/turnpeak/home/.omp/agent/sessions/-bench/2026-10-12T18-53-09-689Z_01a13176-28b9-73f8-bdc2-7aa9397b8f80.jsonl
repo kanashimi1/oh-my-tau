@@ -1,3 +1,0 @@
-{"type":"session","version":3,"id":"01a13176-28b9-73f8-bdc2-7aa9397b8f80","timestamp":"2026-10-12T18:53:09.689Z","cwd":"/tmp"}
-{"type":"model_change","id":"22da54d3","parentId":null,"timestamp":"2026-10-12T18:53:09.725Z","model":"mock/text","resolvedModelIsFallback":false}
-{"type":"thinking_level_change","id":"86dd15d8","parentId":"22da54d3","timestamp":"2026-10-12T18:53:09.725Z","thinkingLevel":"off","configured":null}

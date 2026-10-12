@@ -14,11 +14,16 @@ fn config() -> HostConfig {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut cfg = HostConfig::new(root.join("../../ext-host/host.ts"));
     cfg.handler_timeout_ms = Some(2000);
+    if std::env::var_os("OMP_EXT_TEST_SHARED").is_some_and(|v| v != "0") {
+        let dir = std::env::temp_dir().join(format!("omp-ext-shared-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        cfg.shared_socket = Some(dir.join("ext.sock"));
+    }
     cfg
 }
 
 async fn loaded() -> Arc<ExtHost> {
-    let host = ExtHost::spawn(&config()).unwrap();
+    let host = ExtHost::spawn(&config()).await.unwrap();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lifecycle.ts");
     let r = host
         .load(

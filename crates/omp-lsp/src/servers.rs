@@ -139,6 +139,15 @@ pub async fn reload_server(
                 return Err(LspError { message: "operation cancelled".to_string(), cancelled: true });
             }
         }
+        // On a broker-shared link a per-session teardown only detaches this
+        // process while the wedged server keeps serving everyone else — ask
+        // the mux to kill the shared server first (best-effort; it also
+        // severs us), like omp's `MUX_RESTART_METHOD` reload path.
+        if lsp_client.is_shared_mux() {
+            let _ = lsp_client
+                .send_notification(crate::mux::protocol::MUX_RESTART_METHOD, Value::Null)
+                .await;
+        }
         if !lsp_client.shutdown_instance().await {
             return Err(LspError {
                 message: format!("Failed to restart {server_name}: server process did not exit after kill"),

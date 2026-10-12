@@ -1,0 +1,287 @@
+{
+  "ts": "2026-10-12T21-07-05",
+  "quick": false,
+  "repeats": 12,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "m1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "points": [
+              {
+                "turn": 0,
+                "roles": {
+                  "core": {
+                    "rssKb": 17860,
+                    "pssKb": 15732
+                  },
+                  "ext-host": {
+                    "rssKb": 90180,
+                    "pssKb": 52002
+                  }
+                },
+                "rssKb": 108040,
+                "pssKb": 67734
+              },
+              {
+                "turn": 1,
+                "roles": {
+                  "core": {
+                    "rssKb": 26776,
+                    "pssKb": 24648
+                  },
+                  "ext-host": {
+                    "rssKb": 98472,
+                    "pssKb": 58376
+                  }
+                },
+                "rssKb": 125248,
+                "pssKb": 83024
+              },
+              {
+                "turn": 2,
+                "roles": {
+                  "core": {
+                    "rssKb": 26844,
+                    "pssKb": 24716
+                  },
+                  "ext-host": {
+                    "rssKb": 97448,
+                    "pssKb": 57339
+                  }
+                },
+                "rssKb": 124292,
+                "pssKb": 82055
+              },
+              {
+                "turn": 5,
+                "roles": {
+                  "core": {
+                    "rssKb": 27908,
+                    "pssKb": 25780
+                  },
+                  "ext-host": {
+                    "rssKb": 97404,
+                    "pssKb": 57241
+                  }
+                },
+                "rssKb": 125312,
+                "pssKb": 83021
+              },
+              {
+                "turn": 10,
+                "roles": {
+                  "core": {
+                    "rssKb": 28856,
+                    "pssKb": 26728
+                  },
+                  "ext-host": {
+                    "rssKb": 99568,
+                    "pssKb": 57753
+                  }
+                },
+                "rssKb": 128424,
+                "pssKb": 84481
+              },
+              {
+                "turn": 20,
+                "roles": {
+                  "core": {
+                    "rssKb": 31064,
+                    "pssKb": 28936
+                  },
+                  "ext-host": {
+                    "rssKb": 108216,
+                    "pssKb": 66365
+                  }
+                },
+                "rssKb": 139280,
+                "pssKb": 95301
+              },
+              {
+                "turn": 30,
+                "roles": {
+                  "core": {
+                    "rssKb": 31264,
+                    "pssKb": 29136
+                  },
+                  "ext-host": {
+                    "rssKb": 103792,
+                    "pssKb": 61941
+                  }
+                },
+                "rssKb": 135056,
+                "pssKb": 91077
+              },
+              {
+                "turn": 40,
+                "roles": {
+                  "core": {
+                    "rssKb": 32960,
+                    "pssKb": 30832
+                  },
+                  "ext-host": {
+                    "rssKb": 101976,
+                    "pssKb": 60120
+                  }
+                },
+                "rssKb": 134936,
+                "pssKb": 90952
+              },
+              {
+                "turn": 50,
+                "roles": {
+                  "core": {
+                    "rssKb": 35320,
+                    "pssKb": 33192
+                  },
+                  "ext-host": {
+                    "rssKb": 104008,
+                    "pssKb": 62152
+                  }
+                },
+                "rssKb": 139328,
+                "pssKb": 95344
+              }
+            ]
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": true,
+            "rssKb": 106424,
+            "pssKb": 65523,
+            "pssPerSessionKb": 65523,
+            "settleWallS": 7.252850079000001
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n8",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": true,
+            "rssKb": 358936,
+            "pssKb": 230886,
+            "pssPerSessionKb": 28860.75,
+            "settleWallS": 7.273134695999999
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n32",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": true,
+            "rssKb": 1188632,
+            "pssKb": 755194,
+            "pssPerSessionKb": 23599.8125,
+            "settleWallS": 7.423682413999999
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": false,
+            "rssKb": 15064,
+            "pssKb": 12902,
+            "pssPerSessionKb": 12902,
+            "settleWallS": 7.2472686099999954
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n8",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": false,
+            "rssKb": 119364,
+            "pssKb": 35603,
+            "pssPerSessionKb": 4450.375,
+            "settleWallS": 7.245964200999995
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n32",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": false,
+            "rssKb": 479400,
+            "pssKb": 107288,
+            "pssPerSessionKb": 3352.75,
+            "settleWallS": 7.283584065000003
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    }
+  ]
+}

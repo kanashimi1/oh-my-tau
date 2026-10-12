@@ -1,2 +1,0 @@
-{"timestamp":"2026-10-12T20:42:32.538+03:00","level":"warn","pid":1550061,"message":"model discovery failed for provider","provider":"llama.cpp","url":"http://127.0.0.1:8080","error":"Unable to connect. Is the computer able to access the url?"}
-{"timestamp":"2026-10-12T20:42:32.539+03:00","level":"warn","pid":1550061,"message":"model discovery failed for provider","provider":"lm-studio","url":"http://127.0.0.1:1234/v1","error":"Unable to connect. Is the computer able to access the url?"}

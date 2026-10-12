@@ -15,14 +15,25 @@ fn config() -> HostConfig {
     let mut cfg =
         HostConfig::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ext-host/host.ts"));
     cfg.handler_timeout_ms = Some(400);
+    apply_shared_mode(&mut cfg);
     cfg
+}
+
+/// `OMP_EXT_TEST_SHARED=1` runs the suite against the shared daemon (one bun
+/// process, one Worker per session) instead of a per-session stdio host.
+fn apply_shared_mode(cfg: &mut HostConfig) {
+    if std::env::var_os("OMP_EXT_TEST_SHARED").is_some_and(|v| v != "0") {
+        let dir = std::env::temp_dir().join(format!("omp-ext-shared-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        cfg.shared_socket = Some(dir.join("ext.sock"));
+    }
 }
 
 async fn loaded() -> (
     std::sync::Arc<ExtHost>,
     tokio::sync::mpsc::UnboundedReceiver<HostMessage>,
 ) {
-    let host = ExtHost::spawn(&config()).unwrap();
+    let host = ExtHost::spawn(&config()).await.unwrap();
     let rx = host.take_incoming().unwrap();
     let r = host
         .load(
@@ -129,6 +140,61 @@ async fn gates_rewrites_and_host_survives_failing_handlers() {
     assert_eq!(p["data"]["cwd"], "/tmp");
 
     host.shutdown().await.unwrap();
+}
+
+/// Two concurrent sessions on ONE shared daemon keep fully separate extension
+/// state: `fx_echo` counts calls per session, so the count observed in session
+/// B starts at 1 no matter how many calls session A made (`OMP_EXT_TEST_SHARED`
+/// is irrelevant here — this test always uses the shared daemon).
+#[tokio::test]
+async fn shared_daemon_sessions_are_isolated() {
+    let dir = std::env::temp_dir().join(format!("omp-ext-shared-iso-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("ext.sock");
+    let mut cfg = config();
+    cfg.shared_socket = Some(sock.clone());
+    let paths = [fixture("fixture.ts")];
+
+    let spawn_session = |label: &'static str| {
+        let cfg = cfg.clone();
+        let paths = paths.clone();
+        tokio::spawn(async move {
+            let host = ExtHost::spawn(&cfg).await.unwrap();
+            host.load(Some(&paths), None, "/tmp", Some(json!({"sessionId": label})))
+                .await
+                .unwrap();
+            host
+        })
+    };
+    let (ta, tb) = (spawn_session("a"), spawn_session("b"));
+    let (a, b) = (ta.await.unwrap(), tb.await.unwrap());
+
+    let n = |v: &Value| v["details"]["n"].as_u64().unwrap();
+    let a1 = a.call_tool("fx_echo", "a1", json!({"text":"x"}), None).await.unwrap();
+    let a2 = a.call_tool("fx_echo", "a2", json!({"text":"x"}), None).await.unwrap();
+    assert_eq!(n(&a1), 1);
+    assert_eq!(n(&a2), 2, "session A counts its own calls");
+    let b1 = b.call_tool("fx_echo", "b1", json!({"text":"x"}), None).await.unwrap();
+    assert_eq!(n(&b1), 1, "session B state is not affected by session A");
+
+    // `list_flags`/`list_tools` are per session too.
+    assert_eq!(a.list_tools().await.unwrap().len(), 1);
+    assert_eq!(b.list_tools().await.unwrap().len(), 1);
+
+    a.shutdown().await.unwrap();
+    b.shutdown().await.unwrap();
+    // After the last session disconnects the daemon exits on its own and
+    // removes the socket (2 s grace by default).
+    let gone = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if !sock.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(gone.is_ok(), "shared daemon did not exit after last session");
 }
 
 #[tokio::test]

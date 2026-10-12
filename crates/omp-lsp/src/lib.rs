@@ -11,6 +11,8 @@
 //!   symbol-column resolution.
 //! - [`edits`]: workspace-edit application (text edits, resource operations,
 //!   rename-with-rollback).
+//! - [`mux`]: broker-shared language servers — one mux daemon per project
+//!   multiplexes every session over one server process per identity key.
 //! - [`utils`]: URI conversion, output formatting, language-id detection.
 //!
 //! Cancellation is injected through [`Cancel`] so the crate stays independent
@@ -23,6 +25,7 @@ pub mod client;
 pub mod config;
 pub mod diagnostics;
 pub mod edits;
+pub mod mux;
 pub mod servers;
 pub mod types;
 pub mod utils;

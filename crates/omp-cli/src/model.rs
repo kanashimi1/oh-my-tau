@@ -96,17 +96,6 @@ pub async fn select(model_ref: Option<&str>) -> Result<Selected> {
     })
 }
 
-/// Catalog metadata omp's `Model` carries beyond pa-ai's descriptor, in catalog key order.
-const CATALOG_EXTRA_KEYS: [&str; 7] = [
-    "int",
-    "tps",
-    "thinking",
-    "identity",
-    "requiresGlyphTokenization",
-    "tokenizer",
-    "supportsComputerUse",
-];
-
 fn catalog_path() -> Option<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("OMP_RS_CATALOG") {
         return Some(p.into());
@@ -118,49 +107,203 @@ fn catalog_path() -> Option<std::path::PathBuf> {
     )
 }
 
-/// One catalog model reduced to the [`CATALOG_EXTRA_KEYS`] fields. serde skips every other
-/// field while parsing, so the 11.8 MB `models.json` never materializes as a full `Value` tree
-/// (that tree used to stay resident for the process lifetime: ~80 MB per session).
-#[derive(serde::Deserialize)]
+/// Compact view of one catalog model: only the `CATALOG_EXTRA_KEYS` fields survive the
+/// one-shot build, and every non-bool value is an index into the store's single intern table
+/// (identity JSON, tokenizer names, thinking levels/modes — a few hundred distinct strings
+/// process-wide) or the raw JSON number token (`int`/`tps`, preserving the int/float
+/// distinction `serde_json::Value` makes). The whole 5618-entry store retains well under
+/// 1 MB, versus ~80 MB for the original process-lifetime `Value` tree (~23 MB for cloned
+/// per-entry `Value`s).
+#[derive(Default)]
 struct CatalogEntry {
-    int: Option<serde_json::Value>,
-    tps: Option<serde_json::Value>,
-    thinking: Option<serde_json::Value>,
-    identity: Option<serde_json::Value>,
-    #[serde(rename = "requiresGlyphTokenization")]
-    requires_glyph_tokenization: Option<serde_json::Value>,
-    tokenizer: Option<serde_json::Value>,
-    #[serde(rename = "supportsComputerUse")]
-    supports_computer_use: Option<serde_json::Value>,
+    int: Option<Str>,
+    tps: Option<Str>,
+    thinking: Option<Str>,
+    identity: Option<Str>,
+    requires_glyph_tokenization: Option<Str>,
+    tokenizer: Option<Str>,
+    supports_computer_use: Option<Str>,
 }
 
-impl CatalogEntry {
-    /// Present extras in [`CATALOG_EXTRA_KEYS`] order (catalog key order).
-    fn extras(&self) -> Vec<(&'static str, serde_json::Value)> {
-        let fields = [
-            &self.int,
-            &self.tps,
-            &self.thinking,
-            &self.identity,
-            &self.requires_glyph_tokenization,
-            &self.tokenizer,
-            &self.supports_computer_use,
-        ];
-        CATALOG_EXTRA_KEYS
-            .iter()
-            .zip(fields)
-            .filter_map(|(k, v)| v.as_ref().map(|v| (*k, v.clone())))
-            .collect()
+/// Index into [`CatalogStore::strings`]; `Copy` so extras building borrows cheaply.
+type Str = u32;
+
+/// Owner of the interned strings and the per-provider entry maps: one process-lifetime
+/// static holding every allocation the catalog needs.
+struct CatalogStore {
+    strings: Vec<String>,
+    providers: std::collections::HashMap<String, std::collections::HashMap<String, CatalogEntry>>,
+}
+
+impl CatalogStore {
+    fn str(&self, s: Str) -> &str {
+        &self.strings[s as usize]
     }
+
+    /// Deduplicate `s` into the intern table, returning its index.
+    fn intern(
+        strings: &mut Vec<String>,
+        seen: &mut std::collections::HashMap<String, Str>,
+        s: String,
+    ) -> Str {
+        if let Some(&i) = seen.get(&s) {
+            return i;
+        }
+        // The table holds a few hundred entries; degrade to a duplicate index only past
+        // 4G entries (impossible for the 5618-model catalog).
+        let idx = u32::try_from(strings.len()).unwrap_or(u32::MAX);
+        seen.insert(s.clone(), idx);
+        strings.push(s);
+        idx
+    }
+
+    /// Present extras of `provider`/`id` in `CATALOG_EXTRA_KEYS` order (catalog key order).
+    fn extras(&self, provider: &str, id: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
+        let entry = self.providers.get(provider)?.get(id)?;
+        let mut out = Vec::new();
+        let push = |out: &mut Vec<(&'static str, serde_json::Value)>, k: &'static str, raw: &str| {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+                out.push((k, v));
+            }
+        };
+        if let Some(raw) = &entry.int {
+            push(&mut out, "int", self.str(*raw));
+        }
+        if let Some(raw) = &entry.tps {
+            push(&mut out, "tps", self.str(*raw));
+        }
+        if let Some(raw) = &entry.thinking {
+            push(&mut out, "thinking", self.str(*raw));
+        }
+        if let Some(raw) = &entry.identity {
+            push(&mut out, "identity", self.str(*raw));
+        }
+        if let Some(raw) = &entry.requires_glyph_tokenization {
+            push(&mut out, "requiresGlyphTokenization", self.str(*raw));
+        }
+        if let Some(raw) = &entry.tokenizer {
+            push(&mut out, "tokenizer", self.str(*raw));
+        }
+        if let Some(raw) = &entry.supports_computer_use {
+            push(&mut out, "supportsComputerUse", self.str(*raw));
+        }
+        (!out.is_empty()).then_some(out)
+    }
+
 }
 
-type Catalog = std::collections::HashMap<String, std::collections::HashMap<String, CatalogEntry>>;
+fn catalog() -> Option<&'static CatalogStore> {
+    static CATALOG: std::sync::LazyLock<Option<CatalogStore>> =
+        std::sync::LazyLock::new(build_catalog);
+    CATALOG.as_ref()
+}
 
-fn catalog() -> Option<&'static Catalog> {
-    static CATALOG: std::sync::OnceLock<Option<Catalog>> = std::sync::OnceLock::new();
-    CATALOG
-        .get_or_init(|| serde_json::from_slice(&std::fs::read(catalog_path()?).ok()?).ok())
-        .as_ref()
+/// Owned view of one catalog entry: `Box<RawValue>` copies out the raw JSON text of each
+/// extra field (no DOM, no whole-file buffer), and serde skips everything else at zero
+/// retained cost.
+#[derive(serde::Deserialize)]
+struct RawEntry {
+    int: Option<Box<serde_json::value::RawValue>>,
+    tps: Option<Box<serde_json::value::RawValue>>,
+    thinking: Option<Box<serde_json::value::RawValue>>,
+    identity: Option<Box<serde_json::value::RawValue>>,
+    #[serde(rename = "requiresGlyphTokenization")]
+    requires_glyph_tokenization: Option<Box<serde_json::value::RawValue>>,
+    tokenizer: Option<Box<serde_json::value::RawValue>>,
+    #[serde(rename = "supportsComputerUse")]
+    supports_computer_use: Option<Box<serde_json::value::RawValue>>,
+}
+
+/// Streaming build: `from_reader` pulls `models.json` straight from the file (the 11.8 MB
+/// never sits in the allocator — `fs::read` + `from_slice` left the freed buffer resident
+/// under mimalloc), and the visitors below push each entry into the interned store with no
+/// intermediate maps. Only [`CatalogStore`] survives — no full-catalog `Value` tree is ever
+/// constructed.
+fn build_catalog() -> Option<CatalogStore> {
+    use serde::de::{DeserializeSeed, MapAccess, Visitor};
+    use serde::Deserializer as _;
+
+    struct CatalogVisitor<'a> {
+        store: &'a mut CatalogStore,
+        seen: &'a mut std::collections::HashMap<String, Str>,
+    }
+
+    impl<'de> Visitor<'de> for CatalogVisitor<'_> {
+        type Value = ();
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a catalog of providers to model entries")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<(), A::Error> {
+            while let Some(provider) = m.next_key::<String>()? {
+                let mut entries = std::collections::HashMap::new();
+                m.next_value_seed(ModelsVisitor {
+                    store: self.store,
+                    seen: self.seen,
+                    entries: &mut entries,
+                })?;
+                self.store.providers.insert(provider, entries);
+            }
+            Ok(())
+        }
+    }
+
+    struct ModelsVisitor<'a> {
+        store: &'a mut CatalogStore,
+        seen: &'a mut std::collections::HashMap<String, Str>,
+        entries: &'a mut std::collections::HashMap<String, CatalogEntry>,
+    }
+
+    impl<'de> DeserializeSeed<'de> for ModelsVisitor<'_> {
+        type Value = ();
+
+        fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+            d.deserialize_map(self)
+        }
+    }
+
+    impl<'de> Visitor<'de> for ModelsVisitor<'_> {
+        type Value = ();
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a provider's model entries")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut m: A) -> Result<(), A::Error> {
+            while let Some(id) = m.next_key::<String>()? {
+                let raw = m.next_value::<RawEntry>()?;
+                let mut interned = |rv: Option<Box<serde_json::value::RawValue>>| {
+                    rv.map(|rv| CatalogStore::intern(&mut self.store.strings, self.seen, rv.get().to_string()))
+                };
+                let entry = CatalogEntry {
+                    int: interned(raw.int),
+                    tps: interned(raw.tps),
+                    thinking: interned(raw.thinking),
+                    identity: interned(raw.identity),
+                    requires_glyph_tokenization: interned(raw.requires_glyph_tokenization),
+                    tokenizer: interned(raw.tokenizer),
+                    supports_computer_use: interned(raw.supports_computer_use),
+                };
+                self.entries.insert(id, entry);
+            }
+            Ok(())
+        }
+    }
+
+    let file = std::fs::File::open(catalog_path()?).ok()?;
+    let mut store = CatalogStore {
+        strings: Vec::new(),
+        providers: std::collections::HashMap::new(),
+    };
+    let mut seen: std::collections::HashMap<String, Str> = std::collections::HashMap::new();
+    let mut de = serde_json::Deserializer::from_reader(std::io::BufReader::new(file));
+    de.deserialize_map(CatalogVisitor {
+        store: &mut store,
+        seen: &mut seen,
+    })
+    .ok()?;
+    Some(store)
 }
 
 /// `int`/`tps`/`thinking`/`identity`/`tokenizer`/... of `provider/id` from omp's bundled
@@ -168,8 +311,7 @@ fn catalog() -> Option<&'static Catalog> {
 /// `None` when the catalog is not installed or lists no such model.
 #[must_use]
 pub fn catalog_extras(provider: &str, id: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
-    let extras = catalog()?.get(provider)?.get(id)?.extras();
-    (!extras.is_empty()).then_some(extras)
+    catalog()?.extras(provider, id)
 }
 
 fn parse_effort(s: &str) -> Option<ThinkingLevel> {
@@ -252,6 +394,17 @@ pub fn clamp_level(model: &pa_types::ai::Model, level: ThinkingLevel) -> Thinkin
 mod tests {
     use super::*;
 
+    /// Catalog metadata omp's `Model` carries beyond pa-ai's descriptor, in catalog key order.
+    const CATALOG_EXTRA_KEYS: [&str; 7] = [
+        "int",
+        "tps",
+        "thinking",
+        "identity",
+        "requiresGlyphTokenization",
+        "tokenizer",
+        "supportsComputerUse",
+    ];
+
     /// Reference: untyped `Value` parse of the catalog (the pre-fix implementation),
     /// reduced to the `CATALOG_EXTRA_KEYS` fields. Must cover every provider/id of the
     /// real 5618-model `models.json`, and the typed [`Catalog`] must agree exactly.
@@ -279,9 +432,7 @@ mod tests {
                     })
                     .collect();
                 let got = catalog()
-                    .and_then(|c| c.get(provider))
-                    .and_then(|m| m.get(id))
-                    .map(CatalogEntry::extras)
+                    .and_then(|c| c.extras(provider, id))
                     .unwrap_or_default();
                 assert_eq!(
                     expected, got,

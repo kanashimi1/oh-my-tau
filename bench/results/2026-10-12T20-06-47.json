@@ -1,0 +1,1252 @@
+{
+  "ts": "2026-10-12T20-06-47",
+  "quick": false,
+  "repeats": 12,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s1-print-false",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 165.72890999999981,
+            "p95": 174.87330900000006,
+            "min": 158.820312,
+            "max": 174.87330900000006
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 2510.4296369999975,
+            "p95": 2949.3735039999992,
+            "min": 2310.159257999998,
+            "max": 2949.3735039999992
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s1-print-true",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 321.6906329999997,
+            "p95": 407.938365,
+            "min": 314.33080599999994,
+            "max": 407.938365
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 2872.6071780000057,
+            "p95": 3394.8610469999985,
+            "min": 2587.9480840000033,
+            "max": 3394.8610469999985
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s1-rpc-false",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 127.05029599999943,
+            "p95": 133.9730300000001,
+            "min": 122.97245300000031,
+            "max": 133.9730300000001
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 2366.169274,
+            "p95": 2638.631926000002,
+            "min": 2082.339903,
+            "max": 2638.631926000002
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s1-rpc-true",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 244.6738260000002,
+            "p95": 260.20744300000115,
+            "min": 234.1837140000007,
+            "max": 260.20744300000115
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 2508.180573999998,
+            "p95": 3011.705289999998,
+            "min": 2293.1980160000094,
+            "max": 3011.705289999998
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 72224,
+            "p95": 73348,
+            "min": 72080,
+            "max": 73348
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 3,
+              "median": 71876,
+              "p95": 72716,
+              "min": 71640,
+              "max": 72716
+            },
+            "sessions": 1
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 506100,
+            "p95": 510900,
+            "min": 472488,
+            "max": 510900
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 3,
+              "median": 461596,
+              "p95": 536120,
+              "min": 459008,
+              "max": 536120
+            },
+            "sessions": 1
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 73028,
+            "p95": 73492,
+            "min": 72904,
+            "max": 73492
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 3,
+              "median": 289100,
+              "p95": 290204,
+              "min": 287308,
+              "max": 290204
+            },
+            "sessions": 4
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 484132,
+            "p95": 538792,
+            "min": 480308,
+            "max": 538792
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 3,
+              "median": 1882000,
+              "p95": 1953388,
+              "min": 1867192,
+              "max": 1953388
+            },
+            "sessions": 4
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 73460,
+            "p95": 73560,
+            "min": 73148,
+            "max": 73560
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 3,
+              "median": 1160620,
+              "p95": 1163732,
+              "min": 1157952,
+              "max": 1163732
+            },
+            "sessions": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 483184,
+            "p95": 484072,
+            "min": 480396,
+            "max": 484072
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 3,
+              "median": 7573076,
+              "p95": 7589384,
+              "min": 7572192,
+              "max": 7589384
+            },
+            "sessions": 16
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s3",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 82.38459400000283,
+            "p95": 115.49519799998961,
+            "min": 74.27164099999936,
+            "max": 115.49519799998961
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 12,
+              "median": 10,
+              "p95": 25,
+              "min": 8,
+              "max": 25
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 517.8152489999775,
+            "p95": 1313.3033950000536,
+            "min": 471.2881790000247,
+            "max": 1313.3033950000536
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 36,
+              "median": 244,
+              "p95": 33732,
+              "min": 8,
+              "max": 36071
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-read",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 71.08816499996465,
+            "p95": 91.50470799999312,
+            "min": 56.733359000005294,
+            "max": 91.50470799999312
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 12,
+              "median": 6,
+              "p95": 10,
+              "min": 4,
+              "max": 10
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 484.8497520000092,
+            "p95": 2021.2281119999825,
+            "min": 423.94569299998693,
+            "max": 2021.2281119999825
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 36,
+              "median": 146,
+              "p95": 67548,
+              "min": 4,
+              "max": 70054
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-grep",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 95.35081900004297,
+            "p95": 627.1101449999842,
+            "min": 86.76780100003816,
+            "max": 627.1101449999842
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 12,
+              "median": 28,
+              "p95": 567,
+              "min": 24,
+              "max": 567
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 473.7609329999541,
+            "p95": 724.3328539999784,
+            "min": 431.86613099998794,
+            "max": 724.3328539999784
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 36,
+              "median": 174,
+              "p95": 96875,
+              "min": 24,
+              "max": 99099
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-glob",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 68.93542199995136,
+            "p95": 115.24527300003683,
+            "min": 59.72897799999919,
+            "max": 115.24527300003683
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 12,
+              "median": 4,
+              "p95": 6,
+              "min": 2,
+              "max": 6
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 410.44377300003543,
+            "p95": 633.6044760000077,
+            "min": 360.4423100000131,
+            "max": 633.6044760000077
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 36,
+              "median": 128,
+              "p95": 124393,
+              "min": 2,
+              "max": 126884
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-find",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 68.23447399999714,
+            "p95": 76.46779899997637,
+            "min": 62.516391000011936,
+            "max": 76.46779899997637
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 12,
+              "median": 3,
+              "p95": 6,
+              "min": 2,
+              "max": 6
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 409.2781129999785,
+            "p95": 452.6363460000139,
+            "min": 354.184580000001,
+            "max": 452.6363460000139
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 36,
+              "median": 90,
+              "p95": 154881,
+              "min": 2,
+              "max": 157111
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-edit",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 71.80392499995651,
+            "p95": 110.53855900000781,
+            "min": 62.90556500002276,
+            "max": 110.53855900000781
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 12,
+              "median": 3,
+              "p95": 7,
+              "min": 3,
+              "max": 7
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 408.14303899998777,
+            "p95": 505.70539600006305,
+            "min": 377.1311519999872,
+            "max": 505.70539600006305
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 36,
+              "median": 118,
+              "p95": 183097,
+              "min": 3,
+              "max": 185352
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-bash",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 67.91578899999149,
+            "p95": 108.1752770000021,
+            "min": 56.32429100002628,
+            "max": 108.1752770000021
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 12,
+              "median": 6,
+              "p95": 12,
+              "min": 4,
+              "max": 12
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 460.10092100000475,
+            "p95": 489.8248250000179,
+            "min": 411.5572059999686,
+            "max": 489.8248250000179
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 36,
+              "median": 187,
+              "p95": 212244,
+              "min": 4,
+              "max": 214496
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s5",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 5,
+            "median": 1093.7726869999897,
+            "p95": 1163.0542970000533,
+            "min": 313.84371799998917,
+            "max": 1163.0542970000533
+          },
+          "extra": {
+            "baselineMs": {
+              "n": 12,
+              "median": 187.76688300003298,
+              "p95": 273.1192760000704,
+              "min": 163.9242399999639,
+              "max": 273.1192760000704
+            },
+            "sizesMb": [
+              39.462321,
+              30.63574,
+              24.111546,
+              19.166189,
+              16.771504
+            ],
+            "fileErrors": {}
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 5,
+            "median": 2736.75615999999,
+            "p95": 3393.1953960000537,
+            "min": 2542.0291689999867,
+            "max": 3393.1953960000537
+          },
+          "extra": {
+            "baselineMs": {
+              "n": 12,
+              "median": 2573.881922999979,
+              "p95": 3198.5084239999996,
+              "min": 2338.7944460000144,
+              "max": 3198.5084239999996
+            },
+            "sizesMb": [
+              39.462321,
+              30.63574,
+              24.111546,
+              19.166189,
+              16.771504
+            ],
+            "fileErrors": {}
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-false",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 79.17779399990104,
+            "p95": 103.5654279999435,
+            "min": 66.37950099993031,
+            "max": 103.5654279999435
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 523.1359410000732,
+            "p95": 1183.0106319999322,
+            "min": 488.8000189999584,
+            "max": 1183.0106319999322
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-true",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 230.1769220000133,
+            "p95": 287.27954999997746,
+            "min": 205.2399420000147,
+            "max": 287.27954999997746
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 697.6054719999665,
+            "p95": 1592.1409970000386,
+            "min": 555.5510300000897,
+            "max": 1592.1409970000386
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-delta",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 150.99912800011225,
+            "p95": 150.99912800011225,
+            "min": 150.99912800011225,
+            "max": 150.99912800011225
+          },
+          "extra": {
+            "perEventMs": 9.437445500007016,
+            "assumedEventsPerTurn": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 174.46953099989332,
+            "p95": 174.46953099989332,
+            "min": 174.46953099989332,
+            "max": 174.46953099989332
+          },
+          "extra": {
+            "perEventMs": 10.904345687493333,
+            "assumedEventsPerTurn": 16
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 130.97396299999673,
+            "p95": 157.88163299998268,
+            "min": 128.30599300004542,
+            "max": 157.88163299998268
+          },
+          "extra": {
+            "turnsPerSec": 30.54042122860786
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 1439.900427000015,
+            "p95": 3236.9678350000177,
+            "min": 1243.471583000035,
+            "max": 3236.9678350000177
+          },
+          "extra": {
+            "turnsPerSec": 2.777969868606726
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 314.18662100005895,
+            "p95": 321.8479179999558,
+            "min": 263.9789719999535,
+            "max": 321.8479179999558
+          },
+          "extra": {
+            "turnsPerSec": 50.92514744603653
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 3,
+            "median": 4252.737028999953,
+            "p95": 22105.15466800006,
+            "min": 3145.391677000094,
+            "max": 22105.15466800006
+          },
+          "extra": {
+            "turnsPerSec": 3.7622829464634124
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "points": [
+              {
+                "turn": 0,
+                "roles": {
+                  "core": {
+                    "rssKb": 17984,
+                    "pssKb": 15832
+                  },
+                  "ext-host": {
+                    "rssKb": 84808,
+                    "pssKb": 51755
+                  }
+                },
+                "rssKb": 102792,
+                "pssKb": 67587
+              },
+              {
+                "turn": 1,
+                "roles": {
+                  "core": {
+                    "rssKb": 27360,
+                    "pssKb": 25208
+                  },
+                  "ext-host": {
+                    "rssKb": 90796,
+                    "pssKb": 55966
+                  }
+                },
+                "rssKb": 118156,
+                "pssKb": 81174
+              },
+              {
+                "turn": 2,
+                "roles": {
+                  "core": {
+                    "rssKb": 27448,
+                    "pssKb": 25303
+                  },
+                  "ext-host": {
+                    "rssKb": 91708,
+                    "pssKb": 56878
+                  }
+                },
+                "rssKb": 119156,
+                "pssKb": 82181
+              },
+              {
+                "turn": 5,
+                "roles": {
+                  "core": {
+                    "rssKb": 28744,
+                    "pssKb": 26599
+                  },
+                  "ext-host": {
+                    "rssKb": 92960,
+                    "pssKb": 58041
+                  }
+                },
+                "rssKb": 121704,
+                "pssKb": 84640
+              },
+              {
+                "turn": 10,
+                "roles": {
+                  "core": {
+                    "rssKb": 29736,
+                    "pssKb": 27591
+                  },
+                  "ext-host": {
+                    "rssKb": 96356,
+                    "pssKb": 59685
+                  }
+                },
+                "rssKb": 126092,
+                "pssKb": 87276
+              },
+              {
+                "turn": 20,
+                "roles": {
+                  "core": {
+                    "rssKb": 30996,
+                    "pssKb": 28851
+                  },
+                  "ext-host": {
+                    "rssKb": 104092,
+                    "pssKb": 67356
+                  }
+                },
+                "rssKb": 135088,
+                "pssKb": 96207
+              },
+              {
+                "turn": 30,
+                "roles": {
+                  "core": {
+                    "rssKb": 33068,
+                    "pssKb": 30923
+                  },
+                  "ext-host": {
+                    "rssKb": 97800,
+                    "pssKb": 61064
+                  }
+                },
+                "rssKb": 130868,
+                "pssKb": 91987
+              },
+              {
+                "turn": 40,
+                "roles": {
+                  "core": {
+                    "rssKb": 36124,
+                    "pssKb": 33979
+                  },
+                  "ext-host": {
+                    "rssKb": 100204,
+                    "pssKb": 63461
+                  }
+                },
+                "rssKb": 136328,
+                "pssKb": 97440
+              },
+              {
+                "turn": 50,
+                "roles": {
+                  "core": {
+                    "rssKb": 37352,
+                    "pssKb": 35207
+                  },
+                  "ext-host": {
+                    "rssKb": 100948,
+                    "pssKb": 64205
+                  }
+                },
+                "rssKb": 138300,
+                "pssKb": 99412
+              }
+            ]
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "points": [
+              {
+                "turn": 0,
+                "roles": {
+                  "core": {
+                    "rssKb": 416876,
+                    "pssKb": 373872
+                  }
+                },
+                "rssKb": 416876,
+                "pssKb": 373872
+              },
+              {
+                "turn": 1,
+                "roles": {
+                  "core": {
+                    "rssKb": 505496,
+                    "pssKb": 460854
+                  }
+                },
+                "rssKb": 505496,
+                "pssKb": 460854
+              },
+              {
+                "turn": 2,
+                "roles": {
+                  "core": {
+                    "rssKb": 498800,
+                    "pssKb": 454158
+                  }
+                },
+                "rssKb": 498800,
+                "pssKb": 454158
+              },
+              {
+                "turn": 5,
+                "roles": {
+                  "core": {
+                    "rssKb": 582412,
+                    "pssKb": 537770
+                  }
+                },
+                "rssKb": 582412,
+                "pssKb": 537770
+              },
+              {
+                "turn": 10,
+                "roles": {
+                  "core": {
+                    "rssKb": 536472,
+                    "pssKb": 491854
+                  }
+                },
+                "rssKb": 536472,
+                "pssKb": 491854
+              },
+              {
+                "turn": 20,
+                "roles": {
+                  "core": {
+                    "rssKb": 546604,
+                    "pssKb": 501968
+                  }
+                },
+                "rssKb": 546604,
+                "pssKb": 501968
+              },
+              {
+                "turn": 30,
+                "roles": {
+                  "core": {
+                    "rssKb": 556592,
+                    "pssKb": 511971
+                  }
+                },
+                "rssKb": 556592,
+                "pssKb": 511971
+              },
+              {
+                "turn": 40,
+                "roles": {
+                  "core": {
+                    "rssKb": 569868,
+                    "pssKb": 525207
+                  }
+                },
+                "rssKb": 569868,
+                "pssKb": 525207
+              },
+              {
+                "turn": 50,
+                "roles": {
+                  "core": {
+                    "rssKb": 572876,
+                    "pssKb": 528206
+                  }
+                },
+                "rssKb": 572876,
+                "pssKb": 528206
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": true,
+            "rssKb": 98164,
+            "pssKb": 63032,
+            "pssPerSessionKb": 63032,
+            "settleWallS": 7.261244015000062
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": true,
+            "rssKb": 504644,
+            "pssKb": 461425,
+            "pssPerSessionKb": 461425,
+            "settleWallS": 7.314623767000041
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n8",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": true,
+            "rssKb": 770380,
+            "pssKb": 338399,
+            "pssPerSessionKb": 42299.875,
+            "settleWallS": 7.3114752239999365
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": true,
+            "rssKb": 3972720,
+            "pssKb": 3489061,
+            "pssPerSessionKb": 436132.625,
+            "settleWallS": 7.876108142000041
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-ext-n32",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": true,
+            "rssKb": 3028836,
+            "pssKb": 1182996,
+            "pssPerSessionKb": 36968.625,
+            "settleWallS": 7.528933178999927
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": true,
+            "rssKb": 14920676,
+            "pssKb": 12862426,
+            "pssPerSessionKb": 401950.8125,
+            "settleWallS": 10.184095490999985
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": false,
+            "rssKb": 15168,
+            "pssKb": 12971,
+            "pssPerSessionKb": 12971,
+            "settleWallS": 7.236234140000073
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 1,
+            "extensions": false,
+            "rssKb": 442852,
+            "pssKb": 399625,
+            "pssPerSessionKb": 399625,
+            "settleWallS": 7.278691574999947
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n8",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": false,
+            "rssKb": 119480,
+            "pssKb": 35636,
+            "pssPerSessionKb": 4454.5,
+            "settleWallS": 7.250192976999911
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 8,
+            "extensions": false,
+            "rssKb": 3550652,
+            "pssKb": 3087341,
+            "pssPerSessionKb": 385917.625,
+            "settleWallS": 7.547284469999955
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m2-noext-n32",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": false,
+            "rssKb": 481700,
+            "pssKb": 106714,
+            "pssPerSessionKb": 3334.8125,
+            "settleWallS": 7.328100169999991
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "sessions": 32,
+            "extensions": false,
+            "rssKb": 14191360,
+            "pssKb": 12224122,
+            "pssPerSessionKb": 382003.8125,
+            "settleWallS": 8.921352939000004
+          }
+        }
+      }
+    },
+    {
+      "scenario": "m3",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "extra": {
+            "files": [
+              {
+                "sizeMb": 39.462321,
+                "wallMs": 1035.1034950000467,
+                "rssPeakKb": 253656,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 30.63574,
+                "wallMs": 897.3474280000664,
+                "rssPeakKb": 210240,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 24.111546,
+                "wallMs": 911.0080120000057,
+                "rssPeakKb": 222704,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 19.166189,
+                "wallMs": 303.6326409999747,
+                "rssPeakKb": 73416,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 16.771504,
+                "wallMs": 291.17915099998936,
+                "rssPeakKb": 72252,
+                "pssKb": 0
+              }
+            ]
+          }
+        },
+        "omp": {
+          "ok": true,
+          "extra": {
+            "files": [
+              {
+                "sizeMb": 39.462321,
+                "wallMs": 4075.332712000003,
+                "rssPeakKb": 552604,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 30.63574,
+                "wallMs": 2886.1091270000907,
+                "rssPeakKb": 567396,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 24.111546,
+                "wallMs": 2446.2364240000024,
+                "rssPeakKb": 519432,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 19.166189,
+                "wallMs": 2329.753406999982,
+                "rssPeakKb": 510524,
+                "pssKb": 0
+              },
+              {
+                "sizeMb": 16.771504,
+                "wallMs": 2294.831761000096,
+                "rssPeakKb": 502920,
+                "pssKb": 0
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

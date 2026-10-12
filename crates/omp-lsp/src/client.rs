@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, Command};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
 use tracing::warn;
 
@@ -90,8 +90,16 @@ struct ClientInner {
     server_capabilities: Mutex<Value>,
     last_activity: AtomicI64,
     started_at: i64,
-    stdin: Arc<AsyncMutex<Option<ChildStdin>>>,
+    /// Server stdin: the spawned child's pipe, or a broker-shared mux socket
+    /// driven exactly like one (omp `LspTransport` union).
+    stdin: Arc<AsyncMutex<Option<Box<dyn tokio::io::AsyncWrite + Unpin + Send>>>>,
     child: Mutex<Option<Child>>,
+    /// This link is broker-shared (`sharedMux` in TS): there is no local
+    /// child, teardown detaches the link and the mux keeps the server warm.
+    shared_mux: bool,
+    mux_pid: Option<u32>,
+    /// Signalled when the reader task observes the transport going away.
+    transport_dead: Arc<tokio::sync::Notify>,
     stderr: Arc<Mutex<Vec<u8>>>,
     dynamic_registrations: Mutex<HashMap<String, String>>,
     /// Resolves to `true` when the initial project load completes (or times out).
@@ -192,6 +200,18 @@ impl LspClient {
     #[must_use]
     pub fn started_at(&self) -> i64 {
         self.inner.started_at
+    }
+    /// Whether this link is broker-shared (`sharedMux` in TS): teardown only
+    /// detaches, and a wedged reload must ask the mux to kill the server
+    /// (`omp/muxRestartServer`).
+    #[must_use]
+    pub fn is_shared_mux(&self) -> bool {
+        self.inner.shared_mux
+    }
+    /// Pid of the shared server process behind a mux link, when known.
+    #[must_use]
+    pub fn mux_server_pid(&self) -> Option<u32> {
+        self.inner.mux_pid
     }
     /// Whether the server advertised LSP 3.17 pull diagnostics.
     #[must_use]
@@ -330,19 +350,23 @@ impl LspClient {
 }
 
 /// Frame parser: `Content-Length` headers + JSON body, with resync on junk.
-struct Framer {
+pub(crate) struct Framer {
     buf: Vec<u8>,
 }
 
 impl Framer {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { buf: Vec::new() }
     }
-    fn push(&mut self, bytes: &[u8]) {
+    pub(crate) fn push(&mut self, bytes: &[u8]) {
         self.buf.extend_from_slice(bytes);
     }
+    /// Bytes read past the last complete frame (mux handshake leftover).
+    pub(crate) fn take_remainder(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.buf)
+    }
     /// Pop the next complete message body; `None` when more bytes are needed.
-    fn next(&mut self) -> Option<String> {
+    pub(crate) fn next(&mut self) -> Option<String> {
         loop {
             let header_end = find_subslice(&self.buf, b"\r\n\r\n")?;
             let header_bytes = &self.buf[..header_end];
@@ -391,7 +415,7 @@ fn split_header(line: &[u8]) -> Option<(&[u8], &[u8])> {
 impl LspClient {
     /// Spawn the stdout reader task; routes responses, notifications and
     /// server-initiated requests (omp `startMessageReader`).
-    fn start_reader(&self, mut stdout: tokio::process::ChildStdout) {
+    fn start_reader(&self, mut stdout: Box<dyn tokio::io::AsyncRead + Unpin + Send>) {
         let client = self.clone();
         tokio::spawn(async move {
             let mut framer = Framer::new();
@@ -579,6 +603,7 @@ impl LspClient {
     /// Reader exited: tear the client down so the next call respawns.
     fn on_reader_exit(&self) {
         let _ = self.inner.project_loaded_tx.send(true);
+        self.inner.transport_dead.notify_waiters();
         *self.inner.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
         let stderr = String::from_utf8_lossy(&self.inner.stderr.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).trim().to_string();
         let code = self
@@ -840,6 +865,44 @@ pub fn client_capabilities() -> Value {
     })
 }
 
+type ServerWriter = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+type ServerReader = Box<dyn tokio::io::AsyncRead + Unpin + Send>;
+
+/// Open the server transport for one client: the broker-shared mux link when
+/// sharing is enabled, otherwise a process-local spawn (omp
+/// `connectSharedLspTransport` + the `ptree.spawn` fallback). Any
+/// shared-path failure degrades to the local spawn so LSP never regresses
+/// on mux trouble.
+async fn open_server_transport(
+    command: &str,
+    args: &[String],
+    cwd: &Path,
+) -> Result<(ServerWriter, ServerReader, Option<Child>, Option<u32>), LspError> {
+    if crate::mux::shared_lsp_enabled() {
+        if let Some(transport) = crate::mux::connect_shared_lsp_transport(command, args, cwd, None).await {
+            return Ok((Box::new(transport.writer), Box::new(transport.reader), None, transport.pid));
+        }
+    }
+    let mut child = Command::new(command)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| LspError { message: format!("failed to spawn LSP server {command}: {e}"), cancelled: false })?;
+    let stdin = child.stdin.take().ok_or_else(|| LspError {
+        message: "LSP server stdin unavailable".to_string(),
+        cancelled: false,
+    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| LspError { message: "LSP server stdout unavailable".to_string(), cancelled: false })?;
+    Ok((Box::new(stdin), Box::new(stdout), Some(child), None))
+}
+
 async fn init_client(
     config: &ServerConfig,
     cwd: &Path,
@@ -868,22 +931,13 @@ async fn init_client(
         .resolved_command
         .clone()
         .unwrap_or_else(|| config.command.clone());
-    let mut child = Command::new(&command)
-        .args(config.args.clone().unwrap_or_default())
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| LspError { message: format!("failed to spawn LSP server {command}: {e}"), cancelled: false })?;
+    let args: Vec<String> = config.args.clone().unwrap_or_default();
 
-    let stdin = child.stdin.take();
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| LspError { message: "LSP server stdout unavailable".to_string(), cancelled: false })?;
-    let mut stderr_pipe = child.stderr.take();
+    let (writer, reader, mut child, mux_pid) = open_server_transport(&command, &args, cwd).await?;
+    let mut stderr_pipe = match child.as_mut() {
+        Some(child) => child.stderr.take(),
+        None => None,
+    };
 
     let (project_tx, project_rx) = watch::channel(false);
     // Auto-resolve after the project-load timeout (servers may never publish progress).
@@ -908,8 +962,11 @@ async fn init_client(
         server_capabilities: Mutex::new(Value::Null),
         last_activity: AtomicI64::new(now_millis()),
         started_at: now_millis(),
-        stdin: Arc::new(AsyncMutex::new(stdin)),
-        child: Mutex::new(Some(child)),
+        stdin: Arc::new(AsyncMutex::new(Some(writer))),
+        child: Mutex::new(child),
+        shared_mux: mux_pid.is_some(),
+        mux_pid,
+        transport_dead: Arc::new(tokio::sync::Notify::new()),
         stderr: Arc::new(Mutex::new(Vec::new())),
         dynamic_registrations: Mutex::new(HashMap::new()),
         project_loaded_tx: project_tx,
@@ -918,12 +975,12 @@ async fn init_client(
     });
     let client = LspClient { inner };
 
-    // Drain stderr into a buffer for post-mortems.
+    // Drain stderr into a buffer for post-mortems (mux links have none).
     if let Some(pipe) = stderr_pipe.take() {
         drain_stderr(pipe, Arc::clone(&client.inner.stderr));
     }
 
-    client.start_reader(stdout);
+    client.start_reader(reader);
 
     run_initialize_handshake(&client, config, cwd, cancel, init_timeout).await?;
 
@@ -1012,6 +1069,9 @@ async fn run_initialize_handshake(
 impl LspClient {
     fn fail_init(&self) {
         *self.inner.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
+        if let Ok(mut guard) = self.inner.stdin.try_lock() {
+            *guard = None;
+        }
         if let Ok(mut guard) = self.inner.child.lock() {
             if let Some(child) = guard.as_mut() {
                 let _ = child.start_kill();
@@ -1165,6 +1225,17 @@ impl LspClient {
     }
 
     async fn wait_for_exit(&self, timeout: Duration) -> bool {
+        if self.inner.shared_mux {
+            // No local child: closing the link makes the mux sever the
+            // session (best-effort didClose/cancel), and the reader task
+            // observes the socket teardown.
+            *self.inner.stdin.lock().await = None;
+            let notified = self.inner.transport_dead.notified();
+            tokio::select! {
+                () = notified => return true,
+                () = tokio::time::sleep(timeout) => return true,
+            }
+        }
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             {

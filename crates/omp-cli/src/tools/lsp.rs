@@ -159,6 +159,14 @@ fn text_result(text: impl Into<String>, details: Value) -> AgentToolResult {
 
 impl LspTool {
     async fn run(self: &Arc<Self>, raw: Value, signal: &AbortSignal) -> Result<AgentToolResult> {
+        // Broker-shared language servers (`lsp.shared`, default on, gated by
+        // `lsp.enabled`): re-applied on every tool call like omp's settings
+        // listener, consulted only at client cold-start, so running clients
+        // keep their transport until they exit or idle out.
+        let settings = omp_settings::Settings::load_from(None, &self.env.cwd);
+        let shared = settings.get_bool("lsp.enabled").unwrap_or(true) && settings.get_bool("lsp.shared").unwrap_or(true);
+        omp_lsp::mux::set_shared_lsp_enabled(shared);
+
         let params: Params = serde_json::from_value(raw)
             .map_err(|e| anyhow!("Invalid lsp arguments: {e}"))?;
         let timeout_secs = params

@@ -1,3 +1,0 @@
-{"timestamp":"2026-10-12T20:41:25.804+03:00","level":"debug","pid":1549880,"message":"global proxy fetch not installed","reason":"PI_PROXY unset","env":{"NO_PROXY":"127.0.0.1,localhost,::1,auth.kimi.com,api.kimi.com"}}
-{"timestamp":"2026-10-12T20:42:32.800+03:00","level":"warn","pid":1549880,"message":"model discovery failed for provider","provider":"llama.cpp","url":"http://127.0.0.1:8080","error":"Unable to connect. Is the computer able to access the url?"}
-{"timestamp":"2026-10-12T20:42:32.801+03:00","level":"warn","pid":1549880,"message":"model discovery failed for provider","provider":"lm-studio","url":"http://127.0.0.1:1234/v1","error":"Unable to connect. Is the computer able to access the url?"}

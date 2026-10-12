@@ -1,4 +1,8 @@
 // Fixture extension written against the omp ExtensionAPI surface the user's extensions use.
+// Module-level state: `echoCalls` must be per-session — in the shared host each
+// session runs this module in its own Worker, so counters never leak across
+// sessions (asserted by the shared_daemon_sessions_are_isolated test).
+let echoCalls = 0;
 export default function fixture(pi: any): void {
   pi.on("session_start", async (_e: any, ctx: any) => {
     pi.appendEntry("fixture-started", { cwd: ctx.cwd, sid: ctx.sessionManager.getSessionId() });
@@ -22,7 +26,7 @@ export default function fixture(pi: any): void {
     parameters: pi.typebox ? pi.typebox.Type.Object({ text: pi.typebox.Type.String() }) : {},
     async execute(_id: string, params: any) {
       pi.sendMessage({ customType: "fx-msg", content: "sent", display: true });
-      return { content: [{ type: "text", text: `echo:${params.text}` }], details: { n: 1 } };
+      return { content: [{ type: "text", text: `echo:${params.text}` }], details: { n: ++echoCalls } };
     },
   });
   pi.registerCommand("fx-cmd", { description: "cmd", async handler(args: string) { return `cmd:${args}`; } });

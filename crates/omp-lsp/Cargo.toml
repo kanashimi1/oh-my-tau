@@ -13,6 +13,7 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 serde_yaml = "0.9.34"
 thiserror = "2"
+sha2 = "0.10"
 
 [lints]
 workspace = true

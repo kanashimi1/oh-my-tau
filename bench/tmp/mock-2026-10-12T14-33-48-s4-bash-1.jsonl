@@ -1,4 +1,0 @@
-{"t":1791815719735,"kind":"req","model":"bench-bash","n_messages":2}
-{"t":1791815719736,"kind":"resp_end","model":"bench-bash"}
-{"t":1791815719741,"kind":"req","model":"bench-bash","n_messages":4}
-{"t":1791815719741,"kind":"resp_end","model":"bench-bash"}

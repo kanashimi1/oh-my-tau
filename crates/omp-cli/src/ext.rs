@@ -99,6 +99,22 @@ pub fn host_script() -> Option<PathBuf> {
     None
 }
 
+/// `OMP_RS_EXT_SHARED=1` socket path: `$OMP_RS_EXT_SOCKET`, else
+/// `$OMP_AGENT_DIR/ext-shared.sock`, else `~/.omp/agent/ext-shared.sock`.
+/// Returns `None` (per-session stdio host) when the flag is unset or "0".
+fn shared_socket_path() -> Option<PathBuf> {
+    if !std::env::var_os("OMP_RS_EXT_SHARED").is_some_and(|v| v != "0") {
+        return None;
+    }
+    if let Ok(p) = std::env::var("OMP_RS_EXT_SOCKET") {
+        return Some(PathBuf::from(p));
+    }
+    let base = std::env::var_os("OMP_AGENT_DIR").map(PathBuf::from).or_else(|| {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".omp").join("agent"))
+    })?;
+    Some(base.join("ext-shared.sock"))
+}
+
 /// Gate decision from the `input` event before a prompt is admitted.
 pub enum PromptGate {
     /// Run with (possibly rewritten) text.
@@ -129,7 +145,11 @@ impl Extensions {
         let script = host_script().context("ext-host/host.ts not found (set OMP_RS_EXT_HOST)")?;
         let mut cfg = HostConfig::new(script);
         cfg.trace = std::env::var_os("OMP_EXT_TRACE").map(Into::into);
-        let host = ExtHost::spawn(&cfg)?;
+        // Opt-in shared host (`OMP_RS_EXT_SHARED=1`): one bun daemon per user
+        // serves all sessions; each session still runs its extensions in an
+        // isolated bun Worker (fresh module graph == per-process state).
+        cfg.shared_socket = shared_socket_path();
+        let host = ExtHost::spawn(&cfg).await?;
         let hooks = ExtHooks::new(host.clone());
 
         let dir = std::env::var_os("HOME")
@@ -678,7 +698,7 @@ mod tests {
     use super::*;
     use pa_agent::abort::AbortController;
 
-    fn sh_host(dir: &std::path::Path, body: &str, env: Vec<(String, String)>) -> Arc<ExtHost> {
+    async fn sh_host(dir: &std::path::Path, body: &str, env: Vec<(String, String)>) -> Arc<ExtHost> {
         let script = dir.join("fake-host.sh");
         std::fs::write(&script, body).unwrap();
         ExtHost::spawn(&HostConfig {
@@ -687,7 +707,9 @@ mod tests {
             trace: None,
             handler_timeout_ms: None,
             env,
+            shared_socket: None,
         })
+        .await
         .unwrap()
     }
 
@@ -747,7 +769,7 @@ mod tests {
     #[tokio::test]
     async fn session_stop_continue_schedules_hidden_turn() {
         let dir = tempfile::tempdir().unwrap();
-        let host = sh_host(dir.path(), CONTINUE_HOST, Vec::new());
+        let host = sh_host(dir.path(), CONTINUE_HOST, Vec::new()).await;
         let stop = Mutex::new(StopState::default());
         let turn = AtomicU64::new(2);
         let messages = session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
@@ -773,7 +795,7 @@ mod tests {
     #[tokio::test]
     async fn session_stop_continuation_cap_resets_state() {
         let dir = tempfile::tempdir().unwrap();
-        let host = sh_host(dir.path(), CONTINUE_HOST, Vec::new());
+        let host = sh_host(dir.path(), CONTINUE_HOST, Vec::new()).await;
         let stop = Mutex::new(StopState::default());
         let turn = AtomicU64::new(0);
         for i in 0..SESSION_STOP_CONTINUATION_CAP {
@@ -810,7 +832,8 @@ mod tests {
                 "done\n",
             ),
             vec![("MARKER".into(), marker.display().to_string())],
-        );
+        )
+        .await;
         let tool = Arc::new(ExtTool {
             host: host.clone(),
             info: ToolInfo {

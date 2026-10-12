@@ -46,7 +46,12 @@ async fn main() -> Result<()> {
         HostConfig::new(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ext-host/host.ts"));
     cfg.trace = Some(PathBuf::from(&trace));
     cfg.handler_timeout_ms = Some(30_000);
-    let host = ExtHost::spawn(&cfg)?;
+    if std::env::var_os("OMP_EXT_TEST_SHARED").is_some_and(|v| v != "0") {
+        let dir = std::env::temp_dir().join(format!("omp-ext-shared-trace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        cfg.shared_socket = Some(dir.join("ext.sock"));
+    }
+    let host = ExtHost::spawn(&cfg).await?;
     let mut incoming = host.take_incoming().expect("incoming");
     let notes = tokio::spawn(async move {
         let mut counts: HashMap<String, u32> = HashMap::new();
@@ -107,6 +112,8 @@ async fn main() -> Result<()> {
         );
     }
     host.shutdown().await?;
+    // Close the incoming channel so the notes task can finish.
+    drop(host);
     let counts = notes.await?;
     println!("host->core notifications: {counts:?}");
 
