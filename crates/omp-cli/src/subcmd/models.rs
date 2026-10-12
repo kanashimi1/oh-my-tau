@@ -60,7 +60,7 @@ pub fn run(args: &[String]) -> Result<i32> {
 
 fn resolve_args<'a>(first: Option<&'a str>, second: Option<&'a str>) -> (Action, Option<&'a str>) {
     match first {
-        Some("ls") | Some("list") => (Action::Ls, second),
+        Some("ls" | "list") => (Action::Ls, second),
         Some("find") => (Action::Find, second),
         Some("refresh") => (Action::Refresh, second),
         Some(other) => (Action::Ls, Some(other)),
@@ -80,7 +80,7 @@ fn collect_catalog(dir: &omp_providers::AgentDir) -> BTreeMap<(String, String), 
     for provider in pa_ai::models_generated::get_providers() {
         for model in pa_ai::models_generated::get_models(provider) {
             let efforts = model.thinking_level_map.as_ref().map(|map| {
-                map.keys().map(level_name).collect::<Vec<_>>()
+                map.keys().map(|l| level_name(*l)).collect::<Vec<_>>()
             });
             out.insert(
                 (model.provider.clone(), model.id.clone()),
@@ -99,7 +99,7 @@ fn collect_catalog(dir: &omp_providers::AgentDir) -> BTreeMap<(String, String), 
             }
             let Some(mut model) = lenient_model(&entry, &provider) else { continue };
             if model.provider.is_empty() {
-                model.provider = provider.clone();
+                model.provider.clone_from(&provider);
             }
             let efforts = entry
                 .get("thinking")
@@ -128,7 +128,7 @@ fn is_non_chat_kind(kind: &str) -> bool {
 /// Parse a `models.db` cache entry tolerantly: rows may carry `null` limits
 /// (TS renders them as `-`), which the strict `Model` serde shape rejects.
 fn lenient_model(entry: &Value, provider: &str) -> Option<Model> {
-    if let Ok(mut model) = serde_json::from_value::<Model>(entry.clone()) {
+    if let Ok(model) = serde_json::from_value::<Model>(entry.clone()) {
         return Some(model);
     }
     let id = entry.get("id").and_then(Value::as_str)?.to_string();
@@ -137,16 +137,14 @@ fn lenient_model(entry: &Value, provider: &str) -> Option<Model> {
     let num = |key: &str| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
     let input = entry
         .get("input")
-        .and_then(Value::as_array)
-        .map(|a| {
+        .and_then(Value::as_array).map_or_else(|| vec![ModelInput::Text], |a| {
             a.iter()
                 .filter_map(|v| match v.as_str()? {
                     "image" => Some(ModelInput::Image),
                     _ => Some(ModelInput::Text),
                 })
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| vec![ModelInput::Text]);
+        });
     let zero = pa_types::JsNumber(0.0);
     Some(Model {
         id,
@@ -278,9 +276,8 @@ fn db_cache_models(db: &Path) -> Vec<(String, Vec<Value>)> {
     ) else {
         return Vec::new();
     };
-    let mut stmt = match conn.prepare("SELECT provider_id, models FROM model_cache ORDER BY updated_at DESC") {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
+    let Ok(mut stmt) = conn.prepare("SELECT provider_id, models FROM model_cache ORDER BY updated_at DESC") else {
+        return Vec::new();
     };
     let rows = stmt
         .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
@@ -325,16 +322,14 @@ fn custom_model(provider: &str, entry: &Value) -> Option<Model> {
     let num = |key: &str| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
     let input = entry
         .get("input")
-        .and_then(Value::as_array)
-        .map(|a| {
+        .and_then(Value::as_array).map_or_else(|| vec![ModelInput::Text], |a| {
             a.iter()
                 .filter_map(|v| match v.as_str()? {
                     "image" => Some(ModelInput::Image),
                     _ => Some(ModelInput::Text),
                 })
                 .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| vec![ModelInput::Text]);
+        });
     let zero = pa_types::JsNumber(0.0);
     let cost = entry
         .get("cost")
@@ -365,11 +360,12 @@ fn custom_model(provider: &str, entry: &Value) -> Option<Model> {
 }
 
 /// TS `getSupportedEfforts` display name for a thinking level (wire name).
-fn level_name(level: &pa_types::ai::ModelThinkingLevel) -> String {
+fn level_name(level: pa_types::ai::ModelThinkingLevel) -> String {
     level.wire_name().to_string()
 }
 
 /// TS `formatNumber`: compact K/M/B suffixes (`262K`, `8.2K`, `1M`).
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded quotients of n < 2^53 by construction of the branches
 fn format_number(n: u64) -> String {
     let f = n as f64;
     let trim1 = |x: f64| {
@@ -492,7 +488,7 @@ fn render(catalog: &BTreeMap<(String, String), ListedModel>, action: Action, pat
     });
 
     if json {
-        let models: Vec<Value> = sorted.iter().map(model_json).collect();
+        let models: Vec<Value> = sorted.iter().copied().map(model_json).collect();
         println!("{}", json!({ "models": models }));
         return;
     }
@@ -549,7 +545,7 @@ fn render(catalog: &BTreeMap<(String, String), ListedModel>, action: Action, pat
 }
 
 /// TS `toModelJson`.
-fn model_json(m: &&ListedModel) -> Value {
+fn model_json(m: &ListedModel) -> Value {
     let model = &m.model;
     json!({
         "provider": model.provider,

@@ -41,7 +41,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         }
     }
     let root = dir.unwrap_or_else(default_sessions_dir);
-    let summary = collect(&root)?;
+    let summary = collect(&root);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -59,7 +59,7 @@ fn default_sessions_dir() -> PathBuf {
     dir.0.join("sessions")
 }
 
-fn collect(root: &Path) -> Result<Value> {
+fn collect(root: &Path) -> Value {
     let mut files = 0u64;
     let mut entries_total = 0u64;
     let mut messages = 0u64;
@@ -68,13 +68,11 @@ fn collect(root: &Path) -> Result<Value> {
 
     if root.is_dir() {
         projects = std::fs::read_dir(root)
-            .map(|rd| rd.filter_map(std::result::Result::ok).filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).count() as u64)
-            .unwrap_or(0);
+            .map_or(0, |rd| rd.filter_map(std::result::Result::ok).filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).count() as u64);
         let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
-            let rd = match std::fs::read_dir(&dir) {
-                Ok(rd) => rd,
-                Err(_) => continue,
+            let Ok(rd) = std::fs::read_dir(&dir) else {
+                continue;
             };
             for entry in rd.filter_map(std::result::Result::ok) {
                 let path = entry.path();
@@ -113,7 +111,7 @@ fn collect(root: &Path) -> Result<Value> {
         })
         .collect();
 
-    Ok(json!({
+    json!({
         "sessionsDir": root,
         "projects": projects,
         "sessionFiles": files,
@@ -128,7 +126,7 @@ fn collect(root: &Path) -> Result<Value> {
             "cost": round2(totals.cost),
         },
         "models": models,
-    }))
+    })
 }
 
 fn round2(n: f64) -> f64 {

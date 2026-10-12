@@ -171,8 +171,8 @@ fn json_str(s: &str) -> String {
 }
 
 /// Usage error text, matching omp's `CliUsageError` report
-/// (`Error: {msg}` + `Run \`omp --help\` for available flags.`).
-fn usage_err(msg: String) -> anyhow::Error {
+/// ("Error: {msg}" plus a "Run `omp --help` for available flags." tail).
+fn usage_err(msg: &str) -> anyhow::Error {
     anyhow::anyhow!("{msg}\nRun `omp --help` for available flags.")
 }
 
@@ -184,7 +184,7 @@ fn parse_max_time(value: &str) -> Result<f64> {
         match trimmed.parse::<f64>() {
             Ok(s) => s,
             Err(_) => {
-                return Err(usage_err(format!(
+                return Err(usage_err(&format!(
                     "Invalid --max-time value: {}. Expected a positive number of seconds or duration like \"5s\", \"10m\", \"1h\".",
                     json_str(value)
                 )));
@@ -194,7 +194,7 @@ fn parse_max_time(value: &str) -> Result<f64> {
     if seconds.is_finite() && seconds > 0.0 {
         Ok(seconds)
     } else {
-        Err(usage_err(format!(
+        Err(usage_err(&format!(
             "Invalid --max-time value: {}. Expected a positive number of seconds or duration like \"5s\", \"10m\", \"1h\".",
             json_str(value)
         )))
@@ -254,7 +254,7 @@ fn set_string(a: &mut Args, flag: &str, value: String, invalid: &mut Vec<String>
         }
         "--service-tier" => {
             if !SERVICE_TIER_VALUES.contains(&value.as_str()) {
-                return Err(usage_err(format!(
+                Err(usage_err(&format!(
                     "Invalid --service-tier value: {}. Expected one of: {}.",
                     json_str(&value),
                     SERVICE_TIER_VALUES.join(", ")
@@ -266,7 +266,8 @@ fn set_string(a: &mut Args, flag: &str, value: String, invalid: &mut Vec<String>
         "--system-prompt" => a.system_prompt = Some(value),
         "--system-prompt-template" => a.system_prompt_template = Some(value),
         "--append-system-prompt" => a.append_system_prompt = Some(value),
-        "--provider-session-id" | "--prompt-cache-key" => {} // parsed, unused (no provider-session subsystem)
+        // Parsed but unused in omp-rs (no provider-session / plugin subsystem):
+        "--provider-session-id" | "--prompt-cache-key" | "--plugin-dir" => {}
         "--session-dir" => a.session_dir = Some(PathBuf::from(value)),
         "--models" => {
             a.models = value.split(',').map(|s| s.trim().to_string()).collect();
@@ -295,7 +296,6 @@ fn set_string(a: &mut Args, flag: &str, value: String, invalid: &mut Vec<String>
         "--hook" => a.hooks.push(value),
         "--extension" | "-e" => a.extension.push(PathBuf::from(value)),
         "--trusted-extension" => a.trusted_extensions.push(value),
-        "--plugin-dir" => {} // parsed; plugin subsystem not in omp-rs
         "--skills" => {
             a.skills = value.split(',').map(|s| s.trim().to_string()).collect();
         }
@@ -410,31 +410,33 @@ pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
                 "--no-extensions" => a.no_extensions = true,
                 "--dump-system-prompt" => a.dump_system_prompt = true,
                 other if other.starts_with('@') => push_message(&mut messages, &mut images, other.to_string())?,
-                other if !other.starts_with('-') || other == "-" => {
+                "-" => push_message(&mut messages, &mut images, "-".to_string())?,
+                other if !other.starts_with('-') => {
                     push_message(&mut messages, &mut images, other.to_string())?;
                 }
-                other if other == "--" => saw_separator = true,
+                "--" => saw_separator = true,
                 other => unrecognized.push(other.to_string()),
             }
         }
         // Drop an unconsumed `--flag=value` value (e.g. a boolean flag).
-        if equals_value_index.is_some() && i == flag_index {
-            args.remove(equals_value_index.unwrap());
+        let equals_value_index = equals_value_index.filter(|_| i == flag_index);
+        if let Some(equals_value_index) = equals_value_index {
+            args.remove(equals_value_index);
         }
         i += 1;
     }
 
-    finish(a, messages, images, invalid, unrecognized, trusted_flag_count)
+    finish(a, &messages, images, &invalid, &unrecognized, trusted_flag_count)
 }
 
 /// Post-parse validation (TS end-of-`parseArgs` checks) and error reporting
 /// (`reportUnrecognizedFlags` / `reportInvalidFlagValues`).
 fn finish(
     mut a: Args,
-    messages: Vec<String>,
+    messages: &[String],
     images: Vec<pa_agent::types::ImageContent>,
-    invalid: Vec<String>,
-    unrecognized: Vec<String>,
+    invalid: &[String],
+    unrecognized: &[String],
     trusted_flag_count: usize,
 ) -> Result<Args> {
     if !messages.is_empty() {
@@ -443,7 +445,7 @@ fn finish(
     a.images = images;
     if let Some(goal) = a.goal.take() {
         if goal.trim().is_empty() {
-            return Err(usage_err("--goal requires a non-empty objective.".to_string()));
+            return Err(usage_err("--goal requires a non-empty objective."));
         }
         a.goal = Some(goal);
     }
@@ -460,29 +462,29 @@ fn finish(
     };
     if a.trusted_extensions.len() != trusted_flag_count || ext_or_hook_mentions_trusted {
         return Err(usage_err(
-            "--trusted-extension requires a non-empty, non-flag value".to_string(),
+            "--trusted-extension requires a non-empty, non-flag value",
         ));
     }
     if trusted_flag_count > 0 && (!a.extension.is_empty() || !a.hooks.is_empty()) {
         return Err(usage_err(
-            "--trusted-extension cannot be combined with --extension, -e, or --hook".to_string(),
+            "--trusted-extension cannot be combined with --extension, -e, or --hook",
         ));
     }
     for trusted in &a.trusted_extensions {
         if trusted.is_empty() {
             return Err(usage_err(
-                "--trusted-extension requires a non-empty, non-flag value".to_string(),
+                "--trusted-extension requires a non-empty, non-flag value",
             ));
         }
         if !PathBuf::from(trusted).is_absolute() {
-            return Err(usage_err(format!(
+            return Err(usage_err(&format!(
                 "--trusted-extension requires an absolute path: {trusted}"
             )));
         }
     }
     if a.system_prompt.is_some() && a.system_prompt_template.is_some() {
         return Err(usage_err(
-            "--system-prompt and --system-prompt-template cannot be combined".to_string(),
+            "--system-prompt and --system-prompt-template cannot be combined",
         ));
     }
     if !unrecognized.is_empty() {

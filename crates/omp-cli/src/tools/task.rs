@@ -463,7 +463,7 @@ mod tests {
             .iter()
             .find_map(|part| match part {
                 pa_agent::types::ToolResultContent::Text(text) => Some(text.text.clone()),
-                _ => None,
+                pa_agent::types::ToolResultContent::Image(_) => None,
             })
             .expect("text content");
         assert_eq!(result.is_error, Some(true));

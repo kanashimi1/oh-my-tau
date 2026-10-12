@@ -16,7 +16,7 @@ const REDACTED: &str = "********";
 pub fn run(args: &[String]) -> Result<i32> {
     let mut json = false;
     let mut positional: Vec<&str> = Vec::new();
-    for arg in args.iter() {
+    for arg in args {
         match arg.as_str() {
             "--json" => json = true,
             other if other.starts_with('-') => anyhow::bail!("unknown flag: {other}"),
@@ -29,7 +29,7 @@ pub fn run(args: &[String]) -> Result<i32> {
             let Some(key) = positional.get(1) else {
                 anyhow::bail!("Usage: omp-rs config get <key>\n\nRun 'omp-rs config list' to see available keys");
             };
-            get(key, json)?
+            get(key, json)?;
         }
         "path" => {
             println!("{}", omp_providers::AgentDir::default().0.display());

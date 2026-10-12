@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use cli::{Args, Resume};
 
-const HELP: &str = r#"usage: omp-rs [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
+const HELP: &str = r"usage: omp-rs [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
        [--provider <name>] [--api-key <key>] [--smol <m>] [--slow <m>] [--plan <m>]
        [--cwd DIR] [--add-dir DIR]... [--config FILE]... [--session-dir DIR]
        [-c|--continue] [-r|--resume [ID]] [--fork ID] [--from-claude] [--from-codex]
@@ -45,7 +45,7 @@ reported, see GapInventory): --config, --add-dir, --smol/--slow/--plan,
 --models, --service-tier, --prewalk*/--plan-yolo*, --skills/--no-skills,
 --no-rules, --no-title, --no-lsp, --no-pty, --advisor, --external-thinking,
 --hide-thinking, --auto-approve/--approval-mode, --profile, --alias.
-"#;
+";
 
 fn parse_args() -> Result<Args> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -146,6 +146,7 @@ fn usage_err(msg: &str) -> anyhow::Error {
     anyhow::anyhow!("{msg}\nRun `omp --help` for available flags.")
 }
 
+#[allow(clippy::too_many_lines)] // sequential startup guard clauses; mirrors omp's main flow
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = parse_args()?;
@@ -185,11 +186,8 @@ async fn main() -> Result<()> {
     if args.from_claude || args.from_codex {
         bail!("omp-rs: --from-claude/--from-codex are not supported (no importer subsystem)");
     }
-    match args.mode.as_deref() {
-        Some("acp") | Some("rpc-ui") => {
-            bail!("omp-rs: --mode {} is not supported (no {} subsystem)", args.mode.as_deref().unwrap(), if args.mode.as_deref() == Some("acp") { "acp" } else { "rpc-ui" });
-        }
-        _ => {}
+    if let Some(mode @ ("acp" | "rpc-ui")) = args.mode.as_deref() {
+        bail!("omp-rs: --mode {mode} is not supported (no {mode} subsystem)");
     }
     if !args.config.is_empty() || !args.add_dir.is_empty() {
         eprintln!(
@@ -386,15 +384,12 @@ async fn main() -> Result<()> {
         extensions.as_ref(),
     );
     let messages = if let Some(secs) = args.max_time {
-        match tokio::time::timeout(std::time::Duration::from_secs_f64(secs), run).await {
-            Ok(r) => r?,
-            Err(_) => {
-                if let Some(e) = &extensions {
-                    e.shutdown().await;
-                }
-                eprintln!("omp-rs: stopped after --max-time {:?}", args.max_time_raw.as_deref().unwrap_or(""));
-                exit(124);
+        if let Ok(r) = tokio::time::timeout(std::time::Duration::from_secs_f64(secs), run).await { r? } else {
+            if let Some(e) = &extensions {
+                e.shutdown().await;
             }
+            eprintln!("omp-rs: stopped after --max-time {:?}", args.max_time_raw.as_deref().unwrap_or(""));
+            exit(124);
         }
     } else {
         run.await?
@@ -472,18 +467,9 @@ fn exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
-#[cfg(test)]
-mod tests {
-    /// Review #2: the exit helper's shutdown leg must complete cleanly with an
-    /// empty registry (a no-op, but proves the runtime dance is sound).
-    #[test]
-    fn shutdown_lsp_runs_without_a_runtime_client() {
-        super::shutdown_lsp();
-    }
-}
-
 /// Print-mode run: extension lifecycle hook points, optional session resume
 /// (`--resume`/`--continue`/`--fork`), then the single prompt.
+#[allow(clippy::too_many_arguments)] // print-mode run context; mirrors omp's runPrint signature
 async fn run_print(
     agent: pa_agent::agent::Agent,
     target: agent::Target,
@@ -541,7 +527,7 @@ async fn run_print(
     let mut prompt = prompt;
     match crate::rpc::slash::try_dispatch(&rt, &prompt).await {
         crate::rpc::slash::Outcome::Handled { .. } | crate::rpc::slash::Outcome::ExtensionHandled => {
-            prompt = String::new()
+            prompt = String::new();
         }
         crate::rpc::slash::Outcome::Prompt(expanded) => prompt = expanded,
         crate::rpc::slash::Outcome::NotSlash => {}
@@ -564,4 +550,14 @@ async fn run_print(
     }
     rt.wait_settled().await;
     Ok(agent.state().await.messages)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Review #2: the exit helper's shutdown leg must complete cleanly with an
+    /// empty registry (a no-op, but proves the runtime dance is sound).
+    #[test]
+    fn shutdown_lsp_runs_without_a_runtime_client() {
+        super::shutdown_lsp();
+    }
 }

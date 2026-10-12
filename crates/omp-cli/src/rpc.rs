@@ -59,8 +59,7 @@ impl RpcAskUi {
         let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
         let id = format!("ui-{}", std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0));
+            .map_or(0, |d| d.as_nanos()));
         let timeout_ms = frame.get("timeout").and_then(Value::as_u64);
         frame.insert("id".into(), json!(id));
         frame.insert("type".into(), json!("extension_ui_request"));
@@ -1317,6 +1316,7 @@ pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistenc
 ///
 /// # Errors
 /// Fails on stdin read errors.
+#[allow(clippy::too_many_lines)] // the RPC dispatch loop; one branch per wire frame type, mirrors omp's handler table
 pub async fn run_with(
     agent: Agent,
     target: Target,
@@ -1610,11 +1610,11 @@ mod ask_ui_tests {
     use super::*;
 
     /// The pending-dialog registry is process-global; serialize the tests.
-    static TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[tokio::test]
     async fn ask_ui_resolves_from_extension_ui_response() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK.lock().await;
         let questions = json!([{"id": "q1", "schema": {}}]);
         let ui = RpcAskUi;
         ASK_DIALOG_ENABLED.store(true, Ordering::SeqCst);
@@ -1645,8 +1645,7 @@ mod ask_ui_tests {
 
     #[tokio::test]
     async fn ask_ui_times_out_with_timed_out_frame() {
-        let _guard = TEST_LOCK.lock().unwrap();
-        let ui = RpcAskUi;
+        let _guard = TEST_LOCK.lock().await;
         let mut frame = Map::new();
         frame.insert("questions".into(), json!([]));
         frame.insert("timeout".into(), json!(50));

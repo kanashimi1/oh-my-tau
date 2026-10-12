@@ -176,14 +176,17 @@ pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
     })
 }
 
-/// Shut down every retained kernel (test helper). Leaked runner children hold
-/// inherited stdio fds open, which keeps `cargo test`'s output pipe from
-/// closing; tests must call this before returning.
+/// Shut down the retained kernel for `cwd` (test helper). Leaked runner
+/// children hold inherited stdio fds open, which keeps `cargo test`'s output
+/// pipe from closing; tests must call this before returning. Per-slot, not
+/// global: parallel eval tests each own a distinct cwd, and clearing the
+/// whole registry would drop a sibling test's live kernel mid-run (its next
+/// cell then loses state or fails on broken kernel I/O).
 #[cfg(test)]
-fn shutdown_all() {
+fn shutdown_slot(cwd: &std::path::Path) {
     // Dropping the slot drops KernelState, whose kernel Arcs run Drop and
     // settle the runner children.
-    SLOTS.lock().expect("kernel registry").clear();
+    SLOTS.lock().expect("kernel registry").remove(cwd);
 }
 
 /// `details` payload: execution counter plus timeout annotations, omp-style.
@@ -246,7 +249,7 @@ mod tests {
         )
         .await
         .unwrap();
-        shutdown_all();
+        shutdown_slot(&env.cwd);
     }
 
     #[tokio::test]
@@ -283,7 +286,7 @@ mod tests {
             "state wiped: {}",
             content.text
         );
-        shutdown_all();
+        shutdown_slot(&env.cwd);
     }
 
     #[tokio::test]
@@ -328,6 +331,6 @@ mod tests {
             panic!("unexpected content");
         };
         assert!(content.text.contains("alive"), "got: {}", content.text);
-        shutdown_all();
+        shutdown_slot(&env.cwd);
     }
 }

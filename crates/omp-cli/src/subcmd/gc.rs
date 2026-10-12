@@ -15,9 +15,9 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
-const DAY: Duration = Duration::from_secs(86_400);
+const DAY: Duration = Duration::from_hours(24);
 /// TS `GC_WRITE_GRACE_MS`: a session written within the last 5 minutes is active.
-const WRITE_GRACE: Duration = Duration::from_secs(5 * 60);
+const WRITE_GRACE: Duration = Duration::from_mins(5);
 
 struct Options {
     apply: bool,
@@ -36,13 +36,11 @@ struct SessionFile {
     project: String,
 }
 
-/// Entry point: `omp-rs gc [--apply] [--json] [--agent-dir <dir>]
-/// [--cold-archive-after-days n] [--retain-newest-global n]
-/// [--retain-newest-per-cwd n]`.
+/// Parse the gc flags (TS `parseArchiveGcArgs`).
 ///
 /// # Errors
-/// I/O failure scanning or (with `--apply`) archiving session files.
-pub fn run(args: &[String]) -> Result<i32> {
+/// Unknown flags, missing values, or non-integer numeric values.
+fn parse_options(args: &[String]) -> Result<(Options, PathBuf)> {
     let mut opts = Options {
         apply: false,
         json: false,
@@ -74,10 +72,21 @@ pub fn run(args: &[String]) -> Result<i32> {
     }
 
     let agent_dir = agent_dir.unwrap_or_else(|| omp_providers::AgentDir::default().0);
+    Ok((opts, agent_dir))
+}
+
+/// Entry point: `omp-rs gc [--apply] [--json] [--agent-dir <dir>]
+/// [--cold-archive-after-days n] [--retain-newest-global n]
+/// [--retain-newest-per-cwd n]`.
+///
+/// # Errors
+/// I/O failure scanning or (with `--apply`) archiving session files.
+pub fn run(args: &[String]) -> Result<i32> {
+    let (opts, agent_dir) = parse_options(args)?;
     let sessions_root = agent_dir.join("sessions");
     let archive_root = agent_dir.join("archive").join("sessions");
 
-    let scanned = scan_sessions(&sessions_root)?;
+    let scanned = scan_sessions(&sessions_root);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
@@ -94,7 +103,7 @@ pub fn run(args: &[String]) -> Result<i32> {
     }
 
     // Newest-first across everything, then mark the retained ones.
-    candidates.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    candidates.sort_by_key(|f| std::cmp::Reverse(f.mtime));
     let mut kept = vec![false; candidates.len()];
     let mut per_cwd: BTreeMap<&str, usize> = BTreeMap::new();
     for (i, file) in candidates.iter().enumerate() {
@@ -171,16 +180,15 @@ pub fn run(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
-fn scan_sessions(root: &Path) -> Result<Vec<SessionFile>> {
+fn scan_sessions(root: &Path) -> Vec<SessionFile> {
     let mut out = Vec::new();
     if !root.is_dir() {
-        return Ok(out);
+        return out;
     }
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let rd = match fs::read_dir(&dir) {
-            Ok(rd) => rd,
-            Err(_) => continue,
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
         };
         for entry in rd.filter_map(std::result::Result::ok) {
             let path = entry.path();
@@ -193,7 +201,7 @@ fn scan_sessions(root: &Path) -> Result<Vec<SessionFile>> {
                     .modified()
                     .ok()
                     .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-                    .map_or(0, |d| u64::try_from(d.as_secs()).unwrap_or(0));
+                    .map_or(0, |d| d.as_secs());
                 out.push(SessionFile {
                     project: path
                         .parent()
@@ -206,7 +214,7 @@ fn scan_sessions(root: &Path) -> Result<Vec<SessionFile>> {
             }
         }
     }
-    Ok(out)
+    out
 }
 
 /// TS `tryAcquireSessionFileLease`: a session file a running process still
@@ -270,7 +278,7 @@ fn archive_session(sessions_root: &Path, archive_root: &Path, path: &Path) -> Re
     // size count (no read_to_end: sessions can be large).
     let mut check = flate2::read::GzDecoder::new(fs::File::open(&dest)?);
     let mut counted = 0u64;
-    let mut chunk = [0u8; 64 * 1024];
+    let mut chunk = vec![0u8; 64 * 1024];
     loop {
         let n = check.read(&mut chunk)?;
         if n == 0 {
@@ -286,6 +294,7 @@ fn archive_session(sessions_root: &Path, archive_root: &Path, path: &Path) -> Re
 }
 
 /// TS `formatBytes`: `512B`, `1.5KB`, `2.3MB`, `1.2GB`.
+#[allow(clippy::cast_precision_loss)] // byte counts << 2^52; the division result is formatted to 1 decimal
 fn format_bytes(bytes: u64) -> String {
     let f = bytes as f64;
     if bytes < 1024 {

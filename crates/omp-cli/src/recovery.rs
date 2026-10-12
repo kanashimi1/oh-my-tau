@@ -1573,7 +1573,7 @@ mod tests {
         tokio::pin!(deadline);
         loop {
             tokio::select! {
-                _ = &mut deadline => break,
+                () = &mut deadline => break,
                 frame = h.rx.recv() => {
                     let f = frame.expect("open");
                     match f["type"].as_str() {
@@ -1586,7 +1586,7 @@ mod tests {
                             }
                         }
                         Some("agent_end") if second_turn_user => second_turn_ended = true,
-                        _ => {}
+                        _ => (),
                     }
                 }
             }

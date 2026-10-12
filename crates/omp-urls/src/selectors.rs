@@ -27,9 +27,8 @@ fn is_selector_chunk(chunk: &str) -> bool {
     if matches!(lower.as_str(), "raw" | "conflicts" | "img") {
         return true;
     }
-    if chunk.starts_with('-') {
+    if let Some(body) = chunk.strip_prefix('-') {
         // `-N` or the malformed `-N-M` the TS grammar accepts for peeling.
-        let body = &chunk[1..];
         let digits = body.len() - body.trim_start_matches(|c: char| c.is_ascii_digit()).len();
         if digits == 0 {
             return false;
@@ -88,8 +87,7 @@ pub fn split_selectors(
     let scheme_end = raw_path.len() - rest.len();
     let mut path = raw_path;
     let mut chunks: Vec<&str> = Vec::new();
-    loop {
-        let Some(colon) = path.rfind(':') else { break };
+    while let Some(colon) = path.rfind(':') {
         if colon < scheme_end {
             break;
         }

@@ -231,8 +231,8 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
     ("", content)
 }
 
-/// Async wrapper safe to call from async context.
-pub async fn refresh_file_commands_async(cwd: &Path) {
+/// Reload the cached file commands from disk (cheap; safe to call from async context).
+pub fn refresh_file_commands(cwd: &Path) {
     let cmds = load_file_commands(cwd);
     *FILE_COMMANDS
         .lock()
@@ -412,7 +412,7 @@ pub async fn dispatch_builtin(
             }
         }
         "fresh" => {
-            if rt.state().await.get("isStreaming").and_then(|v| v.as_bool()) == Some(true) {
+            if rt.state().await.get("isStreaming").and_then(serde_json::Value::as_bool) == Some(true) {
                 Some(usage(
                     rt,
                     "Wait for the current response to finish or abort it before refreshing provider state.",
@@ -441,9 +441,9 @@ pub async fn dispatch_builtin(
                 }
                 Some(_) => (None, Some(trimmed.to_string())),
             };
-            if mode.is_some() {
+            if let Some(mode) = mode {
                 // omp-rs compaction does not implement mode overrides; run the default.
-                output(rt, &format!("/compact {} is not supported; running default compaction.", mode.unwrap()));
+                output(rt, &format!("/compact {mode} is not supported; running default compaction."));
             }
             let instructions = instructions.filter(|s| !s.is_empty());
             let result = rt.compact(instructions.as_deref()).await;
@@ -454,7 +454,7 @@ pub async fn dispatch_builtin(
             Some(Handled { agent_invoked: false })
         }
         "retry" => {
-            if rt.state().await.get("isStreaming").and_then(|v| v.as_bool()) == Some(true) {
+            if rt.state().await.get("isStreaming").and_then(serde_json::Value::as_bool) == Some(true) {
                 Some(usage(rt, "Wait for the current response to finish or abort it before retrying."))
             } else {
                 // Manual retry of a failed turn is driven by the recovery saga
@@ -553,10 +553,8 @@ async fn dispatch_builtin_more(
         "advisor" => {
             let (verb, _rest) = subcommand(args);
             match verb.as_str() {
-                "" | "toggle" => output(rt, ADVISOR_INACTIVE_ON),
-                "on" => output(rt, ADVISOR_INACTIVE_ON),
-                "off" => output(rt, "Advisor disabled."),
-                "status" => output(rt, "Advisor disabled."),
+                "" | "toggle" | "on" => output(rt, ADVISOR_INACTIVE_ON),
+                "off" | "status" => output(rt, "Advisor disabled."),
                 "dump" => output(rt, "Advisor is not active for this session."),
                 "configure" => output(
                     rt,
@@ -570,10 +568,10 @@ async fn dispatch_builtin_more(
             let (verb, _rest) = subcommand(args);
             match (verb.as_str(), verb.is_empty()) {
                 ("view", _) | (_, true) => output(rt, "Memory payload is empty."),
-                ("clear", _) | ("reset", _) => output(rt, "Memory cleared."),
-                ("enqueue", _) | ("rebuild", _) => output(rt, "Memory consolidation enqueued."),
+                ("clear" | "reset", _) => output(rt, "Memory cleared."),
+                ("enqueue" | "rebuild", _) => output(rt, "Memory consolidation enqueued."),
                 ("sync", _) => output(rt, "Memory consolidation ran."),
-                ("queue", _) | ("stats", _) | ("diagnose", _) => output(
+                ("queue" | "stats" | "diagnose", _) => output(
                     rt,
                     &format!("Memory is not available for the off backend (/{verb})."),
                 ),
@@ -641,11 +639,11 @@ const ADVISOR_INACTIVE_ON: &str =
 
 /// Compact context report (simplified TS `buildContextReportText`).
 fn context_report(_state: &Value, usage: &Value) -> String {
-    let tokens = usage.get("tokens").and_then(|v| v.as_u64());
-    let window = usage.get("contextWindow").and_then(|v| v.as_u64());
+    let tokens = usage.get("tokens").and_then(serde_json::Value::as_u64);
+    let window = usage.get("contextWindow").and_then(serde_json::Value::as_u64);
     match (tokens, window) {
         (Some(t), Some(w)) => {
-            let pct = if w > 0 { t * 100 / w } else { 0 };
+            let pct = t.checked_mul(100).and_then(|v| v.checked_div(w)).unwrap_or(0);
             format!("Context: {t} / {w} tokens ({pct}%)")
         }
         (Some(t), None) => format!("Context: {t} tokens"),
@@ -685,7 +683,7 @@ use self::Outcome::{Handled, Prompt};
 /// Extension + file commands in TS `buildAvailableSlashCommands` order.
 /// Appended after the builtin catalog by `Runtime::available_commands`.
 pub async fn dynamic_commands(rt: &std::sync::Arc<Runtime>) -> Vec<Value> {
-    refresh_file_commands_async(&rt.cwd).await;
+    refresh_file_commands(&rt.cwd);
     let mut out = extension_commands().await;
     for cmd in FILE_COMMANDS
         .lock()

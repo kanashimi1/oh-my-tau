@@ -137,14 +137,16 @@ fn smallest(candidates: Vec<(Vec<u8>, &'static str)>) -> (Vec<u8>, String) {
         .expect("at least one candidate")
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // result is min-clamped against the u32 caps by every caller
 fn scaled(width: u32, height: u32, scale: f64) -> (u32, u32) {
-    ((width as f64 * scale).round() as u32, (height as f64 * scale).round() as u32)
+    ((f64::from(width) * scale).round() as u32, (f64::from(height) * scale).round() as u32)
 }
 
 /// Resize and recompress an image to fit the caps, following omp's strategy:
 /// fast path when already within all limits and under 1/4 of the byte budget,
 /// then PNG/JPEG encode + pick-smallest, then a quality ladder, then a scale
 /// ladder. On decode failure the original bytes are passed through.
+#[allow(clippy::cast_possible_truncation)] // u64 intermediates are bounded by the u32 caps (max_width/max_height)
 pub fn resize_image(bytes: &[u8], fallback_mime: &str, opts: &ImageResizeOptions) -> ResizedImage {
     let fmt = detect_format(bytes);
     let source_mime = fmt
@@ -345,7 +347,7 @@ mod tests {
     #[test]
     fn oversized_image_is_downscaled_and_encoded() {
         // 3000x2000 gradient PNG — large enough that re-encode is mandatory.
-        let img = image::RgbImage::from_fn(3000, 2000, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 128]));
+        let img = image::RgbImage::from_fn(3000, 2000, |x, y| image::Rgb([u8::try_from(x % 256).unwrap(), u8::try_from(y % 256).unwrap(), 128]));
         let mut png = Vec::new();
         image::DynamicImage::ImageRgb8(img)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -376,7 +378,6 @@ mod tests {
         assert_eq!(content.mime_type, "image/png");
         assert!(!content.data.is_empty());
         // base64 decodes back to a valid PNG.
-        use std::io::Read as _;
         let mut raw = Vec::new();
         base64_decode(&content.data).read_to_end(&mut raw).unwrap();
         assert_eq!(detect_format(&raw), Some(image::ImageFormat::Png));
@@ -386,7 +387,7 @@ mod tests {
     fn read_image_rejects_oversized_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("big.png");
-        std::fs::write(&path, vec![0u8; (MAX_IMAGE_SIZE + 1) as usize]).unwrap();
+        std::fs::write(&path, vec![0u8; usize::try_from(MAX_IMAGE_SIZE + 1).unwrap()]).unwrap();
         assert!(read_image(&path).is_err());
     }
 
@@ -407,15 +408,18 @@ mod tests {
                 if out.is_empty() {
                     return Ok(0);
                 }
-                let vals =
-                    |c: u8| T.iter().position(|&t| t == c).map(|p| p as u32).unwrap_or(0);
+                let vals = |c: u8| {
+                    T.iter()
+                        .position(|&t| t == c)
+                        .map_or(0, |p| u32::try_from(p).expect("alphabet index"))
+                };
                 let mut n = 0usize;
                 while n + 3 <= out.len() {
                     let mut quad = [0u8; 4];
                     let mut got = 0usize;
                     while got < 4 {
                         match self.0.next() {
-                            Some(c) if c.is_ascii_whitespace() || c == '=' => continue,
+                            Some(c) if c.is_ascii_whitespace() || c == '=' => {}
                             Some(c) => {
                                 quad[got] = c as u8;
                                 got += 1;

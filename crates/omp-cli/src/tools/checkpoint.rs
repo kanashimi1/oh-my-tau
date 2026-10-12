@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 // ─── Descriptions (byte-equal to omp's rendered checkpoint.md / rewind.md) ─
 
 /// omp `checkpointDescription` (`prompts/tools/checkpoint.md`, rendered).
+#[allow(clippy::needless_raw_string_hashes)] // r#"…"# is matched literally by tests-tools/compare.ts
 pub const CHECKPOINT_DESCRIPTION: &str = r#"Context checkpoint: before exploratory work; later `rewind`, retaining only concise report.
 
 Use for investigations with many intermediate tool calls (`read`/`grep`/`glob`/`lsp`/etc.) to minimize subsequent context cost.
@@ -39,6 +40,7 @@ Typical flow:
 After `rewind`: intermediate checkpoint messages removed from active context; replaced by report."#;
 
 /// omp `rewindDescription` (`prompts/tools/rewind.md`, rendered).
+#[allow(clippy::needless_raw_string_hashes)] // r#"…"# is matched literally by tests-tools/compare.ts
 pub const REWIND_DESCRIPTION: &str = r#"End the active checkpoint; rewind context to it, replacing intermediate exploration with your report."#;
 
 // ─── Parameter schemas (byte-equal, as JSON, to omp's ArkType schemas) ─────
@@ -135,16 +137,17 @@ impl Shared {
 
 // ─── now_iso: `Date.toISOString()` shape (`YYYY-MM-DDTHH:MM:SS.sssZ`) ──────
 
+#[allow(clippy::cast_possible_truncation)] // millis since 1970 fits i64 for the next 290M years
 fn now_iso() -> String {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_millis() as i64);
     let (year, month, day, hour, minute, second, ms) = civil_from_millis(millis);
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{ms:03}Z")
 }
 
 /// Days→civil date conversion (Howard Hinnant's algorithm), pure std.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // every cast follows div_euclid/rem_euclid, so the value is inside the target range
 fn civil_from_millis(millis: i64) -> (i64, u32, u32, u32, u32, u32, u32) {
     let seconds = millis.div_euclid(1000);
     let ms = (millis.rem_euclid(1000)) as u32;
@@ -184,7 +187,7 @@ fn result_with_text(text: &str, details: Value) -> AgentToolResult {
 }
 
 impl AgentTool for CheckpointTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "checkpoint"
     }
     fn description(&self) -> &str {
@@ -193,7 +196,7 @@ impl AgentTool for CheckpointTool {
     fn parameters(&self) -> &Value {
         &self.schema
     }
-    fn label(&self) -> &str {
+    fn label(&self) -> &'static str {
         "Checkpoint"
     }
     fn execute(
@@ -222,7 +225,7 @@ impl AgentTool for CheckpointTool {
 }
 
 impl AgentTool for RewindTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "rewind"
     }
     fn description(&self) -> &str {
@@ -231,7 +234,7 @@ impl AgentTool for RewindTool {
     fn parameters(&self) -> &Value {
         &self.schema
     }
-    fn label(&self) -> &str {
+    fn label(&self) -> &'static str {
         "Rewind"
     }
     fn execute(

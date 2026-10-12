@@ -302,6 +302,8 @@ pub fn hidden_tool_by_name(name: &str) -> Option<Arc<dyn AgentTool>> {
     }
 }
 
+pub use ask::{AskUi, SelectOption, tool_with_ui};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +417,3 @@ mod tests {
         );
     }
 }
-
-pub use ask::{AskUi, SelectOption, tool_with_ui};

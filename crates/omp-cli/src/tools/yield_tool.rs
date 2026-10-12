@@ -158,31 +158,28 @@ impl YieldTool {
             .lock()
             .expect("yield retry counter poisoned") = 0;
 
-        match error_message {
-            Some(error) => Ok(aborted_result(&error, yield_type)),
-            None => {
-                let mut details = Map::new();
-                if let Some(data) = data {
-                    details.insert("data".into(), data.clone());
-                }
-                details.insert("status".into(), json!("success"));
-                details.insert("error".into(), Value::Null);
-                if let Some(yield_type) = yield_type {
-                    details.insert("type".into(), yield_type);
-                }
-                if use_last_turn {
-                    // No last-assistant-turn accessor on this runtime: omp skips
-                    // its empty-last-turn guard the same way when the session
-                    // exposes no resolver, and finalization reads the turn.
-                    details.insert("useLastTurn".into(), json!(true));
-                }
-                Ok(AgentToolResult {
-                    content: vec![pa_agent::types::ToolResultContent::text("Result submitted.")],
-                    details: Value::Object(details),
-                    terminate: None,
-                    is_error: None,
-                })
+        if let Some(error) = error_message { Ok(aborted_result(&error, yield_type)) } else {
+            let mut details = Map::new();
+            if let Some(data) = data {
+                details.insert("data".into(), data.clone());
             }
+            details.insert("status".into(), json!("success"));
+            details.insert("error".into(), Value::Null);
+            if let Some(yield_type) = yield_type {
+                details.insert("type".into(), yield_type);
+            }
+            if use_last_turn {
+                // No last-assistant-turn accessor on this runtime: omp skips
+                // its empty-last-turn guard the same way when the session
+                // exposes no resolver, and finalization reads the turn.
+                details.insert("useLastTurn".into(), json!(true));
+            }
+            Ok(AgentToolResult {
+                content: vec![pa_agent::types::ToolResultContent::text("Result submitted.")],
+                details: Value::Object(details),
+                terminate: None,
+                is_error: None,
+            })
         }
     }
 }

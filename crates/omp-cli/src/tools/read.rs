@@ -256,7 +256,7 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         bail!("Cannot read '{path_part}': it is a special file, not a regular file or directory.");
     }
     if matches!(sel, Selector::None) && crate::images::looks_like_image(&absolute) {
-        let (image, note) = crate::images::read_image_detailed(&absolute, &Default::default())
+        let (image, note) = crate::images::read_image_detailed(&absolute, &crate::images::ImageResizeOptions::default())
             .map_err(|e| anyhow::anyhow!("Cannot read '{path_part}': {e}"))?;
         let mut text = format!(
             "Read image file [{}].",
@@ -303,6 +303,8 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
 ///
 /// # Errors
 /// Never fails; the Result mirrors the tool surface.
+#[allow(clippy::too_many_lines)] // selector resolution + hashline snapshot recording; one flow, mirrors omp's formatReadOutput
+#[allow(clippy::unnecessary_wraps)] // Result mirrors the tool surface (see doc above)
 fn format_read_output(
     env: &Env,
     normalized: &str,
@@ -469,7 +471,7 @@ pub(crate) fn url_registry() -> &'static Registry {
     static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {
         let mut reg = Registry::new();
-        omp_urls::schemes::register_all(&mut reg);
+        omp_urls::schemes::register_all(&mut reg).expect("scheme registration");
         reg
     })
 }
@@ -1024,9 +1026,9 @@ mod tests {
     #[test]
     fn reads_artifact_url_with_selector() {
         let _lock = URL_TEST_LOCK.lock().unwrap();
-        let _store = session_store();
+        let store = session_store();
         let dir = tempfile::tempdir().unwrap();
-        let artifacts = _store.path().join("sess");
+        let artifacts = store.path().join("sess");
         std::fs::write(artifacts.join("3.log"), "l1\nl2\nl3\nl4\n").unwrap();
         let env = Env::new(dir.path(), false);
         let out = text_of(&read(&env, &serde_json::json!({"path": "artifact://3:2-3"})).unwrap());
@@ -1038,9 +1040,9 @@ mod tests {
     #[test]
     fn reads_agent_url_markdown() {
         let _lock = URL_TEST_LOCK.lock().unwrap();
-        let _store = session_store();
+        let store = session_store();
         let dir = tempfile::tempdir().unwrap();
-        let artifacts = _store.path().join("sess");
+        let artifacts = store.path().join("sess");
         std::fs::write(artifacts.join("Worker.md"), "report body\n").unwrap();
         let env = Env::new(dir.path(), false);
         let out = text_of(&read(&env, &serde_json::json!({"path": "agent://Worker"})).unwrap());
@@ -1050,9 +1052,9 @@ mod tests {
     #[test]
     fn reads_history_index_and_local_file() {
         let _lock = URL_TEST_LOCK.lock().unwrap();
-        let _store = session_store();
+        let store = session_store();
         let dir = tempfile::tempdir().unwrap();
-        let artifacts = _store.path().join("sess");
+        let artifacts = store.path().join("sess");
         std::fs::write(
             artifacts.join("Agent.jsonl"),
             "{\"type\":\"session\",\"version\":3,\"id\":\"a\"}\n",
@@ -1072,9 +1074,9 @@ mod tests {
     #[test]
     fn invalid_url_selector_names_the_url() {
         let _lock = URL_TEST_LOCK.lock().unwrap();
-        let _store = session_store();
+        let store = session_store();
         let dir = tempfile::tempdir().unwrap();
-        let artifacts = _store.path().join("sess");
+        let artifacts = store.path().join("sess");
         std::fs::write(artifacts.join("1.log"), "x\n").unwrap();
         let env = Env::new(dir.path(), false);
         // "bogus" is not selector-shaped, so nothing peels and the numeric-ID

@@ -32,6 +32,7 @@ pub fn schema() -> Value {
 
 /// omp `GoalStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // omp GoalStatus wire shape; paused/budget-limited round-trip for parity even though omp-rs never sets them
 pub enum GoalStatus {
     Active,
     Paused,
@@ -51,6 +52,7 @@ impl GoalStatus {
             Self::Dropped => "dropped",
         }
     }
+    #[allow(dead_code)] // wire-shape parity with omp; resume parsing is not in omp-rs yet
     fn from_str(s: &str) -> Option<Self> {
         Some(match s {
             "active" => Self::Active,
@@ -61,6 +63,7 @@ impl GoalStatus {
             _ => return None,
         })
     }
+    #[allow(dead_code)] // only the (not-yet-wired) token-accounting tail calls it
     fn is_accounting(self) -> bool {
         matches!(self, Self::Active | Self::BudgetLimited)
     }
@@ -145,7 +148,7 @@ impl GoalRuntime {
         self.active_since = Some(Instant::now());
     }
 
-    fn now_millis(&self) -> i64 {
+    fn now_millis() -> i64 {
         i64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -170,7 +173,7 @@ impl GoalRuntime {
         }
         self.flush_time();
         self.next_id += 1;
-        let now = self.now_millis();
+        let now = Self::now_millis();
         let goal = Goal {
             id: format!("{}", now * 1000 + i64::try_from(self.next_id).unwrap_or(i64::MAX)),
             objective: objective.to_string(),
@@ -193,7 +196,7 @@ impl GoalRuntime {
             Some(g) if g.status == GoalStatus::Complete => anyhow::bail!("Goal is already complete."),
             Some(_) => {}
         }
-        let now = self.now_millis();
+        let now = Self::now_millis();
         self.flush_time();
         if let Some(goal) = self.goal.as_mut() {
             goal.status = GoalStatus::Active;
@@ -205,7 +208,7 @@ impl GoalRuntime {
 
     /// omp `GoalRuntime.dropGoal`.
     pub fn drop_goal(&mut self) -> Option<Goal> {
-        let now = self.now_millis();
+        let now = Self::now_millis();
         self.flush_time();
         let goal = self.goal.as_mut()?;
         goal.status = GoalStatus::Dropped;
@@ -227,7 +230,7 @@ impl GoalRuntime {
         } else {
             anyhow::bail!("cannot complete goal because no goal is active");
         }
-        let now = self.now_millis();
+        let now = Self::now_millis();
         self.flush_time();
         let Some(goal) = self.goal.as_mut() else {
             anyhow::bail!("cannot complete goal because no goal is active");
@@ -238,6 +241,7 @@ impl GoalRuntime {
     }
 
     /// Attribute token usage to the active goal (omp accounting tail).
+    #[allow(dead_code)] // omp token-accounting tail; wired when per-goal accounting lands
     pub fn add_tokens(&mut self, tokens: i64) {
         if let Some(goal) = self.goal.as_mut() {
             if goal.status.is_accounting() {

@@ -183,9 +183,6 @@ pub fn resolve_segments(rows: &[CfgSetting], segments: &[String]) -> Result<Reso
     Ok(ResolvedSegments { path, leaf, members })
 }
 
-/// Tree listings keep only the description's first sentence, capped here (TS `TREE_COMMENT_MAX_CHARS`).
-const TREE_COMMENT_MAX_CHARS: usize = 120;
-
 /// Comment on a tree line: enum choices, non-default default, description (TS `treeComment`).
 fn tree_comment(setting: &CfgSetting) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -216,9 +213,9 @@ pub fn render_tree(rows: &[CfgSetting], members: &[usize], prefix: &str) -> (Str
             shared += 1;
         }
         opened.truncate(shared);
-        for depth in shared..segments.len() - 1 {
-            lines.push(format!("{}{}:", "  ".repeat(depth), segments[depth]));
-            opened.push(segments[depth]);
+        for (depth, segment) in segments.iter().enumerate().take(segments.len() - 1).skip(shared) {
+            lines.push(format!("{}{}:", "  ".repeat(depth), segment));
+            opened.push(segment);
         }
         if setting.value != setting.default {
             modified += 1;

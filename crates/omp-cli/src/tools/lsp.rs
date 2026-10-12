@@ -1,6 +1,6 @@
 //! `lsp`: symbol-aware code intelligence from language servers. Port of omp
 //! `lsp/tool.ts` (`v18.6.1`): diagnostics, definition/references/hover/symbols,
-//! rename + rename_file, code actions, capabilities, status, reload, raw
+//! rename + `rename_file`, code actions, capabilities, status, reload, raw
 //! request. The machinery lives in the `omp-lsp` crate.
 
 use std::future::Future;
@@ -923,6 +923,13 @@ async fn enumerate_rename_pairs(
     Ok((pairs, true, false))
 }
 
+struct Bucket {
+    primary_server: String,
+    edits: Vec<omp_lsp::types::TextEdit>,
+    discarded: usize,
+    conflict_servers: Vec<String>,
+}
+
 impl LspTool {
     /// `rename_file` — move a file/dir and rewrite references via
     /// workspace/willRenameFiles; preview with `apply:false`.
@@ -1082,12 +1089,6 @@ impl LspTool {
         // Coalesce per-URI edits across servers: primary (project-aware) wins overlaps.
         let server_config_by_name: std::collections::HashMap<String, &omp_lsp::types::ServerConfig> =
             servers.iter().map(|(n, c)| (n.clone(), c)).collect();
-        struct Bucket {
-            primary_server: String,
-            edits: Vec<omp_lsp::types::TextEdit>,
-            discarded: usize,
-            conflict_servers: Vec<String>,
-        }
         let mut accepted: Vec<(String, Bucket)> = Vec::new();
         for (server_name, edit) in &per_server_edits {
             let incoming_primary = server_config_by_name

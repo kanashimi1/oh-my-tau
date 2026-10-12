@@ -124,7 +124,7 @@ pub struct Runtime {
     /// queued-message drain stays suppressed until the next explicit user prompt.
     user_interrupt: std::sync::atomic::AtomicBool,
     /// Report stashed by a successful `rewind` tool result, consumed by the
-    /// TurnEnd hook that truncates the context (TS `#pendingRewindReport`).
+    /// `TurnEnd` hook that truncates the context (TS `#pendingRewindReport`).
     pending_rewind_report: Mutex<Option<String>>,
 }
 
@@ -661,7 +661,6 @@ impl Runtime {
                 });
             }
             if rt.agent.continue_run_until_accepted().await.is_err() {
-                return;
             }
         });
     }
@@ -1869,29 +1868,6 @@ fn builtin_commands() -> Vec<Value> {
             serde_json::from_str(include_str!("builtin_commands.json")).unwrap_or_default()
         })
         .clone()
-}
-
-/// Print mode (`-p`): run one prompt through the full runtime (retry, fallback chains) with
-/// events discarded, and return the transcript.
-///
-/// # Errors
-/// Fails when the prompt cannot be admitted.
-pub async fn run_print(
-    agent: Agent,
-    target: Target,
-    cwd: PathBuf,
-    persist: Persistence,
-    prompt: &str,
-) -> Result<Vec<AgentMessage>> {
-    let agent = Arc::new(agent);
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    drop(rx);
-    let rt = Runtime::start(agent.clone(), target, cwd, persist, tx).await;
-    rt.prompt(None, prompt, None, Vec::new())
-        .await
-        .map_err(|e| anyhow::anyhow!(e.message))?;
-    rt.wait_settled().await;
-    Ok(agent.state().await.messages)
 }
 
 // -------------------------------------------------- extension hook points

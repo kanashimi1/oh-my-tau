@@ -62,7 +62,7 @@ fn extract_relative_path(url: &InternalUrl) -> anyhow::Result<String> {
         anyhow::bail!("Absolute paths are not allowed in local:// URLs");
     }
     let segments: Vec<&str> = decoded.split(['/', '\\']).collect();
-    if segments.iter().any(|seg| *seg == "..") {
+    if segments.contains(&"..") {
         anyhow::bail!("Path traversal (..) is not allowed in local:// URLs");
     }
     Ok(decoded)

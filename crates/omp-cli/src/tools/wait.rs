@@ -22,7 +22,7 @@ use super::jobs::{JobStatus, ServiceState};
 const DESCRIPTION: &str = "Wait only when blocked with nothing else to do.\nBlocks on background jobs/services you started; returns on the first result, a message sent to you, or a steering interrupt; a safety cap returns a still-running snapshot.\nNothing you started running? Errors; NEVER wait on other agents.\nResults and messages auto-deliver. NEVER poll while work remains.";
 
 /// omp `WAIT_MAX_MS`.
-const WAIT_MAX: Duration = Duration::from_secs(30 * 60);
+const WAIT_MAX: Duration = Duration::from_mins(30);
 /// Poll cadence for job/service completion (omp races job promises; the rust
 /// job registry is a plain snapshot store, so `wait` observes it on a tick).
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -118,7 +118,7 @@ Other agents' results and messages arrive on their own."
             // omp `undeliveredJobs`: an accepted completion not yet in the
             // transcript is exactly what this wait is for — return it now.
             if let Some(watched) = snapshot.iter().find(|w| w.finished.is_some()) {
-                return Ok(self.job_result(&self.env, &watched.id));
+                return Ok(Self::job_result(&self.env, &watched.id));
             }
             if tokio::time::Instant::now() >= deadline {
                 return Ok(AgentToolResult::text(
@@ -136,7 +136,7 @@ Other agents' results and messages arrive on their own."
 
     /// Deliver one settled job's formatted result (omp `buildJobResult` subset:
     /// the bash job manager already formats the result into `Job.result`).
-    fn job_result(&self, env: &Env, id: &str) -> AgentToolResult {
+    fn job_result(env: &Env, id: &str) -> AgentToolResult {
         let text = env
             .jobs
             .get(id)

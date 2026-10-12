@@ -18,14 +18,15 @@ pub mod xd;
 use crate::Registry;
 
 /// Register every read-only scheme provider owned by this module.
-pub fn register_all(reg: &mut Registry) {
-    reg.register(skill::SkillProvider::default());
-    reg.register(rule::RuleProvider::default());
-    reg.register(omp::OmpProvider::default());
-    reg.register(cfg::CfgProvider::default());
-    reg.register(mcp::McpProvider);
-    reg.register(xd::XdProvider);
-    core::register(reg).expect("core scheme registration");
+pub fn register_all(reg: &mut Registry) -> anyhow::Result<()> {
+    reg.register(skill::SkillProvider)?;
+    reg.register(rule::RuleProvider)?;
+    reg.register(omp::OmpProvider)?;
+    reg.register(cfg::CfgProvider)?;
+    reg.register(mcp::McpProvider)?;
+    reg.register(xd::XdProvider)?;
+    core::register(reg)?;
+    Ok(())
 }
 
 /// A skill discovered from a skills directory (TS: `extensibility/skills.ts`).

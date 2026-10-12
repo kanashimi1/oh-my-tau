@@ -187,9 +187,8 @@ fn session_data(path: &Path) -> Result<Value> {
                 obj.remove("previousSessionFiles");
             }
             header = Some(h);
-        } else if matches!(kind, Some("title")) {
-            continue; // fixed-width title slot, not a transcript entry
-        } else {
+        } else if kind != Some("title") {
+            // "title" lines are the fixed-width title slot, not transcript entries.
             leaf_id = value.get("id").and_then(Value::as_str).map(str::to_string).or(leaf_id);
             entries.push(value);
         }
