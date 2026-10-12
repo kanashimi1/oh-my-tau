@@ -116,19 +116,14 @@ pub struct CompactionPreparation {
     pub settings: CompactionSettings,
 }
 
-/// Why [`plan_compaction`] could not prepare a compaction.
+/// Why [`plan_compaction`] could not prepare a compaction (currently never: every lane present
+/// in real sessions is handled; provider-native remote boundaries re-expand like TS).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlanError {
-    /// The previous compaction holds a provider-native payload (remote / Anthropic / snapcompact)
-    /// whose boundary rules this port does not implement.
-    Unsupported(&'static str),
-}
+pub enum PlanError {}
 
 impl std::fmt::Display for PlanError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unsupported(what) => write!(f, "unsupported previous compaction payload: {what}"),
-        }
+    fn fmt(&self, _f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
     }
 }
 
@@ -161,7 +156,7 @@ fn extract_file_operations(messages: &[Value], previous: Option<&Value>) -> File
 /// entry has no id, or there is nothing to summarize.
 ///
 /// # Errors
-/// [`PlanError::Unsupported`] when the previous compaction carries a native payload.
+/// Never currently (`PlanError` is reserved for future boundary failures).
 pub fn plan_compaction(path_entries: &[Value], settings: &CompactionSettings, tokenizer: &dyn Tokenizer) -> Result<Option<CompactionPreparation>, PlanError> {
     if path_entries.last().is_some_and(|e| entry_type(e) == "compaction" && e.get("providerReplayThroughEntryId").is_none_or(Value::is_null)) {
         return Ok(None);
@@ -174,18 +169,34 @@ pub fn plan_compaction(path_entries: &[Value], settings: &CompactionSettings, to
         (c, _) => c,
     };
     let previous = prev_compaction_idx.map(|i| &path_entries[i]);
-    if let Some(prev) = previous {
-        if let Some(what) = crate::context::native_payload(prev) {
-            return Err(PlanError::Unsupported(what));
-        }
-    }
     let mut boundary_start = prev_compaction_idx.max(reset_idx).map_or(0, |i| i + 1);
     if let (Some(prev), Some(prev_idx)) = (previous, prev_compaction_idx) {
-        // Local summaries exclude the retained tail, whose original entries precede the record.
-        let kept = str_field(prev, "firstKeptEntryId").unwrap_or("");
-        let from = reset_idx.map_or(0, |r| r + 1);
-        if let Some(i) = (from..prev_idx).find(|&i| entry_id(&path_entries[i]) == kept) {
-            boundary_start = i;
+        let replay_through = str_field(prev, "providerReplayThroughEntryId").unwrap_or("");
+        let remote = prev.get("preserveData").and_then(|p| p.get("openaiRemoteCompaction")).is_some_and(|c| c.get("replacementHistory").is_some_and(Value::is_array));
+        if remote {
+            // A remote payload stores an opaque replay and a placeholder summary;
+            // re-expand past it. Native replay covers the snapshot, not messages
+            // appended while the request ran — include that interval.
+            if !replay_through.is_empty() {
+                if let Some(rt) = (0..prev_idx).find(|&i| entry_id(&path_entries[i]) == replay_through) {
+                    boundary_start = rt.max(reset_idx.unwrap_or(0)) + 1;
+                }
+            }
+        } else {
+            // Local and Anthropic summaries exclude the retained tail, whose
+            // original entries precede the record.
+            let kept = str_field(prev, "firstKeptEntryId").unwrap_or("");
+            let from = reset_idx.map_or(0, |r| r + 1);
+            if let Some(i) = (from..prev_idx).find(|&i| entry_id(&path_entries[i]) == kept) {
+                boundary_start = i;
+            }
+            if kept.is_empty() && !replay_through.is_empty() {
+                // An empty snapshot tail can still have turns appended during
+                // background compaction; those start after the snapshot.
+                if let Some(s) = (0..prev_idx).find(|&i| entry_id(&path_entries[i]) == replay_through) {
+                    boundary_start = s + 1;
+                }
+            }
         }
     }
 

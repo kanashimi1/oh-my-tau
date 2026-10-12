@@ -264,17 +264,20 @@ fn text_cursor(cmd: &Value) -> Result<(), CmdError> {
 }
 
 /// `get_login_providers`: omp's OAuth registry; `authenticated` = a credential source resolves.
-fn login_providers() -> Vec<Value> {
-    OAUTH_PROVIDERS
-        .iter()
-        .map(|(id, name)| {
-            let from_models = pa_ai::models_generated::get_models(id)
-                .first()
-                .is_some_and(|m| omp_providers::resolve(&format!("{id}/{}", m.id)).is_ok_and(|r| r.api_key.is_some()));
-            let authenticated = from_models || pa_ai::env_api_keys::get_env_api_key(id).is_some();
-            json!({"id": id, "name": name, "available": true, "authenticated": authenticated})
-        })
-        .collect()
+async fn login_providers() -> Vec<Value> {
+    let mut out = Vec::with_capacity(OAUTH_PROVIDERS.len());
+    for (id, name) in OAUTH_PROVIDERS {
+        // `!command` keys shell out: resolve on the blocking pool, not the executor.
+        let from_models = match pa_ai::models_generated::get_models(id).first() {
+            Some(m) => omp_providers::resolve_async(format!("{id}/{}", m.id))
+                .await
+                .is_ok_and(|r| r.api_key.is_some()),
+            None => false,
+        };
+        let authenticated = from_models || pa_ai::env_api_keys::get_env_api_key(id).is_some();
+        out.push(json!({"id": id, "name": name, "available": true, "authenticated": authenticated}));
+    }
+    out
 }
 
 /// `images` of a prompt command: `[{type: "image", data, mimeType}]`.
@@ -305,7 +308,7 @@ fn none() -> CmdResult {
 
 async fn cycle_model(rt: &Runtime) -> CmdResult {
     let info = rt.model_info();
-    let models = available_models(None);
+    let models = available_models(None).await;
     if models.len() < 2 {
         return ok(Value::Null);
     }
@@ -490,16 +493,18 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             }))
         }
         "branch" | "fork" => {
-            if kind == "branch" {
-                str_field(cmd, "entryId")?;
-            }
+            let entry_id = if kind == "branch" { Some(str_field(cmd, "entryId")?) } else { cmd.get("entryId").and_then(Value::as_str) };
             if rt.agent.state().await.is_streaming {
                 return Err(CmdError::coded(
                     format!("Cannot {kind} the session while session maintenance or user work is still running"),
                     "session_busy",
                 ));
             }
-            Err(unsupported("Session tree navigation"))
+            if kind == "branch" {
+                crate::tree::branch(&Arc::clone(rt), entry_id.unwrap_or_default()).await
+            } else {
+                crate::tree::fork(&Arc::clone(rt), entry_id).await
+            }
         }
         "get_state" => ok(rt.state().await),
         "set_fast_mode" => {
@@ -596,7 +601,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 let info = rt.model_info();
                 info.get("provider").zip(info.get("id")).map(|(p, i)| (p.clone(), i.clone()))
             };
-            let mut models: Vec<Value> = available_models(None).iter().map(model_info).collect();
+            let mut models: Vec<Value> = available_models(None).await.iter().map(model_info).collect();
             if let Some((p, i)) = current {
                 if !models.iter().any(|m| m.get("provider") == Some(&p) && m.get("id") == Some(&i)) {
                     models.insert(0, rt.model_info());
@@ -725,7 +730,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 .map(Some)
                 .map_err(|e| CmdError { message: e.message, code: e.code })
         }
-        "get_login_providers" => ok(json!({"providers": login_providers()})),
+        "get_login_providers" => ok(json!({"providers": login_providers().await})),
         "login" => {
             let provider = str_field(cmd, "providerId")?;
             if !OAUTH_PROVIDERS.iter().any(|(id, _)| *id == provider) {

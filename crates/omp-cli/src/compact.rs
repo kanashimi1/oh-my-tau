@@ -39,11 +39,13 @@ pub fn settings_from_config(config: &serde_yaml_ng::Value) -> CompactionSettings
     if let Some(b) = get("enabled").and_then(serde_yaml_ng::Value::as_bool) {
         s.enabled = b;
     }
+    // TS uses -1 as the "unset" sentinel (compaction-threshold.ts); only a
+    // positive finite value is a real threshold, anything else clamps to -1.
     if let Some(n) = num("thresholdPercent") {
-        s.threshold_percent = Some(n);
+        s.threshold_percent = Some(if n.is_finite() && n > 0.0 { n } else { -1.0 });
     }
     if let Some(n) = num("thresholdTokens") {
-        s.threshold_tokens = Some(n);
+        s.threshold_tokens = Some(if n.is_finite() && n > 0.0 { n } else { -1.0 });
     }
     if let Some(n) = num("reserveTokens").filter(|n| *n >= 0.0) {
         s.reserve_tokens = Some(n as u64);
@@ -114,6 +116,8 @@ impl Completer for LiveCompleter {
                 // `resolveCompactionEffort`: High by default, only for reasoning models.
                 reasoning: model.reasoning.then_some(pa_types::ai::ModelThinkingLevel::High),
                 thinking_budgets: None,
+                disable_reasoning: false,
+                tool_choice: None,
             };
             pa_ai::complete_simple(&model, &request.context, Some(options)).await.map_err(|e| anyhow!("{e:?}"))
         }
@@ -375,6 +379,27 @@ mod tests {
         assert_eq!(s.strategy.as_deref(), Some("off"), "no soft method configured");
         let defaults = settings_from_config(&serde_yaml_ng::from_str("compaction:\n  methodOrder: [snapcompact, soft]\n").unwrap());
         assert!(defaults.enabled && defaults.strategy.as_deref() == Some("context-full"));
+    }
+
+    /// Negative/zero/non-finite thresholds clamp to the TS `-1` "unset"
+    /// sentinel instead of being accepted verbatim (`ReviewWave3`).
+    #[test]
+    fn config_negative_thresholds_clamp_to_unset() {
+        let cfg: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+            "compaction:\n  thresholdPercent: -20\n  thresholdTokens: -1\n",
+        )
+        .unwrap();
+        let s = settings_from_config(&cfg);
+        assert_eq!(s.threshold_percent, Some(-1.0));
+        assert_eq!(s.threshold_tokens, Some(-1.0));
+        let zero: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("compaction:\n  thresholdPercent: 0\n").unwrap();
+        assert_eq!(settings_from_config(&zero).threshold_percent, Some(-1.0));
+        let ok: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("compaction:\n  thresholdPercent: 70\n  thresholdTokens: 90000\n").unwrap();
+        let s = settings_from_config(&ok);
+        assert_eq!(s.threshold_percent, Some(70.0));
+        assert_eq!(s.threshold_tokens, Some(90_000.0));
     }
 
     #[tokio::test]

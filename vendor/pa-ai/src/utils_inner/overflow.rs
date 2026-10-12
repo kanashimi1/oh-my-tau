@@ -158,6 +158,7 @@ mod tests {
             cache_read,
             cache_write: 0,
             total_tokens: input + output + cache_read,
+            reasoning_tokens: None,
             cost: UsageCost::default(),
         }
     }

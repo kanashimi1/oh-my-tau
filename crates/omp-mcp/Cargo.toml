@@ -1,0 +1,20 @@
+[package]
+name = "omp-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP client for omp-rs: config loading, stdio/HTTP transports, tool bridge (port of pi-coding-agent/src/mcp)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+tokio-util.workspace = true
+futures.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2", "stream"] }
+
+[dev-dependencies]
+tempfile = "3"
+parking_lot = "0.12"

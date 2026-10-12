@@ -158,8 +158,21 @@ fn context_after_new_compaction_keeps_tail_then_new_messages() {
 }
 
 #[test]
-fn native_payload_compactions_are_rejected() {
+fn invalid_native_payload_replays_like_local_compaction() {
+    // A malformed `openaiRemoteCompaction` payload yields no provider payload
+    // (`getOpenAiRemoteCompactionPayload` returns undefined), so the rebuild
+    // falls back to the plain kept-tail layout without a providerPayload.
     let mut entries = session();
     entries.push(json!({"type":"compaction","id":"k1","parentId":"a2","timestamp":"2026-01-01T00:00:05.000Z","summary":"S","firstKeptEntryId":"u2","tokensBefore":1,"preserveData":{"openaiRemoteCompaction":{}}}));
+    let ctx = omp_compact::build_session_context(&entries, omp_compact::Leaf::Last).unwrap();
+    assert_eq!(ctx.messages[0]["role"], "compactionSummary");
+    assert!(ctx.messages[0].get("providerPayload").is_none());
+    assert_eq!(ctx.messages.len(), 3);
+}
+
+#[test]
+fn rollover_compaction_is_still_rejected() {
+    let mut entries = session();
+    entries.push(json!({"type":"compaction","id":"k1","parentId":"a2","timestamp":"2026-01-01T00:00:05.000Z","summary":"S","firstKeptEntryId":"u2","tokensBefore":1,"details":{"kind":"experimental-context-rollover"}}));
     assert!(omp_compact::build_session_context(&entries, omp_compact::Leaf::Last).is_err());
 }

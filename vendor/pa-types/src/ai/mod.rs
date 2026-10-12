@@ -422,6 +422,14 @@ pub struct Usage {
     pub cache_write: u64,
     #[serde(rename = "totalTokens")]
     pub total_tokens: u64,
+    /// Provider-reported reasoning tokens (already included in `output`); absent
+    /// for providers that do not report them.
+    #[serde(
+        rename = "reasoningTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_tokens: Option<u64>,
     pub cost: UsageCost,
 }
 

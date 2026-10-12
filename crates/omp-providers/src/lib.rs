@@ -31,7 +31,7 @@ pub use fallback::{
     RetryConfig, RevertPolicy,
 };
 pub use judge::{
-    judge, judge_native, judgment_route, resolve_judge, resolve_judge_chain, JudgeCandidate, JudgeKind,
+    judge, judge_native, judge_online, judgment_route, resolve_judge, resolve_judge_chain, JudgeCandidate, JudgeKind,
     JudgeRequest, JudgeResult, JudgeUsage, CachedAnswers, JudgmentCache, judgment_cache_path, stable_json,
 };
 
@@ -57,6 +57,8 @@ pub struct ResolvedModel {
     pub api: String,
     pub base_url: String,
     pub api_key: Option<String>,
+    /// `agent.db` `auth_credentials` row that supplied `api_key` (None for config/env keys).
+    pub credential_id: Option<i64>,
     /// Provider + model extra request headers.
     pub headers: Vec<(String, String)>,
     pub context_window: u64,
@@ -178,10 +180,13 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     if model.api == "openrouter" {
         model.api = "openai-completions".to_string();
     }
-    let api_key = cfg
-        .provider_key(&provider)
-        .or_else(|| env_key(&provider))
-        .or_else(|| db_key(&dir.0.join("agent.db"), &provider));
+    let (api_key, credential_id) = match cfg.provider_key(&provider).or_else(|| env_key(&provider)) {
+        Some(key) => (Some(key), None),
+        None => match db_credential(&dir.0.join("agent.db"), &provider) {
+            Some((key, id)) => (Some(key), Some(id)),
+            None => (None, None),
+        },
+    };
     let mut headers: Vec<(String, String)> = cfg
         .provider(&provider)
         .and_then(|p| p.get("headers"))
@@ -204,6 +209,7 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
         api: model.api.clone(),
         base_url: model.base_url.clone(),
         api_key,
+        credential_id,
         headers,
         context_window: model.context_window,
         max_tokens: model.max_tokens,
@@ -663,29 +669,29 @@ fn now_ms() -> u64 {
 
 /// First enabled credential for `provider` in `agent.db`: an api key, or an
 /// OAuth access token that has not expired.
-fn db_key(db: &Path, provider: &str) -> Option<String> {
+fn db_credential(db: &Path, provider: &str) -> Option<(String, i64)> {
     let conn = open_ro(db)?;
     let mut stmt = conn
-        .prepare("SELECT credential_type, data FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NULL ORDER BY id")
+        .prepare("SELECT credential_type, data, id FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NULL ORDER BY id")
         .ok()?;
-    let rows: Vec<(String, String)> = stmt
-        .query_map([provider], |r| Ok((r.get(0)?, r.get(1)?)))
+    let rows: Vec<(String, String, i64)> = stmt
+        .query_map([provider], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .ok()?
         .filter_map(std::result::Result::ok)
         .collect();
     let now = now_ms();
-    for (kind, data) in rows {
+    for (kind, data, id) in rows {
         let Ok(d) = serde_json::from_str::<Value>(&data) else { continue };
         match kind.as_str() {
             "api_key" => {
                 if let Some(k) = d.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()) {
-                    return Some(k.to_string());
+                    return Some((k.to_string(), id));
                 }
             }
             "oauth" => {
                 let expired = d.get("expires").and_then(Value::as_u64).is_some_and(|e| e <= now);
                 if let (false, Some(a)) = (expired, d.get("access").and_then(Value::as_str)) {
-                    return Some(a.to_string());
+                    return Some((a.to_string(), id));
                 }
             }
             _ => {}
@@ -882,8 +888,11 @@ mod tests {
         )
         .unwrap();
         drop(c);
-        assert_eq!(db_key(&db, "p").as_deref(), Some("live"));
-        assert_eq!(db_key(&db, "q").as_deref(), Some("k"));
-        assert_eq!(db_key(&db, "none"), None);
+        let key = |p: &str| db_credential(&db, p).map(|(k, _)| k);
+        assert_eq!(key("p").as_deref(), Some("live"));
+        assert_eq!(key("q").as_deref(), Some("k"));
+        assert_eq!(key("none"), None);
+        // The row id travels with the key (the live oauth row is the 3rd insert for `p`).
+        assert_eq!(db_credential(&db, "q").map(|(_, id)| id), Some(4));
     }
 }

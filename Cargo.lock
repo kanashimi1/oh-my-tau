@@ -1206,16 +1206,20 @@ dependencies = [
  "omp-compact",
  "omp-eval",
  "omp-ext",
+ "omp-mcp",
  "omp-providers",
  "omp-session",
  "omp-task",
  "pa-agent",
  "pa-ai",
  "pa-types",
+ "parking_lot",
+ "pi-ast",
  "pi-edit",
  "pi-walker",
  "rand 0.8.8",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1259,11 +1263,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "omp-mcp"
+version = "0.10.0"
+dependencies = [
+ "futures",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "omp-providers"
 version = "0.10.0"
 dependencies = [
  "anyhow",
  "futures",
+ "libc",
  "pa-ai",
  "pa-types",
  "reqwest",

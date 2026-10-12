@@ -332,6 +332,10 @@ struct AgentInner {
     model_override: Mutex<Option<AgentModelOverride>>,
     session_id: Option<String>,
     tool_execution: ToolExecutionMode,
+    /// Stored credential row serving the current model (stamped onto assistant messages).
+    credential_id: Mutex<Option<i64>>,
+    /// Compaction epoch recorded in assistant `contextSnapshot`s.
+    compaction_epoch: std::sync::atomic::AtomicU64,
 }
 
 impl AgentInner {
@@ -450,6 +454,7 @@ impl AgentInner {
                 error_message: Some(format!("{error:#}")),
                 stop_reason_raw: None,
                 timestamp: crate::now_ms(),
+                meta: crate::types::AssistantMeta::default(),
             }
         };
         {
@@ -533,6 +538,10 @@ impl AgentInner {
         config.max_tokens = None;
         config.reasoning = reasoning;
         config.session_id.clone_from(&self.session_id);
+        config.credential_id = *self.credential_id.lock().unwrap();
+        config.compaction_epoch = self
+            .compaction_epoch
+            .load(std::sync::atomic::Ordering::SeqCst);
         config.transform_context.clone_from(&self.transform_context);
         config.get_api_key.clone_from(&self.get_api_key);
         config.should_stop_after_turn = should_stop_after_turn;
@@ -770,8 +779,30 @@ impl Agent {
             tool_execution: options
                 .tool_execution
                 .unwrap_or(ToolExecutionMode::Parallel),
+            credential_id: Mutex::new(None),
+            compaction_epoch: std::sync::atomic::AtomicU64::new(0),
         });
         Agent { inner }
+    }
+
+    /// Stored credential row id stamped onto assistant messages as `credentialId`.
+    pub fn set_credential_id(&self, id: Option<i64>) {
+        *self.inner.credential_id.lock().unwrap() = id;
+    }
+
+    /// Current epoch recorded in assistant `contextSnapshot`s.
+    #[must_use]
+    pub fn compaction_epoch(&self) -> u64 {
+        self.inner
+            .compaction_epoch
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Epoch recorded in assistant `contextSnapshot`s; bump after a compaction.
+    pub fn set_compaction_epoch(&self, epoch: u64) {
+        self.inner
+            .compaction_epoch
+            .store(epoch, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn from_inner(inner: Arc<AgentInner>) -> Self {
@@ -1315,6 +1346,7 @@ mod tests {
                         error_message: None,
                         stop_reason_raw: None,
                         timestamp: 0,
+                        meta: crate::types::AssistantMeta::default(),
                     };
                     Box::pin(async move {
                         let (handle, consumer) = crate::stream::event_stream();

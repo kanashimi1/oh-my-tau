@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use crate::abort::{is_abort_error, AbortSignal};
 use crate::stream::{LlmContext, StreamFn, StreamRequestOptions, ToolDefinition};
-use crate::types::{AgentContext, AgentEvent, AgentMessage, AssistantMessage};
+use crate::types::{
+    AgentContext, AgentEvent, AgentMessage, AssistantMessage, ContextSnapshot, StopReason,
+};
 
 use super::abort::{create_aborted_assistant_message, race_with_abort};
 use super::{AgentEventSink, AgentLoopConfig};
@@ -20,15 +22,20 @@ pub(crate) async fn stream_assistant_response(
 ) -> anyhow::Result<AssistantMessage> {
     let mut partial_event: Option<Arc<crate::stream::AssistantMessageEvent>> = None;
     let mut added_partial = false;
+    let mut timing = Timing::start();
 
     // The TS closure captures `partialMessage`/`addedPartial` by reference;
     // here the finish helper runs inline in the abort path below.
     macro_rules! finish_aborted_message {
         () => {{
-            let final_message = create_aborted_assistant_message(
+            let mut final_message = create_aborted_assistant_message(
                 config,
                 partial_event.as_deref().and_then(event_partial),
             );
+            finalize_message(&mut final_message, config, context, &timing);
+            // An aborted turn never reached `done`: the provider timing stays unset.
+            final_message.meta.duration = None;
+            final_message.meta.ttft = None;
             if added_partial {
                 *context.messages.last_mut().unwrap() = AgentMessage::from(final_message.clone());
             } else {
@@ -44,7 +51,7 @@ pub(crate) async fn stream_assistant_response(
                 message: AgentMessage::from(final_message.clone()),
             })
             .await?;
-            final_message
+            for_turn_end(final_message)
         }};
     }
 
@@ -56,6 +63,7 @@ pub(crate) async fn stream_assistant_response(
         stream_fn,
         &mut partial_event,
         &mut added_partial,
+        &mut timing,
     )
     .await;
 
@@ -81,6 +89,7 @@ async fn stream_assistant_response_inner(
     stream_fn: Option<&StreamFn>,
     partial_event: &mut Option<Arc<crate::stream::AssistantMessageEvent>>,
     added_partial: &mut bool,
+    timing: &mut Timing,
 ) -> anyhow::Result<AssistantMessage> {
     crate::abort::throw_if_aborted_signal(signal)?;
 
@@ -146,6 +155,7 @@ async fn stream_assistant_response_inner(
         headers: None,
     };
 
+    timing.started = std::time::Instant::now();
     let mut response = race_with_abort(
         stream_fn(config.model.clone(), llm_context, options),
         signal,
@@ -170,7 +180,8 @@ async fn stream_assistant_response_inner(
         };
 
         match event {
-            crate::stream::AssistantMessageEvent::Start { partial } => {
+            crate::stream::AssistantMessageEvent::Start { mut partial } => {
+                stamp_credential(&mut partial, config);
                 let message = AgentMessage::from(partial.clone());
                 *added_partial = true;
                 context.messages.push(message.clone());
@@ -179,7 +190,11 @@ async fn stream_assistant_response_inner(
                 }));
                 emit(AgentEvent::MessageStart { message }).await?;
             }
-            event if event.is_delta() => {
+            mut event if event.is_delta() => {
+                timing.mark_first_token();
+                if let Some(partial) = event_partial_mut(&mut event) {
+                    stamp_credential(partial, config);
+                }
                 let event = Arc::new(event);
                 if let Some(partial) = event_partial(&event) {
                     *partial_event = Some(Arc::clone(&event));
@@ -201,6 +216,7 @@ async fn stream_assistant_response_inner(
                         }
                     }
                 }
+                finalize_message(&mut final_message, config, context, timing);
                 if *added_partial {
                     *context.messages.last_mut().unwrap() =
                         AgentMessage::from(final_message.clone());
@@ -219,7 +235,7 @@ async fn stream_assistant_response_inner(
                     message: AgentMessage::from(final_message.clone()),
                 })
                 .await?;
-                return Ok(final_message);
+                return Ok(for_turn_end(final_message));
             }
             _ => {}
         }
@@ -227,7 +243,8 @@ async fn stream_assistant_response_inner(
 
     // Stream ended without a terminal event: resolve the final message (TS
     // awaits `response.result()` here too).
-    let final_message = race_with_abort(response.result(), signal).await?;
+    let mut final_message = race_with_abort(response.result(), signal).await?;
+    finalize_message(&mut final_message, config, context, timing);
     if *added_partial {
         *context.messages.last_mut().unwrap() = AgentMessage::from(final_message.clone());
     } else {
@@ -243,10 +260,103 @@ async fn stream_assistant_response_inner(
         message: AgentMessage::from(final_message.clone()),
     })
     .await?;
-    Ok(final_message)
+    Ok(for_turn_end(final_message))
+}
+
+/// omp's `turn_end` carries the message as the provider finished it: the
+/// commit-time stamps (`completedAt`, `contextSnapshot`) land on the stored
+/// message only.
+fn for_turn_end(mut message: AssistantMessage) -> AssistantMessage {
+    message.meta.completed_at = None;
+    message.meta.context_snapshot = None;
+    message
 }
 
 fn event_partial(event: &crate::stream::AssistantMessageEvent) -> Option<&AssistantMessage> {
+    match event {
+        crate::stream::AssistantMessageEvent::Start { partial }
+        | crate::stream::AssistantMessageEvent::TextStart { partial, .. }
+        | crate::stream::AssistantMessageEvent::TextDelta { partial, .. }
+        | crate::stream::AssistantMessageEvent::TextEnd { partial, .. }
+        | crate::stream::AssistantMessageEvent::ThinkingStart { partial, .. }
+        | crate::stream::AssistantMessageEvent::ThinkingDelta { partial, .. }
+        | crate::stream::AssistantMessageEvent::ThinkingEnd { partial, .. }
+        | crate::stream::AssistantMessageEvent::ToolCallStart { partial, .. }
+        | crate::stream::AssistantMessageEvent::ToolCallDelta { partial, .. }
+        | crate::stream::AssistantMessageEvent::ToolCallEnd { partial, .. } => Some(partial),
+        _ => None,
+    }
+}
+
+/// Request timing for `duration` / `ttft` (milliseconds, provider-independent).
+pub(crate) struct Timing {
+    started: std::time::Instant,
+    first_token_ms: Option<f64>,
+}
+
+impl Timing {
+    fn start() -> Self {
+        Timing {
+            started: std::time::Instant::now(),
+            first_token_ms: None,
+        }
+    }
+
+    fn mark_first_token(&mut self) {
+        if self.first_token_ms.is_none() {
+            self.first_token_ms = Some(self.started.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+}
+
+fn stamp_credential(message: &mut AssistantMessage, config: &AgentLoopConfig) {
+    if message.meta.credential_id.is_none() {
+        message.meta.credential_id = config.credential_id;
+    }
+}
+
+/// Stamp the omp turn metadata on a finished (or aborted) assistant message:
+/// credential, request timing, local completion time, and (for non-failed turns)
+/// the prompt-accounting `contextSnapshot` omp records when committing the message.
+fn finalize_message(
+    message: &mut AssistantMessage,
+    config: &AgentLoopConfig,
+    context: &AgentContext,
+    timing: &Timing,
+) {
+    stamp_credential(message, config);
+    if message.meta.duration.is_none() {
+        message.meta.duration = Some(timing.started.elapsed().as_secs_f64() * 1000.0);
+    }
+    if message.meta.ttft.is_none() {
+        message.meta.ttft = timing.first_token_ms;
+    }
+    message.meta.completed_at = Some(crate::now_ms());
+    if !matches!(message.stop_reason, StopReason::Aborted | StopReason::Error)
+        && message.meta.context_snapshot.is_none()
+    {
+        let u = &message.usage;
+        let mut prompt = u.input + u.cache_read + u.cache_write;
+        if prompt == 0 {
+            prompt = u.total_tokens.saturating_sub(u.output);
+        }
+        let overhead = context.system_prompt.chars().count()
+            + context
+                .tools
+                .iter()
+                .map(|t| t.name().len() + t.description().len() + t.parameters().to_string().len())
+                .sum::<usize>();
+        message.meta.context_snapshot = Some(ContextSnapshot {
+            prompt_tokens: prompt,
+            non_message_tokens: u64::try_from(overhead.div_ceil(4)).unwrap_or(0),
+            compaction_epoch: config.compaction_epoch,
+        });
+    }
+}
+
+fn event_partial_mut(
+    event: &mut crate::stream::AssistantMessageEvent,
+) -> Option<&mut AssistantMessage> {
     match event {
         crate::stream::AssistantMessageEvent::Start { partial }
         | crate::stream::AssistantMessageEvent::TextStart { partial, .. }

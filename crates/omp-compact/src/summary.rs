@@ -35,6 +35,7 @@ pub enum SummaryKind {
     CompactionTurnPrefix,
     CompactionShortSummary,
     BranchSummary,
+    Handoff,
 }
 
 /// One summarization LLM call: the context to send and its output budget.

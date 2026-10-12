@@ -261,6 +261,29 @@ async fn normal_turn_streams_and_completes() {
 }
 
 #[tokio::test]
+async fn finished_assistant_message_carries_timing_credential_and_context_snapshot() {
+    let (agent, provider, _events) = scripted_agent(vec![]).await;
+    provider.push_text_turn("hello world");
+    agent.set_credential_id(Some(7));
+    agent.set_compaction_epoch(2);
+
+    agent.prompt("hi").await.unwrap();
+    agent.wait_for_idle().await;
+
+    let state = agent.state().await;
+    let meta = &assistant_text(&state.messages[1]).meta;
+    assert_eq!(meta.credential_id, Some(7));
+    assert!(meta.duration.is_some_and(|d| d >= 0.0));
+    assert!(meta.ttft.is_some_and(|t| t >= 0.0));
+    assert!(meta.completed_at.is_some_and(|c| c > 0));
+    let snap = meta.context_snapshot.as_ref().expect("contextSnapshot on a stop turn");
+    assert_eq!(snap.compaction_epoch, 2);
+    let wire = serde_json::to_value(assistant_text(&state.messages[1])).unwrap();
+    assert_eq!(wire["credentialId"], 7);
+    assert_eq!(wire["contextSnapshot"]["compactionEpoch"], 2);
+}
+
+#[tokio::test]
 async fn tool_call_turn_dispatches_and_feeds_result_back() {
     let echo = EchoTool::new("echo");
     let (agent, provider, _events) = scripted_agent(vec![echo.clone()]).await;
@@ -682,6 +705,7 @@ fn scripted_event_shapes_round_trip_through_the_event_enum() {
         stop_reason_raw: None,
         error_message: None,
         timestamp: 0,
+        meta: Default::default(),
     };
     let event = AssistantMessageEvent::TextDelta {
         content_index: 0,

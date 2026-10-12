@@ -99,6 +99,10 @@ pub struct AgentLoopConfig {
     /// The requested service tier rides the loop config into every stream
     /// request; `None` until a host supplies one.
     pub service_tier: Option<crate::types::ServiceTier>,
+    /// Stored credential row stamped onto assistant messages (`credentialId`).
+    pub credential_id: Option<i64>,
+    /// Compaction epoch recorded in assistant `contextSnapshot`s.
+    pub compaction_epoch: u64,
     pub convert_to_llm: ConvertToLlmFn,
     pub transform_context: Option<TransformContextFn>,
     pub get_system_prompt: Option<GetSystemPromptFn>,
@@ -125,6 +129,8 @@ impl AgentLoopConfig {
             reasoning: ThinkingLevel::Off,
             session_id: None,
             service_tier: None,
+            credential_id: None,
+            compaction_epoch: 0,
             convert_to_llm,
             transform_context: None,
             get_system_prompt: None,

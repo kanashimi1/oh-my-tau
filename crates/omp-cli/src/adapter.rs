@@ -231,6 +231,8 @@ pub fn stream_once(
         },
         reasoning: reasoning_for_request(model, options.reasoning),
         thinking_budgets: None,
+        disable_reasoning: false,
+        tool_choice: None,
     };
     let stream = pa_ai::stream_simple(model, &ai_context, Some(stream_options))
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;

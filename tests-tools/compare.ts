@@ -16,7 +16,22 @@ const TS_JSON = join(dirname(fileURLToPath(import.meta.url)), "ts_tools.json");
 interface ToolDef {
 	name: string;
 	description_first_line: string;
+	description?: string;
 	parameters: Record<string, unknown>;
+}
+
+/** Tools compared byte-for-byte (canonical JSON + full description), not just per-param. */
+const STRICT_TOOLS = new Set(["todo", "ask"]);
+
+/** Recursively sort object keys so JSON equality ignores key order. */
+function canonical(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(canonical);
+	if (value !== null && typeof value === "object") {
+		const out: Record<string, unknown> = {};
+		for (const key of Object.keys(value).sort()) out[key] = canonical((value as Record<string, unknown>)[key]);
+		return out;
+	}
+	return value;
 }
 
 /** Extract the balanced JSON payload of the i-th `json!(` occurrence in `src`. */
@@ -72,7 +87,7 @@ function parseRustTools(): ToolDef[] {
 		}
 	}
 	// task/eval: schemas live in their own modules as `json!(...)` literals.
-	for (const [name, file] of [["task", "crates/omp-cli/src/tools/task.rs"], ["eval", "crates/omp-cli/src/tools/eval.rs"]] as const) {
+	for (const [name, file] of [["task", "crates/omp-cli/src/tools/task.rs"], ["eval", "crates/omp-cli/src/tools/eval.rs"], ["web_search", "crates/omp-cli/src/tools/web_search.rs"]] as const) {
 		const mod = readFileSync(join(ROOT, file), "utf8");
 		const at = mod.indexOf("pub fn schema()");
 		defs.push({
@@ -80,6 +95,28 @@ function parseRustTools(): ToolDef[] {
 			description_first_line: "(from module const, filled below)",
 			parameters: JSON.parse(jsonLiteralAt(mod, at)) as Record<string, unknown>,
 		});
+	}
+	// ast_grep/ast_edit: schemas live in tools/ast.rs as named `schema_*()` fns.
+	{
+		const astNames = ["ast_grep", "ast_edit"] as const;
+	const mod = readFileSync(join(ROOT, "crates/omp-cli/src/tools/ast.rs"), "utf8");
+		const CONST: Record<(typeof astNames)[number], string> = {
+			ast_grep: "AST_GREP_DESCRIPTION",
+			ast_edit: "AST_EDIT_DESCRIPTION",
+		};
+		for (const name of astNames) {
+			const marker = `pub fn schema_${name}()`;
+			const at = mod.indexOf(marker);
+			if (at < 0) throw new Error(`schema_${name} not found in ast.rs`);
+			const cre = new RegExp(`const ${CONST[name]}: &str = "((?:[^"\\\\]|\\\\.)*)";`);
+			const cm = cre.exec(mod);
+			const first = cm ? (JSON.parse(`"${cm[1]}"`) as string).split("\n", 1)[0] ?? "" : "";
+			defs.push({
+				name,
+				description_first_line: first,
+				parameters: JSON.parse(jsonLiteralAt(mod, at)) as Record<string, unknown>,
+			});
+		}
 	}
 	// task: dynamic description = static header (r#"..."# const) + agent list.
 	const taskSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/task.rs"), "utf8");
@@ -93,6 +130,13 @@ function parseRustTools(): ToolDef[] {
 		const m = /const DESCRIPTION: &str = r#"([^"]*)"#;/.exec(evalSrc);
 		defs.find(d => d.name === "eval")!.description_first_line = (m?.[1] ?? "").split("\n", 1)[0] ?? "";
 	}
+	// web_search: schema from `pub fn schema()`; description from DESCRIPTION const.
+	{
+		const wsSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/web_search.rs"), "utf8");
+		const wsDesc = /pub const DESCRIPTION: &str = "((?:[^"\\]|\\.)*)"/.exec(wsSrc);
+		const first = wsDesc ? (JSON.parse(`"${wsDesc[1]}"`) as string).split("\n", 1)[0] ?? "" : "";
+		defs.find(d => d.name === "web_search")!.description_first_line = first;
+	}
 	// edit: `edit::schema(edit_mode)` + `pi_edit::description(edit_mode)`; compare the
 	// Replace mode, the omp-rs default for glm-style models.
 	// verify we grabbed the Replace arm: it follows `EditMode::Replace => json!(`
@@ -103,6 +147,28 @@ function parseRustTools(): ToolDef[] {
 		description_first_line: replacePrompt.split("\n", 1)[0] ?? "",
 		parameters: JSON.parse(replaceJson) as Record<string, unknown>,
 	});
+	// todo/ask: schema in the module; the description is a const (todo: escaped string, ask: raw string).
+	{
+		const todoSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/todo.rs"), "utf8");
+		const askSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/ask.rs"), "utf8");
+		const todoDesc = /const DESCRIPTION: &str = "((?:[^"\\]|\\.)*)";/.exec(todoSrc);
+		const askDesc = /const DESCRIPTION: &str = r#"([\s\S]*?)"#;/.exec(askSrc);
+		const defsFor: Array<[string, string, RegExpExecArray | null]> = [
+			["todo", todoSrc, todoDesc],
+			["ask", askSrc, askDesc],
+		];
+		for (const [name, src, descMatch] of defsFor) {
+			const at = src.indexOf("pub fn schema()");
+			// todo's const is an escaped string literal; ask's is a raw string (already literal text).
+			const fullDesc = descMatch ? (name === "todo" ? (JSON.parse(`"${descMatch[1]}"`) as string) : descMatch[1]) : "";
+			defs.push({
+				name,
+				description_first_line: fullDesc.split("\n", 1)[0] ?? "",
+				description: fullDesc,
+				parameters: JSON.parse(jsonLiteralAt(src, at)) as Record<string, unknown>,
+			});
+		}
+	}
 	return defs;
 }
 
@@ -172,6 +238,10 @@ for (const ts of tsTools) {
 	const d = compare(ts, rust);
 	const descMatch = ts.description_first_line === rust.description_first_line;
 	const issues: string[] = [];
+	if (STRICT_TOOLS.has(ts.name)) {
+		if (JSON.stringify(canonical(ts.parameters)) !== JSON.stringify(canonical(rust.parameters))) issues.push("parameters differ from TS (canonical JSON)");
+		if (ts.description !== rust.description) issues.push("full description differs from TS");
+	}
 	if (d.missing_in_rust.length) issues.push(`missing in rust: ${d.missing_in_rust.join(", ")}`);
 	if (d.extra_in_rust.length) issues.push(`extra in rust: ${d.extra_in_rust.join(", ")}`);
 	for (const m of d.type_mismatches) issues.push(`type ${m.param}: ts=${JSON.stringify(m.ts)} rust=${JSON.stringify(m.rust)}`);

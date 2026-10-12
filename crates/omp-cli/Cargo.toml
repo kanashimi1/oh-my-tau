@@ -26,12 +26,16 @@ omp-ext = { path = "../omp-ext" }
 omp-compact = { path = "../omp-compact" }
 omp-task = { path = "../omp-task" }
 omp-eval = { path = "../omp-eval" }
+omp-mcp = { path = "../omp-mcp" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
 serde_yaml_ng = "0.10"
 rand = "0.8"
+parking_lot = "0.12"
 async-trait = "0.1"
 grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
+pi-ast = { path = "../../vendor/pi-ast" }
 pi-edit = { path = "../../vendor/pi-edit" }
 pi-walker = { path = "../../vendor/pi-walker" }
 

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -125,13 +125,28 @@ pub struct CommandInfo {
     pub extension: String,
 }
 
+/// Delivery state of host-initiated messages (`Incoming`).
+enum Delivery {
+    /// No consumer yet: messages buffer here until `take_incoming` attaches one.
+    Pending(VecDeque<HostMessage>),
+    /// A consumer is attached; messages stream to its channel.
+    Live,
+}
+
+/// Channel halves plus delivery state; one lock makes "check-then-deliver" atomic.
+struct Incoming {
+    delivery: Delivery,
+    tx: mpsc::UnboundedSender<HostMessage>,
+    rx: Option<mpsc::UnboundedReceiver<HostMessage>>,
+}
+
 /// Connection to a running extension host.
 pub struct ExtHost {
     stdin: tokio::sync::Mutex<ChildStdin>,
     child: tokio::sync::Mutex<Child>,
     pending: Pending,
     next_id: AtomicU64,
-    incoming: Mutex<Option<mpsc::UnboundedReceiver<HostMessage>>>,
+    incoming: Mutex<Incoming>,
 }
 
 impl ExtHost {
@@ -168,7 +183,11 @@ impl ExtHost {
             child: tokio::sync::Mutex::new(child),
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
-            incoming: Mutex::new(Some(rx)),
+            incoming: Mutex::new(Incoming {
+                delivery: Delivery::Pending(VecDeque::new()),
+                tx,
+                rx: Some(rx),
+            }),
         });
 
         let weak = Arc::downgrade(&host);
@@ -178,7 +197,7 @@ impl ExtHost {
                 let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                route(&msg, &pending, &tx, weak.upgrade());
+                route(&msg, &pending, weak.upgrade());
             }
             // Host gone: fail everything still waiting.
             for (_, w) in pending
@@ -198,13 +217,24 @@ impl ExtHost {
         Ok(host)
     }
 
-    /// Receiver of host-initiated messages; available once. Without a taker, host requests are
-    /// answered with a "not supported" error so the extension's promise settles.
+    /// Receiver of host-initiated messages; available once. Messages that
+    /// arrived before the consumer attached are delivered first, so an
+    /// extension's load-time requests are not lost to the "not supported"
+    /// race (`ReviewWave3`). Without a taker, messages keep buffering.
     pub fn take_incoming(&self) -> Option<mpsc::UnboundedReceiver<HostMessage>> {
-        self.incoming
+        let mut inc = self
+            .incoming
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let rx = inc.rx.take()?;
+        if let Delivery::Pending(buf) = &mut inc.delivery {
+            let buffered: Vec<_> = buf.drain(..).collect();
+            for msg in buffered {
+                let _ = inc.tx.send(msg);
+            }
+        }
+        inc.delivery = Delivery::Live;
+        Some(rx)
     }
 
     /// Answer a [`HostMessage::Request`].
@@ -320,6 +350,20 @@ impl ExtHost {
         .await
     }
 
+    /// Cancel a running extension tool call in the host (`AbortController`
+    /// abort). Best-effort by contract: an unknown/expired id is not an error.
+    ///
+    /// # Errors
+    /// Transport failure.
+    pub async fn cancel_tool(&self, tool_call_id: &str) -> Result<()> {
+        self.request(
+            "cancel_tool",
+            json!({"toolCallId": tool_call_id}),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// # Errors
     /// Transport failure.
     pub async fn list_commands(&self) -> Result<Vec<CommandInfo>> {
@@ -362,12 +406,7 @@ impl ExtHost {
     }
 }
 
-fn route(
-    msg: &Value,
-    pending: &Pending,
-    tx: &mpsc::UnboundedSender<HostMessage>,
-    host: Option<Arc<ExtHost>>,
-) {
+fn route(msg: &Value, pending: &Pending, host: Option<Arc<ExtHost>>) {
     let method = msg.get("method").and_then(Value::as_str);
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
     match (method, msg.get("id")) {
@@ -390,10 +429,21 @@ fn route(
             });
         }
         (Some(m), None) => {
-            let _ = tx.send(HostMessage::Notification {
+            let note = HostMessage::Notification {
                 method: m.to_owned(),
                 params,
-            });
+            };
+            let Some(host) = host else { return };
+            let mut inc = host
+                .incoming
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match &mut inc.delivery {
+                Delivery::Pending(buf) => buf.push_back(note),
+                Delivery::Live => {
+                    let _ = inc.tx.send(note);
+                }
+            }
         }
         (Some(m), Some(id)) => {
             let req = HostMessage::Request {
@@ -401,25 +451,34 @@ fn route(
                 method: m.to_owned(),
                 params,
             };
-            let untaken = host.as_ref().is_some_and(|h| {
-                h.incoming
+            let Some(host) = host else { return };
+            // One lock covers check-and-deliver: a request can no longer slip
+            // between "no consumer yet" and the channel send.
+            let delivered = {
+                let mut inc = host
+                    .incoming
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .is_some()
-            });
-            if untaken || tx.send(req).is_err() {
-                // Answer on its own task: the reply needs the stdin lock, and
-                // awaiting it here would stall the stdout reader (a large write
-                // holding stdin while the host's stdout pipe is full wedges both).
-                if let Some(host) = host {
-                    let m = m.to_owned();
-                    let id = id.clone();
-                    tokio::spawn(async move {
-                        let _ = host
-                            .respond(id, Err(format!("{m} is not supported by the core")))
-                            .await;
-                    });
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match &mut inc.delivery {
+                    Delivery::Pending(buf) => {
+                        buf.push_back(req);
+                        true
+                    }
+                    Delivery::Live => inc.tx.send(req).is_ok(),
                 }
+            };
+            if !delivered {
+                // The consumer went away: answer on its own task -- the reply
+                // needs the stdin lock, and awaiting it here would stall the
+                // stdout reader (a large write holding stdin while the host's
+                // stdout pipe is full wedges both).
+                let m = m.to_owned();
+                let id = id.clone();
+                tokio::spawn(async move {
+                    let _ = host
+                        .respond(id, Err(format!("{m} is not supported by the core")))
+                        .await;
+                });
             }
         }
         (None, None) => {}
@@ -475,12 +534,12 @@ mod tests {
         assert!(exited, "bun host (pid {pid}) outlived its last handle");
     }
 
-    /// An unclaimed host request (no `take_incoming` taker) is answered on its
-    /// own task, not inside the stdout reader loop: the "not supported" error
-    /// still reaches the child's stdin. The fake host records the reply by
-    /// touching a marker file.
+    /// A host request that arrives before any consumer attached is buffered,
+    /// not rejected: once `take_incoming` + `serve` attach, the buffered
+    /// request is answered (`ReviewWave3` -- previously the check-then-send
+    /// race dropped it as "not supported").
     #[tokio::test]
-    async fn unclaimed_request_is_answered_off_the_reader_loop() {
+    async fn early_request_is_buffered_until_consumer_attaches() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("replied");
         let script = dir.path().join("fake-host.sh");
@@ -490,23 +549,25 @@ mod tests {
                 "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"compact\",\"params\":{}}'\n",
                 "while IFS= read -r line; do\n",
                 "  case \"$line\" in\n",
-                "    *'not supported'*) touch \"$MARKER\"; break;;\n",
+                "    *'\"result\":null'*) touch \"$MARKER\"; break;;\n",
                 "  esac\n",
                 "done\n",
                 "sleep 60\n",
             ),
         )
         .unwrap();
-        let mut cfg = HostConfig {
+        let cfg = HostConfig {
             bun: "/bin/sh".into(),
             host_script: script,
             trace: None,
             handler_timeout_ms: None,
             env: vec![("MARKER".into(), marker.display().to_string())],
         };
-        cfg.handler_timeout_ms = None;
         let host = ExtHost::spawn(&cfg).unwrap();
-        // Deliberately no `take_incoming`: the request is unclaimed.
+        // Give the host's request a moment to arrive while still unclaimed.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let incoming = host.take_incoming().expect("incoming is available once");
+        let _notes = serve(&host, incoming, Arc::new(HeadlessResponder));
         let answered = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 if marker.exists() {
@@ -517,6 +578,9 @@ mod tests {
         })
         .await;
         drop(host);
-        assert!(answered.is_ok(), "unclaimed request was never answered");
+        assert!(
+            answered.is_ok(),
+            "buffered request was never answered after attach"
+        );
     }
 }

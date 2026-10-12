@@ -47,6 +47,56 @@ const scenarios: Record<string, Step[]> = {
 		{ cmd: { type: "abort" }, until: f => f.type === "agent_end", timeoutMs: 30_000 },
 		{ cmd: { type: "get_state" } },
 	],
+	steer_follow_up: [
+		{ cmd: { type: "set_model", provider: "zai", modelId: "glm-5.3-flash" } },
+		{ cmd: { type: "set_thinking_level", level: "off" } },
+		{ cmd: { type: "prompt", message: "Write a brief haiku about programming. Do not call any tools." }, until: f => f.type === "agent_start", timeoutMs: 30_000 },
+		{ cmd: { type: "steer", message: "Please be more detailed." }, timeoutMs: 10_000 },
+		{ cmd: { type: "follow_up", message: "And add another line." }, timeoutMs: 10_000 },
+		{ cmd: { type: "abort" }, until: f => f.type === "agent_end", timeoutMs: 30_000 },
+		{ cmd: { type: "get_state" } },
+	],
+	set_model_prompt: [
+		{ cmd: { type: "set_model", provider: "zai", modelId: "glm-5.3-flash" } },
+		{ cmd: { type: "set_thinking_level", level: "off" } },
+		{ cmd: { type: "prompt", message: "What is 2+2? Answer with a single number. Do not call any tools." }, until: f => f.type === "agent_end", timeoutMs: 300_000 },
+		{ cmd: { type: "get_session_stats" } },
+		{ cmd: { type: "get_last_assistant_text" } },
+	],
+	new_session: [
+		{ cmd: { type: "new_session" } },
+		{ cmd: { type: "get_state" } },
+		{ cmd: { type: "get_session_stats" } },
+		{ cmd: { type: "get_messages" } },
+	],
+	compact: [
+		{ cmd: { type: "compact", customInstructions: "Focus on preserving the user\'s intent." } },
+		{ cmd: { type: "get_state" } },
+	],
+	branch_messages: [
+		{ cmd: { type: "get_branch_messages" } },
+		{ cmd: { type: "branch", entryId: "msg-0000000000000000" } },
+		{ cmd: { type: "get_state" } },
+	],
+	thinking_state: [
+		{ cmd: { type: "set_thinking_level", level: "high" } },
+		{ cmd: { type: "get_state" } },
+		{ cmd: { type: "set_thinking_level", level: "off" } },
+		{ cmd: { type: "get_state" } },
+		{ cmd: { type: "get_available_thinking_levels" } },
+	],
+	bash_command: [
+		{ cmd: { type: "bash", command: "echo golden_test_output" } },
+		{ cmd: { type: "get_session_stats" } },
+		{ cmd: { type: "get_state" } },
+	],
+	abort_mid_tool: [
+		{ cmd: { type: "set_model", provider: "zai", modelId: "glm-5.3-flash" } },
+		{ cmd: { type: "set_thinking_level", level: "off" } },
+		{ cmd: { type: "prompt", message: "Run the bash command: sleep 30. Use the bash tool. Only call one tool and say nothing else." }, until: f => f.type === "tool_execution_start", timeoutMs: 30_000 },
+		{ cmd: { type: "abort" }, until: f => f.type === "agent_end", timeoutMs: 30_000 },
+		{ cmd: { type: "get_state" } },
+	],
 };
 
 function run(name: string, steps: Step[]): Promise<number> {

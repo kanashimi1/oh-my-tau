@@ -13,11 +13,13 @@
 //!    then `auto_retry_end{success:true}`;
 //! 3. every dead end closes the saga with `auto_retry_end{success:false}`.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Result;
 use omp_providers::{
-    is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, CandidateOptions, FallbackConfig,
+    is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, AgentDir, CandidateOptions, FallbackConfig,
     FallbackState, RateLimitReason, ResolvedModel, RetryConfig, RevertPolicy,
 };
 use pa_agent::types::AssistantMessage;
@@ -28,12 +30,21 @@ use tokio_util::sync::CancellationToken;
 pub const EPHEMERAL_ROLE: &str = "fallback";
 
 /// Resolves a `provider/id[:level]` selector to a callable model (credentials included).
-pub type Resolver = Arc<dyn Fn(&str) -> Result<ResolvedModel> + Send + Sync>;
+/// Async: `!command` api keys shell out, so resolution must stay off the executor threads.
+pub type Resolver = Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<ResolvedModel>> + Send>> + Send + Sync>;
 
-/// The default resolver: omp's `config.yml` / `models.yml` / `agent.db`.
+/// The resolver over omp's `config.yml` / `models.yml` / `agent.db` in `dir`.
+#[must_use]
+pub fn resolver_in(dir: AgentDir) -> Resolver {
+    Arc::new(move |selector: String| -> Pin<Box<dyn Future<Output = Result<ResolvedModel>> + Send>> {
+        Box::pin(omp_providers::resolve_in_async(dir.clone(), selector))
+    })
+}
+
+/// The default resolver: omp's `config.yml` / `models.yml` / `agent.db` in the default agent dir.
 #[must_use]
 pub fn default_resolver() -> Resolver {
-    Arc::new(omp_providers::resolve)
+    resolver_in(AgentDir::default())
 }
 
 /// `retry.*` settings plus the fallback chain of the live model.
@@ -623,6 +634,7 @@ mod tests {
             api: "openai-completions".into(),
             base_url: "http://127.0.0.1:9".into(),
             api_key: Some("test-key".into()),
+            credential_id: None,
             headers: Vec::new(),
             context_window: 100_000,
             max_tokens: 4096,
@@ -694,10 +706,13 @@ mod tests {
             headers: None,
         })));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let resolver: Resolver = std::sync::Arc::new(|sel| {
-            let base = sel.split(':').next().unwrap_or(sel);
-            let (p, i) = base.split_once('/').ok_or_else(|| anyhow::anyhow!("bad selector"))?;
-            Ok(resolved(p, i))
+        let resolver: Resolver = std::sync::Arc::new(|sel: String| {
+            let out: Result<ResolvedModel> = (|| {
+                let base = sel.split(':').next().unwrap_or(&sel);
+                let (p, i) = base.split_once('/').ok_or_else(|| anyhow::anyhow!("bad selector"))?;
+                Ok(resolved(p, i))
+            })();
+            Box::pin(async move { out })
         });
         let rt = Runtime::start_with(std::sync::Arc::new(agent), target, cwd, persist, tx, resolver, Some(cfg)).await;
         Harness { rt, rx, models_seen, session_file, _provider: provider }
@@ -1062,5 +1077,33 @@ mod tests {
         assert_eq!((h.rt.queued_previews().0, q(&h.rt)), (vec!["fix the bug".to_string()], vec!["fix the bug".to_string()]));
         assert!(!h.rt.promote_queued("fix"));
         h.rt.abort().await;
+    }
+
+    /// A slow `!command` api key must run on the blocking pool: a single-threaded
+    /// executor keeps ticking while the 2 s key resolves.
+    #[tokio::test]
+    async fn slow_command_key_does_not_block_the_executor() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(
+            t.path().join("models.yml"),
+            "providers:\n  zz:\n    baseUrl: http://127.0.0.1:1/v1\n    apiKey: \"!sleep 2; echo k\"\n    api: openai-completions\n    models:\n      - id: m1\n",
+        )
+        .unwrap();
+        let resolver = resolver_in(omp_providers::AgentDir(t.path().to_path_buf()));
+        let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticker = {
+            let ticks = ticks.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            })
+        };
+        let model = resolver("zz/m1".to_string()).await.unwrap();
+        let ticks_during = ticks.load(std::sync::atomic::Ordering::SeqCst);
+        ticker.abort();
+        assert_eq!(model.api_key.as_deref(), Some("k"));
+        assert!(ticks_during >= 10, "executor blocked during the slow key: {ticks_during} ticks");
     }
 }

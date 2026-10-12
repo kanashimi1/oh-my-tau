@@ -3,19 +3,21 @@
 //!
 //! Layout after a compaction: the summary message first, then the kept tail (entries from
 //! `firstKeptEntryId` up to the compaction entry), then everything appended after the compaction.
-//! Ported: local compactions, `branch_summary`, `custom_message`, `reset_boundary`, mode / model /
-//! thinking-level state, context notes, dangling-tool-call stripping, error-turn dropping.
-//! Compactions carrying provider-native payloads (`preserveData` keys `openaiRemoteCompaction`,
-//! `anthropicCompaction`, `snapcompact`) or `experimental-context-rollover` details are rejected
-//! with [`ContextError::Unsupported`] rather than rebuilt incorrectly. The transcript/display
-//! variants of the TS function are not ported.
+//! Ported: local compactions, provider-native lanes (`OpenAI` remote replacement history,
+//! Anthropic native compaction with `historyRewriteAt`, snapcompact frame-archive blocks),
+//! `branch_summary`, `custom_message`, `reset_boundary`, mode / model / thinking-level state,
+//! context notes, dangling-tool-call stripping, error-turn dropping. Compactions with
+//! `experimental-context-rollover` details are rejected with [`ContextError::Unsupported`]
+//! rather than rebuilt incorrectly (rollover request recovery is not ported). The
+//! transcript/display variants of the TS function are not ported.
 
 use std::collections::{BTreeSet, HashMap};
 
 use serde_json::{Map, Value};
 
 use crate::json::{entry_id, entry_type, message_role, ms_value, parse_iso_ms, str_field, truthy};
-use crate::messages::{create_branch_summary_message, create_compaction_summary_message, custom_message_from_entry};
+use crate::messages::{create_branch_summary_message, create_compaction_summary_message_ext, custom_message_from_entry};
+use crate::native;
 use crate::prompts;
 
 const PREWALK_PLAN_MESSAGE_TYPE: &str = "prewalk-plan";
@@ -162,31 +164,14 @@ fn context_notes<'a>(path: &[&'a Value]) -> Option<(&'a str, &'a Value)> {
     None
 }
 
-/// The provider-native payload (or rollover marker) a compaction depends on, if any.
-pub(crate) fn native_payload(compaction: &Value) -> Option<&'static str> {
-    if let Some(preserve) = compaction.get("preserveData").and_then(Value::as_object) {
-        for (key, what) in [
-            ("openaiRemoteCompaction", "OpenAI remote compaction replacement history"),
-            ("anthropicCompaction", "Anthropic native compaction block"),
-            ("snapcompact", "snapcompact frame archive"),
-        ] {
-            if preserve.contains_key(key) {
-                return Some(what);
-            }
-        }
-    }
-    if compaction.get("details").and_then(|d| str_field(d, "kind")) == Some("experimental-context-rollover") {
-        return Some("experimental-context-rollover");
-    }
-    None
-}
-
 /// Port of `buildSessionContext(entries, leafId)` (model-context mode).
 ///
 /// `entries` are the session entries in file order, header and `title` slot excluded.
 ///
 /// # Errors
-/// [`ContextError::Unsupported`] when the latest compaction carries a provider-native payload.
+/// [`ContextError::Unsupported`] when the latest compaction is an `experimental-context-rollover`.
+// TS `buildSessionContext` is one function; the compaction emission block is kept inline for parity.
+#[allow(clippy::too_many_lines)]
 pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<SessionContext, ContextError> {
     let path = branch_path(entries, leaf);
     let mut ctx = SessionContext { mode: "none".to_owned(), thinking_level: Some("off".to_owned()), ..SessionContext::default() };
@@ -254,13 +239,71 @@ pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<Sessio
         let r = reset_idx.unwrap_or(0);
         messages.extend(path[r + 1..].iter().filter_map(|e| context_message(e)));
     } else if let (Some(compaction), Some(compaction_idx)) = (compaction, compaction_idx) {
-        if let Some(what) = native_payload(compaction) {
-            return Err(ContextError::Unsupported(what));
+        // Rollover recovery (re-asking the discarded turn prefix from the
+        // branch journal) is not ported.
+        if compaction.get("details").and_then(|d| str_field(d, "kind")) == Some("experimental-context-rollover") {
+            return Err(ContextError::Unsupported("experimental-context-rollover"));
         }
-        messages.push(create_compaction_summary_message(compaction));
-        let first_kept = str_field(compaction, "firstKeptEntryId").unwrap_or("");
-        if let Some(kept) = path.iter().enumerate().position(|(i, e)| i < compaction_idx && entry_id(e) == first_kept) {
-            messages.extend(path[kept..compaction_idx].iter().filter_map(|e| context_message(e)));
+        let remote = native::openai_remote_payload(compaction);
+        let anthropic = native::anthropic_compaction_payload(compaction);
+        let provider_payload = remote.clone().or_else(|| anthropic.clone());
+        let remote_replacement_history = remote.as_ref().and_then(|p| p.get("items")).filter(|i| i.is_array());
+
+        // A natively replayed summary must not invalidate the retained tail's
+        // bound thinking: predate the rewrite marker to just before the first
+        // retained entry instead of the commit timestamp.
+        let history_rewrite_at = if anthropic.is_some() {
+            let first_kept_idx = path
+                .iter()
+                .position(|e| entry_id(e) == str_field(compaction, "firstKeptEntryId").unwrap_or(""));
+            let snapshot_idx = if str_field(compaction, "firstKeptEntryId") == Some("") {
+                str_field(compaction, "providerReplayThroughEntryId")
+                    .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+            } else {
+                None
+            };
+            let first_retained = (first_kept_idx.filter(|&i| i < compaction_idx).map(|i| path[i]))
+                .or_else(|| snapshot_idx.filter(|&i| i + 1 < compaction_idx).map(|i| path[i + 1]))
+                .or(path.get(compaction_idx + 1).copied());
+            first_retained
+                .and_then(|e| str_field(e, "timestamp"))
+                .and_then(parse_iso_ms)
+                .map(|ms| ms_value(Some(ms - 1)))
+        } else {
+            None
+        };
+
+        // Re-attach any archived snapcompact frames so the model can keep
+        // reading the archived history after every context rebuild.
+        let blocks = native::get_preserved_archive(compaction.get("preserveData"))
+            .map(|archive| native::history_blocks_for_context(&archive))
+            .filter(|b| !b.is_empty());
+        messages.push(create_compaction_summary_message_ext(compaction, provider_payload, blocks, history_rewrite_at));
+
+        // The remote replacement payload (OpenAI remote compaction) carries
+        // the kept turns for the LLM context only; without it, replay the kept
+        // tail from the entries (Anthropic with an empty `firstKeptEntryId`
+        // falls back to the provider snapshot entry).
+        if remote_replacement_history.is_none() {
+            let first_kept_idx = path.iter().enumerate().position(|(i, e)| {
+                i < compaction_idx && entry_id(e) == str_field(compaction, "firstKeptEntryId").unwrap_or("")
+            });
+            let snapshot_idx = if anthropic.is_some() && str_field(compaction, "firstKeptEntryId") == Some("") {
+                str_field(compaction, "providerReplayThroughEntryId")
+                    .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+            } else {
+                None
+            };
+            let retained_start = first_kept_idx.or_else(|| snapshot_idx.map(|i| i + 1));
+            if let Some(start) = retained_start.filter(|&s| s < compaction_idx) {
+                messages.extend(path[start..compaction_idx].iter().filter_map(|e| context_message(e)));
+            }
+        } else if let Some(replay_through) = str_field(compaction, "providerReplayThroughEntryId")
+            .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+        {
+            if replay_through < compaction_idx {
+                messages.extend(path[replay_through + 1..compaction_idx].iter().filter_map(|e| context_message(e)));
+            }
         }
         messages.extend(path[compaction_idx + 1..].iter().filter_map(|e| context_message(e)));
     } else {

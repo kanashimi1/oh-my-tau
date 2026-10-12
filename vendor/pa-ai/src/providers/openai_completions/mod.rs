@@ -13,7 +13,7 @@ use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
     AssistantContent, AssistantMessage, CacheRetention, Context, Model, ModelExt,
-    ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, Usage, UsageCost,
+    ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage, UsageCost,
 };
 
 mod convert;
@@ -24,6 +24,17 @@ mod stream;
 pub use stream::stream_openai_completions;
 
 pub const API_OPENAI_COMPLETIONS: &str = "openai-completions";
+
+/// Unified tool choice → openai-completions wire form (TS `mapToOpenAICompletionsToolChoice`):
+/// `any` becomes `required`, a function pin becomes `{type:"function", function:{name}}`.
+fn map_tool_choice(choice: &SimpleToolChoice) -> ToolChoice {
+    match choice {
+        SimpleToolChoice::Auto => ToolChoice::Auto,
+        SimpleToolChoice::None => ToolChoice::None,
+        SimpleToolChoice::Any | SimpleToolChoice::Required => ToolChoice::Required,
+        SimpleToolChoice::Function { name } => ToolChoice::Function { name: name.clone() },
+    }
+}
 
 const REASONING_DETAILS_SIGNATURE_TYPE: &str = "openai-completions.reasoning_details.v1";
 pub(crate) const REASONING_FIELDS: [&str; 3] = ["reasoning_content", "reasoning", "reasoning_text"];
@@ -363,17 +374,29 @@ pub fn stream_simple_openai_completions(
     let reasoning_specified = requested_reasoning.is_some();
     let clamped_reasoning =
         requested_reasoning.map(|reasoning| clamp_thinking_level(model, reasoning));
-    let reasoning_effort = clamped_reasoning.filter(|level| *level != ModelThinkingLevel::Off);
+    // TS `disableReasoning`: wins over `reasoning` — no effort is sent and the toggle is
+    // explicitly off, so effort-declared models do not fall back to their default.
+    let disable_reasoning =
+        options.is_some_and(|options| options.disable_reasoning) || clamped_reasoning == Some(ModelThinkingLevel::Off);
+    let reasoning_effort = if disable_reasoning {
+        None
+    } else {
+        clamped_reasoning.filter(|level| *level != ModelThinkingLevel::Off)
+    };
+    let reasoning_enabled = if disable_reasoning {
+        Some(false)
+    } else if reasoning_specified {
+        Some(clamped_reasoning != Some(ModelThinkingLevel::Off))
+    } else {
+        None
+    };
+    let tool_choice = options.and_then(|options| options.tool_choice.as_ref()).map(map_tool_choice);
 
     let stream_options = OpenAICompletionsOptions {
         base,
-        tool_choice: None,
+        tool_choice,
         reasoning_effort,
-        reasoning_enabled: if reasoning_specified {
-            Some(clamped_reasoning != Some(ModelThinkingLevel::Off))
-        } else {
-            None
-        },
+        reasoning_enabled,
     };
     stream_openai_completions(model, context, Some(&stream_options))
 }

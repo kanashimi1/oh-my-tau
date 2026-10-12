@@ -139,6 +139,13 @@ struct WireTaskItem {
     output_schema: Option<Value>,
     #[serde(default)]
     schema_mode: SchemaMode,
+    /// Per-item model selector (string or prioritized list), as advertised
+    /// by the wire schema.
+    #[serde(default)]
+    model: Option<Value>,
+    /// Per-item tool allow-list override.
+    #[serde(default)]
+    tools: Option<Vec<String>>,
 }
 
 fn default_agent() -> String {
@@ -150,19 +157,68 @@ impl WireTaskItem {
         let Some(solution_space) = self.solution_space.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
             bail!("Task {} is missing `solutionSpace`.", index + 1);
         };
+        let label = match self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+            Some(name) => format!("Task {} (`{name}`)", index + 1),
+            None => format!("Task {}", index + 1),
+        };
+        if let Some(model) = &self.model {
+            if let Some(reason) = invalid_model_selector_reason(model, &label) {
+                bail!("{reason}");
+            }
+        }
         let item = TaskItem {
             name: self.name.clone(),
             agent: self.agent.clone(),
             task: self.task.clone(),
             solution_space: solution_space.to_string(),
-            model: None,
+            model: self.model.clone(),
             output_schema: self.output_schema.clone(),
             schema_mode: self.schema_mode,
-            tools: None,
+            tools: self.tools.clone(),
         };
         item.validate().map_err(|e| anyhow::anyhow!(e))?;
         Ok(item)
     }
+}
+
+/// Port of TS `invalidModelSelectorReason` (task/structured-subagent.ts:313):
+/// a selector is a string or a non-empty array of strings; comma-separated
+/// lists flatten; the literals `default`/`inherit` (with or without a
+/// `:thinking` suffix) are ambiguous — `@default` states the inherit intent.
+fn invalid_model_selector_reason(model: &Value, label: &str) -> Option<String> {
+    let invalid = format!(
+        "{label} has an invalid `model` value {model}. Use a selector or a non-empty array of selectors such as \"openai/gpt-5.4:high\" or \"@smol\"."
+    );
+    let values: Vec<&Value> = model
+        .as_array()
+        .map_or_else(|| vec![model], |a| a.iter().collect());
+    let mut patterns: Vec<&str> = Vec::new();
+    for value in values {
+        let Some(selector) = value.as_str() else {
+            return Some(invalid);
+        };
+        let normalized: Vec<&str> = selector
+            .split(',')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
+        if normalized.is_empty() {
+            return Some(invalid);
+        }
+        patterns.extend(normalized);
+    }
+    if patterns.is_empty() {
+        return Some(invalid);
+    }
+    if patterns.iter().any(|pattern| {
+        let base = pattern.split(':').next().unwrap_or(pattern);
+        base.eq_ignore_ascii_case("default") || base.eq_ignore_ascii_case("inherit")
+    }) {
+        return Some(format!(
+            "{label} has an ambiguous `model` value {model}. Use \"@default\" to inherit the parent session's model, or name a model explicitly."
+        ));
+    }
+    None
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +234,9 @@ struct WireParams {
     solution_space: Option<String>,
     #[serde(default = "default_agent")]
     agent: String,
+    /// Flat-shape model selector (TS validates the call-level selector too).
+    #[serde(default)]
+    model: Option<Value>,
 }
 
 /// Execute a `task` call: validate, spawn every item, render envelopes.
@@ -191,12 +250,17 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
             bail!("Missing `task`. Provide `tasks[]` items or a flat `task` string.");
         };
         let solution_space = params.solution_space.as_deref().unwrap_or_default();
+        if let Some(model) = &params.model {
+            if let Some(reason) = invalid_model_selector_reason(model, "The call") {
+                bail!("{reason}");
+            }
+        }
         let item = TaskItem {
             name: None,
             agent: params.agent.clone(),
             task: task_text.to_string(),
             solution_space: solution_space.to_string(),
-            model: None,
+            model: params.model.clone(),
             output_schema: None,
             schema_mode: SchemaMode::Permissive,
             tools: None,
@@ -215,10 +279,16 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
     let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omp-rs"));
     let runner = TaskRunner::new(binary, MAX_CONCURRENCY);
     let outputs = runner.spawn_all(specs).await;
+    merge_outputs(&outputs)
+}
 
+/// Merge per-child outputs into the tool result (TS `mergeSyncPayloads`):
+/// every envelope is rendered; any failed/cancelled child makes the whole
+/// call an error so the agent loop can retry (TS `isError: true`).
+fn merge_outputs(outputs: &[omp_task::runner::RunOutput]) -> Result<AgentToolResult> {
     let mut text = String::new();
     let mut failed = 0usize;
-    for out in &outputs {
+    for out in outputs {
         if out.status != RunStatus::Completed {
             failed += 1;
         }
@@ -232,6 +302,10 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
     if failed > 0 {
         use std::fmt::Write as _;
         let _ = write!(text, "\n{failed} of {} task(s) failed.", outputs.len());
+        // TS sets `isError: true` on the merged result so the agent loop can
+        // retry; this port signals tool errors as `Err` (AgentToolResult has
+        // no is_error field).
+        return Err(anyhow::anyhow!("{}", text.trim_end()));
     }
     Ok(AgentToolResult {
         content: vec![pa_agent::types::ToolResultContent::text(text.trim_end())],
@@ -243,6 +317,102 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wire_item(args: serde_json::Value) -> WireTaskItem {
+        serde_json::from_value(args).unwrap()
+    }
+
+    #[test]
+    fn per_item_model_and_tools_are_honored() {
+        let item = wire_item(json!({
+            "agent": "task",
+            "task": "do it",
+            "solutionSpace": ".",
+            "model": "openai/gpt-5.4:high",
+            "tools": ["read", "grep"],
+        }));
+        let item = item.to_item(0).expect("valid item");
+        assert_eq!(item.model.as_ref(), Some(&json!("openai/gpt-5.4:high")));
+        assert_eq!(item.tools.as_deref(), Some(["read".to_string(), "grep".to_string()].as_slice()));
+        let spec = omp_task::runner::TaskSpec::from_item(&item, None, ".");
+        assert_eq!(spec.model.as_deref(), Some("openai/gpt-5.4:high"));
+        assert_eq!(spec.tools.as_deref(), Some(["read".to_string(), "grep".to_string()].as_slice()));
+    }
+
+    #[test]
+    fn per_item_model_list_flattens_to_selector() {
+        let item = wire_item(json!({
+            "task": "do it",
+            "solutionSpace": ".",
+            "model": ["openai/gpt-5.4:high", "anthropic/claude-sonnet-4"],
+        }));
+        let item = item.to_item(0).expect("valid item");
+        let spec = omp_task::runner::TaskSpec::from_item(&item, None, ".");
+        assert_eq!(
+            spec.model.as_deref(),
+            Some("openai/gpt-5.4:high,anthropic/claude-sonnet-4")
+        );
+    }
+
+    #[test]
+    fn invalid_model_selectors_are_rejected() {
+        for model in [
+            json!("default"),
+            json!("DEFAULT"),
+            json!("default:high"),
+            json!("inherit"),
+            json!(42),
+            json!(""),
+            json!([]),
+            json!(["openai/gpt-5.4", 7]),
+        ] {
+            let item = wire_item(json!({
+                "task": "do it",
+                "solutionSpace": ".",
+                "model": model,
+            }));
+            assert!(
+                item.to_item(0).is_err(),
+                "model {model} must be rejected"
+            );
+        }
+        for model in [json!("openai/gpt-5.4:high"), json!("@default"), json!("@smol"), json!(["a", "b"])] {
+            let item = wire_item(json!({
+                "task": "do it",
+                "solutionSpace": ".",
+                "model": model,
+            }));
+            assert!(item.to_item(0).is_ok(), "model {model} must be accepted");
+        }
+    }
+
+    fn run_output(id: &str, status: RunStatus) -> omp_task::runner::RunOutput {
+        omp_task::runner::RunOutput {
+            id: id.to_string(),
+            agent: "task".to_string(),
+            status,
+            exit_code: None,
+            output: "out".to_string(),
+            stderr: String::new(),
+            schema: omp_task::SchemaValidation::NoSchema,
+            duration: std::time::Duration::ZERO,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn failed_children_surface_as_tool_error() {
+        let outputs = vec![
+            run_output("a", RunStatus::Completed),
+            run_output("b", RunStatus::Failed),
+        ];
+        let err = merge_outputs(&outputs).expect_err("failure must be an error");
+        let text = format!("{err:#}");
+        assert!(text.contains("1 of 2 task(s) failed."), "{text}");
+        assert!(text.contains("=== b (task)"), "per-child envelopes kept: {text}");
+        let ok = merge_outputs(&[run_output("a", RunStatus::Completed)]);
+        assert!(ok.is_ok());
+    }
 
     #[test]
     fn schema_matches_ts_reference() {

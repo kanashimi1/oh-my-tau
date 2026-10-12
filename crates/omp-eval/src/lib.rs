@@ -38,6 +38,8 @@ pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 const RUNNER_SCRIPT: &str = include_str!("runner.py");
 
+pub mod js;
+
 /// Terminal status of one executed cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellStatus {
@@ -113,7 +115,27 @@ impl CellResult {
         self.status == CellStatus::Error
     }
 
-    fn partial(output: String, displays: Vec<Value>, status: CellStatus, timed_out: bool) -> Self {
+    /// omp `formatJsTimeoutAnnotation` for a force-killed JS worker: timeout
+    /// rounded up to seconds plus the state-reset notice (JS has no safe
+    /// in-process interrupt, so a timed-out worker is killed and recreated).
+    #[must_use]
+    pub fn js_timeout_annotation(timeout: Option<Duration>) -> String {
+        const RESET_NOTE: &str = "The JS worker was force-killed and its VM state was reset; variables from earlier cells are gone.";
+        match timeout {
+            None => format!("Command timed out. {RESET_NOTE}"),
+            Some(d) => {
+                let secs = d.as_millis().div_ceil(1000).max(1);
+                format!("Command timed out after {secs} seconds. {RESET_NOTE}")
+            }
+        }
+    }
+
+    pub(crate) fn partial(
+        output: String,
+        displays: Vec<Value>,
+        status: CellStatus,
+        timed_out: bool,
+    ) -> Self {
         Self {
             output,
             status,
@@ -132,7 +154,7 @@ impl CellResult {
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-enum Frame {
+pub(crate) enum Frame {
     Started {
         id: String,
     },
@@ -167,7 +189,7 @@ enum Frame {
 }
 
 impl Frame {
-    fn id(&self) -> &str {
+    pub(crate) fn id(&self) -> &str {
         match self {
             Frame::Started { id }
             | Frame::Stdout { id, .. }
@@ -180,17 +202,18 @@ impl Frame {
     }
 }
 
-struct KernelProcess {
-    child: Child,
-    stdin: ChildStdin,
-    rx: Receiver<Frame>,
-    dead: Arc<AtomicBool>,
+pub(crate) struct KernelProcess {
+    pub(crate) child: Child,
+    pub(crate) stdin: ChildStdin,
+    pub(crate) rx: Receiver<Frame>,
+    pub(crate) dead: Arc<AtomicBool>,
 }
 
 impl KernelProcess {
-    fn spawn(interpreter: &str, cwd: &std::path::Path) -> io::Result<Self> {
-        let mut child = Command::new(interpreter)
-            .args(["-u", "-c", RUNNER_SCRIPT])
+    /// Spawn `program args…` speaking the NDJSON kernel protocol on stdio.
+    pub(crate) fn spawn(program: &str, args: &[&str], cwd: &std::path::Path) -> io::Result<Self> {
+        let mut child = Command::new(program)
+            .args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -225,7 +248,7 @@ impl KernelProcess {
         })
     }
 
-    fn settle_exit(&mut self) {
+    pub(crate) fn settle_exit(&mut self) {
         let _ = self.stdin.write_all(b"{\"type\": \"exit\"}\n");
         let _ = self.stdin.flush();
         // Child::wait closes stdin on return, unblocking the runner's main loop
@@ -253,7 +276,11 @@ impl PythonKernel {
     /// or exceeds the timeout.
     pub fn start(interpreter: &str, cwd: &std::path::Path) -> io::Result<Self> {
         let kernel = Self {
-            process: Mutex::new(Some(KernelProcess::spawn(interpreter, cwd)?)),
+            process: Mutex::new(Some(KernelProcess::spawn(
+                interpreter,
+                &["-u", "-c", RUNNER_SCRIPT],
+                cwd,
+            )?)),
             next_id: AtomicU64::new(1),
             interpreter: interpreter.to_owned(),
             cwd: cwd.to_path_buf(),
@@ -291,7 +318,11 @@ impl PythonKernel {
             if let Some(p) = guard.as_mut() {
                 p.settle_exit();
             }
-            *guard = Some(KernelProcess::spawn(&self.interpreter, &self.cwd)?);
+            *guard = Some(KernelProcess::spawn(
+                &self.interpreter,
+                &["-u", "-c", RUNNER_SCRIPT],
+                &self.cwd,
+            )?);
         }
         self.run_startup(&self.init_script())?;
         self.run_startup(PRELUDE)
@@ -509,7 +540,7 @@ impl PythonKernel {
     }
 }
 
-enum RecvOutcome {
+pub(crate) enum RecvOutcome {
     TimedOut,
     Disconnected,
 }

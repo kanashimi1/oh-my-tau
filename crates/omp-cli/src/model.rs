@@ -17,8 +17,8 @@ fn map_level(l: pa_types::ai::ModelThinkingLevel) -> ThinkingLevel {
     crate::adapter::map_thinking_level(l)
 }
 
-fn from_providers(reference: &str) -> Result<Selected> {
-    let r = omp_providers::resolve(reference)?;
+async fn from_providers(reference: &str) -> Result<Selected> {
+    let r = omp_providers::resolve_async(reference.to_string()).await?;
     let headers = (!r.headers.is_empty()).then(|| r.headers.iter().cloned().collect());
     Ok(Selected {
         // No explicit level: reasoning models default to medium (some, e.g. zai
@@ -50,14 +50,14 @@ fn parse_thinking(s: &str) -> Option<ThinkingLevel> {
 ///
 /// # Errors
 /// Fails when no model reference is available or the model cannot be built.
-pub fn select(model_ref: Option<&str>) -> Result<Selected> {
+pub async fn select(model_ref: Option<&str>) -> Result<Selected> {
     let env_model = std::env::var("OMP_RS_MODEL").ok();
     if std::env::var_os("OMP_RS_BASE_URL").is_none() {
         let reference = model_ref
             .map(str::to_string)
             .or(env_model)
             .unwrap_or_else(|| "default".to_string());
-        return from_providers(&reference);
+        return from_providers(&reference).await;
     }
     let reference = model_ref
         .map(str::to_string)

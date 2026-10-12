@@ -6,6 +6,10 @@
 //! Failures are returned as `Err` so the agent loop reports `isError: true`.
 
 pub mod bash;
+mod web_search;
+mod ask;
+mod ast;
+pub mod mcp;
 mod edit;
 mod eval;
 mod find;
@@ -13,6 +17,7 @@ mod jobs;
 mod read;
 mod search;
 mod task;
+mod todo;
 mod tree;
 mod util;
 
@@ -203,6 +208,21 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             eval::schema(),
             Arc::new(|env, args, _| Box::pin(eval::eval(env, args))),
         ),
+        mk(
+            "ast_grep",
+            ast::AST_GREP_DESCRIPTION.to_string(),
+            ast::schema_ast_grep(),
+            blocking(ast::ast_grep),
+        ),
+        mk(
+            "ast_edit",
+            ast::AST_EDIT_DESCRIPTION.to_string(),
+            ast::schema_ast_edit(),
+            blocking(ast::ast_edit),
+        ),
+        ask::tool(),
+        todo::tool(),
+        web_search::tool(),
     ]
 }
 
@@ -228,7 +248,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert_eq!(
             names,
-            ["read", "bash", "edit", "glob", "grep", "write", "find", "task", "eval"]
+            ["read", "bash", "edit", "glob", "grep", "write", "find", "task", "eval", "ast_grep", "ast_edit", "ask", "todo", "web_search"]
         );
         let edit = tools.iter().find(|t| t.name() == "edit").unwrap();
         assert_eq!(edit.parameters()["properties"]["input"]["type"], "string");

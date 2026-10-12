@@ -49,8 +49,6 @@ pub fn convert_to_llm() -> ConvertToLlmFn {
 /// Shared slot the provider stream reads its target from; `set_model` swaps it.
 pub type Target = Arc<RwLock<Option<ProviderTarget>>>;
 
-const BASE_PROMPT: &str = "You are a coding agent running in a terminal. Use the available tools (bash, read, write, edit, grep, glob) to complete the user's task; prefer reading before editing and verify results by running them. Be concise.";
-
 /// Days since 1970-01-01 to (year, month, day), civil calendar.
 pub fn civil(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
@@ -65,28 +63,20 @@ pub fn civil(days: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-fn today() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
-    let (y, m, d) = civil(secs.div_euclid(86_400));
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
+/// Assemble the provider-facing system prompt: the ported omp prompt
+/// (SYSTEM.md override / flags / context files / skills / tools / env block)
+/// as one concatenated string of `\n\n`-joined blocks.
 #[must_use]
-pub fn system_prompt(cwd: &Path) -> String {
-    // Read-only: a user-level SYSTEM.md replaces the short built-in prompt.
-    let base = std::env::var_os("HOME")
-        .map(|h| Path::new(&h).join(".omp/agent/SYSTEM.md"))
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| BASE_PROMPT.to_string());
-    format!(
-        "{}\n\nCurrent working directory: {}\nCurrent date: {}",
-        base.trim_end(),
-        cwd.display(),
-        today()
+pub fn system_prompt(cwd: &Path, opts: &crate::sysprompt::Options) -> String {
+    // Edit mode does not affect the prompt; the tool surface (names) does.
+    let metas: Vec<crate::sysprompt::ToolMeta> = crate::tools::builtin_tools(
+        cwd,
+        crate::tools::edit_mode_for(""),
     )
+    .iter()
+    .map(|t| (t.name().to_string(), t.name().to_string()))
+    .collect();
+    crate::sysprompt::build(cwd, opts, &metas).blocks.join("\n\n")
 }
 
 /// Build an agent for `cwd` using the selected model, plus the provider
@@ -101,10 +91,22 @@ pub fn build_agent(
     selected: Selected,
     extra_tools: Vec<Arc<dyn AgentTool>>,
     ext_hooks: Option<&Arc<crate::ext::Extensions>>,
+    sysprompt_opts: &crate::sysprompt::Options,
 ) -> Result<(Agent, Target)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
     let mut tools = builtin_tools(cwd, edit_mode_for(&selected.model.id));
+    tools.extend(crate::tools::mcp::mcp_tools(cwd));
+    // `--tools <csv>` restricts the enabled surface to the named built-ins.
+    if let Some(csv) = sysprompt_opts.tools_csv.as_deref() {
+        let keep: Vec<String> = csv
+            .split(',')
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        tools.retain(|t| keep.iter().any(|k| k == t.name()));
+    }
     tools.extend(extra_tools);
     let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
         api_key: selected.api_key,
@@ -121,7 +123,7 @@ pub fn build_agent(
     };
     let agent = Agent::new(AgentOptions {
         initial_state: AgentInitialState {
-            system_prompt: Some(system_prompt(cwd)),
+            system_prompt: Some(system_prompt(cwd, sysprompt_opts)),
             model: Some(agent_model),
             thinking_level: Some(selected.thinking),
             tools: Some(tools),

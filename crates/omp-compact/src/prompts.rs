@@ -20,6 +20,7 @@ pub const BRANCH_SUMMARY_PREAMBLE: &str = include_str!("../prompts/branch-summar
 pub const COMPACTION_SUMMARY_CONTEXT: &str = include_str!("../prompts/compaction-summary-context.md");
 pub const BRANCH_SUMMARY_CONTEXT: &str = include_str!("../prompts/branch-summary-context.md");
 pub const HANDOFF_SUMMARY_CONTEXT: &str = include_str!("../prompts/handoff-summary-context.md");
+pub const HANDOFF_DOCUMENT: &str = include_str!("../prompts/handoff-document.md");
 pub const CONTEXT_NOTES: &str = include_str!("../prompts/context-notes.md");
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {

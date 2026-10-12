@@ -18,6 +18,11 @@ import { FindTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-p
 import { WriteTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/write.ts";
 import { TaskTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/task/index.ts";
 import { EvalTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/eval.ts";
+import { AstGrepTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/ast-grep.ts";
+import { AstEditTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/ast-edit.ts";
+import { TodoTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/todo.ts";
+import { AskTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/ask.ts";
+import { WebSearchTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/web/search";
 
 // Minimal ToolSession stub: tools only read config/description state here, never
 // execute. Declared structurally so no omp types need to be imported.
@@ -47,6 +52,7 @@ function stubSession(): StubSession {
 interface ExtractedTool {
 	name: string;
 	description_first_line: string;
+	description: string;
 	parameters: unknown;
 }
 
@@ -55,7 +61,7 @@ interface ToolLike {
 	parameters: unknown;
 }
 
-const NAMES = ["read", "bash", "edit", "glob", "grep", "find", "write", "task", "eval"];
+const NAMES = ["read", "bash", "edit", "glob", "grep", "find", "write", "task", "eval", "todo", "ask", "ast_grep", "ast_edit", "web_search"];
 
 const session = stubSession();
 const factories: Array<(s: StubSession) => ToolLike> = [
@@ -71,6 +77,11 @@ const factories: Array<(s: StubSession) => ToolLike> = [
 	// every optional lookup and yields the protocol-default render.
 	s => (TaskTool as any).create(permissiveStub()),
 	s => new EvalTool(permissiveStub()),
+	s => new TodoTool(s),
+	s => new AskTool(s),
+	s => new AstGrepTool(session as any),
+	s => new AstEditTool(session as any),
+	s => new WebSearchTool(s),
 ];
 
 function permissiveStub(): any {
@@ -128,6 +139,7 @@ for (const [i, make] of factories.entries()) {
 		tools.push({
 			name,
 			description_first_line: tool.description.split("\n", 1)[0] ?? "",
+			description: tool.description,
 			parameters: toSchema(tool.parameters),
 		});
 	} catch (e) {

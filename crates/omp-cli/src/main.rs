@@ -10,7 +10,9 @@ mod paging;
 mod persist;
 mod rpc;
 mod runtime;
+mod sysprompt;
 mod tools;
+mod tree;
 
 use std::path::PathBuf;
 
@@ -26,6 +28,10 @@ struct Args {
     no_extensions: bool,
     extension: Vec<PathBuf>,
     thinking: Option<String>,
+    system_prompt: Option<String>,
+    append_system_prompt: Option<String>,
+    tools_csv: Option<String>,
+    dump_system_prompt: bool,
 }
 
 fn parse_args() -> Result<Args> {
@@ -47,6 +53,10 @@ fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
         no_extensions: false,
         extension: Vec::new(),
         thinking: None,
+        system_prompt: None,
+        append_system_prompt: None,
+        tools_csv: None,
+        dump_system_prompt: false,
     };
     let mut messages: Vec<String> = Vec::new();
     let mut it = it.peekable();
@@ -73,6 +83,10 @@ fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
             "--thinking" => a.thinking = Some(value("--thinking")?),
             "--extension" => a.extension.push(PathBuf::from(value("--extension")?)),
             "--no-session" => a.no_session = true,
+            "--system-prompt" => a.system_prompt = Some(value("--system-prompt")?),
+            "--append-system-prompt" => a.append_system_prompt = Some(value("--append-system-prompt")?),
+            "--tools" => a.tools_csv = Some(value("--tools")?),
+            "--dump-system-prompt" => a.dump_system_prompt = true,
             "--no-extensions" => a.no_extensions = true,
             "-h" | "--help" => {
                 println!(
@@ -111,7 +125,34 @@ async fn main() -> Result<()> {
         Some(c) => c.canonicalize()?,
         None => std::env::current_dir()?,
     };
-    let mut selected = model::select(args.model.as_deref())?;
+    // System prompt options are assembled before model selection so
+    // `--dump-system-prompt` can run without a provider.
+    let sp_opts = sysprompt::Options {
+        system_prompt: args.system_prompt.clone(),
+        append_system_prompt: args.append_system_prompt.clone(),
+        tools_csv: args.tools_csv.clone(),
+        subagent: false,
+        model: args.model.clone().unwrap_or_default(),
+        generated_append: Vec::new(),
+    };
+    if args.dump_system_prompt {
+        let metas: Vec<sysprompt::ToolMeta> = tools::builtin_tools(
+            &cwd,
+            tools::edit_mode_for(sp_opts.model.split('/').next().unwrap_or("")),
+        )
+        .iter()
+        .map(|t| (t.name().to_string(), t.name().to_string()))
+        .collect();
+        let built = sysprompt::build(&cwd, &sp_opts, &metas);
+        for (i, block) in built.blocks.iter().enumerate() {
+            if i > 0 {
+                println!();
+            }
+            println!("{block}");
+        }
+        return Ok(());
+    }
+    let mut selected = model::select(args.model.as_deref()).await?;
     if let Some(level) = args.thinking.as_deref() {
         selected.thinking = runtime::parse_level(level)
             .ok_or_else(|| anyhow::anyhow!("unknown thinking level: {level}"))?;
@@ -129,7 +170,7 @@ async fn main() -> Result<()> {
         Some(e) => e.tools().await.unwrap_or_default(),
         None => Vec::new(),
     };
-    let (agent, target) = agent::build_agent(&cwd, selected, extra_tools, extensions.as_ref())?;
+    let (agent, target) = agent::build_agent(&cwd, selected, extra_tools, extensions.as_ref(), &sp_opts)?;
 
     let session = persist::attach_with(&agent, &cwd, args.no_session).await;
     if let (Some(e), Ok(p)) = (extensions.as_ref(), &session) {

@@ -85,6 +85,11 @@ pub struct TaskSpec {
     pub output_schema: Option<Value>,
     /// Strict vs permissive schema enforcement.
     pub schema_mode: SchemaMode,
+    /// Per-spawn model selector (validated by the caller), passed to the
+    /// child as `--model` (TS `spawnParamsFor` honors `item.model`).
+    pub model: Option<String>,
+    /// Per-spawn tool allow-list override, passed to the child as `--tools`.
+    pub tools: Option<Vec<String>>,
 }
 
 impl TaskSpec {
@@ -102,6 +107,21 @@ impl TaskSpec {
             cwd: cwd.into(),
             output_schema: item.output_schema.clone(),
             schema_mode: item.schema_mode,
+            // A string selector passes through; a prioritized list flattens
+            // to a comma-separated selector (TS `normalizeModelPatternList`).
+            model: item.model.as_ref().map(|m| match m {
+                Value::String(s) => s.clone(),
+                Value::Array(list) => list
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .flat_map(|s| s.split(','))
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                _ => String::new(),
+            }),
+            tools: item.tools.clone(),
         }
     }
 }
@@ -225,10 +245,18 @@ impl TaskRunner {
     async fn spawn_child(&self, spec: &TaskSpec) -> std::io::Result<std::process::Output> {
         let mut attempt = 0;
         loop {
-            let result = tokio::process::Command::new(&self.binary)
+            let mut command = tokio::process::Command::new(&self.binary);
+            command
                 .arg("-p")
                 .arg(&spec.prompt)
-                .current_dir(&spec.cwd)
+                .current_dir(&spec.cwd);
+            if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
+                command.arg("--model").arg(model);
+            }
+            if let Some(tools) = spec.tools.as_ref().filter(|t| !t.is_empty()) {
+                command.arg("--tools").arg(tools.join(","));
+            }
+            let result = command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -355,6 +383,8 @@ mod tests {
             cwd: cwd.to_path_buf(),
             output_schema: None,
             schema_mode: SchemaMode::Permissive,
+            model: None,
+            tools: None,
         }
     }
 

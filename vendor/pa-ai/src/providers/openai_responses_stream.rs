@@ -790,6 +790,10 @@ impl<'a> ResponsesStreamProcessor<'a> {
                             .get("total_tokens")
                             .and_then(serde_json::Value::as_u64)
                             .unwrap_or(0),
+                        reasoning_tokens: usage
+                            .get("output_tokens_details")
+                            .and_then(|details| details.get("reasoning_tokens"))
+                            .and_then(serde_json::Value::as_u64),
                         cost: UsageCost::default(),
                     };
                 }

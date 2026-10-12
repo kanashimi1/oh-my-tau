@@ -266,6 +266,8 @@ impl GoogleStreamState {
                 cache_read: cached_tokens,
                 cache_write: 0,
                 total_tokens: get("totalTokenCount"),
+                // omp: `reasoningTokens` only when the model reported thinking tokens.
+                reasoning_tokens: Some(get("thoughtsTokenCount")).filter(|t| *t > 0),
                 cost: UsageCost::default(),
             };
             calculate_cost(model, &mut output.usage, None);

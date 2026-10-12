@@ -146,6 +146,13 @@ pub struct Usage {
     pub cache_write: u64,
     #[serde(rename = "totalTokens", default)]
     pub total_tokens: u64,
+    /// Provider-reported reasoning tokens (already included in `output`).
+    #[serde(
+        rename = "reasoningTokens",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reasoning_tokens: Option<u64>,
     #[serde(default)]
     pub cost: UsageCost,
 }
@@ -159,6 +166,7 @@ impl Usage {
             cache_read: 0,
             cache_write: 0,
             total_tokens: 0,
+            reasoning_tokens: None,
             cost: UsageCost {
                 input: 0.0,
                 output: 0.0,
@@ -266,6 +274,52 @@ pub struct AssistantMessage {
     pub error_message: Option<String>,
     #[serde(default)]
     pub timestamp: i64,
+    /// Request timing, credential and context-accounting extras (flattened onto the wire object).
+    #[serde(flatten)]
+    pub meta: AssistantMeta,
+}
+
+/// Provider-turn metadata omp stamps onto assistant messages. Every field is
+/// optional and absent from the wire when unset.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AssistantMeta {
+    /// Stored credential row that produced this turn (absent for env/config keys).
+    #[serde(
+        rename = "credentialId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub credential_id: Option<i64>,
+    /// Prompt accounting recorded when the message was committed.
+    #[serde(
+        rename = "contextSnapshot",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub context_snapshot: Option<ContextSnapshot>,
+    /// Request duration in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f64>,
+    /// Time to first token in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft: Option<f64>,
+    /// Local wall-clock ms when the response finished streaming.
+    #[serde(
+        rename = "completedAt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub completed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextSnapshot {
+    #[serde(rename = "promptTokens", default)]
+    pub prompt_tokens: u64,
+    #[serde(rename = "nonMessageTokens", default)]
+    pub non_message_tokens: u64,
+    #[serde(rename = "compactionEpoch", default)]
+    pub compaction_epoch: u64,
 }
 
 impl AssistantMessage {

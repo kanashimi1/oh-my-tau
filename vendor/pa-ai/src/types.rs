@@ -109,6 +109,26 @@ pub struct SimpleStreamOptions {
     /// Explicit model reasoning selection. Omit to preserve the provider default.
     pub reasoning: Option<ModelThinkingLevel>,
     pub thinking_budgets: Option<ThinkingBudgets>,
+    /// Force-disable reasoning for the request even when the model supports it (TS
+    /// `disableReasoning`). Takes precedence over [`Self::reasoning`]; fast utility calls
+    /// (title generation, judgments) use it to keep the output budget for the answer.
+    pub disable_reasoning: bool,
+    /// Tool choice override for compatible providers (TS `toolChoice`).
+    pub tool_choice: Option<SimpleToolChoice>,
+}
+
+/// Unified tool-choice override (TS `ToolChoice`); each provider maps it to its wire format
+/// (`any` becomes openai-completions `required`, anthropic keeps `any`, and a function pin maps
+/// to the provider's named-tool form).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SimpleToolChoice {
+    Auto,
+    None,
+    Any,
+    Required,
+    Function {
+        name: String,
+    },
 }
 
 impl SimpleStreamOptions {
@@ -118,6 +138,8 @@ impl SimpleStreamOptions {
             base,
             reasoning: None,
             thinking_budgets: None,
+            disable_reasoning: false,
+            tool_choice: None,
         }
     }
 }

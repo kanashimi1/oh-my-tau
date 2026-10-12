@@ -416,6 +416,7 @@ fn with_usage_estimate(
         cache_read,
         cache_write,
         total_tokens: input + output_tokens + cache_read + cache_write,
+        reasoning_tokens: None,
         cost: UsageCost::default(),
     };
     message

@@ -1,0 +1,577 @@
+{
+ "scenarios": {
+  "aa66bb66": {
+   "agent": [
+    {
+     "role": "compactionSummary",
+     "summary": "Scenario A remote summary",
+     "shortSummary": "A short",
+     "tokensBefore": 1234,
+     "tokensAfter": 555,
+     "method": "remote",
+     "providerPayload": {
+      "type": "openaiResponsesHistory",
+      "provider": "openai-codex",
+      "items": [
+       {
+        "id": "cmp_fake1",
+        "type": "compaction",
+        "encrypted_content": "gAAAAAfake"
+       }
+      ]
+     },
+     "timestamp": 1791799220000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario A: after compaction"
+      }
+     ],
+     "timestamp": 3030
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario A: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ],
+   "llm": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\nScenario A remote summary\n</summary>"
+      }
+     ],
+     "attribution": "agent",
+     "historyRewriteAt": 1791799220000,
+     "providerPayload": {
+      "type": "openaiResponsesHistory",
+      "provider": "openai-codex",
+      "items": [
+       {
+        "id": "cmp_fake1",
+        "type": "compaction",
+        "encrypted_content": "gAAAAAfake"
+       }
+      ]
+     },
+     "timestamp": 1791799220000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario A: after compaction"
+      }
+     ],
+     "timestamp": 3030,
+     "attribution": "user"
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario A: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ]
+  },
+  "bb66bb66": {
+   "agent": [
+    {
+     "role": "compactionSummary",
+     "summary": "Scenario B remote summary",
+     "tokensBefore": 1234,
+     "tokensAfter": 600,
+     "method": "remote",
+     "providerPayload": {
+      "type": "openaiResponsesHistory",
+      "provider": "openai-codex",
+      "items": [
+       {
+        "id": "cmp_fake2",
+        "type": "compaction",
+        "encrypted_content": "gAAAAAfake2"
+       }
+      ]
+     },
+     "timestamp": 1791799280000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario B: between replay and compaction"
+      }
+     ],
+     "timestamp": 1030
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario B: after compaction"
+      }
+     ],
+     "timestamp": 3030
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario B: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ],
+   "llm": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\nScenario B remote summary\n</summary>"
+      }
+     ],
+     "attribution": "agent",
+     "historyRewriteAt": 1791799280000,
+     "providerPayload": {
+      "type": "openaiResponsesHistory",
+      "provider": "openai-codex",
+      "items": [
+       {
+        "id": "cmp_fake2",
+        "type": "compaction",
+        "encrypted_content": "gAAAAAfake2"
+       }
+      ]
+     },
+     "timestamp": 1791799280000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario B: between replay and compaction"
+      }
+     ],
+     "timestamp": 1030,
+     "attribution": "user"
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario B: after compaction"
+      }
+     ],
+     "timestamp": 3030,
+     "attribution": "user"
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario B: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ]
+  },
+  "cc77cc77": {
+   "agent": [
+    {
+     "role": "compactionSummary",
+     "summary": "Scenario C anthropic summary",
+     "shortSummary": "C short",
+     "tokensBefore": 1234,
+     "tokensAfter": 700,
+     "method": "remote",
+     "providerPayload": {
+      "type": "anthropicCompaction",
+      "provider": "anthropic",
+      "content": "NATIVE-CONTENT-BLOCK",
+      "signature": "sig-fake",
+      "filesText": "<files>\n- src/main.rs (RW)\n</files>"
+     },
+     "historyRewriteAt": 1791799329999,
+     "timestamp": 1791799340000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: kept-tail user turn"
+      }
+     ],
+     "timestamp": 1030
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: kept-tail answer"
+      }
+     ],
+     "timestamp": 1030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: after compaction"
+      }
+     ],
+     "timestamp": 3030
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ],
+   "llm": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\nScenario C anthropic summary\n</summary>"
+      }
+     ],
+     "attribution": "agent",
+     "historyRewriteAt": 1791799329999,
+     "providerPayload": {
+      "type": "anthropicCompaction",
+      "provider": "anthropic",
+      "content": "NATIVE-CONTENT-BLOCK",
+      "signature": "sig-fake",
+      "filesText": "<files>\n- src/main.rs (RW)\n</files>"
+     },
+     "timestamp": 1791799340000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: kept-tail user turn"
+      }
+     ],
+     "timestamp": 1030,
+     "attribution": "user"
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: kept-tail answer"
+      }
+     ],
+     "timestamp": 1030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: after compaction"
+      }
+     ],
+     "timestamp": 3030,
+     "attribution": "user"
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario C: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ]
+  },
+  "dd55dd55": {
+   "agent": [
+    {
+     "role": "compactionSummary",
+     "summary": "Scenario D snapcompact summary",
+     "shortSummary": "D short",
+     "tokensBefore": 1234,
+     "tokensAfter": 800,
+     "method": "snapcompact",
+     "blocks": [
+      {
+       "type": "text",
+       "text": "HEAD-TEXT"
+      },
+      {
+       "type": "text",
+       "text": "-------------- 2 archived image frames unavailable here --------------\n-------------- middle history omitted above\nTAIL-TEXT"
+      }
+     ],
+     "timestamp": 1791799400000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: before compaction"
+      }
+     ],
+     "timestamp": 30
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: early answer"
+      }
+     ],
+     "timestamp": 5030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: after compaction"
+      }
+     ],
+     "timestamp": 3030
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ],
+   "llm": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D snapcompact summary"
+      },
+      {
+       "type": "text",
+       "text": "HEAD-TEXT"
+      },
+      {
+       "type": "text",
+       "text": "-------------- 2 archived image frames unavailable here --------------\n-------------- middle history omitted above\nTAIL-TEXT"
+      }
+     ],
+     "attribution": "agent",
+     "historyRewriteAt": 1791799400000,
+     "timestamp": 1791799400000
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: before compaction"
+      }
+     ],
+     "timestamp": 30,
+     "attribution": "user"
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: early answer"
+      }
+     ],
+     "timestamp": 5030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: after compaction"
+      }
+     ],
+     "timestamp": 3030,
+     "attribution": "user"
+    },
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "text",
+       "text": "Scenario D: post answer"
+      }
+     ],
+     "timestamp": 3030,
+     "provider": "zai",
+     "model": "glm-5.3-flash",
+     "stopReason": "stop",
+     "usage": {
+      "input": 10,
+      "output": 5,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "totalTokens": 15
+     }
+    }
+   ]
+  }
+ },
+ "handoffPrompt": "<critical>\nWrite a handoff document for another instance of yourself.\nThe handoff MUST be sufficient for seamless continuation without access to this conversation.\nOutput ONLY the handoff document. No preamble, no commentary, no wrapper text.\n</critical>\n\n<instruction>\nCapture exact technical state, not abstractions.\n- File paths, symbol names, commands run\n- Test results, observed failures\n- Decisions made\n- Partial work affecting the next step\nRegister: address the successor directly in the imperative (\"Fix X\", \"Run Y\") — never first person (\"I need to…\", \"my attempt…\").\nThe handoff mechanism is invisible to the document: NEVER list writing, generating, or delivering a handoff/summary/context document as progress or a next step. Progress and Next Steps cover the user's task only.\n</instruction>\n\n<output>\nUse exactly this structure:\n\n## Goal\n[What the user is trying to accomplish]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks with specifics]\n\n### In Progress\n- [ ] [Current work if any]\n\n### Pending\n- [ ] [Tasks mentioned but not started]\n\n## Key Decisions\n- **[Decision]**: [Rationale]\n\n## Critical Context\n- Code snippets, file paths, function/type names, error messages, data essential to continue\n- Repository state if relevant\n\n## Next Steps\n1. [What should happen next]\n</output>",
+ "handoffPromptFocus": "<critical>\nWrite a handoff document for another instance of yourself.\nThe handoff MUST be sufficient for seamless continuation without access to this conversation.\nOutput ONLY the handoff document. No preamble, no commentary, no wrapper text.\n</critical>\n\n<instruction>\nCapture exact technical state, not abstractions.\n- File paths, symbol names, commands run\n- Test results, observed failures\n- Decisions made\n- Partial work affecting the next step\nRegister: address the successor directly in the imperative (\"Fix X\", \"Run Y\") — never first person (\"I need to…\", \"my attempt…\").\nThe handoff mechanism is invisible to the document: NEVER list writing, generating, or delivering a handoff/summary/context document as progress or a next step. Progress and Next Steps cover the user's task only.\n</instruction>\n\n<output>\nUse exactly this structure:\n\n## Goal\n[What the user is trying to accomplish]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks with specifics]\n\n### In Progress\n- [ ] [Current work if any]\n\n### Pending\n- [ ] [Tasks mentioned but not started]\n\n## Key Decisions\n- **[Decision]**: [Rationale]\n\n## Critical Context\n- Code snippets, file paths, function/type names, error messages, data essential to continue\n- Repository state if relevant\n\n## Next Steps\n1. [What should happen next]\n</output>\n\n<instruction>\nAdditional focus: Focus on the parser module\n</instruction>"
+}

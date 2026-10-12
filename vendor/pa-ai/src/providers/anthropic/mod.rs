@@ -14,7 +14,7 @@ use crate::providers::simple_options::{adjust_max_tokens_for_thinking, build_bas
 use crate::registry::Provider;
 use crate::types::{
     AssistantMessage, CacheRetention, Context, Model, ModelExt, ModelThinkingLevel,
-    SimpleStreamOptions, StopReason, StreamOptions, Tool, Usage,
+    SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Tool, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
 
@@ -463,9 +463,19 @@ pub fn stream_simple_anthropic(
 
     let base = build_base_options(model, options, Some(&api_key));
     let reasoning = options.and_then(|options| options.reasoning);
-    if reasoning.is_none() || reasoning == Some(ModelThinkingLevel::Off) {
+    // TS `disableReasoning` wins over `reasoning`: thinking goes off regardless of the model.
+    let disable_reasoning = options.is_some_and(|options| options.disable_reasoning);
+    let tool_choice = options.and_then(|options| options.tool_choice.as_ref()).map(|choice| match choice {
+        SimpleToolChoice::Auto => AnthropicToolChoice::Auto,
+        SimpleToolChoice::None => AnthropicToolChoice::None,
+        // The anthropic wire has no "required": a forced call is `any`.
+        SimpleToolChoice::Any | SimpleToolChoice::Required => AnthropicToolChoice::Any,
+        SimpleToolChoice::Function { name } => AnthropicToolChoice::Tool { name: name.clone() },
+    });
+    if disable_reasoning || reasoning.is_none() || reasoning == Some(ModelThinkingLevel::Off) {
         let mut anthropic_options = AnthropicOptions::from_base(base);
         anthropic_options.thinking_enabled = Some(false);
+        anthropic_options.tool_choice = tool_choice;
         return stream_anthropic(model, context, Some(&anthropic_options));
     }
 
@@ -475,6 +485,7 @@ pub fn stream_simple_anthropic(
         let mut anthropic_options = AnthropicOptions::from_base(base);
         anthropic_options.thinking_enabled = Some(true);
         anthropic_options.effort = Some(effort);
+        anthropic_options.tool_choice = tool_choice;
         return stream_anthropic(model, context, Some(&anthropic_options));
     }
 
@@ -515,6 +526,7 @@ pub fn stream_simple_anthropic(
     anthropic_options.base.max_tokens = Some(adjusted.0);
     anthropic_options.thinking_enabled = Some(true);
     anthropic_options.thinking_budget_tokens = Some(adjusted.1);
+    anthropic_options.tool_choice = tool_choice;
     stream_anthropic(model, context, Some(&anthropic_options))
 }
 

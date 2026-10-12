@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -167,11 +168,26 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
     // child has exited we return whatever was collected (TS `execSync`
     // semantics), so a leftover background descendant holding the pipe open
     // cannot turn a successful command into a cached failure.
+    //
+    // The pipe is non-blocking: a `setsid` descendant escapes the process
+    // group, so `kill_group` cannot unblock the reader. The stop flag ends
+    // the poll loop instead, guaranteeing the thread exits per attempt.
+    {
+        let fd = out.as_raw_fd();
+        // SAFETY: `fcntl` on a live fd owned by `out` for the rest of `run`.
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+        }
+    }
     let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
     let (done_tx, done_rx) = mpsc::channel::<()>();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let buf = Arc::clone(&buf);
-        std::thread::spawn(move || {
+        let stop = Arc::clone(&stop);
+        std::thread::Builder::new()
+            .name("config-cmd-reader".to_string())
+            .spawn(move || {
             let mut chunk = [0u8; 8192];
             loop {
                 match out.read(&mut chunk) {
@@ -180,11 +196,19 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .extend_from_slice(&chunk[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(_) => break,
                 }
             }
             let _ = done_tx.send(());
-        });
+            })
+            .ok()?;
     }
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -200,10 +224,11 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
         }
     };
     // The direct child has exited. Give the reader READ_GRACE to see EOF; if a
-    // descendant still holds the pipe, kill the group so the reader unblocks
-    // (and the thread exits) instead of leaking per attempt.
+    // descendant still holds the pipe, kill the group and stop the reader's
+    // poll loop so the thread exits instead of leaking per attempt.
     if done_rx.recv_timeout(READ_GRACE).is_err() {
         kill_group(&mut child);
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = done_rx.recv_timeout(READ_GRACE);
     }
     let text = String::from_utf8_lossy(
@@ -272,6 +297,29 @@ mod tests {
         let started = Instant::now();
         assert_eq!(run("setsid sleep 100 & echo started", Duration::from_millis(300)).as_deref(), Some("started"));
         assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    }
+
+    /// Reader threads must not accumulate across runs whose pipe is held open
+    /// by an escaped (`setsid`) descendant: `run` returns only after its
+    /// reader thread has exited (ReviewWave3).
+    #[test]
+    fn escaped_pipe_holder_does_not_leak_reader_threads() {
+        fn named_reader_threads() -> usize {
+            std::fs::read_dir("/proc/self/task")
+                .unwrap()
+                .filter_map(|e| {
+                    std::fs::read_to_string(e.ok()?.path().join("comm")).ok()
+                })
+                .filter(|name| name.trim() == "config-cmd-reader")
+                .count()
+        }
+        for _ in 0..3 {
+            assert_eq!(
+                run("setsid sleep 60 & echo started", Duration::from_millis(300)).as_deref(),
+                Some("started")
+            );
+        }
+        assert_eq!(named_reader_threads(), 0, "reader threads leaked");
     }
 
     /// L1: different commands run concurrently -- the global lock is never held

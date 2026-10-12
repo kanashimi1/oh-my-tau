@@ -208,11 +208,16 @@ impl Runtime {
     ) -> Arc<Self> {
         let live = agent.state().await.model;
         let edit_mode = edit_mode_for(&live.id);
-        let recovery_cfg = recovery_cfg.unwrap_or_else(|| {
-            resolver(&format!("{}/{}", live.provider, live.id))
-                .map(|r| RecoveryConfig::from_resolved(&r))
-                .unwrap_or_default()
-        });
+        let recovery_cfg = match recovery_cfg {
+            Some(cfg) => cfg,
+            None => match resolver(format!("{}/{}", live.provider, live.id)).await {
+                Ok(r) => {
+                    agent.set_credential_id(r.credential_id);
+                    RecoveryConfig::from_resolved(&r)
+                }
+                Err(_) => RecoveryConfig::default(),
+            },
+        };
         let recovery = TurnRecovery::new(recovery_cfg);
         persist.defer_errors(true);
         let compaction = crate::compact::load_settings();
@@ -486,7 +491,7 @@ impl Runtime {
         };
         let mut switched = false;
         for selector in candidates {
-            let Ok(resolved) = (self.resolver)(&selector) else { continue };
+            let Ok(resolved) = (self.resolver)(selector.clone()).await else { continue };
             if resolved.api_key.is_none() {
                 continue;
             }
@@ -567,7 +572,7 @@ impl Runtime {
         let now = u64::try_from(pa_agent::now_ms()).unwrap_or(0);
         let plan = lock(&self.recovery).state_mut().restore_plan(&current, Some(level_name(level)), now);
         let Some(plan) = plan else { return };
-        let Ok(resolved) = (self.resolver)(&plan.selector) else { return };
+        let Ok(resolved) = (self.resolver)(plan.selector.clone()).await else { return };
         if resolved.api_key.is_none() {
             return;
         }
@@ -1024,6 +1029,7 @@ impl Runtime {
         let (_, data) = crate::compact::compact_now(&self.persist, &entries, &summarizer, &params).await?;
         let rebuilt = crate::compact::rebuild_context(&self.entries()?)?;
         self.agent.set_messages(rebuilt).await;
+        self.agent.set_compaction_epoch(self.agent.compaction_epoch() + 1);
         Ok(data)
     }
 
@@ -1071,7 +1077,8 @@ impl Runtime {
 
     async fn select_model(&self, provider: &str, model_id: &str, role: Option<&str>) -> Result<Value, CmdError> {
         let reference = format!("{provider}/{model_id}");
-        let resolved = (self.resolver)(&reference)
+        let resolved = (self.resolver)(reference.clone())
+            .await
             .map_err(|_| CmdError::new(format!("Model not found: {provider}/{model_id}")))?;
         if resolved.provider != provider || resolved.id != model_id {
             return Err(CmdError::new(format!("Model not found: {provider}/{model_id}")));
@@ -1114,6 +1121,7 @@ impl Runtime {
             headers: (!resolved.headers.is_empty()).then(|| resolved.headers.iter().cloned().collect()),
         });
         self.agent.set_model(agent_model).await;
+        self.agent.set_credential_id(resolved.credential_id);
         let mode = edit_mode_for(&resolved.id);
         let rebuild = {
             let mut st = lock(&self.settings);
@@ -1122,7 +1130,11 @@ impl Runtime {
             changed
         };
         if rebuild {
-            self.agent.set_tools(builtin_tools(&self.cwd, mode)).await;
+            {
+                let mut tools = builtin_tools(&self.cwd, mode);
+                tools.extend(crate::tools::mcp::mcp_tools(&self.cwd));
+                self.agent.set_tools(tools).await;
+            }
         }
         if changing {
             self.emit_event(json!({"type": "model_changed"}));
@@ -1399,12 +1411,13 @@ pub fn newest_session(dir: &Path) -> Option<PathBuf> {
 
 /// Models whose provider has credentials (plus the live model), for
 /// `get_available_models` / `cycle_model`.
-pub fn available_models(current: Option<&pa_types::ai::Model>) -> Vec<pa_types::ai::Model> {
+pub async fn available_models(current: Option<&pa_types::ai::Model>) -> Vec<pa_types::ai::Model> {
     let mut out: Vec<pa_types::ai::Model> = Vec::new();
     for provider in pa_ai::models_generated::get_providers() {
         let models = pa_ai::models_generated::get_models(provider);
         let Some(first) = models.first() else { continue };
-        let has_key = omp_providers::resolve(&format!("{provider}/{}", first.id))
+        let has_key = omp_providers::resolve_async(format!("{provider}/{}", first.id))
+            .await
             .is_ok_and(|r| r.api_key.is_some());
         if has_key {
             out.extend(models.into_iter().cloned());
@@ -1445,6 +1458,12 @@ pub async fn run_print(agent: Agent, target: Target, cwd: PathBuf, persist: Pers
 // (CliExt2: new functions only; used by `ext.rs` for the extension host.)
 
 impl Runtime {
+    /// Run `f` against the live session writer (tree navigation: leaf moves,
+    /// `branch_summary` appends).
+    pub fn with_writer<R>(&self, f: impl FnOnce(&mut omp_session::SessionWriter) -> R) -> R {
+        self.persist.with_writer(f)
+    }
+
     /// Append a non-message entry (`custom`, extension `append_entry`) to the
     /// live session file; a no-op write-wise for `--no-session` scratch files.
     ///

@@ -1,0 +1,1850 @@
+[
+ {
+  "name": "flow_init_start_done_block_drop_rm_append",
+  "steps": [
+   {
+    "params": {
+     "op": "init",
+     "list": [
+      {
+       "phase": "Setup",
+       "items": [
+        "install deps",
+        "write config"
+       ]
+      },
+      {
+       "phase": "Build",
+       "items": [
+        "compile",
+        "bundle"
+       ]
+      }
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (4):\n  - install deps [in_progress] (Setup)\n  - write config [pending] (Setup)\n  - compile [pending] (Build)\n  - bundle [pending] (Build)\nOverall: 0/4 done, 4 open.\nActive phase 1/2 \"Setup\" (0/2).\n  Setup:\n    - [ ] install deps (in progress)\n    - [ ] write config\n  Build:\n    - [ ] compile\n    - [ ] bundle",
+    "details": {
+     "op": "init",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "in_progress"
+        },
+        {
+         "content": "write config",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "pending"
+        },
+        {
+         "content": "bundle",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "install deps"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - write config [in_progress] (Setup)\n  - compile [pending] (Build)\n  - bundle [pending] (Build)\nOverall: 1/4 done, 3 open.\nActive phase 1/2 \"Setup\" (1/2).\n  Setup:\n    - [X] install deps\n    - [ ] write config (in progress)\n  Build:\n    - [ ] compile\n    - [ ] bundle",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "in_progress"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "pending"
+        },
+        {
+         "content": "bundle",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "Setup",
+       "content": "install deps"
+      }
+     ]
+    }
+   },
+   {
+    "params": {
+     "op": "start",
+     "task": "compile"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - write config [pending] (Setup)\n  - compile [in_progress] (Build)\n  - bundle [pending] (Build)\nOverall: 1/4 done, 3 open.\nActive phase 1/2 \"Setup\" (1/2).\n  Setup:\n    - [X] install deps\n    - [ ] write config\n  Build:\n    - [ ] compile (in progress)\n    - [ ] bundle",
+    "details": {
+     "op": "start",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "in_progress"
+        },
+        {
+         "content": "bundle",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - write config [pending] (Setup)\n  - compile [in_progress] (Build)\n  - bundle [pending] (Build)\nOverall: 1/4 done, 3 open.\nActive phase 1/2 \"Setup\" (1/2).\n  Setup:\n    - [X] install deps\n    - [ ] write config\n  Build:\n    - [ ] compile (in progress)\n    - [ ] bundle",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "in_progress"
+        },
+        {
+         "content": "bundle",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "block",
+     "task": "write config",
+     "reason": "waiting   on\nuser"
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - compile [in_progress] (Build)\n  - bundle [pending] (Build)\nOverall: 1/4 done, 2 open, 1 blocked.\nActive phase 2/2 \"Build\" (0/2).\n  Setup:\n    - [X] install deps\n    - [ ] write config (blocked: waiting on user)\n  Build:\n    - [ ] compile (in progress)\n    - [ ] bundle",
+    "details": {
+     "op": "block",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "blocked",
+         "blocker": "waiting on user"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "in_progress"
+        },
+        {
+         "content": "bundle",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "unblock",
+     "task": "write config"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - write config [pending] (Setup)\n  - compile [in_progress] (Build)\n  - bundle [pending] (Build)\nOverall: 1/4 done, 3 open.\nActive phase 1/2 \"Setup\" (1/2).\n  Setup:\n    - [X] install deps\n    - [ ] write config\n  Build:\n    - [ ] compile (in progress)\n    - [ ] bundle",
+    "details": {
+     "op": "unblock",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "in_progress"
+        },
+        {
+         "content": "bundle",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "drop",
+     "phase": "Build"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - write config [in_progress] (Setup)\nOverall: 3/4 done, 1 open.\nActive phase 1/2 \"Setup\" (1/2) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).\n  Setup:\n    - [X] install deps\n    - [ ] write config (in progress)\n  Build:\n    - [ ] compile (dropped)\n    - [ ] bundle (dropped)",
+    "details": {
+     "op": "drop",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "in_progress"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "abandoned"
+        },
+        {
+         "content": "bundle",
+         "status": "abandoned"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "rm",
+     "task": "bundle"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - write config [in_progress] (Setup)\nOverall: 2/3 done, 1 open.\nActive phase 1/2 \"Setup\" (1/2) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).\n  Setup:\n    - [X] install deps\n    - [ ] write config (in progress)\n  Build:\n    - [ ] compile (dropped)",
+    "details": {
+     "op": "rm",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "in_progress"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "abandoned"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "append",
+     "phase": "Build",
+     "items": [
+      "ship"
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - write config [in_progress] (Setup)\n  - ship [pending] (Build)\nOverall: 2/4 done, 2 open.\nActive phase 1/2 \"Setup\" (1/2) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).\n  Setup:\n    - [X] install deps\n    - [ ] write config (in progress)\n  Build:\n    - [ ] compile (dropped)\n    - [ ] ship",
+    "details": {
+     "op": "append",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "in_progress"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "abandoned"
+        },
+        {
+         "content": "ship",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "write config"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - ship [in_progress] (Build)\nOverall: 3/4 done, 1 open.\nActive phase 2/2 \"Build\" (1/2).\n  Setup:\n    - [X] install deps\n    - [X] write config\n  Build:\n    - [ ] compile (dropped)\n    - [ ] ship (in progress)",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "completed"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "abandoned"
+        },
+        {
+         "content": "ship",
+         "status": "in_progress"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "Setup",
+       "content": "write config"
+      }
+     ]
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "ship"
+    },
+    "isError": false,
+    "text": "Remaining items: none.\nOverall: 4/4 done, 0 open.\nActive phase 2/2 \"Build\" (2/2).\n  Setup:\n    - [X] install deps\n    - [X] write config\n  Build:\n    - [ ] compile (dropped)\n    - [X] ship",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "Setup",
+       "tasks": [
+        {
+         "content": "install deps",
+         "status": "completed"
+        },
+        {
+         "content": "write config",
+         "status": "completed"
+        }
+       ]
+      },
+      {
+       "name": "Build",
+       "tasks": [
+        {
+         "content": "compile",
+         "status": "abandoned"
+        },
+        {
+         "content": "ship",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "Build",
+       "content": "ship"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "flat_init_inference",
+  "steps": [
+   {
+    "params": {
+     "items": [
+      "a",
+      "b"
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - a [in_progress] (Tasks)\n  - b [pending] (Tasks)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"Tasks\" (0/2).\n  Tasks:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "init",
+     "phases": [
+      {
+       "name": "Tasks",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "a"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - b [in_progress] (Tasks)\nOverall: 1/2 done, 1 open.\nActive phase 1/1 \"Tasks\" (1/2).\n  Tasks:\n    - [X] a\n    - [ ] b (in progress)",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "Tasks",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "completed"
+        },
+        {
+         "content": "b",
+         "status": "in_progress"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "Tasks",
+       "content": "a"
+      }
+     ]
+    }
+   },
+   {
+    "params": {
+     "items": [
+      "c"
+     ],
+     "phase": "Extra"
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - b [in_progress] (Tasks)\n  - c [pending] (Extra)\nOverall: 1/3 done, 2 open.\nActive phase 1/2 \"Tasks\" (1/2).\n  Tasks:\n    - [X] a\n    - [ ] b (in progress)\n  Extra:\n    - [ ] c",
+    "details": {
+     "op": "append",
+     "phases": [
+      {
+       "name": "Tasks",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "completed"
+        },
+        {
+         "content": "b",
+         "status": "in_progress"
+        }
+       ]
+      },
+      {
+       "name": "Extra",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "items": [
+      "d"
+     ],
+     "phase": "Extra"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - b [in_progress] (Tasks)\n  - c [pending] (Extra)\n  - d [pending] (Extra)\nOverall: 1/4 done, 3 open.\nActive phase 1/2 \"Tasks\" (1/2).\n  Tasks:\n    - [X] a\n    - [ ] b (in progress)\n  Extra:\n    - [ ] c\n    - [ ] d",
+    "details": {
+     "op": "append",
+     "phases": [
+      {
+       "name": "Tasks",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "completed"
+        },
+        {
+         "content": "b",
+         "status": "in_progress"
+        }
+       ]
+      },
+      {
+       "name": "Extra",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "pending"
+        },
+        {
+         "content": "d",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - b [in_progress] (Tasks)\n  - c [pending] (Extra)\n  - d [pending] (Extra)\nOverall: 1/4 done, 3 open.\nActive phase 1/2 \"Tasks\" (1/2).\n  Tasks:\n    - [X] a\n    - [ ] b (in progress)\n  Extra:\n    - [ ] c\n    - [ ] d",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "Tasks",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "completed"
+        },
+        {
+         "content": "b",
+         "status": "in_progress"
+        }
+       ]
+      },
+      {
+       "name": "Extra",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "pending"
+        },
+        {
+         "content": "d",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   }
+  ]
+ },
+ {
+  "name": "errors_are_discarded_atomically",
+  "steps": [
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Todo list is empty.",
+    "details": {
+     "op": "view",
+     "phases": [],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "init",
+     "list": [
+      {
+       "phase": "P",
+       "items": [
+        "a"
+       ]
+      },
+      {
+       "phase": "P",
+       "items": [
+        "a"
+       ]
+      }
+     ]
+    },
+    "isError": true,
+    "text": "Errors: Duplicate phase \"P\" in init list; Duplicate task \"a\" in init list",
+    "details": {
+     "op": "init",
+     "phases": [],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "init",
+     "list": [
+      {
+       "phase": "P",
+       "items": [
+        "a",
+        "b"
+       ]
+      }
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "init",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "start"
+    },
+    "isError": true,
+    "text": "Errors: Missing task content\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "start",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "task-1"
+    },
+    "isError": true,
+    "text": "Errors: Task \"task-1\" not found. Tasks are referenced by content, not by IDs — pass the task's full text from the previous result.\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "zzz"
+    },
+    "isError": true,
+    "text": "Errors: Task \"zzz\" not found\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "append",
+     "phase": "Q",
+     "items": []
+    },
+    "isError": true,
+    "text": "Errors: Missing items for append operation\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "append",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "append",
+     "items": [
+      "x"
+     ]
+    },
+    "isError": true,
+    "text": "Errors: Missing phase name for append operation\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "append",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "append",
+     "phase": "P",
+     "items": [
+      "a",
+      "c"
+     ]
+    },
+    "isError": true,
+    "text": "Errors: Task \"a\" already exists\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "append",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "block",
+     "reason": "no target"
+    },
+    "isError": true,
+    "text": "Errors: block requires a task or phase target\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "block",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "unblock"
+    },
+    "isError": true,
+    "text": "Errors: unblock requires a task or phase target\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "unblock",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "rm",
+     "phase": "Nope"
+    },
+    "isError": true,
+    "text": "Errors: Phase \"Nope\" not found\nRemaining items (2):\n  - a [in_progress] (P)\n  - b [pending] (P)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"P\" (0/2).\n  P:\n    - [ ] a (in progress)\n    - [ ] b",
+    "details": {
+     "op": "rm",
+     "phases": [
+      {
+       "name": "P",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "init",
+     "list": []
+    },
+    "isError": false,
+    "text": "Todo list cleared.",
+    "details": {
+     "op": "init",
+     "phases": [],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "rm"
+    },
+    "isError": false,
+    "text": "Todo list cleared.",
+    "details": {
+     "op": "rm",
+     "phases": [],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Todo list is empty.",
+    "details": {
+     "op": "view",
+     "phases": [],
+     "storage": "session"
+    }
+   }
+  ]
+ },
+ {
+  "name": "in_progress_normalization",
+  "steps": [
+   {
+    "params": {
+     "op": "init",
+     "list": [
+      {
+       "phase": "One",
+       "items": [
+        "a",
+        "b",
+        "c"
+       ]
+      }
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - a [in_progress] (One)\n  - b [pending] (One)\n  - c [pending] (One)\nOverall: 0/3 done, 3 open.\nActive phase 1/1 \"One\" (0/3).\n  One:\n    - [ ] a (in progress)\n    - [ ] b\n    - [ ] c",
+    "details": {
+     "op": "init",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        },
+        {
+         "content": "c",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "start",
+     "task": "b"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - a [pending] (One)\n  - b [in_progress] (One)\n  - c [pending] (One)\nOverall: 0/3 done, 3 open.\nActive phase 1/1 \"One\" (0/3).\n  One:\n    - [ ] a\n    - [ ] b (in progress)\n    - [ ] c",
+    "details": {
+     "op": "start",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "pending"
+        },
+        {
+         "content": "b",
+         "status": "in_progress"
+        },
+        {
+         "content": "c",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "start",
+     "task": "c"
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - a [pending] (One)\n  - b [pending] (One)\n  - c [in_progress] (One)\nOverall: 0/3 done, 3 open.\nActive phase 1/1 \"One\" (0/3).\n  One:\n    - [ ] a\n    - [ ] b\n    - [ ] c (in progress)",
+    "details": {
+     "op": "start",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "pending"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        },
+        {
+         "content": "c",
+         "status": "in_progress"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "c"
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - a [in_progress] (One)\n  - b [pending] (One)\nOverall: 1/3 done, 2 open.\nActive phase 1/1 \"One\" (1/3).\n  One:\n    - [ ] a (in progress)\n    - [ ] b\n    - [X] c",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        },
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "One",
+       "content": "c"
+      }
+     ]
+    }
+   },
+   {
+    "params": {
+     "op": "block",
+     "task": "a"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - b [in_progress] (One)\nOverall: 1/3 done, 1 open, 1 blocked.\nActive phase 1/1 \"One\" (1/3).\n  One:\n    - [ ] a (blocked)\n    - [ ] b (in progress)\n    - [X] c",
+    "details": {
+     "op": "block",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "blocked"
+        },
+        {
+         "content": "b",
+         "status": "in_progress"
+        },
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - b [in_progress] (One)\nOverall: 1/3 done, 1 open, 1 blocked.\nActive phase 1/1 \"One\" (1/3).\n  One:\n    - [ ] a (blocked)\n    - [ ] b (in progress)\n    - [X] c",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "blocked"
+        },
+        {
+         "content": "b",
+         "status": "in_progress"
+        },
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "b"
+    },
+    "isError": false,
+    "text": "Remaining items: none.\nOverall: 2/3 done, 0 open, 1 blocked.\nActive phase 1/1 \"One\" (2/3).\n  One:\n    - [ ] a (blocked)\n    - [X] b\n    - [X] c",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "blocked"
+        },
+        {
+         "content": "b",
+         "status": "completed"
+        },
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "One",
+       "content": "b"
+      }
+     ]
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Remaining items: none.\nOverall: 2/3 done, 0 open, 1 blocked.\nActive phase 1/1 \"One\" (2/3).\n  One:\n    - [ ] a (blocked)\n    - [X] b\n    - [X] c",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "One",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "blocked"
+        },
+        {
+         "content": "b",
+         "status": "completed"
+        },
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   }
+  ]
+ },
+ {
+  "name": "completion_transitions_and_worked_ahead",
+  "steps": [
+   {
+    "params": {
+     "op": "init",
+     "list": [
+      {
+       "phase": "P1",
+       "items": [
+        "a",
+        "b"
+       ]
+      },
+      {
+       "phase": "P2",
+       "items": [
+        "c"
+       ]
+      }
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (3):\n  - a [in_progress] (P1)\n  - b [pending] (P1)\n  - c [pending] (P2)\nOverall: 0/3 done, 3 open.\nActive phase 1/2 \"P1\" (0/2).\n  P1:\n    - [ ] a (in progress)\n    - [ ] b\n  P2:\n    - [ ] c",
+    "details": {
+     "op": "init",
+     "phases": [
+      {
+       "name": "P1",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "P2",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "c"
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - a [in_progress] (P1)\n  - b [pending] (P1)\nOverall: 1/3 done, 2 open.\nActive phase 1/2 \"P1\" (0/2) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).\n  P1:\n    - [ ] a (in progress)\n    - [ ] b\n  P2:\n    - [X] c",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "P1",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "P2",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "P2",
+       "content": "c"
+      }
+     ]
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "c"
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - a [in_progress] (P1)\n  - b [pending] (P1)\nOverall: 1/3 done, 2 open.\nActive phase 1/2 \"P1\" (0/2) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).\n  P1:\n    - [ ] a (in progress)\n    - [ ] b\n  P2:\n    - [X] c",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "P1",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "P2",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - a [in_progress] (P1)\n  - b [pending] (P1)\nOverall: 1/3 done, 2 open.\nActive phase 1/2 \"P1\" (0/2) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).\n  P1:\n    - [ ] a (in progress)\n    - [ ] b\n  P2:\n    - [X] c",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "P1",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "pending"
+        }
+       ]
+      },
+      {
+       "name": "P2",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "drop",
+     "task": "b"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - a [in_progress] (P1)\nOverall: 2/3 done, 1 open.\nActive phase 1/2 \"P1\" (1/2) — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed).\n  P1:\n    - [ ] a (in progress)\n    - [ ] b (dropped)\n  P2:\n    - [X] c",
+    "details": {
+     "op": "drop",
+     "phases": [
+      {
+       "name": "P1",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "in_progress"
+        },
+        {
+         "content": "b",
+         "status": "abandoned"
+        }
+       ]
+      },
+      {
+       "name": "P2",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "a"
+    },
+    "isError": false,
+    "text": "Remaining items: none.\nOverall: 3/3 done, 0 open.\nActive phase 2/2 \"P2\" (1/1).\n  P1:\n    - [X] a\n    - [ ] b (dropped)\n  P2:\n    - [X] c",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "P1",
+       "tasks": [
+        {
+         "content": "a",
+         "status": "completed"
+        },
+        {
+         "content": "b",
+         "status": "abandoned"
+        }
+       ]
+      },
+      {
+       "name": "P2",
+       "tasks": [
+        {
+         "content": "c",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "P1",
+       "content": "a"
+      }
+     ]
+    }
+   }
+  ]
+ },
+ {
+  "name": "block_phase_and_reason_refine",
+  "steps": [
+   {
+    "params": {
+     "op": "init",
+     "list": [
+      {
+       "phase": "W",
+       "items": [
+        "p",
+        "q"
+       ]
+      }
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (2):\n  - p [in_progress] (W)\n  - q [pending] (W)\nOverall: 0/2 done, 2 open.\nActive phase 1/1 \"W\" (0/2).\n  W:\n    - [ ] p (in progress)\n    - [ ] q",
+    "details": {
+     "op": "init",
+     "phases": [
+      {
+       "name": "W",
+       "tasks": [
+        {
+         "content": "p",
+         "status": "in_progress"
+        },
+        {
+         "content": "q",
+         "status": "pending"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "done",
+     "task": "q"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - p [in_progress] (W)\nOverall: 1/2 done, 1 open.\nActive phase 1/1 \"W\" (1/2).\n  W:\n    - [ ] p (in progress)\n    - [X] q",
+    "details": {
+     "op": "done",
+     "phases": [
+      {
+       "name": "W",
+       "tasks": [
+        {
+         "content": "p",
+         "status": "in_progress"
+        },
+        {
+         "content": "q",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session",
+     "completedTasks": [
+      {
+       "phase": "W",
+       "content": "q"
+      }
+     ]
+    }
+   },
+   {
+    "params": {
+     "op": "block",
+     "phase": "W"
+    },
+    "isError": false,
+    "text": "Remaining items: none.\nOverall: 1/2 done, 0 open, 1 blocked.\nActive phase 1/1 \"W\" (1/2).\n  W:\n    - [ ] p (blocked)\n    - [X] q",
+    "details": {
+     "op": "block",
+     "phases": [
+      {
+       "name": "W",
+       "tasks": [
+        {
+         "content": "p",
+         "status": "blocked"
+        },
+        {
+         "content": "q",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "block",
+     "task": "p",
+     "reason": "needs   review"
+    },
+    "isError": false,
+    "text": "Remaining items: none.\nOverall: 1/2 done, 0 open, 1 blocked.\nActive phase 1/1 \"W\" (1/2).\n  W:\n    - [ ] p (blocked: needs review)\n    - [X] q",
+    "details": {
+     "op": "block",
+     "phases": [
+      {
+       "name": "W",
+       "tasks": [
+        {
+         "content": "p",
+         "status": "blocked",
+         "blocker": "needs review"
+        },
+        {
+         "content": "q",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Remaining items: none.\nOverall: 1/2 done, 0 open, 1 blocked.\nActive phase 1/1 \"W\" (1/2).\n  W:\n    - [ ] p (blocked: needs review)\n    - [X] q",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "W",
+       "tasks": [
+        {
+         "content": "p",
+         "status": "blocked",
+         "blocker": "needs review"
+        },
+        {
+         "content": "q",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "unblock",
+     "phase": "W"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - p [in_progress] (W)\nOverall: 1/2 done, 1 open.\nActive phase 1/1 \"W\" (1/2).\n  W:\n    - [ ] p (in progress)\n    - [X] q",
+    "details": {
+     "op": "unblock",
+     "phases": [
+      {
+       "name": "W",
+       "tasks": [
+        {
+         "content": "p",
+         "status": "in_progress"
+        },
+        {
+         "content": "q",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - p [in_progress] (W)\nOverall: 1/2 done, 1 open.\nActive phase 1/1 \"W\" (1/2).\n  W:\n    - [ ] p (in progress)\n    - [X] q",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "W",
+       "tasks": [
+        {
+         "content": "p",
+         "status": "in_progress"
+        },
+        {
+         "content": "q",
+         "status": "completed"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   }
+  ]
+ },
+ {
+  "name": "empty_and_clear",
+  "steps": [
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Todo list is empty.",
+    "details": {
+     "op": "view",
+     "phases": [],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "rm"
+    },
+    "isError": false,
+    "text": "Todo list cleared.",
+    "details": {
+     "op": "rm",
+     "phases": [],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "init",
+     "list": [
+      {
+       "phase": "E",
+       "items": [
+        "only"
+       ]
+      }
+     ]
+    },
+    "isError": false,
+    "text": "Remaining items (1):\n  - only [in_progress] (E)\nOverall: 0/1 done, 1 open.\nActive phase 1/1 \"E\" (0/1).\n  E:\n    - [ ] only (in progress)",
+    "details": {
+     "op": "init",
+     "phases": [
+      {
+       "name": "E",
+       "tasks": [
+        {
+         "content": "only",
+         "status": "in_progress"
+        }
+       ]
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "rm",
+     "task": "only"
+    },
+    "isError": false,
+    "text": "Todo list cleared.",
+    "details": {
+     "op": "rm",
+     "phases": [
+      {
+       "name": "E",
+       "tasks": []
+      }
+     ],
+     "storage": "session"
+    }
+   },
+   {
+    "params": {
+     "op": "view"
+    },
+    "isError": false,
+    "text": "Todo list is empty.",
+    "details": {
+     "op": "view",
+     "phases": [
+      {
+       "name": "E",
+       "tasks": []
+      }
+     ],
+     "storage": "session"
+    }
+   }
+  ]
+ }
+]

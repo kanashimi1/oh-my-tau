@@ -441,6 +441,13 @@ pub(crate) fn parse_chunk_usage(
         cache_read: cache_read_tokens,
         cache_write: cache_write_tokens,
         total_tokens: input + output_tokens + cache_read_tokens + cache_write_tokens,
+        // omp always records the counter for chat completions (0 when not reported).
+        reasoning_tokens: Some(
+            raw_usage
+                .get("completion_tokens_details")
+                .and_then(|details| details.get("reasoning_tokens"))
+                .map_or(0, get_u64),
+        ),
         cost: UsageCost::default(),
     };
     calculate_cost(

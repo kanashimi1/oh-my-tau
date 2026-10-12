@@ -73,15 +73,11 @@ pub(crate) fn create_aborted_assistant_message(
     partial_message: Option<&AssistantMessage>,
 ) -> AssistantMessage {
     AssistantMessage {
-        content: partial_message.map_or_else(
-            || {
-                vec![AssistantContent::Text(crate::types::TextContent {
-                    text: String::new(),
-                    text_signature: None,
-                })]
-            },
-            |partial| clone_assistant_content(&partial.content),
-        ),
+        // TS: no partial yet -> empty content (the gate-stop `[{text: ""}]` shape is a
+        // different path); a partial keeps what streamed so far.
+        content: partial_message.map_or_else(Vec::new, |partial| {
+            clone_assistant_content(&partial.content)
+        }),
         api: partial_message.map_or_else(|| config.model.api.clone(), |p| p.api.clone()),
         provider: partial_message
             .map_or_else(|| config.model.provider.clone(), |p| p.provider.clone()),
@@ -94,5 +90,6 @@ pub(crate) fn create_aborted_assistant_message(
         stop_reason_raw: None,
         error_message: Some(ABORT_ERROR_MESSAGE.to_string()),
         timestamp: crate::now_ms(),
+        meta: partial_message.map(|p| p.meta.clone()).unwrap_or_default(),
     }
 }

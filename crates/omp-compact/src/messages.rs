@@ -42,6 +42,22 @@ pub fn create_branch_summary_message(summary: &str, from_id: &str, timestamp_iso
 /// no provider payload).
 #[must_use]
 pub fn create_compaction_summary_message(entry: &Value) -> Value {
+    create_compaction_summary_message_ext(entry, None, None, None)
+}
+
+/// `createCompactionSummaryMessage(summary, tokensBefore, timestamp, options)` with the replay
+/// options a provider-native / snapcompact compaction attaches: `providerPayload`
+/// (`openaiResponsesHistory` / `anthropicCompaction`), snapcompact history `blocks` (their image
+/// blocks are mirrored onto `images`), and the Anthropic `historyRewriteAt` marker.
+#[must_use]
+pub fn create_compaction_summary_message_ext(entry: &Value, provider_payload: Option<Value>, blocks: Option<Vec<Value>>, history_rewrite_at: Option<Value>) -> Value {
+    let blocks = blocks.filter(|b| !b.is_empty());
+    let image_blocks: Vec<Value> = blocks
+        .iter()
+        .flatten()
+        .filter(|b| str_field(b, "type") == Some("image"))
+        .cloned()
+        .collect();
     let mut m = Map::new();
     m.insert("role".into(), "compactionSummary".into());
     m.insert("summary".into(), entry.get("summary").cloned().unwrap_or(Value::Null));
@@ -49,7 +65,15 @@ pub fn create_compaction_summary_message(entry: &Value) -> Value {
     m.insert("tokensBefore".into(), entry.get("tokensBefore").cloned().unwrap_or(Value::Null));
     put_opt(&mut m, "tokensAfter", entry.get("tokensAfter").cloned());
     put_opt(&mut m, "method", entry.get("method").cloned());
+    put_opt(&mut m, "providerPayload", provider_payload.filter(|p| !p.is_null()));
+    if let Some(blocks) = blocks {
+        m.insert("blocks".into(), Value::Array(blocks));
+    }
+    if !image_blocks.is_empty() {
+        m.insert("images".into(), Value::Array(image_blocks));
+    }
     put_opt(&mut m, "warning", entry.get("warning").cloned());
+    put_opt(&mut m, "historyRewriteAt", history_rewrite_at.filter(|v| !v.is_null()));
     m.insert("timestamp".into(), ms_value(str_field(entry, "timestamp").and_then(parse_iso_ms)));
     Value::Object(m)
 }

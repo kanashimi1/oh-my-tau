@@ -9,11 +9,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use pa_agent::abort::AbortSignal;
 use pa_agent::agent::{Agent, Subscription};
 use pa_agent::agent_loop::{AfterToolCallFn, BeforeToolCallFn, TransformContextFn};
-use pa_agent::types::{AgentEvent, AgentMessage, AgentTool, AgentToolResult, ToolResultContent};
+use pa_agent::types::{
+    AgentEvent, AgentMessage, AgentTool, AgentToolResult, CustomAgentMessage,
+    GetContinuationMessagesContext, ToolResultContent,
+};
 use serde_json::{json, Value};
 
 use omp_ext::hooks::ExtHooks;
@@ -31,6 +34,49 @@ fn tool_timeout() -> Duration {
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(30_000);
     Duration::from_millis(ms)
+}
+
+/// TS `SESSION_STOP_CONTINUATION_CAP` (agent-session.ts): at most this many
+/// `session_stop` continuation turns per run; `decision: "block"` is exempt.
+const SESSION_STOP_CONTINUATION_CAP: usize = 8;
+
+/// TS `prompts/system/session-stop-blocked.md` (rendered when a `block`
+/// decision carries no reason/additionalContext).
+const SESSION_STOP_BLOCKED_PROMPT: &str = "A session_stop handler blocked completion without a reason. Resolve the outstanding work before finishing.";
+
+/// Per-run `session_stop` control-hook state (TS `#sessionStopContinuationCount`
+/// / `#sessionStopHookActive`).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct StopState {
+    continuations: usize,
+    hook_active: bool,
+}
+
+/// TS `#sessionStopContinuationContext`: the hidden next-turn message a
+/// `session_stop` outcome schedules, if any.
+fn stop_continuation_text(outcome: &omp_ext::lifecycle::SessionStopOutcome) -> Option<String> {
+    let additional = outcome
+        .additional_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let reason = outcome
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if outcome.block {
+        Some(
+            reason
+                .or(additional)
+                .unwrap_or(SESSION_STOP_BLOCKED_PROMPT)
+                .to_string(),
+        )
+    } else if outcome.continue_turn {
+        additional.or(reason).map(str::to_string)
+    } else {
+        None
+    }
 }
 
 /// Locate `ext-host/host.ts`: `$OMP_RS_EXT_HOST`, else the workspace's copy
@@ -68,6 +114,8 @@ pub struct Extensions {
     /// Kept alive for the session's lifetime (drop unsubscribes).
     sub: Mutex<Option<Subscription>>,
     turn: Arc<AtomicU64>,
+    /// `session_stop` continuation bookkeeping (TS agent-session fields).
+    stop: Arc<Mutex<StopState>>,
 }
 
 impl Extensions {
@@ -107,6 +155,7 @@ impl Extensions {
             hooks,
             sub: Mutex::new(None),
             turn: Arc::new(AtomicU64::new(0)),
+            stop: Arc::new(Mutex::new(StopState::default())),
         }))
     }
 
@@ -286,18 +335,46 @@ impl Extensions {
     /// Forward agent events to host lifecycle handlers. Handler errors are
     /// logged, never fatal to the run.
     async fn subscribe_lifecycle(self: &Arc<Self>, rt: Arc<Runtime>) -> Subscription {
+        // `session_stop` runs from the loop's continuation hook: it fires when
+        // the agent would otherwise stop, so `decision: "block"` /
+        // `continue: true` can hand back a hidden next-turn message and the
+        // run continues instead of settling (TS `#emitSessionStopEvent`).
+        let hook_host = self.host.clone();
+        let hook_stop = self.stop.clone();
+        let hook_session_id = rt.session_id();
+        let hook_session_file = rt.session_file().to_string_lossy().into_owned();
+        let hook_turn = self.turn.clone();
+        rt.agent.set_continuation_hook(Some(Arc::new(
+            move |ctx: GetContinuationMessagesContext, _signal: AbortSignal| {
+                let host = hook_host.clone();
+                let stop = hook_stop.clone();
+                let session_id = hook_session_id.clone();
+                let session_file = hook_session_file.clone();
+                let turn = hook_turn.clone();
+                Box::pin(async move {
+                    Ok(session_stop_continuation(
+                        &host,
+                        &stop,
+                        &session_id,
+                        &session_file,
+                        &turn,
+                        &ctx.new_messages,
+                    )
+                    .await)
+                })
+            },
+        )));
+
         let host = self.host.clone();
-        let session_id = rt.session_id();
-        let session_file = rt.session_file().to_string_lossy().into_owned();
         let turn = self.turn.clone();
+        let stop = self.stop.clone();
         rt.agent
             .subscribe(move |event, _| {
                 let host = host.clone();
-                let session_id = session_id.clone();
-                let session_file = session_file.clone();
                 let turn = turn.clone();
+                let stop = stop.clone();
                 Box::pin(async move {
-                    forward_event(&host, &session_id, &session_file, &turn, &event).await;
+                    forward_event(&host, &turn, &stop, &event).await;
                     Ok(())
                 })
             })
@@ -305,40 +382,96 @@ impl Extensions {
     }
 }
 
-#[allow(clippy::too_many_lines)] // one arm per `AgentEvent` variant; splitting adds indirection.
-async fn forward_event(
+/// Emit `session_stop` from the would-stop point and translate its outcome
+/// into a hidden continuation message (TS `#emitSessionStopEvent` +
+/// `#queueHiddenNextTurnMessage`). `decision: "block"` stops the run from
+/// settling with the blocked prompt; `continue: true` schedules one more turn
+/// carrying `additionalContext`/`reason`.
+async fn session_stop_continuation(
     host: &ExtHost,
+    stop: &Mutex<StopState>,
     session_id: &str,
     session_file: &str,
     turn: &AtomicU64,
+    new_messages: &[AgentMessage],
+) -> Vec<AgentMessage> {
+    let (hook_active, continuations) = {
+        let s = stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (s.hook_active, s.continuations)
+    };
+    let event = LifecycleEvent::SessionStop {
+        messages: new_messages.iter().map(message_value).collect(),
+        turn_id: turn.load(Ordering::SeqCst),
+        last_assistant_message: new_messages
+            .iter()
+            .rev()
+            .find(|m| m.role() == "assistant")
+            .map(message_value),
+        session_id: session_id.to_string(),
+        session_file: Some(session_file.to_string()),
+        stop_hook_active: hook_active,
+    };
+    let outcome = match host.emit_session_stop(event, None).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            eprintln!("omp-rs: extension session_stop: {e:#}");
+            return Vec::new();
+        }
+    };
+    let Some(text) = stop_continuation_text(&outcome) else {
+        *stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
+        return Vec::new();
+    };
+    {
+        let mut s = stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !outcome.block {
+            if continuations >= SESSION_STOP_CONTINUATION_CAP {
+                eprintln!("omp-rs: session_stop continuation cap reached");
+                *s = StopState::default();
+                return Vec::new();
+            }
+            s.continuations += 1;
+        }
+        s.hook_active = true;
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
+    vec![AgentMessage::Custom(CustomAgentMessage {
+        role: "developer".to_string(),
+        payload: json!({
+            "customType": "session-stop-continuation",
+            "content": [{"type": "text", "text": text}],
+            "display": false,
+            "attribution": "agent",
+            "timestamp": timestamp,
+        }),
+    })]
+}
+
+#[allow(clippy::too_many_lines)] // one arm per `AgentEvent` variant; splitting adds indirection.
+async fn forward_event(
+    host: &ExtHost,
+    turn: &AtomicU64,
+    stop: &Mutex<StopState>,
     event: &AgentEvent,
 ) {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
     match event {
-        AgentEvent::AgentStart => emit_silent(host.emit_agent_start(None).await),
+        AgentEvent::AgentStart => {
+            // A new run resets the session_stop continuation bookkeeping
+            // (TS `#resetSessionStopContinuationState` on generation change).
+            *stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                StopState::default();
+            emit_silent(host.emit_agent_start(None).await);
+        }
         AgentEvent::AgentEnd { messages } => {
             let values: Vec<Value> = messages.iter().map(message_value).collect();
-            let last_assistant = messages
-                .iter()
-                .rev()
-                .find(|m| m.role() == "assistant")
-                .map(message_value);
-            let stop = LifecycleEvent::SessionStop {
-                messages: values.clone(),
-                turn_id: turn.load(Ordering::SeqCst),
-                last_assistant_message: last_assistant,
-                session_id: session_id.to_string(),
-                session_file: Some(session_file.to_string()),
-                stop_hook_active: false,
-            };
-            if let Ok(outcome) = host.emit_session_stop(stop, None).await {
-                if outcome.wants_continuation() {
-                    // Best-effort continuation turn, like omp's continueTurn.
-                    // Errors surface through the normal retry path.
-                }
-            }
+            // `session_stop` itself is emitted from the continuation hook
+            // (see `subscribe_lifecycle`), where its block/continue outcome can
+            // still keep the run alive.
             emit_silent(host.emit_agent_end(values, None, None).await);
         }
         AgentEvent::TurnStart => {
@@ -456,14 +589,24 @@ impl AgentTool for ExtTool {
         self: Arc<Self>,
         tool_call_id: String,
         params: Value,
-        _signal: AbortSignal,
+        signal: AbortSignal,
         _on_update: pa_agent::types::AgentToolUpdateCallback,
     ) -> pa_agent::BoxFut<'static, Result<AgentToolResult>> {
         Box::pin(async move {
-            let call = self.host.call_tool(&self.info.name, &tool_call_id, params, None);
-            let value = tokio::time::timeout(tool_timeout(), call)
-                .await
-                .map_err(|_| anyhow::anyhow!("extension tool '{}' timed out", self.info.name))??;
+            let host = self.host.clone();
+            let call = host.call_tool(&self.info.name, &tool_call_id, params, None);
+            let value = tokio::select! {
+                biased;
+                // A caller abort must not leave the handler running in the
+                // host: cancel it there too (`cancel_tool`), like an
+                // AbortSignal reaching a TS extension tool.
+                () = signal.aborted() => {
+                    let _ = host.cancel_tool(&tool_call_id).await;
+                    bail!("extension tool '{}' cancelled", self.info.name);
+                }
+                res = tokio::time::timeout(tool_timeout(), call) => res
+                    .map_err(|_| anyhow::anyhow!("extension tool '{}' timed out", self.info.name))??,
+            };
             let content: Vec<ToolResultContent> = value
                 .get("content")
                 .cloned()
@@ -493,5 +636,173 @@ impl AgentTool for ExtTool {
                 terminate: None,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pa_agent::abort::AbortController;
+
+    fn sh_host(dir: &std::path::Path, body: &str, env: Vec<(String, String)>) -> Arc<ExtHost> {
+        let script = dir.join("fake-host.sh");
+        std::fs::write(&script, body).unwrap();
+        ExtHost::spawn(&HostConfig {
+            bun: "/bin/sh".into(),
+            host_script: script,
+            trace: None,
+            handler_timeout_ms: None,
+            env,
+        })
+        .unwrap()
+    }
+
+    /// Answers every request with a `session_stop` outcome of
+    /// `continue: true, additionalContext: "keep going"`.
+    const CONTINUE_HOST: &str = concat!(
+        "while IFS= read -r line; do\n",
+        "  id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\n",
+        "  if [ -n \"$id\" ]; then\n",
+        "    printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"result\":{\"continue\":true,\"additionalContext\":\"keep going\"},\"handlers\":[],\"errors\":[]}}\n' \"$id\"\n",
+        "  fi\n",
+        "done\n",
+    );
+
+    #[test]
+    fn stop_continuation_text_matches_ts_rules() {
+        use omp_ext::lifecycle::SessionStopOutcome;
+        let block_default = SessionStopOutcome {
+            block: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            stop_continuation_text(&block_default).as_deref(),
+            Some(SESSION_STOP_BLOCKED_PROMPT)
+        );
+        let block_reason = SessionStopOutcome {
+            block: true,
+            continue_turn: false,
+            reason: Some("not done".into()),
+            additional_context: Some("ctx".into()),
+        };
+        assert_eq!(
+            stop_continuation_text(&block_reason).as_deref(),
+            Some("not done")
+        );
+        let cont = SessionStopOutcome {
+            block: false,
+            continue_turn: true,
+            additional_context: Some("ctx".into()),
+            reason: Some("why".into()),
+        };
+        assert_eq!(stop_continuation_text(&cont).as_deref(), Some("ctx"));
+        // `continue: true` without context schedules nothing (runner.ts).
+        let bare = SessionStopOutcome {
+            block: false,
+            continue_turn: true,
+            additional_context: None,
+            reason: None,
+        };
+        assert_eq!(stop_continuation_text(&bare), None);
+        let none = SessionStopOutcome::default();
+        assert_eq!(stop_continuation_text(&none), None);
+    }
+
+    /// `continue: true` schedules exactly one hidden continuation turn and
+    /// flips `stop_hook_active` for the next emit (`ReviewWave3`).
+    #[tokio::test]
+    async fn session_stop_continue_schedules_hidden_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = sh_host(dir.path(), CONTINUE_HOST, Vec::new());
+        let stop = Mutex::new(StopState::default());
+        let turn = AtomicU64::new(2);
+        let messages =
+            session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
+        assert_eq!(messages.len(), 1);
+        let AgentMessage::Custom(custom) = &messages[0] else {
+            panic!("continuation must be a custom message");
+        };
+        assert_eq!(custom.role, "developer", "convert_to_llm surfaces it");
+        assert_eq!(custom.payload["customType"], "session-stop-continuation");
+        assert_eq!(
+            custom.payload["content"][0]["text"].as_str(),
+            Some("keep going")
+        );
+        assert!(custom.payload["display"].as_bool() == Some(false));
+        {
+            let st = stop.lock().unwrap();
+            assert!(st.hook_active && st.continuations == 1);
+        }
+        host.shutdown().await.unwrap();
+    }
+
+    /// The continuation cap (8) applies to `continue` outcomes; block is exempt.
+    #[tokio::test]
+    async fn session_stop_continuation_cap_resets_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = sh_host(dir.path(), CONTINUE_HOST, Vec::new());
+        let stop = Mutex::new(StopState::default());
+        let turn = AtomicU64::new(0);
+        for i in 0..SESSION_STOP_CONTINUATION_CAP {
+            let messages =
+                session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
+            assert_eq!(messages.len(), 1, "continuation {i} scheduled");
+        }
+        let messages =
+            session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
+        assert!(messages.is_empty(), "cap reached: no further continuation");
+        assert_eq!(
+            *stop.lock().unwrap(),
+            StopState::default(),
+            "cap resets the bookkeeping"
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    /// An already-aborted signal cancels the host-side handler via
+    /// `cancel_tool` instead of leaving it running (`ReviewWave3`).
+    #[tokio::test]
+    async fn aborted_signal_cancels_host_tool_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("cancelled");
+        let host = sh_host(
+            dir.path(),
+            concat!(
+                "while IFS= read -r line; do\n",
+                "  case \"$line\" in\n",
+                "    *'\"method\":\"cancel_tool\"'*)\n",
+                "      touch \"$MARKER\"\n",
+                "      id=$(printf '%s' \"$line\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\n",
+                "      printf '{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":true}\n' \"$id\";;\n",
+                "  esac\n",
+                "done\n",
+            ),
+            vec![("MARKER".into(), marker.display().to_string())],
+        );
+        let tool = Arc::new(ExtTool {
+            host: host.clone(),
+            info: ToolInfo {
+                name: "slow".into(),
+                label: None,
+                description: None,
+                parameters: json!({}),
+                extension: "test".into(),
+            },
+        });
+        let controller = AbortController::new();
+        let signal = controller.signal();
+        controller.abort();
+        let result = tool
+            .execute(
+                "call-1".into(),
+                json!({}),
+                signal,
+                Arc::new(|_| {}) as pa_agent::types::AgentToolUpdateCallback,
+            )
+            .await;
+        let err = result.expect_err("aborted call must fail");
+        assert!(err.to_string().contains("cancelled"), "{err:#}");
+        assert!(marker.exists(), "host never received cancel_tool");
+        host.shutdown().await.unwrap();
     }
 }

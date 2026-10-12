@@ -6,6 +6,7 @@
 //! and a round-trip checker used against real `~/.omp/agent/sessions`.
 
 pub mod entries;
+pub mod tree;
 
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
@@ -105,6 +106,10 @@ pub struct SessionWriter {
     file: File,
     path: PathBuf,
     last_id: Option<String>,
+    /// The append point: the parent the next entry chains to. Advances with every append
+    /// (`SessionEntryIndex.insert` sets the leaf to the recorded entry); `/tree` navigation
+    /// retargets it without rewriting the file.
+    leaf: Option<String>,
     ids: HashSet<String>,
 }
 
@@ -121,7 +126,7 @@ impl SessionWriter {
         let path = dir.join(format!("{stamp}_{session_id}.jsonl"));
         let file = OpenOptions::new().create(true).append(true).open(&path)
             .with_context(|| format!("open {}", path.display()))?;
-        let mut w = Self { file, path, last_id: None, ids: HashSet::new() };
+        let mut w = Self { file, path, last_id: None, leaf: None, ids: HashSet::new() };
         if w.file.metadata()?.len() == 0 {
             w.write_value(&json!({"type": "session", "version": SESSION_VERSION, "id": session_id, "timestamp": timestamp_iso, "cwd": cwd}))?;
         } else {
@@ -139,6 +144,7 @@ impl SessionWriter {
             self.ids.insert(id.to_owned());
             if obj.get("type").and_then(Value::as_str) != Some("session") {
                 self.last_id = Some(id.to_owned());
+                self.leaf = Some(id.to_owned());
             }
         }
         Ok(())
@@ -297,7 +303,7 @@ impl SessionWriter {
         let mut obj = Map::new();
         obj.insert("type".into(), Value::String(kind.into()));
         obj.insert("id".into(), Value::String(id.clone()));
-        obj.insert("parentId".into(), self.last_id.clone().map_or(Value::Null, Value::String));
+        obj.insert("parentId".into(), self.leaf.clone().map_or(Value::Null, Value::String));
         obj.insert("timestamp".into(), Value::String(timestamp_iso.into()));
         obj.extend(fields.into_iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "id" | "parentId" | "timestamp")));
         let obj = Value::Object(obj);
@@ -320,7 +326,7 @@ impl SessionWriter {
     /// Build an entry with a fresh id chained to the previous one, write it, advance the chain.
     fn append_typed(&mut self, timestamp_iso: &str, build: impl FnOnce(String, Option<String>, String) -> OmpEntry) -> Result<String> {
         let id = self.fresh_id();
-        let entry = build(id.clone(), self.last_id.clone(), timestamp_iso.to_owned());
+        let entry = build(id.clone(), self.leaf.clone(), timestamp_iso.to_owned());
         let line = entry.to_line()?;
         self.push_line(&line, &id)?;
         Ok(id)
@@ -337,7 +343,47 @@ impl SessionWriter {
         self.file.write_all(buf.as_bytes())?;
         self.ids.insert(id.to_owned());
         self.last_id = Some(id.to_owned());
+        self.leaf = Some(id.to_owned());
         Ok(())
+    }
+
+    /// Move the append point to an earlier entry (omp `SessionManager.branch`, the `/tree`
+    /// rewind): the next appended entry chains to `id` instead of the tail; `None` makes the
+    /// next entry a new root (`resetLeaf`). Nothing already written is modified — like omp,
+    /// the move becomes durable only once an entry lands on the new position.
+    ///
+    /// # Errors
+    /// `id` is not an entry of this session file.
+    pub fn branch_to(&mut self, id: Option<String>) -> Result<()> {
+        if let Some(id) = &id {
+            anyhow::ensure!(self.ids.contains(id), "Entry {id} not found");
+        }
+        self.leaf = id;
+        Ok(())
+    }
+
+    /// Append a `branch_summary` entry parented at `branch_from` (omp `branchWithSummary`) and
+    /// land the append point on it, so the journal durably marks the abandoned branch.
+    ///
+    /// # Errors
+    /// `branch_from` is not an entry of this session file, or the write failed.
+    pub fn append_branch_summary(
+        &mut self,
+        branch_from: Option<&str>,
+        summary: &str,
+        details: Option<Value>,
+        from_extension: Option<bool>,
+        timestamp_iso: &str,
+    ) -> Result<String> {
+        if let Some(id) = &branch_from {
+            anyhow::ensure!(self.ids.contains(*id), "Entry {id} not found");
+        }
+        self.branch_to(branch_from.map(str::to_owned))?;
+        let id = self.fresh_id();
+        let entry = tree::branch_summary_entry(&id, branch_from, timestamp_iso, summary, details, from_extension);
+        let line = entries::to_js_string(&entry)?;
+        self.push_line(&line, &id)?;
+        Ok(id)
     }
 
     fn write_value(&mut self, v: &Value) -> Result<()> {

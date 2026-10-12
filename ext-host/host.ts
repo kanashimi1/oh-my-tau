@@ -2,7 +2,7 @@
 // omp extension host: loads omp ExtensionAPI extensions (unchanged .ts files) and serves them to the Rust core
 // over JSON-RPC 2.0 on stdio (newline-delimited). Handler aggregation mirrors pi-coding-agent's ExtensionRunner.
 //
-// core -> host requests: load, emit, list_tools, call_tool, list_commands, call_command, set_ctx, bus_emit, shutdown
+// core -> host requests: load, emit, list_tools, call_tool, cancel_tool, list_commands, call_command, set_ctx, bus_emit, shutdown
 // host -> core:          notifications append_entry, send_message, send_user_message, log, ui_notify, set_label,
 //                        provider_registered, provider_unregistered;
 //                        requests compact, navigate_tree, ui_confirm (core may answer with an error → treated as unsupported)
@@ -591,13 +591,22 @@ function allTools(): { ext: Ext; tool: Json }[] {
   return exts.flatMap((ext) => [...ext.tools.values()].map((tool) => ({ ext, tool })));
 }
 
+// Live tool calls by toolCallId, so a core-side `cancel_tool` can abort them.
+const toolAcs = new Map<string, AbortController>();
+
 async function callTool(p: Json) {
   if (p.ctx) state = { ...state, ...(p.ctx as Json) };
   const found = allTools().findLast((t) => t.tool.name === p.name);
   if (!found) throw rpcError(-32004, `unknown tool: ${p.name}`);
   const ac = new AbortController();
-  const execute = found.tool.execute as (...a: unknown[]) => Promise<unknown>;
-  return (await execute.call(found.tool, String(p.toolCallId ?? ""), p.params ?? {}, ac.signal, (partial: unknown) => notify("tool_update", { toolCallId: p.toolCallId, partial }), ctx())) ?? null;
+  const id = String(p.toolCallId ?? "");
+  toolAcs.set(id, ac);
+  try {
+    const execute = found.tool.execute as (...a: unknown[]) => Promise<unknown>;
+    return (await execute.call(found.tool, id, p.params ?? {}, ac.signal, (partial: unknown) => notify("tool_update", { toolCallId: p.toolCallId, partial }), ctx())) ?? null;
+  } finally {
+    toolAcs.delete(id);
+  }
 }
 
 async function callCommand(p: Json) {
@@ -633,6 +642,12 @@ async function dispatch(method: string, p: Json): Promise<unknown> {
       return allTools().map(({ ext, tool }) => ({ name: tool.name, label: tool.label, description: tool.description, parameters: jsonSchema(tool.parameters), approval: tool.approval, extension: ext.name }));
     case "call_tool":
       return callTool(p);
+    case "cancel_tool": {
+      // Additive: cores that predate `cancel_tool` never call this.
+      const ac = toolAcs.get(String(p.toolCallId ?? ""));
+      if (ac) ac.abort();
+      return true;
+    }
     case "list_commands":
       return exts.flatMap((e) => [...e.commands.values()].map((c) => ({ name: c.name, description: c.description, extension: e.name })));
     case "call_command":
