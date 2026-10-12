@@ -22,7 +22,8 @@ fn main() {
     for a in args.iter().filter(|a| !a.starts_with("--") && a.parse::<usize>().is_err()) {
         files(Path::new(a), &mut paths);
     }
-    let (mut counts, mut by_kind, mut reasons, mut changed): (BTreeMap<String, u64>, BTreeMap<(String, String), u64>, BTreeMap<String, u64>, BTreeMap<String, u64>) = Default::default();
+    type Counts = (BTreeMap<String, u64>, BTreeMap<(String, String), u64>, BTreeMap<String, u64>, BTreeMap<String, u64>);
+    let (mut counts, mut by_kind, mut reasons, mut changed): Counts = Default::default();
     let mut examples: Vec<String> = Vec::new();
     let (mut bad_files, mut bytes, mut malformed_lines, mut malformed_files, mut bad_header) = (0u64, 0u64, 0u64, 0u64, 0u64);
     for p in &paths {

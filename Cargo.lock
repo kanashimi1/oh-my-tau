@@ -1203,8 +1203,12 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "omp-compact",
+ "omp-eval",
+ "omp-ext",
  "omp-providers",
  "omp-session",
+ "omp-task",
  "pa-agent",
  "pa-ai",
  "pa-types",
@@ -1214,6 +1218,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -1249,6 +1254,7 @@ dependencies = [
  "pa-agent",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

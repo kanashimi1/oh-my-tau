@@ -165,8 +165,8 @@ pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
             .into_iter()
             .map(|(job_id, job)| {
                 let duration = match job.ended {
-                    None => format!("up {}", format_duration(now.duration_since(job.started).as_millis() as u64)),
-                    Some(elapsed) => format!("in {}", format_duration(elapsed.as_millis() as u64)),
+                    None => format!("up {}", format_duration(u64::try_from(now.duration_since(job.started).as_millis()).unwrap_or(u64::MAX))),
+                    Some(elapsed) => format!("in {}", format_duration(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))),
                 };
                 format!("{job_id} [bash] {} {duration} — {}", job.status.as_str(), squash(&job.command))
             })

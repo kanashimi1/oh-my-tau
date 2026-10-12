@@ -40,7 +40,11 @@ pub fn uuid_v7() -> String {
     b[..6].copy_from_slice(&ms.to_be_bytes()[2..]);
     b[6] = 0x70 | (b[6] & 0x0f);
     b[8] = 0x80 | (b[8] & 0x3f);
-    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    let mut h = String::with_capacity(b.len() * 2);
+    for x in &b {
+        use std::fmt::Write as _;
+        write!(h, "{x:02x}").expect("writing to a String is infallible");
+    }
     format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
@@ -152,6 +156,11 @@ impl Persistence {
             .unwrap()
             .append_message(message, &iso_from_ms(timestamp_ms))
             .map(|_| ())
+    }
+
+    /// Run `f` on the live session writer (compaction entries need the writer's id chain).
+    pub fn with_writer<R>(&self, f: impl FnOnce(&mut SessionWriter) -> R) -> R {
+        f(&mut self.writer.lock().unwrap())
     }
 
     /// Hold back (`true`) or write straight through (`false`) assistant error turns.

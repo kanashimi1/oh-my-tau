@@ -22,7 +22,9 @@ use serde_json::{json, Map, Value};
 pub use pa_ai::types::{Context, Model, ModelThinkingLevel, SimpleStreamOptions, StreamOptions};
 pub use pa_ai::AssistantMessageEventStream;
 
-pub use command::{invalidate as invalidate_command_value, resolve_config_value};
+pub use command::{
+    invalidate as invalidate_command_value, resolve_config_value, resolve_config_value_async,
+};
 pub use fallback::{
     fallback_cooldown_ms, is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, ActiveFallback,
     CandidateOptions, FallbackConfig, FallbackState, FallbackWalker, ModelLookup, RateLimitReason, RestorePlan,
@@ -100,6 +102,25 @@ impl Default for AgentDir {
 /// Unknown role/provider/model, or unreadable/invalid config files.
 pub fn resolve(model_ref: &str) -> Result<ResolvedModel> {
     resolve_in(&AgentDir::default(), model_ref)
+}
+
+/// [`resolve`] on the blocking-thread pool. `!command`-backed api keys and
+/// headers shell out for up to 10 s; awaiting the sync [`resolve`] inside an
+/// async fn parks an executor thread (and `available_models` parks one per
+/// provider). Async call sites must use this instead.
+///
+/// # Errors
+/// See [`resolve`].
+pub async fn resolve_async(model_ref: String) -> Result<ResolvedModel> {
+    resolve_in_async(AgentDir::default(), model_ref).await
+}
+
+/// [`resolve_in`] on the blocking-thread pool (see [`resolve_async`]).
+///
+/// # Errors
+/// See [`resolve_in`].
+pub async fn resolve_in_async(dir: AgentDir, model_ref: String) -> Result<ResolvedModel> {
+    tokio::task::spawn_blocking(move || resolve_in(&dir, &model_ref)).await?
 }
 
 /// The pa-ai model for streaming.
@@ -675,6 +696,18 @@ fn db_key(db: &Path, provider: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Async resolution never parks the executor: two concurrent `!command`
+    /// values (0.4 s each) finish well under 0.8 s even on a single-threaded
+    /// runtime.
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_command_resolution_runs_off_executor() {
+        let a = resolve_config_value_async("!sleep 0.4; echo one");
+        let b = resolve_config_value_async("!sleep 0.4; echo two");
+        let (a, b) = futures::join!(a, b);
+        assert_eq!(a.as_deref(), Some("one"));
+        assert_eq!(b.as_deref(), Some("two"));
+    }
+
     use super::*;
 
     fn fixture() -> (tempfile::TempDir, AgentDir) {

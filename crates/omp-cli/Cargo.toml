@@ -22,6 +22,11 @@ ignore = "0.4"
 globset = "0.4"
 omp-providers = { path = "../omp-providers" }
 omp-session = { path = "../omp-session" }
+omp-ext = { path = "../omp-ext" }
+omp-compact = { path = "../omp-compact" }
+omp-task = { path = "../omp-task" }
+omp-eval = { path = "../omp-eval" }
+serde_yaml_ng = "0.10"
 rand = "0.8"
 async-trait = "0.1"
 grep-matcher = "0.1"

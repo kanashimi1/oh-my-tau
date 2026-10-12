@@ -88,9 +88,7 @@ pub fn is_retryable_error(status: Option<u16>, message: &str) -> bool {
     {
         return false;
     }
-    let status = status.or_else(|| {
-        m.split(|c: char| !c.is_ascii_digit()).find(|t| t.len() == 3).and_then(|t| t.parse().ok()).filter(|s| (400..600).contains(s))
-    });
+    let status = status.or_else(|| status_from_message(&m));
     if let Some(s) = status {
         return matches!(s, 408 | 409 | 425 | 429) || s >= 500;
     }
@@ -100,6 +98,70 @@ pub fn is_retryable_error(status: Option<u16>, message: &str) -> bool {
     ]
     .iter()
     .any(|p| m.contains(p))
+}
+
+/// Guess an HTTP status from an error message, but only from explicit status
+/// shapes ("http 429", "status: 500", "error code 503") or a provider-style
+/// reason phrase ("503 Service Unavailable"). Bare digit runs are never a
+/// status: ":443" is a port and "try again in 480 seconds" is a retry hint.
+fn status_from_message(m: &str) -> Option<u16> {
+    let in_range = |s: u16| (400..600).contains(&s);
+    for (start, _) in m.match_indices("http") {
+        let after = &m[start + 4..];
+        // A URL scheme ("https://…") is never a status line.
+        if after.starts_with("://") || after.starts_with("s://") {
+            continue;
+        }
+        if let Some(s) = take_status(after).filter(|&s| in_range(s)) {
+            return Some(s);
+        }
+    }
+    for marker in ["status", "code"] {
+        for (start, _) in m.match_indices(marker) {
+            if let Some(s) = take_status(&m[start + marker.len()..]).filter(|&s| in_range(s)) {
+                return Some(s);
+            }
+        }
+    }
+    // "<code> <Reason Phrase>" as HTTP servers and SDKs print it.
+    const REASONS: [&str; 7] = [
+        "too many requests",
+        "internal server error",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "request timeout",
+        "http/2 5",
+    ];
+    for reason in REASONS {
+        if let Some(pos) = m.find(reason) {
+            // Last digit run before the phrase; must be exactly 3 digits.
+            let run: String = m[..pos]
+                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if run.len() == 3 {
+                if let Ok(s) = run.parse::<u16>() {
+                    if in_range(s) {
+                        return Some(s);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// First digit run of exactly 3 characters in `rest` (skipping separators).
+fn take_status(rest: &str) -> Option<u16> {
+    rest.split(|c: char| !c.is_ascii_digit())
+        .filter(|tok| tok.len() == 3)
+        .find_map(|tok| tok.parse().ok())
 }
 
 /// A parsed `provider/id[:level]` selector.
@@ -827,6 +889,32 @@ mod tests {
         assert!(is_retryable_error(None, "connection reset by peer"));
         assert!(!is_retryable_error(Some(401), "bad key"));
         assert!(!is_retryable_error(Some(400), "maximum context length exceeded"));
+    }
+
+    /// Bare digit runs are not HTTP statuses: a port or a "N seconds" retry
+    /// hint must not preempt the transport-keyword classification.
+    #[test]
+    fn retryable_status_guess_never_uses_bare_digits() {
+        // ":443" is a port; the socket keyword makes this retryable.
+        assert!(is_retryable_error(
+            None,
+            "fetch failed: socket hang up connecting to api.example.com:443"
+        ));
+        // "480 seconds" is a retry hint, not a status; no keyword -> not retryable
+        // (previously misread as status 480, same outcome but for the wrong reason;
+        // the important part is the guess must not fire).
+        assert!(!status_guess_is_bare_digit("try again in 480 seconds"));
+        assert!(!status_guess_is_bare_digit("connection to api.example.com:443 failed"));
+        assert!(!status_guess_is_bare_digit("via https://api.example.com:443/v1"));
+        // Explicit status shapes still classify.
+        assert!(is_retryable_error(None, "provider returned http status 429, retry later"));
+        assert!(is_retryable_error(None, "error code: 503, backend down"));
+        assert!(is_retryable_error(None, "500 Internal Server Error"));
+        assert!(!is_retryable_error(None, "400 Bad Request: malformed tool call"));
+    }
+
+    fn status_guess_is_bare_digit(message: &str) -> bool {
+        super::status_from_message(&message.to_ascii_lowercase()).is_some()
     }
 
     fn lookup(models: &'static [(&'static str, &'static str)], cap: ModelThinkingLevel) -> ModelLookup {

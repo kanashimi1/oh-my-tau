@@ -54,7 +54,7 @@ function parseRustTools(): ToolDef[] {
 	const editSrc = readFileSync(RUST_EDIT, "utf8");
 	const replacePrompt = readFileSync(EDIT_REPLACE_PROMPT, "utf8");
 
-	// Inline literal tools: read, bash, glob, grep, write, find.
+	// Inline literal tools: read, bash, glob, grep, write, find, task, eval.
 	const names = ["read", "bash", "glob", "grep", "write", "find"];
 	const defs: ToolDef[] = names.map(name => ({
 		name,
@@ -70,6 +70,28 @@ function parseRustTools(): ToolDef[] {
 			const cm = cre.exec(toolsSrc);
 			if (cm) def.description_first_line = (JSON.parse(`"${cm[1]}"`) as string).split("\n", 1)[0] ?? "";
 		}
+	}
+	// task/eval: schemas live in their own modules as `json!(...)` literals.
+	for (const [name, file] of [["task", "crates/omp-cli/src/tools/task.rs"], ["eval", "crates/omp-cli/src/tools/eval.rs"]] as const) {
+		const mod = readFileSync(join(ROOT, file), "utf8");
+		const at = mod.indexOf("pub fn schema()");
+		defs.push({
+			name,
+			description_first_line: "(from module const, filled below)",
+			parameters: JSON.parse(jsonLiteralAt(mod, at)) as Record<string, unknown>,
+		});
+	}
+	// task: dynamic description = static header (r#"..."# const) + agent list.
+	const taskSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/task.rs"), "utf8");
+	{
+		const m = /DESCRIPTION_HEADER: &str = r#"([^"]*)"#;/.exec(taskSrc);
+		defs.find(d => d.name === "task")!.description_first_line = (m?.[1] ?? "").split("\n", 1)[0] ?? "";
+	}
+	// eval: static r#"..."# description const.
+	{
+		const evalSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/eval.rs"), "utf8");
+		const m = /const DESCRIPTION: &str = r#"([^"]*)"#;/.exec(evalSrc);
+		defs.find(d => d.name === "eval")!.description_first_line = (m?.[1] ?? "").split("\n", 1)[0] ?? "";
 	}
 	// edit: `edit::schema(edit_mode)` + `pi_edit::description(edit_mode)`; compare the
 	// Replace mode, the omp-rs default for glm-style models.

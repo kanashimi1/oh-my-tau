@@ -217,6 +217,8 @@ fn truncate_columns(line: &str) -> String {
 ///
 /// # Errors
 /// Missing path, unreadable file, binary content or invalid selector.
+// Layout mirrors omp's `read` flow top-to-bottom; splitting it would obscure that parity.
+#[allow(clippy::too_many_lines)]
 pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let raw_path = super::util::str_arg(args, "path")?;
     if let Some(rest) = raw_path.strip_prefix("proc://") {
@@ -256,7 +258,7 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         Selector::Lines { ranges, .. } => ranges.clone(),
         _ => Vec::new(),
     };
-    let selector_base = path_part.clone();
+    let selector_base = path_part;
     let display = format_path_relative_to_cwd(&absolute, &env.cwd, false);
     let display = if Path::new(&display).is_absolute() { shorten_path(&display) } else { display };
 
@@ -526,7 +528,7 @@ mod tests {
             .iter()
             .filter_map(|c| match c {
                 pa_agent::types::ToolResultContent::Text(t) => Some(t.text.clone()),
-                _ => None,
+                pa_agent::types::ToolResultContent::Image(_) => None,
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -559,7 +561,11 @@ mod tests {
     #[test]
     fn hashline_read_header_rows_and_footer() {
         let dir = tempfile::tempdir().unwrap();
-        let body: String = (1..=5).map(|i| format!("line {i}\n")).collect();
+        let mut body = String::new();
+        for i in 1..=5 {
+            use std::fmt::Write as _;
+            let _ = writeln!(body, "line {i}");
+        }
         std::fs::write(dir.path().join("a.txt"), &body).unwrap();
         let e = env(dir.path());
         let out = text_of(&read(&e, &serde_json::json!({"path": "a.txt"})).unwrap());
@@ -606,7 +612,11 @@ mod tests {
     #[test]
     fn long_files_page_with_continue_footer() {
         let dir = tempfile::tempdir().unwrap();
-        let body: String = (1..=400).map(|i| format!("l{i}\n")).collect();
+        let mut body = String::new();
+        for i in 1..=400 {
+            use std::fmt::Write as _;
+            let _ = writeln!(body, "l{i}");
+        }
         std::fs::write(dir.path().join("big.txt"), body).unwrap();
         let out = text_of(&read(&env(dir.path()), &serde_json::json!({"path": "big.txt"})).unwrap());
         assert!(out.contains("300:l300"));

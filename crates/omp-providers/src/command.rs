@@ -112,6 +112,19 @@ pub fn resolve_config_value(raw: &str) -> Option<String> {
     result
 }
 
+/// [`resolve_config_value`] for async callers: `!command` values shell out for
+/// up to 10 s, so they must run on the blocking pool instead of an executor thread.
+pub async fn resolve_config_value_async(raw: &str) -> Option<String> {
+    if !is_command(raw) {
+        // Env var / literal lookup is cheap; no blocking work happens.
+        return resolve_config_value(raw);
+    }
+    let raw = raw.to_string();
+    tokio::task::spawn_blocking(move || resolve_config_value(&raw))
+        .await
+        .unwrap_or_default()
+}
+
 /// Drop the cache and failure backoff of one `!command` value (e.g. after a 401).
 pub fn invalidate(raw: &str) {
     if !is_command(raw) {
@@ -150,14 +163,29 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
         }
     };
     let mut out = child.stdout.take()?;
-    // H1: read on a detached thread and receive with a bound; joining would
-    // block forever if an escaped grandchild keeps the stdout pipe open.
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = out.read_to_end(&mut buf);
-        let _ = tx.send(buf);
-    });
+    // H1: read on a detached thread into a shared buffer. Once the direct
+    // child has exited we return whatever was collected (TS `execSync`
+    // semantics), so a leftover background descendant holding the pipe open
+    // cannot turn a successful command into a cached failure.
+    let buf: Arc<Mutex<Vec<u8>>> = Arc::default();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+    {
+        let buf = Arc::clone(&buf);
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            loop {
+                match out.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => buf
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend_from_slice(&chunk[..n]),
+                    Err(_) => break,
+                }
+            }
+            let _ = done_tx.send(());
+        });
+    }
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
@@ -165,21 +193,37 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             _ => {
                 // Kill the whole group so descendants cannot keep the stdout pipe open.
-                let _ = Command::new("/bin/sh")
-                    .args(["-c", &format!("kill -KILL -{}", child.id())])
-                    .status();
-                let _ = child.kill();
+                kill_group(&mut child);
                 let _ = child.wait();
                 break None;
             }
         }
     };
-    let buf = rx.recv_timeout(READ_GRACE).ok()?;
-    if !status?.success() {
+    // The direct child has exited. Give the reader READ_GRACE to see EOF; if a
+    // descendant still holds the pipe, kill the group so the reader unblocks
+    // (and the thread exits) instead of leaking per attempt.
+    if done_rx.recv_timeout(READ_GRACE).is_err() {
+        kill_group(&mut child);
+        let _ = done_rx.recv_timeout(READ_GRACE);
+    }
+    let text = String::from_utf8_lossy(
+        &buf.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    )
+    .trim()
+    .to_string();
+    if !status?.success() || text.is_empty() {
         return None;
     }
-    let text = String::from_utf8_lossy(&buf).trim().to_string();
-    (!text.is_empty()).then_some(text)
+    Some(text)
+}
+
+/// Kill the child's whole process group (and the child itself).
+fn kill_group(child: &mut std::process::Child) {
+    let _ = Command::new("/bin/sh")
+        .args(["-c", &format!("kill -KILL -{}", child.id())])
+        .status();
+    let _ = child.kill();
 }
 
 #[cfg(test)]
@@ -206,13 +250,28 @@ mod tests {
         assert_eq!(run("sleep 5", Duration::from_millis(100)), None);
     }
 
-    /// H1: a grandchild that escaped the process group (`setsid`) keeps the
-    /// stdout pipe open; the timeout path must still return promptly.
+    /// A successful command whose background descendant keeps the stdout pipe
+    /// open must still return the child's stdout (TS `execSync` semantics):
+    /// previously the partial output was discarded, cached as failed for 30 s,
+    /// and the blocked reader thread leaked on every attempt.
     #[test]
-    fn escaped_grandchild_does_not_hang_timeout() {
+    fn background_descendant_does_not_turn_success_into_failure() {
         let started = Instant::now();
-        assert_eq!(run("setsid sleep 100 & echo started", Duration::from_millis(300)), None);
-        assert!(started.elapsed() < Duration::from_secs(3), "took {:?}", started.elapsed());
+        // `sleep 30 &` stays in the process group holding the write end of the
+        // stdout pipe after the direct child has exited 0.
+        let got = run("echo done; sleep 30 &", Duration::from_secs(5));
+        assert_eq!(got.as_deref(), Some("done"));
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+    }
+
+    /// A `setsid` grandchild escapes the process group and holds the stdout
+    /// pipe open; the run must still return promptly with the child's output
+    /// (the escaped reader is abandoned -- it cannot be killed via the group).
+    #[test]
+    fn escaped_grandchild_does_not_hang_success() {
+        let started = Instant::now();
+        assert_eq!(run("setsid sleep 100 & echo started", Duration::from_millis(300)).as_deref(), Some("started"));
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
     }
 
     /// L1: different commands run concurrently -- the global lock is never held

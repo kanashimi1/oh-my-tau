@@ -63,7 +63,7 @@ fn keywords(query: &str, extra: &[String]) -> Vec<String> {
 
 /// Score from occurrence count: 1 - 1/(1+n), a 0–1 probability-ish scale.
 fn score(count: usize) -> f64 {
-    1.0 - 1.0 / (1.0 + count as f64)
+    1.0 - 1.0 / (1.0 + f64::from(u32::try_from(count).unwrap_or(u32::MAX)))
 }
 
 fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -84,6 +84,8 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
 ///
 /// # Errors
 /// Empty query or an unresolvable scope path.
+// Layout mirrors omp's `find` flow top-to-bottom; splitting it would obscure that parity.
+#[allow(clippy::too_many_lines)]
 pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let query = str_arg(args, "query")?.trim().to_string();
     if query.is_empty() {
@@ -112,7 +114,7 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let mut hits: Vec<Hit> = Vec::new();
     let mut files_read = 0usize;
     let mut file_bytes = 0usize;
-    let files: Vec<PathBuf> = if meta.is_file() { vec![root.clone()] } else { walk_files(&root)? };
+    let files: Vec<PathBuf> = if meta.is_file() { vec![root] } else { walk_files(&root)? };
     let listed = files.len();
 
     for file in files {
@@ -198,7 +200,7 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         out,
         "listed {listed} · judged 0 · read {files_read} files ({}) · 0 requests · 0 tokens · $0.0000 · {} wall / 0:00 api",
         format_bytes(file_bytes),
-        super::jobs::format_duration(started.elapsed().as_millis() as u64),
+        super::jobs::format_duration(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
     );
     Ok(AgentToolResult::text(out.trim_end().to_string()))
 }
@@ -231,7 +233,7 @@ mod tests {
         .unwrap();
         let text = match &r.content[0] {
             pa_agent::types::ToolResultContent::Text(t) => t.text.clone(),
-            other => panic!("unexpected content: {other:?}"),
+            pa_agent::types::ToolResultContent::Image(image) => panic!("unexpected content: {image:?}"),
         };
         assert!(text.starts_with("2 hit(s) for \"user login session\" (τ 0.40), strongest first"), "{text}");
         let alpha = text.lines().find(|l| l.starts_with("src/alpha.rs")).unwrap();
@@ -254,7 +256,7 @@ mod tests {
         .unwrap();
         let text = match &r.content[0] {
             pa_agent::types::ToolResultContent::Text(t) => t.text.clone(),
-            other => panic!("unexpected content: {other:?}"),
+            pa_agent::types::ToolResultContent::Image(image) => panic!("unexpected content: {image:?}"),
         };
         assert!(text.starts_with("no hits for \"zzz absent topic\" in src/ (τ 0.40)"), "{text}");
     }

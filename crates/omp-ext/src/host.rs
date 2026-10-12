@@ -178,7 +178,7 @@ impl ExtHost {
                 let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                route(&msg, &pending, &tx, weak.upgrade().as_deref()).await;
+                route(&msg, &pending, &tx, weak.upgrade());
             }
             // Host gone: fail everything still waiting.
             for (_, w) in pending
@@ -362,11 +362,11 @@ impl ExtHost {
     }
 }
 
-async fn route(
+fn route(
     msg: &Value,
     pending: &Pending,
     tx: &mpsc::UnboundedSender<HostMessage>,
-    host: Option<&ExtHost>,
+    host: Option<Arc<ExtHost>>,
 ) {
     let method = msg.get("method").and_then(Value::as_str);
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -401,20 +401,122 @@ async fn route(
                 method: m.to_owned(),
                 params,
             };
-            let untaken = host.is_some_and(|h| {
+            let untaken = host.as_ref().is_some_and(|h| {
                 h.incoming
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .is_some()
             });
             if untaken || tx.send(req).is_err() {
+                // Answer on its own task: the reply needs the stdin lock, and
+                // awaiting it here would stall the stdout reader (a large write
+                // holding stdin while the host's stdout pipe is full wedges both).
                 if let Some(host) = host {
-                    let _ = host
-                        .respond(id.clone(), Err(format!("{m} is not supported by the core")))
-                        .await;
+                    let m = m.to_owned();
+                    let id = id.clone();
+                    tokio::spawn(async move {
+                        let _ = host
+                            .respond(id, Err(format!("{m} is not supported by the core")))
+                            .await;
+                    });
                 }
             }
         }
         (None, None) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lifecycle::{serve, HeadlessResponder};
+
+    fn pid_alive(pid: u32) -> bool {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    fn fake_host(dir: &std::path::Path, body: &str) -> HostConfig {
+        let script = dir.join("fake-host.sh");
+        std::fs::write(&script, body).unwrap();
+        HostConfig {
+            bun: "/bin/sh".into(),
+            host_script: script,
+            trace: None,
+            handler_timeout_ms: None,
+            env: Vec::new(),
+        }
+    }
+
+    /// Once `serve()` is running, the loop must not keep the host alive:
+    /// dropping the last `Arc<ExtHost>` handle kills the bun child
+    /// (`kill_on_drop`). Previously `serve` held a strong reference and the
+    /// process outlived every handle until the explicit close call.
+    #[tokio::test]
+    async fn host_process_exits_when_last_handle_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        // `sleep 60` keeps the child alive unless it is killed on drop.
+        let cfg = fake_host(dir.path(), "sleep 60\n");
+        let host = ExtHost::spawn(&cfg).unwrap();
+        let pid = host.child.lock().await.id().expect("child pid");
+        assert!(pid_alive(pid));
+        let incoming = host.take_incoming().expect("incoming is available once");
+        let _notes = serve(&host, incoming, Arc::new(HeadlessResponder));
+        drop(host);
+        // Tokio reaps the killed child asynchronously; allow generous time,
+        // but far less than the 60 s the fake host would otherwise sleep.
+        let mut exited = false;
+        for _ in 0..200 {
+            if !pid_alive(pid) {
+                exited = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(exited, "bun host (pid {pid}) outlived its last handle");
+    }
+
+    /// An unclaimed host request (no `take_incoming` taker) is answered on its
+    /// own task, not inside the stdout reader loop: the "not supported" error
+    /// still reaches the child's stdin. The fake host records the reply by
+    /// touching a marker file.
+    #[tokio::test]
+    async fn unclaimed_request_is_answered_off_the_reader_loop() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("replied");
+        let script = dir.path().join("fake-host.sh");
+        std::fs::write(
+            &script,
+            concat!(
+                "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"compact\",\"params\":{}}'\n",
+                "while IFS= read -r line; do\n",
+                "  case \"$line\" in\n",
+                "    *'not supported'*) touch \"$MARKER\"; break;;\n",
+                "  esac\n",
+                "done\n",
+                "sleep 60\n",
+            ),
+        )
+        .unwrap();
+        let mut cfg = HostConfig {
+            bun: "/bin/sh".into(),
+            host_script: script,
+            trace: None,
+            handler_timeout_ms: None,
+            env: vec![("MARKER".into(), marker.display().to_string())],
+        };
+        cfg.handler_timeout_ms = None;
+        let host = ExtHost::spawn(&cfg).unwrap();
+        // Deliberately no `take_incoming`: the request is unclaimed.
+        let answered = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if marker.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        drop(host);
+        assert!(answered.is_ok(), "unclaimed request was never answered");
     }
 }

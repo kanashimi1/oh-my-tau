@@ -10,7 +10,7 @@ use crate::json::{message_role, str_field};
 
 /// Counts tokens in one text fragment. Fragments of a message are counted independently and
 /// summed, like the TS `countTokens(string[])`.
-pub trait Tokenizer {
+pub trait Tokenizer: Sync {
     fn count_text(&self, text: &str) -> u64;
 
     /// Estimated tokens for one image block. omp decodes the image header for its pixel size; the

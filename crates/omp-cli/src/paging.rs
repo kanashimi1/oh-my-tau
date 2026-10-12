@@ -113,7 +113,7 @@ pub fn page(
         return Err(PageError::plain("RPC message snapshot does not match current messages"));
     }
     let limit = limit.unwrap_or(DEFAULT_LIMIT);
-    if limit < 1 || limit > MAX_LIMIT {
+    if !(1..=MAX_LIMIT).contains(&limit) {
         return Err(PageError::plain(format!("RPC message page limit must be between 1 and {MAX_LIMIT}")));
     }
     let mut offset = 0;

@@ -65,7 +65,7 @@ pub fn elide_middle(output: &str) -> (String, Option<String>) {
 fn timeout_arg(args: &Value) -> Option<f64> {
     match args.get("timeout").and_then(Value::as_f64) {
         None => Some(DEFAULT_TIMEOUT_SECS),
-        Some(t) if t == 0.0 => None,
+        Some(0.0) => None,
         Some(t) => Some(t.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS)),
     }
 }
@@ -176,16 +176,17 @@ pub async fn execute(cwd: &std::path::Path, command: &str, signal: &AbortSignal)
 
 /// Format a finished command as omp's bash result text (without error propagation).
 fn finished_text(output: &str, elapsed: Duration, outcome: Option<&str>, timeout: Option<f64>, code: Option<i32>) -> String {
+    use std::fmt::Write as _;
     let (shown, elision) = elide_middle(output.trim_end_matches('\n'));
     let body = if shown.is_empty() { "(no output)".to_string() } else { shown };
     let mut text = format!("{body}\n\n{}", wall_time_notice(elapsed));
     if let Some(n) = elision {
-        text.push_str(&format!("\n\n[{n}]"));
+        let _ = write!(text, "\n\n[{n}]");
     }
     match outcome {
         Some("timeout") => {
             let secs = timeout.unwrap_or(0.0);
-            text.push_str(&format!("\n\n[Command timed out after {secs} seconds]"));
+            let _ = write!(text, "\n\n[Command timed out after {secs} seconds]");
         }
         Some(_) => text.push_str("\n\n[Command aborted]"),
         None => {}
@@ -193,7 +194,7 @@ fn finished_text(output: &str, elapsed: Duration, outcome: Option<&str>, timeout
     if outcome.is_none() {
         if let Some(c) = code {
             if c != 0 {
-                text.push_str(&format!("\n\nCommand exited with code {c}"));
+                let _ = write!(text, "\n\nCommand exited with code {c}");
             }
         } else {
             text.push_str("\n\nCommand failed: missing exit status");
@@ -238,7 +239,7 @@ pub async fn bash(env: std::sync::Arc<super::Env>, args: Value, signal: AbortSig
         notices.push("Ignored ready: service-only, and no service name was given.".to_string());
     }
     if async_requested {
-        return start_background(&env.jobs, dir, command, timeout, notices, &signal);
+        return Ok(start_background(&env.jobs, dir, command, timeout, notices, &signal));
     }
     let (output, code, elapsed, outcome) = run(&dir, &command, timeout, &signal, None).await?;
     let mut text = finished_text(&output, elapsed, outcome, timeout, code);
@@ -260,7 +261,7 @@ fn start_background(
     timeout: Option<f64>,
     notices: Vec<String>,
     _signal: &AbortSignal,
-) -> Result<AgentToolResult> {
+) -> AgentToolResult {
     let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let job = jobs::Job {
         command: command.clone(),
@@ -304,7 +305,7 @@ fn start_background(
     let mut lines: Vec<String> = Vec::new();
     lines.extend(notices);
     lines.push(jobs::background_notice(&job_id, timeout));
-    Ok(AgentToolResult::text(lines.join("\n")))
+    AgentToolResult::text(lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -320,7 +321,7 @@ mod tests {
             .iter()
             .filter_map(|c| match c {
                 pa_agent::types::ToolResultContent::Text(t) => Some(t.text.clone()),
-                _ => None,
+                pa_agent::types::ToolResultContent::Image(_) => None,
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -432,7 +433,11 @@ mod tests {
 
     #[test]
     fn long_output_is_elided_in_the_middle() {
-        let long: String = (1..=5000).map(|i| format!("line number {i}\n")).collect();
+        let mut long = String::new();
+        for i in 1..=5000 {
+            use std::fmt::Write as _;
+            let _ = writeln!(long, "line number {i}");
+        }
         let (shown, notice) = elide_middle(long.trim_end());
         assert!(shown.len() < long.len());
         assert!(shown.starts_with("line number 1\n"));

@@ -1,6 +1,6 @@
-//! `edit` (hashline / replace / patch / apply_patch / sloppy, run by the
-//! vendored `pi-edit` engine exactly as omp's native `EditSession` does) and
-//! `write`.
+//! `edit` (`hashline` / `replace` / `patch` / `apply_patch` / `sloppy`, run by the
+//! vendored `pi-edit` engine exactly as `omp`'s native `EditSession` does)
+//! and `write`.
 
 use std::path::{Path, PathBuf};
 
@@ -157,7 +157,7 @@ mod tests {
             .iter()
             .filter_map(|c| match c {
                 pa_agent::types::ToolResultContent::Text(t) => Some(t.text.clone()),
-                _ => None,
+                pa_agent::types::ToolResultContent::Image(_) => None,
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -224,7 +224,11 @@ mod tests {
     #[tokio::test]
     async fn hashline_requires_lines_to_have_been_seen() {
         let dir = tempfile::tempdir().unwrap();
-        let body: String = (1..=50).map(|i| format!("l{i}\n")).collect();
+        let mut body = String::new();
+        for i in 1..=50 {
+            use std::fmt::Write as _;
+            let _ = writeln!(body, "l{i}");
+        }
         std::fs::write(dir.path().join("f.txt"), body).unwrap();
         let env = Env::new(dir.path(), true);
         let tag = tag_of(&text_of(&read(&env, &json!({"path": "f.txt:1-3"})).unwrap()));

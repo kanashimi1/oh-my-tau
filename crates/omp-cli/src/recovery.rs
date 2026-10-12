@@ -236,6 +236,10 @@ pub struct TurnRecovery {
     attempt: u32,
     generation: u64,
     cancel: Option<(u64, CancellationToken)>,
+    /// Between `begin_attempt` and `arm_cancel` (fallback consult in flight): an `abort_retry`
+    /// arriving now is remembered and cancels the backoff as soon as it is armed.
+    handling: bool,
+    abort_pending: bool,
 }
 
 impl TurnRecovery {
@@ -243,16 +247,26 @@ impl TurnRecovery {
     pub fn new(cfg: RecoveryConfig) -> Self {
         let state = FallbackState::new(RevertPolicy::from_setting(Some(&cfg.retry.revert_policy)));
         let enabled = cfg.retry.enabled;
-        Self { cfg, state, enabled, attempt: 0, generation: 0, cancel: None }
+        Self { cfg, state, enabled, attempt: 0, generation: 0, cancel: None, handling: false, abort_pending: false }
     }
 
-    /// A user-selected model replaces the chain and ends fallback ownership.
+    /// A user-selected model replaces the chain and ends fallback ownership; cooldowns of other
+    /// selectors survive (the caller clears the selected model's own).
     pub fn reconfigure(&mut self, cfg: RecoveryConfig) {
-        let enabled = self.enabled;
-        let (attempt, generation, cancel) = (self.attempt, self.generation, self.cancel.take());
-        *self = Self::new(cfg);
-        self.enabled = enabled;
-        (self.attempt, self.generation, self.cancel) = (attempt, generation, cancel);
+        self.cfg = cfg;
+        self.state.clear_active();
+    }
+
+    /// Clear the cooldown of a selector the user just picked.
+    pub fn clear_cooldown(&mut self, selector: &str) {
+        self.state.clear_suppressed(selector);
+    }
+
+    /// Whether `selector` is on a cooldown at `now_ms`.
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_cooling(&self, selector: &str, now_ms: u64) -> bool {
+        self.state.is_suppressed(selector, now_ms)
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
@@ -288,6 +302,8 @@ impl TurnRecovery {
     /// Open (or continue) a saga for `failed`: bump the attempt counter, compute the backoff.
     pub fn begin_attempt(&mut self, failed: &FailedTurn, rand01: f64) -> Attempt {
         self.attempt += 1;
+        self.handling = true;
+        self.abort_pending = false;
         let max = self.cfg.retry.max_retries;
         let retry_after_ms = parse_retry_after_ms(&failed.message);
         let mut delay_ms = self.cfg.retry.backoff_ms(self.attempt, rand01);
@@ -324,6 +340,15 @@ impl TurnRecovery {
 
     /// Decide how the attempt ends (`switched` = a fallback model took over).
     pub fn finish_attempt(&mut self, a: &Attempt, switched: bool) -> Verdict {
+        let verdict = self.finish_attempt_inner(a, switched);
+        if matches!(verdict, Verdict::GiveUp { .. }) {
+            self.handling = false;
+            self.abort_pending = false;
+        }
+        verdict
+    }
+
+    fn finish_attempt_inner(&mut self, a: &Attempt, switched: bool) -> Verdict {
         let mut delay = a.delay_ms;
         if switched {
             delay = 0;
@@ -396,6 +421,10 @@ impl TurnRecovery {
         if let Some((_, old)) = self.cancel.replace((self.generation, token.clone())) {
             old.cancel();
         }
+        self.handling = false;
+        if std::mem::take(&mut self.abort_pending) {
+            token.cancel();
+        }
         (self.generation, token)
     }
 
@@ -418,12 +447,12 @@ impl TurnRecovery {
 
     /// `abortRetry`: cancel the backoff sleep. `true` when a sleep was pending.
     pub fn abort_retry(&mut self) -> bool {
-        match self.cancel.take() {
-            Some((_, token)) => {
-                token.cancel();
-                true
-            }
-            None => false,
+        if let Some((_, token)) = self.cancel.take() {
+            token.cancel();
+            true
+        } else {
+            self.abort_pending = self.handling;
+            false
         }
     }
 
@@ -895,5 +924,143 @@ mod tests {
                 json!({"type": "model_change", "model": "r/c", "resolvedModelIsFallback": false}),
             ]
         );
+    }
+
+    #[test]
+    fn abort_before_the_backoff_is_armed_still_cancels_it() {
+        let mut r = TurnRecovery::new(cfg(&[]));
+        r.begin_attempt(&failed("503"), 0.0);
+        assert!(!r.abort_retry(), "nothing armed yet");
+        let (_g, token) = r.arm_cancel();
+        assert!(token.is_cancelled());
+        // an abort with no attempt in flight must not poison the next backoff
+        let mut r = TurnRecovery::new(cfg(&[]));
+        assert!(!r.abort_retry());
+        r.begin_attempt(&failed("503"), 0.0);
+        assert!(!r.arm_cancel().1.is_cancelled());
+    }
+
+    #[test]
+    fn reconfigure_keeps_other_selectors_cooldowns_and_drops_fallback_ownership() {
+        let mut r = TurnRecovery::new(cfg(&["q/b"]));
+        let a = r.begin_attempt(&failed("503"), 0.0);
+        r.consult("p/a", &a, 1_000, 0.0);
+        r.commit_switch("p/a", None, None);
+        assert!(r.is_cooling("p/a", 1_001));
+        r.reconfigure(cfg(&["r/c"]));
+        r.clear_cooldown("q/b");
+        assert!(r.is_cooling("p/a", 1_001), "unrelated cooldown survives a model switch");
+        assert!(r.on_settled_ok("q/b").iter().all(|f| f["type"] != "retry_fallback_succeeded"), "ownership ended");
+    }
+
+    // ------------------------------------------------ review round 3 regressions
+
+    /// Frames until `auto_retry_start` (backoff pending).
+    async fn until_backoff(h: &mut Harness) -> Vec<Value> {
+        let mut frames = Vec::new();
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.expect("frame").expect("open");
+            let start = f["type"] == "auto_retry_start";
+            frames.push(f);
+            if start {
+                return frames;
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn terminal_error_settle_and_get_state_do_not_deadlock() {
+        for _ in 0..30 {
+            let mut h = harness(&[Err("401 invalid api key")], fast_cfg(&[], 3, 1)).await;
+            // open a saga so `on_error_settled` has something to close
+            h.rt.prompt(Some(json!("p")), "hi", None, Vec::new()).await.unwrap();
+            let rt = h.rt.clone();
+            let poller = tokio::spawn(async move {
+                for _ in 0..200 {
+                    rt.state().await;
+                    tokio::task::yield_now().await;
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(10), until_settled(&mut h.rx)).await.expect("no deadlock");
+            tokio::time::timeout(Duration::from_secs(10), poller).await.expect("state() finished").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn new_session_during_backoff_cancels_it_and_leaves_the_new_file_clean() {
+        let mut h = harness(&[Err("503 overloaded")], fast_cfg(&[], 5, 60_000)).await;
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.unwrap();
+        until_backoff(&mut h).await;
+        h.rt.new_session(None).await.expect("new session");
+        let rest = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut v = Vec::new();
+            while let Some(f) = h.rx.recv().await {
+                let done = f["type"] == "session_settled";
+                v.push(f);
+                if done {
+                    break;
+                }
+            }
+            v
+        })
+        .await
+        .expect("saga ended promptly");
+        assert!(rest.iter().any(|f| f["type"] == "auto_retry_end" && f["finalError"] == "Retry cancelled"), "{rest:?}");
+        let entries = session_entries(&h.rt.session_file());
+        assert!(entries.iter().all(|e| e["message"]["stopReason"] != "error"), "old failure leaked into the new session");
+        assert!(!h.rt.state().await["isSettled"].is_null());
+        assert_eq!(h.rt.state().await["isSettled"], true);
+    }
+
+    #[tokio::test]
+    async fn prompt_during_backoff_does_not_inherit_the_old_turns_result() {
+        let mut h = harness(&[Err("503 overloaded"), Ok("fresh")], fast_cfg(&[], 5, 60_000)).await;
+        h.rt.prompt(Some(json!("old")), "first", None, Vec::new()).await.unwrap();
+        until_backoff(&mut h).await;
+        h.rt.prompt(Some(json!("new")), "second", None, Vec::new()).await.unwrap();
+        let mut frames = Vec::new();
+        while frames.iter().filter(|f: &&Value| f["type"] == "prompt_result").count() < 2 {
+            frames.push(tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.expect("frame").expect("open"));
+        }
+        let detail: Vec<_> = frames.iter().filter(|f| f["type"] == "prompt_result").map(ToString::to_string).collect();
+        let results: Vec<_> = frames.iter().filter(|f| f["type"] == "prompt_result").map(|f| (f["id"].clone(), f["status"].clone())).collect();
+        assert_eq!(results, [(json!("old"), json!("error")), (json!("new"), json!("completed"))], "{detail:?}");
+    }
+
+    #[tokio::test]
+    async fn cancelled_retry_never_persists_the_superseded_turn() {
+        let mut h = harness(&[Err("503 overloaded")], fast_cfg(&[], 5, 60_000)).await;
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.unwrap();
+        until_backoff(&mut h).await;
+        h.rt.abort().await;
+        until_settled(&mut h.rx).await;
+        let entries = session_entries(&h.session_file);
+        // omp: a failed attempt reaches the file only when the saga gives up; a cancel is not that.
+        assert!(entries.iter().all(|e| e["message"]["stopReason"] != "error"));
+    }
+
+    #[tokio::test]
+    async fn queue_edits_match_exactly_and_touch_one_message() {
+        let mut h = harness_with(|p| p.push_stalled_turn("busy"), fast_cfg(&[], 3, 1)).await;
+        h.rt.prompt(Some(json!("p")), "run", None, Vec::new()).await.unwrap();
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.unwrap().unwrap();
+            if f["type"] == "message_start" && f["message"]["role"] == "assistant" {
+                break;
+            }
+        }
+        for t in ["fix the bug", "fix the bug", "fix"] {
+            h.rt.prompt(None, t, Some("followUp"), Vec::new()).await.unwrap();
+        }
+        let q = |rt: &Runtime| rt.queued_previews().1;
+        assert_eq!(q(&h.rt), ["fix the bug", "fix the bug", "fix"]);
+        assert!(!h.rt.remove_queued("fix the", "followUp"), "prefix must not match");
+        assert!(!h.rt.remove_queued("fix", "steering"), "wrong queue");
+        assert!(h.rt.remove_queued("fix", "followUp"));
+        assert_eq!(q(&h.rt), ["fix the bug", "fix the bug"], "exactly one, and the right one");
+        assert!(h.rt.promote_queued("fix the bug"));
+        assert_eq!((h.rt.queued_previews().0, q(&h.rt)), (vec!["fix the bug".to_string()], vec!["fix the bug".to_string()]));
+        assert!(!h.rt.promote_queued("fix"));
+        h.rt.abort().await;
     }
 }

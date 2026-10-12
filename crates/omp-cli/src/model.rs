@@ -1,6 +1,6 @@
-//! Model selection via `omp-providers` (models.yml / config.yml roles /
-//! agent.db credentials). Setting OMP_RS_BASE_URL switches to an explicit
-//! openai-completions endpoint (OMP_RS_API_KEY / OMP_RS_MODEL).
+//! Model selection via `omp-providers` (`models.yml` / `config.yml` roles /
+//! agent.db credentials). Setting `OMP_RS_BASE_URL` switches to an explicit
+//! openai-completions endpoint (`OMP_RS_API_KEY` / `OMP_RS_MODEL`).
 
 use anyhow::{anyhow, Result};
 use pa_agent::types::ThinkingLevel;

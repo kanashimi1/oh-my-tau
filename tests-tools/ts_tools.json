@@ -187,5 +187,128 @@
 				"path"
 			]
 		}
+	},
+	{
+		"name": "task",
+		"description_first_line": "Spawn `tasks[]` concurrently; IDs return immediately.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"context": {
+					"type": "string"
+				},
+				"tasks": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"task": {
+								"type": "string"
+							},
+							"solutionSpace": {
+								"type": "string"
+							},
+							"name": {
+								"type": "string"
+							},
+							"agent": {
+								"type": "string",
+								"default": "task"
+							},
+							"model": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									}
+								]
+							},
+							"outputSchema": {
+								"anyOf": [
+									{
+										"type": "object"
+									},
+									{
+										"type": "boolean"
+									},
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"schemaMode": {
+								"enum": [
+									"permissive",
+									"strict"
+								],
+								"type": "string"
+							},
+							"tools": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						},
+						"required": [
+							"task",
+							"solutionSpace"
+						]
+					}
+				},
+				"model": {
+					"not": {}
+				}
+			},
+			"required": [
+				"context",
+				"tasks"
+			]
+		}
+	},
+	{
+		"name": "eval",
+		"description_first_line": "One cell per call; top-level state persists, including across compaction. Subagents have separate kernels.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"language": {
+					"enum": [
+						"py",
+						"js"
+					],
+					"type": "string",
+					"description": "\"py\": IPython; \"js\": Bun"
+				},
+				"code": {
+					"type": "string",
+					"description": "Code or standalone % command; top-level await works."
+				},
+				"title": {
+					"type": "string",
+					"description": "Short transcript label."
+				},
+				"timeout": {
+					"type": "number",
+					"description": "Cell deadline in seconds; 0 disables it."
+				},
+				"reset": {
+					"type": "boolean",
+					"description": "Wipe only this kernel."
+				}
+			},
+			"required": [
+				"language",
+				"code"
+			]
+		}
 	}
 ]

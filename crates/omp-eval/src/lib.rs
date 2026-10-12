@@ -317,6 +317,8 @@ impl PythonKernel {
         self.execute_opts(code, timeout, false)
     }
 
+    // Mirrors the omp host cell-execution flow step by step; splitting would obscure that parity.
+    #[allow(clippy::too_many_lines)]
     fn execute_opts(
         &self,
         code: &str,
@@ -354,7 +356,7 @@ impl PythonKernel {
             match self.recv(deadline, &id) {
                 Ok(frame) => match frame {
                     Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
-                        output.push_str(&data)
+                        output.push_str(&data);
                     }
                     Frame::Result { bundle, .. } => {
                         if let Some(Value::String(text)) = bundle.get("text/plain") {

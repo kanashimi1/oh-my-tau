@@ -7,10 +7,12 @@
 
 pub mod bash;
 mod edit;
+mod eval;
 mod find;
 mod jobs;
 mod read;
 mod search;
+mod task;
 mod tree;
 mod util;
 
@@ -189,6 +191,18 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             },"required":["query","grep_keywords"],"additionalProperties":false}),
             blocking(find::find),
         ),
+        mk(
+            "task",
+            task::description(cwd),
+            task::schema(),
+            Arc::new(|env, args, _| Box::pin(task::task(env, args))),
+        ),
+        mk(
+            "eval",
+            eval::DESCRIPTION.to_string(),
+            eval::schema(),
+            Arc::new(|env, args, _| Box::pin(eval::eval(env, args))),
+        ),
     ]
 }
 
@@ -212,7 +226,10 @@ mod tests {
     fn tool_names_and_schemas_match_omp() {
         let tools = builtin_tools(Path::new("/tmp"), EditMode::Hashline);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert_eq!(names, ["read", "bash", "edit", "glob", "grep", "write", "find"]);
+        assert_eq!(
+            names,
+            ["read", "bash", "edit", "glob", "grep", "write", "find", "task", "eval"]
+        );
         let edit = tools.iter().find(|t| t.name() == "edit").unwrap();
         assert_eq!(edit.parameters()["properties"]["input"]["type"], "string");
         assert!(edit.description().starts_with("Hashline patches existing files"));

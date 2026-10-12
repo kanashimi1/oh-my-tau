@@ -1,4 +1,4 @@
-//! AgentEvent -> omp RPC event frames (field names match omp).
+//! `AgentEvent` -> `omp` RPC event frames (field names match omp).
 
 use pa_agent::stream::AssistantMessageEvent as Ev;
 use pa_agent::types::{AgentEvent, AgentMessage};
@@ -36,8 +36,8 @@ pub fn stamp_attribution(v: &mut Value) {
     }
 }
 
-fn stop_reason(r: &pa_agent::types::StopReason) -> Value {
-    to_value(r)
+fn stop_reason(r: pa_agent::types::StopReason) -> Value {
+    to_value(&r)
 }
 
 /// omp `assistantMessageEvent` payload.
@@ -63,10 +63,10 @@ pub fn assistant_event(e: &Ev) -> Value {
         Ev::ToolCallDelta { content_index, delta, partial } => json!({"type":"toolcall_delta","contentIndex":content_index,"delta":delta,"partial":to_value(partial)}),
         Ev::ToolCallEnd { content_index, tool_call, partial } => json!({"type":"toolcall_end","contentIndex":content_index,"toolCall":to_value(tool_call),"partial":to_value(partial)}),
         Ev::Done { reason, message } => {
-            json!({"type":"done","reason":stop_reason(reason),"message":to_value(message)})
+            json!({"type":"done","reason":stop_reason(*reason),"message":to_value(message)})
         }
         Ev::Error { reason, error } => {
-            json!({"type":"error","reason":stop_reason(reason),"error":to_value(error)})
+            json!({"type":"error","reason":stop_reason(*reason),"error":to_value(error)})
         }
     }
 }

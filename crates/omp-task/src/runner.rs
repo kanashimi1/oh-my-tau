@@ -216,6 +216,34 @@ impl TaskRunner {
         self.semaphore.available_permits()
     }
 
+    /// Spawn the child process, retrying transient fork/exec failures.
+    ///
+    /// Under load `fork`/`exec` can fail with `EAGAIN` (resource limits),
+    /// `ENOMEM`, or `ETXTBSY` (the binary is momentarily open for writing,
+    /// e.g. a freshly written script still being closed). These are transient,
+    /// so retry a few times with a short backoff before giving up.
+    async fn spawn_child(&self, spec: &TaskSpec) -> std::io::Result<std::process::Output> {
+        let mut attempt = 0;
+        loop {
+            let result = tokio::process::Command::new(&self.binary)
+                .arg("-p")
+                .arg(&spec.prompt)
+                .current_dir(&spec.cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .await;
+            match result {
+                Err(e) if attempt < 3 && is_transient_spawn_error(&e) => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(50 * attempt)).await;
+                }
+                result => return result,
+            }
+        }
+    }
+
     async fn run_child(
         &self,
         id: String,
@@ -223,15 +251,7 @@ impl TaskRunner {
         _permit: OwnedSemaphorePermit,
     ) -> RunOutput {
         let start = Instant::now();
-        let result = tokio::process::Command::new(&self.binary)
-            .arg("-p")
-            .arg(&spec.prompt)
-            .current_dir(&spec.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .await;
+        let result = self.spawn_child(&spec).await;
 
         match result {
             Ok(out) => {
@@ -284,6 +304,26 @@ impl TaskRunner {
     }
 }
 
+/// Whether a spawn error is worth retrying (transient resource pressure).
+#[cfg(unix)]
+fn is_transient_spawn_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::WouldBlock | ErrorKind::ResourceBusy | ErrorKind::OutOfMemory
+    ) || matches!(e.raw_os_error(), Some(11 | 12 | 26)) // EAGAIN | ENOMEM | ETXTBSY
+}
+
+/// Whether a spawn error is worth retrying (transient resource pressure).
+#[cfg(not(unix))]
+fn is_transient_spawn_error(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::WouldBlock | ErrorKind::ResourceBusy | ErrorKind::OutOfMemory
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,7 +338,10 @@ mod tests {
         let path = dir.join("fake-omp-rs");
         let mut f = std::fs::File::create(&path).unwrap();
         writeln!(f, "#!/bin/sh\n{body}").unwrap();
-        let mut perms = f.metadata().unwrap().permissions();
+        // Close the write handle before the script may be exec'd: an exec while
+        // any descriptor is still open for writing fails with ETXTBSY.
+        drop(f);
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&path, perms).unwrap();
         path

@@ -803,6 +803,11 @@ pub async fn answer(
 /// Serve the host's requests with `responder` (each in its own task, so a slow `compact` does not stall
 /// the rest) and hand every notification (`append_entry`, `send_message`, ...) to the returned channel.
 /// Must run inside a tokio runtime; ends when the host closes.
+///
+/// `serve` only holds a weak handle: dropping the last [`ExtHost`] handle kills
+/// the child process (`kill_on_drop`), after which the reader task closes the
+/// message channel and this loop ends. A strong handle here would keep the host
+/// (and its bun process) alive forever once the loop is running.
 #[must_use]
 pub fn serve(
     host: &Arc<ExtHost>,
@@ -810,12 +815,14 @@ pub fn serve(
     responder: Arc<dyn HostResponder>,
 ) -> mpsc::UnboundedReceiver<HostMessage> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let host = Arc::clone(host);
+    let weak = Arc::downgrade(host);
     tokio::spawn(async move {
         while let Some(msg) = incoming.recv().await {
             match msg {
                 HostMessage::Request { id, method, params } => {
-                    let host = Arc::clone(&host);
+                    let Some(host) = weak.upgrade() else {
+                        break;
+                    };
                     let responder = Arc::clone(&responder);
                     tokio::spawn(async move {
                         let reply = answer(responder.as_ref(), &method, &params).await;

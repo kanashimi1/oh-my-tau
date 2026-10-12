@@ -116,6 +116,9 @@ fn bool_arg(args: &serde_json::Value, key: &str) -> Option<bool> {
 ///
 /// # Errors
 /// Missing paths, invalid glob or limit.
+// Layout mirrors omp's `glob` flow top-to-bottom; splitting it would obscure that parity.
+// The limit casts below are lossless: both limits are small fixed constants (200).
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let mut patterns = path_list(args.get("path").and_then(serde_json::Value::as_str));
     if patterns.is_empty() {
@@ -230,7 +233,7 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
 struct Match {
     line_number: u64,
     line: String,
-    is_match: bool,
+    matched: bool,
 }
 
 struct Collector {
@@ -260,7 +263,7 @@ impl Sink for Collector {
         // A multi-line match yields one row per line.
         for (i, raw) in m.lines().enumerate() {
             let line = self.clip(raw);
-            self.rows.push(Match { line_number: first + i as u64, line, is_match: true });
+            self.rows.push(Match { line_number: first + i as u64, line, matched: true });
         }
         self.matches += 1;
         Ok(self.matches <= self.cap)
@@ -271,7 +274,7 @@ impl Sink for Collector {
             return Ok(false);
         }
         let line = self.clip(c.bytes());
-        self.rows.push(Match { line_number: c.line_number().unwrap_or(0), line, is_match: false });
+        self.rows.push(Match { line_number: c.line_number().unwrap_or(0), line, matched: false });
         Ok(true)
     }
 }
@@ -368,7 +371,7 @@ fn search_file(
     let mut count = sink.matches;
     if let Some(r) = ranges {
         rows.retain(|m| in_ranges(m.line_number, r));
-        count = rows.iter().filter(|m| m.is_match).count();
+        count = rows.iter().filter(|m| m.matched).count();
     }
     if count == 0 {
         return None;
@@ -376,7 +379,7 @@ fn search_file(
     Some((rows, count.min(per_file_cap + 1), sink.truncated_lines))
 }
 
-fn split_targets(env: &Env, entries: &[String]) -> Result<(Vec<Target>, Vec<String>)> {
+fn split_targets(env: &Env, entries: &[String]) -> (Vec<Target>, Vec<String>) {
     let mut targets = Vec::new();
     let mut missing = Vec::new();
     for entry in entries {
@@ -402,17 +405,17 @@ fn split_targets(env: &Env, entries: &[String]) -> Result<(Vec<Target>, Vec<Stri
         let parsed = parse_find_pattern(&path_part);
         if parsed.has_glob {
             // A glob spelled without a directory prefix matches at any depth.
-            let bare = !path_part.contains('/');
-            let glob = if bare && !parsed.glob.starts_with("**") { format!("**/{}", parsed.glob) } else { parsed.glob };
-            let base = resolve_to_cwd(&parsed.base, &env.cwd);
-            if base.is_dir() {
-                targets.push(Target { base, glob: Some(glob), ranges: None });
+            let no_dir_prefix = !path_part.contains('/');
+            let glob = if no_dir_prefix && !parsed.glob.starts_with("**") { format!("**/{}", parsed.glob) } else { parsed.glob };
+            let dir = resolve_to_cwd(&parsed.base, &env.cwd);
+            if dir.is_dir() {
+                targets.push(Target { base: dir, glob: Some(glob), ranges: None });
                 continue;
             }
         }
         missing.push(entry);
     }
-    Ok((targets, missing))
+    (targets, missing)
 }
 
 /// Run the `grep` tool.
@@ -441,7 +444,7 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let gitignore = bool_arg(args, "gitignore").unwrap_or(true);
     let multiline = pattern.contains('\n') || pattern.contains("\\n");
 
-    let (targets, missing) = split_targets(env, &entries)?;
+    let (targets, missing) = split_targets(env, &entries);
     if targets.is_empty() {
         bail!(
             "Path not found: {}; list each target in the semicolon-delimited `path`",
@@ -522,7 +525,7 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             let mut seen = 0usize;
             let mut cut = h.matches.len();
             for (i, m) in h.matches.iter().enumerate() {
-                if m.is_match {
+                if m.matched {
                     seen += 1;
                     if seen > per_file_cap {
                         cut = i;
@@ -583,7 +586,7 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             if last.is_some_and(|l| m.line_number > l + 1) {
                 out.push("...".into());
             }
-            let marker = if m.is_match { '*' } else { ' ' };
+            let marker = if m.matched { '*' } else { ' ' };
             if tag.is_some() {
                 out.push(format!("{marker}{}:{}", m.line_number, m.line));
             } else {
@@ -681,7 +684,7 @@ mod tests {
             .iter()
             .filter_map(|c| match c {
                 pa_agent::types::ToolResultContent::Text(t) => Some(t.text.clone()),
-                _ => None,
+                pa_agent::types::ToolResultContent::Image(_) => None,
             })
             .collect::<Vec<_>>()
             .join("\n")

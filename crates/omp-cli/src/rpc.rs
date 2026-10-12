@@ -254,14 +254,13 @@ fn subagent_messages(cmd: &Value) -> CmdResult {
 fn text_cursor(cmd: &Value) -> Result<(), CmdError> {
     let text = cmd.get("text").and_then(Value::as_str);
     let cursor = cmd.get("cursor").and_then(Value::as_f64);
-    match (text, cursor) {
-        (Some(t), Some(c))
-            if c.fract() == 0.0 && c >= 0.0 && c <= f64::from(u32::try_from(t.encode_utf16().count()).unwrap_or(u32::MAX)) =>
-        {
-            Ok(())
+    if let (Some(t), Some(c)) = (text, cursor) {
+        let utf16_len = f64::from(u32::try_from(t.encode_utf16().count()).unwrap_or(u32::MAX));
+        if c.fract() == 0.0 && c >= 0.0 && c <= utf16_len {
+            return Ok(());
         }
-        _ => Err(CmdError::new("cursor must be an integer UTF-16 offset within text")),
     }
+    Err(CmdError::new("cursor must be an integer UTF-16 offset within text"))
 }
 
 /// `get_login_providers`: omp's OAuth registry; `authenticated` = a credential source resolves.
@@ -293,26 +292,29 @@ fn images(cmd: &Value) -> Vec<pa_agent::types::ImageContent> {
         .collect()
 }
 
+// Result shape mirrors the TS command framing (`ok(...)` / `none()` feed `?`-chains).
+#[allow(clippy::unnecessary_wraps)]
 fn ok(data: Value) -> CmdResult {
     Ok(Some(data))
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn none() -> CmdResult {
     Ok(None)
 }
 
 async fn cycle_model(rt: &Runtime) -> CmdResult {
-    let info = rt.model_info().await;
+    let info = rt.model_info();
     let models = available_models(None);
     if models.len() < 2 {
         return ok(Value::Null);
     }
     let idx = models
         .iter()
-        .position(|m| info.get("provider") == Some(&json!(m.provider.to_string())) && info.get("id") == Some(&json!(m.id)))
+        .position(|m| info.get("provider") == Some(&json!(m.provider.clone())) && info.get("id") == Some(&json!(m.id)))
         .unwrap_or(0);
     let next = &models[(idx + 1) % models.len()];
-    let model = rt.cycle_to(&next.provider.to_string(), &next.id).await?;
+    let model = rt.cycle_to(&next.provider, &next.id).await?;
     let level = rt.agent.state().await.thinking_level;
     ok(json!({"model": model, "thinkingLevel": level_name(level), "isScoped": false}))
 }
@@ -396,6 +398,10 @@ pub async fn handle(rt: &Arc<Runtime>, cmd: &Value) -> Value {
 }
 
 #[allow(clippy::too_many_lines)]
+// The `abort_bash` closure is required: the method-ref form `SettingsView::abort_bash`
+// fails the HRTB lifetime check (`&mut SettingsView<'_>`), so clippy's replacement
+// does not compile.
+#[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
 async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
     match kind {
         "negotiate_protocol" => match cmd.get("protocolVersion").and_then(Value::as_i64) {
@@ -469,15 +475,12 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "open_session" => {
             let dir = PathBuf::from(str_field(cmd, "sessionDir")?);
-            let resumed = match newest_session(&dir) {
-                Some(path) => {
-                    rt.load_session(&path, Some(&dir)).await?;
-                    true
-                }
-                None => {
-                    rt.new_session(Some(&dir)).await?;
-                    false
-                }
+            let resumed = if let Some(path) = newest_session(&dir) {
+                rt.load_session(&path, Some(&dir)).await?;
+                true
+            } else {
+                rt.new_session(Some(&dir)).await?;
+                false
             };
             ok(json!({
                 "cancelled": false,
@@ -590,13 +593,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "cycle_model" => cycle_model(rt).await,
         "get_available_models" => {
             let current = {
-                let info = rt.model_info().await;
+                let info = rt.model_info();
                 info.get("provider").zip(info.get("id")).map(|(p, i)| (p.clone(), i.clone()))
             };
             let mut models: Vec<Value> = available_models(None).iter().map(model_info).collect();
             if let Some((p, i)) = current {
                 if !models.iter().any(|m| m.get("provider") == Some(&p) && m.get("id") == Some(&i)) {
-                    models.insert(0, rt.model_info().await);
+                    models.insert(0, rt.model_info());
                 }
             }
             ok(json!({"models": models}))
@@ -611,7 +614,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             none()
         }
         "cycle_thinking_level" => {
-            let levels = rt.available_thinking_levels().await;
+            let levels = rt.available_thinking_levels();
             if levels.len() < 2 {
                 return ok(Value::Null);
             }
@@ -623,7 +626,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             }
             ok(json!({"level": next}))
         }
-        "get_available_thinking_levels" => ok(json!({"levels": rt.available_thinking_levels().await})),
+        "get_available_thinking_levels" => ok(json!({"levels": rt.available_thinking_levels()})),
         "set_steering_mode" => {
             rt.set_queue_modes(Some(queue_mode_field(cmd)?), None);
             none()
@@ -641,10 +644,8 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             none()
         }
         "compact" => {
-            if rt.agent.state().await.messages.is_empty() {
-                return Err(CmdError::new("Nothing to compact (session too small)"));
-            }
-            Err(unsupported("Compaction"))
+            let custom = cmd.get("customInstructions").and_then(Value::as_str);
+            Ok(Some(rt.compact(custom).await?))
         }
         "set_auto_compaction" => {
             let enabled = bool_field(cmd, "enabled")?;
@@ -1109,12 +1110,14 @@ mod tests {
         let other = json!({"role": "assistant", "content": [{"type": "text", "text": "w".repeat(700_000)}]});
         enc.encode(&json!({"type": "agent_start"}));
         enc.encode(&json!({"type": "message_end", "message": big}));
-        let lines = enc.encode(&json!({"type": "agent_end", "messages": [big, other.clone()], "isTerminal": true}));
+        let lines = enc.encode(&json!({"type": "agent_end", "messages": [big, other], "isTerminal": true}));
         let v: Value = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(v["messageCount"], 2);
         assert_eq!(v["messages"], json!([other]));
     }
 
+    // Bit-extraction casts are exact: the 24-bit accumulator is built from 6-bit sextets.
+    #[allow(clippy::cast_possible_truncation)]
     fn unbase64(s: &str) -> Vec<u8> {
         const T: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let vals: Vec<u32> = s.bytes().filter(|b| *b != b'=').map(|b| T.find(b as char).unwrap() as u32).collect();

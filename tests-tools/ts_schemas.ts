@@ -16,6 +16,8 @@ import { GlobTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-p
 import { GrepTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/grep.ts";
 import { FindTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/jfind/index.ts";
 import { WriteTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/write.ts";
+import { TaskTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/task/index.ts";
+import { EvalTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/eval.ts";
 
 // Minimal ToolSession stub: tools only read config/description state here, never
 // execute. Declared structurally so no omp types need to be imported.
@@ -53,7 +55,7 @@ interface ToolLike {
 	parameters: unknown;
 }
 
-const NAMES = ["read", "bash", "edit", "glob", "grep", "find", "write"];
+const NAMES = ["read", "bash", "edit", "glob", "grep", "find", "write", "task", "eval"];
 
 const session = stubSession();
 const factories: Array<(s: StubSession) => ToolLike> = [
@@ -64,7 +66,25 @@ const factories: Array<(s: StubSession) => ToolLike> = [
 	s => new GrepTool(s),
 	s => new FindTool(s),
 	s => new WriteTool(s),
+	// task/eval need a session with many optional hooks (task discovery,
+	// spawn policy, eval backend config); a permissive proxy stub satisfies
+	// every optional lookup and yields the protocol-default render.
+	s => (TaskTool as any).create(permissiveStub()),
+	s => new EvalTool(permissiveStub()),
 ];
+
+function permissiveStub(): any {
+	return new Proxy({}, {
+		get(_t, key) {
+			if (key === "settings")
+				return { revision: 0, valueCache: {}, rawValue: () => undefined, warnState: { invalid: new Map(), items: new Map() }, getProvenance: () => undefined, getShellConfig: () => ({ env: {} }) };
+			if (key === "cwd") return process.cwd();
+			if (key === "taskDepth") return 0;
+			if (typeof key === "symbol") return undefined;
+			return (..._a: unknown[]) => undefined;
+		},
+	});
+}
 
 // omp tool schemas are ArkType Type objects: `toJsonSchema()` yields the canonical
 // JSON Schema. Older TypeBox-style schemas (plain objects) are round-tripped as-is.
@@ -97,12 +117,14 @@ function toSchema(parameters: unknown): unknown {
 }
 
 const tools: ExtractedTool[] = [];
+// top-level await: task tool construction is async
+void 0;
 const failures: string[] = [];
 
-factories.forEach((make, i) => {
+for (const [i, make] of factories.entries()) {
 	const name = NAMES[i];
 	try {
-		const tool = make(session);
+		const tool = await make(session);
 		tools.push({
 			name,
 			description_first_line: tool.description.split("\n", 1)[0] ?? "",
@@ -111,7 +133,7 @@ factories.forEach((make, i) => {
 	} catch (e) {
 		failures.push(`${name}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);
 	}
-});
+}
 
 const outDir = dirname(fileURLToPath(import.meta.url));
 const outPath = join(outDir, "ts_tools.json");
