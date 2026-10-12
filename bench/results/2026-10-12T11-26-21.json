@@ -1,0 +1,151 @@
+{
+  "ts": "2026-10-12T11-26-21",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s2-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 82836,
+            "p95": 82836,
+            "min": 82836,
+            "max": 82836
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 77748,
+              "p95": 77748,
+              "min": 77748,
+              "max": 77748
+            },
+            "sessions": 1
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 557268,
+            "p95": 557268,
+            "min": 557268,
+            "max": 557268
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 496932,
+              "p95": 496932,
+              "min": 496932,
+              "max": 496932
+            },
+            "sessions": 1
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 85844,
+            "p95": 85844,
+            "min": 85844,
+            "max": 85844
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 314800,
+              "p95": 314800,
+              "min": 314800,
+              "max": 314800
+            },
+            "sessions": 4
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 488820,
+            "p95": 488820,
+            "min": 488820,
+            "max": 488820
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 1920440,
+              "p95": 1920440,
+              "min": 1920440,
+              "max": 1920440
+            },
+            "sessions": 4
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 83996,
+            "p95": 83996,
+            "min": 83996,
+            "max": 83996
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 1258240,
+              "p95": 1258240,
+              "min": 1258240,
+              "max": 1258240
+            },
+            "sessions": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 485512,
+            "p95": 485512,
+            "min": 485512,
+            "max": 485512
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 7519544,
+              "p95": 7519544,
+              "min": 7519544,
+              "max": 7519544
+            },
+            "sessions": 16
+          }
+        }
+      }
+    }
+  ]
+}

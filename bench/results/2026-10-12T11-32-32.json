@@ -1,0 +1,51 @@
+{
+  "ts": "2026-10-12T11-32-32",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s5",
+      "bins": {
+        "omp-rs": {
+          "ok": false,
+          "error": "Error: exit 1: omp-rs: started in ~; switching to a temp dir (pass --allow-home to stay)\nsession: /home/kaneki/fleet-split/omp-rs/bench/tmp/2026-10-12T11-32-32-s5-omp-rs/.omp/agent/sessions/-bench/2026-10-12T11-32-36-330Z_01a12fe2-d16a-76a2-8ec8-e50c749a8fe3.jsonl\nError: no assistant response\n"
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 5,
+            "median": 12438.093950000002,
+            "p95": 12493.122771000002,
+            "min": 9917.492760999994,
+            "max": 12493.122771000002
+          },
+          "extra": {
+            "baselineMs": {
+              "n": 2,
+              "median": 8060.312126999997,
+              "p95": 10486.947400000001,
+              "min": 8060.312126999997,
+              "max": 10486.947400000001
+            },
+            "sizesMb": [
+              39.462321,
+              30.63574,
+              24.111546,
+              19.166189,
+              16.771504
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

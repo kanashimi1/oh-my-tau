@@ -1,0 +1,688 @@
+{
+  "ts": "2026-10-12T10-55-06",
+  "quick": true,
+  "repeats": 2,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48731,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s1-print-false",
+      "bins": {
+        "omp-rs": {
+          "ok": false,
+          "error": "Error: exit 101: -split/omp-rs/ext-host/host.ts'\nerror: Connection error.\n\nthread 'main' (158654) panicked at crates/omp-cli/src/main.rs:461:22:\nCannot start a runtime from within a runtime. This happens because a function (like `block_on`) attempted to block the current thread while the thread is being used to drive asynchronous tasks.\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: exit -1: Working...\n"
+        }
+      }
+    },
+    {
+      "scenario": "s1-print-true",
+      "bins": {
+        "omp-rs": {
+          "ok": false,
+          "error": "Error: exit 101: -split/omp-rs/ext-host/host.ts'\nerror: Connection error.\n\nthread 'main' (161032) panicked at crates/omp-cli/src/main.rs:461:22:\nCannot start a runtime from within a runtime. This happens because a function (like `block_on`) attempted to block the current thread while the thread is being used to drive asynchronous tasks.\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: exit -1: Working...\n"
+        }
+      }
+    },
+    {
+      "scenario": "s1-rpc-false",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 455.6021599999949,
+            "p95": 533.2695079999976,
+            "min": 455.6021599999949,
+            "max": 533.2695079999976
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 11052.611682999996,
+            "p95": 13587.590785000008,
+            "min": 11052.611682999996,
+            "max": 13587.590785000008
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s1-rpc-true",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 576.1958700000105,
+            "p95": 620.2389229999972,
+            "min": 576.1958700000105,
+            "max": 620.2389229999972
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 14841.736491999996,
+            "p95": 16468.286500000046,
+            "min": 14841.736491999996,
+            "max": 16468.286500000046
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n1",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 82264,
+            "p95": 82264,
+            "min": 82264,
+            "max": 82264
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 77548,
+              "p95": 77548,
+              "min": 77548,
+              "max": 77548
+            },
+            "sessions": 1
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 560988,
+            "p95": 560988,
+            "min": 560988,
+            "max": 560988
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 499012,
+              "p95": 499012,
+              "min": 499012,
+              "max": 499012
+            },
+            "sessions": 1
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 83188,
+            "p95": 83188,
+            "min": 83188,
+            "max": 83188
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 314928,
+              "p95": 314928,
+              "min": 314928,
+              "max": 314928
+            },
+            "sessions": 4
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 545240,
+            "p95": 545240,
+            "min": 545240,
+            "max": 545240
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 1935080,
+              "p95": 1935080,
+              "min": 1935080,
+              "max": 1935080
+            },
+            "sessions": 4
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s2-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 82060,
+            "p95": 82060,
+            "min": 82060,
+            "max": 82060
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 1258892,
+              "p95": 1258892,
+              "min": 1258892,
+              "max": 1258892
+            },
+            "sessions": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 485784,
+            "p95": 485784,
+            "min": 485784,
+            "max": 485784
+          },
+          "extra": {
+            "steadyKb": {
+              "n": 1,
+              "median": 7423540,
+              "p95": 7423540,
+              "min": 7423540,
+              "max": 7423540
+            },
+            "sessions": 16
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s3",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 234.64643300004536,
+            "p95": 380.28890200000023,
+            "min": 234.64643300004536,
+            "max": 380.28890200000023
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 2,
+              "median": 145,
+              "p95": 287,
+              "min": 145,
+              "max": 287
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 2996.319431999931,
+            "p95": 3809.3586779999314,
+            "min": 2996.319431999931,
+            "max": 3809.3586779999314
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 6,
+              "median": 487,
+              "p95": 20320,
+              "min": 145,
+              "max": 20320
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-read",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 107.90547400002833,
+            "p95": 215.3597160000354,
+            "min": 107.90547400002833,
+            "max": 215.3597160000354
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 2,
+              "median": 49,
+              "p95": 135,
+              "min": 49,
+              "max": 135
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 1223.054272999987,
+            "p95": 3798.7081770000514,
+            "min": 1223.054272999987,
+            "max": 3798.7081770000514
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 6,
+              "median": 347,
+              "p95": 26644,
+              "min": 49,
+              "max": 26644
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-grep",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 317.8754360000603,
+            "p95": 355.100672999979,
+            "min": 317.8754360000603,
+            "max": 355.100672999979
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 2,
+              "median": 211,
+              "p95": 242,
+              "min": 211,
+              "max": 242
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 1299.7229560000123,
+            "p95": 1942.2996900000144,
+            "min": 1299.7229560000123,
+            "max": 1942.2996900000144
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 6,
+              "median": 448,
+              "p95": 40180,
+              "min": 211,
+              "max": 40180
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-glob",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 145.91619399993215,
+            "p95": 218.01282899989747,
+            "min": 145.91619399993215,
+            "max": 218.01282899989747
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 2,
+              "median": 47,
+              "p95": 62,
+              "min": 47,
+              "max": 62
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 1859.711122999899,
+            "p95": 4446.294548999984,
+            "min": 1859.711122999899,
+            "max": 4446.294548999984
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 6,
+              "median": 594,
+              "p95": 56562,
+              "min": 47,
+              "max": 56562
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-find",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 90.51679600006901,
+            "p95": 123.94856700010132,
+            "min": 90.51679600006901,
+            "max": 123.94856700010132
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 2,
+              "median": 24,
+              "p95": 51,
+              "min": 24,
+              "max": 51
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 2471.4107379999477,
+            "p95": 2796.9560200000415,
+            "min": 2471.4107379999477,
+            "max": 2796.9560200000415
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 6,
+              "median": 326,
+              "p95": 79888,
+              "min": 24,
+              "max": 79888
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-edit",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 87.3654080000706,
+            "p95": 208.01798300002702,
+            "min": 87.3654080000706,
+            "max": 208.01798300002702
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 2,
+              "median": 35,
+              "p95": 53,
+              "min": 35,
+              "max": 53
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 2039.9254969999893,
+            "p95": 2289.9857649999904,
+            "min": 2039.9254969999893,
+            "max": 2289.9857649999904
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 6,
+              "median": 227,
+              "p95": 96253,
+              "min": 35,
+              "max": 96253
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s4-bash",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 143.22713100002147,
+            "p95": 232.78432199999224,
+            "min": 143.22713100002147,
+            "max": 232.78432199999224
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 2,
+              "median": 50,
+              "p95": 135,
+              "min": 50,
+              "max": 135
+            }
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 2768.1185970000224,
+            "p95": 3099.5022889999673,
+            "min": 2768.1185970000224,
+            "max": 3099.5022889999673
+          },
+          "extra": {
+            "toolPhaseGapMs": {
+              "n": 6,
+              "median": 595,
+              "p95": 113267,
+              "min": 50,
+              "max": 113267
+            }
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s5",
+      "bins": {
+        "omp-rs": {
+          "ok": false,
+          "error": "Error: exit 101: -split/omp-rs/ext-host/host.ts'\nerror: Connection error.\n\nthread 'main' (195179) panicked at crates/omp-cli/src/main.rs:461:22:\nCannot start a runtime from within a runtime. This happens because a function (like `block_on`) attempted to block the current thread while the thread is being used to drive asynchronous tasks.\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: exit -1: Working...\n"
+        }
+      }
+    },
+    {
+      "scenario": "s6-false",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 60.55872299999464,
+            "p95": 117.48407300002873,
+            "min": 60.55872299999464,
+            "max": 117.48407300002873
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 2673.9109659999376,
+            "p95": 4769.394346999936,
+            "min": 2673.9109659999376,
+            "max": 4769.394346999936
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-true",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 619.1966030000476,
+            "p95": 1087.2589239999652,
+            "min": 619.1966030000476,
+            "max": 1087.2589239999652
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 2,
+            "median": 1966.086796999909,
+            "p95": 3269.814025999978,
+            "min": 1966.086796999909,
+            "max": 3269.814025999978
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s6-delta",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 558.637880000053,
+            "p95": 558.637880000053,
+            "min": 558.637880000053,
+            "max": 558.637880000053
+          },
+          "extra": {
+            "perEventMs": 34.91486750000331,
+            "assumedEventsPerTurn": 16
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": -707.8241690000286,
+            "p95": -707.8241690000286,
+            "min": -707.8241690000286,
+            "max": -707.8241690000286
+          },
+          "extra": {
+            "perEventMs": -44.23901056250179,
+            "assumedEventsPerTurn": 16
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n4",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 516.107670999947,
+            "p95": 516.107670999947,
+            "min": 516.107670999947,
+            "max": 516.107670999947
+          },
+          "extra": {
+            "turnsPerSec": 7.7503207659171
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 6894.554443000001,
+            "p95": 6894.554443000001,
+            "min": 6894.554443000001,
+            "max": 6894.554443000001
+          },
+          "extra": {
+            "turnsPerSec": 0.5801680200032615
+          }
+        }
+      }
+    },
+    {
+      "scenario": "s7-n16",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 608.3286300000036,
+            "p95": 608.3286300000036,
+            "min": 608.3286300000036,
+            "max": 608.3286300000036
+          },
+          "extra": {
+            "turnsPerSec": 26.301573213806993
+          }
+        },
+        "omp": {
+          "ok": true,
+          "runs": {
+            "n": 1,
+            "median": 6781.121874000062,
+            "p95": 6781.121874000062,
+            "min": 6781.121874000062,
+            "max": 6781.121874000062
+          },
+          "extra": {
+            "turnsPerSec": 2.359491585211974
+          }
+        }
+      }
+    }
+  ]
+}

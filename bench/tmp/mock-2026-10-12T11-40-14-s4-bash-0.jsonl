@@ -1,0 +1,8 @@
+{"t":1791805477628,"kind":"req","model":"bench-bash","n_messages":2}
+{"t":1791805477629,"kind":"resp_end","model":"bench-bash"}
+{"t":1791805477789,"kind":"req","model":"bench-bash","n_messages":4}
+{"t":1791805477789,"kind":"resp_end","model":"bench-bash"}
+{"t":1791805572682,"kind":"req","model":"bench-bash","n_messages":2}
+{"t":1791805572683,"kind":"resp_end","model":"bench-bash"}
+{"t":1791805573454,"kind":"req","model":"bench-bash","n_messages":4}
+{"t":1791805573455,"kind":"resp_end","model":"bench-bash"}
