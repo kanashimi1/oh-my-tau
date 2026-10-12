@@ -8,7 +8,7 @@
 pub mod ask;
 mod ast;
 pub mod bash;
-mod checkpoint;
+pub mod checkpoint;
 mod edit;
 mod eval;
 mod find;
@@ -261,13 +261,45 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
     ]
 }
 
-/// omp `HIDDEN_TOOLS` (`HIDDEN_TOOL_NAMES = ["yield", "goal", "think"]`, order as
-/// registered in omp's `HIDDEN_TOOLS` map): constructed for a session only when
-/// the corresponding mode is active and never listed as visible built-ins.
+/// Active hidden tools for a session (TS `resolveBuiltinToolPlan`'s
+/// `...(externalThinkingActive ? ["think"] : [])`, `...(includeYield ? ["yield"]
+/// : [])`, `...(goalModeActive ? ["goal"] : [])` legs, in that order; never in
+/// the visible built-in list). `think` needs the `externalThinking` setting and
+/// a model whose transport supports external thinking; `yield` is included when
+/// the session requires it (subagent runs); `goal` when goal mode is active
+/// (`goal.enabled` setting + enabled goal-mode state).
 #[must_use]
-#[allow(dead_code)] // session-assembly wiring (goal mode / subagent runs) pending
-pub fn hidden_tools() -> Vec<Arc<dyn AgentTool>> {
-    vec![think::tool(), yield_tool::tool(), goal::tool()]
+pub fn hidden_tools(
+    settings: &omp_settings::Settings,
+    model: Option<&pa_types::ai::Model>,
+    require_yield_tool: bool,
+    goal_mode_active: bool,
+) -> Vec<Arc<dyn AgentTool>> {
+    let mut tools: Vec<Arc<dyn AgentTool>> = Vec::new();
+    let external_thinking = settings.get_bool("externalThinking").unwrap_or(false)
+        && model.is_some_and(think::supports_external_thinking);
+    if external_thinking {
+        tools.push(think::tool());
+    }
+    if require_yield_tool {
+        tools.push(yield_tool::tool());
+    }
+    if goal_mode_active {
+        tools.push(goal::tool());
+    }
+    tools
+}
+
+/// Construct one hidden tool by name (omp `HIDDEN_TOOLS` factories), for
+/// explicit `--tools <csv>` requests that name a hidden tool.
+#[must_use]
+pub fn hidden_tool_by_name(name: &str) -> Option<Arc<dyn AgentTool>> {
+    match name {
+        "think" => Some(think::tool()),
+        "yield" => Some(yield_tool::tool()),
+        "goal" => Some(goal::tool()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

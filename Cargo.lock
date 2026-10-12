@@ -1391,6 +1391,7 @@ dependencies = [
  "anyhow",
  "futures",
  "libc",
+ "omp-settings",
  "pa-ai",
  "pa-types",
  "reqwest",

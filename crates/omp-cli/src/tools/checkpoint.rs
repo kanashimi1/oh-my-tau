@@ -115,8 +115,8 @@ impl Shared {
         inner.last_completed_rewind = None;
     }
 
-    /// Clear the active checkpoint (TS `setCheckpointState(undefined)`).
-    #[allow(dead_code)] // used by the runtime rewind hook (see reports/Checkpoint.md)
+    /// Clear the active checkpoint (TS `setCheckpointState(undefined)`); used
+    /// by the runtime rewind hook (`Runtime::maybe_apply_rewind`).
     pub fn clear_checkpoint_state(&self) {
         self.inner.lock().checkpoint = None;
     }
@@ -180,7 +180,7 @@ struct RewindTool {
 }
 
 fn result_with_text(text: &str, details: Value) -> AgentToolResult {
-    AgentToolResult { content: vec![ToolResultContent::text(text)], details, terminate: None }
+    AgentToolResult { content: vec![ToolResultContent::text(text)], details, terminate: None, is_error: None }
 }
 
 impl AgentTool for CheckpointTool {

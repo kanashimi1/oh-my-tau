@@ -123,6 +123,9 @@ pub struct Runtime {
     /// Set by `abort()` (TS `#advisors.autoResumeSuppressed`): a follow-up-only
     /// queued-message drain stays suppressed until the next explicit user prompt.
     user_interrupt: std::sync::atomic::AtomicBool,
+    /// Report stashed by a successful `rewind` tool result, consumed by the
+    /// TurnEnd hook that truncates the context (TS `#pendingRewindReport`).
+    pending_rewind_report: Mutex<Option<String>>,
 }
 
 /// Outcome of the retry pass over a failed turn.
@@ -271,6 +274,7 @@ impl Runtime {
             settled: tokio::sync::Notify::new(),
             retry_task: Mutex::new(None),
             user_interrupt: std::sync::atomic::AtomicBool::new(false),
+            pending_rewind_report: Mutex::new(None),
             compaction: Mutex::new(compaction),
             compacting: std::sync::atomic::AtomicBool::new(false),
             summarizer: Mutex::new(None),
@@ -390,8 +394,135 @@ impl Runtime {
             } => {
                 self.on_assistant_settled(a);
             }
+            // Checkpoint runtime hooks (reports/Checkpoint.md): a successful
+            // `checkpoint` tool result arms the shared checkpoint state with the
+            // post-append message count; a successful `rewind` result stashes
+            // its report for the TurnEnd truncation.
+            AgentEvent::MessageEnd {
+                message: AgentMessage::Standard(Message::ToolResult(tr)),
+            } => {
+                self.on_tool_result_settled(tr);
+            }
+            AgentEvent::TurnEnd { .. } => {
+                self.maybe_apply_rewind();
+            }
             _ => {}
         }
+    }
+
+    /// TS `AgentSession`'s checkpoint toolResult leg of `#checkpointActiveReminderFor`:
+    /// arm the shared checkpoint state with the message count AFTER the
+    /// checkpoint tool result is appended (async: the listener runs sync while
+    /// the agent holds its state lock, so the count is read on a task).
+    fn on_tool_result_settled(&self, tr: &pa_agent::types::ToolResultMessage) {
+        if tr.is_error {
+            return;
+        }
+        if tr.tool_name == "checkpoint" {
+            let started_at = tr
+                .details
+                .as_ref()
+                .and_then(|d| d.get("startedAt"))
+                .and_then(Value::as_str)
+                .map_or_else(crate::persist::now_iso, str::to_owned);
+            let agent = self.agent.clone();
+            tokio::spawn(async move {
+                let count = agent.state().await.messages.len();
+                crate::tools::checkpoint::shared().set_checkpoint_state(
+                    crate::tools::checkpoint::CheckpointState {
+                        checkpoint_message_count: count,
+                        checkpoint_entry_id: None,
+                        started_at,
+                    },
+                );
+            });
+        } else if tr.tool_name == "rewind" {
+            let report = tr
+                .details
+                .as_ref()
+                .and_then(|d| d.get("report"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    tr.content.iter().find_map(|part| match part {
+                        pa_agent::types::ToolResultContent::Text(t) => {
+                            let text = t.text.trim();
+                            (!text.is_empty()).then(|| text.to_owned())
+                        }
+                        pa_agent::types::ToolResultContent::Image(_) => None,
+                    })
+                });
+            if let Some(report) = report {
+                *lock(&self.pending_rewind_report) = Some(report);
+            }
+        }
+    }
+
+    /// TS `setOnTurnEnd`'s rewind leg (`#applyRewind`): when this turn carried a
+    /// successful `rewind` result, cut the context back to the checkpoint in a
+    /// spawned task — the listener runs under the agent's state lock, so the
+    /// `set_messages` surgery happens after the run went idle.
+    fn maybe_apply_rewind(self: &Arc<Self>) {
+        let Some(report) = lock(&self.pending_rewind_report).take() else {
+            return;
+        };
+        if crate::tools::checkpoint::shared().checkpoint_state().is_none() {
+            return;
+        }
+        let rt = self.clone();
+        tokio::spawn(async move {
+            rt.agent.wait_for_idle().await;
+            let Some(state) = crate::tools::checkpoint::shared().checkpoint_state() else {
+                return;
+            };
+            let count = state.checkpoint_message_count;
+            let mut messages = rt.agent.state().await.messages.clone();
+            if messages.len() > count {
+                messages.truncate(count);
+                // Carry the report into the cut context like the TS branch view's
+                // rewind-report custom message.
+                messages.push(AgentMessage::Custom(pa_agent::types::CustomAgentMessage {
+                    role: "agent".to_string(),
+                    payload: serde_json::json!({
+                        "customType": "rewind-report",
+                        "content": report,
+                        "display": false,
+                        "details": {
+                            "report": report,
+                            "startedAt": state.started_at,
+                            "rewoundAt": crate::persist::now_iso(),
+                        },
+                    }),
+                }));
+                rt.agent.set_messages(messages).await;
+            }
+            // Persist the `rewind-report` entry (TS `appendCustomMessageEntry`).
+            let details = serde_json::json!({
+                "report": report,
+                "startedAt": state.started_at,
+                "rewoundAt": crate::persist::now_iso(),
+            });
+            let _ = rt.persist.append_entry(
+                "custom_message",
+                serde_json::json!({
+                    "customType": "rewind-report",
+                    "content": report,
+                    "display": false,
+                    "details": details,
+                    "attribution": "agent",
+                }),
+            );
+            crate::tools::checkpoint::shared().set_last_completed_rewind(
+                crate::tools::checkpoint::CompletedRewindState {
+                    report,
+                    started_at: state.started_at,
+                    rewound_at: crate::persist::now_iso(),
+                },
+            );
+            crate::tools::checkpoint::shared().clear_checkpoint_state();
+        });
     }
 
     /// `onAssistantSettledSuccessfully`: a turn that produced output settled on the live model.
@@ -1394,6 +1525,12 @@ impl Runtime {
             {
                 let mut tools = builtin_tools(&self.cwd, mode);
                 tools.extend(crate::tools::mcp::mcp_tools(&self.cwd));
+                // TS `reconcileThinkTool`: model swaps re-evaluate the hidden
+                // think tool's eligibility.
+                let settings = omp_settings::Settings::load(&self.cwd);
+                let hidden =
+                    crate::tools::hidden_tools(&settings, Some(&resolved.model), false, false);
+                tools.extend(hidden);
                 self.agent.set_tools(tools).await;
             }
         }

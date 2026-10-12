@@ -322,8 +322,9 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
 }
 
 /// Merge per-child outputs into the tool result (TS `mergeSyncPayloads`):
-/// every envelope is rendered; any failed/cancelled child makes the whole
-/// call an error so the agent loop can retry (TS `isError: true`).
+/// every envelope is rendered; any failed/cancelled child keeps the merged
+/// view's content/details and sets `isError: true` so the agent loop can
+/// retry (TS `...(merged.isError ? { isError: true } : {})`).
 fn merge_outputs(outputs: &[omp_task::runner::RunOutput]) -> Result<AgentToolResult> {
     let mut text = String::new();
     let mut failed = 0usize;
@@ -338,18 +339,21 @@ fn merge_outputs(outputs: &[omp_task::runner::RunOutput]) -> Result<AgentToolRes
         text.push_str(&serde_json::to_string_pretty(&format_task_result(out))?);
         text.push('\n');
     }
-    if failed > 0 {
+    let is_error = if failed > 0 {
         use std::fmt::Write as _;
         let _ = write!(text, "\n{failed} of {} task(s) failed.", outputs.len());
-        // TS sets `isError: true` on the merged result so the agent loop can
-        // retry; this port signals tool errors as `Err` (AgentToolResult has
-        // no is_error field).
-        return Err(anyhow::anyhow!("{}", text.trim_end()));
-    }
+        Some(true)
+    } else {
+        None
+    };
+    let details = json!({
+        "results": outputs.iter().map(format_task_result).collect::<Vec<_>>(),
+    });
     Ok(AgentToolResult {
         content: vec![pa_agent::types::ToolResultContent::text(text.trim_end())],
-        details: Value::Null,
+        details,
         terminate: None,
+        is_error,
     })
 }
 
@@ -453,15 +457,28 @@ mod tests {
             run_output("a", RunStatus::Completed),
             run_output("b", RunStatus::Failed),
         ];
-        let err = merge_outputs(&outputs).expect_err("failure must be an error");
-        let text = format!("{err:#}");
+        let result = merge_outputs(&outputs).expect("merged result");
+        let text = result
+            .content
+            .iter()
+            .find_map(|part| match part {
+                pa_agent::types::ToolResultContent::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .expect("text content");
+        assert_eq!(result.is_error, Some(true));
         assert!(text.contains("1 of 2 task(s) failed."), "{text}");
         assert!(
             text.contains("=== b (task)"),
             "per-child envelopes kept: {text}"
         );
-        let ok = merge_outputs(&[run_output("a", RunStatus::Completed)]);
-        assert!(ok.is_ok());
+        assert!(
+            result.details["results"].as_array().is_some_and(|r| r.len() == 2),
+            "details.results kept: {}",
+            result.details
+        );
+        let ok = merge_outputs(&[run_output("a", RunStatus::Completed)]).expect("ok");
+        assert_eq!(ok.is_error, None);
     }
 
     #[test]

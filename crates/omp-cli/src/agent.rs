@@ -67,13 +67,24 @@ pub fn civil(days: i64) -> (i64, u32, u32) {
 /// (SYSTEM.md override / flags / context files / skills / tools / env block)
 /// as one concatenated string of `\n\n`-joined blocks.
 #[must_use]
-pub fn system_prompt(cwd: &Path, opts: &crate::sysprompt::Options) -> String {
+pub fn system_prompt(
+    cwd: &Path,
+    opts: &crate::sysprompt::Options,
+    active_hidden: &[Arc<dyn AgentTool>],
+) -> String {
     // Edit mode does not affect the prompt; the tool surface (names) does.
-    let metas: Vec<crate::sysprompt::ToolMeta> =
+    let mut metas: Vec<crate::sysprompt::ToolMeta> =
         crate::tools::builtin_tools(cwd, crate::tools::edit_mode_for(""))
             .iter()
             .map(|t| (t.name().to_string(), t.name().to_string()))
             .collect();
+    // Active hidden tools join the prompt's tool list/refs (TS lists active
+    // tools; `{{toolRefs.think}}` resolves only while the tool is active).
+    metas.extend(
+        active_hidden
+            .iter()
+            .map(|t| (t.name().to_string(), t.name().to_string())),
+    );
     crate::sysprompt::build(cwd, opts, &metas)
         .blocks
         .join("\n\n")
@@ -97,7 +108,12 @@ pub fn build_agent(
         .context("model does not convert to the agent model shape")?;
     let mut tools = builtin_tools(cwd, edit_mode_for(&selected.model.id));
     tools.extend(crate::tools::mcp::mcp_tools(cwd));
-    // `--tools <csv>` restricts the enabled surface to the named built-ins.
+    // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
+    // after the built-ins; a `--tools <csv>` list admits hidden names too
+    // (subagent runs carry `yield` in their csv), like TS's requestedTools
+    // filter over BUILTIN_TOOLS + HIDDEN_TOOLS.
+    let settings = omp_settings::Settings::load(cwd);
+    let hidden = crate::tools::hidden_tools(&settings, Some(&selected.model), false, false);
     if let Some(csv) = sysprompt_opts.tools_csv.as_deref() {
         let keep: Vec<String> = csv
             .split(',')
@@ -106,7 +122,16 @@ pub fn build_agent(
             .map(ToString::to_string)
             .collect();
         tools.retain(|t| keep.iter().any(|k| k == t.name()));
+        for name in &keep {
+            if hidden.iter().all(|t| t.name() != name) {
+                if let Some(t) = crate::tools::hidden_tool_by_name(name) {
+                    tools.push(t);
+                }
+            }
+        }
     }
+    let prompt = system_prompt(cwd, sysprompt_opts, &hidden);
+    tools.extend(hidden);
     tools.extend(extra_tools);
     let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
         api_key: selected.api_key,
@@ -123,7 +148,7 @@ pub fn build_agent(
     };
     let agent = Agent::new(AgentOptions {
         initial_state: AgentInitialState {
-            system_prompt: Some(system_prompt(cwd, sysprompt_opts)),
+            system_prompt: Some(prompt),
             model: Some(agent_model),
             thinking_level: Some(selected.thinking),
             tools: Some(tools),

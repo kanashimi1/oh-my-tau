@@ -377,6 +377,7 @@ impl AgentTool for GoalTool {
                 content: vec![pa_agent::types::ToolResultContent::text(text)],
                 details: Value::Object(details),
                 terminate: None,
+                is_error: None,
             })
         })
     }

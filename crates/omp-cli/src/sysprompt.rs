@@ -28,7 +28,7 @@ fn agent_dir() -> PathBuf {
     home_dir().join(".omp/agent")
 }
 
-/// Minimal scan of `config.yml` for the settings the prompt renders from.
+/// Settings the prompt renders from.
 #[allow(clippy::struct_excessive_bools)] // mirrors omp's PromptConfig shape; one struct beats six params
 struct PromptConfig {
     skills_enabled: bool,
@@ -37,46 +37,38 @@ struct PromptConfig {
     reactions: bool,
 }
 
+/// Prompt-rendered settings via `omp-settings` (TS registry layering over the
+/// agent dir's `config.yml`). The port predates omp-settings and defaults
+/// `includeModelInPrompt` / `inlineToolDescriptors` / `reactions` to off where
+/// the TS registry defaults them on, so those three keep their port defaults
+/// unless the user explicitly set the key (`Provenance::Default` = unset).
 fn load_config(agent: &Path) -> PromptConfig {
+    // No project layer: the prompt historically reads the agent dir only.
+    let project_none = agent.join(".no-project-layer");
+    let settings =
+        omp_settings::Settings::load_from(Some(&agent.join("config.yml")), &project_none);
+    let set = |id: &str| settings.provenance(id).is_some_and(|p| p != omp_settings::Provenance::Default);
     let mut cfg = PromptConfig {
         skills_enabled: true,
         include_model_in_prompt: false,
         inline_tool_descriptors: false,
         reactions: false,
     };
-    let Ok(text) = std::fs::read_to_string(agent.join("config.yml")) else {
-        return cfg;
-    };
-    let mut section = "";
-    for line in text.lines() {
-        let indent = line.len() - line.trim_start().len();
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        if indent == 0 {
-            section = t.split(':').next().unwrap_or("");
-            // Top-level `key: value` scalars.
-            match t {
-                "includeModelInPrompt: true" => cfg.include_model_in_prompt = true,
-                "includeModelInPrompt: false" => cfg.include_model_in_prompt = false,
-                "inlineToolDescriptors: \"on\"" | "inlineToolDescriptors: on" => {
-                    cfg.inline_tool_descriptors = true;
-                }
-                _ => {}
-            }
-            continue;
-        }
-        if section == "skills" {
-            if t == "enabled: true" {
-                cfg.skills_enabled = true;
-            } else if t == "enabled: false" {
-                cfg.skills_enabled = false;
-            }
-        }
-        if section == "tui" && t == "reactions: true" {
-            cfg.reactions = true;
-        }
+    if set("skills.enabled") {
+        cfg.skills_enabled = settings.get_bool("skills.enabled").unwrap_or(true);
+    }
+    if set("includeModelInPrompt") {
+        cfg.include_model_in_prompt = settings.get_bool("includeModelInPrompt").unwrap_or(false);
+    }
+    if set("inlineToolDescriptors") {
+        cfg.inline_tool_descriptors = match settings.get("inlineToolDescriptors") {
+            serde_json::Value::String(v) => v == "on",
+            serde_json::Value::Bool(true) => true, // YAML 1.1 `on` unquoted
+            _ => false,
+        };
+    }
+    if set("tui.reactions") {
+        cfg.reactions = settings.get_bool("tui.reactions").unwrap_or(false);
     }
     cfg
 }
@@ -472,11 +464,16 @@ fn parse_nodes(tags: &[String], pos: &mut usize) -> (Vec<Node>, Option<String>) 
             let mut args = Vec::new();
             let mut hash = Vec::new();
             for t in &toks[1..] {
-                if let Some((k, v)) = t.split_once('=') {
-                    hash.push((k.to_string(), unescape(v.trim_matches('"'))));
-                } else {
-                    args.push(parse_arg(t));
+                // Quoted tokens may contain '=' (comparison operators like
+                // "=="); only bare `key=value` tokens are hashes.
+                let quoted = t.starts_with('"') || t.starts_with('\'');
+                if !quoted && !t.starts_with('(') {
+                    if let Some((k, v)) = t.split_once('=') {
+                        hash.push((k.to_string(), unescape(v.trim_matches('"'))));
+                        continue;
+                    }
                 }
+                args.push(parse_arg(t));
             }
             *pos += 1;
             let (body, term) = parse_nodes(tags, pos);
@@ -625,6 +622,11 @@ fn render_nodes(nodes: &[Node], ctx: &mut Vec<&Value>, out: &mut String) {
                     render_nodes(if hit { body } else { else_body }, ctx, out);
                 }
                 "when" => {
+                    // Guard malformed comparisons (TS renders the else branch).
+                    if args.len() < 3 {
+                        render_nodes(else_body, ctx, out);
+                        continue;
+                    }
                     let l = eval_arg(&args[0], ctx);
                     let op = eval_arg(&args[1], ctx);
                     let r = eval_arg(&args[2], ctx);
@@ -1165,6 +1167,19 @@ mod tests {
         let out = render(tmpl, &json!({"ok": false, "items": []}));
         // `prompt.format` strips trailing blank lines.
         assert_eq!(out, "A\nNO\nB");
+    }
+
+    /// Regression: `{{#when x "==" "y"}}` — the quoted operator must parse as
+    /// an argument, not a `key=value` hash (same-line nesting included).
+    #[test]
+    fn when_operator_with_equals_is_an_arg() {
+        let tmpl = "{{#when delegationBias \"==\" \"eager\"}}E{{/when}}{{#when n \">\" 1}}G{{/when}}";
+        assert_eq!(render(tmpl, &json!({"delegationBias": "eager", "n": 2})), "EG");
+        assert_eq!(render(tmpl, &json!({"delegationBias": "gated", "n": 0})), "");
+        // Same-line nested open/close (system-prompt.md:160 shape).
+        let nested = "{{#if scout}}{{#when bias \"==\" \"eager\"}}; scout allowed{{/when}}{{/if}}.";
+        assert_eq!(render(nested, &json!({"scout": true, "bias": "eager"})), "; scout allowed.");
+        assert_eq!(render(nested, &json!({"scout": true, "bias": "gated"})), ".");
     }
 
     /// `resolvePromptInput`: multi-line stays literal; an existing path is

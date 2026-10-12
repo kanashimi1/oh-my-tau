@@ -1714,6 +1714,7 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
             content: vec![ToolResultContent::text(format_for_llm(&resp, &[]))],
             details: serde_json::to_value(&resp)?,
             terminate: None,
+            is_error: None,
         });
     }
 
@@ -1789,6 +1790,7 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
             content: vec![ToolResultContent::text(format_for_llm(&error_resp, &[]))],
             details: serde_json::to_value(&error_resp)?,
             terminate: None,
+            is_error: None,
         });
     }
 
@@ -1799,6 +1801,7 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
         content: vec![ToolResultContent::text(text)],
         details,
         terminate: None,
+        is_error: None,
     })
 }
 

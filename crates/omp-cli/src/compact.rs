@@ -76,14 +76,97 @@ pub fn load_settings() -> CompactionSettings {
     load_settings_from(&dir)
 }
 
-/// [`load_settings`] for an explicit agent directory.
+/// [`load_settings`] for an explicit agent directory, via `omp-settings`
+/// (registry defaults < global `config.yml`; no project layer, matching the
+/// historical agent-dir-only read). Flat dotted keys (`compaction.enabled: …`
+/// at top level) are a port extension still honoured underneath.
 #[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn load_settings_from(dir: &Path) -> CompactionSettings {
-    std::fs::read_to_string(dir.join("config.yml"))
+    let settings = omp_settings::Settings::load_from(
+        Some(&dir.join("config.yml")),
+        &dir.join(".no-project-layer"),
+    );
+    // Schema defaults equal `CompactionSettings::default()` for every key this
+    // reads, so an unset (Default-provenance) key leaves the default standing.
+    let unset = |id: &str| {
+        settings
+            .provenance(id)
+            .is_none_or(|p| p == omp_settings::Provenance::Default)
+    };
+    let mut s = CompactionSettings::default();
+    if !unset("compaction.enabled") {
+        if let Some(b) = settings.get_bool("compaction.enabled") {
+            s.enabled = b;
+        }
+    }
+    // TS uses -1 as the "unset" sentinel (compaction-threshold.ts); only a
+    // positive finite value is a real threshold, anything else clamps to -1.
+    if !unset("compaction.thresholdPercent") {
+        s.threshold_percent = Some(
+            settings
+                .get_number("compaction.thresholdPercent")
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .unwrap_or(-1.0),
+        );
+    }
+    if !unset("compaction.thresholdTokens") {
+        s.threshold_tokens = Some(
+            settings
+                .get_number("compaction.thresholdTokens")
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .unwrap_or(-1.0),
+        );
+    }
+    if !unset("compaction.reserveTokens") {
+        if let Some(n) = settings
+            .get_number("compaction.reserveTokens")
+            .filter(|n| *n >= 0.0)
+        {
+            s.reserve_tokens = Some(n as u64);
+        }
+    }
+    if !unset("compaction.keepRecentTokens") {
+        if let Some(n) = settings
+            .get_number("compaction.keepRecentTokens")
+            .filter(|n| *n >= 0.0)
+        {
+            s.keep_recent_tokens = n as u64;
+        }
+    }
+    // Only the `soft` method is available here: an explicit order without it leaves nothing to run.
+    if !unset("compaction.methodOrder") {
+        let order = settings.get_string_array("compaction.methodOrder");
+        if !order.iter().any(|m| m == "soft" || m == "context-full") {
+            s.strategy = Some("off".to_owned());
+        }
+    }
+    // Flat dotted-key extension underneath the registry values.
+    if let Some(config) = std::fs::read_to_string(dir.join("config.yml"))
         .ok()
         .and_then(|text| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text).ok())
-        .map(|config| settings_from_config(&config))
-        .unwrap_or_default()
+    {
+        let flat = settings_from_config(&config);
+        if unset("compaction.enabled") {
+            s.enabled = flat.enabled;
+        }
+        if unset("compaction.thresholdPercent") {
+            s.threshold_percent = flat.threshold_percent;
+        }
+        if unset("compaction.thresholdTokens") {
+            s.threshold_tokens = flat.threshold_tokens;
+        }
+        if unset("compaction.reserveTokens") {
+            s.reserve_tokens = flat.reserve_tokens;
+        }
+        if unset("compaction.keepRecentTokens") {
+            s.keep_recent_tokens = flat.keep_recent_tokens;
+        }
+        if unset("compaction.methodOrder") && flat.strategy == Some("off".to_owned()) {
+            s.strategy = flat.strategy;
+        }
+    }
+    s
 }
 
 /// The messages the model sees for `entries` (session entries without the header): the latest

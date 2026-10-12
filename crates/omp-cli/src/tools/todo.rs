@@ -731,11 +731,6 @@ impl TodoTool {
             *self.state.lock() = updated;
         }
         let summary = format_summary(&effective, &errors, read_only);
-        if failed {
-            // Soft failures are `isError` results in TS; the Rust result type carries no
-            // flag, so an `Err` is the error path (content = summary text).
-            return Err(anyhow!(summary));
-        }
         let mut details = json!({
             "op": entry.op.as_str(),
             "phases": effective,
@@ -744,10 +739,12 @@ impl TodoTool {
         if !completed.is_empty() {
             details["completedTasks"] = json!(completed);
         }
+        // TS: soft failures are `isError: true` results keeping content/details.
         Ok(AgentToolResult {
             content: vec![ToolResultContent::text(summary)],
             details,
             terminate: None,
+            is_error: if failed { Some(true) } else { None },
         })
     }
 }
@@ -815,20 +812,22 @@ mod tests {
                 let ctx = format!("{name} step {i}");
                 let outcome = tool.run(&step["params"]);
                 let expected_text = step["text"].as_str().unwrap();
-                if step["isError"].as_bool() == Some(true) {
-                    let err = outcome
-                        .err()
-                        .unwrap_or_else(|| panic!("{ctx}: expected error"));
-                    assert_eq!(err.to_string(), expected_text, "{ctx}");
-                } else {
-                    let result = outcome.unwrap_or_else(|e| panic!("{ctx}: unexpected error {e}"));
-                    assert_eq!(
-                        result.content,
-                        vec![ToolResultContent::text(expected_text)],
-                        "{ctx}: text"
-                    );
-                    assert_eq!(result.details, step["details"], "{ctx}: details");
-                }
+                let result = outcome.unwrap_or_else(|e| panic!("{ctx}: unexpected error {e}"));
+                assert_eq!(
+                    result.content,
+                    vec![ToolResultContent::text(expected_text)],
+                    "{ctx}: text"
+                );
+                assert_eq!(result.details, step["details"], "{ctx}: details");
+                assert_eq!(
+                    result.is_error,
+                    if step["isError"].as_bool() == Some(true) {
+                        Some(true)
+                    } else {
+                        None
+                    },
+                    "{ctx}: isError"
+                );
             }
         }
     }
@@ -886,9 +885,10 @@ mod tests {
         assert_eq!(result.details["op"], json!("done"));
         let phases = result.details["phases"].as_array().unwrap();
         assert_eq!(phases[0]["tasks"][1]["status"], json!("completed"));
-        // State unknown to a fresh tool resolves after rehydration.
+        // State unknown to a fresh tool resolves after rehydration (TS isError).
         let fresh = TodoTool::with_phases(Vec::new());
-        assert!(fresh.run(&json!({"op": "done", "task": "b"})).is_err());
+        let missing = fresh.run(&json!({"op": "done", "task": "b"})).unwrap();
+        assert_eq!(missing.is_error, Some(true));
     }
 
     #[test]

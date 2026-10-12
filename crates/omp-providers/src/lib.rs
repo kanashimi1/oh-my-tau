@@ -346,39 +346,37 @@ impl Config {
                 Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
             }
         };
-        let config = read_yaml("config.yml")?;
         let models = read_yaml("models.yml")?;
-        let roles = config
-            .get("modelRoles")
-            .and_then(Value::as_object)
-            .map(|m| m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
-            .unwrap_or_default();
+        // Registry-layered view of the agent config (defaults < config.yml);
+        // serde_json's `preserve_order` map keeps fallback-chain order, so the
+        // old raw-YAML double-read is no longer needed.
+        let settings = omp_settings::Settings::load_from(
+            Some(&dir.join("config.yml")),
+            &dir.join(".no-project-layer"),
+        );
+        let roles: std::collections::BTreeMap<String, String> = settings.model_roles();
         let providers = models.get("providers").and_then(Value::as_object).cloned().unwrap_or_default();
-        let default_thinking = config
-            .get("defaultThinkingLevel")
-            .and_then(Value::as_str)
+        let default_thinking = settings
+            .get_string("defaultThinkingLevel")
+            .as_deref()
             .and_then(parse_sel)
             .filter(|s| *s != Sel::Inherit)
             .unwrap_or(Sel::Level(ModelThinkingLevel::High));
-        // Re-read as YAML to keep chain order (serde_json maps sort keys).
-        let ordered: serde_yaml_ng::Value = std::fs::read_to_string(dir.join("config.yml"))
-            .ok()
-            .and_then(|t| serde_yaml_ng::from_str(&t).ok())
-            .unwrap_or(serde_yaml_ng::Value::Null);
-        let retry_yaml = ordered.get("retry");
-        let chains = retry_yaml
-            .and_then(|r| r.get("fallbackChains"))
-            .and_then(serde_yaml_ng::Value::as_mapping)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| {
-                        let list = v.as_sequence()?.iter().filter_map(|e| e.as_str().map(str::to_string)).collect();
-                        Some((k.as_str()?.to_string(), list))
-                    })
-                    .collect()
+        let chains = settings
+            .get_record("retry.fallbackChains")
+            .iter()
+            .filter_map(|(k, v)| {
+                let list = v.as_array()?.iter().filter_map(|e| e.as_str().map(str::to_string)).collect();
+                Some((k.clone(), list))
             })
-            .unwrap_or_default();
-        Ok(Self { roles, providers, default_thinking, retry: RetryConfig::from_yaml(retry_yaml), chains })
+            .collect();
+        Ok(Self {
+            roles,
+            providers,
+            default_thinking,
+            retry: RetryConfig::from_settings(&settings),
+            chains,
+        })
     }
 
     fn fallback(&self, dir: &Path) -> FallbackConfig {

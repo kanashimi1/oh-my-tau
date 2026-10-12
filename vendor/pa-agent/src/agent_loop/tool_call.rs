@@ -220,8 +220,8 @@ pub(crate) async fn execute_prepared_tool_call(
                 }
             }
             ExecutedToolCallOutcome {
+                is_error: result.is_error == Some(true),
                 result,
-                is_error: false,
             }
         }
         Err(error) => {

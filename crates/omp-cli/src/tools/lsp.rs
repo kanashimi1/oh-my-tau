@@ -153,6 +153,7 @@ fn text_result(text: impl Into<String>, details: Value) -> AgentToolResult {
         content: vec![pa_agent::types::ToolResultContent::text(text.into())],
         details,
         terminate: None,
+        is_error: None,
     }
 }
 

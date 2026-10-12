@@ -514,6 +514,10 @@ pub struct AgentToolResult {
     /// Hint that the agent should stop after the current tool batch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminate: Option<bool>,
+    /// TS `isError`: soft-error results keep their content/details but are
+    /// reported to the agent loop as errors.
+    #[serde(rename = "isError", default, skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
 }
 
 impl AgentToolResult {
@@ -522,6 +526,7 @@ impl AgentToolResult {
             content: vec![ToolResultContent::text(s)],
             details: serde_json::Value::Null,
             terminate: None,
+            is_error: None,
         }
     }
 
@@ -530,6 +535,7 @@ impl AgentToolResult {
             content: vec![ToolResultContent::text(s)],
             details: serde_json::Value::Object(serde_json::Map::new()),
             terminate: None,
+            is_error: Some(true),
         }
     }
 }

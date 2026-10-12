@@ -137,6 +137,7 @@ impl AgentTool for McpTool {
                         content,
                         details,
                         terminate: None,
+                        is_error: None,
                     })
                 }
                 Err(error) => {
@@ -150,6 +151,7 @@ impl AgentTool for McpTool {
                             "isError": true,
                         }),
                         terminate: None,
+                        is_error: None,
                     })
                 }
             }

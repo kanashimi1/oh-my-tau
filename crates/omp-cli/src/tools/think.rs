@@ -31,6 +31,36 @@ pub struct ThinkTool {
     schema: Value,
 }
 
+/// TS `supportsExternalThinking` (tools/think.ts): whether the model transport
+/// can suppress native reasoning while private scratchpad thoughts are active.
+/// The port's `Model` has no `thinking` field, so the `thinking.requiresEffort`
+/// / `mode: "budget"` legs collapse to the compat/reasoning/api checks.
+#[must_use]
+pub fn supports_external_thinking(model: &pa_types::ai::Model) -> bool {
+    use serde_json::Value;
+    let compat = model.compat.as_ref().map(|c| &c.raw);
+    let compat_true = |key: &str| {
+        compat.is_some_and(|raw| raw.get(key).is_some_and(|v| v == &Value::Bool(true)))
+    };
+    let anthropic = model.api == "anthropic-messages";
+    let requires_thinking = anthropic && compat_true("requiresThinkingEnabled");
+    if model.reasoning
+        && (requires_thinking
+            || compat_true("omitReasoningEffort")
+            || compat.is_some_and(|raw| raw.get("supportsReasoningEffort") == Some(&Value::Bool(false))))
+    {
+        return false;
+    }
+    if model.api == "google-generative-ai" || model.api == "google-gemini-cli" || model.api == "google-vertex"
+    {
+        return !model.reasoning;
+    }
+    anthropic
+        || model.api == "openai-responses"
+        || model.api == "azure-openai-responses"
+        || model.api == "openai-codex-responses"
+}
+
 /// The hidden `think` tool (omp `HIDDEN_TOOLS.think`).
 #[must_use]
 pub fn tool() -> Arc<dyn AgentTool> {

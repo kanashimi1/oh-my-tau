@@ -180,6 +180,7 @@ impl YieldTool {
                     content: vec![pa_agent::types::ToolResultContent::text("Result submitted.")],
                     details: Value::Object(details),
                     terminate: None,
+                    is_error: None,
                 })
             }
         }
@@ -200,6 +201,7 @@ fn aborted_result(error: &str, yield_type: Option<Value>) -> AgentToolResult {
         ))],
         details: Value::Object(details),
         terminate: None,
+        is_error: None,
     }
 }
 

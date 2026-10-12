@@ -269,6 +269,7 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             ],
             details: serde_json::Value::Null,
             terminate: None,
+            is_error: None,
         });
     }
     let bytes = std::fs::read(&absolute).with_context(|| format!("cannot read {path_part}"))?;

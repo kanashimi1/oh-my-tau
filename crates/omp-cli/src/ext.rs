@@ -667,6 +667,7 @@ impl AgentTool for ExtTool {
                 content,
                 details,
                 terminate: None,
+                is_error: None,
             })
         })
     }

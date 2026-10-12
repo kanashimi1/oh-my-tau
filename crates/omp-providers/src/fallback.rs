@@ -45,7 +45,10 @@ impl Default for RetryConfig {
 }
 
 impl RetryConfig {
-    pub(crate) fn from_yaml(retry: Option<&serde_yaml_ng::Value>) -> Self {
+    /// Legacy YAML reader, kept for its unit test; production uses
+    /// [`Self::from_settings`].
+    #[cfg(test)]
+    fn from_yaml(retry: Option<&serde_yaml_ng::Value>) -> Self {
         let mut c = Self::default();
         let Some(r) = retry else { return c };
         if let Some(v) = r.get("enabled").and_then(serde_yaml_ng::Value::as_bool) {
@@ -61,6 +64,53 @@ impl RetryConfig {
             c.max_delay_ms = v;
         }
         if r.get("fallbackRevertPolicy").and_then(serde_yaml_ng::Value::as_str) == Some("never") {
+            c.revert_policy = "never".into();
+        }
+        c
+    }
+
+    /// Settings-backed construction: the `retry.*` schema defaults equal
+    /// [`Self::default`], so only user-supplied (non-Default-provenance) keys
+    /// override — replacing the old hand-rolled YAML read.
+    pub(crate) fn from_settings(settings: &omp_settings::Settings) -> Self {
+        let mut c = Self::default();
+        let set = |id: &str| {
+            settings
+                .provenance(id)
+                .is_some_and(|p| p != omp_settings::Provenance::Default)
+        };
+        if set("retry.enabled") {
+            if let Some(v) = settings.get_bool("retry.enabled") {
+                c.enabled = v;
+            }
+        }
+        if set("retry.maxRetries") {
+            if let Some(v) = settings
+                .get_number("retry.maxRetries")
+                .filter(|n| n.fract() == 0.0 && *n >= 0.0 && *n <= f64::from(u32::MAX))
+            {
+                c.max_retries = v as u32;
+            }
+        }
+        if set("retry.baseDelayMs") {
+            if let Some(v) = settings
+                .get_number("retry.baseDelayMs")
+                .filter(|n| n.fract() == 0.0 && *n >= 0.0 && *n <= u64::MAX as f64)
+            {
+                c.base_delay_ms = v as u64;
+            }
+        }
+        if set("retry.maxDelayMs") {
+            if let Some(v) = settings
+                .get_number("retry.maxDelayMs")
+                .filter(|n| n.fract() == 0.0 && *n >= 0.0 && *n <= u64::MAX as f64)
+            {
+                c.max_delay_ms = v as u64;
+            }
+        }
+        if set("retry.fallbackRevertPolicy")
+            && settings.get_string("retry.fallbackRevertPolicy").as_deref() == Some("never")
+        {
             c.revert_policy = "never".into();
         }
         c

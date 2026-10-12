@@ -745,6 +745,7 @@ fn result_with_text(text: String, details: Value) -> AgentToolResult {
         content: vec![ToolResultContent::text(text)],
         details: strip_nulls(details),
         terminate: None,
+        is_error: None,
     }
 }
 

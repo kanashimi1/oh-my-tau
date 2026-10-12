@@ -172,6 +172,7 @@ pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
         content: vec![pa_agent::types::ToolResultContent::text(text)],
         details: cell_details(&result),
         terminate: None,
+        is_error: None,
     })
 }
 
