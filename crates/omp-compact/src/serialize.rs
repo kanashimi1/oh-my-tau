@@ -41,15 +41,24 @@ pub fn truncate_tool_result_for_summary(text: &str) -> String {
     if len <= TOOL_RESULT_MAX_CHARS {
         return text.to_owned();
     }
-    format!("{}\n\n[... {} more characters truncated]", utf16_prefix(text, TOOL_RESULT_MAX_CHARS), len - TOOL_RESULT_MAX_CHARS)
+    format!(
+        "{}\n\n[... {} more characters truncated]",
+        utf16_prefix(text, TOOL_RESULT_MAX_CHARS),
+        len - TOOL_RESULT_MAX_CHARS
+    )
 }
 
 /// `escapeSummaryBoundaryTags`: stop untrusted text from closing harness-owned boundaries.
 #[must_use]
 pub fn escape_summary_boundary_tags(text: &str) -> String {
     static CELL: OnceLock<Regex> = OnceLock::new();
-    let re = CELL.get_or_init(|| Regex::new(r"(?i)<\s*/?\s*(?:conversation|previous-summary)\s*>").expect("boundary regex"));
-    re.replace_all(text, |caps: &regex::Captures<'_>| format!("&lt;{}", &caps[0][1..])).into_owned()
+    let re = CELL.get_or_init(|| {
+        Regex::new(r"(?i)<\s*/?\s*(?:conversation|previous-summary)\s*>").expect("boundary regex")
+    });
+    re.replace_all(text, |caps: &regex::Captures<'_>| {
+        format!("&lt;{}", &caps[0][1..])
+    })
+    .into_owned()
 }
 
 fn text_blocks(content: &Value, sep: &str) -> String {
@@ -74,7 +83,13 @@ fn render_tool_calls(calls: &[&Value]) -> String {
                 .and_then(Value::as_object)
                 .map(|o| {
                     o.iter()
-                        .map(|(k, v)| format!("{k}={}", omp_session::entries::to_js_string(v).unwrap_or_else(|_| "null".into())))
+                        .map(|(k, v)| {
+                            format!(
+                                "{k}={}",
+                                omp_session::entries::to_js_string(v)
+                                    .unwrap_or_else(|_| "null".into())
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join(", ")
                 })
@@ -90,7 +105,10 @@ fn render_tool_calls(calls: &[&Value]) -> String {
 pub fn serialize_conversation(messages: &[Value]) -> String {
     let mut useless: Vec<&str> = Vec::new();
     for msg in messages {
-        if message_role(msg) == "toolResult" && msg.get("useless") == Some(&Value::Bool(true)) && msg.get("isError") != Some(&Value::Bool(true)) {
+        if message_role(msg) == "toolResult"
+            && msg.get("useless") == Some(&Value::Bool(true))
+            && msg.get("isError") != Some(&Value::Bool(true))
+        {
             if let Some(id) = str_field(msg, "toolCallId") {
                 useless.push(id);
             }
@@ -100,18 +118,32 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
     for msg in messages {
         match message_role(msg) {
             "user" => {
-                let content = msg.get("content").map(|c| text_blocks(c, "")).unwrap_or_default();
+                let content = msg
+                    .get("content")
+                    .map(|c| text_blocks(c, ""))
+                    .unwrap_or_default();
                 if !content.is_empty() {
                     parts.push(format!("[User]: {content}"));
                 }
             }
             "assistant" => {
                 let (mut text, mut thinking, mut calls) = (Vec::new(), Vec::new(), Vec::new());
-                for block in msg.get("content").and_then(Value::as_array).into_iter().flatten() {
+                for block in msg
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
                     match str_field(block, "type") {
                         Some("text") => text.push(str_field(block, "text").unwrap_or("")),
-                        Some("thinking") => thinking.push(str_field(block, "thinking").unwrap_or("")),
-                        Some("toolCall") if !str_field(block, "id").is_some_and(|id| useless.contains(&id)) => calls.push(block),
+                        Some("thinking") => {
+                            thinking.push(str_field(block, "thinking").unwrap_or(""));
+                        }
+                        Some("toolCall")
+                            if !str_field(block, "id").is_some_and(|id| useless.contains(&id)) =>
+                        {
+                            calls.push(block);
+                        }
                         _ => {}
                     }
                 }
@@ -129,9 +161,15 @@ pub fn serialize_conversation(messages: &[Value]) -> String {
                 if str_field(msg, "toolCallId").is_some_and(|id| useless.contains(&id)) {
                     continue;
                 }
-                let content = msg.get("content").map(|c| text_blocks(c, "")).unwrap_or_default();
+                let content = msg
+                    .get("content")
+                    .map(|c| text_blocks(c, ""))
+                    .unwrap_or_default();
                 if truthy(Some(&Value::String(content.clone()))) {
-                    parts.push(format!("[Tool Result]: {}", truncate_tool_result_for_summary(&content)));
+                    parts.push(format!(
+                        "[Tool Result]: {}",
+                        truncate_tool_result_for_summary(&content)
+                    ));
                 }
             }
             _ => {}

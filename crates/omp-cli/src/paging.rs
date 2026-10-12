@@ -19,7 +19,10 @@ pub struct PageError {
 
 impl PageError {
     fn plain(message: impl Into<String>) -> Self {
-        Self { message: message.into(), code: None }
+        Self {
+            message: message.into(),
+            code: None,
+        }
     }
 }
 
@@ -35,7 +38,11 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 fn b64url_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], chunk.get(1).copied().unwrap_or(0), chunk.get(2).copied().unwrap_or(0)];
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..=chunk.len() {
             out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
@@ -83,15 +90,30 @@ fn decode_cursor(cursor: &str) -> Result<(String, Option<String>, usize, usize),
     }
     let v: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     let o = v.as_object().ok_or_else(invalid)?;
-    let session_id = o.get("sessionId").and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 256);
+    let session_id = o
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty() && s.len() <= 256);
     let leaf = match o.get("leafId") {
         Some(Value::Null) => Some(None),
         Some(Value::String(s)) if !s.is_empty() && s.len() <= 256 => Some(Some(s.clone())),
         _ => None,
     };
-    let count = o.get("messageCount").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok());
-    let offset = o.get("offset").and_then(Value::as_u64).and_then(|n| usize::try_from(n).ok());
-    match (o.get("version").and_then(Value::as_u64), session_id, leaf, count, offset) {
+    let count = o
+        .get("messageCount")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok());
+    let offset = o
+        .get("offset")
+        .and_then(Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok());
+    match (
+        o.get("version").and_then(Value::as_u64),
+        session_id,
+        leaf,
+        count,
+        offset,
+    ) {
         (Some(1), Some(sid), Some(leaf), Some(count), Some(offset)) if offset <= count => {
             Ok((sid.to_string(), leaf, count, offset))
         }
@@ -110,17 +132,27 @@ pub fn page(
     limit: Option<usize>,
 ) -> Result<Value, PageError> {
     if snapshot.message_count != messages.len() {
-        return Err(PageError::plain("RPC message snapshot does not match current messages"));
+        return Err(PageError::plain(
+            "RPC message snapshot does not match current messages",
+        ));
     }
     let limit = limit.unwrap_or(DEFAULT_LIMIT);
     if !(1..=MAX_LIMIT).contains(&limit) {
-        return Err(PageError::plain(format!("RPC message page limit must be between 1 and {MAX_LIMIT}")));
+        return Err(PageError::plain(format!(
+            "RPC message page limit must be between 1 and {MAX_LIMIT}"
+        )));
     }
     let mut offset = 0;
     if let Some(c) = cursor {
         let (sid, leaf, count, off) = decode_cursor(c)?;
-        if sid != snapshot.session_id || leaf.as_deref() != snapshot.leaf_id || count != snapshot.message_count {
-            return Err(PageError { message: STALE_ERROR.into(), code: Some("stale_cursor") });
+        if sid != snapshot.session_id
+            || leaf.as_deref() != snapshot.leaf_id
+            || count != snapshot.message_count
+        {
+            return Err(PageError {
+                message: STALE_ERROR.into(),
+                code: Some("stale_cursor"),
+            });
         }
         offset = off;
     }
@@ -148,13 +180,19 @@ mod tests {
     use super::*;
 
     fn msgs(n: usize) -> Vec<Value> {
-        (0..n).map(|i| json!({"role": "user", "content": format!("m{i}")})).collect()
+        (0..n)
+            .map(|i| json!({"role": "user", "content": format!("m{i}")}))
+            .collect()
     }
 
     #[test]
     fn pages_through_all_messages_with_cursor() {
         let m = msgs(5);
-        let snap = Snapshot { session_id: "s1", leaf_id: Some("leaf"), message_count: 5 };
+        let snap = Snapshot {
+            session_id: "s1",
+            leaf_id: Some("leaf"),
+            message_count: 5,
+        };
         let first = page(&m, &snap, None, Some(2)).unwrap();
         assert_eq!(first["messages"].as_array().unwrap().len(), 2);
         assert_eq!(first["totalMessages"], 5);
@@ -170,12 +208,29 @@ mod tests {
     #[test]
     fn stale_and_invalid_cursors_are_rejected() {
         let m = msgs(3);
-        let snap = Snapshot { session_id: "s1", leaf_id: None, message_count: 3 };
-        let cursor = page(&m, &snap, None, Some(1)).unwrap()["nextCursor"].as_str().unwrap().to_string();
-        let other = Snapshot { session_id: "s2", leaf_id: None, message_count: 3 };
+        let snap = Snapshot {
+            session_id: "s1",
+            leaf_id: None,
+            message_count: 3,
+        };
+        let cursor = page(&m, &snap, None, Some(1)).unwrap()["nextCursor"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let other = Snapshot {
+            session_id: "s2",
+            leaf_id: None,
+            message_count: 3,
+        };
         let err = page(&m, &other, Some(&cursor), None).unwrap_err();
-        assert_eq!((err.message.as_str(), err.code), (STALE_ERROR, Some("stale_cursor")));
-        assert_eq!(page(&m, &snap, Some("!!"), None).unwrap_err().message, "Invalid RPC message cursor");
+        assert_eq!(
+            (err.message.as_str(), err.code),
+            (STALE_ERROR, Some("stale_cursor"))
+        );
+        assert_eq!(
+            page(&m, &snap, Some("!!"), None).unwrap_err().message,
+            "Invalid RPC message cursor"
+        );
         assert_eq!(
             page(&m, &snap, None, Some(0)).unwrap_err().message,
             "RPC message page limit must be between 1 and 256"
@@ -185,7 +240,10 @@ mod tests {
     #[test]
     fn base64url_round_trips() {
         for s in ["", "a", "ab", "abc", "abcd", "{\"version\":1}"] {
-            assert_eq!(b64url_decode(&b64url_encode(s.as_bytes())).unwrap(), s.as_bytes());
+            assert_eq!(
+                b64url_decode(&b64url_encode(s.as_bytes())).unwrap(),
+                s.as_bytes()
+            );
         }
     }
 }

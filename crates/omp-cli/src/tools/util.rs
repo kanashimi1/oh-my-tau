@@ -119,7 +119,11 @@ pub fn resolve_to_cwd(raw: &str, cwd: &Path) -> PathBuf {
 /// omp `formatPathRelativeToCwd`: cwd-relative when inside, absolute otherwise.
 #[must_use]
 pub fn format_path_relative_to_cwd(path: &Path, cwd: &Path, trailing_slash: bool) -> String {
-    let abs = normalize(&if path.is_absolute() { path.to_path_buf() } else { cwd.join(path) });
+    let abs = normalize(&if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    });
     let cwd = normalize(cwd);
     let mut display = match abs.strip_prefix(&cwd) {
         Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
@@ -271,7 +275,10 @@ mod tests {
 
     #[test]
     fn tail_truncation_keeps_whole_trailing_lines() {
-        let text = (1..=100).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text = (1..=100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let t = truncate_tail(&text, 50);
         assert!(t.truncated);
         assert!(t.content.ends_with("line 100"));
@@ -283,10 +290,22 @@ mod tests {
     #[test]
     fn relative_paths_inside_and_outside_cwd() {
         let cwd = Path::new("/w/proj");
-        assert_eq!(format_path_relative_to_cwd(Path::new("/w/proj/a/b.rs"), cwd, false), "a/b.rs");
-        assert_eq!(format_path_relative_to_cwd(Path::new("/w/proj/a"), cwd, true), "a/");
-        assert_eq!(format_path_relative_to_cwd(Path::new("/etc/x"), cwd, false), "/etc/x");
+        assert_eq!(
+            format_path_relative_to_cwd(Path::new("/w/proj/a/b.rs"), cwd, false),
+            "a/b.rs"
+        );
+        assert_eq!(
+            format_path_relative_to_cwd(Path::new("/w/proj/a"), cwd, true),
+            "a/"
+        );
+        assert_eq!(
+            format_path_relative_to_cwd(Path::new("/etc/x"), cwd, false),
+            "/etc/x"
+        );
         assert_eq!(resolve_to_cwd("../x/./y", cwd), PathBuf::from("/w/x/y"));
-        assert_eq!(resolve_to_cwd("@src/a.rs", cwd), PathBuf::from("/w/proj/src/a.rs"));
+        assert_eq!(
+            resolve_to_cwd("@src/a.rs", cwd),
+            PathBuf::from("/w/proj/src/a.rs")
+        );
     }
 }

@@ -9,16 +9,19 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{Context, Result};
 use pa_agent::abort::AbortController;
 use pa_agent::agent::{Agent, QueueMode};
-use pa_agent::types::{AgentEvent, AgentMessage, AssistantContent, Message, StopReason, ThinkingLevel, UserContent, UserPart};
+use pa_agent::types::{
+    AgentEvent, AgentMessage, AssistantContent, Message, StopReason, ThinkingLevel, UserContent,
+    UserPart,
+};
 use pi_edit::EditMode;
 use serde_json::{json, Map, Value};
 use tokio::sync::mpsc::UnboundedSender;
 
+use self::recovery::{FailedTurn, RecoveryConfig, Resolver, TurnRecovery, Verdict, EPHEMERAL_ROLE};
 use crate::adapter::{json_round_trip, ProviderTarget};
 use crate::agent::Target;
 use crate::events::Framer;
 use crate::persist::Persistence;
-use self::recovery::{FailedTurn, RecoveryConfig, Resolver, TurnRecovery, Verdict, EPHEMERAL_ROLE};
 use crate::tools::{builtin_tools, edit_mode_for};
 
 // Declared here (not in main.rs, which another agent owns); same file `src/recovery.rs`.
@@ -34,12 +37,18 @@ pub struct CmdError {
 
 impl CmdError {
     pub fn new(message: impl Into<String>) -> Self {
-        Self { message: message.into(), code: None }
+        Self {
+            message: message.into(),
+            code: None,
+        }
     }
 
     #[must_use]
     pub fn coded(message: impl Into<String>, code: &'static str) -> Self {
-        Self { message: message.into(), code: Some(code) }
+        Self {
+            message: message.into(),
+            code: Some(code),
+        }
     }
 }
 
@@ -192,7 +201,16 @@ impl Runtime {
         persist: Persistence,
         out: UnboundedSender<Value>,
     ) -> Arc<Self> {
-        Self::start_with(agent, target, cwd, persist, out, recovery::default_resolver(), None).await
+        Self::start_with(
+            agent,
+            target,
+            cwd,
+            persist,
+            out,
+            recovery::default_resolver(),
+            None,
+        )
+        .await
     }
 
     /// [`Self::start`] with an explicit model resolver (fallback candidates, `set_model`) and,
@@ -275,13 +293,18 @@ impl Runtime {
         let s = self.agent.state().await;
         let model = format!("{}/{}", s.model.provider, s.model.id);
         let _ = self.persist.append_model_change(&model, None, false);
-        let _ = self.persist.append_thinking_level_change(Some(level_name(s.thinking_level)), None);
+        let _ = self
+            .persist
+            .append_thinking_level_change(Some(level_name(s.thinking_level)), None);
     }
 
     // ------------------------------------------------------------- events
 
     fn queued(&self) -> (Vec<String>, Vec<String>) {
-        (self.agent.steering_previews(), self.agent.follow_up_previews())
+        (
+            self.agent.steering_previews(),
+            self.agent.follow_up_previews(),
+        )
     }
 
     /// `(steering, followUp)` previews of the queued messages.
@@ -303,20 +326,29 @@ impl Runtime {
         }
         st.last_queue = snapshot.clone();
         drop(st);
-        self.emit_event(json!({"type": "queue_update", "steering": snapshot.0, "followUp": snapshot.1}));
+        self.emit_event(
+            json!({"type": "queue_update", "steering": snapshot.0, "followUp": snapshot.1}),
+        );
     }
 
     /// Forward a session event subject to `set_event_filter`.
     fn emit_event(&self, mut frame: Value) {
         let st = lock(&self.settings);
-        let kind = frame.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+        let kind = frame
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if st.event_filter.as_ref().is_some_and(|f| !f.contains(&kind)) {
             return;
         }
         if st.delta_updates && kind == "message_update" {
             if let Some(obj) = frame.as_object_mut() {
                 obj.remove("message");
-                if let Some(ev) = obj.get_mut("assistantMessageEvent").and_then(Value::as_object_mut) {
+                if let Some(ev) = obj
+                    .get_mut("assistantMessageEvent")
+                    .and_then(Value::as_object_mut)
+                {
                     ev.remove("partial");
                 }
             }
@@ -338,8 +370,12 @@ impl Runtime {
                 p.agent_starts += 1;
                 p.active = true;
             }
-            AgentEvent::MessageEnd { message } if message.role() == "user" => self.emit_queue_update(),
-            AgentEvent::MessageEnd { message: AgentMessage::Standard(Message::Assistant(a)) } => {
+            AgentEvent::MessageEnd { message } if message.role() == "user" => {
+                self.emit_queue_update();
+            }
+            AgentEvent::MessageEnd {
+                message: AgentMessage::Standard(Message::Assistant(a)),
+            } => {
                 self.on_assistant_settled(a);
             }
             _ => {}
@@ -348,7 +384,8 @@ impl Runtime {
 
     /// `onAssistantSettledSuccessfully`: a turn that produced output settled on the live model.
     fn on_assistant_settled(&self, a: &pa_agent::types::AssistantMessage) {
-        if matches!(a.stop_reason, StopReason::Error | StopReason::Aborted) || a.content.is_empty() {
+        if matches!(a.stop_reason, StopReason::Error | StopReason::Aborted) || a.content.is_empty()
+        {
             return;
         }
         let selector = self.live_selector_with_level(None);
@@ -390,16 +427,27 @@ impl Runtime {
     }
 
     /// Final `agent_end` of a prompt: persist/close failure bookkeeping, then `prompt_result`s.
-    fn settle_terminal(self: &Arc<Self>, mut frame: Value, messages: &[AgentMessage], error_override: Option<&str>) {
+    fn settle_terminal(
+        self: &Arc<Self>,
+        mut frame: Value,
+        messages: &[AgentMessage],
+        error_override: Option<&str>,
+    ) {
         let mut messages = messages.to_vec();
-        if let Some(AgentMessage::Standard(Message::Assistant(a))) = messages.iter_mut().rev().find(|m| m.role() == "assistant") {
+        if let Some(AgentMessage::Standard(Message::Assistant(a))) =
+            messages.iter_mut().rev().find(|m| m.role() == "assistant")
+        {
             if a.stop_reason == StopReason::Error {
                 if let Some(e) = error_override {
                     a.error_message = Some(e.to_string());
                     if let Some(last) = frame
                         .get_mut("messages")
                         .and_then(Value::as_array_mut)
-                        .and_then(|v| v.iter_mut().rev().find(|m| m.get("role") == Some(&json!("assistant"))))
+                        .and_then(|v| {
+                            v.iter_mut()
+                                .rev()
+                                .find(|m| m.get("role") == Some(&json!("assistant")))
+                        })
                     {
                         last["errorMessage"] = json!(e);
                     }
@@ -420,7 +468,12 @@ impl Runtime {
     }
 
     /// Retry saga for a failed turn (`#handleRetryableError`), then continue the run.
-    async fn recover(self: Arc<Self>, frame: Value, messages: Vec<AgentMessage>, failed: FailedTurn) {
+    async fn recover(
+        self: Arc<Self>,
+        frame: Value,
+        messages: Vec<AgentMessage>,
+        failed: FailedTurn,
+    ) {
         self.agent.wait_for_idle().await;
         match self.handle_retryable(&failed).await {
             Recovered::Final { error } => self.settle_terminal(frame, &messages, error.as_deref()),
@@ -465,8 +518,12 @@ impl Runtime {
     }
 
     fn live_provider_id(&self) -> Option<(String, String)> {
-        let t = self.target.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-        t.as_ref().map(|t| (String::from(&*t.model.provider), t.model.id.clone()))
+        let t = self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        t.as_ref()
+            .map(|t| (String::from(&*t.model.provider), t.model.id.clone()))
     }
 
     /// `provider/id[:level]` of the live model (`formatRetryFallbackSelector`).
@@ -491,26 +548,41 @@ impl Runtime {
         };
         let mut switched = false;
         for selector in candidates {
-            let Ok(resolved) = (self.resolver)(selector.clone()).await else { continue };
+            let Ok(resolved) = (self.resolver)(selector.clone()).await else {
+                continue;
+            };
             if resolved.api_key.is_none() {
                 continue;
             }
-            if self.apply_fallback(&resolved, &selector, &current, level).await {
+            if self
+                .apply_fallback(&resolved, &selector, &current, level)
+                .await
+            {
                 switched = true;
                 break;
             }
         }
         let verdict = lock(&self.recovery).finish_attempt(&attempt, switched);
         let delay_ms = match verdict {
-            Verdict::GiveUp { frame, error_message } => {
+            Verdict::GiveUp {
+                frame,
+                error_message,
+            } => {
                 self.emit_event(frame);
-                return Recovered::Final { error: error_message };
+                return Recovered::Final {
+                    error: error_message,
+                };
             }
             Verdict::Retry { delay_ms } => delay_ms,
         };
         let announced = lock(&self.recovery).attempt();
         let max = attempt.max;
-        self.emit_event(recovery::auto_retry_start_frame(announced, max, delay_ms, &attempt.error_message));
+        self.emit_event(recovery::auto_retry_start_frame(
+            announced,
+            max,
+            delay_ms,
+            &attempt.error_message,
+        ));
         // The failed turn is superseded by the retry: out of the file and out of the context.
         self.persist.drop_deferred_error();
         self.agent
@@ -561,7 +633,9 @@ impl Runtime {
             rec.commit_switch(current, Some(from_thinking), Some(applied_name));
             rec.role().to_string()
         };
-        self.emit_event(recovery::fallback_applied_frame(current, selector, &role, None));
+        self.emit_event(recovery::fallback_applied_frame(
+            current, selector, &role, None,
+        ));
         true
     }
 
@@ -570,16 +644,22 @@ impl Runtime {
         let level = self.agent.state().await.thinking_level;
         let current = self.live_selector_with_level(Some(level));
         let now = u64::try_from(pa_agent::now_ms()).unwrap_or(0);
-        let plan = lock(&self.recovery).state_mut().restore_plan(&current, Some(level_name(level)), now);
+        let plan =
+            lock(&self.recovery)
+                .state_mut()
+                .restore_plan(&current, Some(level_name(level)), now);
         let Some(plan) = plan else { return };
-        let Ok(resolved) = (self.resolver)(plan.selector.clone()).await else { return };
+        let Ok(resolved) = (self.resolver)(plan.selector.clone()).await else {
+            return;
+        };
         if resolved.api_key.is_none() {
             return;
         }
         let restored_level = plan.thinking.as_deref().and_then(parse_level);
         // Ownership ends before the swap so observers never see the primary tagged as a fallback.
         lock(&self.recovery).state_mut().clear_active();
-        self.swap_model(&resolved, Some(EPHEMERAL_ROLE), false).await;
+        self.swap_model(&resolved, Some(EPHEMERAL_ROLE), false)
+            .await;
         if let Some(l) = restored_level {
             self.apply_thinking(l).await;
         }
@@ -594,7 +674,10 @@ impl Runtime {
         let claimed = {
             let mut p = lock(&self.prompts);
             let starts = p.agent_starts;
-            let (ready, rest): (Vec<_>, Vec<_>) = p.open.drain(..).partition(|t| !t.waiting && starts > t.starts_at_begin);
+            let (ready, rest): (Vec<_>, Vec<_>) = p
+                .open
+                .drain(..)
+                .partition(|t| !t.waiting && starts > t.starts_at_begin);
             p.open = rest;
             ready
         };
@@ -661,7 +744,11 @@ impl Runtime {
                     ))
                 }
             }
-            lock(&self.prompts).open.push(Ticket { id, starts_at_begin: 0, waiting: true });
+            lock(&self.prompts).open.push(Ticket {
+                id,
+                starts_at_begin: 0,
+                waiting: true,
+            });
             self.emit_queue_update();
             return Ok(());
         }
@@ -671,12 +758,21 @@ impl Runtime {
         let starts = {
             let mut p = lock(&self.prompts);
             let starts = p.agent_starts;
-            p.open.push(Ticket { id: id.clone(), starts_at_begin: starts, waiting: false });
+            p.open.push(Ticket {
+                id: id.clone(),
+                starts_at_begin: starts,
+                waiting: false,
+            });
             starts
         };
-        let input = pa_agent::agent::AgentPromptInput::Text { text: message.to_string(), images };
+        let input = pa_agent::agent::AgentPromptInput::Text {
+            text: message.to_string(),
+            images,
+        };
         if let Err(e) = self.agent.prompt_until_accepted(input).await {
-            lock(&self.prompts).open.retain(|t| !(t.starts_at_begin == starts && t.id == id && !t.waiting));
+            lock(&self.prompts)
+                .open
+                .retain(|t| !(t.starts_at_begin == starts && t.id == id && !t.waiting));
             return Err(CmdError::new(format!("{e:#}")));
         }
         Ok(())
@@ -743,7 +839,9 @@ impl Runtime {
     }
 
     pub fn promote_queued(&self, message: &str) -> bool {
-        let Some(first) = self.take_queued_exact(message, "followUp") else { return false };
+        let Some(first) = self.take_queued_exact(message, "followUp") else {
+            return false;
+        };
         self.agent.steer(first);
         self.emit_queue_update();
         true
@@ -774,7 +872,11 @@ impl Runtime {
     }
 
     pub fn model_info(&self) -> Value {
-        let target = self.target.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let target = self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         target.map_or(Value::Null, |t| model_info(&t.model))
     }
 
@@ -786,28 +888,28 @@ impl Runtime {
             let (steering, follow) = self.queued();
             let queued = steering.len() + follow.len();
             let mut v = json!({
-            "isStreaming": s.is_streaming,
-            "isCompacting": self.compacting.load(std::sync::atomic::Ordering::SeqCst),
-            "steeringMode": queue_mode(self.agent.steering_mode()),
-            "followUpMode": queue_mode(self.agent.follow_up_mode()),
-            "interruptMode": st.interrupt_mode,
-            "sessionId": self.persist.session_id(),
-            "autoCompactionEnabled": st.auto_compaction,
-            "queuedMessageCount": queued,
-            "hasPendingAsyncWork": false,
-            "isSettled": !s.is_streaming && queued == 0 && !retrying,
-            "queuedMessages": {"steering": steering, "followUp": follow},
-            "todoPhases": st.todo_phases,
-            "fastModeEnabled": false,
-            "tokensPerSecond": null,
-            "fastModeActive": false,
-            "messageCount": s.messages.len(),
-            "systemPrompt": [s.system_prompt],
-            "dumpTools": s.tools.iter().map(|t| json!({
-                "name": t.name(), "description": t.description(), "parameters": t.parameters(),
-            })).collect::<Vec<_>>(),
-            "goal": null,
-        });
+                "isStreaming": s.is_streaming,
+                "isCompacting": self.compacting.load(std::sync::atomic::Ordering::SeqCst),
+                "steeringMode": queue_mode(self.agent.steering_mode()),
+                "followUpMode": queue_mode(self.agent.follow_up_mode()),
+                "interruptMode": st.interrupt_mode,
+                "sessionId": self.persist.session_id(),
+                "autoCompactionEnabled": st.auto_compaction,
+                "queuedMessageCount": queued,
+                "hasPendingAsyncWork": false,
+                "isSettled": !s.is_streaming && queued == 0 && !retrying,
+                "queuedMessages": {"steering": steering, "followUp": follow},
+                "todoPhases": st.todo_phases,
+                "fastModeEnabled": false,
+                "tokensPerSecond": null,
+                "fastModeActive": false,
+                "messageCount": s.messages.len(),
+                "systemPrompt": [s.system_prompt],
+                "dumpTools": s.tools.iter().map(|t| json!({
+                    "name": t.name(), "description": t.description(), "parameters": t.parameters(),
+                })).collect::<Vec<_>>(),
+                "goal": null,
+            });
             if let Some(name) = &st.session_name {
                 v["sessionName"] = json!(name);
             }
@@ -853,7 +955,8 @@ impl Runtime {
     pub async fn session_stats(&self) -> Value {
         let s = self.agent.state().await;
         let (mut user, mut assistant, mut calls, mut results) = (0u64, 0u64, 0u64, 0u64);
-        let (mut input, mut output, mut cache_read, mut cache_write, mut cost) = (0u64, 0u64, 0u64, 0u64, 0.0f64);
+        let (mut input, mut output, mut cache_read, mut cache_write, mut cost) =
+            (0u64, 0u64, 0u64, 0u64, 0.0f64);
         for m in &s.messages {
             match m {
                 AgentMessage::Standard(Message::User(_)) => user += 1,
@@ -919,7 +1022,8 @@ impl Runtime {
     /// append-only and cannot reopen an existing file).
     pub async fn load_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
         self.cancel_retry_and_wait().await;
-        let lines = omp_session::read(path).with_context(|| format!("cannot read session {}", path.display()))?;
+        let lines = omp_session::read(path)
+            .with_context(|| format!("cannot read session {}", path.display()))?;
         let mut entries = Vec::new();
         let mut messages = Vec::new();
         for l in &lines {
@@ -931,12 +1035,20 @@ impl Runtime {
                     }
                 }
             }
-            if v.get("type").and_then(Value::as_str).is_some_and(|t| t != "session") {
+            if v.get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t != "session")
+            {
                 entries.push(v);
             }
         }
         // A compacted session resumes with the rebuilt context (summary + kept tail), not the raw log.
-        let compacted = entries.iter().any(|e| matches!(e.get("type").and_then(Value::as_str), Some("compaction" | "reset_boundary" | "branch_summary")));
+        let compacted = entries.iter().any(|e| {
+            matches!(
+                e.get("type").and_then(Value::as_str),
+                Some("compaction" | "reset_boundary" | "branch_summary")
+            )
+        });
         if compacted {
             messages = crate::compact::rebuild_context(&entries)?;
         }
@@ -951,7 +1063,10 @@ impl Runtime {
             for m in &messages {
                 let converted = serde_json::to_value(m)
                     .map_err(anyhow::Error::from)
-                    .and_then(|v| serde_json::from_value::<pa_types::session::AgentMessage>(v).map_err(anyhow::Error::from));
+                    .and_then(|v| {
+                        serde_json::from_value::<pa_types::session::AgentMessage>(v)
+                            .map_err(anyhow::Error::from)
+                    });
                 if let Ok(c) = converted {
                     let _ = self.persist.append_message(&c, m.timestamp());
                 }
@@ -964,7 +1079,8 @@ impl Runtime {
 
     pub fn set_session_name(&self, name: &str) -> Result<()> {
         let previous = lock(&self.settings).session_name.clone();
-        self.persist.append_title_change(name, "user", previous.as_deref())?;
+        self.persist
+            .append_title_change(name, "user", previous.as_deref())?;
         lock(&self.settings).session_name = Some(name.to_string());
         Ok(())
     }
@@ -993,23 +1109,33 @@ impl Runtime {
         if let Some(f) = lock(&self.summarizer).clone() {
             return Ok(crate::compact::Summarizer::Injected(f));
         }
-        Ok(crate::compact::Summarizer::Live(Arc::new(crate::compact::LiveCompleter::from_target(&self.target)?)))
+        Ok(crate::compact::Summarizer::Live(Arc::new(
+            crate::compact::LiveCompleter::from_target(&self.target)?,
+        )))
     }
 
     fn live_window(&self) -> u64 {
-        self.target.read().ok().and_then(|t| t.as_ref().map(|t| t.model.context_window)).unwrap_or(0)
+        self.target
+            .read()
+            .ok()
+            .and_then(|t| t.as_ref().map(|t| t.model.context_window))
+            .unwrap_or(0)
     }
 
     /// rpc `compact`: summarize the older history into a `compaction` entry and swap the agent's
     /// messages for the rebuilt context. Returns the `CompactionResult` the response carries.
     pub async fn compact(&self, custom_instructions: Option<&str>) -> Result<Value, CmdError> {
-        if self.compacting.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .compacting
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
             return Err(CmdError::new("Compaction already in progress"));
         }
         self.agent.abort();
         self.agent.wait_for_idle().await;
         let out = self.compact_inner(custom_instructions).await;
-        self.compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.compacting
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         out
     }
 
@@ -1018,7 +1144,9 @@ impl Runtime {
         let entries = self.entries()?;
         let st = self.agent.state().await;
         let settings = lock(&self.compaction).clone();
-        let non_message_tokens = u64::try_from(prompt_overhead_chars(&st.system_prompt, &st.tools).div_ceil(4)).unwrap_or(0);
+        let non_message_tokens =
+            u64::try_from(prompt_overhead_chars(&st.system_prompt, &st.tools).div_ceil(4))
+                .unwrap_or(0);
         let params = crate::compact::CompactParams {
             settings: &settings,
             model_id: &st.model.id,
@@ -1026,40 +1154,54 @@ impl Runtime {
             custom_instructions,
             non_message_tokens,
         };
-        let (_, data) = crate::compact::compact_now(&self.persist, &entries, &summarizer, &params).await?;
+        let (_, data) =
+            crate::compact::compact_now(&self.persist, &entries, &summarizer, &params).await?;
         let rebuilt = crate::compact::rebuild_context(&self.entries()?)?;
         self.agent.set_messages(rebuilt).await;
-        self.agent.set_compaction_epoch(self.agent.compaction_epoch() + 1);
+        self.agent
+            .set_compaction_epoch(self.agent.compaction_epoch() + 1);
         Ok(data)
     }
 
     /// Post-turn threshold check (`checkCompaction`): auto-compaction is on, the turn succeeded and
     /// the provider-billed / stored context crossed `resolveThresholdTokens`.
     fn auto_compaction_due(&self, messages: &[AgentMessage]) -> bool {
-        if self.compacting.load(std::sync::atomic::Ordering::SeqCst) || !lock(&self.settings).auto_compaction {
+        if self.compacting.load(std::sync::atomic::Ordering::SeqCst)
+            || !lock(&self.settings).auto_compaction
+        {
             return false;
         }
-        if last_assistant_msg(messages).is_none_or(|a| matches!(a.stop_reason, StopReason::Error | StopReason::Aborted)) {
+        if last_assistant_msg(messages)
+            .is_none_or(|a| matches!(a.stop_reason, StopReason::Error | StopReason::Aborted))
+        {
             return false;
         }
         let mut settings = lock(&self.compaction).clone();
         settings.enabled = true;
-        self.entries().is_ok_and(|entries| crate::compact::auto_check(&entries, self.live_window(), &settings))
+        self.entries().is_ok_and(|entries| {
+            crate::compact::auto_check(&entries, self.live_window(), &settings)
+        })
     }
 
     /// The threshold compaction pass with its `auto_compaction_start` / `auto_compaction_end` events.
     async fn run_auto_compaction(&self) {
         const ACTION: &str = "context-full";
-        self.compacting.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.emit_event(json!({"type": "auto_compaction_start", "reason": "threshold", "action": ACTION}));
+        self.compacting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.emit_event(
+            json!({"type": "auto_compaction_start", "reason": "threshold", "action": ACTION}),
+        );
         let end = match self.compact_inner(None).await {
-            Ok(result) => json!({"type": "auto_compaction_end", "action": ACTION, "result": result, "aborted": false, "willRetry": false}),
+            Ok(result) => {
+                json!({"type": "auto_compaction_end", "action": ACTION, "result": result, "aborted": false, "willRetry": false})
+            }
             Err(e) => json!({
                 "type": "auto_compaction_end", "action": ACTION, "aborted": false, "willRetry": false,
                 "errorMessage": format!("Auto-compaction failed: {}", e.message),
             }),
         };
-        self.compacting.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.compacting
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.emit_event(end);
     }
 
@@ -1075,16 +1217,25 @@ impl Runtime {
         self.select_model(provider, model_id, None).await
     }
 
-    async fn select_model(&self, provider: &str, model_id: &str, role: Option<&str>) -> Result<Value, CmdError> {
+    async fn select_model(
+        &self,
+        provider: &str,
+        model_id: &str,
+        role: Option<&str>,
+    ) -> Result<Value, CmdError> {
         let reference = format!("{provider}/{model_id}");
         let resolved = (self.resolver)(reference.clone())
             .await
             .map_err(|_| CmdError::new(format!("Model not found: {provider}/{model_id}")))?;
         if resolved.provider != provider || resolved.id != model_id {
-            return Err(CmdError::new(format!("Model not found: {provider}/{model_id}")));
+            return Err(CmdError::new(format!(
+                "Model not found: {provider}/{model_id}"
+            )));
         }
         if resolved.api_key.is_none() {
-            return Err(CmdError::new(format!("No API key for {provider}/{model_id}")));
+            return Err(CmdError::new(format!(
+                "No API key for {provider}/{model_id}"
+            )));
         }
         let info = model_info(&resolved.model);
         // A user selection ends fallback ownership and clears the selector's cooldown.
@@ -1099,7 +1250,11 @@ impl Runtime {
             .into_iter()
             .flatten()
             .find(|(k, _)| *k == "thinking")
-            .and_then(|(_, v)| v.get("defaultLevel").and_then(Value::as_str).and_then(parse_level));
+            .and_then(|(_, v)| {
+                v.get("defaultLevel")
+                    .and_then(Value::as_str)
+                    .and_then(parse_level)
+            });
         let preferred = match catalog_default {
             Some(l) => l,
             None => self.agent.state().await.thinking_level,
@@ -1110,15 +1265,28 @@ impl Runtime {
 
     /// Swap the live model: provider target, agent model, edit-mode tools, `model_change` entry,
     /// `model_changed` event (only when the model actually changed). Thinking is left to the caller.
-    async fn swap_model(&self, resolved: &omp_providers::ResolvedModel, role: Option<&str>, is_fallback: bool) {
+    async fn swap_model(
+        &self,
+        resolved: &omp_providers::ResolvedModel,
+        role: Option<&str>,
+        is_fallback: bool,
+    ) {
         let agent_model: Option<pa_agent::types::Model> = json_round_trip(&resolved.model);
-        let Some(agent_model) = agent_model else { return };
-        let changing = self.live_provider_id().is_none_or(|(p, i)| p != resolved.provider || i != resolved.id);
-        *self.target.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ProviderTarget {
+        let Some(agent_model) = agent_model else {
+            return;
+        };
+        let changing = self
+            .live_provider_id()
+            .is_none_or(|(p, i)| p != resolved.provider || i != resolved.id);
+        *self
+            .target
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ProviderTarget {
             api_key: resolved.api_key.clone(),
             model: resolved.model.clone(),
             service_tier: None,
-            headers: (!resolved.headers.is_empty()).then(|| resolved.headers.iter().cloned().collect()),
+            headers: (!resolved.headers.is_empty())
+                .then(|| resolved.headers.iter().cloned().collect()),
         });
         self.agent.set_model(agent_model).await;
         self.agent.set_credential_id(resolved.credential_id);
@@ -1140,19 +1308,28 @@ impl Runtime {
             self.emit_event(json!({"type": "model_changed"}));
         }
         let selector = format!("{}/{}", resolved.provider, resolved.id);
-        let _ = self.persist.append_model_change(&selector, role, is_fallback);
+        let _ = self
+            .persist
+            .append_model_change(&selector, role, is_fallback);
     }
 
     /// `ModelControls.setThinkingLevel`: clamp to the live model; journal and announce only a change.
     /// Returns the effective level.
     async fn apply_thinking(&self, requested: ThinkingLevel) -> ThinkingLevel {
-        let model = self.target.read().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().map(|t| t.model.clone());
+        let model = self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|t| t.model.clone());
         let effective = model.map_or(requested, |m| crate::model::clamp_level(&m, requested));
         let current = self.agent.state().await.thinking_level;
         if current != effective {
             self.agent.set_thinking_level(effective).await;
             let name = level_name(effective);
-            let _ = self.persist.append_thinking_level_change(Some(name), Some(name));
+            let _ = self
+                .persist
+                .append_thinking_level_change(Some(name), Some(name));
             self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name}));
         }
         effective
@@ -1202,7 +1379,8 @@ impl Runtime {
 
     /// Emit `available_commands_update` with the current catalog.
     pub fn announce_commands(&self) {
-        self.announced.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.announced
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let commands = self.available_commands();
         self.send(json!({"type": "available_commands_update", "commands": commands}));
     }
@@ -1218,7 +1396,11 @@ impl Runtime {
 
     /// Selectable levels for the live model, `off` first.
     pub fn available_thinking_levels(&self) -> Vec<&'static str> {
-        let target = self.target.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let target = self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let mut levels = vec!["off"];
         if let Some(t) = target {
             if t.model.reasoning {
@@ -1304,16 +1486,28 @@ fn run_outcome(messages: &[AgentMessage]) -> RunOutcome {
                         "retryable": recovery::is_transient(None, a.error_message.as_deref().unwrap_or("")),
                     })),
                 },
-                StopReason::Aborted => RunOutcome { status: "aborted", error: None },
-                _ => RunOutcome { status: "completed", error: None },
+                StopReason::Aborted => RunOutcome {
+                    status: "aborted",
+                    error: None,
+                },
+                _ => RunOutcome {
+                    status: "completed",
+                    error: None,
+                },
             };
         }
     }
-    RunOutcome { status: "completed", error: None }
+    RunOutcome {
+        status: "completed",
+        error: None,
+    }
 }
 
 /// Characters the system prompt and tool schemas add to every request.
-fn prompt_overhead_chars(system_prompt: &str, tools: &[Arc<dyn pa_agent::types::AgentTool>]) -> usize {
+fn prompt_overhead_chars(
+    system_prompt: &str,
+    tools: &[Arc<dyn pa_agent::types::AgentTool>],
+) -> usize {
     system_prompt.chars().count()
         + tools
             .iter()
@@ -1349,11 +1543,14 @@ fn context_usage(messages: &[AgentMessage], window: u64, overhead_chars: usize) 
     });
     let tokens = match last_usage {
         Some(i) => {
-            let AgentMessage::Standard(Message::Assistant(a)) = &messages[i] else { return None };
+            let AgentMessage::Standard(Message::Assistant(a)) = &messages[i] else {
+                return None;
+            };
             a.usage.total_tokens + messages[i + 1..].iter().map(estimate_tokens).sum::<u64>()
         }
         None => {
-            u64::try_from(overhead_chars.div_ceil(4)).unwrap_or(u64::MAX) + messages.iter().map(estimate_tokens).sum::<u64>()
+            u64::try_from(overhead_chars.div_ceil(4)).unwrap_or(u64::MAX)
+                + messages.iter().map(estimate_tokens).sum::<u64>()
         }
     };
     #[allow(clippy::cast_precision_loss)]
@@ -1405,7 +1602,8 @@ pub fn newest_session(dir: &Path) -> Option<PathBuf> {
         .collect();
     files.sort_by_key(|b| std::cmp::Reverse(b.0));
     files.into_iter().map(|(_, p)| p).find(|p| {
-        std::fs::read_to_string(p).is_ok_and(|t| t.lines().any(|l| l.contains("\"type\":\"message\"")))
+        std::fs::read_to_string(p)
+            .is_ok_and(|t| t.lines().any(|l| l.contains("\"type\":\"message\"")))
     })
 }
 
@@ -1415,7 +1613,9 @@ pub async fn available_models(current: Option<&pa_types::ai::Model>) -> Vec<pa_t
     let mut out: Vec<pa_types::ai::Model> = Vec::new();
     for provider in pa_ai::models_generated::get_providers() {
         let models = pa_ai::models_generated::get_models(provider);
-        let Some(first) = models.first() else { continue };
+        let Some(first) = models.first() else {
+            continue;
+        };
         let has_key = omp_providers::resolve_async(format!("{provider}/{}", first.id))
             .await
             .is_ok_and(|r| r.api_key.is_some());
@@ -1435,7 +1635,9 @@ pub async fn available_models(current: Option<&pa_types::ai::Model>) -> Vec<pa_t
 fn builtin_commands() -> Vec<Value> {
     static BUILTIN: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
     BUILTIN
-        .get_or_init(|| serde_json::from_str(include_str!("builtin_commands.json")).unwrap_or_default())
+        .get_or_init(|| {
+            serde_json::from_str(include_str!("builtin_commands.json")).unwrap_or_default()
+        })
         .clone()
 }
 
@@ -1444,12 +1646,20 @@ fn builtin_commands() -> Vec<Value> {
 ///
 /// # Errors
 /// Fails when the prompt cannot be admitted.
-pub async fn run_print(agent: Agent, target: Target, cwd: PathBuf, persist: Persistence, prompt: &str) -> Result<Vec<AgentMessage>> {
+pub async fn run_print(
+    agent: Agent,
+    target: Target,
+    cwd: PathBuf,
+    persist: Persistence,
+    prompt: &str,
+) -> Result<Vec<AgentMessage>> {
     let agent = Arc::new(agent);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     drop(rx);
     let rt = Runtime::start(agent.clone(), target, cwd, persist, tx).await;
-    rt.prompt(None, prompt, None, Vec::new()).await.map_err(|e| anyhow::anyhow!(e.message))?;
+    rt.prompt(None, prompt, None, Vec::new())
+        .await
+        .map_err(|e| anyhow::anyhow!(e.message))?;
     rt.wait_settled().await;
     Ok(agent.state().await.messages)
 }
@@ -1460,6 +1670,7 @@ pub async fn run_print(agent: Agent, target: Target, cwd: PathBuf, persist: Pers
 impl Runtime {
     /// Run `f` against the live session writer (tree navigation: leaf moves,
     /// `branch_summary` appends).
+    #[allow(dead_code)] // host-request API used by tree navigation, wired with the rpc surface
     pub fn with_writer<R>(&self, f: impl FnOnce(&mut omp_session::SessionWriter) -> R) -> R {
         self.persist.with_writer(f)
     }
@@ -1470,7 +1681,9 @@ impl Runtime {
     /// # Errors
     /// Session-writer serialization/I/O failure.
     pub fn append_entry(&self, kind: &str, payload: Value) -> Result<()> {
-        self.persist.append_entry(kind, payload).map_err(|e| anyhow::anyhow!(e))
+        self.persist
+            .append_entry(kind, payload)
+            .map_err(|e| anyhow::anyhow!(e))
     }
 
     /// Queue a user message from an extension (`send_message` notification).

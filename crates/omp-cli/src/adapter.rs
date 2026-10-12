@@ -123,7 +123,10 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
 /// The reasoning level sent with a request. `off` on a model that always thinks (catalog
 /// `thinking.requiresEffort`, e.g. zai glm) goes out as that model's lowest effort instead of a
 /// disable toggle the provider rejects.
-fn reasoning_for_request(model: &Model, level: ThinkingLevel) -> Option<pa_types::ai::ModelThinkingLevel> {
+fn reasoning_for_request(
+    model: &Model,
+    level: ThinkingLevel,
+) -> Option<pa_types::ai::ModelThinkingLevel> {
     if level == ThinkingLevel::Off {
         if let Some(lowest) = crate::model::always_thinking_floor(&model.provider, &model.id) {
             return Some(model_thinking_level(lowest));
@@ -135,24 +138,32 @@ fn reasoning_for_request(model: &Model, level: ThinkingLevel) -> Option<pa_types
 /// GLM-5.x on a z.ai host (`thinkingFormat: "zai"` + `zaiReasoningEffortDialect`) wants
 /// `thinking: {type: "enabled"}` and `reasoning_effort` on the wire; pa-ai's zai arm only sends
 /// `enable_thinking`, which z.ai answers without reasoning. Patch the payload here.
-fn zai_effort_hook(model: &Model, effort: Option<pa_types::ai::ModelThinkingLevel>) -> Option<pa_ai::types::OnPayloadHook> {
+fn zai_effort_hook(
+    model: &Model,
+    effort: Option<pa_types::ai::ModelThinkingLevel>,
+) -> Option<pa_ai::types::OnPayloadHook> {
     let effort = effort.filter(|e| *e != pa_types::ai::ModelThinkingLevel::Off)?;
     let compat = serde_json::to_value(model).ok()?.get("compat")?.clone();
     let flag = |k: &str| compat.get(k) == Some(&serde_json::Value::Bool(true));
-    if compat.get("thinkingFormat").and_then(serde_json::Value::as_str) != Some("zai")
+    if compat
+        .get("thinkingFormat")
+        .and_then(serde_json::Value::as_str)
+        != Some("zai")
         || !flag("zaiReasoningEffortDialect")
         || !flag("supportsReasoningEffort")
     {
         return None;
     }
     let wire = effort.wire_name().to_string();
-    Some(Arc::new(move |mut payload: serde_json::Value, _m: &Model| {
-        if let Some(o) = payload.as_object_mut() {
-            o.insert("thinking".into(), serde_json::json!({"type": "enabled"}));
-            o.insert("reasoning_effort".into(), serde_json::json!(wire));
-        }
-        Some(payload)
-    }))
+    Some(Arc::new(
+        move |mut payload: serde_json::Value, _m: &Model| {
+            if let Some(o) = payload.as_object_mut() {
+                o.insert("thinking".into(), serde_json::json!({"type": "enabled"}));
+                o.insert("reasoning_effort".into(), serde_json::json!(wire));
+            }
+            Some(payload)
+        },
+    ))
 }
 
 fn chain_payload_hooks(
@@ -160,7 +171,9 @@ fn chain_payload_hooks(
     second: Option<pa_ai::types::OnPayloadHook>,
 ) -> Option<pa_ai::types::OnPayloadHook> {
     match (first, second) {
-        (Some(a), Some(b)) => Some(Arc::new(move |p: serde_json::Value, m: &Model| b(a(p, m)?, m))),
+        (Some(a), Some(b)) => Some(Arc::new(move |p: serde_json::Value, m: &Model| {
+            b(a(p, m)?, m)
+        })),
         (a, b) => a.or(b),
     }
 }
@@ -424,4 +437,3 @@ impl ModelStream for PumpedStream {
         self.cancel.cancel();
     }
 }
-

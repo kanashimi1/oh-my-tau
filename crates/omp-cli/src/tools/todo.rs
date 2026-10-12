@@ -127,7 +127,11 @@ fn present(value: Option<&str>) -> Option<&str> {
 
 fn find_task(phases: &[TodoPhase], content: &str) -> Option<(usize, usize)> {
     phases.iter().enumerate().find_map(|(pi, phase)| {
-        phase.tasks.iter().position(|t| t.content == content).map(|ti| (pi, ti))
+        phase
+            .tasks
+            .iter()
+            .position(|t| t.content == content)
+            .map(|ti| (pi, ti))
     })
 }
 
@@ -142,7 +146,11 @@ fn is_task_id(content: &str) -> bool {
         .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn resolve_task(phases: &[TodoPhase], content: Option<&str>, errors: &mut Vec<String>) -> Option<(usize, usize)> {
+fn resolve_task(
+    phases: &[TodoPhase],
+    content: Option<&str>,
+    errors: &mut Vec<String>,
+) -> Option<(usize, usize)> {
     let Some(content) = present(content) else {
         errors.push("Missing task content".to_string());
         return None;
@@ -154,18 +162,22 @@ fn resolve_task(phases: &[TodoPhase], content: Option<&str>, errors: &mut Vec<St
                 "Task \"{content}\" not found. Tasks are referenced by content, not by IDs — pass the task's full text from the previous result."
             ));
         } else {
-            let hint = if total_tasks(phases) == 0 {
+            let empty_hint = if total_tasks(phases) == 0 {
                 " (todo list is empty — was it replaced or not yet created?)"
             } else {
                 ""
             };
-            errors.push(format!("Task \"{content}\" not found{hint}"));
+            errors.push(format!("Task \"{content}\" not found{empty_hint}"));
         }
     }
     hit
 }
 
-fn resolve_phase(phases: &[TodoPhase], name: Option<&str>, errors: &mut Vec<String>) -> Option<usize> {
+fn resolve_phase(
+    phases: &[TodoPhase],
+    name: Option<&str>,
+    errors: &mut Vec<String>,
+) -> Option<usize> {
     let Some(name) = present(name) else {
         errors.push("Missing phase name".to_string());
         return None;
@@ -178,9 +190,15 @@ fn resolve_phase(phases: &[TodoPhase], name: Option<&str>, errors: &mut Vec<Stri
 }
 
 /// Task coordinates an op targets: one task, one phase's tasks, or every task.
-fn task_targets(phases: &[TodoPhase], entry: &Entry, errors: &mut Vec<String>) -> Vec<(usize, usize)> {
+fn task_targets(
+    phases: &[TodoPhase],
+    entry: &Entry,
+    errors: &mut Vec<String>,
+) -> Vec<(usize, usize)> {
     if present(entry.task.as_deref()).is_some() {
-        return resolve_task(phases, entry.task.as_deref(), errors).into_iter().collect();
+        return resolve_task(phases, entry.task.as_deref(), errors)
+            .into_iter()
+            .collect();
     }
     if present(entry.phase.as_deref()).is_some() {
         return resolve_phase(phases, entry.phase.as_deref(), errors)
@@ -198,9 +216,15 @@ fn init_phases(entry: &Entry, errors: &mut Vec<String>) -> Vec<TodoPhase> {
     // Models often flatten a single-phase init into `{op:"init", items:[...]}`;
     // accept that shape as a one-phase list, like TS.
     let list: Vec<(String, Vec<String>)> = match (&entry.list, &entry.items) {
-        (Some(list), _) => list.iter().map(|e| (e.phase.clone(), e.items.clone())).collect(),
+        (Some(list), _) => list
+            .iter()
+            .map(|e| (e.phase.clone(), e.items.clone()))
+            .collect(),
         (None, Some(items)) if !items.is_empty() => vec![(
-            entry.phase.clone().unwrap_or_else(|| DEFAULT_INIT_PHASE.to_string()),
+            entry
+                .phase
+                .clone()
+                .unwrap_or_else(|| DEFAULT_INIT_PHASE.to_string()),
             items.clone(),
         )],
         _ => {
@@ -226,7 +250,11 @@ fn init_phases(entry: &Entry, errors: &mut Vec<String>) -> Vec<TodoPhase> {
             name,
             tasks: items
                 .into_iter()
-                .map(|content| TodoItem { content, status: Status::Pending, blocker: None })
+                .map(|content| TodoItem {
+                    content,
+                    status: Status::Pending,
+                    blocker: None,
+                })
                 .collect(),
         })
         .collect()
@@ -256,15 +284,21 @@ fn append_items(phases: &mut Vec<TodoPhase>, entry: &Entry, errors: &mut Vec<Str
     if has_duplicate {
         return;
     }
-    let pi = match phases.iter().position(|p| p.name == phase_name) {
-        Some(pi) => pi,
-        None => {
-            phases.push(TodoPhase { name: phase_name.to_string(), tasks: Vec::new() });
-            phases.len() - 1
-        }
+    let pi = if let Some(pi) = phases.iter().position(|p| p.name == phase_name) {
+        pi
+    } else {
+        phases.push(TodoPhase {
+            name: phase_name.to_string(),
+            tasks: Vec::new(),
+        });
+        phases.len() - 1
     };
     for content in items {
-        phases[pi].tasks.push(TodoItem { content: content.clone(), status: Status::Pending, blocker: None });
+        phases[pi].tasks.push(TodoItem {
+            content: content.clone(),
+            status: Status::Pending,
+            blocker: None,
+        });
     }
 }
 
@@ -309,13 +343,18 @@ fn apply_entry(phases: &mut Vec<TodoPhase>, entry: &Entry, errors: &mut Vec<Stri
             phases[hit.0].tasks[hit.1].status = Status::InProgress;
         }
         Op::Done | Op::Drop => {
-            let status = if entry.op == Op::Done { Status::Completed } else { Status::Abandoned };
+            let status = if entry.op == Op::Done {
+                Status::Completed
+            } else {
+                Status::Abandoned
+            };
             for (pi, ti) in task_targets(phases, entry, errors) {
                 phases[pi].tasks[ti].status = status;
             }
         }
         Op::Block => {
-            if present(entry.task.as_deref()).is_none() && present(entry.phase.as_deref()).is_none() {
+            if present(entry.task.as_deref()).is_none() && present(entry.phase.as_deref()).is_none()
+            {
                 errors.push("block requires a task or phase target".to_string());
                 return;
             }
@@ -323,15 +362,19 @@ fn apply_entry(phases: &mut Vec<TodoPhase>, entry: &Entry, errors: &mut Vec<Stri
             for (pi, ti) in task_targets(phases, entry, errors) {
                 // Only open work can be blocked; an already-blocked task may refine its note.
                 let task = &mut phases[pi].tasks[ti];
-                if !matches!(task.status, Status::Pending | Status::InProgress | Status::Blocked) {
+                if !matches!(
+                    task.status,
+                    Status::Pending | Status::InProgress | Status::Blocked
+                ) {
                     continue;
                 }
                 task.status = Status::Blocked;
-                task.blocker = reason.clone();
+                task.blocker.clone_from(&reason);
             }
         }
         Op::Unblock => {
-            if present(entry.task.as_deref()).is_none() && present(entry.phase.as_deref()).is_none() {
+            if present(entry.task.as_deref()).is_none() && present(entry.phase.as_deref()).is_none()
+            {
                 errors.push("unblock requires a task or phase target".to_string());
                 return;
             }
@@ -372,7 +415,10 @@ fn normalize_in_progress(phases: &mut [TodoPhase]) {
     if !in_progress.is_empty() {
         return;
     }
-    if let Some(&(pi, ti)) = ordered.iter().find(|&&(pi, ti)| phases[pi].tasks[ti].status == Status::Pending) {
+    if let Some(&(pi, ti)) = ordered
+        .iter()
+        .find(|&&(pi, ti)| phases[pi].tasks[ti].status == Status::Pending)
+    {
         phases[pi].tasks[ti].status = Status::InProgress;
     }
 }
@@ -401,7 +447,10 @@ fn completion_transitions(previous: &[TodoPhase], updated: &[TodoPhase]) -> Vec<
             }
             if let Some(prev) = previous_status.get(&(phase.name.as_str(), task.content.as_str())) {
                 if *prev != Status::Completed {
-                    out.push(Transition { phase: phase.name.clone(), content: task.content.clone() });
+                    out.push(Transition {
+                        phase: phase.name.clone(),
+                        content: task.content.clone(),
+                    });
                 }
             }
         }
@@ -425,12 +474,20 @@ fn parse_entry(raw: &Value) -> Result<Entry, String> {
 
 /// Infer a missing `op` from an unambiguous payload (omp `inferTodoOp`).
 fn infer_op(raw: &Value, has_existing: bool) -> Option<&'static str> {
-    let non_empty = |key: &str| raw.get(key).and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+    let non_empty = |key: &str| {
+        raw.get(key)
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    };
     if non_empty("list") {
         return Some("init");
     }
     if non_empty("items") {
-        if raw.get("phase").and_then(Value::as_str).is_some_and(|p| !p.is_empty()) {
+        if raw
+            .get("phase")
+            .and_then(Value::as_str)
+            .is_some_and(|p| !p.is_empty())
+        {
             return Some("append");
         }
         if !has_existing {
@@ -471,14 +528,23 @@ fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> S
         if !errors.is_empty() {
             return format!("Errors: {}", errors.join("; "));
         }
-        return if read_only { "Todo list is empty.".to_string() } else { "Todo list cleared.".to_string() };
+        return if read_only {
+            "Todo list is empty.".to_string()
+        } else {
+            "Todo list cleared.".to_string()
+        };
     }
     let is_open = |s: Status| matches!(s, Status::Pending | Status::InProgress);
     let is_closed = |s: Status| matches!(s, Status::Completed | Status::Abandoned);
 
     let remaining: Vec<(&str, &TodoItem)> = phases
         .iter()
-        .flat_map(|p| p.tasks.iter().filter(|t| is_open(t.status)).map(move |t| (p.name.as_str(), t)))
+        .flat_map(|p| {
+            p.tasks
+                .iter()
+                .filter(|t| is_open(t.status))
+                .map(move |t| (p.name.as_str(), t))
+        })
         .collect();
 
     let current_idx = phases
@@ -497,7 +563,11 @@ fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> S
     } else {
         lines.push(format!("Remaining items ({}):", remaining.len()));
         for (phase, task) in &remaining {
-            lines.push(format!("  - {} [{}] ({phase})", task.content, task.status.as_str()));
+            lines.push(format!(
+                "  - {} [{}] ({phase})",
+                task.content,
+                task.status.as_str()
+            ));
         }
     }
     let closed_all = tasks.iter().filter(|t| is_closed(t.status)).count();
@@ -506,7 +576,11 @@ fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> S
         .iter()
         .enumerate()
         .any(|(idx, p)| idx > current_idx && p.tasks.iter().any(|t| is_closed(t.status)));
-    let blocked_part = if blocked_all > 0 { format!(", {blocked_all} blocked") } else { String::new() };
+    let blocked_part = if blocked_all > 0 {
+        format!(", {blocked_all} blocked")
+    } else {
+        String::new()
+    };
     lines.push(format!(
         "Overall: {closed_all}/{} done, {} open{blocked_part}.",
         tasks.len(),
@@ -527,7 +601,11 @@ fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> S
     for phase in phases {
         lines.push(format!("  {}:", phase.name));
         for task in &phase.tasks {
-            let checkbox = if task.status == Status::Completed { "[X]" } else { "[ ]" };
+            let checkbox = if task.status == Status::Completed {
+                "[X]"
+            } else {
+                "[ ]"
+            };
             let tag = match task.status {
                 Status::InProgress => " (in progress)".to_string(),
                 Status::Abandoned => " (dropped)".to_string(),
@@ -554,7 +632,8 @@ fn format_summary(phases: &[TodoPhase], errors: &[String], read_only: bool) -> S
 /// `todo` tool result (or `user_todo_edit` custom entry) on the branch.
 /// Entries are the JSON session entries in branch order.
 #[must_use]
-pub fn phases_from_entries(entries: &[Value]) -> Vec<TodoPhase> {
+#[allow(dead_code)] // transcript->todo rebuild (resume path), exercised by tests
+fn phases_from_entries(entries: &[Value]) -> Vec<TodoPhase> {
     for entry in entries.iter().rev() {
         if let Some(phases) = canonical_phases(entry) {
             return phases;
@@ -563,6 +642,7 @@ pub fn phases_from_entries(entries: &[Value]) -> Vec<TodoPhase> {
     Vec::new()
 }
 
+#[allow(dead_code)] // helper of phases_from_entries
 fn canonical_phases(entry: &Value) -> Option<Vec<TodoPhase>> {
     if entry.get("type").and_then(Value::as_str) == Some("custom")
         && entry.get("customType").and_then(Value::as_str) == Some("user_todo_edit")
@@ -586,6 +666,7 @@ fn canonical_phases(entry: &Value) -> Option<Vec<TodoPhase>> {
     parse_phases(details.get("phases")?)
 }
 
+#[allow(dead_code)] // helper of phases_from_entries
 fn parse_phases(value: &Value) -> Option<Vec<TodoPhase>> {
     serde_json::from_value(value.clone()).ok()
 }
@@ -605,7 +686,10 @@ impl TodoTool {
     /// transcript with [`phases_from_entries`] on resume).
     #[must_use]
     pub fn with_phases(phases: Vec<TodoPhase>) -> Self {
-        Self { schema: schema(), state: Mutex::new(phases) }
+        Self {
+            schema: schema(),
+            state: Mutex::new(phases),
+        }
     }
 
     fn run(&self, raw: &Value) -> Result<AgentToolResult> {
@@ -619,8 +703,16 @@ impl TodoTool {
         };
         // A batch with any error is discarded wholesale; state and summary stay at previous.
         let failed = !errors.is_empty();
-        let effective = if failed { previous.clone() } else { updated.clone() };
-        let completed = if read_only || failed { Vec::new() } else { completion_transitions(&previous, &updated) };
+        let effective = if failed {
+            previous.clone()
+        } else {
+            updated.clone()
+        };
+        let completed = if read_only || failed {
+            Vec::new()
+        } else {
+            completion_transitions(&previous, &updated)
+        };
         if !read_only && !failed {
             *self.state.lock() = updated;
         }
@@ -647,7 +739,7 @@ impl TodoTool {
 }
 
 impl AgentTool for TodoTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "todo"
     }
     fn description(&self) -> &str {
@@ -656,7 +748,7 @@ impl AgentTool for TodoTool {
     fn parameters(&self) -> &Value {
         &self.schema
     }
-    fn label(&self) -> &str {
+    fn label(&self) -> &'static str {
         "Todo"
     }
     fn execute(
@@ -710,11 +802,17 @@ mod tests {
                 let outcome = tool.run(&step["params"]);
                 let expected_text = step["text"].as_str().unwrap();
                 if step["isError"].as_bool() == Some(true) {
-                    let err = outcome.err().unwrap_or_else(|| panic!("{ctx}: expected error"));
+                    let err = outcome
+                        .err()
+                        .unwrap_or_else(|| panic!("{ctx}: expected error"));
                     assert_eq!(err.to_string(), expected_text, "{ctx}");
                 } else {
                     let result = outcome.unwrap_or_else(|e| panic!("{ctx}: unexpected error {e}"));
-                    assert_eq!(result.content, vec![ToolResultContent::text(expected_text)], "{ctx}: text");
+                    assert_eq!(
+                        result.content,
+                        vec![ToolResultContent::text(expected_text)],
+                        "{ctx}: text"
+                    );
                     assert_eq!(result.details, step["details"], "{ctx}: details");
                 }
             }
@@ -727,7 +825,9 @@ mod tests {
         assert_eq!(resolve_params(&list, true).unwrap().op, Op::Init);
         let items = json!({"items": ["x"]});
         assert_eq!(resolve_params(&items, false).unwrap().op, Op::Init);
-        assert!(resolve_params(&items, true).unwrap_err().starts_with("Invalid todo arguments: "));
+        assert!(resolve_params(&items, true)
+            .unwrap_err()
+            .starts_with("Invalid todo arguments: "));
         assert!(resolve_params(&json!({"task": "x"}), true).is_err());
     }
 
@@ -740,7 +840,13 @@ mod tests {
                 "details": {"op": "view", "phases": [{"name": "View", "tasks": []}]}}}),
             json!({"type": "custom", "customType": "user_todo_edit", "data": {"phases": [{"name": "Edited", "tasks": []}]}}),
         ];
-        assert_eq!(phases_from_entries(&entries), vec![TodoPhase { name: "Edited".into(), tasks: vec![] }]);
+        assert_eq!(
+            phases_from_entries(&entries),
+            vec![TodoPhase {
+                name: "Edited".into(),
+                tasks: vec![]
+            }]
+        );
         assert_eq!(phases_from_entries(&entries[..2])[0].name, "Old");
     }
 
@@ -749,6 +855,9 @@ mod tests {
         let s = schema();
         assert_eq!(s["required"], json!(["op"]));
         assert_eq!(s["properties"]["op"]["enum"].as_array().unwrap().len(), 9);
-        assert_eq!(s["properties"]["list"]["items"]["properties"]["items"]["minItems"], json!(1));
+        assert_eq!(
+            s["properties"]["list"]["items"]["properties"]["items"]["minItems"],
+            json!(1)
+        );
     }
 }

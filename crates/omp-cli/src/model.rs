@@ -24,7 +24,11 @@ async fn from_providers(reference: &str) -> Result<Selected> {
         // No explicit level: reasoning models default to medium (some, e.g. zai
         // glm, reject thinking=off), others stay off.
         thinking: r.thinking.map_or(
-            if r.reasoning { ThinkingLevel::Medium } else { ThinkingLevel::Off },
+            if r.reasoning {
+                ThinkingLevel::Medium
+            } else {
+                ThinkingLevel::Off
+            },
             map_level,
         ),
         api_key: r.api_key.clone(),
@@ -93,15 +97,25 @@ pub async fn select(model_ref: Option<&str>) -> Result<Selected> {
 }
 
 /// Catalog metadata omp's `Model` carries beyond pa-ai's descriptor, in catalog key order.
-const CATALOG_EXTRA_KEYS: [&str; 7] =
-    ["int", "tps", "thinking", "identity", "requiresGlyphTokenization", "tokenizer", "supportsComputerUse"];
+const CATALOG_EXTRA_KEYS: [&str; 7] = [
+    "int",
+    "tps",
+    "thinking",
+    "identity",
+    "requiresGlyphTokenization",
+    "tokenizer",
+    "supportsComputerUse",
+];
 
 fn catalog_path() -> Option<std::path::PathBuf> {
     if let Some(p) = std::env::var_os("OMP_RS_CATALOG") {
         return Some(p.into());
     }
     let home = std::env::var_os("HOME")?;
-    Some(std::path::PathBuf::from(home).join(".bun/install/global/node_modules/@oh-my-pi/pi-catalog/src/models.json"))
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".bun/install/global/node_modules/@oh-my-pi/pi-catalog/src/models.json"),
+    )
 }
 
 fn catalog() -> Option<&'static serde_json::Value> {
@@ -131,15 +145,26 @@ fn parse_effort(s: &str) -> Option<ThinkingLevel> {
 /// Catalog `thinking.efforts` of `provider/id` (least to most intensive), when listed.
 #[must_use]
 pub fn catalog_efforts(provider: &str, id: &str) -> Option<Vec<ThinkingLevel>> {
-    let thinking = catalog_extras(provider, id)?.into_iter().find(|(k, _)| *k == "thinking")?.1;
-    let efforts: Vec<_> = thinking.get("efforts")?.as_array()?.iter().filter_map(|e| parse_effort(e.as_str()?)).collect();
+    let thinking = catalog_extras(provider, id)?
+        .into_iter()
+        .find(|(k, _)| *k == "thinking")?
+        .1;
+    let efforts: Vec<_> = thinking
+        .get("efforts")?
+        .as_array()?
+        .iter()
+        .filter_map(|e| parse_effort(e.as_str()?))
+        .collect();
     (!efforts.is_empty()).then_some(efforts)
 }
 
 /// Lowest effort of a model that cannot think "off" (`thinking.requiresEffort`).
 #[must_use]
 pub fn always_thinking_floor(provider: &str, id: &str) -> Option<ThinkingLevel> {
-    let thinking = catalog_extras(provider, id)?.into_iter().find(|(k, _)| *k == "thinking")?.1;
+    let thinking = catalog_extras(provider, id)?
+        .into_iter()
+        .find(|(k, _)| *k == "thinking")?
+        .1;
     if thinking.get("requiresEffort") != Some(&serde_json::Value::Bool(true)) {
         return None;
     }
@@ -147,10 +172,18 @@ pub fn always_thinking_floor(provider: &str, id: &str) -> Option<ThinkingLevel> 
 }
 
 fn ladder_index(l: ThinkingLevel) -> usize {
-    [ThinkingLevel::Off, ThinkingLevel::Minimal, ThinkingLevel::Low, ThinkingLevel::Medium, ThinkingLevel::High, ThinkingLevel::Xhigh, ThinkingLevel::Max]
-        .iter()
-        .position(|x| *x == l)
-        .unwrap_or(0)
+    [
+        ThinkingLevel::Off,
+        ThinkingLevel::Minimal,
+        ThinkingLevel::Low,
+        ThinkingLevel::Medium,
+        ThinkingLevel::High,
+        ThinkingLevel::Xhigh,
+        ThinkingLevel::Max,
+    ]
+    .iter()
+    .position(|x| *x == l)
+    .unwrap_or(0)
 }
 
 /// `resolveThinkingLevelForModel`: `off` stays; otherwise the nearest higher supported effort,
@@ -165,9 +198,18 @@ pub fn clamp_level(model: &pa_types::ai::Model, level: ThinkingLevel) -> Thinkin
             .iter()
             .copied()
             .find(|e| ladder_index(*e) > ladder_index(level))
-            .or_else(|| efforts.iter().rev().copied().find(|e| ladder_index(*e) < ladder_index(level)))
+            .or_else(|| {
+                efforts
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|e| ladder_index(*e) < ladder_index(level))
+            })
             .unwrap_or(level),
         Some(_) => level,
-        None => map_level(pa_types::ai::clamp_thinking_level(model, crate::adapter::model_thinking_level(level))),
+        None => map_level(pa_types::ai::clamp_thinking_level(
+            model,
+            crate::adapter::model_thinking_level(level),
+        )),
     }
 }

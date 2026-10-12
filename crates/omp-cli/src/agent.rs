@@ -69,14 +69,14 @@ pub fn civil(days: i64) -> (i64, u32, u32) {
 #[must_use]
 pub fn system_prompt(cwd: &Path, opts: &crate::sysprompt::Options) -> String {
     // Edit mode does not affect the prompt; the tool surface (names) does.
-    let metas: Vec<crate::sysprompt::ToolMeta> = crate::tools::builtin_tools(
-        cwd,
-        crate::tools::edit_mode_for(""),
-    )
-    .iter()
-    .map(|t| (t.name().to_string(), t.name().to_string()))
-    .collect();
-    crate::sysprompt::build(cwd, opts, &metas).blocks.join("\n\n")
+    let metas: Vec<crate::sysprompt::ToolMeta> =
+        crate::tools::builtin_tools(cwd, crate::tools::edit_mode_for(""))
+            .iter()
+            .map(|t| (t.name().to_string(), t.name().to_string()))
+            .collect();
+    crate::sysprompt::build(cwd, opts, &metas)
+        .blocks
+        .join("\n\n")
 }
 
 /// Build an agent for `cwd` using the selected model, plus the provider

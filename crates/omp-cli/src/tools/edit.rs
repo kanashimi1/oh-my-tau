@@ -10,7 +10,9 @@ use pa_agent::types::AgentToolResult;
 use pi_edit::engine::FileOp;
 use pi_edit::error::{EditError, EditResult};
 use pi_edit::path_policy::PathPolicy;
-use pi_edit::session::{ApplyRequest, EditWriter, Session, SessionConfig, WriteRequest, WriteResponse};
+use pi_edit::session::{
+    ApplyRequest, EditWriter, Session, SessionConfig, WriteRequest, WriteResponse,
+};
 use pi_edit::EditMode;
 use serde_json::{json, Value};
 
@@ -83,7 +85,8 @@ impl EditWriter for FsWriter {
         let target = request.move_to.as_deref().unwrap_or(&request.absolute);
         match request.op {
             FileOp::Delete => {
-                std::fs::remove_file(&request.absolute).map_err(|e| io_err(&request.absolute, &e))?;
+                std::fs::remove_file(&request.absolute)
+                    .map_err(|e| io_err(&request.absolute, &e))?;
                 Ok(WriteResponse::default())
             }
             FileOp::Noop => Ok(WriteResponse::default()),
@@ -94,9 +97,13 @@ impl EditWriter for FsWriter {
                 }
                 std::fs::write(target, &content).map_err(|e| io_err(target, &e))?;
                 if request.move_to.is_some() && request.absolute != target {
-                    std::fs::remove_file(&request.absolute).map_err(|e| io_err(&request.absolute, &e))?;
+                    std::fs::remove_file(&request.absolute)
+                        .map_err(|e| io_err(&request.absolute, &e))?;
                 }
-                Ok(WriteResponse { written: content, diagnostics_json: None })
+                Ok(WriteResponse {
+                    written: content,
+                    diagnostics_json: None,
+                })
             }
         }
     }
@@ -136,10 +143,12 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     };
     let path = resolve_to_cwd(raw, &env.cwd);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("cannot create {}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("cannot create {}", parent.display()))?;
     }
     std::fs::write(&path, content).with_context(|| format!("cannot write {}", path.display()))?;
-    env.store.invalidate(&pi_edit::path_policy::canonical_key(&path));
+    env.store
+        .invalidate(&pi_edit::path_policy::canonical_key(&path));
     Ok(AgentToolResult::text(format!(
         "Successfully wrote {} bytes to {}",
         content.len(),
@@ -165,7 +174,12 @@ mod tests {
 
     fn tag_of(read_out: &str) -> String {
         let header = read_out.lines().next().unwrap();
-        header.split('#').nth(1).unwrap().trim_end_matches(']').to_string()
+        header
+            .split('#')
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(']')
+            .to_string()
     }
 
     #[tokio::test]
@@ -177,7 +191,10 @@ mod tests {
         let tag = tag_of(&out);
         let input = format!("[f.txt#{tag}]\nPUT 2.=2:\n+BETA\n+beta2\n");
         let res = edit(&env, &json!({"input": input})).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "alpha\nBETA\nbeta2\ngamma\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "alpha\nBETA\nbeta2\ngamma\n"
+        );
         let text = text_of(&res);
         // result header carries the new snapshot tag
         assert!(text.starts_with("[f.txt#"), "{text}");
@@ -189,9 +206,19 @@ mod tests {
         std::fs::write(dir.path().join("f.txt"), "one\ntwo\n").unwrap();
         let env = Env::new(dir.path(), true);
         let tag = tag_of(&text_of(&read(&env, &json!({"path": "f.txt"})).unwrap()));
-        edit(&env, &json!({"input": format!("[f.txt#{tag}]\nPUT >1:\n+one-and-a-half\n")})).await.unwrap();
+        edit(
+            &env,
+            &json!({"input": format!("[f.txt#{tag}]\nPUT >1:\n+one-and-a-half\n")}),
+        )
+        .await
+        .unwrap();
         let tag = tag_of(&text_of(&read(&env, &json!({"path": "f.txt"})).unwrap()));
-        edit(&env, &json!({"input": format!("[f.txt#{tag}]\nPUT >$:\n+three\n")})).await.unwrap();
+        edit(
+            &env,
+            &json!({"input": format!("[f.txt#{tag}]\nPUT >$:\n+three\n")}),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
             "one\none-and-a-half\ntwo\nthree\n"
@@ -204,8 +231,16 @@ mod tests {
         std::fs::write(dir.path().join("f.txt"), "a\nb\nc\nd\n").unwrap();
         let env = Env::new(dir.path(), true);
         let tag = tag_of(&text_of(&read(&env, &json!({"path": "f.txt"})).unwrap()));
-        edit(&env, &json!({"input": format!("[f.txt#{tag}]\nCUT 2.=3\n")})).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "a\nd\n");
+        edit(
+            &env,
+            &json!({"input": format!("[f.txt#{tag}]\nCUT 2.=3\n")}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "a\nd\n"
+        );
     }
 
     #[tokio::test]
@@ -214,11 +249,18 @@ mod tests {
         std::fs::write(dir.path().join("f.txt"), "a\nb\n").unwrap();
         let env = Env::new(dir.path(), true);
         let _ = read(&env, &json!({"path": "f.txt"})).unwrap();
-        let err = edit(&env, &json!({"input": "[f.txt#0000]\nPUT 1.=1:\n+x\n"})).await.unwrap_err();
+        let err = edit(&env, &json!({"input": "[f.txt#0000]\nPUT 1.=1:\n+x\n"}))
+            .await
+            .unwrap_err();
         assert!(!err.to_string().is_empty());
-        let err = edit(&env, &json!({"input": "this is not hashline"})).await.unwrap_err();
+        let err = edit(&env, &json!({"input": "this is not hashline"}))
+            .await
+            .unwrap_err();
         assert!(!err.to_string().is_empty());
-        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "a\nb\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "a\nb\n"
+        );
     }
 
     #[tokio::test]
@@ -231,8 +273,15 @@ mod tests {
         }
         std::fs::write(dir.path().join("f.txt"), body).unwrap();
         let env = Env::new(dir.path(), true);
-        let tag = tag_of(&text_of(&read(&env, &json!({"path": "f.txt:1-3"})).unwrap()));
-        let err = edit(&env, &json!({"input": format!("[f.txt#{tag}]\nPUT 40.=40:\n+x\n")})).await.unwrap_err();
+        let tag = tag_of(&text_of(
+            &read(&env, &json!({"path": "f.txt:1-3"})).unwrap(),
+        ));
+        let err = edit(
+            &env,
+            &json!({"input": format!("[f.txt#{tag}]\nPUT 40.=40:\n+x\n")}),
+        )
+        .await
+        .unwrap_err();
         assert!(!err.to_string().is_empty());
     }
 
@@ -241,8 +290,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("f.txt"), "hello world\n").unwrap();
         let env = Env::with_mode(dir.path(), EditMode::Replace);
-        edit(&env, &json!({"path": "f.txt", "old_string": "world", "new_string": "rust"})).await.unwrap();
-        assert_eq!(std::fs::read_to_string(dir.path().join("f.txt")).unwrap(), "hello rust\n");
+        edit(
+            &env,
+            &json!({"path": "f.txt", "old_string": "world", "new_string": "rust"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+            "hello rust\n"
+        );
     }
 
     #[test]
@@ -251,6 +308,9 @@ mod tests {
         let env = Env::new(dir.path(), true);
         let r = write(&env, &json!({"path": "a/b/c.txt", "content": "héllo"})).unwrap();
         assert_eq!(text_of(&r), "Successfully wrote 6 bytes to a/b/c.txt");
-        assert_eq!(std::fs::read_to_string(dir.path().join("a/b/c.txt")).unwrap(), "héllo");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a/b/c.txt")).unwrap(),
+            "héllo"
+        );
     }
 }

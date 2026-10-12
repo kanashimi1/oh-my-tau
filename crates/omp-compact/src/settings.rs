@@ -37,7 +37,10 @@ impl Default for CompactionSettings {
 }
 
 fn usage_u64(usage: &Value, key: &str) -> u64 {
-    usage.get(key).and_then(Value::as_f64).map_or(0, |f| if f > 0.0 { f as u64 } else { 0 })
+    usage
+        .get(key)
+        .and_then(Value::as_f64)
+        .map_or(0, |f| if f > 0.0 { f as u64 } else { 0 })
 }
 
 /// `calculateContextTokens`: provider-reported context occupancy, else total tokens minus
@@ -52,7 +55,10 @@ pub fn calculate_context_tokens(usage: &Value) -> u64 {
     });
     let total = usage_u64(usage, "totalTokens");
     let raw = if total == 0 {
-        usage_u64(usage, "input") + usage_u64(usage, "output") + usage_u64(usage, "cacheRead") + usage_u64(usage, "cacheWrite")
+        usage_u64(usage, "input")
+            + usage_u64(usage, "output")
+            + usage_u64(usage, "cacheRead")
+            + usage_u64(usage, "cacheWrite")
     } else {
         total
     };
@@ -65,7 +71,8 @@ pub fn calculate_prompt_tokens(usage: &Value) -> u64 {
     if let Some(ctx) = usage.get("contextTokens").and_then(Value::as_f64) {
         return ctx.max(0.0) as u64;
     }
-    let prompt = usage_u64(usage, "input") + usage_u64(usage, "cacheRead") + usage_u64(usage, "cacheWrite");
+    let prompt =
+        usage_u64(usage, "input") + usage_u64(usage, "cacheRead") + usage_u64(usage, "cacheWrite");
     if prompt > 0 {
         prompt
     } else {
@@ -84,10 +91,15 @@ pub fn last_assistant_usage(entries: &[Value]) -> Option<&Value> {
         if crate::json::message_role(message) != "assistant" {
             return None;
         }
-        if matches!(crate::json::str_field(message, "stopReason"), Some("aborted" | "error")) {
+        if matches!(
+            crate::json::str_field(message, "stopReason"),
+            Some("aborted" | "error")
+        ) {
             return None;
         }
-        message.get("usage").filter(|u| crate::json::truthy(Some(u)))
+        message
+            .get("usage")
+            .filter(|u| crate::json::truthy(Some(u)))
     })
 }
 
@@ -121,10 +133,16 @@ pub fn resolve_budget_reserve_tokens(context_window: u64, settings: &CompactionS
 #[must_use]
 pub fn resolve_threshold_tokens(context_window: u64, settings: &CompactionSettings) -> f64 {
     let window = context_window as f64;
-    if let Some(t) = settings.threshold_tokens.filter(|t| t.is_finite() && *t > 0.0) {
+    if let Some(t) = settings
+        .threshold_tokens
+        .filter(|t| t.is_finite() && *t > 0.0)
+    {
         return (window - 1.0).min(t.max(1.0));
     }
-    match settings.threshold_percent.filter(|p| p.is_finite() && *p > 0.0) {
+    match settings
+        .threshold_percent
+        .filter(|p| p.is_finite() && *p > 0.0)
+    {
         None => {
             let budget = resolve_budget_reserve_tokens(context_window, settings) as f64;
             (window - 1.0).min(window - budget).max(0.0)
@@ -135,7 +153,11 @@ pub fn resolve_threshold_tokens(context_window: u64, settings: &CompactionSettin
 
 /// `shouldCompact`: whether `context_tokens` exceeds the threshold.
 #[must_use]
-pub fn should_compact(context_tokens: u64, context_window: u64, settings: &CompactionSettings) -> bool {
+pub fn should_compact(
+    context_tokens: u64,
+    context_window: u64,
+    settings: &CompactionSettings,
+) -> bool {
     if !settings.enabled || settings.strategy.as_deref() == Some("off") || context_window == 0 {
         return false;
     }
@@ -145,6 +167,9 @@ pub fn should_compact(context_tokens: u64, context_window: u64, settings: &Compa
 /// `compactionContextTokens`: the provider figure floored by the local estimate of the stored
 /// conversation, so on-wire compression cannot hide real growth.
 #[must_use]
-pub fn compaction_context_tokens(provider_context_tokens: u64, stored_conversation_estimate: u64) -> u64 {
+pub fn compaction_context_tokens(
+    provider_context_tokens: u64,
+    stored_conversation_estimate: u64,
+) -> u64 {
     provider_context_tokens.max(stored_conversation_estimate)
 }

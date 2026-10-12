@@ -13,7 +13,11 @@
 
 // Arms mirror the TS dialect tables one-to-one; collecting per-call strings keeps each dialect's
 // wire template visible.
-#![allow(clippy::match_same_arms, clippy::format_collect, clippy::nonminimal_bool)]
+#![allow(
+    clippy::match_same_arms,
+    clippy::format_collect,
+    clippy::nonminimal_bool
+)]
 
 use serde_json::Value;
 
@@ -62,20 +66,56 @@ const MATCHERS: &[(&str, Dialect, Kind, bool, &str)] = &[
     ("amazon", Dialect::Xml, Kind::Bounded, false, "nova"),
     ("amazon", Dialect::Xml, Kind::Bounded, false, "titan"),
     ("amazon", Dialect::Xml, Kind::Namespace, true, "amazon"),
-    ("anthropic", Dialect::Anthropic, Kind::Namespace, true, "anthropic"),
-    ("anthropic", Dialect::Anthropic, Kind::Bounded, false, "anthropic"),
-    ("anthropic", Dialect::Anthropic, Kind::Bounded, false, "claude"),
+    (
+        "anthropic",
+        Dialect::Anthropic,
+        Kind::Namespace,
+        true,
+        "anthropic",
+    ),
+    (
+        "anthropic",
+        Dialect::Anthropic,
+        Kind::Bounded,
+        false,
+        "anthropic",
+    ),
+    (
+        "anthropic",
+        Dialect::Anthropic,
+        Kind::Bounded,
+        false,
+        "claude",
+    ),
     ("baidu", Dialect::Xml, Kind::Bounded, false, "ernie"),
     ("bytedance", Dialect::Xml, Kind::Bounded, false, "doubao"),
     ("cohere", Dialect::Xml, Kind::Bounded, false, "command"),
     ("cohere", Dialect::Xml, Kind::Namespace, false, "cohere"),
-    ("deepseek", Dialect::Deepseek, Kind::Namespace, true, "deepseek"),
-    ("deepseek", Dialect::Deepseek, Kind::Bounded, false, "deepseek"),
+    (
+        "deepseek",
+        Dialect::Deepseek,
+        Kind::Namespace,
+        true,
+        "deepseek",
+    ),
+    (
+        "deepseek",
+        Dialect::Deepseek,
+        Kind::Bounded,
+        false,
+        "deepseek",
+    ),
     ("gemini", Dialect::Gemini, Kind::Bounded, false, "gemini"),
     ("gemma", Dialect::Gemma, Kind::Bounded, false, "gemma"),
     ("glm", Dialect::Glm, Kind::Bounded, false, "glm"),
     ("glm", Dialect::Glm, Kind::Bounded, false, "zai-glm"),
-    ("gpt-oss", Dialect::Harmony, Kind::Namespace, true, "gpt-oss"),
+    (
+        "gpt-oss",
+        Dialect::Harmony,
+        Kind::Namespace,
+        true,
+        "gpt-oss",
+    ),
     ("gpt-oss", Dialect::Harmony, Kind::Bounded, false, "gpt-oss"),
     ("kimi", Dialect::Kimi, Kind::Namespace, false, "moonshotai"),
     ("kimi", Dialect::Kimi, Kind::Bounded, false, "kimi"),
@@ -85,7 +125,13 @@ const MATCHERS: &[(&str, Dialect, Kind, bool, &str)] = &[
     ("meta", Dialect::Xml, Kind::Bounded, false, "llama"),
     ("meta", Dialect::Xml, Kind::Namespace, false, "meta-llama"),
     ("mimo", Dialect::Xml, Kind::Bounded, false, "mimo"),
-    ("minimax", Dialect::Minimax, Kind::Namespace, false, "minimax"),
+    (
+        "minimax",
+        Dialect::Minimax,
+        Kind::Namespace,
+        false,
+        "minimax",
+    ),
     ("minimax", Dialect::Minimax, Kind::Bounded, false, "minimax"),
     ("minimax", Dialect::Minimax, Kind::Bounded, false, "hailuo"),
     ("mistral", Dialect::Xml, Kind::Bounded, false, "mistral"),
@@ -105,7 +151,13 @@ const MATCHERS: &[(&str, Dialect, Kind, bool, &str)] = &[
     ("openai", Dialect::Harmony, Kind::Prefix, false, "o4-"),
     ("openai", Dialect::Harmony, Kind::Prefix, false, "o4."),
     ("qwen", Dialect::Qwen3, Kind::Bounded, false, "qwen"),
-    ("qwen", Dialect::Qwen3, Kind::Bounded, false, "deepseek-r1-distill-qwen"),
+    (
+        "qwen",
+        Dialect::Qwen3,
+        Kind::Bounded,
+        false,
+        "deepseek-r1-distill-qwen",
+    ),
     ("qwen", Dialect::Qwen3, Kind::Glob, false, "*distill-qwen*"),
     ("stepfun", Dialect::Xml, Kind::Bounded, false, "step"),
     ("xai", Dialect::Xml, Kind::Prefix, false, "cursor-grok-"),
@@ -122,8 +174,12 @@ fn bounded_match(value: &str, token: &str) -> bool {
     if value == token {
         return true;
     }
-    let Some(rest) = value.strip_prefix(token) else { return false };
-    rest.bytes().next().is_some_and(|b| matches!(b, b'-' | b'_' | b'.' | b':' | b'0'..=b'9'))
+    let Some(rest) = value.strip_prefix(token) else {
+        return false;
+    };
+    rest.bytes()
+        .next()
+        .is_some_and(|b| matches!(b, b'-' | b'_' | b'.' | b':' | b'0'..=b'9'))
 }
 
 /// `globMatch` (`*` wildcards only).
@@ -140,7 +196,9 @@ fn glob_match(pattern: &str, value: &str) -> bool {
         if segment.is_empty() {
             continue;
         }
-        let Some(found) = remainder.find(segment) else { return false };
+        let Some(found) = remainder.find(segment) else {
+            return false;
+        };
         remainder = &remainder[found + segment.len()..];
     }
     let last = segments[segments.len() - 1];
@@ -153,7 +211,9 @@ fn matcher_matches(kind: Kind, bounded: bool, token: &str, lower: &str, bare: &s
         Kind::Bounded => bounded_match(bare, token),
         Kind::Namespace => {
             if bounded {
-                lower.split(['/', '.', ':']).any(|p| !p.is_empty() && bounded_match(p, token))
+                lower
+                    .split(['/', '.', ':'])
+                    .any(|p| !p.is_empty() && bounded_match(p, token))
             } else {
                 lower.split('/').any(|p| !p.is_empty() && p == token)
             }
@@ -235,7 +295,12 @@ struct AssistantParts<'a> {
 
 fn assistant_parts(message: &Value) -> AssistantParts<'_> {
     let (mut text, mut thinking, mut tool_calls) = (String::new(), Vec::new(), Vec::new());
-    for block in message.get("content").and_then(Value::as_array).into_iter().flatten() {
+    for block in message
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         match str_field(block, "type") {
             Some("text") => text.push_str(str_field(block, "text").unwrap_or("")),
             Some("thinking") => thinking.push(str_field(block, "thinking").unwrap_or("")),
@@ -243,7 +308,11 @@ fn assistant_parts(message: &Value) -> AssistantParts<'_> {
             _ => {}
         }
     }
-    AssistantParts { text, thinking: thinking.join("\n"), tool_calls }
+    AssistantParts {
+        text,
+        thinking: thinking.join("\n"),
+        tool_calls,
+    }
 }
 
 /// `messageContentText`.
@@ -290,15 +359,23 @@ fn collect_tool_result_run(messages: &[Value], start: usize) -> (Vec<ToolResult>
 }
 
 fn escape_xml_attr(v: &str) -> String {
-    v.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;")
+    v.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn escape_xml_text(v: &str) -> String {
-    v.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    v.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn call_args(call: &Value) -> impl Iterator<Item = (&String, &Value)> {
-    call.get("arguments").and_then(Value::as_object).into_iter().flat_map(|o| o.iter())
+    call.get("arguments")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|o| o.iter())
 }
 
 fn call_name(call: &Value) -> &str {
@@ -306,25 +383,38 @@ fn call_name(call: &Value) -> &str {
 }
 
 fn call_arguments_json(call: &Value) -> String {
-    call.get("arguments").map_or_else(|| "null".to_owned(), stringify_json)
+    call.get("arguments")
+        .map_or_else(|| "null".to_owned(), stringify_json)
 }
 
 /// `renderInvoke` (no schema: every argument is JSON).
 fn render_invoke(call: &Value) -> String {
     let mut body = format!("<invoke name=\"{}\">", escape_xml_attr(call_name(call)));
     for (key, value) in call_args(call) {
-        body.push_str(&format!("<parameter name=\"{}\">{}</parameter>", escape_xml_attr(key), stringify_json(value)));
+        body.push_str(&format!(
+            "<parameter name=\"{}\">{}</parameter>",
+            escape_xml_attr(key),
+            stringify_json(value)
+        ));
     }
     body.push_str("</invoke>");
     body
 }
 
 fn render_invokes(calls: &[&Value]) -> String {
-    calls.iter().map(|c| render_invoke(c)).collect::<Vec<_>>().join("\n")
+    calls
+        .iter()
+        .map(|c| render_invoke(c))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn render_tool_response_results(results: &[ToolResult]) -> String {
-    results.iter().map(|r| format!("<tool_response>\n{}\n</tool_response>", r.text)).collect::<Vec<_>>().join("\n")
+    results
+        .iter()
+        .map(|r| format!("<tool_response>\n{}\n</tool_response>", r.text))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn is_ascii_ws(b: u8) -> bool {
@@ -347,12 +437,25 @@ fn trim_ascii_end(text: &str, start: usize, end: usize) -> usize {
     c
 }
 
-fn find_delimited_thinking_close(open: &str, close: &str, text: &str, start: usize, end: usize) -> Option<usize> {
+fn find_delimited_thinking_close(
+    open: &str,
+    close: &str,
+    text: &str,
+    start: usize,
+    end: usize,
+) -> Option<usize> {
     let mut depth = 1;
     let mut cursor = start;
     while cursor < end {
-        let next_close = text[cursor..].find(close).map(|i| i + cursor).filter(|i| *i < end)?;
-        if let Some(next_open) = text[cursor..].find(open).map(|i| i + cursor).filter(|o| *o < next_close) {
+        let next_close = text[cursor..]
+            .find(close)
+            .map(|i| i + cursor)
+            .filter(|i| *i < end)?;
+        if let Some(next_open) = text[cursor..]
+            .find(open)
+            .map(|i| i + cursor)
+            .filter(|o| *o < next_close)
+        {
             depth += 1;
             cursor = next_open + open.len();
             continue;
@@ -378,10 +481,17 @@ fn unwrap_delimited_thinking(open: &str, close: &str, text: &str) -> String {
             return text.to_owned();
         }
         let inner_start = cursor + open.len();
-        let Some(inner_end) = find_delimited_thinking_close(open, close, text, inner_start, end) else { return text.to_owned() };
+        let Some(inner_end) = find_delimited_thinking_close(open, close, text, inner_start, end)
+        else {
+            return text.to_owned();
+        };
         let t_end = trim_ascii_end(text, inner_start, inner_end);
         let t_start = trim_ascii_start(text, inner_start, t_end);
-        segments.push(unwrap_delimited_thinking(open, close, &text[t_start..t_end]));
+        segments.push(unwrap_delimited_thinking(
+            open,
+            close,
+            &text[t_start..t_end],
+        ));
         cursor = trim_ascii_start(text, inner_end + close.len(), end);
     }
     segments.join("\n")
@@ -391,7 +501,10 @@ fn render_delimited_thinking(open: &str, close: &str, text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
-    format!("{open}\n{}\n{close}", unwrap_delimited_thinking(open, close, text))
+    format!(
+        "{open}\n{}\n{close}",
+        unwrap_delimited_thinking(open, close, text)
+    )
 }
 
 fn chat_ml_turn(role: &str, body: &str) -> String {
@@ -409,7 +522,12 @@ fn join_user_bodies(left: &str, right: &str) -> String {
 }
 
 fn py_string(v: &str) -> String {
-    let escaped = v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
+    let escaped = v
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
     format!("\"{escaped}\"")
 }
 
@@ -419,8 +537,17 @@ fn py_value(v: &Value) -> String {
         Value::Bool(b) => if *b { "True" } else { "False" }.to_owned(),
         Value::Number(_) => stringify_json(v),
         Value::String(s) => py_string(s),
-        Value::Array(a) => format!("[{}]", a.iter().map(py_value).collect::<Vec<_>>().join(", ")),
-        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, val)| format!("{}: {}", py_string(k), py_value(val))).collect::<Vec<_>>().join(", ")),
+        Value::Array(a) => format!(
+            "[{}]",
+            a.iter().map(py_value).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Object(o) => format!(
+            "{{{}}}",
+            o.iter()
+                .map(|(k, val)| format!("{}: {}", py_string(k), py_value(val)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
     }
 }
 
@@ -430,8 +557,17 @@ fn gemma_value(v: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(_) => stringify_json(v),
         Value::String(s) => format!("<|\"|>{s}<|\"|>"),
-        Value::Array(a) => format!("[{}]", a.iter().map(gemma_value).collect::<Vec<_>>().join(",")),
-        Value::Object(o) => format!("{{{}}}", o.iter().map(|(k, val)| format!("{k}:{}", gemma_value(val))).collect::<Vec<_>>().join(",")),
+        Value::Array(a) => format!(
+            "[{}]",
+            a.iter().map(gemma_value).collect::<Vec<_>>().join(",")
+        ),
+        Value::Object(o) => format!(
+            "{{{}}}",
+            o.iter()
+                .map(|(k, val)| format!("{k}:{}", gemma_value(val)))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
     }
 }
 
@@ -468,9 +604,15 @@ fn legacy_calls(flavour: Legacy, calls: &[&Value]) -> String {
     match flavour {
         Legacy::Xml => render_invokes(calls),
         Legacy::Anthropic if calls.is_empty() => String::new(),
-        Legacy::Anthropic => format!("<function_calls>\n{}\n</function_calls>", render_invokes(calls)),
+        Legacy::Anthropic => format!(
+            "<function_calls>\n{}\n</function_calls>",
+            render_invokes(calls)
+        ),
         Legacy::Minimax if calls.is_empty() => String::new(),
-        Legacy::Minimax => format!("<minimax:tool_call>\n{}\n</minimax:tool_call>", render_invokes(calls)),
+        Legacy::Minimax => format!(
+            "<minimax:tool_call>\n{}\n</minimax:tool_call>",
+            render_invokes(calls)
+        ),
     }
 }
 
@@ -481,8 +623,16 @@ fn legacy_results(flavour: Legacy, results: &[ToolResult]) -> String {
     let body = results
         .iter()
         .map(|r| {
-            let (tag, stream) = if r.is_error { ("error", "stderr") } else { ("result", "stdout") };
-            format!("<{tag}>\n<tool_name>{}</tool_name>\n<{stream}>{}</{stream}>\n</{tag}>", escape_xml_text(&r.name), r.text)
+            let (tag, stream) = if r.is_error {
+                ("error", "stderr")
+            } else {
+                ("result", "stdout")
+            };
+            format!(
+                "<{tag}>\n<tool_name>{}</tool_name>\n<{stream}>{}</{stream}>\n</{tag}>",
+                escape_xml_text(&r.name),
+                r.text
+            )
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -498,7 +648,11 @@ fn render_legacy(messages: &[Value], flavour: Legacy) -> String {
             "assistant" => {
                 let p = assistant_parts(message);
                 let thinking = render_delimited_thinking("<thinking>", "</thinking>", &p.thinking);
-                out = format!("{out}\n\nAssistant: {thinking}{}{}", p.text, legacy_calls(flavour, &p.tool_calls));
+                out = format!(
+                    "{out}\n\nAssistant: {thinking}{}{}",
+                    p.text,
+                    legacy_calls(flavour, &p.tool_calls)
+                );
                 i += 1;
             }
             "toolResult" => {
@@ -510,7 +664,11 @@ fn render_legacy(messages: &[Value], flavour: Legacy) -> String {
                 let text = content_text(message.get("content"));
                 if role == "developer" {
                     if !text.is_empty() {
-                        out = if out.is_empty() { text } else { format!("{out}\n\n{text}") };
+                        out = if out.is_empty() {
+                            text
+                        } else {
+                            format!("{out}\n\n{text}")
+                        };
                     }
                 } else {
                     out = format!("{out}\n\nHuman: {text}");
@@ -528,7 +686,10 @@ fn glm_calls(calls: &[&Value]) -> String {
         .map(|call| {
             let mut body = format!("<tool_call>{}", call_name(call));
             for (key, value) in call_args(call) {
-                body.push_str(&format!("\n<arg_key>{key}</arg_key>\n<arg_value>{}</arg_value>", stringify_json(value)));
+                body.push_str(&format!(
+                    "\n<arg_key>{key}</arg_key>\n<arg_value>{}</arg_value>",
+                    stringify_json(value)
+                ));
             }
             format!("{body}\n</tool_call>")
         })
@@ -547,18 +708,32 @@ fn render_glm(messages: &[Value]) -> String {
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
-                let thinking = if p.thinking.is_empty() { String::new() } else { format!("\n<think>\n{}\n</think>", p.thinking) };
-                out.push_str(&format!("<|assistant|>\n{thinking}{}{}", p.text, glm_calls(&p.tool_calls)));
+                let thinking = if p.thinking.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n<think>\n{}\n</think>", p.thinking)
+                };
+                out.push_str(&format!(
+                    "<|assistant|>\n{thinking}{}{}",
+                    p.text,
+                    glm_calls(&p.tool_calls)
+                ));
                 i += 1;
             }
             "toolResult" => {
                 let (results, next) = collect_tool_result_run(messages, i);
-                out.push_str(&format!("<|observation|>\n{}", render_tool_response_results(&results)));
+                out.push_str(&format!(
+                    "<|observation|>\n{}",
+                    render_tool_response_results(&results)
+                ));
                 i = next;
             }
             role => {
                 let role = if role == "developer" { "system" } else { role };
-                out.push_str(&format!("<|{role}|>\n{}", content_text(message.get("content"))));
+                out.push_str(&format!(
+                    "<|{role}|>\n{}",
+                    content_text(message.get("content"))
+                ));
                 i += 1;
             }
         }
@@ -571,7 +746,10 @@ fn gemini_turn(role: &str, body: &str) -> String {
 }
 
 fn gemini_call(call: &Value) -> String {
-    let kwargs = call_args(call).map(|(k, v)| format!("{k}={}", py_value(v))).collect::<Vec<_>>().join(", ");
+    let kwargs = call_args(call)
+        .map(|(k, v)| format!("{k}={}", py_value(v)))
+        .collect::<Vec<_>>()
+        .join(", ");
     format!("default_api.{}({kwargs})", call_name(call))
 }
 
@@ -591,7 +769,10 @@ fn render_gemini(messages: &[Value]) -> String {
                 continue;
             }
             "user" => {
-                out.push_str(&gemini_turn("user", &join_user_bodies(&pending, &content_text(message.get("content")))));
+                out.push_str(&gemini_turn(
+                    "user",
+                    &join_user_bodies(&pending, &content_text(message.get("content"))),
+                ));
                 pending.clear();
                 i += 1;
                 continue;
@@ -604,18 +785,36 @@ fn render_gemini(messages: &[Value]) -> String {
         }
         if message_role(message) == "assistant" {
             let p = assistant_parts(message);
-            let thinking = if p.thinking.is_empty() { String::new() } else { format!("```thinking\n{}\n```\n", p.thinking) };
+            let thinking = if p.thinking.is_empty() {
+                String::new()
+            } else {
+                format!("```thinking\n{}\n```\n", p.thinking)
+            };
             let body = if p.tool_calls.len() == 1 {
                 gemini_call(p.tool_calls[0])
             } else {
-                format!("[{}]", p.tool_calls.iter().map(|c| gemini_call(c)).collect::<Vec<_>>().join(", "))
+                format!(
+                    "[{}]",
+                    p.tool_calls
+                        .iter()
+                        .map(|c| gemini_call(c))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
-            out.push_str(&gemini_turn("model", &format!("{thinking}{}```tool_code\n{body}\n```", p.text)));
+            out.push_str(&gemini_turn(
+                "model",
+                &format!("{thinking}{}```tool_code\n{body}\n```", p.text),
+            ));
             i += 1;
             continue;
         }
         let (results, next) = collect_tool_result_run(messages, i);
-        let body = results.iter().map(|r| format!("```tool_outputs\n{}\n```", r.text)).collect::<Vec<_>>().join("\n");
+        let body = results
+            .iter()
+            .map(|r| format!("```tool_outputs\n{}\n```", r.text))
+            .collect::<Vec<_>>()
+            .join("\n");
         out.push_str(&gemini_turn("user", &body));
         i = next;
     }
@@ -626,7 +825,10 @@ fn render_gemini(messages: &[Value]) -> String {
 }
 
 fn gemma_call(call: &Value) -> String {
-    let args = call_args(call).map(|(k, v)| format!("{k}:{}", gemma_value(v))).collect::<Vec<_>>().join(",");
+    let args = call_args(call)
+        .map(|(k, v)| format!("{k}:{}", gemma_value(v)))
+        .collect::<Vec<_>>()
+        .join(",");
     format!("<|tool_call>call:{}{{{args}}}<tool_call|>", call_name(call))
 }
 
@@ -634,8 +836,13 @@ fn gemma_results(results: &[ToolResult]) -> String {
     results
         .iter()
         .map(|r| {
-            let parsed = serde_json::from_str::<Value>(&r.text).unwrap_or_else(|_| Value::String(r.text.clone()));
-            format!("<|tool_response>response:{}{{output:{}}}<tool_response|>", r.name, gemma_value(&parsed))
+            let parsed = serde_json::from_str::<Value>(&r.text)
+                .unwrap_or_else(|_| Value::String(r.text.clone()));
+            format!(
+                "<|tool_response>response:{}{{output:{}}}<tool_response|>",
+                r.name,
+                gemma_value(&parsed)
+            )
         })
         .collect()
 }
@@ -655,8 +862,19 @@ fn render_gemma(messages: &[Value]) -> String {
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
-                let thinking = if p.thinking.is_empty() { String::new() } else { format!("<|channel>thought\n{}<channel|>", p.thinking) };
-                let mut body = format!("{thinking}{}{}", p.text, p.tool_calls.iter().map(|c| gemma_call(c)).collect::<String>());
+                let thinking = if p.thinking.is_empty() {
+                    String::new()
+                } else {
+                    format!("<|channel>thought\n{}<channel|>", p.thinking)
+                };
+                let mut body = format!(
+                    "{thinking}{}{}",
+                    p.text,
+                    p.tool_calls
+                        .iter()
+                        .map(|c| gemma_call(c))
+                        .collect::<String>()
+                );
                 let mut next = i + 1;
                 if next < messages.len() && message_role(&messages[next]) == "toolResult" {
                     let (results, n) = collect_tool_result_run(messages, next);
@@ -693,7 +911,11 @@ fn render_kimi(messages: &[Value]) -> String {
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
-                let thinking = if p.thinking.is_empty() { String::new() } else { format!("<think>\n{}\n</think>", p.thinking) };
+                let thinking = if p.thinking.is_empty() {
+                    String::new()
+                } else {
+                    format!("<think>\n{}\n</think>", p.thinking)
+                };
                 let calls = if p.tool_calls.is_empty() {
                     String::new()
                 } else {
@@ -711,19 +933,35 @@ fn render_kimi(messages: &[Value]) -> String {
                         .collect();
                     format!("<|tool_calls_section_begin|>{body}<|tool_calls_section_end|>")
                 };
-                out.push_str(&kimi_turn("assistant", "assistant", &format!("{thinking}{}{calls}", p.text)));
+                out.push_str(&kimi_turn(
+                    "assistant",
+                    "assistant",
+                    &format!("{thinking}{}{calls}", p.text),
+                ));
                 i += 1;
             }
             "toolResult" => {
                 let (results, next) = collect_tool_result_run(messages, i);
                 for r in &results {
-                    out.push_str(&kimi_turn("system", &r.name, &format!("## Return of {}\n{}", kimi_call_id(&r.name, &r.id, r.index), r.text)));
+                    out.push_str(&kimi_turn(
+                        "system",
+                        &r.name,
+                        &format!(
+                            "## Return of {}\n{}",
+                            kimi_call_id(&r.name, &r.id, r.index),
+                            r.text
+                        ),
+                    ));
                 }
                 i = next;
             }
             role => {
                 let role = if role == "developer" { "system" } else { role };
-                out.push_str(&kimi_turn(role, role, &content_text(message.get("content"))));
+                out.push_str(&kimi_turn(
+                    role,
+                    role,
+                    &content_text(message.get("content")),
+                ));
                 i += 1;
             }
         }
@@ -742,24 +980,40 @@ fn render_qwen3(messages: &[Value]) -> String {
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
-                let thinking = if p.thinking.is_empty() { String::new() } else { format!("<think>\n{}\n</think>", p.thinking) };
+                let thinking = if p.thinking.is_empty() {
+                    String::new()
+                } else {
+                    format!("<think>\n{}\n</think>", p.thinking)
+                };
                 let calls = p
                     .tool_calls
                     .iter()
                     .map(|c| {
                         let mut obj = serde_json::Map::new();
                         obj.insert("name".into(), call_name(c).into());
-                        obj.insert("arguments".into(), c.get("arguments").cloned().unwrap_or(Value::Null));
-                        format!("<tool_call>\n{}\n</tool_call>", stringify_json(&Value::Object(obj)))
+                        obj.insert(
+                            "arguments".into(),
+                            c.get("arguments").cloned().unwrap_or(Value::Null),
+                        );
+                        format!(
+                            "<tool_call>\n{}\n</tool_call>",
+                            stringify_json(&Value::Object(obj))
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
-                out.push_str(&chat_ml_turn("assistant", &format!("{thinking}{}{calls}", p.text)));
+                out.push_str(&chat_ml_turn(
+                    "assistant",
+                    &format!("{thinking}{}{calls}", p.text),
+                ));
                 i += 1;
             }
             "toolResult" => {
                 let (results, next) = collect_tool_result_run(messages, i);
-                out.push_str(&chat_ml_turn("user", &render_tool_response_results(&results)));
+                out.push_str(&chat_ml_turn(
+                    "user",
+                    &render_tool_response_results(&results),
+                ));
                 i = next;
             }
             role => {
@@ -783,30 +1037,52 @@ fn render_deepseek(messages: &[Value]) -> String {
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
-                let thinking = if p.thinking.is_empty() { String::new() } else { format!("<think>\n{}\n</think>", p.thinking) };
+                let thinking = if p.thinking.is_empty() {
+                    String::new()
+                } else {
+                    format!("<think>\n{}\n</think>", p.thinking)
+                };
                 let calls = if p.tool_calls.is_empty() {
                     String::new()
                 } else {
                     let body: String = p
                         .tool_calls
                         .iter()
-                        .map(|c| format!("<｜tool▁call▁begin｜>{}<｜tool▁sep｜>{}<｜tool▁call▁end｜>", call_name(c), call_arguments_json(c)))
+                        .map(|c| {
+                            format!(
+                                "<｜tool▁call▁begin｜>{}<｜tool▁sep｜>{}<｜tool▁call▁end｜>",
+                                call_name(c),
+                                call_arguments_json(c)
+                            )
+                        })
                         .collect();
                     format!("<｜tool▁calls▁begin｜>{body}<｜tool▁calls▁end｜>")
                 };
-                out.push_str(&format!("<｜Assistant｜>{thinking}{}{calls}<｜end▁of▁sentence｜>", p.text));
+                out.push_str(&format!(
+                    "<｜Assistant｜>{thinking}{}{calls}<｜end▁of▁sentence｜>",
+                    p.text
+                ));
                 i += 1;
             }
             "toolResult" => {
                 let (results, next) = collect_tool_result_run(messages, i);
-                out.push_str(&results.iter().map(|r| format!("<｜tool▁output▁begin｜>{}<｜tool▁output▁end｜>", r.text)).collect::<Vec<_>>().join("\n"));
+                out.push_str(
+                    &results
+                        .iter()
+                        .map(|r| format!("<｜tool▁output▁begin｜>{}<｜tool▁output▁end｜>", r.text))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
                 i = next;
             }
             role => {
                 if role == "developer" {
                     out.push_str(&content_text(message.get("content")));
                 } else {
-                    out.push_str(&format!("<｜User｜>{}", content_text(message.get("content"))));
+                    out.push_str(&format!(
+                        "<｜User｜>{}",
+                        content_text(message.get("content"))
+                    ));
                 }
                 i += 1;
             }
@@ -825,11 +1101,17 @@ fn render_harmony(messages: &[Value]) -> String {
                 let p = assistant_parts(message);
                 let mut emitted = false;
                 if !p.thinking.is_empty() {
-                    out.push_str(&format!("<|start|>assistant<|channel|>analysis<|message|>{}<|end|>", p.thinking));
+                    out.push_str(&format!(
+                        "<|start|>assistant<|channel|>analysis<|message|>{}<|end|>",
+                        p.thinking
+                    ));
                     emitted = true;
                 }
                 if !p.text.is_empty() {
-                    out.push_str(&format!("<|start|>assistant<|channel|>final<|message|>{}<|end|>", p.text));
+                    out.push_str(&format!(
+                        "<|start|>assistant<|channel|>final<|message|>{}<|end|>",
+                        p.text
+                    ));
                     emitted = true;
                 }
                 for c in &p.tool_calls {
@@ -848,12 +1130,19 @@ fn render_harmony(messages: &[Value]) -> String {
             "toolResult" => {
                 let (results, next) = collect_tool_result_run(messages, i);
                 for r in &results {
-                    out.push_str(&format!("<|start|>{} to=assistant<|channel|>commentary<|message|>{}<|end|>", harmony_recipient(&r.name), r.text));
+                    out.push_str(&format!(
+                        "<|start|>{} to=assistant<|channel|>commentary<|message|>{}<|end|>",
+                        harmony_recipient(&r.name),
+                        r.text
+                    ));
                 }
                 i = next;
             }
             role => {
-                out.push_str(&format!("<|start|>{role}<|message|>{}<|end|>", content_text(message.get("content"))));
+                out.push_str(&format!(
+                    "<|start|>{role}<|message|>{}<|end|>",
+                    content_text(message.get("content"))
+                ));
                 i += 1;
             }
         }
@@ -885,9 +1174,17 @@ fn escape_harmony_control_tokens(text: &str) -> String {
     while let Some(pos) = rest.find("<|") {
         out.push_str(&rest[..pos]);
         let tail = &rest[pos + 2..];
-        let hit = ["start", "end", "message", "channel", "constrain", "return", "call"]
-            .iter()
-            .find(|t| tail.starts_with(*t) && tail[t.len()..].starts_with("|>"));
+        let hit = [
+            "start",
+            "end",
+            "message",
+            "channel",
+            "constrain",
+            "return",
+            "call",
+        ]
+        .iter()
+        .find(|t| tail.starts_with(*t) && tail[t.len()..].starts_with("|>"));
         if let Some(t) = hit {
             out.push_str(&format!("<\\|{t}\\|>"));
             rest = &tail[t.len() + 2..];
@@ -906,7 +1203,11 @@ fn escape_harmony_control_tokens(text: &str) -> String {
 pub fn serialize_conversation(messages: &[Value], dialect: Dialect) -> String {
     let useless: Vec<&str> = messages
         .iter()
-        .filter(|m| message_role(m) == "toolResult" && m.get("useless") == Some(&Value::Bool(true)) && m.get("isError") != Some(&Value::Bool(true)))
+        .filter(|m| {
+            message_role(m) == "toolResult"
+                && m.get("useless") == Some(&Value::Bool(true))
+                && m.get("isError") != Some(&Value::Bool(true))
+        })
         .filter_map(|m| str_field(m, "toolCallId"))
         .collect();
     let drop_thinking = dialect == Dialect::Anthropic;
@@ -914,12 +1215,18 @@ pub fn serialize_conversation(messages: &[Value], dialect: Dialect) -> String {
     for msg in messages {
         match message_role(msg) {
             "assistant" => {
-                let blocks = msg.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
+                let blocks = msg
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
                 let kept: Vec<Value> = blocks
                     .iter()
                     .filter(|b| {
                         let t = str_field(b, "type");
-                        !(t == Some("toolCall") && str_field(b, "id").is_some_and(|id| useless.contains(&id))) && !(drop_thinking && t == Some("thinking"))
+                        !(t == Some("toolCall")
+                            && str_field(b, "id").is_some_and(|id| useless.contains(&id)))
+                            && !(drop_thinking && t == Some("thinking"))
                     })
                     .cloned()
                     .collect();
@@ -962,6 +1269,10 @@ pub fn serialize_conversation(messages: &[Value], dialect: Dialect) -> String {
 #[must_use]
 pub fn serialize_conversation_for_summary(messages: &[Value], dialect: Dialect) -> String {
     let conversation = serialize_conversation(messages, dialect);
-    let escaped = if dialect == Dialect::Harmony { escape_harmony_control_tokens(&conversation) } else { conversation };
+    let escaped = if dialect == Dialect::Harmony {
+        escape_harmony_control_tokens(&conversation)
+    } else {
+        conversation
+    };
     escape_summary_boundary_tags(&escaped)
 }

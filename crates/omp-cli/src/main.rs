@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 
+#[allow(clippy::struct_excessive_bools)] // CLI flag struct mirroring omp's parsed argv shape
 struct Args {
     print: bool,
     prompt: Option<String>,
@@ -74,7 +75,10 @@ fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
             push_message(&mut messages, arg)?;
             continue;
         }
-        let mut value = |name: &str| it.next().ok_or_else(|| anyhow::anyhow!("{name} needs a value"));
+        let mut value = |name: &str| {
+            it.next()
+                .ok_or_else(|| anyhow::anyhow!("{name} needs a value"))
+        };
         match arg.as_str() {
             "-p" | "--print" => a.print = true,
             "--model" => a.model = Some(value("--model")?),
@@ -84,7 +88,9 @@ fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
             "--extension" => a.extension.push(PathBuf::from(value("--extension")?)),
             "--no-session" => a.no_session = true,
             "--system-prompt" => a.system_prompt = Some(value("--system-prompt")?),
-            "--append-system-prompt" => a.append_system_prompt = Some(value("--append-system-prompt")?),
+            "--append-system-prompt" => {
+                a.append_system_prompt = Some(value("--append-system-prompt")?);
+            }
             "--tools" => a.tools_csv = Some(value("--tools")?),
             "--dump-system-prompt" => a.dump_system_prompt = true,
             "--no-extensions" => a.no_extensions = true,
@@ -119,6 +125,7 @@ fn push_message(messages: &mut Vec<String>, arg: String) -> Result<()> {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)] // argv parse + dispatch; splitting would only add hops
 async fn main() -> Result<()> {
     let args = parse_args()?;
     let cwd = match args.cwd {
@@ -170,13 +177,17 @@ async fn main() -> Result<()> {
         Some(e) => e.tools().await.unwrap_or_default(),
         None => Vec::new(),
     };
-    let (agent, target) = agent::build_agent(&cwd, selected, extra_tools, extensions.as_ref(), &sp_opts)?;
+    let (agent, target) =
+        agent::build_agent(&cwd, selected, extra_tools, extensions.as_ref(), &sp_opts)?;
 
     let session = persist::attach_with(&agent, &cwd, args.no_session).await;
     if let (Some(e), Ok(p)) = (extensions.as_ref(), &session) {
         let model = agent.state().await.model;
         let model_ref = format!("{}/{}", model.provider, model.id);
-        if let Err(err) = e.set_session_ctx(&p.session_id(), p.file().as_deref(), &model_ref).await {
+        if let Err(err) = e
+            .set_session_ctx(&p.session_id(), p.file().as_deref(), &model_ref)
+            .await
+        {
             eprintln!("omp-rs: extension ctx: {err:#}");
         }
     }

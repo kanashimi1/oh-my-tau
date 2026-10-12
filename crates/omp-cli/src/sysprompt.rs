@@ -29,6 +29,7 @@ fn agent_dir() -> PathBuf {
 }
 
 /// Minimal scan of `config.yml` for the settings the prompt renders from.
+#[allow(clippy::struct_excessive_bools)] // mirrors omp's PromptConfig shape; one struct beats six params
 struct PromptConfig {
     skills_enabled: bool,
     include_model_in_prompt: bool,
@@ -81,7 +82,7 @@ fn load_config(agent: &Path) -> PromptConfig {
 }
 
 /// Workstation facts, matching `getEnvironmentInfo()` (Node `os.platform()`
-////`os.release()`/`os.arch()`).
+///`os.release()`/`os.arch()`).
 pub fn environment_info() -> Vec<(String, String)> {
     let release = std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map(|s| s.trim().to_string())
@@ -118,8 +119,9 @@ fn scan_boundary(cwd: &Path, home: &Path) -> (PathBuf, bool, bool) {
     let cwd_under_home = cwd.starts_with(home);
     let repo_root = git_root(cwd, home);
     let repo_is_home = repo_root.as_deref() == Some(home);
-    let repo_under_home =
-        repo_root.as_deref().is_some_and(|r| r.starts_with(home) && r != home);
+    let repo_under_home = repo_root
+        .as_deref()
+        .is_some_and(|r| r.starts_with(home) && r != home);
     let scan_to_home = repo_root.is_some() && cwd_under_home && repo_under_home;
     let boundary = if scan_to_home {
         home.to_path_buf()
@@ -155,7 +157,7 @@ pub fn context_files(cwd: &Path, home: &Path) -> Vec<ContextFile> {
     loop {
         let at_boundary = current == boundary;
         let at_home = exclude_home && current == home;
-        if !at_home && !(at_boundary && !include_boundary) {
+        if !at_home && (!at_boundary || include_boundary) {
             for name in ["AGENTS.md", "CLAUDE.md"] {
                 let candidate = current.join(name);
                 if let Ok(content) = std::fs::read_to_string(&candidate) {
@@ -186,11 +188,11 @@ pub fn context_files(cwd: &Path, home: &Path) -> Vec<ContextFile> {
             None => break,
         }
     }
-    out.sort_by(|a, b| b.depth.cmp(&a.depth));
+    out.sort_by_key(|f| std::cmp::Reverse(f.depth));
     out
 }
 
-/// A discovered system prompt override (SYSTEM.md text or SYSTEM_TEMPLATE.md
+/// A discovered system prompt override (SYSTEM.md text or `SYSTEM_TEMPLATE.md`
 /// template), project scope beating user scope as in
 /// `discoverSystemPromptOverride`.
 #[derive(Debug)]
@@ -200,7 +202,7 @@ pub enum Override {
 }
 
 /// Walk from `cwd` up to the git root (or filesystem root) for SYSTEM.md /
-/// SYSTEM_TEMPLATE.md (`getProjectPathCandidates` analog), falling back to the
+/// `SYSTEM_TEMPLATE.md` (`getProjectPathCandidates` analog), falling back to the
 /// user-level files in the agent dir.
 pub fn discover_override(cwd: &Path, agent: &Path) -> Option<Override> {
     let mut dirs: Vec<PathBuf> = cwd.ancestors().map(Path::to_path_buf).collect();
@@ -273,19 +275,23 @@ fn parse_frontmatter(content: &str) -> (Map<String, Value>, String) {
 /// Load skills from a `skills/` dir (`~/.omp/agent/skills`, project
 /// `.omp/skills`): one directory per skill with a SKILL.md.
 fn load_skills_dir(dir: &Path, skills: &mut Vec<Skill>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
         let file = path.join("SKILL.md");
-        let Ok(content) = std::fs::read_to_string(&file) else { continue };
+        let Ok(content) = std::fs::read_to_string(&file) else {
+            continue;
+        };
         let (meta, _body) = parse_frontmatter(&content);
-        let name = meta
-            .get("name")
-            .and_then(Value::as_str)
-            .map_or_else(|| entry.file_name().to_string_lossy().into_owned(), Into::into);
+        let name = meta.get("name").and_then(Value::as_str).map_or_else(
+            || entry.file_name().to_string_lossy().into_owned(),
+            Into::into,
+        );
         let description = meta
             .get("description")
             .and_then(Value::as_str)
@@ -362,17 +368,14 @@ fn tokenize(template: &str) -> Vec<String> {
     while let Some(start) = rest.find("{{") {
         let (before, tag_start) = rest.split_at(start);
         if !before.is_empty() {
-            tags.push(format!("\0{text}", text = before));
+            tags.push(format!("\0{before}"));
         }
-        match tag_start[2..].find("}}") {
-            Some(end) => {
-                tags.push(tag_start[..end + 4].to_string());
-                rest = &tag_start[end + 4..];
-            }
-            None => {
-                tags.push(tag_start.to_string());
-                rest = "";
-            }
+        if let Some(end) = tag_start[2..].find("}}") {
+            tags.push(tag_start[..end + 4].to_string());
+            rest = &tag_start[end + 4..];
+        } else {
+            tags.push(tag_start.to_string());
+            rest = "";
         }
     }
     if !rest.is_empty() {
@@ -392,7 +395,6 @@ fn split_tokens(rest: &str) -> Vec<String> {
                 quote = None;
                 cur.push(c);
             }
-            (Some(_), c) => cur.push(c),
             (None, '"' | '\'') => {
                 quote = Some(c);
                 cur.push(c);
@@ -402,7 +404,7 @@ fn split_tokens(rest: &str) -> Vec<String> {
                     out.push(std::mem::take(&mut cur));
                 }
             }
-            (None, c) => cur.push(c),
+            (_, c) => cur.push(c),
         }
     }
     if !cur.is_empty() {
@@ -527,18 +529,16 @@ fn lookup(ctx: &[&Value], path: &str) -> Value {
         let mut cur = *frame;
         let mut ok = true;
         for part in path.split('.') {
-            match cur {
-                Value::Object(m) => match m.get(part) {
-                    Some(v) => cur = v,
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                },
-                _ => {
+            if let Value::Object(m) = cur {
+                if let Some(v) = m.get(part) {
+                    cur = v;
+                } else {
                     ok = false;
                     break;
                 }
+            } else {
+                ok = false;
+                break;
             }
         }
         if ok {
@@ -573,10 +573,7 @@ fn eval_helper_value(name: &str, args: &[Arg], ctx: &[&Value]) -> Value {
         "includes" | "has" => {
             let hay = eval_arg(&args[0], ctx);
             let needle = eval_arg(&args[1], ctx);
-            Value::Bool(
-                hay.as_array()
-                    .is_some_and(|a| a.iter().any(|v| *v == needle)),
-            )
+            Value::Bool(hay.as_array().is_some_and(|a| a.contains(&needle)))
         }
         "not" => Value::Bool(!truthy(&eval_arg(&args[0], ctx))),
         _ => Value::Null,
@@ -593,6 +590,7 @@ fn value_string(v: &Value) -> String {
     }
 }
 
+#[allow(clippy::too_many_lines)] // template node walker; one loop per node kind, splitting adds indirection
 fn render_nodes(nodes: &[Node], ctx: &mut Vec<&Value>, out: &mut String) {
     for node in nodes {
         match node {
@@ -623,9 +621,7 @@ fn render_nodes(nodes: &[Node], ctx: &mut Vec<&Value>, out: &mut String) {
                 "has" => {
                     let hay = eval_arg(&args[0], ctx);
                     let needle = eval_arg(&args[1], ctx);
-                    let hit = hay
-                        .as_array()
-                        .is_some_and(|a| a.iter().any(|v| *v == needle));
+                    let hit = hay.as_array().is_some_and(|a| a.contains(&needle));
                     render_nodes(if hit { body } else { else_body }, ctx, out);
                 }
                 "when" => {
@@ -673,7 +669,7 @@ fn render_nodes(nodes: &[Node], ctx: &mut Vec<&Value>, out: &mut String) {
                         .iter()
                         .map(|item| {
                             let mut s = String::new();
-                            let mut sub: Vec<&Value> = ctx.to_vec();
+                            let mut sub: Vec<&Value> = ctx.clone();
                             sub.push(item);
                             render_nodes(body, &mut sub, &mut s);
                             s
@@ -718,7 +714,7 @@ fn strip_standalone(template: &str) -> String {
             .strip_prefix("{{")
             .and_then(|l| l.strip_suffix("}}"))
             .filter(|inner| !inner.contains("{{") && !inner.contains("}}"))
-            .map(|inner| {
+            .is_some_and(|inner| {
                 let name = inner
                     .trim_start_matches('#')
                     .trim_start_matches('/')
@@ -726,8 +722,7 @@ fn strip_standalone(template: &str) -> String {
                     .next()
                     .unwrap_or("");
                 inner.trim() == "else" || BLOCK_HELPERS.contains(&name)
-            })
-            .unwrap_or(false);
+            });
         if decor {
             out.push_str(trimmed); // tag kept; line newline dropped
         } else {
@@ -740,12 +735,11 @@ fn strip_standalone(template: &str) -> String {
 /// `prompt.format` with `renderPhase: "post-render"`: trimEnd lines, collapse
 /// runs of blank lines (keep at most one, and only between content), pop
 /// blank lines before closing XML tags, strip trailing blanks. Code fences
-/// (``` / ~~~) disable blank handling inside them.
+/// (`` ``` `` / `` ~~~ ``) disable blank handling inside them.
 fn format_post_render(content: &str) -> String {
     fn is_closing_tag_line(line: &str) -> bool {
-        let rest = match line.trim_start().strip_prefix("</") {
-            Some(r) => r,
-            None => return false,
+        let Some(rest) = line.trim_start().strip_prefix("</") else {
+            return false;
         };
         let name_len = rest
             .chars()
@@ -777,7 +771,7 @@ fn format_post_render(content: &str) -> String {
             let next_blank = i + 1 >= lines.len() || lines[i + 1].trim().is_empty();
             if next_blank {
                 // Run of 2+ blanks (or trailing): strip entirely.
-                while result.last().is_some_and(|l| l.is_empty()) {
+                while result.last().is_some_and(std::string::String::is_empty) {
                     result.pop();
                 }
                 let mut j = i + 1;
@@ -787,7 +781,7 @@ fn format_post_render(content: &str) -> String {
                 i = j;
                 continue;
             }
-            if result.last().is_none_or(|l| l.is_empty()) {
+            if result.last().is_none_or(std::string::String::is_empty) {
                 i += 1;
                 continue;
             }
@@ -796,14 +790,14 @@ fn format_post_render(content: &str) -> String {
             continue;
         }
         if is_closing_tag_line(line) {
-            while result.last().is_some_and(|l| l.is_empty()) {
+            while result.last().is_some_and(std::string::String::is_empty) {
                 result.pop();
             }
         }
         result.push(line.to_string());
         i += 1;
     }
-    while result.last().is_some_and(|l| l.is_empty()) {
+    while result.last().is_some_and(std::string::String::is_empty) {
         result.pop();
     }
     result.join("\n")
@@ -828,6 +822,7 @@ pub fn render(template: &str, data: &Value) -> String {
 // ---------------------------------------------------------------------------
 
 /// Inputs the CLI gathers for the system prompt.
+#[derive(Default)]
 pub struct Options {
     /// `--system-prompt <path|text>` (replaces the default prompt).
     pub system_prompt: Option<String>,
@@ -844,24 +839,12 @@ pub struct Options {
     pub generated_append: Vec<String>,
 }
 
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            system_prompt: None,
-            append_system_prompt: None,
-            tools_csv: None,
-            subagent: false,
-            model: String::new(),
-            generated_append: Vec::new(),
-        }
-    }
-}
-
 /// Result of building the provider-facing system prompt blocks.
 pub struct Built {
     /// Ordered blocks; providers preserve them as distinct messages.
     pub blocks: Vec<String>,
     /// Tool names enabled after the `--tools` restriction.
+    #[allow(dead_code)] // read by tests and prompt debug dumps; kept with `Built`
     pub tool_names: Vec<String>,
 }
 
@@ -889,6 +872,7 @@ fn compose_append(generated: &[String], user: Option<&str>) -> String {
 }
 
 /// Build the system prompt blocks for `cwd` (env-injected dirs for tests).
+#[allow(clippy::too_many_lines)] // sequential prompt assembly; mirrors omp's buildSystemPrompt order
 pub fn build_with(
     cwd: &Path,
     home: &Path,
@@ -1054,10 +1038,8 @@ mod tests {
     use super::*;
 
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "omp-rs-sysprompt-{tag}-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("omp-rs-sysprompt-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1076,13 +1058,13 @@ mod tests {
         std::fs::write(proj.join("SYSTEM.md"), "project prompt").unwrap();
         match discover_override(&proj, &agent).unwrap() {
             Override::Text(t) => assert_eq!(t, "project prompt"),
-            other => panic!("expected text override, got {other:?}"),
+            Override::Template(_) => panic!("expected text override, got template"),
         }
         // No project file: user-level wins.
         std::fs::remove_file(proj.join("SYSTEM.md")).unwrap();
         match discover_override(&proj, &agent).unwrap() {
             Override::Text(t) => assert_eq!(t, "user prompt"),
-            other => panic!("expected text override, got {other:?}"),
+            Override::Template(_) => panic!("expected text override, got template"),
         }
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1116,11 +1098,7 @@ mod tests {
         let agent = root.join("agent");
         let sk = agent.join("skills/demo");
         std::fs::create_dir_all(&sk).unwrap();
-        std::fs::write(
-            agent.join("config.yml"),
-            "skills:\n  enabled: false\n",
-        )
-        .unwrap();
+        std::fs::write(agent.join("config.yml"), "skills:\n  enabled: false\n").unwrap();
         std::fs::write(
             sk.join("SKILL.md"),
             "---\nname: demo\ndescription: Demo skill.\n---\nbody\n",
@@ -1182,19 +1160,12 @@ mod tests {
     #[test]
     fn renderer_semantics() {
         let tmpl = "A\n{{#if ok}}\nYES\n{{else}}\nNO\n{{/if}}\nB\n{{#list items prefix=\"- \" join=\"\\n\"}}{{this}}{{/list}}";
-        let out = render(
-            tmpl,
-            &json!({"ok": true, "items": ["x", "y"]}),
-        );
+        let out = render(tmpl, &json!({"ok": true, "items": ["x", "y"]}));
         assert_eq!(out, "A\nYES\nB\n- x\n- y");
         let out = render(tmpl, &json!({"ok": false, "items": []}));
         // `prompt.format` strips trailing blank lines.
         assert_eq!(out, "A\nNO\nB");
     }
-
-
-
-
 
     /// `resolvePromptInput`: multi-line stays literal; an existing path is
     /// read; a missing path falls back to the literal string.

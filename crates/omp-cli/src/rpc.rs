@@ -87,9 +87,15 @@ const OAUTH_PROVIDERS: [(&str, &str); 80] = [
     ("github-copilot", "GitHub Copilot"),
     ("cursor", "Cursor (Claude, GPT, etc.)"),
     ("devin", "Devin"),
-    ("google-antigravity", "Antigravity (Gemini 3, Claude, GPT-OSS)"),
+    (
+        "google-antigravity",
+        "Antigravity (Gemini 3, Claude, GPT-OSS)",
+    ),
     ("google-gemini-cli", "Google Cloud Code Assist (Gemini CLI)"),
-    ("openai-codex-device", "ChatGPT Plus/Pro (Codex, headless/device)"),
+    (
+        "openai-codex-device",
+        "ChatGPT Plus/Pro (Codex, headless/device)",
+    ),
     ("xai", "xAI API"),
     ("xai-oauth", "xAI Grok OAuth (SuperGrok or X Premium+)"),
     ("gitlab-duo", "GitLab Duo Non-Agentic"),
@@ -166,12 +172,18 @@ fn goal(cmd: &Value) -> CmdResult {
     match cmd.get("op").and_then(Value::as_str) {
         Some("get" | "pause" | "drop") => empty(),
         Some("create") => {
-            if cmd.get("objective").and_then(Value::as_str).is_none_or(|o| o.trim().is_empty()) {
+            if cmd
+                .get("objective")
+                .and_then(Value::as_str)
+                .is_none_or(|o| o.trim().is_empty())
+            {
                 return Err(CmdError::new("objective is required when op=create"));
             }
             if let Some(b) = cmd.get("token_budget") {
                 if !b.as_f64().is_some_and(|n| n.fract() == 0.0 && n > 0.0) {
-                    return Err(CmdError::new("token_budget must be a positive integer when provided"));
+                    return Err(CmdError::new(
+                        "token_budget must be a positive integer when provided",
+                    ));
                 }
             }
             Err(unsupported("Goal mode"))
@@ -186,17 +198,33 @@ fn goal(cmd: &Value) -> CmdResult {
 
 /// `set_host_tools`: omp's validation, then the no-bridge answer (an empty set is a plain success).
 fn set_host_tools(cmd: &Value) -> CmdResult {
-    let tools = cmd.get("tools").and_then(Value::as_array).ok_or_else(|| CmdError::new("tools must be an array"))?;
+    let tools = cmd
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CmdError::new("tools must be an array"))?;
     for (index, tool) in tools.iter().enumerate() {
-        let name = tool.get("name").and_then(Value::as_str).map_or("", str::trim);
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .map_or("", str::trim);
         if name.is_empty() {
-            return Err(CmdError::new(format!("Host tool at index {index} must provide a non-empty name")));
+            return Err(CmdError::new(format!(
+                "Host tool at index {index} must provide a non-empty name"
+            )));
         }
-        if tool.get("description").and_then(Value::as_str).is_none_or(|d| d.trim().is_empty()) {
-            return Err(CmdError::new(format!("Host tool \"{name}\" must provide a non-empty description")));
+        if tool
+            .get("description")
+            .and_then(Value::as_str)
+            .is_none_or(|d| d.trim().is_empty())
+        {
+            return Err(CmdError::new(format!(
+                "Host tool \"{name}\" must provide a non-empty description"
+            )));
         }
         if !tool.get("parameters").is_some_and(Value::is_object) {
-            return Err(CmdError::new(format!("Host tool \"{name}\" must provide a JSON Schema object")));
+            return Err(CmdError::new(format!(
+                "Host tool \"{name}\" must provide a JSON Schema object"
+            )));
         }
     }
     if tools.is_empty() {
@@ -207,18 +235,28 @@ fn set_host_tools(cmd: &Value) -> CmdResult {
 
 /// `set_host_uri_schemes`: omp's scheme validation, then the no-bridge answer.
 fn set_host_uri_schemes(cmd: &Value) -> CmdResult {
-    let schemes = cmd.get("schemes").and_then(Value::as_array).ok_or_else(|| CmdError::new("schemes must be an array"))?;
+    let schemes = cmd
+        .get("schemes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CmdError::new("schemes must be an array"))?;
     for raw in schemes {
-        let scheme = raw.get("scheme").and_then(Value::as_str).map_or_else(String::new, |s| s.trim().to_lowercase());
+        let scheme = raw
+            .get("scheme")
+            .and_then(Value::as_str)
+            .map_or_else(String::new, |s| s.trim().to_lowercase());
         if scheme.is_empty() {
             return Err(CmdError::new("Host URI scheme must be a non-empty string"));
         }
         let mut chars = scheme.chars();
         let valid = chars.next().is_some_and(|c| c.is_ascii_lowercase())
-            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-'));
+            && chars.all(|c| {
+                c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '.' | '-')
+            });
         if !valid {
             let shown = raw.get("scheme").and_then(Value::as_str).unwrap_or("");
-            return Err(CmdError::new(format!("Host URI scheme contains invalid characters: {shown}")));
+            return Err(CmdError::new(format!(
+                "Host URI scheme contains invalid characters: {shown}"
+            )));
         }
     }
     if schemes.is_empty() {
@@ -241,13 +279,25 @@ fn subagent_messages(cmd: &Value) -> CmdResult {
             return Err(CmdError::new("fromByte must be a finite number"));
         }
     }
-    if let Some(id) = cmd.get("subagentId").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-        return Err(CmdError::new(format!("Unknown subagent or session file unavailable: {id}")));
+    if let Some(id) = cmd
+        .get("subagentId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        return Err(CmdError::new(format!(
+            "Unknown subagent or session file unavailable: {id}"
+        )));
     }
-    if cmd.get("sessionFile").and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+    if cmd
+        .get("sessionFile")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+    {
         return Err(CmdError::new("Unknown subagent session file"));
     }
-    Err(CmdError::new("get_subagent_messages requires subagentId or sessionFile"))
+    Err(CmdError::new(
+        "get_subagent_messages requires subagentId or sessionFile",
+    ))
 }
 
 /// `predict_word*` validation: `text` string, `cursor` an integer UTF-16 offset within it.
@@ -260,7 +310,9 @@ fn text_cursor(cmd: &Value) -> Result<(), CmdError> {
             return Ok(());
         }
     }
-    Err(CmdError::new("cursor must be an integer UTF-16 offset within text"))
+    Err(CmdError::new(
+        "cursor must be an integer UTF-16 offset within text",
+    ))
 }
 
 /// `get_login_providers`: omp's OAuth registry; `authenticated` = a credential source resolves.
@@ -275,7 +327,9 @@ async fn login_providers() -> Vec<Value> {
             None => false,
         };
         let authenticated = from_models || pa_ai::env_api_keys::get_env_api_key(id).is_some();
-        out.push(json!({"id": id, "name": name, "available": true, "authenticated": authenticated}));
+        out.push(
+            json!({"id": id, "name": name, "available": true, "authenticated": authenticated}),
+        );
     }
     out
 }
@@ -314,7 +368,10 @@ async fn cycle_model(rt: &Runtime) -> CmdResult {
     }
     let idx = models
         .iter()
-        .position(|m| info.get("provider") == Some(&json!(m.provider.clone())) && info.get("id") == Some(&json!(m.id)))
+        .position(|m| {
+            info.get("provider") == Some(&json!(m.provider.clone()))
+                && info.get("id") == Some(&json!(m.id))
+        })
         .unwrap_or(0);
     let next = &models[(idx + 1) % models.len()];
     let model = rt.cycle_to(&next.provider, &next.id).await?;
@@ -334,7 +391,10 @@ fn branch_messages(entries: &[Value]) -> Vec<Value> {
                 Value::String(s) => s.clone(),
                 Value::Array(parts) => parts
                     .iter()
-                    .filter_map(|p| (p.get("type")? == "text").then(|| p.get("text")?.as_str().map(str::to_string))?)
+                    .filter_map(|p| {
+                        (p.get("type")? == "text")
+                            .then(|| p.get("text")?.as_str().map(str::to_string))?
+                    })
                     .collect::<Vec<_>>()
                     .join("\n"),
                 _ => return None,
@@ -361,7 +421,10 @@ fn tree(entries: &[Value]) -> Vec<Value> {
             })
             .collect()
     }
-    let known: HashSet<&str> = entries.iter().filter_map(|e| e.get("id").and_then(Value::as_str)).collect();
+    let known: HashSet<&str> = entries
+        .iter()
+        .filter_map(|e| e.get("id").and_then(Value::as_str))
+        .collect();
     build(entries, None, &known)
 }
 
@@ -416,8 +479,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         },
         "prompt" => {
             let message = str_field(cmd, "message")?;
-            rt.prompt(cmd.get("id").cloned(), message, cmd.get("streamingBehavior").and_then(Value::as_str), images(cmd))
-                .await?;
+            rt.prompt(
+                cmd.get("id").cloned(),
+                message,
+                cmd.get("streamingBehavior").and_then(Value::as_str),
+                images(cmd),
+            )
+            .await?;
             none()
         }
         "steer" | "follow_up" => {
@@ -453,7 +521,11 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             let id = cmd.get("id").cloned();
             tokio::spawn(async move {
                 if let Err(e) = task_rt.prompt(id.clone(), &message, None, images).await {
-                    task_rt.send(response(id.as_ref(), "abort_and_prompt", Err(CmdError::new(e.message.clone()))));
+                    task_rt.send(response(
+                        id.as_ref(),
+                        "abort_and_prompt",
+                        Err(CmdError::new(e.message.clone())),
+                    ));
                     let mut f = json!({"type":"prompt_result","agentInvoked":false,"status":"error",
                         "error":{"message":e.message,"retryable":false},"sessionSettled":true});
                     if let Some(id) = id {
@@ -471,7 +543,10 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "switch_session" => {
             let path = PathBuf::from(str_field(cmd, "sessionPath")?);
             if !path.is_file() {
-                return Err(CmdError::new(format!("Session file not found: {}", path.display())));
+                return Err(CmdError::new(format!(
+                    "Session file not found: {}",
+                    path.display()
+                )));
             }
             rt.load_session(&path, None).await?;
             ok(json!({"cancelled": false}))
@@ -493,7 +568,11 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             }))
         }
         "branch" | "fork" => {
-            let entry_id = if kind == "branch" { Some(str_field(cmd, "entryId")?) } else { cmd.get("entryId").and_then(Value::as_str) };
+            let entry_id = if kind == "branch" {
+                Some(str_field(cmd, "entryId")?)
+            } else {
+                cmd.get("entryId").and_then(Value::as_str)
+            };
             if rt.agent.state().await.is_streaming {
                 return Err(CmdError::coded(
                     format!("Cannot {kind} the session while session maintenance or user work is still running"),
@@ -509,27 +588,35 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "get_state" => ok(rt.state().await),
         "set_fast_mode" => {
             if bool_field(cmd, "enabled")? {
-                Err(CmdError::new("Fast mode is unavailable for the current model."))
+                Err(CmdError::new(
+                    "Fast mode is unavailable for the current model.",
+                ))
             } else {
                 ok(json!({"enabled": false, "active": false}))
             }
         }
         "goal" => goal(cmd),
         "set_ask_dialog" => {
-            let enabled = rt.set(|s| s.ask_dialog(cmd.get("enabled").and_then(Value::as_bool) == Some(true)));
+            let enabled =
+                rt.set(|s| s.ask_dialog(cmd.get("enabled").and_then(Value::as_bool) == Some(true)));
             ok(json!({"enabled": enabled}))
         }
         "get_available_commands" => ok(json!({"commands": rt.available_commands()})),
         "get_entries" => {
             let entries = rt.entries().map_err(CmdError::from)?;
-            let leaf = entries.last().and_then(|e| e.get("id").cloned()).unwrap_or(Value::Null);
+            let leaf = entries
+                .last()
+                .and_then(|e| e.get("id").cloned())
+                .unwrap_or(Value::Null);
             let selected = match cmd.get("since").and_then(Value::as_str) {
                 None => entries,
                 Some(since) => {
                     let idx = entries
                         .iter()
                         .position(|e| e.get("id").and_then(Value::as_str) == Some(since))
-                        .ok_or_else(|| CmdError::coded(format!("Unknown entry id: {since}"), "unknown_since"))?;
+                        .ok_or_else(|| {
+                            CmdError::coded(format!("Unknown entry id: {since}"), "unknown_since")
+                        })?;
                     entries[idx + 1..].to_vec()
                 }
             };
@@ -537,11 +624,18 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "get_tree" => {
             let entries = rt.entries().map_err(CmdError::from)?;
-            let leaf = entries.last().and_then(|e| e.get("id").cloned()).unwrap_or(Value::Null);
+            let leaf = entries
+                .last()
+                .and_then(|e| e.get("id").cloned())
+                .unwrap_or(Value::Null);
             ok(json!({"tree": tree(&entries), "leafId": leaf}))
         }
         "set_todos" => {
-            let phases = cmd.get("phases").cloned().filter(Value::is_array).ok_or_else(|| CmdError::new("phases must be an array"))?;
+            let phases = cmd
+                .get("phases")
+                .cloned()
+                .filter(Value::is_array)
+                .ok_or_else(|| CmdError::new("phases must be an array"))?;
             rt.set(|s| s.todo_phases(phases));
             ok(json!({"todoPhases": rt.set(|s| s.todo_phases_value())}))
         }
@@ -550,7 +644,9 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "set_subagent_subscription" => {
             let level = str_field(cmd, "level")?;
             if !matches!(level, "off" | "progress" | "events") {
-                return Err(CmdError::new("level must be \"off\", \"progress\" or \"events\""));
+                return Err(CmdError::new(
+                    "level must be \"off\", \"progress\" or \"events\"",
+                ));
             }
             rt.set(|s| s.subagent_level(level));
             ok(json!({"level": level}))
@@ -559,13 +655,21 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             let events = cmd.get("events");
             let filter = match events {
                 Some(Value::Null) => None,
-                Some(Value::Array(a)) => Some(a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect::<HashSet<_>>()),
+                Some(Value::Array(a)) => Some(
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect::<HashSet<_>>(),
+                ),
                 _ => return Err(CmdError::new("events must be an array of strings or null")),
             };
             let delta = match cmd.get("messageUpdates").and_then(Value::as_str) {
                 None | Some("full") => false,
                 Some("delta") => true,
-                Some(_) => return Err(CmdError::new("messageUpdates must be \"full\" or \"delta\"")),
+                Some(_) => {
+                    return Err(CmdError::new(
+                        "messageUpdates must be \"full\" or \"delta\"",
+                    ))
+                }
             };
             rt.set(|s| s.event_filter(filter, delta));
             let mut data = json!({"events": events.cloned().unwrap_or(Value::Null)});
@@ -582,7 +686,11 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "steer_subagent" => {
             let id = subagent_id(cmd, "steer_subagent")?;
-            if cmd.get("message").and_then(Value::as_str).is_none_or(|m| m.trim().is_empty()) {
+            if cmd
+                .get("message")
+                .and_then(Value::as_str)
+                .is_none_or(|m| m.trim().is_empty())
+            {
                 return Err(CmdError::new("`message` is required for steer_subagent."));
             }
             Err(CmdError::new(format!("Subagent not running: {id}")))
@@ -599,11 +707,20 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "get_available_models" => {
             let current = {
                 let info = rt.model_info();
-                info.get("provider").zip(info.get("id")).map(|(p, i)| (p.clone(), i.clone()))
+                info.get("provider")
+                    .zip(info.get("id"))
+                    .map(|(p, i)| (p.clone(), i.clone()))
             };
-            let mut models: Vec<Value> = available_models(None).await.iter().map(model_info).collect();
+            let mut models: Vec<Value> = available_models(None)
+                .await
+                .iter()
+                .map(model_info)
+                .collect();
             if let Some((p, i)) = current {
-                if !models.iter().any(|m| m.get("provider") == Some(&p) && m.get("id") == Some(&i)) {
+                if !models
+                    .iter()
+                    .any(|m| m.get("provider") == Some(&p) && m.get("id") == Some(&i))
+                {
                     models.insert(0, rt.model_info());
                 }
             }
@@ -611,7 +728,8 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "set_thinking_level" => {
             let level = str_field(cmd, "level")?;
-            let parsed = parse_level(level).or_else(|| (level == "inherit").then_some(ThinkingLevel::Medium));
+            let parsed = parse_level(level)
+                .or_else(|| (level == "inherit").then_some(ThinkingLevel::Medium));
             let Some(parsed) = parsed else {
                 return Err(CmdError::new(format!("Invalid thinking level: {level}")));
             };
@@ -660,8 +778,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "set_cache_warming" => {
             let mode = cmd.get("mode").and_then(Value::as_str).unwrap_or("");
             if !CACHE_WARMING_MODES.contains(&mode) {
-                let shown = cmd.get("mode").map_or_else(|| "undefined".to_string(), |m| m.as_str().map_or_else(|| m.to_string(), str::to_string));
-                return Err(CmdError::new(format!("Invalid cache warming mode: {shown}")));
+                let shown = cmd.get("mode").map_or_else(
+                    || "undefined".to_string(),
+                    |m| m.as_str().map_or_else(|| m.to_string(), str::to_string),
+                );
+                return Err(CmdError::new(format!(
+                    "Invalid cache warming mode: {shown}"
+                )));
             }
             rt.set(|s| s.cache_warming(mode));
             ok(json!({"mode": mode}))
@@ -705,20 +828,32 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "handoff" => {
             if rt.agent.state().await.is_streaming {
-                return Err(CmdError::new("Cannot hand off while a response is in progress"));
+                return Err(CmdError::new(
+                    "Cannot hand off while a response is in progress",
+                ));
             }
             Err(unsupported("Handoff"))
         }
         "get_messages" => ok(json!({"messages": rt.messages().await})),
         "get_messages_page" => {
             if rt.agent.state().await.is_streaming {
-                return Err(CmdError::coded("Cannot page messages while the session is changing", "session_busy"));
+                return Err(CmdError::coded(
+                    "Cannot page messages while the session is changing",
+                    "session_busy",
+                ));
             }
             let messages = rt.messages().await;
             let entries = rt.entries().map_err(CmdError::from)?;
-            let leaf = entries.last().and_then(|e| e.get("id").and_then(Value::as_str)).map(str::to_string);
+            let leaf = entries
+                .last()
+                .and_then(|e| e.get("id").and_then(Value::as_str))
+                .map(str::to_string);
             let session_id = rt.session_id();
-            let snapshot = paging::Snapshot { session_id: &session_id, leaf_id: leaf.as_deref(), message_count: messages.len() };
+            let snapshot = paging::Snapshot {
+                session_id: &session_id,
+                leaf_id: leaf.as_deref(),
+                message_count: messages.len(),
+            };
             let limit = cmd.get("limit").and_then(Value::as_f64);
             let limit = match limit {
                 None => None,
@@ -726,9 +861,17 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 Some(n) if n.fract() == 0.0 && n >= 0.0 => Some(n as usize),
                 Some(_) => Some(0),
             };
-            paging::page(&messages, &snapshot, cmd.get("cursor").and_then(Value::as_str), limit)
-                .map(Some)
-                .map_err(|e| CmdError { message: e.message, code: e.code })
+            paging::page(
+                &messages,
+                &snapshot,
+                cmd.get("cursor").and_then(Value::as_str),
+                limit,
+            )
+            .map(Some)
+            .map_err(|e| CmdError {
+                message: e.message,
+                code: e.code,
+            })
         }
         "get_login_providers" => ok(json!({"providers": login_providers().await})),
         "login" => {
@@ -746,8 +889,12 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "predict_word_feedback" => {
             text_cursor(cmd)?;
-            if cmd.get("suggestion").is_none_or(|v| !v.is_string()) || cmd.get("accepted").is_none_or(|v| !v.is_boolean()) {
-                return Err(CmdError::new("suggestion must be a string and accepted a boolean"));
+            if cmd.get("suggestion").is_none_or(|v| !v.is_string())
+                || cmd.get("accepted").is_none_or(|v| !v.is_boolean())
+            {
+                return Err(CmdError::new(
+                    "suggestion must be a string and accepted a boolean",
+                ));
             }
             none()
         }
@@ -773,11 +920,21 @@ fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for c in bytes.chunks(3) {
-        let n = (u32::from(c[0]) << 16) | (u32::from(*c.get(1).unwrap_or(&0)) << 8) | u32::from(*c.get(2).unwrap_or(&0));
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -792,7 +949,10 @@ fn shrink_string(s: &str, cap: usize) -> String {
     format!("{kept}\n…[{} chars elided for RPC frame]", len - head)
 }
 
-fn shrink_value(v: &Value, (string_cap, array_limit, object_limit): (usize, usize, usize)) -> Value {
+fn shrink_value(
+    v: &Value,
+    (string_cap, array_limit, object_limit): (usize, usize, usize),
+) -> Value {
     let pass = (string_cap, array_limit, object_limit);
     match v {
         Value::String(s) => Value::String(shrink_string(s, string_cap)),
@@ -800,7 +960,10 @@ fn shrink_value(v: &Value, (string_cap, array_limit, object_limit): (usize, usiz
             let keep = a.len().min(array_limit);
             let mut out: Vec<Value> = a.iter().take(keep).map(|e| shrink_value(e, pass)).collect();
             if keep < a.len() {
-                out.push(json!(format!("…[{} more items elided for RPC frame]", a.len() - keep)));
+                out.push(json!(format!(
+                    "…[{} more items elided for RPC frame]",
+                    a.len() - keep
+                )));
             }
             Value::Array(out)
         }
@@ -821,7 +984,10 @@ fn shrink_value(v: &Value, (string_cap, array_limit, object_limit): (usize, usiz
 
 /// `overflowFrame`: what replaces a frame that cannot fit the transport at all.
 fn overflow_frame(frame: &Value) -> Value {
-    let cap = |v: Option<&Value>| v.and_then(Value::as_str).map(|s| shrink_string(s, METADATA_STRING_CAP));
+    let cap = |v: Option<&Value>| {
+        v.and_then(Value::as_str)
+            .map(|s| shrink_string(s, METADATA_STRING_CAP))
+    };
     match frame.get("type").and_then(Value::as_str) {
         Some("response") => {
             let mut m = Map::new();
@@ -829,9 +995,15 @@ fn overflow_frame(frame: &Value) -> Value {
                 m.insert("id".into(), json!(id));
             }
             m.insert("type".into(), json!("response"));
-            m.insert("command".into(), json!(cap(frame.get("command")).unwrap_or_else(|| "unknown".into())));
+            m.insert(
+                "command".into(),
+                json!(cap(frame.get("command")).unwrap_or_else(|| "unknown".into())),
+            );
             m.insert("success".into(), json!(false));
-            m.insert("error".into(), json!("RPC response exceeded the transport limit"));
+            m.insert(
+                "error".into(),
+                json!("RPC response exceeded the transport limit"),
+            );
             Value::Object(m)
         }
         Some("agent_end") => json!({
@@ -843,9 +1015,15 @@ fn overflow_frame(frame: &Value) -> Value {
             let mut m = Map::new();
             m.insert("type".into(), json!("rpc_frame_error"));
             if let Some(t) = original {
-                m.insert("originalType".into(), json!(shrink_string(t, METADATA_STRING_CAP)));
+                m.insert(
+                    "originalType".into(),
+                    json!(shrink_string(t, METADATA_STRING_CAP)),
+                );
             }
-            m.insert("error".into(), json!("RPC frame exceeded the transport limit"));
+            m.insert(
+                "error".into(),
+                json!("RPC frame exceeded the transport limit"),
+            );
             Value::Object(m)
         }
     }
@@ -861,7 +1039,11 @@ struct FrameEncoder {
 
 impl FrameEncoder {
     fn new() -> Self {
-        Self { version: 1, streamed: Vec::new(), chunks: 0 }
+        Self {
+            version: 1,
+            streamed: Vec::new(),
+            chunks: 0,
+        }
     }
 
     fn fits(json: &str) -> bool {
@@ -870,11 +1052,17 @@ impl FrameEncoder {
 
     /// `agent_end` minus the messages the client already received as `message_end` frames.
     fn compact_terminal(&self, frame: &Value) -> Value {
-        let Some(messages) = frame.get("messages").and_then(Value::as_array).filter(|_| frame.get("type") == Some(&json!("agent_end"))) else {
+        let Some(messages) = frame
+            .get("messages")
+            .and_then(Value::as_array)
+            .filter(|_| frame.get("type") == Some(&json!("agent_end")))
+        else {
             return frame.clone();
         };
         let mut streamed = 0;
-        while streamed < self.streamed.len().min(messages.len()) && self.streamed[streamed] == messages[streamed] {
+        while streamed < self.streamed.len().min(messages.len())
+            && self.streamed[streamed] == messages[streamed]
+        {
             streamed += 1;
         }
         let mut out = frame.clone();
@@ -942,7 +1130,9 @@ impl FrameEncoder {
                     self.streamed.push(m.clone());
                 }
             }
-            Some("agent_end") if frame.get("willContinue") != Some(&json!(true)) => self.streamed.clear(),
+            Some("agent_end") if frame.get("willContinue") != Some(&json!(true)) => {
+                self.streamed.clear();
+            }
             _ => {}
         }
         if kind == Some("response")
@@ -1018,11 +1208,21 @@ pub async fn run_with(
         let cmd = match serde_json::from_str::<Value>(&line) {
             Ok(v) if v.is_object() => v,
             Ok(_) => {
-                rt.send(response(None, "parse", Err(CmdError::new("Failed to parse command: expected a JSON object"))));
+                rt.send(response(
+                    None,
+                    "parse",
+                    Err(CmdError::new(
+                        "Failed to parse command: expected a JSON object",
+                    )),
+                ));
                 continue;
             }
             Err(e) => {
-                rt.send(response(None, "parse", Err(CmdError::new(format!("Failed to parse command: {e}")))));
+                rt.send(response(
+                    None,
+                    "parse",
+                    Err(CmdError::new(format!("Failed to parse command: {e}"))),
+                ));
                 continue;
             }
         };
@@ -1086,7 +1286,10 @@ mod tests {
         assert!((lines[0].len() as u64) < MAX_FRAME_BYTES);
         let v: Value = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(v["type"], "tool_execution_end");
-        assert!(v["result"]["output"].as_str().unwrap().contains("chars elided for RPC frame"));
+        assert!(v["result"]["output"]
+            .as_str()
+            .unwrap()
+            .contains("chars elided for RPC frame"));
     }
 
     #[test]
@@ -1100,7 +1303,10 @@ mod tests {
         let mut bytes = Vec::new();
         for (i, line) in lines.iter().enumerate() {
             let c: Value = serde_json::from_str(line).unwrap();
-            assert_eq!((c["type"].clone(), c["index"].clone(), c["count"].clone()), (json!("rpc_chunk"), json!(i), json!(lines.len())));
+            assert_eq!(
+                (c["type"].clone(), c["index"].clone(), c["count"].clone()),
+                (json!("rpc_chunk"), json!(i), json!(lines.len()))
+            );
             assert!((line.len() as u64) < MAX_FRAME_BYTES);
             bytes.extend(unbase64(c["data"].as_str().unwrap()));
             assert_eq!(c["byteLength"], frame.to_string().len());
@@ -1115,7 +1321,8 @@ mod tests {
         let other = json!({"role": "assistant", "content": [{"type": "text", "text": "w".repeat(700_000)}]});
         enc.encode(&json!({"type": "agent_start"}));
         enc.encode(&json!({"type": "message_end", "message": big}));
-        let lines = enc.encode(&json!({"type": "agent_end", "messages": [big, other], "isTerminal": true}));
+        let lines =
+            enc.encode(&json!({"type": "agent_end", "messages": [big, other], "isTerminal": true}));
         let v: Value = serde_json::from_str(&lines[0]).unwrap();
         assert_eq!(v["messageCount"], 2);
         assert_eq!(v["messages"], json!([other]));
@@ -1125,10 +1332,17 @@ mod tests {
     #[allow(clippy::cast_possible_truncation)]
     fn unbase64(s: &str) -> Vec<u8> {
         const T: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let vals: Vec<u32> = s.bytes().filter(|b| *b != b'=').map(|b| T.find(b as char).unwrap() as u32).collect();
+        let vals: Vec<u32> = s
+            .bytes()
+            .filter(|b| *b != b'=')
+            .map(|b| T.find(b as char).unwrap() as u32)
+            .collect();
         let mut out = Vec::new();
         for c in vals.chunks(4) {
-            let n = c.iter().enumerate().fold(0u32, |a, (i, v)| a | (v << (18 - 6 * i)));
+            let n = c
+                .iter()
+                .enumerate()
+                .fold(0u32, |a, (i, v)| a | (v << (18 - 6 * i)));
             out.push((n >> 16) as u8);
             if c.len() > 2 {
                 out.push((n >> 8) as u8);
@@ -1142,35 +1356,69 @@ mod tests {
 
     #[test]
     fn unsupported_commands_follow_omp_validation_and_error_shapes() {
-        assert_eq!(goal(&json!({"op": "get"})).unwrap(), Some(json!({"goal": null, "state": null})));
-        assert_eq!(goal(&json!({"op": "resume"})).unwrap_err().message, "No paused goal to resume.");
-        assert_eq!(goal(&json!({"op": "create"})).unwrap_err().message, "objective is required when op=create");
         assert_eq!(
-            goal(&json!({"op": "create", "objective": "x", "token_budget": 0})).unwrap_err().message,
+            goal(&json!({"op": "get"})).unwrap(),
+            Some(json!({"goal": null, "state": null}))
+        );
+        assert_eq!(
+            goal(&json!({"op": "resume"})).unwrap_err().message,
+            "No paused goal to resume."
+        );
+        assert_eq!(
+            goal(&json!({"op": "create"})).unwrap_err().message,
+            "objective is required when op=create"
+        );
+        assert_eq!(
+            goal(&json!({"op": "create", "objective": "x", "token_budget": 0}))
+                .unwrap_err()
+                .message,
             "token_budget must be a positive integer when provided"
         );
-        assert_eq!(goal(&json!({"op": "nope"})).unwrap_err().message, "Unknown goal op: nope");
         assert_eq!(
-            set_host_tools(&json!({"tools": [{"name": " ", "description": "d", "parameters": {}}]})).unwrap_err().message,
+            goal(&json!({"op": "nope"})).unwrap_err().message,
+            "Unknown goal op: nope"
+        );
+        assert_eq!(
+            set_host_tools(
+                &json!({"tools": [{"name": " ", "description": "d", "parameters": {}}]})
+            )
+            .unwrap_err()
+            .message,
             "Host tool at index 0 must provide a non-empty name"
         );
         assert_eq!(
-            set_host_tools(&json!({"tools": [{"name": "t", "description": "d", "parameters": []}]})).unwrap_err().message,
+            set_host_tools(
+                &json!({"tools": [{"name": "t", "description": "d", "parameters": []}]})
+            )
+            .unwrap_err()
+            .message,
             "Host tool \"t\" must provide a JSON Schema object"
         );
-        assert_eq!(set_host_tools(&json!({"tools": []})).unwrap(), Some(json!({"toolNames": []})));
         assert_eq!(
-            set_host_uri_schemes(&json!({"schemes": [{"scheme": "1bad"}]})).unwrap_err().message,
+            set_host_tools(&json!({"tools": []})).unwrap(),
+            Some(json!({"toolNames": []}))
+        );
+        assert_eq!(
+            set_host_uri_schemes(&json!({"schemes": [{"scheme": "1bad"}]}))
+                .unwrap_err()
+                .message,
             "Host URI scheme contains invalid characters: 1bad"
         );
-        assert_eq!(subagent_messages(&json!({})).unwrap_err().message, "get_subagent_messages requires subagentId or sessionFile");
         assert_eq!(
-            subagent_messages(&json!({"subagentId": "s1"})).unwrap_err().message,
+            subagent_messages(&json!({})).unwrap_err().message,
+            "get_subagent_messages requires subagentId or sessionFile"
+        );
+        assert_eq!(
+            subagent_messages(&json!({"subagentId": "s1"}))
+                .unwrap_err()
+                .message,
             "Unknown subagent or session file unavailable: s1"
         );
         assert!(text_cursor(&json!({"text": "héllo", "cursor": 5})).is_ok());
         assert_eq!(
-            text_cursor(&json!({"text": "hi", "cursor": 3})).unwrap_err().message,
+            text_cursor(&json!({"text": "hi", "cursor": 3}))
+                .unwrap_err()
+                .message,
             "cursor must be an integer UTF-16 offset within text"
         );
     }

@@ -292,6 +292,15 @@ impl PythonKernel {
 
     fn run_startup(&self, source: &str) -> io::Result<()> {
         let result = self.execute_opts(source, Some(STARTUP_TIMEOUT), true)?;
+        // omp's executeWithBudget fails the start on any non-clean cell —
+        // including a cancelled/timed-out one (load can push the init or
+        // prelude past STARTUP_TIMEOUT). Accepting a wedged kernel here made
+        // the next cell report KernelKilled and silently drop user state.
+        if result.cancelled || result.timed_out || result.status == CellStatus::KernelKilled {
+            return Err(io::Error::other(format!(
+                "Python kernel startup cell did not complete cleanly: {result:?}"
+            )));
+        }
         if result.is_error() {
             return Err(io::Error::other(format!(
                 "Python kernel startup failed: {}",

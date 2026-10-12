@@ -121,13 +121,13 @@ function parseRustTools(): ToolDef[] {
 	// task: dynamic description = static header (r#"..."# const) + agent list.
 	const taskSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/task.rs"), "utf8");
 	{
-		const m = /DESCRIPTION_HEADER: &str = r#"([^"]*)"#;/.exec(taskSrc);
+		const m = /DESCRIPTION_HEADER: &str = r#?"([^"]*)"#?;/.exec(taskSrc);
 		defs.find(d => d.name === "task")!.description_first_line = (m?.[1] ?? "").split("\n", 1)[0] ?? "";
 	}
 	// eval: static r#"..."# description const.
 	{
 		const evalSrc = readFileSync(join(ROOT, "crates/omp-cli/src/tools/eval.rs"), "utf8");
-		const m = /const DESCRIPTION: &str = r#"([^"]*)"#;/.exec(evalSrc);
+		const m = /const DESCRIPTION: &str = r#?"([^"]*)"#?;/.exec(evalSrc);
 		defs.find(d => d.name === "eval")!.description_first_line = (m?.[1] ?? "").split("\n", 1)[0] ?? "";
 	}
 	// web_search: schema from `pub fn schema()`; description from DESCRIPTION const.

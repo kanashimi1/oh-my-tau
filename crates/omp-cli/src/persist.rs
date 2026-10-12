@@ -45,7 +45,14 @@ pub fn uuid_v7() -> String {
         use std::fmt::Write as _;
         write!(h, "{x:02x}").expect("writing to a String is infallible");
     }
-    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
 }
 
 fn sessions_dir(cwd: &Path) -> Option<PathBuf> {
@@ -114,7 +121,12 @@ impl Persistence {
     ///
     /// # Errors
     /// Fails on serialization or I/O errors.
-    pub fn append_model_change(&self, model: &str, role: Option<&str>, resolved_model_is_fallback: bool) -> Result<()> {
+    pub fn append_model_change(
+        &self,
+        model: &str,
+        role: Option<&str>,
+        resolved_model_is_fallback: bool,
+    ) -> Result<()> {
         self.writer
             .lock()
             .unwrap()
@@ -126,7 +138,11 @@ impl Persistence {
     ///
     /// # Errors
     /// Fails on serialization or I/O errors.
-    pub fn append_thinking_level_change(&self, level: Option<&str>, configured: Option<&str>) -> Result<()> {
+    pub fn append_thinking_level_change(
+        &self,
+        level: Option<&str>,
+        configured: Option<&str>,
+    ) -> Result<()> {
         self.writer
             .lock()
             .unwrap()
@@ -138,7 +154,12 @@ impl Persistence {
     ///
     /// # Errors
     /// Fails on serialization or I/O errors.
-    pub fn append_title_change(&self, title: &str, source: &str, previous: Option<&str>) -> Result<()> {
+    pub fn append_title_change(
+        &self,
+        title: &str,
+        source: &str,
+        previous: Option<&str>,
+    ) -> Result<()> {
         self.writer
             .lock()
             .unwrap()
@@ -150,7 +171,11 @@ impl Persistence {
     ///
     /// # Errors
     /// Fails on serialization or I/O errors.
-    pub fn append_message(&self, message: &pa_types::session::AgentMessage, timestamp_ms: i64) -> Result<()> {
+    pub fn append_message(
+        &self,
+        message: &pa_types::session::AgentMessage,
+        timestamp_ms: i64,
+    ) -> Result<()> {
         self.writer
             .lock()
             .unwrap()
@@ -230,10 +255,17 @@ pub async fn attach(agent: &Agent, cwd: &Path) -> Result<Persistence> {
 pub async fn attach_with(agent: &Agent, cwd: &Path, ephemeral: bool) -> Result<Persistence> {
     let session_id = uuid_v7();
     let (dir, scratch) = if ephemeral {
-        let d = std::env::temp_dir().join(format!("omp-rs-nosession-{}-{}", std::process::id(), &session_id[..8]));
+        let d = std::env::temp_dir().join(format!(
+            "omp-rs-nosession-{}-{}",
+            std::process::id(),
+            &session_id[..8]
+        ));
         (d.clone(), Some(d))
     } else {
-        (sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("HOME is not set"))?, None)
+        (
+            sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("HOME is not set"))?,
+            None,
+        )
     };
     let writer = SessionWriter::create(&dir, &cwd.display().to_string(), &session_id, &now_iso())?;
     let writer = Arc::new(Mutex::new(writer));

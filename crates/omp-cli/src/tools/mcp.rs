@@ -76,7 +76,10 @@ fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
 /// Process-lifetime runtime used when the host has no Tokio context.
 fn fallback_runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
-        tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("MCP runtime")
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("MCP runtime")
     });
     &RUNTIME
 }
@@ -128,12 +131,17 @@ impl AgentTool for McpTool {
                         "serverName": self.server,
                         "toolName": self.tool_name,
                         "isError": result.is_error,
-                        
+
                     });
-                    Ok(AgentToolResult { content, details, terminate: None })
+                    Ok(AgentToolResult {
+                        content,
+                        details,
+                        terminate: None,
+                    })
                 }
                 Err(error) => {
-                    let text = omp_mcp::errors::format_tool_failure(&error, &self.server, &self.tool_name);
+                    let text =
+                        omp_mcp::errors::format_tool_failure(&error, &self.server, &self.tool_name);
                     Ok(AgentToolResult {
                         content: vec![ToolResultContent::text(text)],
                         details: serde_json::json!({
@@ -152,7 +160,6 @@ impl AgentTool for McpTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pa_agent::types::AgentTool;
     use std::io::Write;
 
     /// Same fake MCP stdio server as the omp-mcp fixture.
@@ -182,10 +189,14 @@ for line in sys.stdin:
 
     /// Registration matches omp: `mcp__<server>_<tool>` names, verbatim
     /// schema passthrough, `MCP tool from <server>` fallback description,
-    /// and execute() result formatting.
+    /// and `execute()` result formatting.
     #[test]
     fn mcp_tools_register_with_omp_names_and_schemas() {
-        if std::process::Command::new("python3").arg("--version").output().is_err() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             eprintln!("python3 not available; skipping");
             return;
         }
@@ -217,7 +228,10 @@ for line in sys.stdin:
         assert_eq!(tool.name(), "mcp__fake_echo");
         assert_eq!(tool.description(), "Echo args");
         // Schema passthrough: server-provided inputSchema is kept verbatim.
-        assert_eq!(tool.parameters()["properties"]["text"]["type"], serde_json::json!("string"));
+        assert_eq!(
+            tool.parameters()["properties"]["text"]["type"],
+            serde_json::json!("string")
+        );
         assert_eq!(tool.parameters()["required"], serde_json::json!(["text"]));
 
         // Execute through the AgentTool surface.
@@ -238,7 +252,7 @@ for line in sys.stdin:
             });
         let text = match &result.content[0] {
             ToolResultContent::Text(t) => t.text.clone(),
-            other => panic!("unexpected content: {other:?}"),
+            ToolResultContent::Image(_) => panic!("unexpected content: image"),
         };
         assert!(text.contains("\"text\": \"hi\""), "result text: {text}");
         assert_eq!(result.details["serverName"], serde_json::json!("fake"));

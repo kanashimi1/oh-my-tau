@@ -11,7 +11,10 @@
 use serde_json::{Map, Value};
 
 use crate::json::{message_role, str_field, truthy};
-use crate::messages::{render_branch_summary_context, render_compaction_summary_context, render_handoff_summary_context};
+use crate::messages::{
+    render_branch_summary_context, render_compaction_summary_context,
+    render_handoff_summary_context,
+};
 
 fn text_block(text: &str) -> Value {
     let mut b = Map::new();
@@ -34,8 +37,15 @@ pub fn bash_execution_to_text(msg: &Value) -> String {
     }
     if truthy(msg.get("cancelled")) {
         text.push_str("\n\n(command cancelled)");
-    } else if let Some(code) = msg.get("exitCode").filter(|c| !c.is_null()).filter(|c| c.as_f64() != Some(0.0)) {
-        text.push_str(&format!("\n\nCommand exited with code {}", code.as_f64().map_or_else(|| code.to_string(), js_number)));
+    } else if let Some(code) = msg
+        .get("exitCode")
+        .filter(|c| !c.is_null())
+        .filter(|c| c.as_f64() != Some(0.0))
+    {
+        text.push_str(&format!(
+            "\n\nCommand exited with code {}",
+            code.as_f64().map_or_else(|| code.to_string(), js_number)
+        ));
     }
     text
 }
@@ -43,15 +53,25 @@ pub fn bash_execution_to_text(msg: &Value) -> String {
 /// `pythonExecutionToText` (without the `OutputMeta` notice).
 #[must_use]
 pub fn python_execution_to_text(msg: &Value) -> String {
-    let mut text = format!("Ran Python:\n```python\n{}\n```\n", str_field(msg, "code").unwrap_or(""));
+    let mut text = format!(
+        "Ran Python:\n```python\n{}\n```\n",
+        str_field(msg, "code").unwrap_or("")
+    );
     match str_field(msg, "output").filter(|o| !o.is_empty()) {
         Some(output) => text.push_str(&format!("Output:\n```\n{output}\n```")),
         None => text.push_str("(no output)"),
     }
     if truthy(msg.get("cancelled")) {
         text.push_str("\n\n(execution cancelled)");
-    } else if let Some(code) = msg.get("exitCode").filter(|c| !c.is_null()).filter(|c| c.as_f64() != Some(0.0)) {
-        text.push_str(&format!("\n\nExecution failed with code {}", code.as_f64().map_or_else(|| code.to_string(), js_number)));
+    } else if let Some(code) = msg
+        .get("exitCode")
+        .filter(|c| !c.is_null())
+        .filter(|c| c.as_f64() != Some(0.0))
+    {
+        text.push_str(&format!(
+            "\n\nExecution failed with code {}",
+            code.as_f64().map_or_else(|| code.to_string(), js_number)
+        ));
     }
     text
 }
@@ -68,14 +88,30 @@ pub(crate) fn js_number(f: f64) -> String {
 /// `getPrunedToolResultContent`: a pruned tool result keeps its text (or `[Output truncated]`)
 /// collapsed into the first text block's slot.
 fn pruned_tool_result_content(message: &Value) -> Value {
-    let content = message.get("content").cloned().unwrap_or(Value::Array(Vec::new()));
+    let content = message
+        .get("content")
+        .cloned()
+        .unwrap_or(Value::Array(Vec::new()));
     if message.get("prunedAt").is_none_or(Value::is_null) {
         return content;
     }
-    let Value::Array(blocks) = &content else { return content };
-    let text: String = blocks.iter().filter(|b| str_field(b, "type") == Some("text")).filter_map(|b| str_field(b, "text")).collect();
-    let text = if text.is_empty() { "[Output truncated]".to_owned() } else { text };
-    let Some(first_text) = blocks.iter().position(|b| str_field(b, "type") == Some("text")) else {
+    let Value::Array(blocks) = &content else {
+        return content;
+    };
+    let text: String = blocks
+        .iter()
+        .filter(|b| str_field(b, "type") == Some("text"))
+        .filter_map(|b| str_field(b, "text"))
+        .collect();
+    let text = if text.is_empty() {
+        "[Output truncated]".to_owned()
+    } else {
+        text
+    };
+    let Some(first_text) = blocks
+        .iter()
+        .position(|b| str_field(b, "type") == Some("text"))
+    else {
         let mut out = vec![text_block(&text)];
         out.extend(blocks.iter().cloned());
         return Value::Array(out);
@@ -117,7 +153,11 @@ pub fn convert_message(message: &Value) -> Option<Value> {
             if truthy(message.get("excludeFromContext")) {
                 return None;
             }
-            let text = if message_role(message) == "bashExecution" { bash_execution_to_text(message) } else { python_execution_to_text(message) };
+            let text = if message_role(message) == "bashExecution" {
+                bash_execution_to_text(message)
+            } else {
+                python_execution_to_text(message)
+            };
             let mut content = vec![text_block(&text)];
             if let Some(images) = message.get("images").and_then(Value::as_array) {
                 content.extend(images.iter().cloned());
@@ -140,7 +180,12 @@ pub fn convert_message(message: &Value) -> Option<Value> {
         }
         "branchSummary" => Some(obj(vec![
             ("role", "user".into()),
-            ("content", Value::Array(vec![text_block(&render_branch_summary_context(str_field(message, "summary").unwrap_or("")))])),
+            (
+                "content",
+                Value::Array(vec![text_block(&render_branch_summary_context(
+                    str_field(message, "summary").unwrap_or(""),
+                ))]),
+            ),
             ("attribution", "agent".into()),
             ("historyRewriteAt", timestamp.clone()),
             ("timestamp", timestamp),
@@ -163,7 +208,11 @@ pub fn convert_message(message: &Value) -> Option<Value> {
                 }
                 c
             };
-            let rewrite = message.get("historyRewriteAt").filter(|v| !v.is_null()).cloned().unwrap_or_else(|| timestamp.clone());
+            let rewrite = message
+                .get("historyRewriteAt")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .unwrap_or_else(|| timestamp.clone());
             let mut pairs = vec![
                 ("role", Value::from("user")),
                 ("content", Value::Array(content)),

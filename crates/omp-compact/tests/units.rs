@@ -4,7 +4,10 @@ use std::collections::BTreeSet;
 
 use omp_compact::apply::{compaction_entry, ApplyOptions};
 use omp_compact::files::format_file_operations;
-use omp_compact::messages::{render_branch_summary_context, render_compaction_summary_context, render_handoff_summary_context};
+use omp_compact::messages::{
+    render_branch_summary_context, render_compaction_summary_context,
+    render_handoff_summary_context,
+};
 use omp_compact::prompts;
 use omp_compact::settings::{resolve_threshold_tokens, should_compact, CompactionSettings};
 use omp_compact::summary::{compact, SummaryKind, SummaryParams, SummaryRequest};
@@ -13,7 +16,11 @@ use pa_types::ai::{AssistantMessage, Message, UserContent, UserContentBlock};
 use serde_json::{json, Value};
 
 fn golden(name: &str) -> String {
-    std::fs::read_to_string(format!("{}/tests/fixtures/prompts/{name}.txt", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    std::fs::read_to_string(format!(
+        "{}/tests/fixtures/prompts/{name}.txt",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
 }
 
 #[test]
@@ -40,8 +47,12 @@ fn context_wrappers_match_ts_render() {
         render_compaction_summary_context(PROBE),
         "Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\nA <b> & \"q\" 's' {{x}} `c`\nz\n</summary>"
     );
-    assert_eq!(render_branch_summary_context(PROBE), "Branch-return summary:\n\n<summary>\nA <b> & \"q\" 's' {{x}} `c`\nz\n</summary>");
-    assert!(render_handoff_summary_context(PROBE).ends_with("<handoff>\nA <b> & \"q\" 's' {{x}} `c`\nz\n</handoff>"));
+    assert_eq!(
+        render_branch_summary_context(PROBE),
+        "Branch-return summary:\n\n<summary>\nA <b> & \"q\" 's' {{x}} `c`\nz\n</summary>"
+    );
+    assert!(render_handoff_summary_context(PROBE)
+        .ends_with("<handoff>\nA <b> & \"q\" 's' {{x}} `c`\nz\n</handoff>"));
 }
 
 #[test]
@@ -49,7 +60,10 @@ fn file_operations_block_matches_ts() {
     let read = vec!["a/b.ts".to_owned(), "a/c.ts".to_owned()];
     let modified = vec!["a/d.ts".to_owned(), "z.md".to_owned()];
     let set: BTreeSet<String> = ["a/d.ts".to_owned()].into();
-    assert_eq!(format_file_operations(&read, &modified, Some(&set)), "<files>\nz.md (Write)\n# a/\nb.ts (Read)\nc.ts (Read)\nd.ts (RW)\n</files>");
+    assert_eq!(
+        format_file_operations(&read, &modified, Some(&set)),
+        "<files>\nz.md (Write)\n# a/\nb.ts (Read)\nc.ts (Read)\nd.ts (RW)\n</files>"
+    );
 }
 
 #[test]
@@ -59,13 +73,26 @@ fn threshold_arithmetic() {
     assert_eq!(resolve_threshold_tokens(200_000, &s), 170_000.0);
     assert!(should_compact(170_001, 200_000, &s));
     assert!(!should_compact(170_000, 200_000, &s));
-    let pct = CompactionSettings { threshold_percent: Some(50.0), ..s.clone() };
+    let pct = CompactionSettings {
+        threshold_percent: Some(50.0),
+        ..s.clone()
+    };
     assert_eq!(resolve_threshold_tokens(200_000, &pct), 100_000.0);
-    let fixed = CompactionSettings { threshold_tokens: Some(5_000_000.0), ..s.clone() };
+    let fixed = CompactionSettings {
+        threshold_tokens: Some(5_000_000.0),
+        ..s.clone()
+    };
     assert_eq!(resolve_threshold_tokens(200_000, &fixed), 199_999.0);
     // small window: defaulted reserve is impossible -> proportional 15%
     assert_eq!(resolve_threshold_tokens(16_000, &s), 13_600.0);
-    assert!(!should_compact(1_000_000, 200_000, &CompactionSettings { enabled: false, ..s }));
+    assert!(!should_compact(
+        1_000_000,
+        200_000,
+        &CompactionSettings {
+            enabled: false,
+            ..s
+        }
+    ));
 }
 
 fn reply(text: &str) -> AssistantMessage {
@@ -92,15 +119,24 @@ fn session() -> Vec<Value> {
 #[tokio::test]
 async fn compact_runs_summary_flow_through_injected_completer() {
     let entries = session();
-    let settings = CompactionSettings { keep_recent_tokens: 30, ..CompactionSettings::default() };
-    let prep = plan_compaction(&entries, &settings, &ByteEstimate).unwrap().unwrap();
+    let settings = CompactionSettings {
+        keep_recent_tokens: 30,
+        ..CompactionSettings::default()
+    };
+    let prep = plan_compaction(&entries, &settings, &ByteEstimate)
+        .unwrap()
+        .unwrap();
     assert_eq!(prep.first_kept_entry_id, "u2");
     assert!(!prep.is_split_turn);
     assert_eq!(prep.tokens_before, 110);
 
     let seen = std::sync::Mutex::new(Vec::<SummaryRequest>::new());
     let completer = |req: SummaryRequest| {
-        let text = if req.kind == SummaryKind::CompactionShortSummary { "I did things." } else { "## Goal\nthe goal" };
+        let text = if req.kind == SummaryKind::CompactionShortSummary {
+            "I did things."
+        } else {
+            "## Goal\nthe goal"
+        };
         seen.lock().unwrap().push(req);
         async move { Ok(reply(text)) }
     };
@@ -108,21 +144,43 @@ async fn compact_runs_summary_flow_through_injected_completer() {
     let result = compact(&completer, &prep, &params).await.unwrap();
 
     let seen = seen.into_inner().unwrap();
-    assert_eq!(seen.iter().map(|r| r.kind).collect::<Vec<_>>(), [SummaryKind::CompactionSummary, SummaryKind::CompactionShortSummary]);
+    assert_eq!(
+        seen.iter().map(|r| r.kind).collect::<Vec<_>>(),
+        [
+            SummaryKind::CompactionSummary,
+            SummaryKind::CompactionShortSummary
+        ]
+    );
     assert_eq!(seen[0].max_tokens, 13_107);
     assert_eq!(seen[1].max_tokens, 512);
-    let Message::User(user) = &seen[0].context.messages[0] else { panic!("user request expected") };
-    let UserContent::Blocks(blocks) = &user.content else { panic!("blocks expected") };
-    let UserContentBlock::Text(t) = &blocks[0] else { panic!("text expected") };
+    let Message::User(user) = &seen[0].context.messages[0] else {
+        panic!("user request expected")
+    };
+    let UserContent::Blocks(blocks) = &user.content else {
+        panic!("blocks expected")
+    };
+    let UserContentBlock::Text(t) = &blocks[0] else {
+        panic!("text expected")
+    };
     assert!(t.text.starts_with("<conversation>\n\n\nHuman: first request\n\nAssistant: <invoke name=\"read\"><parameter name=\"path\">\"src/a.rs:1-20\"</parameter></invoke>\n<invoke name=\"edit\">"));
-    assert!(t.text.contains("Human: <tool_response>\nfile body\n</tool_response>"));
-    assert!(t.text.ends_with(&prompts::render_static(prompts::SUMMARIZATION)));
+    assert!(t
+        .text
+        .contains("Human: <tool_response>\nfile body\n</tool_response>"));
+    assert!(t
+        .text
+        .ends_with(&prompts::render_static(prompts::SUMMARIZATION)));
     assert_eq!(user.timestamp, 42);
 
-    assert_eq!(result.summary, "## Goal\nthe goal\n\n<files>\n# src/\na.rs (Read)\nb.rs (Write)\n</files>");
+    assert_eq!(
+        result.summary,
+        "## Goal\nthe goal\n\n<files>\n# src/\na.rs (Read)\nb.rs (Write)\n</files>"
+    );
     assert_eq!(result.short_summary, "I did things.");
     assert_eq!(result.first_kept_entry_id, "u2");
-    assert_eq!(result.details, json!({"readFiles": ["src/a.rs"], "modifiedFiles": ["src/b.rs"]}));
+    assert_eq!(
+        result.details,
+        json!({"readFiles": ["src/a.rs"], "modifiedFiles": ["src/b.rs"]})
+    );
 }
 
 #[test]
@@ -135,9 +193,21 @@ fn compaction_entry_serializes_in_omp_order() {
         details: json!({"readFiles": [], "modifiedFiles": []}),
         preserve_data: None,
     };
-    let opts = ApplyOptions { method: Some("soft".into()), tokens_after: Some(50), from_extension: Some(false) };
-    let line = compaction_entry(&result, "d5daf5a9", Some("8a644e3e"), "2026-01-01T00:00:00.000Z", &opts);
-    let line = omp_session::OmpEntry::Compaction(Box::new(line)).to_line().unwrap();
+    let opts = ApplyOptions {
+        method: Some("soft".into()),
+        tokens_after: Some(50),
+        from_extension: Some(false),
+    };
+    let line = compaction_entry(
+        &result,
+        "d5daf5a9",
+        Some("8a644e3e"),
+        "2026-01-01T00:00:00.000Z",
+        &opts,
+    );
+    let line = omp_session::OmpEntry::Compaction(Box::new(line))
+        .to_line()
+        .unwrap();
     assert_eq!(
         line,
         r#"{"type":"compaction","id":"d5daf5a9","parentId":"8a644e3e","timestamp":"2026-01-01T00:00:00.000Z","summary":"S","shortSummary":"","firstKeptEntryId":"u2","tokensBefore":110,"tokensAfter":50,"method":"soft","details":{"readFiles":[],"modifiedFiles":[]},"fromExtension":false}"#
@@ -150,7 +220,11 @@ fn context_after_new_compaction_keeps_tail_then_new_messages() {
     entries.push(json!({"type":"compaction","id":"k1","parentId":"a2","timestamp":"2026-01-01T00:00:05.000Z","summary":"SUM","firstKeptEntryId":"u2","tokensBefore":110}));
     entries.push(json!({"type":"message","id":"u3","parentId":"k1","timestamp":"2026-01-01T00:00:06.000Z","message":{"role":"user","content":"third","timestamp":7}}));
     let ctx = omp_compact::build_session_context(&entries, omp_compact::Leaf::Last).unwrap();
-    let roles: Vec<&str> = ctx.messages.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    let roles: Vec<&str> = ctx
+        .messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
     assert_eq!(roles, ["compactionSummary", "user", "assistant", "user"]);
     let llm = omp_compact::convert_to_llm(&ctx.messages);
     assert_eq!(llm[0]["historyRewriteAt"], llm[0]["timestamp"]);

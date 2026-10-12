@@ -147,7 +147,10 @@ impl Extensions {
             )
             .await?;
         for err in &loaded.errors {
-            eprintln!("omp-rs: extension failed to load: {}: {}", err.path, err.error);
+            eprintln!(
+                "omp-rs: extension failed to load: {}: {}",
+                err.path, err.error
+            );
         }
 
         Ok(Arc::new(Self {
@@ -179,7 +182,12 @@ impl Extensions {
             .list_tools()
             .await?
             .into_iter()
-            .map(|info| Arc::new(ExtTool { host: self.host.clone(), info }) as Arc<dyn AgentTool>)
+            .map(|info| {
+                Arc::new(ExtTool {
+                    host: self.host.clone(),
+                    info,
+                }) as Arc<dyn AgentTool>
+            })
             .collect())
     }
 
@@ -212,7 +220,11 @@ impl Extensions {
     ///
     /// # Errors
     /// Transport failure; handler outcomes are applied best-effort.
-    pub async fn before_prompt(self: &Arc<Self>, agent: &Agent, prompt: &str) -> Result<PromptGate> {
+    pub async fn before_prompt(
+        self: &Arc<Self>,
+        agent: &Agent,
+        prompt: &str,
+    ) -> Result<PromptGate> {
         let state = agent.state().await;
         let system_prompts = vec![state.system_prompt.clone()];
         let outcome = self
@@ -240,7 +252,9 @@ impl Extensions {
         if input.handled {
             return Ok(PromptGate::Handled);
         }
-        Ok(PromptGate::Run(input.text.unwrap_or_else(|| prompt.to_string())))
+        Ok(PromptGate::Run(
+            input.text.unwrap_or_else(|| prompt.to_string()),
+        ))
     }
 
     /// Attach to a running runtime: serve host->core notifications
@@ -262,7 +276,9 @@ impl Extensions {
         let ext = self.clone();
         tokio::spawn(async move {
             let sub = ext.subscribe_lifecycle(rt).await;
-            *ext.sub.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sub);
+            *ext.sub
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sub);
             // Hold the subscription for the session's lifetime.
             std::future::pending::<()>().await;
         });
@@ -325,7 +341,11 @@ fn handle_notification(rt: &Arc<Runtime>, msg: HostMessage) {
             }
         }
         "ui_notify" | "tool_update" | "set_label" => {
-            rt.send_extension_frame(params.get("extension").and_then(Value::as_str), &method, &params);
+            rt.send_extension_frame(
+                params.get("extension").and_then(Value::as_str),
+                &method,
+                &params,
+            );
         }
         _ => {}
     }
@@ -396,7 +416,9 @@ async fn session_stop_continuation(
     new_messages: &[AgentMessage],
 ) -> Vec<AgentMessage> {
     let (hook_active, continuations) = {
-        let s = stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let s = stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (s.hook_active, s.continuations)
     };
     let event = LifecycleEvent::SessionStop {
@@ -419,11 +441,15 @@ async fn session_stop_continuation(
         }
     };
     let Some(text) = stop_continuation_text(&outcome) else {
-        *stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
+        *stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
         return Vec::new();
     };
     {
-        let mut s = stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !outcome.block {
             if continuations >= SESSION_STOP_CONTINUATION_CAP {
                 eprintln!("omp-rs: session_stop continuation cap reached");
@@ -463,8 +489,9 @@ async fn forward_event(
         AgentEvent::AgentStart => {
             // A new run resets the session_stop continuation bookkeeping
             // (TS `#resetSessionStopContinuationState` on generation change).
-            *stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-                StopState::default();
+            *stop
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
             emit_silent(host.emit_agent_start(None).await);
         }
         AgentEvent::AgentEnd { messages } => {
@@ -478,7 +505,10 @@ async fn forward_event(
             let index = turn.fetch_add(1, Ordering::SeqCst) + 1;
             emit_silent(host.emit_turn_start(index, now_ms, None).await);
         }
-        AgentEvent::TurnEnd { message, tool_results } => {
+        AgentEvent::TurnEnd {
+            message,
+            tool_results,
+        } => {
             let results = tool_results
                 .iter()
                 .map(serde_json::to_value)
@@ -613,7 +643,10 @@ impl AgentTool for ExtTool {
                 .map(serde_json::from_value)
                 .transpose()?
                 .unwrap_or_default();
-            let is_error = value.get("isError").and_then(Value::as_bool).unwrap_or(false);
+            let is_error = value
+                .get("isError")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let details = value.get("details").cloned().unwrap_or(Value::Null);
             if is_error {
                 let text = content
@@ -716,8 +749,7 @@ mod tests {
         let host = sh_host(dir.path(), CONTINUE_HOST, Vec::new());
         let stop = Mutex::new(StopState::default());
         let turn = AtomicU64::new(2);
-        let messages =
-            session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
+        let messages = session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
         assert_eq!(messages.len(), 1);
         let AgentMessage::Custom(custom) = &messages[0] else {
             panic!("continuation must be a custom message");
@@ -748,8 +780,7 @@ mod tests {
                 session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
             assert_eq!(messages.len(), 1, "continuation {i} scheduled");
         }
-        let messages =
-            session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
+        let messages = session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
         assert!(messages.is_empty(), "cap reached: no further continuation");
         assert_eq!(
             *stop.lock().unwrap(),

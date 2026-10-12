@@ -12,10 +12,13 @@ use std::path::Path;
 
 use anyhow::{anyhow, Context as _, Result};
 use omp_compact::context::branch_path;
-use omp_compact::settings::{calculate_context_tokens, compaction_context_tokens, last_assistant_usage};
+use omp_compact::settings::{
+    calculate_context_tokens, compaction_context_tokens, last_assistant_usage,
+};
 use omp_compact::tokens::{count_messages, CountOptions};
 use omp_compact::{
-    build_session_context, convert_to_llm, plan_compaction, project_tokens_after, should_compact, ApplyOptions, ByteEstimate, CompactionResult, CompactionSettings, Completer, Leaf,
+    build_session_context, convert_to_llm, plan_compaction, project_tokens_after, should_compact,
+    ApplyOptions, ByteEstimate, CompactionResult, CompactionSettings, Completer, Leaf,
     SummaryParams, SummaryRequest,
 };
 use pa_agent::types::AgentMessage;
@@ -55,7 +58,10 @@ pub fn settings_from_config(config: &serde_yaml_ng::Value) -> CompactionSettings
     }
     // Only the `soft` method is available here: an explicit order without it leaves nothing to run.
     if let Some(order) = get("methodOrder").and_then(serde_yaml_ng::Value::as_sequence) {
-        let has_soft = order.iter().filter_map(serde_yaml_ng::Value::as_str).any(|m| matches!(m, "soft" | "context-full"));
+        let has_soft = order
+            .iter()
+            .filter_map(serde_yaml_ng::Value::as_str)
+            .any(|m| matches!(m, "soft" | "context-full"));
         if !has_soft {
             s.strategy = Some("off".to_owned());
         }
@@ -101,7 +107,10 @@ pub struct LiveCompleter {
 }
 
 impl Completer for LiveCompleter {
-    fn complete(&self, request: SummaryRequest) -> impl Future<Output = Result<AssistantMessage>> + Send {
+    fn complete(
+        &self,
+        request: SummaryRequest,
+    ) -> impl Future<Output = Result<AssistantMessage>> + Send {
         let model = self.model.clone();
         let api_key = self.api_key.clone();
         let headers = self.headers.clone();
@@ -114,12 +123,16 @@ impl Completer for LiveCompleter {
                     ..pa_ai::types::StreamOptions::default()
                 },
                 // `resolveCompactionEffort`: High by default, only for reasoning models.
-                reasoning: model.reasoning.then_some(pa_types::ai::ModelThinkingLevel::High),
+                reasoning: model
+                    .reasoning
+                    .then_some(pa_types::ai::ModelThinkingLevel::High),
                 thinking_budgets: None,
                 disable_reasoning: false,
                 tool_choice: None,
             };
-            pa_ai::complete_simple(&model, &request.context, Some(options)).await.map_err(|e| anyhow!("{e:?}"))
+            pa_ai::complete_simple(&model, &request.context, Some(options))
+                .await
+                .map_err(|e| anyhow!("{e:?}"))
         }
     }
 }
@@ -130,13 +143,27 @@ impl LiveCompleter {
     /// # Errors
     /// No provider target is set.
     pub fn from_target(target: &crate::agent::Target) -> Result<Self> {
-        let t = target.read().map_err(|_| anyhow!("provider target lock poisoned"))?.clone().ok_or_else(|| anyhow!("no provider target"))?;
-        Ok(Self { model: t.model, api_key: t.api_key, headers: t.headers })
+        let t = target
+            .read()
+            .map_err(|_| anyhow!("provider target lock poisoned"))?
+            .clone()
+            .ok_or_else(|| anyhow!("no provider target"))?;
+        Ok(Self {
+            model: t.model,
+            api_key: t.api_key,
+            headers: t.headers,
+        })
     }
 }
 
 /// An injected summarizer (tests, hosts that route summaries elsewhere).
-pub type SummarizeFn = std::sync::Arc<dyn Fn(SummaryRequest) -> std::pin::Pin<Box<dyn Future<Output = Result<AssistantMessage>> + Send>> + Send + Sync>;
+pub type SummarizeFn = std::sync::Arc<
+    dyn Fn(
+            SummaryRequest,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<AssistantMessage>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// The summarizer a compaction runs with: the live model, or an injected function.
 #[derive(Clone)]
@@ -146,7 +173,10 @@ pub enum Summarizer {
 }
 
 impl Completer for Summarizer {
-    fn complete(&self, request: SummaryRequest) -> impl Future<Output = Result<AssistantMessage>> + Send {
+    fn complete(
+        &self,
+        request: SummaryRequest,
+    ) -> impl Future<Output = Result<AssistantMessage>> + Send {
         let this = self.clone();
         async move {
             match this {
@@ -180,24 +210,50 @@ fn now_ms() -> u64 {
 /// # Errors
 /// Nothing to compact / already compacted (TS messages), summarization failure, unsupported
 /// previous compaction payload, or a write failure.
-pub async fn compact_now(persist: &Persistence, entries: &[Value], completer: &impl Completer, params: &CompactParams<'_>) -> Result<(CompactionResult, Value)> {
-    let branch: Vec<Value> = branch_path(entries, Leaf::Last).into_iter().cloned().collect();
+pub async fn compact_now(
+    persist: &Persistence,
+    entries: &[Value],
+    completer: &impl Completer,
+    params: &CompactParams<'_>,
+) -> Result<(CompactionResult, Value)> {
+    let branch: Vec<Value> = branch_path(entries, Leaf::Last)
+        .into_iter()
+        .cloned()
+        .collect();
     let tokenizer = ByteEstimate;
     let prep = plan_compaction(&branch, params.settings, &tokenizer).map_err(|e| anyhow!("{e}"))?;
     let Some(prep) = prep else {
-        if branch.last().is_some_and(|e| e.get("type").and_then(Value::as_str) == Some("compaction")) {
+        if branch
+            .last()
+            .is_some_and(|e| e.get("type").and_then(Value::as_str) == Some("compaction"))
+        {
             return Err(anyhow!("Already compacted"));
         }
         return Err(anyhow!("Nothing to compact (session too small)"));
     };
     let mut summary_params = SummaryParams::new(now_ms()).for_model(params.model_id);
-    summary_params.reserve_tokens = params.settings.reserve_tokens.unwrap_or(omp_compact::settings::DEFAULT_RESERVE_TOKENS);
+    summary_params.reserve_tokens = params
+        .settings
+        .reserve_tokens
+        .unwrap_or(omp_compact::settings::DEFAULT_RESERVE_TOKENS);
     summary_params.context_window = params.context_window;
     summary_params.custom_instructions = params.custom_instructions;
     let result = omp_compact::compact(completer, &prep, &summary_params).await?;
     let ts = iso_from_ms(i64::try_from(now_ms()).unwrap_or(0));
-    let tokens_after = project_tokens_after(&branch, &result, Some("soft"), &ts, params.non_message_tokens, &tokenizer).ok();
-    let options = ApplyOptions { method: Some("soft".to_owned()), tokens_after, from_extension: Some(false) };
+    let tokens_after = project_tokens_after(
+        &branch,
+        &result,
+        Some("soft"),
+        &ts,
+        params.non_message_tokens,
+        &tokenizer,
+    )
+    .ok();
+    let options = ApplyOptions {
+        method: Some("soft".to_owned()),
+        tokens_after,
+        from_extension: Some(false),
+    };
     persist
         .with_writer(|w| omp_compact::append_compaction(w, &result, &ts, &options))
         .context("writing the compaction entry")?;
@@ -222,16 +278,32 @@ pub fn auto_check(entries: &[Value], context_window: u64, settings: &CompactionS
     if !settings.enabled || context_window == 0 {
         return false;
     }
-    let branch: Vec<Value> = branch_path(entries, Leaf::Last).into_iter().cloned().collect();
-    let after = branch.iter().rposition(|e| e.get("type").and_then(Value::as_str) == Some("compaction")).map_or(0, |i| i + 1);
+    let branch: Vec<Value> = branch_path(entries, Leaf::Last)
+        .into_iter()
+        .cloned()
+        .collect();
+    let after = branch
+        .iter()
+        .rposition(|e| e.get("type").and_then(Value::as_str) == Some("compaction"))
+        .map_or(0, |i| i + 1);
     // An assistant turn that predates the latest compaction carries stale usage.
     let usage = last_assistant_usage(&branch[after..]).map_or(0, calculate_context_tokens);
     let stored = rebuild_estimate(&branch);
-    should_compact(compaction_context_tokens(usage, stored), context_window, settings)
+    should_compact(
+        compaction_context_tokens(usage, stored),
+        context_window,
+        settings,
+    )
 }
 
 fn rebuild_estimate(branch: &[Value]) -> u64 {
-    build_session_context(branch, Leaf::Last).map_or(0, |ctx| count_messages(&ByteEstimate, &convert_to_llm(&ctx.messages), CountOptions::default()))
+    build_session_context(branch, Leaf::Last).map_or(0, |ctx| {
+        count_messages(
+            &ByteEstimate,
+            &convert_to_llm(&ctx.messages),
+            CountOptions::default(),
+        )
+    })
 }
 
 /// Copy the active branch of a loaded session into the (fresh) live session file so its
@@ -243,15 +315,31 @@ fn rebuild_estimate(branch: &[Value]) -> u64 {
 pub fn seed_entries(persist: &Persistence, entries: &[Value]) -> Result<()> {
     let mut ids = std::collections::HashMap::<String, String>::new();
     for entry in branch_path(entries, Leaf::Last) {
-        let Some(kind) = entry.get("type").and_then(Value::as_str) else { continue };
-        let Some(Value::Object(mut fields)) = Some(entry.clone()) else { continue };
-        let old_id = fields.get("id").and_then(Value::as_str).unwrap_or_default().to_owned();
-        let ts = fields.get("timestamp").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let Some(kind) = entry.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(Value::Object(mut fields)) = Some(entry.clone()) else {
+            continue;
+        };
+        let old_id = fields
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let ts = fields
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
         for k in ["type", "id", "parentId", "timestamp"] {
             fields.remove(k);
         }
         for key in ["firstKeptEntryId", "providerReplayThroughEntryId"] {
-            if let Some(mapped) = fields.get(key).and_then(Value::as_str).and_then(|id| ids.get(id)) {
+            if let Some(mapped) = fields
+                .get(key)
+                .and_then(Value::as_str)
+                .and_then(|id| ids.get(id))
+            {
                 fields.insert(key.to_owned(), Value::String(mapped.clone()));
             }
         }
@@ -314,7 +402,9 @@ mod tests {
 
     async fn harness(turns: usize) -> Harness {
         let model = pa_model();
-        let provider = Arc::new(ScriptedProvider::new(json_round_trip(&model).expect("agent model")));
+        let provider = Arc::new(ScriptedProvider::new(
+            json_round_trip(&model).expect("agent model"),
+        ));
         for i in 0..turns {
             provider.push_text_turn(&format!("answer {i} {}", "y".repeat(400)));
         }
@@ -330,8 +420,15 @@ mod tests {
             ..AgentOptions::default()
         });
         let cwd = std::env::temp_dir();
-        let persist = crate::persist::attach_with(&agent, &cwd, true).await.expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget { api_key: Some("k".into()), model, service_tier: None, headers: None })));
+        let persist = crate::persist::attach_with(&agent, &cwd, true)
+            .await
+            .expect("session");
+        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+            api_key: Some("k".into()),
+            model,
+            service_tier: None,
+            headers: None,
+        })));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let rt = Runtime::start(Arc::new(agent), target, cwd, persist, tx).await;
         // keep the provider alive for the runtime's lifetime
@@ -342,7 +439,10 @@ mod tests {
     async fn until_settled(rx: &mut UnboundedReceiver<Value>) -> Vec<Value> {
         let mut out = Vec::new();
         loop {
-            let f = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await.expect("frame in time").expect("open");
+            let f = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .expect("frame in time")
+                .expect("open");
             let done = f["type"] == "session_settled";
             out.push(f);
             if done {
@@ -352,18 +452,29 @@ mod tests {
     }
 
     fn small_keep() -> CompactionSettings {
-        CompactionSettings { keep_recent_tokens: 100, ..CompactionSettings::default() }
+        CompactionSettings {
+            keep_recent_tokens: 100,
+            ..CompactionSettings::default()
+        }
     }
 
     async fn talk(h: &mut Harness, prompts: usize) {
         for i in 0..prompts {
-            h.rt.prompt(None, &format!("question {i} {}", "x".repeat(400)), None, Vec::new()).await.expect("prompt");
+            h.rt.prompt(
+                None,
+                &format!("question {i} {}", "x".repeat(400)),
+                None,
+                Vec::new(),
+            )
+            .await
+            .expect("prompt");
             until_settled(&mut h.rx).await;
         }
     }
 
     fn fixture() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../omp-compact/tests/fixtures/compacted-session.jsonl")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../omp-compact/tests/fixtures/compacted-session.jsonl")
     }
 
     fn user_text(m: &AgentMessage) -> String {
@@ -375,9 +486,18 @@ mod tests {
         let cfg: serde_yaml_ng::Value = serde_yaml_ng::from_str("compaction:\n  enabled: false\n  thresholdPercent: 70\n  reserveTokens: 5000\n  keepRecentTokens: 123\n  methodOrder: [snapcompact, shake]\n").unwrap();
         let s = settings_from_config(&cfg);
         assert!(!s.enabled);
-        assert_eq!((s.threshold_percent, s.reserve_tokens, s.keep_recent_tokens), (Some(70.0), Some(5000), 123));
-        assert_eq!(s.strategy.as_deref(), Some("off"), "no soft method configured");
-        let defaults = settings_from_config(&serde_yaml_ng::from_str("compaction:\n  methodOrder: [snapcompact, soft]\n").unwrap());
+        assert_eq!(
+            (s.threshold_percent, s.reserve_tokens, s.keep_recent_tokens),
+            (Some(70.0), Some(5000), 123)
+        );
+        assert_eq!(
+            s.strategy.as_deref(),
+            Some("off"),
+            "no soft method configured"
+        );
+        let defaults = settings_from_config(
+            &serde_yaml_ng::from_str("compaction:\n  methodOrder: [snapcompact, soft]\n").unwrap(),
+        );
         assert!(defaults.enabled && defaults.strategy.as_deref() == Some("context-full"));
     }
 
@@ -395,8 +515,10 @@ mod tests {
         let zero: serde_yaml_ng::Value =
             serde_yaml_ng::from_str("compaction:\n  thresholdPercent: 0\n").unwrap();
         assert_eq!(settings_from_config(&zero).threshold_percent, Some(-1.0));
-        let ok: serde_yaml_ng::Value =
-            serde_yaml_ng::from_str("compaction:\n  thresholdPercent: 70\n  thresholdTokens: 90000\n").unwrap();
+        let ok: serde_yaml_ng::Value = serde_yaml_ng::from_str(
+            "compaction:\n  thresholdPercent: 70\n  thresholdTokens: 90000\n",
+        )
+        .unwrap();
         let s = settings_from_config(&ok);
         assert_eq!(s.threshold_percent, Some(70.0));
         assert_eq!(s.threshold_tokens, Some(90_000.0));
@@ -407,27 +529,44 @@ mod tests {
         let h = harness(0).await;
         let raw = crate::runtime::read_entries(&fixture()).expect("fixture");
         let expected = rebuild_context(&raw).expect("rebuild");
-        assert!(user_text(&expected[0]).contains("<summary>"), "summary comes first: {}", user_text(&expected[0]));
+        assert!(
+            user_text(&expected[0]).contains("<summary>"),
+            "summary comes first: {}",
+            user_text(&expected[0])
+        );
         assert!(expected.len() >= 2);
 
         h.rt.load_session(&fixture(), None).await.expect("load");
         let live = h.rt.messages().await;
-        assert_eq!(live.len(), expected.len(), "model sees the rebuilt context, not the raw log");
+        assert_eq!(
+            live.len(),
+            expected.len(),
+            "model sees the rebuilt context, not the raw log"
+        );
         assert!(live[0].to_string().contains("<summary>"));
 
         // The seeded file keeps the compaction usable: same context when rebuilt from it, and
         // `firstKeptEntryId` points at a copied entry.
         let seeded = h.rt.entries().expect("entries");
-        let compaction = seeded.iter().find(|e| e["type"] == "compaction").expect("compaction copied");
+        let compaction = seeded
+            .iter()
+            .find(|e| e["type"] == "compaction")
+            .expect("compaction copied");
         let kept = compaction["firstKeptEntryId"].as_str().unwrap();
-        assert!(seeded.iter().any(|e| e["id"] == kept), "firstKeptEntryId remapped to the new file");
+        assert!(
+            seeded.iter().any(|e| e["id"] == kept),
+            "firstKeptEntryId remapped to the new file"
+        );
         assert_eq!(rebuild_context(&seeded).unwrap().len(), expected.len());
     }
 
     #[tokio::test]
     async fn forced_compaction_with_fake_summarizer_commits_entry_and_swaps_context() {
         let mut h = harness(3).await;
-        h.rt.set_compaction_settings(CompactionSettings { enabled: false, ..small_keep() });
+        h.rt.set_compaction_settings(CompactionSettings {
+            enabled: false,
+            ..small_keep()
+        });
         let (fake, calls) = fake_summarizer("FAKE SUMMARY");
         h.rt.set_summarizer(Some(fake));
         talk(&mut h, 3).await;
@@ -435,20 +574,37 @@ mod tests {
         assert_eq!(before, 6);
 
         let result = h.rt.compact(None).await.expect("compact");
-        assert!(result["summary"].as_str().unwrap().contains("FAKE SUMMARY"), "{result}");
+        assert!(
+            result["summary"].as_str().unwrap().contains("FAKE SUMMARY"),
+            "{result}"
+        );
         assert!(calls.load(Ordering::SeqCst) >= 1);
         let entries = h.rt.entries().unwrap();
-        let comp = entries.iter().find(|e| e["type"] == "compaction").expect("compaction entry");
+        let comp = entries
+            .iter()
+            .find(|e| e["type"] == "compaction")
+            .expect("compaction entry");
         assert_eq!(comp["method"], "soft");
         assert_eq!(comp["firstKeptEntryId"], result["firstKeptEntryId"]);
-        assert!(entries.iter().any(|e| e["id"] == comp["firstKeptEntryId"]), "kept entry exists");
+        assert!(
+            entries.iter().any(|e| e["id"] == comp["firstKeptEntryId"]),
+            "kept entry exists"
+        );
         assert!(comp["tokensAfter"].as_u64().is_some());
 
         let after = h.rt.messages().await;
-        assert!(after.len() < before + 1 && after[0].to_string().contains("FAKE SUMMARY"), "{after:?}");
+        assert!(
+            after.len() < before + 1 && after[0].to_string().contains("FAKE SUMMARY"),
+            "{after:?}"
+        );
         // a second manual compaction right away is a no-op
         let again = h.rt.compact(None).await.unwrap_err();
-        assert!(again.message.contains("Already compacted") || again.message.contains("Nothing to compact"), "{}", again.message);
+        assert!(
+            again.message.contains("Already compacted")
+                || again.message.contains("Nothing to compact"),
+            "{}",
+            again.message
+        );
     }
 
     #[tokio::test]
@@ -456,21 +612,82 @@ mod tests {
         let mut h = harness(4).await;
         let (fake, _) = fake_summarizer("AUTO SUMMARY");
         h.rt.set_summarizer(Some(fake));
-        h.rt.set_compaction_settings(CompactionSettings { enabled: false, ..small_keep() });
+        h.rt.set_compaction_settings(CompactionSettings {
+            enabled: false,
+            ..small_keep()
+        });
         talk(&mut h, 3).await;
-        assert!(h.rt.entries().unwrap().iter().all(|e| e["type"] != "compaction"), "disabled: no compaction yet");
+        assert!(
+            h.rt.entries()
+                .unwrap()
+                .iter()
+                .all(|e| e["type"] != "compaction"),
+            "disabled: no compaction yet"
+        );
 
-        h.rt.set_compaction_settings(CompactionSettings { threshold_tokens: Some(200.0), ..small_keep() });
-        h.rt.prompt(Some(json!("p4")), &format!("question 4 {}", "x".repeat(400)), None, Vec::new()).await.expect("prompt");
+        h.rt.set_compaction_settings(CompactionSettings {
+            threshold_tokens: Some(200.0),
+            ..small_keep()
+        });
+        h.rt.prompt(
+            Some(json!("p4")),
+            &format!("question 4 {}", "x".repeat(400)),
+            None,
+            Vec::new(),
+        )
+        .await
+        .expect("prompt");
         let frames = until_settled(&mut h.rx).await;
-        let kinds: Vec<&str> = frames.iter().map(|f| f["type"].as_str().unwrap_or("?")).filter(|k| k.starts_with("auto_") || matches!(*k, "agent_end" | "prompt_result" | "session_settled")).collect();
-        assert_eq!(kinds, ["agent_end", "auto_compaction_start", "auto_compaction_end", "prompt_result", "session_settled"], "{kinds:?}");
-        let start = frames.iter().find(|f| f["type"] == "auto_compaction_start").unwrap();
-        assert_eq!((start["reason"].clone(), start["action"].clone()), (json!("threshold"), json!("context-full")));
-        let end = frames.iter().find(|f| f["type"] == "auto_compaction_end").unwrap();
-        assert_eq!((end["aborted"].clone(), end["willRetry"].clone()), (json!(false), json!(false)));
-        assert!(end["result"]["summary"].as_str().unwrap().contains("AUTO SUMMARY"), "{end}");
-        assert!(h.rt.entries().unwrap().iter().any(|e| e["type"] == "compaction"));
-        assert!(h.rt.messages().await[0].to_string().contains("AUTO SUMMARY"));
+        let kinds: Vec<&str> = frames
+            .iter()
+            .map(|f| f["type"].as_str().unwrap_or("?"))
+            .filter(|k| {
+                k.starts_with("auto_")
+                    || matches!(*k, "agent_end" | "prompt_result" | "session_settled")
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "agent_end",
+                "auto_compaction_start",
+                "auto_compaction_end",
+                "prompt_result",
+                "session_settled"
+            ],
+            "{kinds:?}"
+        );
+        let start = frames
+            .iter()
+            .find(|f| f["type"] == "auto_compaction_start")
+            .unwrap();
+        assert_eq!(
+            (start["reason"].clone(), start["action"].clone()),
+            (json!("threshold"), json!("context-full"))
+        );
+        let end = frames
+            .iter()
+            .find(|f| f["type"] == "auto_compaction_end")
+            .unwrap();
+        assert_eq!(
+            (end["aborted"].clone(), end["willRetry"].clone()),
+            (json!(false), json!(false))
+        );
+        assert!(
+            end["result"]["summary"]
+                .as_str()
+                .unwrap()
+                .contains("AUTO SUMMARY"),
+            "{end}"
+        );
+        assert!(h
+            .rt
+            .entries()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "compaction"));
+        assert!(h.rt.messages().await[0]
+            .to_string()
+            .contains("AUTO SUMMARY"));
     }
 }

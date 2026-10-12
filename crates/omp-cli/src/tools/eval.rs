@@ -91,6 +91,7 @@ fn slot(cwd: &std::path::Path) -> Arc<AsyncMutex<KernelState>> {
 
 /// Execute one `eval` cell.
 pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
+    use std::fmt::Write as _;
     // omp's schema requires `language`; a missing one fails TS input
     // validation before execute, so reject it here too (no silent default).
     let language = args
@@ -126,37 +127,32 @@ pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
     }
 
     let (result, is_js) = if is_js {
-        let kernel = match state.js.as_ref().filter(|k| k.is_alive()) {
-            Some(existing) => Arc::clone(existing),
-            None => {
-                let fresh = Arc::new(JsKernel::start(omp_eval::js::default_runtime(), &cwd)?);
-                state.js = Some(Arc::clone(&fresh));
-                fresh
-            }
+        let kernel = if let Some(existing) = state.js.as_ref().filter(|k| k.is_alive()) {
+            Arc::clone(existing)
+        } else {
+            let fresh = Arc::new(JsKernel::start(omp_eval::js::default_runtime(), &cwd)?);
+            state.js = Some(Arc::clone(&fresh));
+            fresh
         };
-        let result =
-            tokio::task::spawn_blocking(move || kernel.execute(&code, timeout))
-                .await
-                .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+        let result = tokio::task::spawn_blocking(move || kernel.execute(&code, timeout))
+            .await
+            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
         (result, true)
     } else {
-        let kernel = match state.py.as_ref().filter(|k| k.is_alive()) {
-            Some(existing) => Arc::clone(existing),
-            None => {
-                let fresh = Arc::new(PythonKernel::start(omp_eval::default_interpreter(), &cwd)?);
-                state.py = Some(Arc::clone(&fresh));
-                fresh
-            }
+        let kernel = if let Some(existing) = state.py.as_ref().filter(|k| k.is_alive()) {
+            Arc::clone(existing)
+        } else {
+            let fresh = Arc::new(PythonKernel::start(omp_eval::default_interpreter(), &cwd)?);
+            state.py = Some(Arc::clone(&fresh));
+            fresh
         };
-        let result =
-            tokio::task::spawn_blocking(move || kernel.execute(&code, timeout))
-                .await
-                .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+        let result = tokio::task::spawn_blocking(move || kernel.execute(&code, timeout))
+            .await
+            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
         (result, false)
     };
 
     let mut text = result.output.clone();
-    use std::fmt::Write as _;
     if is_js {
         if result.timed_out {
             let _ = write!(text, "\n[{}]", CellResult::js_timeout_annotation(timeout));
@@ -206,7 +202,8 @@ mod tests {
     /// Unique cwd per test: parallel tests must not share a kernel slot (a
     /// JS timeout kill is global to the slot's kernel).
     fn test_env(tag: &str) -> Arc<Env> {
-        let dir = std::env::temp_dir().join(format!("omp-rs-eval-test-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("omp-rs-eval-test-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Arc::new(Env::new(&dir, false))
     }
@@ -233,16 +230,21 @@ mod tests {
         eval(env.clone(), json!({"language": "py", "code": "x = 40 + 2"}))
             .await
             .unwrap();
-        let r = eval(env.clone(), json!({"language": "py", "code": "x"})).await.unwrap();
+        let r = eval(env.clone(), json!({"language": "py", "code": "x"}))
+            .await
+            .unwrap();
         let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
             panic!("unexpected content");
         };
         let text = content.text.clone();
         assert!(text.contains("42"), "got: {text}");
         // reset wipes the kernel
-        eval(env.clone(), json!({"language": "py", "code": "x", "reset": true}))
-            .await
-            .unwrap();
+        eval(
+            env.clone(),
+            json!({"language": "py", "code": "x", "reset": true}),
+        )
+        .await
+        .unwrap();
         shutdown_all();
     }
 
@@ -295,7 +297,11 @@ mod tests {
         let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
             panic!("unexpected content");
         };
-        assert!(content.text.contains("Error: boom"), "got: {}", content.text);
+        assert!(
+            content.text.contains("Error: boom"),
+            "got: {}",
+            content.text
+        );
 
         let r = eval(
             env.clone(),

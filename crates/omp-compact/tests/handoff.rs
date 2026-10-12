@@ -3,10 +3,13 @@
 //! contain 62 handoff compactions (the most common non-soft method), so this
 //! lane is exercised end-to-end here with an injected completer.
 
+use omp_compact::build_session_context;
 use omp_compact::context::Leaf;
 use omp_compact::files::FileOperations;
-use omp_compact::handoff::{build_handoff_request, generate_handoff_from_context, handoff_compaction_entry, render_handoff_prompt, HandoffCommit};
-use omp_compact::{build_session_context};
+use omp_compact::handoff::{
+    build_handoff_request, generate_handoff_from_context, handoff_compaction_entry,
+    render_handoff_prompt, HandoffCommit,
+};
 use omp_compact::summary::{SummaryKind, SummaryRequest};
 use pa_types::ai::{AssistantMessage, Context, Message};
 use serde_json::json;
@@ -21,16 +24,29 @@ fn reply(text: &str) -> AssistantMessage {
 }
 
 fn golden(name: &str) -> String {
-    std::fs::read_to_string(format!("{}/tests/fixtures/prompts/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+    std::fs::read_to_string(format!(
+        "{}/tests/fixtures/prompts/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap()
 }
 
 #[test]
 fn render_handoff_prompt_matches_ts_handlebars_render() {
     // Expectations captured from `renderHandoffPrompt()` in pi-agent-core
     // 18.6.1 under bun (handlebars `{{#if additionalFocus}}` semantics).
-    assert_eq!(render_handoff_prompt(None), golden("handoff-document-none.txt"));
-    assert_eq!(render_handoff_prompt(Some("pay attention to X")), golden("handoff-document-focus.txt"));
-    assert_eq!(render_handoff_prompt(Some("")), golden("handoff-document-none.txt"));
+    assert_eq!(
+        render_handoff_prompt(None),
+        golden("handoff-document-none.txt")
+    );
+    assert_eq!(
+        render_handoff_prompt(Some("pay attention to X")),
+        golden("handoff-document-focus.txt")
+    );
+    assert_eq!(
+        render_handoff_prompt(Some("")),
+        golden("handoff-document-none.txt")
+    );
 }
 
 #[tokio::test]
@@ -42,7 +58,10 @@ async fn handoff_document_commits_as_handoff_compaction_and_replays() {
     }))
     .unwrap();
     context.messages.push(
-        serde_json::from_value::<Message>(json!({"role": "user", "content": prompt.as_str(), "timestamp": 2})).unwrap(),
+        serde_json::from_value::<Message>(
+            json!({"role": "user", "content": prompt.as_str(), "timestamp": 2}),
+        )
+        .unwrap(),
     );
     let request = build_handoff_request(context, 4096);
     assert_eq!(request.kind, SummaryKind::Handoff);
@@ -53,7 +72,9 @@ async fn handoff_document_commits_as_handoff_compaction_and_replays() {
         assert_eq!(req.kind, SummaryKind::Handoff);
         async move { Ok(reply("## Goal\ndo the thing")) }
     };
-    let document = generate_handoff_from_context(&completer, request).await.unwrap();
+    let document = generate_handoff_from_context(&completer, request)
+        .await
+        .unwrap();
     assert_eq!(document, "## Goal\ndo the thing");
 
     // 3. Commit payload: `method: "handoff"`, cumulative `<files>` upsert, details lists.
@@ -61,8 +82,19 @@ async fn handoff_document_commits_as_handoff_compaction_and_replays() {
     file_ops.read.insert("src/lib.rs".into());
     file_ops.read.insert("src/main.rs".into());
     file_ops.written.insert("src/main.rs".into());
-    let commit = HandoffCommit { first_kept_entry_id: "a2", tokens_before: 500, tokens_after: Some(80), file_ops: &file_ops };
-    let entry = handoff_compaction_entry("h1", Some("a2"), "2026-01-01T00:00:10.000Z", &document, &commit);
+    let commit = HandoffCommit {
+        first_kept_entry_id: "a2",
+        tokens_before: 500,
+        tokens_after: Some(80),
+        file_ops: &file_ops,
+    };
+    let entry = handoff_compaction_entry(
+        "h1",
+        Some("a2"),
+        "2026-01-01T00:00:10.000Z",
+        &document,
+        &commit,
+    );
     let wire = serde_json::to_value(&entry).unwrap();
     assert_eq!(wire["method"], "handoff");
     assert_eq!(wire["firstKeptEntryId"], "a2");
@@ -72,7 +104,10 @@ async fn handoff_document_commits_as_handoff_compaction_and_replays() {
     // A file both read and written lands only in modifiedFiles (TS semantics).
     assert_eq!(wire["details"]["readFiles"], json!(["src/lib.rs"]));
     assert_eq!(wire["details"]["modifiedFiles"], json!(["src/main.rs"]));
-    assert!(wire["summary"].as_str().unwrap().contains("## Goal\ndo the thing"));
+    assert!(wire["summary"]
+        .as_str()
+        .unwrap()
+        .contains("## Goal\ndo the thing"));
     assert!(wire["summary"].as_str().unwrap().contains("<files>"));
 
     // 4. Replay: the committed entry rebuilds like a local compaction
@@ -86,7 +121,10 @@ async fn handoff_document_commits_as_handoff_compaction_and_replays() {
     entries.push(entry_value);
     entries.push(json!({"type":"message","id":"u3","parentId":"h1","timestamp":"2026-01-01T00:00:11.000Z","message":{"role":"user","content":"after","timestamp":3}}));
     let ctx = build_session_context(&entries, Leaf::Last).unwrap();
-    let roles: Vec<&str> = ctx.messages.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    let roles: Vec<&str> = ctx
+        .messages
+        .iter()
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
     assert_eq!(roles, ["compactionSummary", "assistant", "user"]);
 }
-

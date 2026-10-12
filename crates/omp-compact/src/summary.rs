@@ -11,14 +11,17 @@
 use std::future::Future;
 
 use anyhow::{anyhow, Result};
-use pa_types::ai::{AssistantContentBlock, AssistantMessage, Context, Message, StopReason, TextContent, UserContent, UserContentBlock, UserMessage};
+use pa_types::ai::{
+    AssistantContentBlock, AssistantMessage, Context, Message, StopReason, TextContent,
+    UserContent, UserContentBlock, UserMessage,
+};
 use serde_json::{json, Value};
 
 use crate::convert::convert_to_llm;
 use crate::cut::CompactionPreparation;
+use crate::dialect::{serialize_conversation_for_summary, Dialect};
 use crate::files::{compute_file_lists, upsert_file_operations};
 use crate::prompts;
-use crate::dialect::{serialize_conversation_for_summary, Dialect};
 use crate::serialize::{escape_summary_boundary_tags, utf16_len, utf16_prefix};
 use crate::settings::{DEFAULT_RESERVE_TOKENS, MAX_SUMMARY_TOKENS};
 use crate::tokens::{ByteEstimate, Tokenizer};
@@ -49,7 +52,10 @@ pub struct SummaryRequest {
 /// The injected LLM call. Implement it over `pa-ai` (or a fake in tests); any
 /// `Fn(SummaryRequest) -> impl Future<Output = Result<AssistantMessage>>` works too.
 pub trait Completer {
-    fn complete(&self, request: SummaryRequest) -> impl Future<Output = Result<AssistantMessage>> + Send;
+    fn complete(
+        &self,
+        request: SummaryRequest,
+    ) -> impl Future<Output = Result<AssistantMessage>> + Send;
 }
 
 impl<F, Fut> Completer for F
@@ -57,7 +63,10 @@ where
     F: Fn(SummaryRequest) -> Fut,
     Fut: Future<Output = Result<AssistantMessage>> + Send,
 {
-    fn complete(&self, request: SummaryRequest) -> impl Future<Output = Result<AssistantMessage>> + Send {
+    fn complete(
+        &self,
+        request: SummaryRequest,
+    ) -> impl Future<Output = Result<AssistantMessage>> + Send {
         self(request)
     }
 }
@@ -118,7 +127,11 @@ pub fn build_context(text: &str, now_ms: u64) -> Context {
     Context {
         system_prompt: Some(summarization_system_prompt()),
         messages: vec![Message::User(UserMessage {
-            content: UserContent::Blocks(vec![UserContentBlock::Text(TextContent { text: text.to_owned(), text_signature: None, rest: serde_json::Map::default() })]),
+            content: UserContent::Blocks(vec![UserContentBlock::Text(TextContent {
+                text: text.to_owned(),
+                text_signature: None,
+                rest: serde_json::Map::default(),
+            })]),
             timestamp: now_ms,
             rest: serde_json::Map::default(),
         })],
@@ -131,7 +144,11 @@ fn format_additional_context(context: &[String]) -> String {
     if context.is_empty() {
         return String::new();
     }
-    let lines = context.iter().map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n");
+    let lines = context
+        .iter()
+        .map(|l| format!("- {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!("<additional-context>\n{lines}\n</additional-context>\n\n")
 }
 
@@ -144,9 +161,17 @@ pub fn summary_max_tokens(reserve_tokens: u64) -> u64 {
 /// `summarizeConversationWindow`'s request: the history summary (or iterative update when
 /// `previous_summary` is given) over one serialized conversation window.
 #[must_use]
-pub fn build_summary_request(conversation_text: &str, previous_summary: Option<&str>, params: &SummaryParams<'_>) -> SummaryRequest {
+pub fn build_summary_request(
+    conversation_text: &str,
+    previous_summary: Option<&str>,
+    params: &SummaryParams<'_>,
+) -> SummaryRequest {
     let previous_summary = previous_summary.filter(|p| !p.is_empty());
-    let mut base_prompt = prompts::render_static(if previous_summary.is_some() { prompts::UPDATE_SUMMARIZATION } else { prompts::SUMMARIZATION });
+    let mut base_prompt = prompts::render_static(if previous_summary.is_some() {
+        prompts::UPDATE_SUMMARIZATION
+    } else {
+        prompts::SUMMARIZATION
+    });
     if let Some(over) = params.prompt_override {
         over.clone_into(&mut base_prompt);
     }
@@ -155,7 +180,10 @@ pub fn build_summary_request(conversation_text: &str, previous_summary: Option<&
     }
     let mut text = format!("<conversation>\n{conversation_text}\n</conversation>\n\n");
     if let Some(prev) = previous_summary {
-        text.push_str(&format!("<previous-summary>\n{}\n</previous-summary>\n\n", escape_summary_boundary_tags(prev)));
+        text.push_str(&format!(
+            "<previous-summary>\n{}\n</previous-summary>\n\n",
+            escape_summary_boundary_tags(prev)
+        ));
     }
     text.push_str(&format_additional_context(params.extra_context));
     text.push_str(&base_prompt);
@@ -169,8 +197,12 @@ pub fn build_summary_request(conversation_text: &str, previous_summary: Option<&
 /// `generateTurnPrefixSummary`'s request (budget `min(floor(0.5 * reserve), MAX)`).
 #[must_use]
 pub fn build_turn_prefix_request(messages: &[Value], params: &SummaryParams<'_>) -> SummaryRequest {
-    let conversation = serialize_conversation_for_summary(&convert_to_llm(messages), params.dialect);
-    let text = format!("<conversation>\n{conversation}\n</conversation>\n\n{}", prompts::render_static(prompts::TURN_PREFIX));
+    let conversation =
+        serialize_conversation_for_summary(&convert_to_llm(messages), params.dialect);
+    let text = format!(
+        "<conversation>\n{conversation}\n</conversation>\n\n{}",
+        prompts::render_static(prompts::TURN_PREFIX)
+    );
     SummaryRequest {
         kind: SummaryKind::CompactionTurnPrefix,
         context: build_context(&text, params.now_ms),
@@ -181,11 +213,19 @@ pub fn build_turn_prefix_request(messages: &[Value], params: &SummaryParams<'_>)
 /// `generateShortSummary`'s request: a PR-style blurb of the kept tail given the history summary
 /// (budget `min(512, floor(0.2 * reserve))`).
 #[must_use]
-pub fn build_short_summary_request(recent_messages: &[Value], history_summary: Option<&str>, params: &SummaryParams<'_>) -> SummaryRequest {
-    let conversation = serialize_conversation_for_summary(&convert_to_llm(recent_messages), params.dialect);
+pub fn build_short_summary_request(
+    recent_messages: &[Value],
+    history_summary: Option<&str>,
+    params: &SummaryParams<'_>,
+) -> SummaryRequest {
+    let conversation =
+        serialize_conversation_for_summary(&convert_to_llm(recent_messages), params.dialect);
     let mut text = format!("<conversation>\n{conversation}\n</conversation>\n\n");
     if let Some(summary) = history_summary.filter(|s| !s.is_empty()) {
-        text.push_str(&format!("<previous-summary>\n{}\n</previous-summary>\n\n", escape_summary_boundary_tags(summary)));
+        text.push_str(&format!(
+            "<previous-summary>\n{}\n</previous-summary>\n\n",
+            escape_summary_boundary_tags(summary)
+        ));
     }
     text.push_str(&format_additional_context(params.extra_context));
     text.push_str(&prompts::render_static(prompts::SHORT_SUMMARY));
@@ -203,7 +243,14 @@ pub fn build_short_summary_request(recent_messages: &[Value], history_summary: O
 /// The reply ended with `stopReason: "error"`.
 pub fn completion_text(reply: &AssistantMessage, error_prefix: &str) -> Result<String> {
     if reply.stop_reason == StopReason::Error {
-        return Err(anyhow!("{error_prefix}: {}", reply.error_message.as_deref().filter(|m| !m.is_empty()).unwrap_or("Unknown error")));
+        return Err(anyhow!(
+            "{error_prefix}: {}",
+            reply
+                .error_message
+                .as_deref()
+                .filter(|m| !m.is_empty())
+                .unwrap_or("Unknown error")
+        ));
     }
     Ok(reply
         .content
@@ -217,7 +264,9 @@ pub fn completion_text(reply: &AssistantMessage, error_prefix: &str) -> Result<S
 }
 
 fn window_or_default(window: Option<u64>) -> u64 {
-    window.filter(|w| *w > 0).unwrap_or(DEFAULT_SUMMARY_INPUT_WINDOW)
+    window
+        .filter(|w| *w > 0)
+        .unwrap_or(DEFAULT_SUMMARY_INPUT_WINDOW)
 }
 
 /// `minSummaryInputTokens`.
@@ -229,7 +278,8 @@ fn min_summary_input_tokens(window: Option<u64>) -> u64 {
 #[must_use]
 pub fn summary_input_budget_tokens(window: Option<u64>, max_tokens: u64) -> u64 {
     let w = window_or_default(window);
-    let discounted = (w as f64 * 0.8).floor() as i64 - max_tokens as i64 - MAX_SUMMARY_TOKENS as i64;
+    let discounted =
+        (w as f64 * 0.8).floor() as i64 - max_tokens as i64 - MAX_SUMMARY_TOKENS as i64;
     min_summary_input_tokens(window).max(u64::try_from(discounted).unwrap_or(0))
 }
 
@@ -254,16 +304,29 @@ fn clamp_conversation_to_budget(text: &str, budget: u64, tokens: u64) -> String 
     if keep >= len {
         return text.to_owned();
     }
-    format!("{}\n\n[... {} more characters truncated]", utf16_prefix(text, keep), len - keep)
+    format!(
+        "{}\n\n[... {} more characters truncated]",
+        utf16_prefix(text, keep),
+        len - keep
+    )
 }
 
 /// `planSummaryWindows`: partition `messages` into windows that each fit `budget`.
-fn plan_summary_windows(messages: &[Value], params: &SummaryParams<'_>, budget: u64) -> Vec<Vec<Value>> {
+fn plan_summary_windows(
+    messages: &[Value],
+    params: &SummaryParams<'_>,
+    budget: u64,
+) -> Vec<Vec<Value>> {
     let mut windows: Vec<Vec<Value>> = Vec::new();
     let mut current: Vec<Value> = Vec::new();
     let mut current_tokens = 0u64;
     for message in messages {
-        let tokens = params.tokenizer.count_text(&serialize_conversation_for_summary(std::slice::from_ref(message), params.dialect));
+        let tokens = params
+            .tokenizer
+            .count_text(&serialize_conversation_for_summary(
+                std::slice::from_ref(message),
+                params.dialect,
+            ));
         if current_tokens > 0 && current_tokens + tokens > budget {
             windows.push(std::mem::take(&mut current));
             current_tokens = 0;
@@ -282,7 +345,12 @@ fn plan_summary_windows(messages: &[Value], params: &SummaryParams<'_>, budget: 
 ///
 /// # Errors
 /// The completer failed or replied with `stopReason: "error"`.
-pub async fn generate_summary(completer: &impl Completer, messages: &[Value], previous_summary: Option<&str>, params: &SummaryParams<'_>) -> Result<String> {
+pub async fn generate_summary(
+    completer: &impl Completer,
+    messages: &[Value],
+    previous_summary: Option<&str>,
+    params: &SummaryParams<'_>,
+) -> Result<String> {
     let max_tokens = summary_max_tokens(params.reserve_tokens);
     let llm = convert_to_llm(messages);
     let whole = serialize_conversation_for_summary(&llm, params.dialect);
@@ -296,7 +364,11 @@ pub async fn generate_summary(completer: &impl Completer, messages: &[Value], pr
     for window in &windows {
         let text = serialize_conversation_for_summary(window, params.dialect);
         let (fits, tokens) = fits_budget(params.tokenizer, &text, budget);
-        let text = if fits { text } else { clamp_conversation_to_budget(&text, budget, tokens) };
+        let text = if fits {
+            text
+        } else {
+            clamp_conversation_to_budget(&text, budget, tokens)
+        };
         let request = build_summary_request(&text, carried.as_deref(), params);
         let reply = completer.complete(request).await?;
         carried = Some(completion_text(&reply, "Summarization failed")?);
@@ -322,33 +394,70 @@ pub struct CompactionResult {
 ///
 /// # Errors
 /// Any summarization call failed, or the kept entry has no id.
-pub async fn compact(completer: &impl Completer, preparation: &CompactionPreparation, params: &SummaryParams<'_>) -> Result<CompactionResult> {
-    let previous = preparation.previous_summary.as_deref().filter(|p| !p.is_empty());
+pub async fn compact(
+    completer: &impl Completer,
+    preparation: &CompactionPreparation,
+    params: &SummaryParams<'_>,
+) -> Result<CompactionResult> {
+    let previous = preparation
+        .previous_summary
+        .as_deref()
+        .filter(|p| !p.is_empty());
     let mut summary = if preparation.is_split_turn && !preparation.turn_prefix_messages.is_empty() {
         let history = if !preparation.messages_to_summarize.is_empty() || previous.is_some() {
-            generate_summary(completer, &preparation.messages_to_summarize, previous, params).await?
+            generate_summary(
+                completer,
+                &preparation.messages_to_summarize,
+                previous,
+                params,
+            )
+            .await?
         } else {
             "No prior history.".to_owned()
         };
-        let reply = completer.complete(build_turn_prefix_request(&preparation.turn_prefix_messages, params)).await?;
+        let reply = completer
+            .complete(build_turn_prefix_request(
+                &preparation.turn_prefix_messages,
+                params,
+            ))
+            .await?;
         let prefix = completion_text(&reply, "Turn prefix summarization failed")?;
         format!("{history}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix}")
     } else if !preparation.messages_to_summarize.is_empty() {
-        generate_summary(completer, &preparation.messages_to_summarize, previous, params).await?
+        generate_summary(
+            completer,
+            &preparation.messages_to_summarize,
+            previous,
+            params,
+        )
+        .await?
     } else if let Some(prev) = previous {
         prev.to_owned()
     } else {
         "No prior history.".to_owned()
     };
 
-    let reply = completer.complete(build_short_summary_request(&preparation.recent_messages, Some(&summary), params)).await?;
+    let reply = completer
+        .complete(build_short_summary_request(
+            &preparation.recent_messages,
+            Some(&summary),
+            params,
+        ))
+        .await?;
     let short_summary = completion_text(&reply, "Short summary failed")?;
 
     let (read_files, modified_files) = compute_file_lists(&preparation.file_ops);
-    summary = upsert_file_operations(&summary, &read_files, &modified_files, Some(&preparation.file_ops.read));
+    summary = upsert_file_operations(
+        &summary,
+        &read_files,
+        &modified_files,
+        Some(&preparation.file_ops.read),
+    );
 
     if preparation.first_kept_entry_id.is_empty() {
-        return Err(anyhow!("First kept entry has no ID - session may need migration"));
+        return Err(anyhow!(
+            "First kept entry has no ID - session may need migration"
+        ));
     }
     Ok(CompactionResult {
         summary,

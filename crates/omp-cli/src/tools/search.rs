@@ -7,13 +7,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
-use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch};
+use grep_searcher::{
+    BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
+};
 use pa_agent::types::AgentToolResult;
 use pi_edit::path_policy::canonical_key;
 use pi_edit::store::seen_lines_from_body;
 use pi_walker::{
-    CompiledWalkGlob, DirectoryErrorMode, EmptyRecheck, FollowLinks, WalkDetail, WalkFilter, WalkOrder,
-    WalkRank, WalkRequest,
+    CompiledWalkGlob, DirectoryErrorMode, EmptyRecheck, FollowLinks, WalkDetail, WalkFilter,
+    WalkOrder, WalkRank, WalkRequest,
 };
 
 use super::read::{parse_sel, LineRange, Selector};
@@ -53,13 +55,29 @@ pub fn parse_find_pattern(pattern: &str) -> FindPattern {
     let normalized = pattern.replace('\\', "/");
     let segments: Vec<&str> = normalized.split('/').collect();
     let Some(first) = segments.iter().position(|s| has_glob_chars(s)) else {
-        return FindPattern { base: normalized, glob: "**/*".into(), has_glob: false };
+        return FindPattern {
+            base: normalized,
+            glob: "**/*".into(),
+            has_glob: false,
+        };
     };
     if first == 0 {
-        let glob = if normalized.starts_with("**/") { normalized } else { format!("**/{normalized}") };
-        return FindPattern { base: ".".into(), glob, has_glob: true };
+        let glob = if normalized.starts_with("**/") {
+            normalized
+        } else {
+            format!("**/{normalized}")
+        };
+        return FindPattern {
+            base: ".".into(),
+            glob,
+            has_glob: true,
+        };
     }
-    FindPattern { base: segments[..first].join("/"), glob: segments[first..].join("/"), has_glob: true }
+    FindPattern {
+        base: segments[..first].join("/"),
+        glob: segments[first..].join("/"),
+        has_glob: true,
+    }
 }
 
 fn fix_unclosed_braces(mut p: String) -> String {
@@ -103,7 +121,11 @@ fn build_walk_request(
         .directory_errors(DirectoryErrorMode::SkipSkippable)
         .cache(false)
         .empty_recheck(EmptyRecheck::Configured)
-        .filter(WalkFilter::all().glob(compiled).node_modules_unless_mentioned(mentions_node_modules)))
+        .filter(
+            WalkFilter::all()
+                .glob(compiled)
+                .node_modules_unless_mentioned(mentions_node_modules),
+        ))
 }
 
 // ------------------------------------------------------------------ glob
@@ -126,7 +148,10 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     }
     let hidden = bool_arg(args, "hidden").unwrap_or(true);
     let gitignore = bool_arg(args, "gitignore").unwrap_or(true);
-    let requested = args.get("limit").and_then(serde_json::Value::as_f64).unwrap_or(GLOB_DEFAULT_LIMIT as f64);
+    let requested = args
+        .get("limit")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(GLOB_DEFAULT_LIMIT as f64);
     if !requested.is_finite() || requested <= 0.0 {
         bail!("Limit must be a positive number");
     }
@@ -186,7 +211,8 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let mut seen = BTreeSet::new();
     merged.retain(|(p, _)| seen.insert(p.clone()));
     merged.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let missing_note = (!missing.is_empty()).then(|| format!("Skipped missing paths: {}", missing.join(", ")));
+    let missing_note =
+        (!missing.is_empty()).then(|| format!("Skipped missing paths: {}", missing.join(", ")));
     if merged.is_empty() {
         let mut parts = vec!["No files found matching pattern".to_string()];
         parts.extend(missing_note);
@@ -263,7 +289,11 @@ impl Sink for Collector {
         // A multi-line match yields one row per line.
         for (i, raw) in m.lines().enumerate() {
             let line = self.clip(raw);
-            self.rows.push(Match { line_number: first + i as u64, line, matched: true });
+            self.rows.push(Match {
+                line_number: first + i as u64,
+                line,
+                matched: true,
+            });
         }
         self.matches += 1;
         Ok(self.matches <= self.cap)
@@ -274,7 +304,11 @@ impl Sink for Collector {
             return Ok(false);
         }
         let line = self.clip(c.bytes());
-        self.rows.push(Match { line_number: c.line_number().unwrap_or(0), line, matched: false });
+        self.rows.push(Match {
+            line_number: c.line_number().unwrap_or(0),
+            line,
+            matched: false,
+        });
         Ok(true)
     }
 }
@@ -349,7 +383,9 @@ struct FileHits {
 
 fn in_ranges(line: u64, ranges: &[LineRange]) -> bool {
     let line = usize::try_from(line).unwrap_or(usize::MAX);
-    ranges.iter().any(|r| line >= r.start && r.end.is_none_or(|e| line <= e))
+    ranges
+        .iter()
+        .any(|r| line >= r.start && r.end.is_none_or(|e| line <= e))
 }
 
 fn search_file(
@@ -363,7 +399,12 @@ fn search_file(
     if !meta.is_file() {
         return None;
     }
-    let mut sink = Collector { rows: Vec::new(), matches: 0, cap: per_file_cap, truncated_lines: false };
+    let mut sink = Collector {
+        rows: Vec::new(),
+        matches: 0,
+        cap: per_file_cap,
+        truncated_lines: false,
+    };
     let file = std::fs::File::open(path).ok()?;
     let reader = std::io::Read::take(file, MAX_FILE_BYTES);
     searcher.search_reader(matcher, reader, &mut sink).ok()?;
@@ -399,17 +440,29 @@ fn split_targets(env: &Env, entries: &[String]) -> (Vec<Target>, Vec<String>) {
         }
         let literal = resolve_to_cwd(&path_part, &env.cwd);
         if literal.exists() {
-            targets.push(Target { base: literal, glob: None, ranges });
+            targets.push(Target {
+                base: literal,
+                glob: None,
+                ranges,
+            });
             continue;
         }
         let parsed = parse_find_pattern(&path_part);
         if parsed.has_glob {
             // A glob spelled without a directory prefix matches at any depth.
             let no_dir_prefix = !path_part.contains('/');
-            let glob = if no_dir_prefix && !parsed.glob.starts_with("**") { format!("**/{}", parsed.glob) } else { parsed.glob };
+            let glob = if no_dir_prefix && !parsed.glob.starts_with("**") {
+                format!("**/{}", parsed.glob)
+            } else {
+                parsed.glob
+            };
             let dir = resolve_to_cwd(&parsed.base, &env.cwd);
             if dir.is_dir() {
-                targets.push(Target { base: dir, glob: Some(glob), ranges: None });
+                targets.push(Target {
+                    base: dir,
+                    glob: Some(glob),
+                    ranges: None,
+                });
                 continue;
             }
         }
@@ -462,7 +515,11 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
 
     let single_file = targets.len() == 1 && targets[0].glob.is_none() && targets[0].base.is_file();
     let is_multi_scope = !single_file;
-    let per_file_cap = if is_multi_scope { MULTI_FILE_PER_FILE_MATCHES } else { SINGLE_FILE_MATCHES };
+    let per_file_cap = if is_multi_scope {
+        MULTI_FILE_PER_FILE_MATCHES
+    } else {
+        SINGLE_FILE_MATCHES
+    };
 
     let mut hits: Vec<FileHits> = Vec::new();
     let mut seen_files: BTreeSet<PathBuf> = BTreeSet::new();
@@ -475,7 +532,8 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             vec![target.base.clone()]
         } else {
             let glob = target.glob.clone().unwrap_or_else(|| "**/*".to_string());
-            let request = build_walk_request(&target.base, &glob, true, gitignore, WalkDetail::Minimal)?;
+            let request =
+                build_walk_request(&target.base, &glob, true, gitignore, WalkDetail::Minimal)?;
             let mut files: Vec<PathBuf> = request
                 .collect_files()
                 .map_err(|e| anyhow::anyhow!("{e}"))?
@@ -496,9 +554,13 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             if !seen_files.insert(file.clone()) {
                 continue;
             }
-            let Some((rows, count, truncated)) =
-                search_file(&mut searcher, &matcher, &file, per_file_cap, target.ranges.as_deref())
-            else {
+            let Some((rows, count, truncated)) = search_file(
+                &mut searcher,
+                &matcher,
+                &file,
+                per_file_cap,
+                target.ranges.as_deref(),
+            ) else {
                 continue;
             };
             lines_truncated |= truncated;
@@ -538,11 +600,22 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     }
 
     let total_files = hits.len();
-    let total_files_label = if limit_reached { format!("{total_files}+") } else { total_files.to_string() };
+    let total_files_label = if limit_reached {
+        format!("{total_files}+")
+    } else {
+        total_files.to_string()
+    };
     let can_paginate = is_multi_scope;
-    let skip_files = if can_paginate { skip.min(total_files) } else { 0 };
+    let skip_files = if can_paginate {
+        skip.min(total_files)
+    } else {
+        0
+    };
     let window: Vec<&FileHits> = if can_paginate {
-        hits.iter().skip(skip_files).take(DEFAULT_FILE_LIMIT).collect()
+        hits.iter()
+            .skip(skip_files)
+            .take(DEFAULT_FILE_LIMIT)
+            .collect()
     } else {
         hits.iter().collect()
     };
@@ -555,7 +628,8 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         )
     });
 
-    let missing_note = (!missing.is_empty()).then(|| format!("Skipped missing paths: {}", missing.join(", ")));
+    let missing_note =
+        (!missing.is_empty()).then(|| format!("Skipped missing paths: {}", missing.join(", ")));
     let oversized_note = (!oversized.is_empty()).then(|| {
         format!(
             "Searched only the first {}MB of large files (matches past the {}MB window are not shown; use `read` for the rest): {}",
@@ -564,22 +638,36 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             oversized.join(", ")
         )
     });
-    let warning = [missing_note, oversized_note].into_iter().flatten().collect::<Vec<_>>().join("\n");
+    let warning = [missing_note, oversized_note]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
 
     if window.is_empty() {
         let no_match = if can_paginate && skip > 0 && total_files > 0 && skip_files >= total_files {
-            format!("No more results ({total_files_label} files total; skip={skip} is past the end)")
+            format!(
+                "No more results ({total_files_label} files total; skip={skip} is past the end)"
+            )
         } else {
             "No matches found".to_string()
         };
-        let text = if warning.is_empty() { no_match } else { format!("{no_match}\n{warning}") };
+        let text = if warning.is_empty() {
+            no_match
+        } else {
+            format!("{no_match}\n{warning}")
+        };
         return Ok(AgentToolResult::text(text));
     }
 
     // Render per file; hashline snapshot tags bind to the displayed rows.
     let render = |h: &FileHits| -> (Vec<String>, Option<String>) {
         let key = canonical_key(&h.absolute);
-        let tag = if env.hashline { env.store.record_file(&key, None) } else { None };
+        let tag = if env.hashline {
+            env.store.record_file(&key, None)
+        } else {
+            None
+        };
         let mut out: Vec<String> = Vec::new();
         let mut last: Option<u64> = None;
         for m in &h.matches {
@@ -595,15 +683,20 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             last = Some(m.line_number);
         }
         if let Some(t) = &tag {
-            env.store.record_seen_lines(&key, t, &seen_lines_from_body(&out.join("\n")));
+            env.store
+                .record_seen_lines(&key, t, &seen_lines_from_body(&out.join("\n")));
         }
         (out, tag)
     };
     let mut model: Vec<String> = Vec::new();
     if is_multi_scope {
-        let entries: Vec<(String, bool)> = window.iter().map(|h| (h.shown.clone(), false)).collect();
-        let rendered: HashMap<usize, (Vec<String>, Option<String>)> =
-            window.iter().enumerate().map(|(i, h)| (i, render(h))).collect();
+        let entries: Vec<(String, bool)> =
+            window.iter().map(|h| (h.shown.clone(), false)).collect();
+        let rendered: HashMap<usize, (Vec<String>, Option<String>)> = window
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (i, render(h)))
+            .collect();
         let mut emitted = false;
         for e in events(&entries) {
             let hashes = "#".repeat(e.depth + 1);
@@ -707,13 +800,19 @@ mod tests {
     #[test]
     fn find_pattern_parsing_matches_omp() {
         let p = parse_find_pattern("**/*.json");
-        assert_eq!((p.base.as_str(), p.glob.as_str(), p.has_glob), (".", "**/*.json", true));
+        assert_eq!(
+            (p.base.as_str(), p.glob.as_str(), p.has_glob),
+            (".", "**/*.json", true)
+        );
         let p = parse_find_pattern("*.ts");
         assert_eq!((p.base.as_str(), p.glob.as_str()), (".", "**/*.ts"));
         let p = parse_find_pattern("/abs/path/**/*.ts");
         assert_eq!((p.base.as_str(), p.glob.as_str()), ("/abs/path", "**/*.ts"));
         let p = parse_find_pattern("src/app");
-        assert_eq!((p.base.as_str(), p.glob.as_str(), p.has_glob), ("src/app", "**/*", false));
+        assert_eq!(
+            (p.base.as_str(), p.glob.as_str(), p.has_glob),
+            ("src/app", "**/*", false)
+        );
     }
 
     #[test]
@@ -726,7 +825,9 @@ mod tests {
         assert!(out.contains("# src/"), "{out}");
         let none = text_of(&glob(&env, &serde_json::json!({"path": "*.zzz"})).unwrap());
         assert_eq!(none, "No files found matching pattern");
-        let err = glob(&env, &serde_json::json!({"path": "missing/dir"})).unwrap_err().to_string();
+        let err = glob(&env, &serde_json::json!({"path": "missing/dir"}))
+            .unwrap_err()
+            .to_string();
         assert_eq!(err, "Path not found: missing/dir");
     }
 
@@ -738,7 +839,10 @@ mod tests {
         }
         let env = Env::new(dir.path(), true);
         let out = text_of(&glob(&env, &serde_json::json!({"path": "*.txt", "limit": 3})).unwrap());
-        assert!(out.ends_with("[3 results limit reached. Use limit=6 for more]"), "{out}");
+        assert!(
+            out.ends_with("[3 results limit reached. Use limit=6 for more]"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -746,9 +850,15 @@ mod tests {
         let dir = fixture();
         let env = Env::new(dir.path(), true);
         let out = text_of(&grep(&env, &serde_json::json!({"pattern": "beta"})).unwrap());
-        assert!(out.contains("## a.rs#") || out.contains("# a.rs#") || out.contains("a.rs#"), "{out}");
+        assert!(
+            out.contains("## a.rs#") || out.contains("# a.rs#") || out.contains("a.rs#"),
+            "{out}"
+        );
         assert!(out.contains("*2:fn beta() {}"), "{out}");
-        assert!(out.contains(" 1:fn alpha() {}"), "context row missing: {out}");
+        assert!(
+            out.contains(" 1:fn alpha() {}"),
+            "context row missing: {out}"
+        );
         assert!(out.contains("*1:// beta here"), "{out}");
         assert!(!out.contains("beta_ignored"), "{out}");
         assert!(out.contains("notes.md"), "{out}");
@@ -758,7 +868,13 @@ mod tests {
     fn grep_single_file_scope_flat_with_header() {
         let dir = fixture();
         let env = Env::new(dir.path(), true);
-        let out = text_of(&grep(&env, &serde_json::json!({"pattern": "alpha", "path": "src/a.rs"})).unwrap());
+        let out = text_of(
+            &grep(
+                &env,
+                &serde_json::json!({"pattern": "alpha", "path": "src/a.rs"}),
+            )
+            .unwrap(),
+        );
         assert!(out.starts_with("[src/a.rs#"), "{out}");
         assert!(out.contains("*1:fn alpha() {}"), "{out}");
     }
@@ -769,10 +885,18 @@ mod tests {
         let env = Env::new(dir.path(), true);
         let none = text_of(&grep(&env, &serde_json::json!({"pattern": "ALPHA"})).unwrap());
         assert_eq!(none, "No matches found");
-        let some = text_of(&grep(&env, &serde_json::json!({"pattern": "ALPHA", "case": false})).unwrap());
+        let some = text_of(
+            &grep(
+                &env,
+                &serde_json::json!({"pattern": "ALPHA", "case": false}),
+            )
+            .unwrap(),
+        );
         assert!(some.contains("alpha"), "{some}");
         assert_eq!(
-            grep(&env, &serde_json::json!({"pattern": "  "})).unwrap_err().to_string(),
+            grep(&env, &serde_json::json!({"pattern": "  "}))
+                .unwrap_err()
+                .to_string(),
             "Pattern must not be empty"
         );
         // unbalanced paren is escaped instead of failing
@@ -784,7 +908,13 @@ mod tests {
     fn grep_line_range_selector_filters_matches() {
         let dir = fixture();
         let env = Env::new(dir.path(), true);
-        let out = text_of(&grep(&env, &serde_json::json!({"pattern": "fn", "path": "src/a.rs:2-2"})).unwrap());
+        let out = text_of(
+            &grep(
+                &env,
+                &serde_json::json!({"pattern": "fn", "path": "src/a.rs:2-2"}),
+            )
+            .unwrap(),
+        );
         assert!(out.contains("*2:fn beta() {}"), "{out}");
         assert!(!out.contains("*1:fn alpha"), "{out}");
     }
@@ -793,10 +923,25 @@ mod tests {
     fn grep_glob_scope_and_bare_glob_any_depth() {
         let dir = fixture();
         let env = Env::new(dir.path(), true);
-        let out = text_of(&grep(&env, &serde_json::json!({"pattern": "beta", "path": "*.rs"})).unwrap());
+        let out = text_of(
+            &grep(
+                &env,
+                &serde_json::json!({"pattern": "beta", "path": "*.rs"}),
+            )
+            .unwrap(),
+        );
         assert!(out.contains("a.rs") && out.contains("b.rs"), "{out}");
         assert!(!out.contains("notes.md"), "{out}");
-        let direct = text_of(&grep(&env, &serde_json::json!({"pattern": "beta", "path": "src/*.rs"})).unwrap());
-        assert!(direct.contains("a.rs") && !direct.contains("b.rs"), "{direct}");
+        let direct = text_of(
+            &grep(
+                &env,
+                &serde_json::json!({"pattern": "beta", "path": "src/*.rs"}),
+            )
+            .unwrap(),
+        );
+        assert!(
+            direct.contains("a.rs") && !direct.contains("b.rs"),
+            "{direct}"
+        );
     }
 }

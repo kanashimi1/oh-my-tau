@@ -24,15 +24,19 @@ fn err(message: impl Into<String>) -> CmdError {
 
 /// Session entries (header excluded), raw values in file order.
 fn entries(rt: &Runtime) -> Result<Vec<Value>, CmdError> {
-    rt.entries().map_err(|e| err(format!("cannot read session entries: {e:#}")))
+    rt.entries()
+        .map_err(|e| err(format!("cannot read session entries: {e:#}")))
 }
 
 fn find_entry<'a>(entries: &'a [Value], id: &str) -> Option<&'a Value> {
-    entries.iter().find(|e| e.get("id").and_then(Value::as_str) == Some(id))
+    entries
+        .iter()
+        .find(|e| e.get("id").and_then(Value::as_str) == Some(id))
 }
 
 /// The abandoned branch rendered as one text block for the summarizer
 /// (TS `serializeConversationForSummary`).
+#[allow(dead_code)] // summarizer input for the navigate_tree host request
 fn abandoned_text(abandoned: &[&Value]) -> String {
     let mut lines = Vec::new();
     for entry in abandoned {
@@ -86,7 +90,10 @@ pub fn write_branched_session(rt: &Runtime, leaf: Option<&str>) -> Result<PathBu
         }
     };
 
-    let kept: Vec<&Value> = path.iter().filter(|e| e.get("type").and_then(Value::as_str) != Some("label")).collect();
+    let kept: Vec<&Value> = path
+        .iter()
+        .filter(|e| e.get("type").and_then(Value::as_str) != Some("label"))
+        .collect();
     let kept_ids: std::collections::HashSet<&str> = kept
         .iter()
         .filter_map(|e| e.get("id").and_then(Value::as_str))
@@ -101,9 +108,12 @@ pub fn write_branched_session(rt: &Runtime, leaf: Option<&str>) -> Result<PathBu
     let dir = rt
         .session_file()
         .parent()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| rt.cwd.clone());
-    let file_name = format!("{}_{}.jsonl", timestamp.replace([':', '.'], "-"), session_id);
+        .map_or_else(|| rt.cwd.clone(), PathBuf::from);
+    let file_name = format!(
+        "{}_{}.jsonl",
+        timestamp.replace([':', '.'], "-"),
+        session_id
+    );
     let file = dir.join(file_name);
 
     let mut out = String::new();
@@ -117,7 +127,10 @@ pub fn write_branched_session(rt: &Runtime, leaf: Option<&str>) -> Result<PathBu
     });
     out.push_str(&header.to_string());
     out.push('\n');
-    let mut parent = kept.last().and_then(|e| e.get("id").and_then(Value::as_str)).map(str::to_owned);
+    let mut parent = kept
+        .last()
+        .and_then(|e| e.get("id").and_then(Value::as_str))
+        .map(str::to_owned);
     for entry in &kept {
         out.push_str(&entry.to_string());
         out.push('\n');
@@ -136,7 +149,9 @@ pub fn write_branched_session(rt: &Runtime, leaf: Option<&str>) -> Result<PathBu
         out.push_str(&entry.to_string());
         out.push('\n');
     }
-    std::fs::write(&file, out).with_context(|| format!("write {}", file.display())).map_err(|e| err(format!("{e:#}")))?;
+    std::fs::write(&file, out)
+        .with_context(|| format!("write {}", file.display()))
+        .map_err(|e| err(format!("{e:#}")))?;
     Ok(file)
 }
 
@@ -154,7 +169,9 @@ pub async fn branch(rt: &Arc<Runtime>, entry_id: &str) -> CmdResult {
     let text = omp_session::tree::user_message_text(selected).unwrap_or_default();
     let parent = selected.get("parentId").and_then(Value::as_str);
     let file = write_branched_session(rt, parent)?;
-    rt.load_session(&file, None).await.map_err(|e| err(format!("branch: {e:#}")))?;
+    rt.load_session(&file, None)
+        .await
+        .map_err(|e| err(format!("branch: {e:#}")))?;
     Ok(Some(json!({"text": text, "cancelled": false})))
 }
 
@@ -164,11 +181,15 @@ pub async fn branch(rt: &Arc<Runtime>, entry_id: &str) -> CmdResult {
 pub async fn fork(rt: &Arc<Runtime>, entry_id: Option<&str>) -> CmdResult {
     match entry_id {
         None => {
-            rt.new_session(None).await.map_err(|e| err(format!("fork: {e:#}")))?;
+            rt.new_session(None)
+                .await
+                .map_err(|e| err(format!("fork: {e:#}")))?;
         }
         Some(id) => {
             let file = write_branched_session(rt, Some(id))?;
-            rt.load_session(&file, None).await.map_err(|e| err(format!("fork: {e:#}")))?;
+            rt.load_session(&file, None)
+                .await
+                .map_err(|e| err(format!("fork: {e:#}")))?;
         }
     }
     Ok(Some(json!({"cancelled": false})))
@@ -183,6 +204,8 @@ pub async fn fork(rt: &Arc<Runtime>, entry_id: Option<&str>) -> CmdResult {
 ///
 /// `summarize` is the model call used for that (the runtime's compaction summarizer);
 /// required exactly when `options.summarize` is set, like TS requires a model.
+#[allow(dead_code)] // host-request entry point (omp parity), wired with the rpc surface
+#[allow(clippy::too_many_lines)] // host-request flow: fork + optional branch summary + context rebuild
 pub async fn navigate_tree(
     rt: &Arc<Runtime>,
     target: &str,
@@ -209,7 +232,10 @@ pub async fn navigate_tree(
 
     // Where the leaf lands: user-authored targets rewind PAST themselves (null = root).
     let new_leaf = if target_is_user {
-        target_entry.get("parentId").and_then(Value::as_str).map(str::to_owned)
+        target_entry
+            .get("parentId")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     } else {
         Some(target.to_owned())
     };
@@ -223,7 +249,10 @@ pub async fn navigate_tree(
         if !abandoned.is_empty() {
             let request = omp_compact::SummaryRequest {
                 kind: omp_compact::SummaryKind::BranchSummary,
-                context: omp_compact::summary::build_context(&abandoned_text(&abandoned), pa_agent::now_ms() as u64),
+                context: omp_compact::summary::build_context(
+                    &abandoned_text(&abandoned),
+                    pa_agent::now_ms().cast_unsigned(),
+                ),
                 max_tokens: 1024,
             };
             let assistant = (summarize.expect("checked above"))(request)
@@ -236,8 +265,7 @@ pub async fn navigate_tree(
                     pa_types::ai::AssistantContentBlock::Text(t) => Some(t.text.clone()),
                     _ => None,
                 })
-                .collect::<Vec<_>>()
-                .join("");
+                .collect::<String>();
             summary_result = Some((text, json!({"readFiles": [], "modifiedFiles": []})));
         }
     }
@@ -245,31 +273,37 @@ pub async fn navigate_tree(
     // Commit: either a durable branch_summary entry at the target, or an in-memory leaf
     // move (TS `branch()`; the next append chains onto the target, which is how the loader
     // reconstructs the branch after a restart too).
-    let summary_entry = match &summary_result {
-        Some((text, details)) => {
-            let id = rt.with_writer(|w| {
-                w.append_branch_summary(new_leaf.as_deref(), text, Some(details.clone()), None, &persist::now_iso())
-            })?;
-            Some(json!({
-                "type": "branch_summary",
-                "id": id,
-                "parentId": new_leaf,
-                "fromId": new_leaf.as_deref().unwrap_or("root"),
-                "summary": text,
-            }))
-        }
-        None => {
-            rt.with_writer(|w| w.branch_to(new_leaf.clone()))?;
-            None
-        }
+    let summary_entry = if let Some((text, details)) = &summary_result {
+        let id = rt.with_writer(|w| {
+            w.append_branch_summary(
+                new_leaf.as_deref(),
+                text,
+                Some(details.clone()),
+                None,
+                &persist::now_iso(),
+            )
+        })?;
+        Some(json!({
+            "type": "branch_summary",
+            "id": id,
+            "parentId": new_leaf,
+            "fromId": new_leaf.as_deref().unwrap_or("root"),
+            "summary": text,
+        }))
+    } else {
+        rt.with_writer(|w| w.branch_to(new_leaf.clone()))?;
+        None
     };
 
     // Rebuild the conversation the model sees from the new leaf.
     let fresh = entries(rt)?;
-    let ctx = omp_compact::build_session_context(&fresh, match new_leaf.as_deref() {
-        None => omp_compact::Leaf::Before,
-        Some(id) => omp_compact::Leaf::Id(id),
-    })
+    let ctx = omp_compact::build_session_context(
+        &fresh,
+        match new_leaf.as_deref() {
+            None => omp_compact::Leaf::Before,
+            Some(id) => omp_compact::Leaf::Id(id),
+        },
+    )
     .map_err(|e| err(format!("navigate_tree: cannot rebuild context: {e}")))?;
     let messages = ctx
         .messages
@@ -282,7 +316,8 @@ pub async fn navigate_tree(
 
     let mut data = json!({"cancelled": false});
     if target_is_user {
-        data["editorText"] = omp_session::tree::user_message_text(target_entry).map_or(Value::Null, |t| Value::String(t));
+        data["editorText"] =
+            omp_session::tree::user_message_text(target_entry).map_or(Value::Null, Value::String);
     }
     if let Some(entry) = summary_entry {
         data["summaryEntry"] = entry;
@@ -301,7 +336,8 @@ mod tests {
     fn branched_append_forms_sibling_branch() {
         let dir = tempfile::tempdir().unwrap();
         let stamp = "2026-10-12T00:00:00.000Z";
-        let mut writer = omp_session::SessionWriter::create(dir.path(), "/tmp", "sess1", stamp).unwrap();
+        let mut writer =
+            omp_session::SessionWriter::create(dir.path(), "/tmp", "sess1", stamp).unwrap();
         let root = writer.append_entry("custom", json!({}), stamp).unwrap();
         let first = writer.append_entry("custom", json!({}), stamp).unwrap();
         let tail = writer.append_entry("custom", json!({}), stamp).unwrap();
@@ -311,23 +347,37 @@ mod tests {
         let entries: Vec<Value> = read_entries(writer.path()).unwrap();
         let tree = omp_session::tree::build_tree(&entries);
         assert_eq!(tree.len(), 1);
-        assert_eq!(tree[0].children.len(), 2, "first and forked are siblings under the root");
+        assert_eq!(
+            tree[0].children.len(),
+            2,
+            "first and forked are siblings under the root"
+        );
         assert_eq!(tree[0].children[1].entry["id"], json!(forked));
         let forked_entry = entries.iter().find(|e| e["id"] == json!(forked)).unwrap();
         assert_eq!(forked_entry["parentId"], json!(root));
-        assert!(tree[0].children[0].children[0].entry["id"] == json!(tail)
-            || tree[0].children[1].children[0].entry["id"] == json!(tail));
+        assert!(
+            tree[0].children[0].children[0].entry["id"] == json!(tail)
+                || tree[0].children[1].children[0].entry["id"] == json!(tail)
+        );
         let _ = (first, tail);
     }
 
     #[test]
     fn branch_to_unknown_id_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        let mut w = omp_session::SessionWriter::create(dir.path(), "/tmp", "sess1", "2026-10-12T00:00:00.000Z").unwrap();
+        let mut w = omp_session::SessionWriter::create(
+            dir.path(),
+            "/tmp",
+            "sess1",
+            "2026-10-12T00:00:00.000Z",
+        )
+        .unwrap();
         assert!(w.branch_to(Some("nope".to_owned())).is_err());
         // New root: parentId null.
         w.branch_to(None).unwrap();
-        let id = w.append_entry("custom", json!({}), "2026-10-12T00:00:01.000Z").unwrap();
+        let id = w
+            .append_entry("custom", json!({}), "2026-10-12T00:00:01.000Z")
+            .unwrap();
         let entries = read_entries(w.path()).unwrap();
         let e = entries.iter().find(|e| e["id"] == json!(id)).unwrap();
         assert_eq!(e["parentId"], Value::Null);
@@ -339,7 +389,10 @@ mod tests {
             Value::String(s) => s.clone(),
             Value::Array(parts) => parts
                 .iter()
-                .filter_map(|p| (p.get("type")? == "text").then(|| p.get("text")?.as_str().map(str::to_owned))?)
+                .filter_map(|p| {
+                    (p.get("type")? == "text")
+                        .then(|| p.get("text")?.as_str().map(str::to_owned))?
+                })
                 .collect::<Vec<_>>()
                 .join("\n"),
             _ => String::new(),
@@ -351,7 +404,10 @@ mod tests {
     /// (golden produced by running omp's TS under bun; fixture shared with omp-session).
     #[test]
     fn context_matches_ts_build_session_context() {
-        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/../omp-session/tests/fixtures/branched-session.jsonl");
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../omp-session/tests/fixtures/branched-session.jsonl"
+        );
         let golden: Value = serde_json::from_str(include_str!(
             "../../omp-session/tests/fixtures/branched-session.expectation.json"
         ))
@@ -361,13 +417,27 @@ mod tests {
             .lines()
             .filter(|l| !l.trim().is_empty())
             .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|e| !matches!(e.get("type").and_then(Value::as_str), Some("title" | "session")))
+            .filter(|e| {
+                !matches!(
+                    e.get("type").and_then(Value::as_str),
+                    Some("title" | "session")
+                )
+            })
             .collect();
         let leaf = golden["leafId"].as_str().unwrap();
-        let ctx = omp_compact::build_session_context(&entries, omp_compact::Leaf::Id(leaf)).unwrap();
+        let ctx =
+            omp_compact::build_session_context(&entries, omp_compact::Leaf::Id(leaf)).unwrap();
         assert_eq!(ctx.mode, golden["mode"], "mode differs");
-        assert_eq!(ctx.thinking_level.unwrap_or_default(), golden["thinkingLevel"], "thinking level differs");
-        assert_eq!(ctx.messages.len() as u64, golden["messageCount"].as_u64().unwrap(), "message count differs");
+        assert_eq!(
+            ctx.thinking_level.unwrap_or_default(),
+            golden["thinkingLevel"],
+            "thinking level differs"
+        );
+        assert_eq!(
+            ctx.messages.len() as u64,
+            golden["messageCount"].as_u64().unwrap(),
+            "message count differs"
+        );
         let digest: Vec<Value> = ctx
             .messages
             .iter()
@@ -379,7 +449,11 @@ mod tests {
                 }
             })
             .collect();
-        assert_eq!(json!(digest), golden["messages"], "context differs from TS buildSessionContext()");
+        assert_eq!(
+            json!(digest),
+            golden["messages"],
+            "context differs from TS buildSessionContext()"
+        );
     }
 
     #[test]

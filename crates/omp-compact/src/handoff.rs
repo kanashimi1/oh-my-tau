@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use crate::files::{compute_file_lists, upsert_file_operations, FileOperations};
 use crate::json::str_field;
 use crate::summary::{completion_text, Completer, SummaryKind, SummaryRequest};
-use crate::{files, summary::CompactionResult, prompts};
+use crate::{files, prompts, summary::CompactionResult};
 
 /// `renderHandoffPrompt`: the handoff-document instructions, optionally with an
 /// `<instruction>` block carrying `additionalFocus`.
@@ -56,7 +56,11 @@ pub fn render_handoff_prompt(custom_instructions: Option<&str>) -> String {
 /// appended) sent as one oneshot with a `Handoff` oneshot kind.
 #[must_use]
 pub fn build_handoff_request(context: pa_types::ai::Context, max_tokens: u64) -> SummaryRequest {
-    SummaryRequest { kind: SummaryKind::Handoff, context, max_tokens }
+    SummaryRequest {
+        kind: SummaryKind::Handoff,
+        context,
+        max_tokens,
+    }
 }
 
 /// `generateHandoffFromContext`: run the handoff oneshot and extract the
@@ -64,7 +68,10 @@ pub fn build_handoff_request(context: pa_types::ai::Context, max_tokens: u64) ->
 ///
 /// # Errors
 /// The completer failed or replied with `stopReason: "error"`.
-pub async fn generate_handoff_from_context(completer: &impl Completer, request: SummaryRequest) -> Result<String> {
+pub async fn generate_handoff_from_context(
+    completer: &impl Completer,
+    request: SummaryRequest,
+) -> Result<String> {
     let reply = completer.complete(request).await?;
     completion_text(&reply, "Handoff generation failed")
 }
@@ -74,7 +81,8 @@ pub async fn generate_handoff_from_context(completer: &impl Completer, request: 
 #[must_use]
 pub fn handoff_summary_from_document(document: &str, file_ops: &FileOperations) -> (String, Value) {
     let (read_files, modified_files) = compute_file_lists(file_ops);
-    let summary = upsert_file_operations(document, &read_files, &modified_files, Some(&file_ops.read));
+    let summary =
+        upsert_file_operations(document, &read_files, &modified_files, Some(&file_ops.read));
     let details = serde_json::json!({ "readFiles": read_files, "modifiedFiles": modified_files });
     (summary, details)
 }
@@ -93,7 +101,13 @@ pub struct HandoffCommit<'a> {
 /// Field order on the wire matches TS `appendCompaction` (`summary`, `shortSummary` omitted,
 /// `firstKeptEntryId`, `tokensBefore`, `tokensAfter`, `method`, `details`, `fromExtension`).
 #[must_use]
-pub fn handoff_compaction_entry(id: &str, parent_id: Option<&str>, timestamp_iso: &str, document: &str, commit: &HandoffCommit<'_>) -> omp_session::entries::Compaction {
+pub fn handoff_compaction_entry(
+    id: &str,
+    parent_id: Option<&str>,
+    timestamp_iso: &str,
+    document: &str,
+    commit: &HandoffCommit<'_>,
+) -> omp_session::entries::Compaction {
     let (summary, details) = handoff_summary_from_document(document, commit.file_ops);
     omp_session::entries::Compaction {
         id: id.to_owned(),
@@ -118,7 +132,12 @@ pub fn handoff_compaction_entry(id: &str, parent_id: Option<&str>, timestamp_iso
 ///
 /// # Errors
 /// The write failed.
-pub fn append_handoff(writer: &mut omp_session::SessionWriter, document: &str, timestamp_iso: &str, commit: &HandoffCommit<'_>) -> Result<String> {
+pub fn append_handoff(
+    writer: &mut omp_session::SessionWriter,
+    document: &str,
+    timestamp_iso: &str,
+    commit: &HandoffCommit<'_>,
+) -> Result<String> {
     let (summary, details) = handoff_summary_from_document(document, commit.file_ops);
     let mut payload = Map::new();
     payload.insert("summary".into(), summary.into());
@@ -137,7 +156,12 @@ pub fn append_handoff(writer: &mut omp_session::SessionWriter, document: &str, t
 /// [`apply::project_tokens_after`] can project `tokensAfter` (the summary message
 /// renders through the handoff context prompt because `method` is `handoff`).
 #[must_use]
-pub fn handoff_result(document: &str, first_kept_entry_id: &str, tokens_before: u64, file_ops: &FileOperations) -> CompactionResult {
+pub fn handoff_result(
+    document: &str,
+    first_kept_entry_id: &str,
+    tokens_before: u64,
+    file_ops: &FileOperations,
+) -> CompactionResult {
     let (summary, _) = handoff_summary_from_document(document, file_ops);
     CompactionResult {
         summary,

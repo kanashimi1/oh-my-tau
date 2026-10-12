@@ -39,7 +39,9 @@ fn selector_regexes() -> &'static (Regex, Regex, Regex) {
 #[must_use]
 pub fn split_read_selector(path: &str) -> (String, Option<String>) {
     let (selector, range_only, raw_only) = selector_regexes();
-    let Some(colon) = path.rfind(':').filter(|c| *c > 0) else { return (path.to_owned(), None) };
+    let Some(colon) = path.rfind(':').filter(|c| *c > 0) else {
+        return (path.to_owned(), None);
+    };
     let candidate = &path[colon + 1..];
     if !selector.is_match(candidate) {
         return (path.to_owned(), None);
@@ -70,7 +72,8 @@ pub fn strip_read_selector(path: &str) -> String {
 #[must_use]
 pub fn is_url_scheme_path(path: &str) -> bool {
     static CELL: OnceLock<Regex> = OnceLock::new();
-    CELL.get_or_init(|| Regex::new("(?i)[a-z][a-z0-9+.-]*://").expect("url regex")).is_match(path)
+    CELL.get_or_init(|| Regex::new("(?i)[a-z][a-z0-9+.-]*://").expect("url regex"))
+        .is_match(path)
 }
 
 /// `extractFileOpsFromMessage`: record `read` / `write` / `edit` tool-call paths of an assistant
@@ -79,12 +82,23 @@ pub fn extract_file_ops_from_message(message: &Value, ops: &mut FileOperations) 
     if message_role(message) != "assistant" {
         return;
     }
-    for block in message.get("content").and_then(Value::as_array).into_iter().flatten() {
+    for block in message
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         if str_field(block, "type") != Some("toolCall") {
             continue;
         }
-        let Some(name) = block.get("name") else { continue };
-        let Some(path) = block.get("arguments").and_then(|a| str_field(a, "path")).filter(|p| !p.is_empty()) else {
+        let Some(name) = block.get("name") else {
+            continue;
+        };
+        let Some(path) = block
+            .get("arguments")
+            .and_then(|a| str_field(a, "path"))
+            .filter(|p| !p.is_empty())
+        else {
             continue;
         };
         if is_url_scheme_path(path) {
@@ -108,8 +122,18 @@ pub fn extract_file_ops_from_message(message: &Value, ops: &mut FileOperations) 
 /// `computeFileLists`: `(readFiles, modifiedFiles)`, each sorted; files only read vs modified.
 #[must_use]
 pub fn compute_file_lists(ops: &FileOperations) -> (Vec<String>, Vec<String>) {
-    let modified: BTreeSet<&String> = ops.edited.iter().chain(&ops.written).filter(|f| !is_url_scheme_path(f)).collect();
-    let read_only = ops.read.iter().filter(|f| !is_url_scheme_path(f) && !modified.contains(f)).cloned().collect();
+    let modified: BTreeSet<&String> = ops
+        .edited
+        .iter()
+        .chain(&ops.written)
+        .filter(|f| !is_url_scheme_path(f))
+        .collect();
+    let read_only = ops
+        .read
+        .iter()
+        .filter(|f| !is_url_scheme_path(f) && !modified.contains(f))
+        .cloned()
+        .collect();
     (read_only, modified.into_iter().cloned().collect())
 }
 
@@ -172,7 +196,11 @@ pub fn format_grouped_paths(paths: &[String], annotate: &dyn Fn(&str) -> String)
             continue;
         }
         let segments: Vec<&str> = trimmed.split('/').collect();
-        let dir_count = if is_dir { segments.len() } else { segments.len() - 1 };
+        let dir_count = if is_dir {
+            segments.len()
+        } else {
+            segments.len() - 1
+        };
         let mut node = &mut root;
         for seg in &segments[..dir_count] {
             node = node.subdir(seg);
@@ -189,7 +217,11 @@ pub fn format_grouped_paths(paths: &[String], annotate: &dyn Fn(&str) -> String)
 /// `formatFileOperations`: one `<files>` block with a `(Read)` / `(Write)` / `(RW)` marker per
 /// file; `""` when there are none.
 #[must_use]
-pub fn format_file_operations(read_files: &[String], modified_files: &[String], read_set: Option<&BTreeSet<String>>) -> String {
+pub fn format_file_operations(
+    read_files: &[String],
+    modified_files: &[String],
+    read_set: Option<&BTreeSet<String>>,
+) -> String {
     if read_files.is_empty() && modified_files.is_empty() {
         return String::new();
     }
@@ -198,13 +230,25 @@ pub fn format_file_operations(read_files: &[String], modified_files: &[String], 
         mode.insert(f, "Read");
     }
     for f in modified_files {
-        mode.insert(f, if read_set.is_some_and(|s| s.contains(f)) { "RW" } else { "Write" });
+        mode.insert(
+            f,
+            if read_set.is_some_and(|s| s.contains(f)) {
+                "RW"
+            } else {
+                "Write"
+            },
+        );
     }
     let all: Vec<String> = mode.keys().map(|k| (*k).to_owned()).collect();
     let shown = &all[..all.len().min(FILE_OPERATION_SUMMARY_LIMIT)];
-    let mut files = format_grouped_paths(shown, &|p| format!(" ({})", mode.get(p).copied().unwrap_or("")));
+    let mut files = format_grouped_paths(shown, &|p| {
+        format!(" ({})", mode.get(p).copied().unwrap_or(""))
+    });
     if all.len() > FILE_OPERATION_SUMMARY_LIMIT {
-        files.push_str(&format!("\n[…{} files elided…]", all.len() - FILE_OPERATION_SUMMARY_LIMIT));
+        files.push_str(&format!(
+            "\n[…{} files elided…]",
+            all.len() - FILE_OPERATION_SUMMARY_LIMIT
+        ));
     }
     crate::prompts::format(&format!("<files>\n{files}\n</files>"))
 }
@@ -227,7 +271,12 @@ fn strip_file_operation_tags(summary: &str) -> String {
 
 /// `upsertFileOperations`: replace any `<files>` block in `summary` with a fresh one.
 #[must_use]
-pub fn upsert_file_operations(summary: &str, read_files: &[String], modified_files: &[String], read_set: Option<&BTreeSet<String>>) -> String {
+pub fn upsert_file_operations(
+    summary: &str,
+    read_files: &[String],
+    modified_files: &[String],
+    read_set: Option<&BTreeSet<String>>,
+) -> String {
     let base = strip_file_operation_tags(summary);
     let ops = format_file_operations(read_files, modified_files, read_set);
     if ops.is_empty() {

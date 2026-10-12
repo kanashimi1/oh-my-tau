@@ -16,7 +16,9 @@ use std::collections::{BTreeSet, HashMap};
 use serde_json::{Map, Value};
 
 use crate::json::{entry_id, entry_type, message_role, ms_value, parse_iso_ms, str_field, truthy};
-use crate::messages::{create_branch_summary_message, create_compaction_summary_message_ext, custom_message_from_entry};
+use crate::messages::{
+    create_branch_summary_message, create_compaction_summary_message_ext, custom_message_from_entry,
+};
 use crate::native;
 use crate::prompts;
 
@@ -103,18 +105,24 @@ fn is_empty_error_turn(message: &Value) -> bool {
     if str_field(message, "stopReason") != Some("error") {
         return false;
     }
-    !message.get("content").and_then(Value::as_array).is_some_and(|blocks| {
-        blocks.iter().any(|block| match str_field(block, "type") {
-            Some("text") => str_field(block, "text").is_some_and(|t| !t.trim().is_empty()),
-            Some("thinking") => {
-                str_field(block, "thinking").is_some_and(|t| !t.trim().is_empty())
-                    || str_field(block, "thinkingSignature").is_some_and(|t| !t.trim().is_empty())
-            }
-            Some("redactedThinking") => str_field(block, "data").is_some_and(|t| !t.trim().is_empty()),
-            Some("fallback") => false,
-            _ => true,
+    !message
+        .get("content")
+        .and_then(Value::as_array)
+        .is_some_and(|blocks| {
+            blocks.iter().any(|block| match str_field(block, "type") {
+                Some("text") => str_field(block, "text").is_some_and(|t| !t.trim().is_empty()),
+                Some("thinking") => {
+                    str_field(block, "thinking").is_some_and(|t| !t.trim().is_empty())
+                        || str_field(block, "thinkingSignature")
+                            .is_some_and(|t| !t.trim().is_empty())
+                }
+                Some("redactedThinking") => {
+                    str_field(block, "data").is_some_and(|t| !t.trim().is_empty())
+                }
+                Some("fallback") => false,
+                _ => true,
+            })
         })
-    })
 }
 
 /// `appendMessage` (model-context mode): the message an entry adds to the context, if any.
@@ -122,14 +130,18 @@ fn context_message(entry: &Value) -> Option<Value> {
     match entry_type(entry) {
         "message" => {
             let message = entry.get("message")?;
-            if message_role(message) == "assistant" && (truthy(message.get("retryRecovery")) || is_empty_error_turn(message)) {
+            if message_role(message) == "assistant"
+                && (truthy(message.get("retryRecovery")) || is_empty_error_turn(message))
+            {
                 return None;
             }
             Some(message.clone())
         }
         "custom_message" => {
             let custom_type = str_field(entry, "customType");
-            if custom_type == Some(PREWALK_PLAN_MESSAGE_TYPE) || custom_type == Some(VIBE_MODE_CONTEXT_MESSAGE_TYPE) {
+            if custom_type == Some(PREWALK_PLAN_MESSAGE_TYPE)
+                || custom_type == Some(VIBE_MODE_CONTEXT_MESSAGE_TYPE)
+            {
                 return None;
             }
             custom_message_from_entry(entry)
@@ -149,10 +161,14 @@ fn context_notes<'a>(path: &[&'a Value]) -> Option<(&'a str, &'a Value)> {
         if entry_type(entry) == "reset_boundary" {
             return None;
         }
-        if entry_type(entry) != "custom" || str_field(entry, "customType") != Some(CONTEXT_NOTES_ENTRY_TYPE) {
+        if entry_type(entry) != "custom"
+            || str_field(entry, "customType") != Some(CONTEXT_NOTES_ENTRY_TYPE)
+        {
             continue;
         }
-        let Some(data) = entry.get("data").and_then(Value::as_object) else { continue };
+        let Some(data) = entry.get("data").and_then(Value::as_object) else {
+            continue;
+        };
         let version_ok = data.get("version").and_then(Value::as_f64) == Some(1.0);
         let text = data.get("text").and_then(Value::as_str);
         if data.len() == 2 && version_ok {
@@ -172,9 +188,16 @@ fn context_notes<'a>(path: &[&'a Value]) -> Option<(&'a str, &'a Value)> {
 /// [`ContextError::Unsupported`] when the latest compaction is an `experimental-context-rollover`.
 // TS `buildSessionContext` is one function; the compaction emission block is kept inline for parity.
 #[allow(clippy::too_many_lines)]
-pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<SessionContext, ContextError> {
+pub fn build_session_context(
+    entries: &[Value],
+    leaf: Leaf<'_>,
+) -> Result<SessionContext, ContextError> {
     let path = branch_path(entries, leaf);
-    let mut ctx = SessionContext { mode: "none".to_owned(), thinking_level: Some("off".to_owned()), ..SessionContext::default() };
+    let mut ctx = SessionContext {
+        mode: "none".to_owned(),
+        thinking_level: Some("off".to_owned()),
+        ..SessionContext::default()
+    };
     if path.is_empty() {
         return Ok(ctx);
     }
@@ -187,8 +210,11 @@ pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<Sessio
             "thinking_level_change" => {
                 let level = entry.get("thinkingLevel").and_then(Value::as_str);
                 ctx.thinking_level = Some(level.unwrap_or("off").to_owned());
-                ctx.configured_thinking_level =
-                    entry.get("configured").and_then(Value::as_str).or(level).map(str::to_owned);
+                ctx.configured_thinking_level = entry
+                    .get("configured")
+                    .and_then(Value::as_str)
+                    .or(level)
+                    .map(str::to_owned);
             }
             "model_change" => {
                 if let Some(model) = str_field(entry, "model").filter(|m| !m.is_empty()) {
@@ -199,26 +225,40 @@ pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<Sessio
                     }
                 }
             }
-            "service_tier_change" => ctx.service_tier = entry.get("serviceTier").filter(|v| !v.is_null()).cloned(),
+            "service_tier_change" => {
+                ctx.service_tier = entry.get("serviceTier").filter(|v| !v.is_null()).cloned();
+            }
             "message" => {
-                if let Some(m) = entry.get("message").filter(|m| message_role(m) == "assistant") {
+                if let Some(m) = entry
+                    .get("message")
+                    .filter(|m| message_role(m) == "assistant")
+                {
                     if !has_explicit_default_model {
                         let provider = str_field(m, "provider").unwrap_or("undefined");
                         let model = str_field(m, "model").unwrap_or("undefined");
-                        ctx.models.insert("default".to_owned(), format!("{provider}/{model}").into());
+                        ctx.models
+                            .insert("default".to_owned(), format!("{provider}/{model}").into());
                     }
                 }
             }
             "compaction" => compaction = Some(entry),
             "ttsr_injection" => {
-                for rule in entry.get("injectedRules").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                for rule in entry
+                    .get("injectedRules")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                {
                     if !ttsr.iter().any(|r| r == rule) {
                         ttsr.push(rule.to_owned());
                     }
                 }
             }
             "mode_change" => {
-                str_field(entry, "mode").unwrap_or("none").clone_into(&mut ctx.mode);
+                str_field(entry, "mode")
+                    .unwrap_or("none")
+                    .clone_into(&mut ctx.mode);
                 ctx.mode_data = entry.get("data").filter(|d| !d.is_null()).cloned();
             }
             _ => {}
@@ -227,7 +267,10 @@ pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<Sessio
     ctx.injected_ttsr_rules = ttsr;
 
     let reset_idx = path.iter().rposition(|e| entry_type(e) == "reset_boundary");
-    let compaction_idx = compaction.and_then(|c| path.iter().position(|e| entry_type(e) == "compaction" && entry_id(e) == entry_id(c)));
+    let compaction_idx = compaction.and_then(|c| {
+        path.iter()
+            .position(|e| entry_type(e) == "compaction" && entry_id(e) == entry_id(c))
+    });
     let mut messages: Vec<Value> = Vec::new();
 
     let after_reset = match (reset_idx, compaction_idx) {
@@ -241,30 +284,41 @@ pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<Sessio
     } else if let (Some(compaction), Some(compaction_idx)) = (compaction, compaction_idx) {
         // Rollover recovery (re-asking the discarded turn prefix from the
         // branch journal) is not ported.
-        if compaction.get("details").and_then(|d| str_field(d, "kind")) == Some("experimental-context-rollover") {
+        if compaction.get("details").and_then(|d| str_field(d, "kind"))
+            == Some("experimental-context-rollover")
+        {
             return Err(ContextError::Unsupported("experimental-context-rollover"));
         }
         let remote = native::openai_remote_payload(compaction);
         let anthropic = native::anthropic_compaction_payload(compaction);
         let provider_payload = remote.clone().or_else(|| anthropic.clone());
-        let remote_replacement_history = remote.as_ref().and_then(|p| p.get("items")).filter(|i| i.is_array());
+        let remote_replacement_history = remote
+            .as_ref()
+            .and_then(|p| p.get("items"))
+            .filter(|i| i.is_array());
 
         // A natively replayed summary must not invalidate the retained tail's
         // bound thinking: predate the rewrite marker to just before the first
         // retained entry instead of the commit timestamp.
         let history_rewrite_at = if anthropic.is_some() {
-            let first_kept_idx = path
-                .iter()
-                .position(|e| entry_id(e) == str_field(compaction, "firstKeptEntryId").unwrap_or(""));
+            let first_kept_idx = path.iter().position(|e| {
+                entry_id(e) == str_field(compaction, "firstKeptEntryId").unwrap_or("")
+            });
             let snapshot_idx = if str_field(compaction, "firstKeptEntryId") == Some("") {
                 str_field(compaction, "providerReplayThroughEntryId")
                     .and_then(|id| path.iter().position(|e| entry_id(e) == id))
             } else {
                 None
             };
-            let first_retained = (first_kept_idx.filter(|&i| i < compaction_idx).map(|i| path[i]))
-                .or_else(|| snapshot_idx.filter(|&i| i + 1 < compaction_idx).map(|i| path[i + 1]))
-                .or(path.get(compaction_idx + 1).copied());
+            let first_retained = (first_kept_idx
+                .filter(|&i| i < compaction_idx)
+                .map(|i| path[i]))
+            .or_else(|| {
+                snapshot_idx
+                    .filter(|&i| i + 1 < compaction_idx)
+                    .map(|i| path[i + 1])
+            })
+            .or(path.get(compaction_idx + 1).copied());
             first_retained
                 .and_then(|e| str_field(e, "timestamp"))
                 .and_then(parse_iso_ms)
@@ -278,7 +332,12 @@ pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<Sessio
         let blocks = native::get_preserved_archive(compaction.get("preserveData"))
             .map(|archive| native::history_blocks_for_context(&archive))
             .filter(|b| !b.is_empty());
-        messages.push(create_compaction_summary_message_ext(compaction, provider_payload, blocks, history_rewrite_at));
+        messages.push(create_compaction_summary_message_ext(
+            compaction,
+            provider_payload,
+            blocks,
+            history_rewrite_at,
+        ));
 
         // The remote replacement payload (OpenAI remote compaction) carries
         // the kept turns for the LLM context only; without it, replay the kept
@@ -286,39 +345,58 @@ pub fn build_session_context(entries: &[Value], leaf: Leaf<'_>) -> Result<Sessio
         // falls back to the provider snapshot entry).
         if remote_replacement_history.is_none() {
             let first_kept_idx = path.iter().enumerate().position(|(i, e)| {
-                i < compaction_idx && entry_id(e) == str_field(compaction, "firstKeptEntryId").unwrap_or("")
+                i < compaction_idx
+                    && entry_id(e) == str_field(compaction, "firstKeptEntryId").unwrap_or("")
             });
-            let snapshot_idx = if anthropic.is_some() && str_field(compaction, "firstKeptEntryId") == Some("") {
-                str_field(compaction, "providerReplayThroughEntryId")
-                    .and_then(|id| path.iter().position(|e| entry_id(e) == id))
-            } else {
-                None
-            };
+            let snapshot_idx =
+                if anthropic.is_some() && str_field(compaction, "firstKeptEntryId") == Some("") {
+                    str_field(compaction, "providerReplayThroughEntryId")
+                        .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+                } else {
+                    None
+                };
             let retained_start = first_kept_idx.or_else(|| snapshot_idx.map(|i| i + 1));
             if let Some(start) = retained_start.filter(|&s| s < compaction_idx) {
-                messages.extend(path[start..compaction_idx].iter().filter_map(|e| context_message(e)));
+                messages.extend(
+                    path[start..compaction_idx]
+                        .iter()
+                        .filter_map(|e| context_message(e)),
+                );
             }
         } else if let Some(replay_through) = str_field(compaction, "providerReplayThroughEntryId")
             .and_then(|id| path.iter().position(|e| entry_id(e) == id))
         {
             if replay_through < compaction_idx {
-                messages.extend(path[replay_through + 1..compaction_idx].iter().filter_map(|e| context_message(e)));
+                messages.extend(
+                    path[replay_through + 1..compaction_idx]
+                        .iter()
+                        .filter_map(|e| context_message(e)),
+                );
             }
         }
-        messages.extend(path[compaction_idx + 1..].iter().filter_map(|e| context_message(e)));
+        messages.extend(
+            path[compaction_idx + 1..]
+                .iter()
+                .filter_map(|e| context_message(e)),
+        );
     } else {
         messages.extend(path.iter().filter_map(|e| context_message(e)));
     }
 
     if let Some((text, source)) = context_notes(&path) {
-        let rendered = prompts::render(prompts::CONTEXT_NOTES, &[("notes", text)]).trim().to_owned();
+        let rendered = prompts::render(prompts::CONTEXT_NOTES, &[("notes", text)])
+            .trim()
+            .to_owned();
         if !text.is_empty() && !rendered.is_empty() {
             let mut m = Map::new();
             m.insert("role".into(), "custom".into());
             m.insert("customType".into(), CONTEXT_NOTES_ENTRY_TYPE.into());
             m.insert("content".into(), rendered.into());
             m.insert("display".into(), false.into());
-            m.insert("timestamp".into(), ms_value(str_field(source, "timestamp").and_then(parse_iso_ms)));
+            m.insert(
+                "timestamp".into(),
+                ms_value(str_field(source, "timestamp").and_then(parse_iso_ms)),
+            );
             messages.insert(0, Value::Object(m));
         }
     }
@@ -337,12 +415,19 @@ fn strip_dangling_tool_calls(messages: &mut Vec<Value>) {
         .filter(|m| message_role(m) == "toolResult")
         .filter_map(|m| str_field(m, "toolCallId").map(str::to_owned))
         .collect();
-    let is_dangling = |block: &Value| str_field(block, "type") == Some("toolCall") && !str_field(block, "id").is_some_and(|id| paired.contains(id));
+    let is_dangling = |block: &Value| {
+        str_field(block, "type") == Some("toolCall")
+            && !str_field(block, "id").is_some_and(|id| paired.contains(id))
+    };
     for i in (0..messages.len()).rev() {
         if message_role(&messages[i]) != "assistant" {
             continue;
         }
-        let blocks = messages[i].get("content").and_then(Value::as_array).cloned().unwrap_or_default();
+        let blocks = messages[i]
+            .get("content")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if !blocks.iter().any(is_dangling) {
             continue;
         }
@@ -373,11 +458,16 @@ fn drop_failed_assistant_turns(messages: &mut Vec<Value>) {
         if i >= messages.len() || message_role(&messages[i]) != "assistant" {
             continue;
         }
-        if !matches!(str_field(&messages[i], "stopReason"), Some("aborted" | "error")) {
+        if !matches!(
+            str_field(&messages[i], "stopReason"),
+            Some("aborted" | "error")
+        ) {
             continue;
         }
         if let Some(next) = messages.get(i + 1) {
-            if message_role(next) == "custom" && str_field(next, "customType") == Some(INTERRUPTED_THINKING_MESSAGE_TYPE) {
+            if message_role(next) == "custom"
+                && str_field(next, "customType") == Some(INTERRUPTED_THINKING_MESSAGE_TYPE)
+            {
                 continue;
             }
         }
@@ -394,7 +484,9 @@ fn drop_failed_assistant_turns(messages: &mut Vec<Value>) {
             let mut j = messages.len();
             while j > i {
                 j -= 1;
-                if message_role(&messages[j]) == "toolResult" && str_field(&messages[j], "toolCallId").is_some_and(|id| dropped.contains(id)) {
+                if message_role(&messages[j]) == "toolResult"
+                    && str_field(&messages[j], "toolCallId").is_some_and(|id| dropped.contains(id))
+                {
                     messages.remove(j);
                 }
             }

@@ -46,20 +46,28 @@ pub enum Selector {
 static RANGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$").expect("valid line range regex")
 });
-static TAIL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-(\d+)$").expect("valid tail regex"));
+static TAIL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^-(\d+)$").expect("valid tail regex"));
 
 fn parse_chunk(chunk: &str, pin_bare: bool) -> Result<Option<LineRange>> {
-    let Some(c) = RANGE_RE.captures(chunk) else { return Ok(None) };
+    let Some(c) = RANGE_RE.captures(chunk) else {
+        return Ok(None);
+    };
     let start: usize = c[1].parse().unwrap_or(usize::MAX);
     if start < 1 {
         bail!("Line selector 0 is invalid; lines are 1-indexed. Use :1.");
     }
-    let sep = c.get(2).map(|m| if m.as_str() == ".." { "-" } else { m.as_str() });
+    let sep = c
+        .get(2)
+        .map(|m| if m.as_str() == ".." { "-" } else { m.as_str() });
     let rhs: Option<usize> = c.get(3).and_then(|m| m.as_str().parse().ok());
     let end = match sep {
         Some("+") => match rhs {
             Some(n) if n >= 1 => Some(start + n - 1),
-            _ => bail!("Invalid range {start}+{}: count must be >= 1.", rhs.unwrap_or(0)),
+            _ => bail!(
+                "Invalid range {start}+{}: count must be >= 1.",
+                rhs.unwrap_or(0)
+            ),
         },
         Some(_) => match rhs {
             Some(e) if e < start => bail!("Invalid range {start}-{e}: end must be >= start."),
@@ -169,7 +177,10 @@ pub fn parse_sel(sel: &str) -> Result<Selector> {
 }
 
 fn is_raw(sel: &Selector) -> bool {
-    matches!(sel, Selector::Raw | Selector::Lines { raw: true, .. } | Selector::Tail { raw: true, .. })
+    matches!(
+        sel,
+        Selector::Raw | Selector::Lines { raw: true, .. } | Selector::Tail { raw: true, .. }
+    )
 }
 
 /// Split `raw` into a filesystem path (existing) plus selector. A literal path
@@ -236,7 +247,10 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     }
     let bytes = std::fs::read(&absolute).with_context(|| format!("cannot read {path_part}"))?;
     if bytes.contains(&0) {
-        bail!("Cannot read '{path_part}': binary file ({}).", format_bytes(bytes.len()));
+        bail!(
+            "Cannot read '{path_part}': binary file ({}).",
+            format_bytes(bytes.len())
+        );
     }
     let text = String::from_utf8_lossy(&bytes);
     let (_, without_bom) = strip_bom(&text);
@@ -250,7 +264,13 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let sel = match sel {
         Selector::Tail { count, raw } => {
             let start = total.saturating_sub(count) + 1;
-            Selector::Lines { ranges: vec![LineRange { start: start.max(1), end: Some(total.max(start)) }], raw }
+            Selector::Lines {
+                ranges: vec![LineRange {
+                    start: start.max(1),
+                    end: Some(total.max(start)),
+                }],
+                raw,
+            }
         }
         other => other,
     };
@@ -260,7 +280,11 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     };
     let selector_base = path_part;
     let display = format_path_relative_to_cwd(&absolute, &env.cwd, false);
-    let display = if Path::new(&display).is_absolute() { shorten_path(&display) } else { display };
+    let display = if Path::new(&display).is_absolute() {
+        shorten_path(&display)
+    } else {
+        display
+    };
 
     let mut body = String::new();
     let mut rows = 0usize;
@@ -275,10 +299,21 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             .iter()
             .map(|r| {
                 let requested_start = r.start - 1;
-                let lead = if !raw && r.start > 1 { LEADING_CONTEXT.min(requested_start) } else { 0 };
-                let trail = if !raw && r.end.is_some() { TRAILING_CONTEXT } else { 0 };
+                let lead = if !raw && r.start > 1 {
+                    LEADING_CONTEXT.min(requested_start)
+                } else {
+                    0
+                };
+                let trail = if !raw && r.end.is_some() {
+                    TRAILING_CONTEXT
+                } else {
+                    0
+                };
                 let limit = r.end.map_or(DEFAULT_LIMIT, |e| e - r.start + 1);
-                (requested_start - lead, (limit + lead + trail).min(MAX_LINES))
+                (
+                    requested_start - lead,
+                    (limit + lead + trail).min(MAX_LINES),
+                )
             })
             .collect()
     };
@@ -293,8 +328,16 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         }
         let end = (start + count).min(total);
         for (i, line) in lines.iter().enumerate().take(end).skip(*start) {
-            let shown = if raw { (*line).to_string() } else { truncate_columns(line) };
-            let row = if hash_lines { format!("{}:{shown}", i + 1) } else { shown };
+            let shown = if raw {
+                (*line).to_string()
+            } else {
+                truncate_columns(line)
+            };
+            let row = if hash_lines {
+                format!("{}:{shown}", i + 1)
+            } else {
+                shown
+            };
             if body.len() + row.len() + 1 > max_bytes && rows > 0 {
                 truncated_by_bytes = true;
                 break;
@@ -334,7 +377,9 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         // A raw read emits no header, but records the displayed range.
         let key = canonical_key(&absolute);
         let first = windows.first().map_or(0, |w| w.0) + 1;
-        let seen: Vec<u32> = (first..=last_shown).filter_map(|n| u32::try_from(n).ok()).collect();
+        let seen: Vec<u32> = (first..=last_shown)
+            .filter_map(|n| u32::try_from(n).ok())
+            .collect();
         env.store.record(&key, &normalized, Some(&seen));
     }
     out.push_str(&body);
@@ -384,7 +429,9 @@ fn skip_dir(name: &str) -> bool {
 /// Children of `dir` (depth 1 = the root's entries), newest first. Below the
 /// root a directory keeps `limit - 1` recent entries plus its oldest.
 fn load_children(dir: &Path, depth: usize) -> (Vec<Node>, usize) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return (Vec::new(), 0) };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return (Vec::new(), 0);
+    };
     let mut nodes: Vec<Node> = rd
         .filter_map(Result::ok)
         .filter_map(|e| {
@@ -394,10 +441,21 @@ fn load_children(dir: &Path, depth: usize) -> (Vec<Node>, usize) {
             if is_dir && skip_dir(&name) {
                 return None;
             }
-            Some(Node { name, is_dir, mtime: mtime_ms(&meta), size: meta.len(), children: Vec::new(), dropped: 0 })
+            Some(Node {
+                name,
+                is_dir,
+                mtime: mtime_ms(&meta),
+                size: meta.len(),
+                children: Vec::new(),
+                dropped: 0,
+            })
         })
         .collect();
-    nodes.sort_by(|a, b| b.mtime.total_cmp(&a.mtime).then_with(|| a.name.cmp(&b.name)));
+    nodes.sort_by(|a, b| {
+        b.mtime
+            .total_cmp(&a.mtime)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     let mut dropped = 0;
     if depth > 1 && nodes.len() > DIR_CHILD_LIMIT {
         dropped = nodes.len() - DIR_CHILD_LIMIT;
@@ -441,11 +499,17 @@ fn render(nodes: &[Node], depth: usize, dropped: usize, now_ms: f64, out: &mut V
         return;
     }
     // Layout: recent entries, the "… N more" marker, then the oldest entry.
-    let (oldest, recent) = nodes.split_last().map_or((None, nodes), |(l, r)| (Some(l), r));
+    let (oldest, recent) = nodes
+        .split_last()
+        .map_or((None, nodes), |(l, r)| (Some(l), r));
     for n in recent {
         one(n, out);
     }
-    out.push(Line { label: format!("{indent}- … {dropped} more"), size: None, age: None });
+    out.push(Line {
+        label: format!("{indent}- … {dropped} more"),
+        size: None,
+        age: None,
+    });
     if let Some(n) = oldest {
         one(n, out);
     }
@@ -456,21 +520,34 @@ fn read_directory(absolute: &Path, sel: &Selector) -> Result<AgentToolResult> {
     let now_ms = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64() * 1000.0);
-    let mut lines = vec![Line { label: ".".to_string(), size: None, age: None }];
+    let mut lines = vec![Line {
+        label: ".".to_string(),
+        size: None,
+        age: None,
+    }];
     render(&top, 1, 0, now_ms, &mut lines);
     let rendered = if lines.len() <= 1 {
         "(empty directory)".to_string()
     } else {
-        let width = lines.iter().map(|l| l.label.chars().count()).max().unwrap_or(0);
+        let width = lines
+            .iter()
+            .map(|l| l.label.chars().count())
+            .max()
+            .unwrap_or(0);
         lines
             .iter()
             .map(|l| match &l.age {
                 None => l.label.clone(),
                 Some(age) => {
                     let pad = " ".repeat(width + 2 - l.label.chars().count());
-                    format!("{}{pad}{:<8}  {:<4}", l.label, l.size.clone().unwrap_or_default(), age)
-                        .trim_end()
-                        .to_string()
+                    format!(
+                        "{}{pad}{:<8}  {:<4}",
+                        l.label,
+                        l.size.clone().unwrap_or_default(),
+                        age
+                    )
+                    .trim_end()
+                    .to_string()
                 }
             })
             .collect::<Vec<_>>()
@@ -480,7 +557,13 @@ fn read_directory(absolute: &Path, sel: &Selector) -> Result<AgentToolResult> {
         Selector::Tail { count, raw } => {
             let total = rendered.split('\n').count();
             let start = total.saturating_sub(*count) + 1;
-            Selector::Lines { ranges: vec![LineRange { start, end: Some(total) }], raw: *raw }
+            Selector::Lines {
+                ranges: vec![LineRange {
+                    start,
+                    end: Some(total),
+                }],
+                raw: *raw,
+            }
         }
         other => other.clone(),
     };
@@ -502,14 +585,25 @@ fn read_directory(absolute: &Path, sel: &Selector) -> Result<AgentToolResult> {
         let end = r.end.map_or(all.len(), |e| e.min(all.len()));
         let mut text = all[start..end].join("\n");
         if end < all.len() {
-            let _ = write!(text, "\n\n[{} more lines in listing. Use :{} to continue]", all.len() - end, end + 1);
+            let _ = write!(
+                text,
+                "\n\n[{} more lines in listing. Use :{} to continue]",
+                all.len() - end,
+                end + 1
+            );
         }
         return Ok(AgentToolResult::text(text));
     }
     let t = truncate_head(&rendered, DEFAULT_MAX_BYTES);
     let mut text = t.content;
     if t.truncated {
-        let _ = write!(text, "\n\n[Showing lines 1-{} of {} ({} limit)]", t.output_lines, t.total_lines, format_bytes(t.max_bytes));
+        let _ = write!(
+            text,
+            "\n\n[Showing lines 1-{} of {} ({} limit)]",
+            t.output_lines,
+            t.total_lines,
+            format_bytes(t.max_bytes)
+        );
     }
     Ok(AgentToolResult::text(text))
 }
@@ -541,18 +635,45 @@ mod tests {
         assert_eq!(
             parse_sel("5-16,960-973").unwrap(),
             Selector::Lines {
-                ranges: vec![LineRange { start: 5, end: Some(16) }, LineRange { start: 960, end: Some(973) }],
+                ranges: vec![
+                    LineRange {
+                        start: 5,
+                        end: Some(16)
+                    },
+                    LineRange {
+                        start: 960,
+                        end: Some(973)
+                    }
+                ],
                 raw: false
             }
         );
         assert_eq!(
             parse_sel("50+10").unwrap(),
-            Selector::Lines { ranges: vec![LineRange { start: 50, end: Some(59) }], raw: false }
+            Selector::Lines {
+                ranges: vec![LineRange {
+                    start: 50,
+                    end: Some(59)
+                }],
+                raw: false
+            }
         );
-        assert_eq!(parse_sel("-60").unwrap(), Selector::Tail { count: 60, raw: false });
+        assert_eq!(
+            parse_sel("-60").unwrap(),
+            Selector::Tail {
+                count: 60,
+                raw: false
+            }
+        );
         assert_eq!(
             parse_sel("raw:2-4").unwrap(),
-            Selector::Lines { ranges: vec![LineRange { start: 2, end: Some(4) }], raw: true }
+            Selector::Lines {
+                ranges: vec![LineRange {
+                    start: 2,
+                    end: Some(4)
+                }],
+                raw: true
+            }
         );
         assert!(parse_sel("0").is_err());
         assert!(parse_sel("9-3").is_err());
@@ -571,7 +692,10 @@ mod tests {
         let out = text_of(&read(&e, &serde_json::json!({"path": "a.txt"})).unwrap());
         let mut it = out.lines();
         let header = it.next().unwrap();
-        assert!(header.starts_with("[a.txt#") && header.ends_with(']'), "{header}");
+        assert!(
+            header.starts_with("[a.txt#") && header.ends_with(']'),
+            "{header}"
+        );
         assert_eq!(header.len(), "[a.txt#ABCD]".len());
         assert_eq!(it.next(), Some("1:line 1"));
         assert_eq!(out.lines().last(), Some("5:line 5"));
@@ -580,7 +704,10 @@ mod tests {
         assert!(out.contains("1:line 1\n2:line 2\n3:line 3"), "{out}");
         assert!(out.contains("5:line 5"), "{out}");
         let raw = text_of(&read(&e, &serde_json::json!({"path": "a.txt:raw:2-3"})).unwrap());
-        assert_eq!(raw, "line 2\nline 3\n\n[2 more lines in file. Use a.txt:4 to continue]");
+        assert_eq!(
+            raw,
+            "line 2\nline 3\n\n[2 more lines in file. Use a.txt:4 to continue]"
+        );
         let tail = text_of(&read(&e, &serde_json::json!({"path": "a.txt:-2"})).unwrap());
         assert!(tail.contains("4:line 4\n5:line 5"), "{tail}");
     }
@@ -591,11 +718,18 @@ mod tests {
         //   hashlineFileHash → "0793", hashlineFormatHeader → "[a.txt#0793]",
         //   rows via formatNumberedLine → "N:line".
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "line 1\nline 2\nline 3\nline 4\nline 5\n").unwrap();
+        std::fs::write(
+            dir.path().join("a.txt"),
+            "line 1\nline 2\nline 3\nline 4\nline 5\n",
+        )
+        .unwrap();
         let e = env(dir.path());
         let out = text_of(&read(&e, &serde_json::json!({"path": "a.txt"})).unwrap());
         let expected = "[a.txt#0793]\n1:line 1\n2:line 2\n3:line 3\n4:line 4\n5:line 5";
-        assert_eq!(out, expected, "omp-rs read output diverged from TS formatting");
+        assert_eq!(
+            out, expected,
+            "omp-rs read output diverged from TS formatting"
+        );
     }
 
     #[test]
@@ -603,10 +737,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.txt"), "x\n").unwrap();
         let e = env(dir.path());
-        let err = read(&e, &serde_json::json!({"path": "nope.txt"})).unwrap_err().to_string();
+        let err = read(&e, &serde_json::json!({"path": "nope.txt"}))
+            .unwrap_err()
+            .to_string();
         assert_eq!(err, "Path 'nope.txt' not found");
         let out = text_of(&read(&e, &serde_json::json!({"path": "a.txt:9"})).unwrap());
-        assert!(out.starts_with("Line 9 is beyond end of file (1 lines total)."), "{out}");
+        assert!(
+            out.starts_with("Line 9 is beyond end of file (1 lines total)."),
+            "{out}"
+        );
     }
 
     #[test]
@@ -618,9 +757,13 @@ mod tests {
             let _ = writeln!(body, "l{i}");
         }
         std::fs::write(dir.path().join("big.txt"), body).unwrap();
-        let out = text_of(&read(&env(dir.path()), &serde_json::json!({"path": "big.txt"})).unwrap());
+        let out =
+            text_of(&read(&env(dir.path()), &serde_json::json!({"path": "big.txt"})).unwrap());
         assert!(out.contains("300:l300"));
         assert!(!out.contains("301:l301"));
-        assert!(out.ends_with("[100 more lines in file. Use big.txt:301 to continue]"), "{out}");
+        assert!(
+            out.ends_with("[100 more lines in file. Use big.txt:301 to continue]"),
+            "{out}"
+        );
     }
 }

@@ -24,7 +24,9 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 
 use super::jobs::{self, JobRegistry, JobStatus, Service, ServiceState};
-use super::util::{format_bytes, resolve_to_cwd, str_arg, truncate_head, truncate_tail, DEFAULT_MAX_BYTES};
+use super::util::{
+    format_bytes, resolve_to_cwd, str_arg, truncate_head, truncate_tail, DEFAULT_MAX_BYTES,
+};
 
 const DEFAULT_TIMEOUT_SECS: f64 = 300.0;
 const MIN_TIMEOUT_SECS: f64 = 1.0;
@@ -51,7 +53,9 @@ pub fn elide_middle(output: &str) -> (String, Option<String>) {
     let tail = truncate_tail(output, TAIL_BYTES);
     let total = head.total_lines;
     let elided_lines = total.saturating_sub(head.output_lines + tail.output_lines);
-    let elided_bytes = output.len().saturating_sub(head.content.len() + tail.content.len());
+    let elided_bytes = output
+        .len()
+        .saturating_sub(head.content.len() + tail.content.len());
     let marker = if elided_lines <= 1 {
         format!("[…{elided_bytes}B elided…]")
     } else {
@@ -64,7 +68,10 @@ pub fn elide_middle(output: &str) -> (String, Option<String>) {
         if elided_lines == 1 { "" } else { "s" },
         format_bytes(elided_bytes)
     );
-    (format!("{}\n{marker}\n{}", head.content, tail.content), Some(notice))
+    (
+        format!("{}\n{marker}\n{}", head.content, tail.content),
+        Some(notice),
+    )
 }
 
 fn timeout_arg(args: &Value) -> Option<f64> {
@@ -141,7 +148,12 @@ async fn run(
     } else {
         child.wait().await.context("waiting for command")?.code()
     };
-    Ok((String::from_utf8_lossy(&buf).into_owned(), code, started.elapsed(), outcome))
+    Ok((
+        String::from_utf8_lossy(&buf).into_owned(),
+        code,
+        started.elapsed(),
+        outcome,
+    ))
 }
 
 /// Outcome of a host-issued shell command (rpc `bash`), as omp's `BashResult`.
@@ -161,8 +173,13 @@ pub struct Executed {
 ///
 /// # Errors
 /// Spawn or read failures.
-pub async fn execute(cwd: &std::path::Path, command: &str, signal: &AbortSignal) -> Result<Executed> {
-    let (raw, code, _, outcome) = run(cwd, command, Some(DEFAULT_TIMEOUT_SECS), signal, None).await?;
+pub async fn execute(
+    cwd: &std::path::Path,
+    command: &str,
+    signal: &AbortSignal,
+) -> Result<Executed> {
+    let (raw, code, _, outcome) =
+        run(cwd, command, Some(DEFAULT_TIMEOUT_SECS), signal, None).await?;
     let total_bytes = raw.len();
     let total_lines = raw.lines().count();
     let t = truncate_tail(&raw, DEFAULT_MAX_BYTES);
@@ -180,10 +197,20 @@ pub async fn execute(cwd: &std::path::Path, command: &str, signal: &AbortSignal)
 }
 
 /// Format a finished command as omp's bash result text (without error propagation).
-fn finished_text(output: &str, elapsed: Duration, outcome: Option<&str>, timeout: Option<f64>, code: Option<i32>) -> String {
+fn finished_text(
+    output: &str,
+    elapsed: Duration,
+    outcome: Option<&str>,
+    timeout: Option<f64>,
+    code: Option<i32>,
+) -> String {
     use std::fmt::Write as _;
     let (shown, elision) = elide_middle(output.trim_end_matches('\n'));
-    let body = if shown.is_empty() { "(no output)".to_string() } else { shown };
+    let body = if shown.is_empty() {
+        "(no output)".to_string()
+    } else {
+        shown
+    };
     let mut text = format!("{body}\n\n{}", wall_time_notice(elapsed));
     if let Some(n) = elision {
         let _ = write!(text, "\n\n[{n}]");
@@ -219,17 +246,22 @@ struct ReadySpec {
 }
 
 fn blank(v: Option<&str>) -> Option<String> {
-    v.map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
+    v.map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
 }
 
 /// Parse `args["ready"]` (omp `normalizeReady`).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // port fraction already validated 1..=65535 before the cast
 fn parse_ready(args: &Value) -> Option<ReadySpec> {
     let r = &args["ready"];
     if !r.is_object() {
         return None;
     }
     let raw_port = r["port"].as_f64().filter(|p| p.is_finite());
-    let port = raw_port.filter(|p| p.fract() == 0.0 && *p >= 1.0 && *p <= 65_535.0).map(|p| p as u16);
+    let port = raw_port
+        .filter(|p| p.fract() == 0.0 && *p >= 1.0 && *p <= 65_535.0)
+        .map(|p| p as u16);
     let spec = ReadySpec {
         log: blank(r["log"].as_str()),
         host: blank(r["host"].as_str()),
@@ -249,7 +281,12 @@ fn ready_given(args: &Value) -> bool {
 }
 
 /// omp `startService` validation; `bail!`s with omp's `ToolError` texts.
-fn validate_service(name: &str, ready: Option<&ReadySpec>, args: &Value, async_requested: bool) -> Result<()> {
+fn validate_service(
+    name: &str,
+    ready: Option<&ReadySpec>,
+    args: &Value,
+    async_requested: bool,
+) -> Result<()> {
     if !valid_service_name(name) {
         bail!("Service name must be 1-48 letters, numbers, dots, underscores, or hyphens");
     }
@@ -279,7 +316,8 @@ fn valid_service_name(name: &str) -> bool {
     let b = name.as_bytes();
     b.len() <= 48
         && b.first().is_some_and(u8::is_ascii_alphanumeric)
-        && b.iter().all(|c| c.is_ascii_alphanumeric() || matches!(*c, b'.' | b'_' | b'-'))
+        && b.iter()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(*c, b'.' | b'_' | b'-'))
 }
 
 /// Run the `bash` tool.
@@ -287,22 +325,43 @@ fn valid_service_name(name: &str) -> bool {
 /// # Errors
 /// Spawn failure, timeout, abort or a non-zero exit (carrying the output);
 /// disabled service mode (omp's error text).
-pub async fn bash(env: std::sync::Arc<super::Env>, args: Value, signal: AbortSignal) -> Result<AgentToolResult> {
+pub async fn bash(
+    env: std::sync::Arc<super::Env>,
+    args: Value,
+    signal: AbortSignal,
+) -> Result<AgentToolResult> {
     let cwd = env.cwd.clone();
     let command = str_arg(&args, "command")?.to_string();
     let dir = args
         .get("cwd")
         .and_then(Value::as_str)
         .map_or_else(|| cwd.clone(), |d| resolve_to_cwd(d, &cwd));
-    let name = args.get("name").and_then(Value::as_str).map(str::trim).filter(|n| !n.is_empty());
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|n| !n.is_empty());
     let async_requested = args.get("async").and_then(Value::as_bool) == Some(true);
     let timeout = timeout_arg(&args);
     let mut notices: Vec<String> = Vec::new();
     if let Some(name) = name {
         let ready = parse_ready(&args);
         validate_service(name, ready.as_ref(), &args, async_requested)?;
-        let timeout_secs = ready.as_ref().and_then(|r| r.timeout).unwrap_or(30.0).clamp(0.05, 3_600.0);
-        let outcome = start_service(&env.jobs, name, &dir, &command, ready.as_ref(), timeout_secs, &signal).await?;
+        let timeout_secs = ready
+            .as_ref()
+            .and_then(|r| r.timeout)
+            .unwrap_or(30.0)
+            .clamp(0.05, 3_600.0);
+        let outcome = start_service(
+            &env.jobs,
+            name,
+            &dir,
+            &command,
+            ready.as_ref(),
+            timeout_secs,
+            &signal,
+        )
+        .await?;
         let mut lines = vec![format!(
             "{name}: {}{}{}",
             outcome.state.as_str(),
@@ -328,7 +387,9 @@ pub async fn bash(env: std::sync::Arc<super::Env>, args: Value, signal: AbortSig
         notices.push("Ignored ready: service-only, and no service name was given.".to_string());
     }
     if async_requested {
-        return Ok(start_background(&env.jobs, dir, command, timeout, notices, &signal));
+        return Ok(start_background(
+            &env.jobs, dir, command, timeout, notices, &signal,
+        ));
     }
     let (output, code, elapsed, outcome) = run(&dir, &command, timeout, &signal, None).await?;
     let mut text = finished_text(&output, elapsed, outcome, timeout, code);
@@ -353,8 +414,6 @@ struct ServiceOutcome {
 
 /// Readiness buffer window (omp broker `READINESS_BUFFER_CHARS`).
 const READINESS_BUFFER_CHARS: usize = 64 * 1024;
-/// Port-probe interval (omp broker `#pollPort`).
-const PORT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Supervisor liveness tick: checks kill requests and registry liveness.
 const SUPERVISOR_TICK: Duration = Duration::from_millis(100);
 
@@ -371,6 +430,7 @@ const SUPERVISOR_TICK: Duration = Duration::from_millis(100);
 ///
 /// # Errors
 /// Spawn failure, or abort while waiting.
+#[allow(clippy::too_many_lines)] // one supervisor task: spawn + readiness poll + liveness loop; mirrors omp's service supervisor
 async fn start_service(
     registry: &JobRegistry,
     name: &str,
@@ -396,7 +456,9 @@ async fn start_service(
     let pattern = ready
         .and_then(|r| r.log.as_ref())
         .map(|p| regex::Regex::new(p).expect("readiness regex validated"));
-    let host = ready.and_then(|r| r.host.clone()).unwrap_or_else(|| "127.0.0.1".to_string());
+    let host = ready
+        .and_then(|r| r.host.clone())
+        .unwrap_or_else(|| "127.0.0.1".to_string());
     let port = ready.and_then(|r| r.port);
     let has_ready = ready.is_some();
 
@@ -404,7 +466,11 @@ async fn start_service(
         name: name.to_string(),
         command: command.to_string(),
         started: Instant::now(),
-        state: if has_ready { ServiceState::Starting } else { ServiceState::Running },
+        state: if has_ready {
+            ServiceState::Starting
+        } else {
+            ServiceState::Running
+        },
         pid,
         ready_at: None,
         exited_at: None,
@@ -415,7 +481,8 @@ async fn start_service(
     };
     let service = registry.insert_service(service);
     let inner = registry.inner.clone();
-    let registry_liveness: std::sync::Weak<std::sync::Mutex<super::jobs::JobsInner>> = Arc::downgrade(&inner);
+    let registry_liveness: std::sync::Weak<std::sync::Mutex<super::jobs::JobsInner>> =
+        Arc::downgrade(&inner);
 
     // Supervisor: drains output (log capture + readiness buffer), polls the
     // port, watches for kill requests and registry death, settles on exit.
@@ -464,8 +531,9 @@ async fn start_service(
                             let _ = child.start_kill();
                         }
                     }
-                    if !port_ready && port.is_some() {
-                        let addr = format!("{host}:{}", port.expect("checked above"));
+                    if !port_ready {
+                        let Some(port) = port else { continue };
+                        let addr = format!("{host}:{port}");
                         if TcpStream::connect(&addr).await.is_ok() {
                             port_ready = true;
                         }
@@ -492,7 +560,11 @@ async fn start_service(
         match status {
             Ok(st) => {
                 svc.exit_code = st.code();
-                svc.state = if st.success() { ServiceState::Exited } else { ServiceState::Failed };
+                svc.state = if st.success() {
+                    ServiceState::Exited
+                } else {
+                    ServiceState::Failed
+                };
                 if let Some(code) = st.code() {
                     if code != 0 {
                         svc.exit_reason = Some(format!("exited with code {code}"));
@@ -563,14 +635,21 @@ fn start_background(
         let (status, result, error) = match &raw {
             Ok((output, code, elapsed, outcome)) => {
                 let text = finished_text(output, *elapsed, *outcome, timeout, *code);
-                let status = if outcome.is_none() && *code == Some(0) { JobStatus::Completed } else { JobStatus::Failed };
+                let status = if outcome.is_none() && *code == Some(0) {
+                    JobStatus::Completed
+                } else {
+                    JobStatus::Failed
+                };
                 let error = (status == JobStatus::Failed).then(|| {
                     if *outcome == Some("timeout") {
                         format!("Command timed out after {} seconds", timeout.unwrap_or(0.0))
                     } else if *outcome == Some("aborted") {
                         "[Command aborted]".to_string()
                     } else {
-                        format!("Command exited with code {}", code.map_or("?".to_string(), |c| c.to_string()))
+                        format!(
+                            "Command exited with code {}",
+                            code.map_or("?".to_string(), |c| c.to_string())
+                        )
                     }
                 });
                 (status, Some(text), error)
@@ -631,10 +710,14 @@ mod tests {
     #[tokio::test]
     async fn nonzero_exit_is_an_error_with_output_and_code() {
         let env = test_env();
-        let e = bash(env.clone(), serde_json::json!({"command": "echo boom; exit 3"}), sig())
-            .await
-            .unwrap_err()
-            .to_string();
+        let e = bash(
+            env.clone(),
+            serde_json::json!({"command": "echo boom; exit 3"}),
+            sig(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(e.starts_with("boom\n\nWall time: "), "{e}");
         assert!(e.ends_with("\n\nCommand exited with code 3"), "{e}");
     }
@@ -642,12 +725,20 @@ mod tests {
     #[tokio::test]
     async fn empty_output_and_timeout() {
         let env = test_env();
-        let t = text_of(&bash(env.clone(), serde_json::json!({"command": "true"}), sig()).await.unwrap());
+        let t = text_of(
+            &bash(env.clone(), serde_json::json!({"command": "true"}), sig())
+                .await
+                .unwrap(),
+        );
         assert!(t.starts_with("(no output)\n\nWall time: "), "{t}");
-        let e = bash(env.clone(), serde_json::json!({"command": "sleep 5", "timeout": 1}), sig())
-            .await
-            .unwrap_err()
-            .to_string();
+        let e = bash(
+            env.clone(),
+            serde_json::json!({"command": "sleep 5", "timeout": 1}),
+            sig(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(e.ends_with("[Command timed out after 1 seconds]"), "{e}");
     }
 
@@ -662,14 +753,20 @@ mod tests {
         .await
         .unwrap();
         let t = text_of(&r);
-        assert!(t.starts_with("Backgrounded as job bg_1 (killed once it has run 300s in total"), "{t}");
+        assert!(
+            t.starts_with("Backgrounded as job bg_1 (killed once it has run 300s in total"),
+            "{t}"
+        );
         assert!(t.contains("Do NOT poll for it"), "{t}");
 
         // proc:// lists the running job.
         let listing = super::super::jobs::read_proc(&env, "").unwrap();
         let lt = text_of(&listing);
         assert!(lt.contains("bg_1 [bash] running up "), "{lt}");
-        assert!(lt.contains("echo first; sleep 0.2; echo done-marker"), "{lt}");
+        assert!(
+            lt.contains("echo first; sleep 0.2; echo done-marker"),
+            "{lt}"
+        );
 
         // Wait for completion, then proc://<id> carries the formatted result.
         for _ in 0..50 {
@@ -681,12 +778,19 @@ mod tests {
         }
         let detail = super::super::jobs::read_proc(&env, "bg_1").unwrap();
         let dt = text_of(&detail);
-        assert!(dt.starts_with("bg_1 [bash] — completed — echo first"), "{dt}");
+        assert!(
+            dt.starts_with("bg_1 [bash] — completed — echo first"),
+            "{dt}"
+        );
         assert!(dt.contains("first\ndone-marker\n\nWall time: "), "{dt}");
         assert!(dt.ends_with(" seconds"), "{dt}");
 
         let after = super::super::jobs::read_proc(&env, "").unwrap();
-        assert!(text_of(&after).contains("bg_1 [bash] completed in "), "{}", text_of(&after));
+        assert!(
+            text_of(&after).contains("bg_1 [bash] completed in "),
+            "{}",
+            text_of(&after)
+        );
     }
 
     #[tokio::test]
@@ -713,7 +817,11 @@ mod tests {
         assert!(lt.contains("svc-log [service] — ready — up "), "{lt}");
         // proc://<name> shows the captured log.
         let detail = super::super::jobs::read_proc(&env, "svc-log").unwrap();
-        assert!(text_of(&detail).contains("boot-banner"), "{}", text_of(&detail));
+        assert!(
+            text_of(&detail).contains("boot-banner"),
+            "{}",
+            text_of(&detail)
+        );
     }
 
     #[tokio::test]
@@ -754,10 +862,16 @@ mod tests {
         let t = text_of(&r);
         assert!(t.starts_with("svc-slow: starting pid="), "{t}");
         assert!(!t.contains(" ready\n"), "{t}");
-        assert!(t.contains("NOT ready — readiness timed out after 0.2s; process state: starting."), "{t}");
+        assert!(
+            t.contains("NOT ready — readiness timed out after 0.2s; process state: starting."),
+            "{t}"
+        );
         // The service keeps running after the timeout (omp returns readyTimedOut).
         let svc = env.jobs.service("svc-slow").unwrap();
-        assert_eq!(svc.lock().unwrap().state, super::super::jobs::ServiceState::Starting);
+        assert_eq!(
+            svc.lock().unwrap().state,
+            super::super::jobs::ServiceState::Starting
+        );
         assert!(svc.lock().unwrap().pid.is_some());
     }
 
@@ -772,7 +886,10 @@ mod tests {
         .await
         .unwrap_err()
         .to_string();
-        assert_eq!(err, "Service name must be 1-48 letters, numbers, dots, underscores, or hyphens");
+        assert_eq!(
+            err,
+            "Service name must be 1-48 letters, numbers, dots, underscores, or hyphens"
+        );
         let err = bash(
             env.clone(),
             serde_json::json!({"command": "true", "name": "svc", "timeout": 10}),
@@ -781,7 +898,10 @@ mod tests {
         .await
         .unwrap_err()
         .to_string();
-        assert_eq!(err, "Service mode does not accept async or timeout; use ready.timeout for readiness.");
+        assert_eq!(
+            err,
+            "Service mode does not accept async or timeout; use ready.timeout for readiness."
+        );
         let err = bash(
             env.clone(),
             serde_json::json!({"command": "true", "name": "svc", "ready": {"log": "x", "port": 70000}}),
@@ -844,7 +964,10 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(settled.contains("svc-exit [service] — failed — up "), "{settled}");
+        assert!(
+            settled.contains("svc-exit [service] — failed — up "),
+            "{settled}"
+        );
         assert!(settled.contains("brief"), "{settled}");
     }
 
@@ -883,7 +1006,14 @@ mod tests {
             )
             .await
             .unwrap();
-            pid = env.jobs.service("svc-drop").unwrap().lock().unwrap().pid.unwrap();
+            pid = env
+                .jobs
+                .service("svc-drop")
+                .unwrap()
+                .lock()
+                .unwrap()
+                .pid
+                .unwrap();
             assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
         } // registry dropped: the supervisor must kill the child.
         let mut gone = false;
@@ -908,7 +1038,12 @@ mod tests {
         .await
         .unwrap();
         let t = text_of(&r);
-        assert!(t.starts_with("Ignored ready: service-only, and no service name was given.\nhi\n\nWall time: "), "{t}");
+        assert!(
+            t.starts_with(
+                "Ignored ready: service-only, and no service name was given.\nhi\n\nWall time: "
+            ),
+            "{t}"
+        );
     }
 
     #[test]

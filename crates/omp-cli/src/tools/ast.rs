@@ -14,11 +14,11 @@ use serde_json::{json, Value};
 
 use super::util::{format_path_relative_to_cwd, path_list, resolve_to_cwd, str_arg};
 use super::Env;
+use pi_ast::language::SupportLang;
 use pi_ast::ops::{
     collect_matches, compile_rewrite_rules, compile_search_patterns, resolve_supported_lang,
     rewrite_source, AstMatch,
 };
-use pi_ast::language::SupportLang;
 use pi_ast::parse_cache::parse_cached;
 
 pub(crate) const AST_GREP_DESCRIPTION: &str = "Structural code search via ast-grep. Use when syntax shape matters more than text (calls, declarations, language constructs).\n\n<instruction>\n- Narrow each call to one language. `pat` is ONE AST pattern; separate calls for unrelated patterns.\n- Set `lang` when extension inference is ambiguous (for example, `cpp` for `.h`); `.cu` and `.cuh` infer as C++.\n- `$NAME` captures one node; `$_` matches without binding; `$$$NAME` zero-or-more; `$$$` zero-or-more unbound.\n  - Use `$$$NAME`, NOT `$$NAME` (invalid). Names UPPERCASE, whole node — `prefix$VAR` fails.\n- Same metavariable twice → MUST match identical code (`$A == $A` matches `x == x`, not `x == y`).\n- Patterns MUST parse as single AST node. Non-standalone → wrap: `class $_ { … }`.\n- C++ expression-statement calls need trailing `;`: `ns::doThing($ARG);`, `$CALLEE($ARG);`.\n- TS: tolerate annotations — `async function $NAME($$$ARGS): $_ { $$$BODY }`.\n- Declaration forms are distinct — `function foo`, method `foo()`, `const foo = () => {}`; search the right form before concluding absence.\n- Loosest existence check: `pat: \"executeBash\"` with narrow `path`.\n</instruction>\n\n<critical>\n- AVOID repo-root scans — narrow `path` first.\n- Parse issues = query failure, not absence: fix pattern or tighten `path` before concluding \"no matches\".\n</critical>";
@@ -236,8 +236,11 @@ pub fn ast_grep(env: &Env, args: &Value) -> Result<AgentToolResult> {
     // Render per file, mirroring the `grep` tool: hashline snapshot tags when
     // active, `*line:text` match rows, continuation lines space-marked.
     let mut model: Vec<String> = Vec::new();
-    let window: Vec<(&str, &PathBuf, &AstMatch)> =
-        flat.into_iter().skip(skip).take(DEFAULT_AST_LIMIT).collect();
+    let window: Vec<(&str, &PathBuf, &AstMatch)> = flat
+        .into_iter()
+        .skip(skip)
+        .take(DEFAULT_AST_LIMIT)
+        .collect();
     let mut last_file: Option<&str> = None;
     for (relative, absolute, _m) in &window {
         if last_file == Some(relative) {
@@ -350,8 +353,9 @@ pub fn ast_edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
         let Ok(language) = language_or_infer(None, file) else {
             continue;
         };
-        let compiled = compile_rewrite_rules(&rules, language)
-            .map_err(|(index, error)| anyhow::anyhow!("Invalid pattern in ops[{index}]: {error}"))?;
+        let compiled = compile_rewrite_rules(&rules, language).map_err(|(index, error)| {
+            anyhow::anyhow!("Invalid pattern in ops[{index}]: {error}")
+        })?;
         if let Some(tree) = parse_cached(&source, language)? {
             if tree.root_node().has_error() {
                 parse_errors.push(parse_error_note(file, env));
@@ -386,8 +390,8 @@ pub fn ast_edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
                         }
                     }
                 }
-                let (next, count) =
-                    rewrite_source(&work, language, std::slice::from_ref(rule)).map_err(|e| anyhow::anyhow!(e))?;
+                let (next, count) = rewrite_source(&work, language, std::slice::from_ref(rule))
+                    .map_err(|e| anyhow::anyhow!(e))?;
                 if count == 0 {
                     break;
                 }
@@ -412,7 +416,10 @@ pub fn ast_edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
             lines.push(format!("-{line}:{col} {}", clamp_line(before)));
             lines.push(format!("+{line}:{col} {}", clamp_line(after)));
         }
-        sections.push(format!("{}:", format_path_relative_to_cwd(file, &env.cwd, false)));
+        sections.push(format!(
+            "{}:",
+            format_path_relative_to_cwd(file, &env.cwd, false)
+        ));
         sections.extend(lines);
     }
 
@@ -453,9 +460,13 @@ fn extract_replacement(work: &str, next: &str, first: &AstMatch) -> String {
     let start = first.byte_start;
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     let delta = first.byte_end as isize + next.len() as isize - work.len() as isize;
-    let end = delta.max(0) as usize;
+    let end = delta.max(0).cast_unsigned();
     let end = end.min(next.len());
-    let end = if next.is_char_boundary(end) { end } else { work.len() };
+    let end = if next.is_char_boundary(end) {
+        end
+    } else {
+        work.len()
+    };
     clamp_line(next.get(start..end).unwrap_or(""))
 }
 
@@ -464,6 +475,7 @@ mod tests {
     use super::*;
     use crate::tools::Env;
 
+    #[allow(clippy::match_wildcard_for_single_variants)] // wildcard is deliberate: forward-compatible with future content variants
     fn text_of(result: &AgentToolResult) -> String {
         result
             .content
@@ -500,7 +512,8 @@ mod tests {
     #[test]
     fn ast_grep_finds_matches_across_languages() {
         let dir = fixture();
-        let result = ast_grep(&env(dir.path()), &json!({"pat": "beta($A)", "path": "src"})).unwrap();
+        let result =
+            ast_grep(&env(dir.path()), &json!({"pat": "beta($A)", "path": "src"})).unwrap();
         let text = text_of(&result);
         assert!(text.contains("src/app.ts:"), "{text}");
         assert!(text.contains("src/lib.rs:"), "{text}");
@@ -528,7 +541,10 @@ mod tests {
         let all = text_of(&ast_grep(&env, &json!({"pat": "$F($A)", "path": "src"})).unwrap());
         let skipped =
             text_of(&ast_grep(&env, &json!({"pat": "$F($A)", "path": "src", "skip": 1})).unwrap());
-        assert!(all.lines().count() > skipped.lines().count(), "{all}\n---\n{skipped}");
+        assert!(
+            all.lines().count() > skipped.lines().count(),
+            "{all}\n---\n{skipped}"
+        );
     }
 
     #[test]
@@ -550,7 +566,10 @@ mod tests {
         )
         .unwrap();
         let text = text_of(&result);
-        assert!(text.contains("Applied 2 replacements in 2 files."), "{text}");
+        assert!(
+            text.contains("Applied 2 replacements in 2 files."),
+            "{text}"
+        );
         assert!(text.contains("-1:14 beta(1)"), "{text}");
         assert!(text.contains("+1:14 gamma(1)"), "{text}");
         assert!(text.contains("+1:20 gamma(1)"), "{text}");
@@ -570,7 +589,11 @@ mod tests {
         )
         .unwrap();
         assert!(text_of(&result).contains("Applied 1 replacement in 1 file."));
-        let miss = ast_edit(&env, &json!({"ops": [{"pat": "nope($$$)", "out": "x"}], "paths": ["src"]})).unwrap();
+        let miss = ast_edit(
+            &env,
+            &json!({"ops": [{"pat": "nope($$$)", "out": "x"}], "paths": ["src"]}),
+        )
+        .unwrap();
         assert_eq!(text_of(&miss), "No replacements made");
     }
 
@@ -586,8 +609,18 @@ mod tests {
             ], "paths": ["src"]}),
         )
         .unwrap_err();
-        assert!(dup.to_string().contains("Duplicate rewrite pattern"), "{dup}");
-        let empty = ast_edit(&env, &json!({"ops": [{"pat": "", "out": "x"}], "paths": ["src"]})).unwrap_err();
-        assert!(empty.to_string().contains("must be a non-empty pattern"), "{empty}");
+        assert!(
+            dup.to_string().contains("Duplicate rewrite pattern"),
+            "{dup}"
+        );
+        let empty = ast_edit(
+            &env,
+            &json!({"ops": [{"pat": "", "out": "x"}], "paths": ["src"]}),
+        )
+        .unwrap_err();
+        assert!(
+            empty.to_string().contains("must be a non-empty pattern"),
+            "{empty}"
+        );
     }
 }

@@ -8,7 +8,11 @@ use omp_compact::dialect::{preferred_dialect, serialize_conversation_for_summary
 use serde_json::Value;
 
 fn expected() -> Value {
-    let raw = std::fs::read_to_string(format!("{}/tests/fixtures/dialects.expected.json", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let raw = std::fs::read_to_string(format!(
+        "{}/tests/fixtures/dialects.expected.json",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
     serde_json::from_str(&raw).unwrap()
 }
 
@@ -39,7 +43,12 @@ fn preferred_dialect_matches_ts_for_catalog_models() {
             bad.push(format!("{id}: want {want:?} got {got:?}"));
         }
     }
-    assert!(bad.is_empty(), "{} mismatches, e.g. {:?}", bad.len(), &bad[..bad.len().min(10)]);
+    assert!(
+        bad.is_empty(),
+        "{} mismatches, e.g. {:?}",
+        bad.len(),
+        &bad[..bad.len().min(10)]
+    );
 }
 
 #[test]
@@ -49,7 +58,11 @@ fn serialized_conversation_matches_ts_for_every_dialect() {
         for (input, want) in per_input.as_object().unwrap() {
             let messages = exp["inputs"][input].as_array().unwrap();
             let got = serialize_conversation_for_summary(messages, parse(dialect));
-            assert_eq!(got, want.as_str().unwrap(), "dialect={dialect} input={input}");
+            assert_eq!(
+                got,
+                want.as_str().unwrap(),
+                "dialect={dialect} input={input}"
+            );
         }
     }
 }

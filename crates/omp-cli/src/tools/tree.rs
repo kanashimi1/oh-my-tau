@@ -26,7 +26,9 @@ struct Node {
 }
 
 fn is_url_like(p: &str) -> bool {
-    let Some((scheme, rest)) = p.split_once("://") else { return false };
+    let Some((scheme, rest)) = p.split_once("://") else {
+        return false;
+    };
     let _ = rest;
     let mut chars = scheme.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic())
@@ -48,10 +50,18 @@ pub fn events(entries: &[(String, bool)]) -> Vec<Event> {
             continue;
         }
         let segments: Vec<&str> = trimmed.split('/').collect();
-        let dir_count = if *is_dir { segments.len() } else { segments.len() - 1 };
+        let dir_count = if *is_dir {
+            segments.len()
+        } else {
+            segments.len() - 1
+        };
         let mut node = 0;
         for seg in &segments[..dir_count] {
-            let existing = arena[node].subdirs.iter().find(|(n, _)| n == seg).map(|(_, i)| *i);
+            let existing = arena[node]
+                .subdirs
+                .iter()
+                .find(|(n, _)| n == seg)
+                .map(|(_, i)| *i);
             node = if let Some(i) = existing {
                 i
             } else {
@@ -62,7 +72,11 @@ pub fn events(entries: &[(String, bool)]) -> Vec<Event> {
             };
         }
         if !*is_dir {
-            add_file(&mut arena[node], segments[segments.len() - 1].to_string(), key);
+            add_file(
+                &mut arena[node],
+                segments[segments.len() - 1].to_string(),
+                key,
+            );
         }
     }
     let mut out = Vec::new();
@@ -79,7 +93,12 @@ fn add_file(node: &mut Node, name: String, key: usize) {
 
 fn walk(arena: &[Node], node: usize, depth: usize, out: &mut Vec<Event>) {
     for (name, key) in &arena[node].files {
-        out.push(Event { kind: Kind::File, depth, name: name.clone(), key: *key });
+        out.push(Event {
+            kind: Kind::File,
+            depth,
+            name: name.clone(),
+            key: *key,
+        });
     }
     for (name, idx) in &arena[node].subdirs {
         let mut dir = *idx;
@@ -89,7 +108,12 @@ fn walk(arena: &[Node], node: usize, depth: usize, out: &mut Vec<Event>) {
             parts.push(only_name.clone());
             dir = *only_idx;
         }
-        out.push(Event { kind: Kind::Dir, depth, name: parts.join("/"), key: usize::MAX });
+        out.push(Event {
+            kind: Kind::Dir,
+            depth,
+            name: parts.join("/"),
+            key: usize::MAX,
+        });
         walk(arena, dir, depth + 1, out);
     }
 }
@@ -97,7 +121,10 @@ fn walk(arena: &[Node], node: usize, depth: usize, out: &mut Vec<Event>) {
 /// omp `formatGroupedPaths`: dir headers `# a/b/` and bare file names.
 #[must_use]
 pub fn format_grouped_paths(paths: &[String]) -> String {
-    let entries: Vec<(String, bool)> = paths.iter().map(|p| (p.clone(), p.ends_with('/'))).collect();
+    let entries: Vec<(String, bool)> = paths
+        .iter()
+        .map(|p| (p.clone(), p.ends_with('/')))
+        .collect();
     let mut lines = Vec::new();
     for e in events(&entries) {
         match e.kind {

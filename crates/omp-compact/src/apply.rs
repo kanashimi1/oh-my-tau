@@ -27,7 +27,13 @@ pub struct ApplyOptions {
 /// `summary, shortSummary, firstKeptEntryId, tokensBefore, tokensAfter, method, details,
 /// fromExtension, preserveData` (omp-session's [`Compaction`] serializes in that order).
 #[must_use]
-pub fn compaction_entry(result: &CompactionResult, id: &str, parent_id: Option<&str>, timestamp_iso: &str, options: &ApplyOptions) -> Compaction {
+pub fn compaction_entry(
+    result: &CompactionResult,
+    id: &str,
+    parent_id: Option<&str>,
+    timestamp_iso: &str,
+    options: &ApplyOptions,
+) -> Compaction {
     Compaction {
         id: id.to_owned(),
         parent_id: parent_id.map(str::to_owned),
@@ -51,11 +57,19 @@ pub fn compaction_entry(result: &CompactionResult, id: &str, parent_id: Option<&
 ///
 /// # Errors
 /// The payload does not fit the entry schema or the write failed.
-pub fn append_compaction(writer: &mut SessionWriter, result: &CompactionResult, timestamp_iso: &str, options: &ApplyOptions) -> Result<String> {
+pub fn append_compaction(
+    writer: &mut SessionWriter,
+    result: &CompactionResult,
+    timestamp_iso: &str,
+    options: &ApplyOptions,
+) -> Result<String> {
     let mut payload = Map::new();
     payload.insert("summary".into(), result.summary.clone().into());
     payload.insert("shortSummary".into(), result.short_summary.clone().into());
-    payload.insert("firstKeptEntryId".into(), result.first_kept_entry_id.clone().into());
+    payload.insert(
+        "firstKeptEntryId".into(),
+        result.first_kept_entry_id.clone().into(),
+    );
     payload.insert("tokensBefore".into(), result.tokens_before.into());
     if let Some(after) = options.tokens_after {
         payload.insert("tokensAfter".into(), after.into());
@@ -80,16 +94,36 @@ pub fn append_compaction(writer: &mut SessionWriter, result: &CompactionResult, 
 ///
 /// # Errors
 /// The rebuilt context hit an unsupported payload.
-pub fn project_tokens_after(branch: &[Value], result: &CompactionResult, method: Option<&str>, timestamp_iso: &str, non_message_tokens: u64, tokenizer: &dyn Tokenizer) -> Result<u64, ContextError> {
+pub fn project_tokens_after(
+    branch: &[Value],
+    result: &CompactionResult,
+    method: Option<&str>,
+    timestamp_iso: &str,
+    non_message_tokens: u64,
+    tokenizer: &dyn Tokenizer,
+) -> Result<u64, ContextError> {
     let leaf_id = branch.last().map_or("", entry_id).to_owned();
     let mut pending = Map::new();
     pending.insert("type".into(), "compaction".into());
-    pending.insert("id".into(), format!("{leaf_id}:compaction-tokens-projection").into());
-    pending.insert("parentId".into(), if leaf_id.is_empty() { Value::Null } else { leaf_id.into() });
+    pending.insert(
+        "id".into(),
+        format!("{leaf_id}:compaction-tokens-projection").into(),
+    );
+    pending.insert(
+        "parentId".into(),
+        if leaf_id.is_empty() {
+            Value::Null
+        } else {
+            leaf_id.into()
+        },
+    );
     pending.insert("timestamp".into(), timestamp_iso.into());
     pending.insert("summary".into(), result.summary.clone().into());
     pending.insert("shortSummary".into(), result.short_summary.clone().into());
-    pending.insert("firstKeptEntryId".into(), result.first_kept_entry_id.clone().into());
+    pending.insert(
+        "firstKeptEntryId".into(),
+        result.first_kept_entry_id.clone().into(),
+    );
     pending.insert("tokensBefore".into(), result.tokens_before.into());
     if let Some(m) = method {
         pending.insert("method".into(), m.into());
@@ -102,5 +136,12 @@ pub fn project_tokens_after(branch: &[Value], result: &CompactionResult, method:
     entries.push(Value::Object(pending));
     let rebuilt = build_session_context(&entries, Leaf::Last)?;
     let llm = convert_to_llm(&rebuilt.messages);
-    Ok(non_message_tokens + count_messages(tokenizer, &llm, CountOptions { exclude_encrypted_reasoning: true }))
+    Ok(non_message_tokens
+        + count_messages(
+            tokenizer,
+            &llm,
+            CountOptions {
+                exclude_encrypted_reasoning: true,
+            },
+        ))
 }

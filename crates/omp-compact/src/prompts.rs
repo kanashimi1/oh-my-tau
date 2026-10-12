@@ -17,7 +17,8 @@ pub const TURN_PREFIX: &str = include_str!("../prompts/compaction-turn-prefix.md
 pub const SUMMARIZATION_SYSTEM: &str = include_str!("../prompts/summarization-system.md");
 pub const BRANCH_SUMMARY: &str = include_str!("../prompts/branch-summary.md");
 pub const BRANCH_SUMMARY_PREAMBLE: &str = include_str!("../prompts/branch-summary-preamble.md");
-pub const COMPACTION_SUMMARY_CONTEXT: &str = include_str!("../prompts/compaction-summary-context.md");
+pub const COMPACTION_SUMMARY_CONTEXT: &str =
+    include_str!("../prompts/compaction-summary-context.md");
 pub const BRANCH_SUMMARY_CONTEXT: &str = include_str!("../prompts/branch-summary-context.md");
 pub const HANDOFF_SUMMARY_CONTEXT: &str = include_str!("../prompts/handoff-summary-context.md");
 pub const HANDOFF_DOCUMENT: &str = include_str!("../prompts/handoff-document.md");
@@ -71,7 +72,9 @@ pub fn format(content: &str) -> String {
         }
         let first = line[s..].chars().next();
 
-        if matches!(first, Some('`' | '~')) && (line[s..].starts_with("```") || line[s..].starts_with("~~~")) {
+        if matches!(first, Some('`' | '~'))
+            && (line[s..].starts_with("```") || line[s..].starts_with("~~~"))
+        {
             in_code_block = !in_code_block;
             result.push(line);
             i += 1;
@@ -109,7 +112,9 @@ pub fn format(content: &str) -> String {
 
         if s >= line.len() {
             // Blank line: a run of 2+ is dropped entirely, a single one is kept.
-            let next_blank = lines.get(i + 1).is_none_or(|next| next.is_empty() || !non_blank(next));
+            let next_blank = lines
+                .get(i + 1)
+                .is_none_or(|next| next.is_empty() || !non_blank(next));
             if next_blank {
                 while result.last().is_some_and(String::is_empty) {
                     result.pop();

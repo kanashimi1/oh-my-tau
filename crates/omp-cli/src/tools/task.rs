@@ -11,9 +11,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use omp_task::discovery::{discover_project_agents, discover_user_agents};
+use omp_task::envelope::format_task_result;
 use omp_task::params::{SchemaMode, TaskItem};
 use omp_task::runner::{RunStatus, TaskRunner, TaskSpec};
-use omp_task::envelope::format_task_result;
 use pa_agent::types::AgentToolResult;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -23,8 +23,22 @@ use super::Env;
 /// omp `READ_ONLY_TOOL_NAMES` (`task/read-only-policy.ts`): approval tier
 /// "read" tools; an agent is read-only iff its tools are a non-empty subset.
 const READ_ONLY_TOOLS: &[&str] = &[
-    "read", "wait", "grep", "glob", "find", "web_search", "ast_grep", "yield", "ask", "todo",
-    "recall", "reflect", "retain", "memory_edit", "checkpoint", "rewind",
+    "read",
+    "wait",
+    "grep",
+    "glob",
+    "find",
+    "web_search",
+    "ast_grep",
+    "yield",
+    "ask",
+    "todo",
+    "recall",
+    "reflect",
+    "retain",
+    "memory_edit",
+    "checkpoint",
+    "rewind",
 ];
 
 /// omp `task.maxConcurrency` protocol default.
@@ -154,10 +168,20 @@ fn default_agent() -> String {
 
 impl WireTaskItem {
     fn to_item(&self, index: usize) -> Result<TaskItem> {
-        let Some(solution_space) = self.solution_space.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        let Some(solution_space) = self
+            .solution_space
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
             bail!("Task {} is missing `solutionSpace`.", index + 1);
         };
-        let label = match self.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        let label = match self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
             Some(name) => format!("Task {} (`{name}`)", index + 1),
             None => format!("Task {}", index + 1),
         };
@@ -241,12 +265,17 @@ struct WireParams {
 
 /// Execute a `task` call: validate, spawn every item, render envelopes.
 pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResult> {
-    let params: WireParams = serde_json::from_value(args)
-        .map_err(|e| anyhow::anyhow!("invalid task params: {e}"))?;
+    let params: WireParams =
+        serde_json::from_value(args).map_err(|e| anyhow::anyhow!("invalid task params: {e}"))?;
 
     let mut specs = Vec::new();
     if params.tasks.is_empty() {
-        let Some(task_text) = params.task.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
+        let Some(task_text) = params
+            .task
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+        else {
             bail!("Missing `task`. Provide `tasks[]` items or a flat `task` string.");
         };
         let solution_space = params.solution_space.as_deref().unwrap_or_default();
@@ -266,13 +295,23 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
             tools: None,
         };
         item.validate().map_err(|e| anyhow::anyhow!(e))?;
-        specs.push(TaskSpec::from_item(&item, params.context.as_deref(), env.cwd.clone()));
+        specs.push(TaskSpec::from_item(
+            &item,
+            params.context.as_deref(),
+            env.cwd.clone(),
+        ));
     } else {
         if params.task.is_some() {
-            bail!("Top-level `task` is not part of the batch shape. Put the work in `tasks[]` items.");
+            bail!(
+                "Top-level `task` is not part of the batch shape. Put the work in `tasks[]` items."
+            );
         }
         for (index, item) in params.tasks.iter().enumerate() {
-            specs.push(TaskSpec::from_item(&item.to_item(index)?, params.context.as_deref(), env.cwd.clone()));
+            specs.push(TaskSpec::from_item(
+                &item.to_item(index)?,
+                params.context.as_deref(),
+                env.cwd.clone(),
+            ));
         }
     }
 
@@ -333,10 +372,16 @@ mod tests {
         }));
         let item = item.to_item(0).expect("valid item");
         assert_eq!(item.model.as_ref(), Some(&json!("openai/gpt-5.4:high")));
-        assert_eq!(item.tools.as_deref(), Some(["read".to_string(), "grep".to_string()].as_slice()));
+        assert_eq!(
+            item.tools.as_deref(),
+            Some(["read".to_string(), "grep".to_string()].as_slice())
+        );
         let spec = omp_task::runner::TaskSpec::from_item(&item, None, ".");
         assert_eq!(spec.model.as_deref(), Some("openai/gpt-5.4:high"));
-        assert_eq!(spec.tools.as_deref(), Some(["read".to_string(), "grep".to_string()].as_slice()));
+        assert_eq!(
+            spec.tools.as_deref(),
+            Some(["read".to_string(), "grep".to_string()].as_slice())
+        );
     }
 
     #[test]
@@ -371,12 +416,14 @@ mod tests {
                 "solutionSpace": ".",
                 "model": model,
             }));
-            assert!(
-                item.to_item(0).is_err(),
-                "model {model} must be rejected"
-            );
+            assert!(item.to_item(0).is_err(), "model {model} must be rejected");
         }
-        for model in [json!("openai/gpt-5.4:high"), json!("@default"), json!("@smol"), json!(["a", "b"])] {
+        for model in [
+            json!("openai/gpt-5.4:high"),
+            json!("@default"),
+            json!("@smol"),
+            json!(["a", "b"]),
+        ] {
             let item = wire_item(json!({
                 "task": "do it",
                 "solutionSpace": ".",
@@ -409,7 +456,10 @@ mod tests {
         let err = merge_outputs(&outputs).expect_err("failure must be an error");
         let text = format!("{err:#}");
         assert!(text.contains("1 of 2 task(s) failed."), "{text}");
-        assert!(text.contains("=== b (task)"), "per-child envelopes kept: {text}");
+        assert!(
+            text.contains("=== b (task)"),
+            "per-child envelopes kept: {text}"
+        );
         let ok = merge_outputs(&[run_output("a", RunStatus::Completed)]);
         assert!(ok.is_ok());
     }

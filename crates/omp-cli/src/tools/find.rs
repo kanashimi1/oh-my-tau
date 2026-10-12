@@ -94,16 +94,28 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let extra: Vec<String> = args
         .get("grep_keywords")
         .and_then(serde_json::Value::as_array)
-        .map_or_else(Vec::new, |a| a.iter().filter_map(serde_json::Value::as_str).map(str::to_string).collect());
+        .map_or_else(Vec::new, |a| {
+            a.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        });
     let keywords = keywords(&query, &extra);
     if keywords.is_empty() {
         bail!("`grep_keywords` must contain at least one term");
     }
 
-    let scope_input = args.get("path").and_then(serde_json::Value::as_str).unwrap_or("");
-    let root = if scope_input.is_empty() { env.cwd.clone() } else { resolve_to_cwd(scope_input, &env.cwd) };
-    let meta = std::fs::metadata(&root)
-        .map_err(|_| anyhow::anyhow!("Path not found: {scope_input}"))?;
+    let scope_input = args
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let root = if scope_input.is_empty() {
+        env.cwd.clone()
+    } else {
+        resolve_to_cwd(scope_input, &env.cwd)
+    };
+    let meta =
+        std::fs::metadata(&root).map_err(|_| anyhow::anyhow!("Path not found: {scope_input}"))?;
     let scope_path = if root == env.cwd {
         None
     } else {
@@ -114,15 +126,23 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let mut hits: Vec<Hit> = Vec::new();
     let mut files_read = 0usize;
     let mut file_bytes = 0usize;
-    let files: Vec<PathBuf> = if meta.is_file() { vec![root] } else { walk_files(&root)? };
+    let files: Vec<PathBuf> = if meta.is_file() {
+        vec![root]
+    } else {
+        walk_files(&root)?
+    };
     let listed = files.len();
 
     for file in files {
-        let Ok(m) = std::fs::metadata(&file) else { continue };
+        let Ok(m) = std::fs::metadata(&file) else {
+            continue;
+        };
         if m.len() > MAX_FILE_BYTES {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&file) else { continue };
+        let Ok(bytes) = std::fs::read(&file) else {
+            continue;
+        };
         if bytes.contains(&0) {
             continue;
         }
@@ -134,7 +154,10 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         let mut count = 0usize;
         for (i, line) in text.lines().enumerate() {
             let lower = line.to_lowercase();
-            let line_hits = keywords.iter().filter(|kw| lower.contains(kw.as_str())).count();
+            let line_hits = keywords
+                .iter()
+                .filter(|kw| lower.contains(kw.as_str()))
+                .count();
             if line_hits > 0 {
                 count += line_hits;
                 matched_lines.push((u32::try_from(i + 1).unwrap_or(u32::MAX), line.trim()));
@@ -185,12 +208,24 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if hits.is_empty() {
         let _ = writeln!(out, "no hits for \"{query}\"{where_} (τ {THRESHOLD:.2})");
     } else {
-        let _ = writeln!(out, "{} hit(s) for \"{query}\"{where_} (τ {THRESHOLD:.2}), strongest first", hits.len());
+        let _ = writeln!(
+            out,
+            "{} hit(s) for \"{query}\"{where_} (τ {THRESHOLD:.2}), strongest first",
+            hits.len()
+        );
         out.push('\n');
         for hit in &hits {
-            let _ = writeln!(out, "{}  {:.2}  {} lines matched", hit.rel, hit.score, hit.lines_seen);
+            let _ = writeln!(
+                out,
+                "{}  {:.2}  {} lines matched",
+                hit.rel, hit.score, hit.lines_seen
+            );
             for (start, end, snippet) in &hit.ranges {
-                let span = if start == end { format!("{start}") } else { format!("{start}-{end}") };
+                let span = if start == end {
+                    format!("{start}")
+                } else {
+                    format!("{start}-{end}")
+                };
                 let _ = writeln!(out, "  {}:{span}  {:.2}  {snippet}", hit.rel, hit.score);
             }
         }
@@ -217,7 +252,11 @@ mod tests {
             "pub fn login_user() {\n    verify_password();\n    create_session();\n}\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("src/beta.rs"), "pub fn logout() { destroy_session(); }\n").unwrap();
+        std::fs::write(
+            dir.path().join("src/beta.rs"),
+            "pub fn logout() { destroy_session(); }\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("README.md"), "# demo\nnothing here\n").unwrap();
         let env = Env::new(dir.path(), false);
         (dir, env)
@@ -233,17 +272,28 @@ mod tests {
         .unwrap();
         let text = match &r.content[0] {
             pa_agent::types::ToolResultContent::Text(t) => t.text.clone(),
-            pa_agent::types::ToolResultContent::Image(image) => panic!("unexpected content: {image:?}"),
+            pa_agent::types::ToolResultContent::Image(image) => {
+                panic!("unexpected content: {image:?}")
+            }
         };
-        assert!(text.starts_with("2 hit(s) for \"user login session\" (τ 0.40), strongest first"), "{text}");
-        let alpha = text.lines().find(|l| l.starts_with("src/alpha.rs")).unwrap();
+        assert!(
+            text.starts_with("2 hit(s) for \"user login session\" (τ 0.40), strongest first"),
+            "{text}"
+        );
+        let alpha = text
+            .lines()
+            .find(|l| l.starts_with("src/alpha.rs"))
+            .unwrap();
         assert!(alpha.contains("  0."), "{alpha}");
         // omp hit line format: `path:start-end score snippet`; matched lines
         // 1 and 3 are not contiguous, so they list as separate ranges.
         assert!(text.contains("  src/alpha.rs:1  "), "{text}");
         assert!(text.contains("  src/alpha.rs:3  "), "{text}");
         assert!(text.contains("pub fn login_user()"), "{text}");
-        assert!(text.contains("listed 3 · judged 0 · read 3 files"), "{text}");
+        assert!(
+            text.contains("listed 3 · judged 0 · read 3 files"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -256,15 +306,24 @@ mod tests {
         .unwrap();
         let text = match &r.content[0] {
             pa_agent::types::ToolResultContent::Text(t) => t.text.clone(),
-            pa_agent::types::ToolResultContent::Image(image) => panic!("unexpected content: {image:?}"),
+            pa_agent::types::ToolResultContent::Image(image) => {
+                panic!("unexpected content: {image:?}")
+            }
         };
-        assert!(text.starts_with("no hits for \"zzz absent topic\" in src/ (τ 0.40)"), "{text}");
+        assert!(
+            text.starts_with("no hits for \"zzz absent topic\" in src/ (τ 0.40)"),
+            "{text}"
+        );
     }
 
     #[test]
     fn rejects_empty_query_and_scope() {
         let (_dir, env) = fixture();
-        let e = find(&env, &serde_json::json!({"query": "  ", "grep_keywords": ["x"]})).unwrap_err();
+        let e = find(
+            &env,
+            &serde_json::json!({"query": "  ", "grep_keywords": ["x"]}),
+        )
+        .unwrap_err();
         assert_eq!(e.to_string(), "`query` must be a non-empty description");
         let e = find(
             &env,

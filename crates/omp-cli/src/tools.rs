@@ -5,21 +5,21 @@
 //! sessions, hashline mode included) and the file walks are `pi-walker`.
 //! Failures are returned as `Err` so the agent loop reports `isError: true`.
 
-pub mod bash;
-mod web_search;
 mod ask;
 mod ast;
-pub mod mcp;
+pub mod bash;
 mod edit;
 mod eval;
 mod find;
 mod jobs;
+pub mod mcp;
 mod read;
 mod search;
 mod task;
 mod todo;
 mod tree;
 mod util;
+mod web_search;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -58,7 +58,14 @@ impl Env {
     #[cfg(test)]
     #[must_use]
     pub fn new(cwd: &Path, hashline: bool) -> Self {
-        Self::with_mode(cwd, if hashline { EditMode::Hashline } else { EditMode::Replace })
+        Self::with_mode(
+            cwd,
+            if hashline {
+                EditMode::Hashline
+            } else {
+                EditMode::Replace
+            },
+        )
     }
 }
 
@@ -67,7 +74,11 @@ impl Env {
 /// per-model fallback to `replace`).
 #[must_use]
 pub fn edit_mode_for(model_id: &str) -> EditMode {
-    if let Some(mode) = std::env::var("PI_EDIT_VARIANT").ok().as_deref().and_then(EditMode::parse) {
+    if let Some(mode) = std::env::var("PI_EDIT_VARIANT")
+        .ok()
+        .as_deref()
+        .and_then(EditMode::parse)
+    {
         return mode;
     }
     let id = model_id.to_lowercase();
@@ -82,7 +93,9 @@ pub fn edit_mode_for(model_id: &str) -> EditMode {
     }
 }
 
-type Handler = Arc<dyn Fn(Arc<Env>, Value, AbortSignal) -> BoxFut<'static, Result<AgentToolResult>> + Send + Sync>;
+type Handler = Arc<
+    dyn Fn(Arc<Env>, Value, AbortSignal) -> BoxFut<'static, Result<AgentToolResult>> + Send + Sync,
+>;
 
 struct FnTool {
     name: &'static str,
@@ -122,10 +135,21 @@ const FIND_DESCRIPTION: &str = "Describe behavior, get implementing files and li
 
 /// All built-in tools, rooted at `cwd`.
 #[must_use]
+#[allow(clippy::too_many_lines)] // the tool registry table; order mirrors omp's builtinTools
 pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>> {
     let env = Arc::new(Env::with_mode(cwd, edit_mode));
-    let mk = |name: &'static str, description: String, schema: Value, run: Handler| -> Arc<dyn AgentTool> {
-        Arc::new(FnTool { name, description, schema, env: env.clone(), run })
+    let mk = |name: &'static str,
+              description: String,
+              schema: Value,
+              run: Handler|
+     -> Arc<dyn AgentTool> {
+        Arc::new(FnTool {
+            name,
+            description,
+            schema,
+            env: env.clone(),
+            run,
+        })
     };
     let blocking = |f: fn(&Env, &Value) -> Result<AgentToolResult>| -> Handler {
         Arc::new(move |env, args, _| {
@@ -248,11 +272,28 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert_eq!(
             names,
-            ["read", "bash", "edit", "glob", "grep", "write", "find", "task", "eval", "ast_grep", "ast_edit", "ask", "todo", "web_search"]
+            [
+                "read",
+                "bash",
+                "edit",
+                "glob",
+                "grep",
+                "write",
+                "find",
+                "task",
+                "eval",
+                "ast_grep",
+                "ast_edit",
+                "ask",
+                "todo",
+                "web_search"
+            ]
         );
         let edit = tools.iter().find(|t| t.name() == "edit").unwrap();
         assert_eq!(edit.parameters()["properties"]["input"]["type"], "string");
-        assert!(edit.description().starts_with("Hashline patches existing files"));
+        assert!(edit
+            .description()
+            .starts_with("Hashline patches existing files"));
         let read = tools.iter().find(|t| t.name() == "read").unwrap();
         assert_eq!(read.parameters()["required"], json!(["path"]));
     }
@@ -273,7 +314,10 @@ mod tests {
                 "timeout": {"type": "number"}
             }})
         );
-        assert_eq!(bash.description().lines().next().unwrap(), "Persistent shell: one fact command/pipeline; dependencies use `&&`.");
+        assert_eq!(
+            bash.description().lines().next().unwrap(),
+            "Persistent shell: one fact command/pipeline; dependencies use `&&`."
+        );
     }
 
     #[test]
@@ -298,10 +342,16 @@ mod tests {
     fn find_schema_matches_omp() {
         let tools = builtin_tools(Path::new("/tmp"), EditMode::Replace);
         let find = tools.iter().find(|t| t.name() == "find").unwrap();
-        assert_eq!(find.parameters()["required"], json!(["query", "grep_keywords"]));
+        assert_eq!(
+            find.parameters()["required"],
+            json!(["query", "grep_keywords"])
+        );
         let props = &find.parameters()["properties"];
         assert_eq!(props["query"], json!({"type": "string"}));
-        assert_eq!(props["grep_keywords"], json!({"type": "array", "items": {"type": "string"}}));
+        assert_eq!(
+            props["grep_keywords"],
+            json!({"type": "array", "items": {"type": "string"}})
+        );
         assert_eq!(props["path"], json!({"type": "string"}));
         assert_eq!(
             find.description().lines().next().unwrap(),

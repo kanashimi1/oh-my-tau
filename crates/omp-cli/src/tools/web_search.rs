@@ -27,7 +27,8 @@ use serde_json::{json, Value};
 pub const DESCRIPTION: &str = "Known URLs/programmatic data → `read`. Query: site: or -site:, after: or before: YYYY-MM-DD, inurl:, intitle:, filetype:, \"phrase\", -term, OR. Prefer primary sources; MUST link citations.";
 
 /// omp `webSearchSystemPrompt` (sent as Anthropic `system` parameter).
-const SYSTEM_PROMPT: &str = "Web research assistant: accurate, well-sourced, comprehensive answers.";
+const SYSTEM_PROMPT: &str =
+    "Web research assistant: accurate, well-sourced, comprehensive answers.";
 
 const WEB_SEARCH_TOOL_NAME: &str = "web_search";
 const WEB_SEARCH_TOOL_TYPE: &str = "web_search_20250305";
@@ -57,8 +58,10 @@ static DIRECTIVE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^([+-]?)([a-z][a-z-]*):(.*)$").unwrap());
 
 static PAGE_AGE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(\d+)\s*(s|sec|second|m|min|minute|h|hour|d|day|w|week|mo|month|y|year)s?\s*(ago)?$")
-        .unwrap()
+    Regex::new(
+        r"(?i)^(\d+)\s*(s|sec|second|m|min|minute|h|hour|d|day|w|week|mo|month|y|year)s?\s*(ago)?$",
+    )
+    .unwrap()
 });
 
 static RELATIVE_AGE_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -179,6 +182,7 @@ struct StructuredQuery {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)] // mirrors omp's QuerySyntax flags one-to-one
 struct QuerySyntax {
     phrases: bool,
     negation: bool,
@@ -200,7 +204,7 @@ struct RawToken {
 // ─── Query parsing functions ────────────────────────────────────────────────
 
 fn is_quote(ch: char) -> bool {
-    ch == '"' || ch == '"' || ch == '"'
+    ch == '"' || ch == '\u{201C}' || ch == '\u{201D}'
 }
 
 fn is_reserved_token(text: &str) -> bool {
@@ -326,7 +330,7 @@ fn split_parens(tokens: Vec<RawToken>) -> Vec<RawToken> {
 }
 
 fn iso_date(year: i32, month: u32, day: u32) -> Option<String> {
-    if year < 1000 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31 {
+    if !(1000..=9999).contains(&year) || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
     Some(format!("{year:04}-{month:02}-{day:02}"))
@@ -392,12 +396,13 @@ fn directive_field(name: &str) -> Option<&'static str> {
 }
 
 /// Convert days since epoch (1970-01-01) to (year, month, day) using
-/// Howard Hinnant's civil_from_days algorithm.
+/// Howard Hinnant's `civil_from_days` algorithm.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Hinnant algorithm output is always in 1..=12 / 1..=31
 fn days_to_ymd(days: u64) -> (i64, u32, u32) {
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days.cast_signed() + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -408,14 +413,14 @@ fn days_to_ymd(days: u64) -> (i64, u32, u32) {
 }
 
 /// Convert (year, month, day) to days since epoch using Howard Hinnant's
-/// days_from_civil algorithm.
+/// `days_from_civil` algorithm.
 fn ymd_to_days(year: i64, month: i64, day: i64) -> i64 {
-    let z = year - if month <= 2 { 1 } else { 0 };
+    let z = year - i64::from(month <= 2);
     let era = if z >= 0 { z } else { z - 399 } / 400;
     let yoe = z - era * 400;
     let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
+    era * 146_097 + doe - 719_468
 }
 
 fn epoch_secs_to_iso_date(secs: u64) -> String {
@@ -430,7 +435,7 @@ fn iso_date_to_epoch_secs(date: &str) -> Option<u64> {
     let month: i64 = caps[2].parse().ok()?;
     let day: i64 = caps[3].parse().ok()?;
     let days = ymd_to_days(year, month, day);
-    Some(days as u64 * 86400)
+    Some(days.cast_unsigned() * 86_400)
 }
 
 fn parse_page_age(page_age: &str) -> Option<f64> {
@@ -442,14 +447,19 @@ fn parse_page_age(page_age: &str) -> Option<f64> {
         "m" | "min" | "minute" => 60.0,
         "h" | "hr" | "hour" => 3600.0,
         "d" | "day" => 86400.0,
-        "w" | "week" => 604800.0,
-        "mo" | "month" => 2592000.0,
-        "y" | "yr" | "year" => 31536000.0,
+        "w" | "week" => 604_800.0,
+        "mo" | "month" => 2_592_000.0,
+        "y" | "yr" | "year" => 31_536_000.0,
         _ => return None,
     };
     Some(value * multiplier)
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)] // TS number math: epoch-ms fits u64 for any realistic date
 fn source_time(source: &SearchSource) -> Option<u64> {
     if let Some(age) = source.age_seconds {
         if age.is_finite() {
@@ -467,9 +477,9 @@ fn source_time(source: &SearchSource) -> Option<u64> {
             "minute" | "min" | "m" => 60.0,
             "hour" | "hr" | "h" => 3600.0,
             "day" | "d" => 86400.0,
-            "week" | "w" => 604800.0,
-            "month" | "mo" => 2592000.0,
-            "year" | "yr" | "y" => 31536000.0,
+            "week" | "w" => 604_800.0,
+            "month" | "mo" => 2_592_000.0,
+            "year" | "yr" | "y" => 31_536_000.0,
             _ => return None,
         };
         let seconds = value * multiplier;
@@ -517,22 +527,27 @@ fn render_terms(terms: &[QueryTerm], syntax: &QuerySyntax) -> String {
     let mut i = 0;
     while i < terms.len() {
         let term = &terms[i];
-        if term.group.is_some() && syntax.or {
-            let group = term.group.unwrap();
-            let mut members: Vec<String> = Vec::new();
-            let mut j = i;
-            while j < terms.len() && terms[j].group == Some(group) {
-                if let Some(rendered) = render_term(&terms[j], syntax) {
-                    members.push(rendered);
+        let mut handled_group = false;
+        if syntax.or {
+            if let Some(group) = term.group {
+                let mut members: Vec<String> = Vec::new();
+                let mut j = i;
+                while j < terms.len() && terms[j].group == Some(group) {
+                    if let Some(rendered) = render_term(&terms[j], syntax) {
+                        members.push(rendered);
+                    }
+                    j += 1;
                 }
-                j += 1;
+                i = j;
+                if members.len() > 1 {
+                    parts.push(format!("({})", members.join(" OR ")));
+                } else if members.len() == 1 {
+                    parts.push(members[0].clone());
+                }
+                handled_group = true;
             }
-            i = j;
-            if members.len() > 1 {
-                parts.push(format!("({})", members.join(" OR ")));
-            } else if members.len() == 1 {
-                parts.push(members[0].clone());
-            }
+        }
+        if handled_group {
             continue;
         }
         if let Some(rendered) = render_term(term, syntax) {
@@ -551,7 +566,14 @@ fn format_query(q: &StructuredQuery, syntax: &QuerySyntax) -> String {
     }
     if syntax.site {
         if q.sites.len() > 1 && syntax.or {
-            parts.push(format!("({})", q.sites.iter().map(|s| format!("site:{s}")).collect::<Vec<_>>().join(" OR ")));
+            parts.push(format!(
+                "({})",
+                q.sites
+                    .iter()
+                    .map(|s| format!("site:{s}"))
+                    .collect::<Vec<_>>()
+                    .join(" OR ")
+            ));
         } else {
             for s in &q.sites {
                 parts.push(format!("site:{s}"));
@@ -587,7 +609,14 @@ fn format_query(q: &StructuredQuery, syntax: &QuerySyntax) -> String {
     }
     if syntax.filetype {
         if q.filetypes.len() > 1 && syntax.or {
-            parts.push(format!("({})", q.filetypes.iter().map(|f| format!("filetype:{f}")).collect::<Vec<_>>().join(" OR ")));
+            parts.push(format!(
+                "({})",
+                q.filetypes
+                    .iter()
+                    .map(|f| format!("filetype:{f}"))
+                    .collect::<Vec<_>>()
+                    .join(" OR ")
+            ));
         } else {
             for f in &q.filetypes {
                 parts.push(format!("filetype:{f}"));
@@ -607,12 +636,21 @@ fn format_query(q: &StructuredQuery, syntax: &QuerySyntax) -> String {
     }
     let result = parts.join(" ").trim().to_string();
     if result.is_empty() {
-        let fallback: Vec<&str> =
-            q.sites.iter().chain(&q.in_title).chain(&q.in_url).chain(&q.in_text).chain(&q.filetypes)
-                .map(|s| s.as_str())
-                .collect();
+        let fallback: Vec<&str> = q
+            .sites
+            .iter()
+            .chain(&q.in_title)
+            .chain(&q.in_url)
+            .chain(&q.in_text)
+            .chain(&q.filetypes)
+            .map(std::string::String::as_str)
+            .collect();
         let fb = fallback.join(" ").trim().to_string();
-        return if fb.is_empty() { q.raw.trim().to_string() } else { fb };
+        return if fb.is_empty() {
+            q.raw.trim().to_string()
+        } else {
+            fb
+        };
     }
     result
 }
@@ -655,8 +693,16 @@ fn plan_query(raw_query: &str, parsed: &StructuredQuery) -> AnthropicQueryPlan {
     let query = format_query(parsed, &ANTHROPIC_QUERY_SYNTAX);
     AnthropicQueryPlan {
         query,
-        allowed_domains: if allowed.is_empty() { None } else { Some(allowed) },
-        blocked_domains: if blocked.is_empty() { None } else { Some(blocked) },
+        allowed_domains: if allowed.is_empty() {
+            None
+        } else {
+            Some(allowed)
+        },
+        blocked_domains: if blocked.is_empty() {
+            None
+        } else {
+            Some(blocked)
+        },
     }
 }
 
@@ -684,7 +730,7 @@ fn matches_site(url: &str, site: &str) -> bool {
 }
 
 fn matches_filetype(url: &str, ext: &str) -> bool {
-    let path = url.split('/').last().unwrap_or("");
+    let path = url.split('/').next_back().unwrap_or("");
     path.to_lowercase().ends_with(&format!(".{ext}"))
 }
 
@@ -703,8 +749,8 @@ struct ConstraintDimension {
 
 #[derive(Clone, Copy)]
 enum ConstraintKind {
-    Include,  // any-of
-    Exclude,  // none-of
+    Include, // any-of
+    Exclude, // none-of
     DateRange,
 }
 
@@ -807,23 +853,43 @@ fn dimension_pred(dim: &ConstraintDimension, q: &StructuredQuery, source: &Searc
         }
         ConstraintKind::Include => match &dim.matches[0] {
             site if q.sites.contains(site) => q.sites.iter().any(|s| matches_site(&source.url, s)),
-            v if q.in_url.contains(v) => q.in_url.iter().all(|v| source.url.to_lowercase().contains(&v.to_lowercase())),
-            v if q.in_title.contains(v) => q.in_title.iter().all(|v| source.title.to_lowercase().contains(&v.to_lowercase())),
-            ext if q.filetypes.contains(ext) => q.filetypes.iter().any(|e| matches_filetype(&source.url, e)),
+            v if q.in_url.contains(v) => q
+                .in_url
+                .iter()
+                .all(|v| source.url.to_lowercase().contains(&v.to_lowercase())),
+            v if q.in_title.contains(v) => q
+                .in_title
+                .iter()
+                .all(|v| source.title.to_lowercase().contains(&v.to_lowercase())),
+            ext if q.filetypes.contains(ext) => {
+                q.filetypes.iter().any(|e| matches_filetype(&source.url, e))
+            }
             _ => true,
         },
         ConstraintKind::Exclude => {
             // Check exclusions
-            if q.excluded_sites.iter().any(|s| matches_site(&source.url, s)) {
+            if q.excluded_sites
+                .iter()
+                .any(|s| matches_site(&source.url, s))
+            {
                 return false;
             }
-            if q.excluded_in_url.iter().any(|v| source.url.to_lowercase().contains(&v.to_lowercase())) {
+            if q.excluded_in_url
+                .iter()
+                .any(|v| source.url.to_lowercase().contains(&v.to_lowercase()))
+            {
                 return false;
             }
-            if q.excluded_in_title.iter().any(|v| source.title.to_lowercase().contains(&v.to_lowercase())) {
+            if q.excluded_in_title
+                .iter()
+                .any(|v| source.title.to_lowercase().contains(&v.to_lowercase()))
+            {
                 return false;
             }
-            if q.excluded_filetypes.iter().any(|e| matches_filetype(&source.url, e)) {
+            if q.excluded_filetypes
+                .iter()
+                .any(|e| matches_filetype(&source.url, e))
+            {
                 return false;
             }
             true
@@ -834,28 +900,44 @@ fn dimension_pred(dim: &ConstraintDimension, q: &StructuredQuery, source: &Searc
 /// Strict per-source check: every constraint dimension must pass.
 #[allow(dead_code)]
 fn matches_query_constraints(source: &SearchSource, q: &StructuredQuery) -> bool {
-    constraint_dimensions(q).iter().all(|dim| dimension_pred(dim, q, source))
+    constraint_dimensions(q)
+        .iter()
+        .all(|dim| dimension_pred(dim, q, source))
 }
 
 /// Lenient post-filter: skips dimensions that would eliminate every source.
-fn apply_query_constraints(sources: &[SearchSource], q: &StructuredQuery) -> ConstraintFilterResult {
+fn apply_query_constraints(
+    sources: &[SearchSource],
+    q: &StructuredQuery,
+) -> ConstraintFilterResult {
     let mut current = sources.to_vec();
     let mut dropped: Vec<String> = Vec::new();
     if current.is_empty() {
-        return ConstraintFilterResult { sources: current, dropped };
+        return ConstraintFilterResult {
+            sources: current,
+            dropped,
+        };
     }
     for dim in constraint_dimensions(q) {
-        let kept: Vec<SearchSource> = current.iter().filter(|s| dimension_pred(&dim, q, s)).cloned().collect();
-        if !kept.is_empty() {
-            current = kept;
-        } else {
+        let kept: Vec<SearchSource> = current
+            .iter()
+            .filter(|s| dimension_pred(&dim, q, s))
+            .cloned()
+            .collect();
+        if kept.is_empty() {
             dropped.push(dim.label);
+        } else {
+            current = kept;
         }
     }
-    ConstraintFilterResult { sources: current, dropped }
+    ConstraintFilterResult {
+        sources: current,
+        dropped,
+    }
 }
 
-/// Parse a raw query into a StructuredQuery.
+/// Parse a raw query into a `StructuredQuery`.
+#[allow(clippy::too_many_lines)] // single-pass tokenizer mirroring omp's parseSearchQuery
 fn parse_search_query(raw: &str) -> StructuredQuery {
     let mut q = StructuredQuery {
         raw: raw.to_string(),
@@ -877,7 +959,10 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
         }
 
         match tok.text.as_str() {
-            "(" | ")" => { idx += 1; continue; }
+            "(" | ")" => {
+                idx += 1;
+                continue;
+            }
             "OR" | "|" | "||" => {
                 state.or_pending = true;
                 q.has_directives = true;
@@ -896,7 +981,7 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
                 continue;
             }
             "-" | "+" => {
-                if tok.text == "-" && tokens.get(idx + 1).map(|t| t.quoted).unwrap_or(false) {
+                if tok.text == "-" && tokens.get(idx + 1).is_some_and(|t| t.quoted) {
                     state.negate_next = true;
                 }
                 idx += 1;
@@ -908,17 +993,19 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
         let caps = DIRECTIVE_RE.captures(&tok.text);
         let name = caps.as_ref().and_then(|c| c.get(2).map(|m| m.as_str()));
         let all_match = name.and_then(|n| {
-            ALL_MODES.iter().find(|(k, _)| k.eq_ignore_ascii_case(n)).map(|(_, v)| *v)
+            ALL_MODES
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(n))
+                .map(|(_, v)| *v)
         });
         let field = name.and_then(directive_field);
 
-        if caps.is_some() && all_match.is_some() {
-            let mode = all_match.unwrap();
+        if let (Some(caps), Some(mode)) = (&caps, all_match) {
             q.has_directives = true;
             all_mode = Some(mode);
-            let inline = caps.as_ref().unwrap().get(3).map(|m| m.as_str()).unwrap_or("").trim();
+            let inline = caps.get(3).map_or("", |m| m.as_str()).trim();
             if !inline.is_empty() {
-                let negated = caps.as_ref().unwrap().get(1).map(|m| m.as_str()) == Some("-");
+                let negated = caps.get(1).map(|m| m.as_str()) == Some("-");
                 push_constraint_into(&mut q, mode, inline, negated);
             }
             state.or_pending = false;
@@ -927,13 +1014,12 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
             continue;
         }
 
-        if caps.is_some() && field.is_some() {
-            let cap = caps.as_ref().unwrap();
-            let mut value = cap.get(3).map(|m| m.as_str()).unwrap_or("").trim().to_string();
+        if let (Some(cap), Some(fld)) = (caps.as_ref(), field) {
+            let mut value = cap.get(3).map_or("", |m| m.as_str()).trim().to_string();
             if value.is_empty() {
                 if let Some(next) = tokens.get(idx + 1) {
                     if next.quoted || !is_reserved_token(&next.text) {
-                        value = next.text.clone();
+                        value.clone_from(&next.text);
                         idx += 1; // skip next token
                     }
                 }
@@ -946,7 +1032,6 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
 
             let negated = cap.get(1).map(|m| m.as_str()) == Some("-") || state.negate_next;
             state.negate_next = false;
-            let fld = field.unwrap();
 
             match fld {
                 "before" | "after" => {
@@ -995,7 +1080,7 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
                 if let Some(nf) = nf {
                     if nf != "before" && nf != "after" && nf != "lang" {
                         state.negate_next = false;
-                        let val = cap.get(3).map(|m| m.as_str()).unwrap_or("");
+                        let val = cap.get(3).map_or("", |m| m.as_str());
                         push_constraint_into(&mut q, nf, val, true);
                         idx += 1;
                         continue;
@@ -1016,12 +1101,15 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
         idx += 1;
     }
 
-    q.text = render_terms(&q.terms, &QuerySyntax {
-        phrases: true,
-        negation: true,
-        or: true,
-        ..Default::default()
-    });
+    q.text = render_terms(
+        &q.terms,
+        &QuerySyntax {
+            phrases: true,
+            negation: true,
+            or: true,
+            ..Default::default()
+        },
+    );
     q.has_constraints = !q.sites.is_empty()
         || !q.excluded_sites.is_empty()
         || !q.in_url.is_empty()
@@ -1040,12 +1128,7 @@ fn parse_search_query(raw: &str) -> StructuredQuery {
     q
 }
 
-fn push_constraint_into(
-    q: &mut StructuredQuery,
-    field: &str,
-    value: &str,
-    negated: bool,
-) {
+fn push_constraint_into(q: &mut StructuredQuery, field: &str, value: &str, negated: bool) {
     let v = value.trim();
     if v.is_empty() {
         return;
@@ -1055,22 +1138,42 @@ fn push_constraint_into(
         "site" => {
             let site = normalize_site(v);
             if !site.is_empty() {
-                if negated { q.excluded_sites.push(site); } else { q.sites.push(site); }
+                if negated {
+                    q.excluded_sites.push(site);
+                } else {
+                    q.sites.push(site);
+                }
             }
         }
         "inUrl" => {
-            if negated { q.excluded_in_url.push(v.to_string()); } else { q.in_url.push(v.to_string()); }
+            if negated {
+                q.excluded_in_url.push(v.to_string());
+            } else {
+                q.in_url.push(v.to_string());
+            }
         }
         "inTitle" => {
-            if negated { q.excluded_in_title.push(v.to_string()); } else { q.in_title.push(v.to_string()); }
+            if negated {
+                q.excluded_in_title.push(v.to_string());
+            } else {
+                q.in_title.push(v.to_string());
+            }
         }
         "inText" => {
-            if negated { q.excluded_in_text.push(v.to_string()); } else { q.in_text.push(v.to_string()); }
+            if negated {
+                q.excluded_in_text.push(v.to_string());
+            } else {
+                q.in_text.push(v.to_string());
+            }
         }
         "filetype" => {
             let ext = v.trim_start_matches('.').to_ascii_lowercase();
             if !ext.is_empty() {
-                if negated { q.excluded_filetypes.push(ext); } else { q.filetypes.push(ext); }
+                if negated {
+                    q.excluded_filetypes.push(ext);
+                } else {
+                    q.filetypes.push(ext);
+                }
             }
         }
         _ => {}
@@ -1101,27 +1204,24 @@ impl ParseState {
         q.has_directives = true;
         if self.or_pending && self.last_was_term {
             let prev_group = q.terms.last().and_then(|t| t.group);
-            match prev_group {
-                Some(group) => {
-                    q.terms.push(QueryTerm {
-                        text: text.to_string(),
-                        phrase,
-                        negated,
-                        group: Some(group),
-                    });
+            if let Some(group) = prev_group {
+                q.terms.push(QueryTerm {
+                    text: text.to_string(),
+                    phrase,
+                    negated,
+                    group: Some(group),
+                });
+            } else {
+                self.group_seq += 1;
+                if let Some(prev) = q.terms.last_mut() {
+                    prev.group = Some(self.group_seq);
                 }
-                None => {
-                    self.group_seq += 1;
-                    if let Some(prev) = q.terms.last_mut() {
-                        prev.group = Some(self.group_seq);
-                    }
-                    q.terms.push(QueryTerm {
-                        text: text.to_string(),
-                        phrase,
-                        negated,
-                        group: Some(self.group_seq),
-                    });
-                }
+                q.terms.push(QueryTerm {
+                    text: text.to_string(),
+                    phrase,
+                    negated,
+                    group: Some(self.group_seq),
+                });
             }
         } else {
             q.terms.push(QueryTerm {
@@ -1199,7 +1299,8 @@ struct AnthropicServerToolUse {
     web_search_requests: Option<u32>,
 }
 
-/// Call Anthropic's Claude web_search_20250305 tool.
+/// Call Anthropic's Claude `web_search_20250305` tool.
+#[allow(clippy::too_many_arguments)] // provider call mirrors omp's searchAnthropic signature
 async fn search_anthropic(
     client: &reqwest::Client,
     base_url: &str,
@@ -1249,7 +1350,7 @@ async fn search_anthropic(
             .header("anthropic-beta", ANTHROPIC_BETA)
             .json(&body_val)
             .send() => result.map_err(|e| anyhow!("HTTP request failed: {e}"))?,
-        _ = signal.aborted() => {
+        () = signal.aborted() => {
             bail!("Web search was aborted");
         }
     };
@@ -1268,7 +1369,8 @@ async fn search_anthropic(
     Ok(api_response)
 }
 
-/// Convert an Anthropic API response into a SearchResponse.
+/// Convert an Anthropic API response into a `SearchResponse`.
+#[allow(clippy::too_many_lines)] // response fold: one pass over content blocks mirroring omp's parseResponse
 fn parse_response(api_response: &AnthropicApiResponse) -> SearchResponse {
     let mut answer_parts: Vec<String> = Vec::new();
     let mut search_queries: Vec<String> = Vec::new();
@@ -1279,7 +1381,7 @@ fn parse_response(api_response: &AnthropicApiResponse) -> SearchResponse {
         match block {
             AnthropicContentBlock::ServerToolUse { name, input } => {
                 let nm = name.as_deref().unwrap_or("");
-                if nm == WEB_SEARCH_TOOL_NAME || nm.ends_with(&format!("{WEB_SEARCH_TOOL_NAME}")) {
+                if nm == WEB_SEARCH_TOOL_NAME || nm.ends_with(&WEB_SEARCH_TOOL_NAME.to_string()) {
                     if let Some(inp) = input {
                         if !inp.query.is_empty() {
                             search_queries.push(inp.query.clone());
@@ -1291,23 +1393,37 @@ fn parse_response(api_response: &AnthropicApiResponse) -> SearchResponse {
                 for item in content {
                     if let Some(item_type) = item.get("type").and_then(|v| v.as_str()) {
                         if item_type == "web_search_result" {
-                            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let page_age = item.get("page_age").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            let title = item
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let url = item
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let page_age = item
+                                .get("page_age")
+                                .and_then(|v| v.as_str())
+                                .map(std::string::ToString::to_string);
                             let age_seconds = page_age.as_deref().and_then(parse_page_age);
                             sources.push(SearchSource {
                                 title,
                                 url,
                                 snippet: None,
                                 published_date: page_age,
-                                age_seconds: age_seconds.map(|s| s),
+                                age_seconds,
                                 author: None,
                             });
                         }
                     }
                 }
             }
-            AnthropicContentBlock::Text { text, citations: text_citations } => {
+            AnthropicContentBlock::Text {
+                text,
+                citations: text_citations,
+            } => {
                 if let Some(t) = text {
                     if !t.is_empty() {
                         answer_parts.push(t.clone());
@@ -1329,15 +1445,31 @@ fn parse_response(api_response: &AnthropicApiResponse) -> SearchResponse {
 
     SearchResponse {
         provider: "anthropic".to_string(),
-        answer: if answer_parts.is_empty() { None } else { Some(answer_parts.join("\n\n")) },
+        answer: if answer_parts.is_empty() {
+            None
+        } else {
+            Some(answer_parts.join("\n\n"))
+        },
         sources,
-        citations: if citations.is_empty() { None } else { Some(citations) },
-        search_queries: if search_queries.is_empty() { None } else { Some(search_queries) },
+        citations: if citations.is_empty() {
+            None
+        } else {
+            Some(citations)
+        },
+        search_queries: if search_queries.is_empty() {
+            None
+        } else {
+            Some(search_queries)
+        },
         related_questions: None,
         usage: Some(SearchUsage {
             input_tokens: api_response.usage.input_tokens,
             output_tokens: api_response.usage.output_tokens,
-            search_requests: api_response.usage.server_tool_use.as_ref().and_then(|s| s.web_search_requests),
+            search_requests: api_response
+                .usage
+                .server_tool_use
+                .as_ref()
+                .and_then(|s| s.web_search_requests),
             total_tokens: None,
         }),
         model: Some(api_response.model.clone()),
@@ -1351,8 +1483,11 @@ fn parse_response(api_response: &AnthropicApiResponse) -> SearchResponse {
 fn pluralize(label: &str, count: usize) -> String {
     if count == 1 {
         label.to_string()
-    } else if label.ends_with('s') || label.ends_with('x') || label.ends_with('z')
-        || label.ends_with("ch") || label.ends_with("sh")
+    } else if label.ends_with('s')
+        || label.ends_with('x')
+        || label.ends_with('z')
+        || label.ends_with("ch")
+        || label.ends_with("sh")
     {
         format!("{label}es")
     } else if label.ends_with('y') && !label.ends_with("ay") && !label.ends_with("ey") {
@@ -1367,6 +1502,7 @@ fn format_count(label: &str, count: usize) -> String {
     format!("{count} {}", pluralize(label, count))
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // caller passes finite positive ages; truncation toward zero matches TS
 fn format_age(age_seconds: f64) -> String {
     if age_seconds <= 0.0 {
         return String::new();
@@ -1403,11 +1539,20 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 fn has_renderable_search_content(response: &SearchResponse) -> bool {
-    response.answer.as_ref().map_or(false, |s| !s.trim().is_empty())
+    response
+        .answer
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty())
         || !response.sources.is_empty()
-        || response.citations.as_ref().map_or(false, |c| !c.is_empty())
-        || response.related_questions.as_ref().map_or(false, |q| q.iter().any(|s| !s.trim().is_empty()))
-        || response.search_queries.as_ref().map_or(false, |q| q.iter().any(|s| !s.trim().is_empty()))
+        || response.citations.as_ref().is_some_and(|c| !c.is_empty())
+        || response
+            .related_questions
+            .as_ref()
+            .is_some_and(|q| q.iter().any(|s| !s.trim().is_empty()))
+        || response
+            .search_queries
+            .as_ref()
+            .is_some_and(|q| q.iter().any(|s| !s.trim().is_empty()))
 }
 
 fn format_for_llm(response: &SearchResponse, notes: &[String]) -> String {
@@ -1432,8 +1577,18 @@ fn format_for_llm(response: &SearchResponse, notes: &[String]) -> String {
         } else {
             age_str
         };
-        let age_part = if age.is_empty() { String::new() } else { format!(" ({age})") };
-        parts.push(format!("[{}] {}{}\n    {}", i + 1, src.title, age_part, src.url));
+        let age_part = if age.is_empty() {
+            String::new()
+        } else {
+            format!(" ({age})")
+        };
+        parts.push(format!(
+            "[{}] {}{}\n    {}",
+            i + 1,
+            src.title,
+            age_part,
+            src.url
+        ));
         if let Some(snippet) = &src.snippet {
             parts.push(format!("    {}", truncate(snippet, 240)));
         }
@@ -1487,7 +1642,7 @@ pub struct WebSearchTool {
 }
 
 impl AgentTool for WebSearchTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "web_search"
     }
     fn description(&self) -> &str {
@@ -1507,7 +1662,7 @@ impl AgentTool for WebSearchTool {
     }
 }
 
-/// Register the web_search tool (single-line registration in `builtin_tools`).
+/// Register the `web_search` tool (single-line registration in `builtin_tools`).
 #[must_use]
 pub fn tool() -> Arc<dyn AgentTool> {
     Arc::new(WebSearchTool { schema: schema() })
@@ -1539,14 +1694,12 @@ fn recency_to_after(recency: &str) -> Option<String> {
         "year" => 365 * 86400,
         _ => return None,
     };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     let then = now.as_secs().saturating_sub(secs);
     Some(epoch_secs_to_iso_date(then))
 }
 
-/// Execute a web search through Anthropic's Claude web_search_20250305 tool.
+/// Execute a web search through Anthropic's Claude `web_search_20250305` tool.
 async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResult> {
     let parsed: WebSearchParams = serde_json::from_value(params.clone())
         .map_err(|e| anyhow!("Invalid web_search arguments: {e}"))?;
@@ -1570,8 +1723,8 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
             anyhow!("Anthropic credentials not found. Set ANTHROPIC_SEARCH_API_KEY or ANTHROPIC_API_KEY.")
         })?;
 
-    let base_url = std::env::var("ANTHROPIC_BASE_URL")
-        .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
+    let base_url =
+        std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
 
     let parsed_query = parse_search_query(&parsed.query);
     let mut parsed_q = parsed_query;
@@ -1614,7 +1767,9 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
             response.sources = filtered.sources;
         }
         for label in &filtered.dropped {
-            constraint_notes.push(format!("no results matched `{label}`; the constraint was relaxed"));
+            constraint_notes.push(format!(
+                "no results matched `{label}`; the constraint was relaxed"
+            ));
         }
     }
 
@@ -1628,7 +1783,8 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
 
     if !has_renderable_search_content(&response) {
         let mut error_resp = response;
-        error_resp.answer = Some("Error: Anthropic returned no renderable search content.".to_string());
+        error_resp.answer =
+            Some("Error: Anthropic returned no renderable search content.".to_string());
         return Ok(AgentToolResult {
             content: vec![ToolResultContent::text(format_for_llm(&error_resp, &[]))],
             details: serde_json::to_value(&error_resp)?,
@@ -1637,8 +1793,7 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
     }
 
     let text = format_for_llm(&response, &constraint_notes);
-    let details = serde_json::to_value(&response)
-        .unwrap_or(serde_json::Value::Null);
+    let details = serde_json::to_value(&response).unwrap_or(serde_json::Value::Null);
 
     Ok(AgentToolResult {
         content: vec![ToolResultContent::text(text)],
@@ -1728,7 +1883,10 @@ mod tests {
     fn plan_query_maps_site_to_allowed_domains() {
         let parsed = parse_search_query("site:rust-lang.org rust");
         let plan = plan_query("site:rust-lang.org rust", &parsed);
-        assert_eq!(plan.allowed_domains, Some(vec!["rust-lang.org".to_string()]));
+        assert_eq!(
+            plan.allowed_domains,
+            Some(vec!["rust-lang.org".to_string()])
+        );
         assert_eq!(plan.blocked_domains, None);
         assert_eq!(plan.query, "rust");
     }
@@ -1763,7 +1921,7 @@ mod tests {
 
     #[test]
     fn parse_page_age_parses_human_string() {
-        assert_eq!(parse_page_age("2 days ago"), Some(172800.0));
+        assert_eq!(parse_page_age("2 days ago"), Some(172_800.0));
         assert_eq!(parse_page_age("3h ago"), Some(10800.0));
         assert!(parse_page_age("not a date").is_none());
     }
@@ -1858,8 +2016,14 @@ mod tests {
         assert_eq!(resp.sources[0].title, "Rust Programming Language");
         assert_eq!(resp.sources[0].url, "https://www.rust-lang.org/");
         assert!(resp.sources[0].age_seconds.is_some());
-        assert_eq!(resp.answer, Some("Rust is a systems programming language.".to_string()));
-        assert_eq!(resp.search_queries.unwrap(), vec!["rust programming language".to_string()]);
+        assert_eq!(
+            resp.answer,
+            Some("Rust is a systems programming language.".to_string())
+        );
+        assert_eq!(
+            resp.search_queries.unwrap(),
+            vec!["rust programming language".to_string()]
+        );
         assert_eq!(resp.citations.unwrap().len(), 1);
     }
 

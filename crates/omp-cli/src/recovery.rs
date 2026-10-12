@@ -19,8 +19,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use omp_providers::{
-    is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, AgentDir, CandidateOptions, FallbackConfig,
-    FallbackState, RateLimitReason, ResolvedModel, RetryConfig, RevertPolicy,
+    is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, AgentDir, CandidateOptions,
+    FallbackConfig, FallbackState, RateLimitReason, ResolvedModel, RetryConfig, RevertPolicy,
 };
 use pa_agent::types::AssistantMessage;
 use serde_json::{json, Value};
@@ -31,14 +31,18 @@ pub const EPHEMERAL_ROLE: &str = "fallback";
 
 /// Resolves a `provider/id[:level]` selector to a callable model (credentials included).
 /// Async: `!command` api keys shell out, so resolution must stay off the executor threads.
-pub type Resolver = Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<ResolvedModel>> + Send>> + Send + Sync>;
+pub type Resolver = Arc<
+    dyn Fn(String) -> Pin<Box<dyn Future<Output = Result<ResolvedModel>> + Send>> + Send + Sync,
+>;
 
 /// The resolver over omp's `config.yml` / `models.yml` / `agent.db` in `dir`.
 #[must_use]
 pub fn resolver_in(dir: AgentDir) -> Resolver {
-    Arc::new(move |selector: String| -> Pin<Box<dyn Future<Output = Result<ResolvedModel>> + Send>> {
-        Box::pin(omp_providers::resolve_in_async(dir.clone(), selector))
-    })
+    Arc::new(
+        move |selector: String| -> Pin<Box<dyn Future<Output = Result<ResolvedModel>> + Send>> {
+            Box::pin(omp_providers::resolve_in_async(dir.clone(), selector))
+        },
+    )
 }
 
 /// The default resolver: omp's `config.yml` / `models.yml` / `agent.db` in the default agent dir.
@@ -65,7 +69,9 @@ impl RecoveryConfig {
         let chain_key = format!("{}/{}", primary.provider, primary.id);
         let mut fallback = FallbackConfig::default();
         if !primary.fallbacks.is_empty() {
-            fallback.chains.push((chain_key.clone(), primary.fallbacks.clone()));
+            fallback
+                .chains
+                .push((chain_key.clone(), primary.fallbacks.clone()));
         }
         fallback.known_providers = primary
             .fallbacks
@@ -74,7 +80,12 @@ impl RecoveryConfig {
             .chain([primary.provider.as_str()])
             .map(String::from)
             .collect();
-        Self { retry: primary.retry.clone(), fallback, chain_key, role_label: primary.role.clone() }
+        Self {
+            retry: primary.retry.clone(),
+            fallback,
+            chain_key,
+            role_label: primary.role.clone(),
+        }
     }
 
     fn role(&self) -> &str {
@@ -106,7 +117,10 @@ impl FailedTurn {
             .find_map(|d| d.get("status").and_then(Value::as_u64))
             .and_then(|s| u16::try_from(s).ok());
         Some(Self {
-            message: m.error_message.clone().unwrap_or_else(|| "Unknown error".to_string()),
+            message: m
+                .error_message
+                .clone()
+                .unwrap_or_else(|| "Unknown error".to_string()),
             status,
             provider: m.provider.clone(),
             model: m.model.clone(),
@@ -123,9 +137,18 @@ pub fn is_transient(status: Option<u16>, message: &str) -> bool {
     }
     let m = message.to_ascii_lowercase();
     status.is_none()
-        && ["connection error", "fetch failed", "econnrefused", "econnreset", "enotfound", "etimedout", "dns", "tls handshake"]
-            .iter()
-            .any(|p| m.contains(p))
+        && [
+            "connection error",
+            "fetch failed",
+            "econnrefused",
+            "econnreset",
+            "enotfound",
+            "etimedout",
+            "dns",
+            "tls handshake",
+        ]
+        .iter()
+        .any(|p| m.contains(p))
 }
 
 /// Longest provider-stated wait found in an error text (`retry-after-ms`, `retry-after`,
@@ -141,7 +164,9 @@ pub fn parse_retry_after_ms(message: &str) -> Option<u64> {
     };
     let number_after = |at: usize| -> Option<(f64, &str)> {
         let rest = lower[at..].trim_start_matches([' ', ':', '=', '"']);
-        let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(rest.len());
         let n: f64 = rest[..end].parse().ok()?;
         Some((n, rest[end..].trim_start()))
     };
@@ -173,7 +198,14 @@ pub fn parse_retry_after_ms(message: &str) -> Option<u64> {
             from = at;
         }
     }
-    for needle in ["try again in", "retry in", "resets in", "reset in", "available in", "wait "] {
+    for needle in [
+        "try again in",
+        "retry in",
+        "resets in",
+        "reset in",
+        "available in",
+        "wait ",
+    ] {
         let mut from = 0;
         while let Some(i) = lower[from..].find(needle) {
             let at = from + i + needle.len();
@@ -190,7 +222,12 @@ pub fn parse_retry_after_ms(message: &str) -> Option<u64> {
 // ---------------------------------------------------------------- frames
 
 #[must_use]
-pub fn auto_retry_start_frame(attempt: u32, max_attempts: u32, delay_ms: u64, error_message: &str) -> Value {
+pub fn auto_retry_start_frame(
+    attempt: u32,
+    max_attempts: u32,
+    delay_ms: u64,
+    error_message: &str,
+) -> Value {
     json!({"type": "auto_retry_start", "attempt": attempt, "maxAttempts": max_attempts, "delayMs": delay_ms, "errorMessage": error_message})
 }
 
@@ -237,7 +274,10 @@ pub enum Verdict {
     /// Announce `auto_retry_start` with `delay_ms`, sleep, continue.
     Retry { delay_ms: u64 },
     /// Give up; `frame` is the closing `auto_retry_end`, `error_message` replaces the turn's error text if set.
-    GiveUp { frame: Value, error_message: Option<String> },
+    GiveUp {
+        frame: Value,
+        error_message: Option<String>,
+    },
 }
 
 pub struct TurnRecovery {
@@ -258,7 +298,16 @@ impl TurnRecovery {
     pub fn new(cfg: RecoveryConfig) -> Self {
         let state = FallbackState::new(RevertPolicy::from_setting(Some(&cfg.retry.revert_policy)));
         let enabled = cfg.retry.enabled;
-        Self { cfg, state, enabled, attempt: 0, generation: 0, cancel: None, handling: false, abort_pending: false }
+        Self {
+            cfg,
+            state,
+            enabled,
+            attempt: 0,
+            generation: 0,
+            cancel: None,
+            handling: false,
+            abort_pending: false,
+        }
     }
 
     /// A user-selected model replaces the chain and ends fallback ownership; cooldowns of other
@@ -320,7 +369,10 @@ impl TurnRecovery {
         let mut delay_ms = self.cfg.retry.backoff_ms(self.attempt, rand01);
         if retry_after_ms.is_none() {
             let reason = parse_rate_limit_reason(&failed.message);
-            if matches!(reason, RateLimitReason::ConcurrentLimit | RateLimitReason::RateLimitExceeded) {
+            if matches!(
+                reason,
+                RateLimitReason::ConcurrentLimit | RateLimitReason::RateLimitExceeded
+            ) {
                 delay_ms = delay_ms.max(rate_limit_backoff_ms(reason, rand01));
             }
         }
@@ -335,18 +387,42 @@ impl TurnRecovery {
     }
 
     /// Cool `current` down and list the chain candidates still worth trying, in walk order.
-    pub fn consult(&mut self, current: &str, attempt: &Attempt, now_ms: u64, rand01: f64) -> Vec<String> {
+    pub fn consult(
+        &mut self,
+        current: &str,
+        attempt: &Attempt,
+        now_ms: u64,
+        rand01: f64,
+    ) -> Vec<String> {
         if self.cfg.fallback.chains.is_empty() {
             return Vec::new();
         }
-        self.state.note_cooldown(current, attempt.retry_after_ms, &attempt.error_message, now_ms, rand01);
-        self.state.candidates(&self.cfg.fallback, current, None, CandidateOptions::default(), now_ms)
+        self.state.note_cooldown(
+            current,
+            attempt.retry_after_ms,
+            &attempt.error_message,
+            now_ms,
+            rand01,
+        );
+        self.state.candidates(
+            &self.cfg.fallback,
+            current,
+            None,
+            CandidateOptions::default(),
+            now_ms,
+        )
     }
 
     /// Record a committed switch onto a fallback (`from` is the selector left behind).
-    pub fn commit_switch(&mut self, from: &str, from_thinking: Option<String>, applied_thinking: Option<String>) {
+    pub fn commit_switch(
+        &mut self,
+        from: &str,
+        from_thinking: Option<String>,
+        applied_thinking: Option<String>,
+    ) {
         let key = self.cfg.chain_key.clone();
-        self.state.apply(&key, from, from_thinking, applied_thinking, false);
+        self.state
+            .apply(&key, from, from_thinking, applied_thinking, false);
     }
 
     /// Decide how the attempt ends (`switched` = a fallback model took over).
@@ -484,7 +560,9 @@ impl TurnRecovery {
         Some(auto_retry_end_frame(
             false,
             attempt,
-            Some(&format!("Retry continuation failed locally: {local_error}. Original error: {original}")),
+            Some(&format!(
+                "Retry continuation failed locally: {local_error}. Original error: {original}"
+            )),
         ))
     }
 }
@@ -494,15 +572,29 @@ mod tests {
     use super::*;
 
     fn failed(msg: &str) -> FailedTurn {
-        FailedTurn { message: msg.into(), status: None, provider: "p".into(), model: "m".into() }
+        FailedTurn {
+            message: msg.into(),
+            status: None,
+            provider: "p".into(),
+            model: "m".into(),
+        }
     }
 
     fn cfg(chain: &[&str]) -> RecoveryConfig {
         let mut fallback = FallbackConfig::default();
-        fallback.chains.push(("p/a".into(), chain.iter().map(|s| (*s).to_string()).collect()));
+        fallback.chains.push((
+            "p/a".into(),
+            chain.iter().map(|s| (*s).to_string()).collect(),
+        ));
         fallback.known_providers = ["p", "q", "r"].iter().map(|s| (*s).to_string()).collect();
         RecoveryConfig {
-            retry: RetryConfig { enabled: true, max_retries: 2, base_delay_ms: 100, max_delay_ms: 60_000, revert_policy: "cooldown-expiry".into() },
+            retry: RetryConfig {
+                enabled: true,
+                max_retries: 2,
+                base_delay_ms: 100,
+                max_delay_ms: 60_000,
+                revert_policy: "cooldown-expiry".into(),
+            },
             fallback,
             chain_key: "p/a".into(),
             role_label: Some("default".into()),
@@ -511,9 +603,15 @@ mod tests {
 
     #[test]
     fn retry_after_takes_the_longest_hint() {
-        assert_eq!(parse_retry_after_ms("429 rate limited. Retry-After: 3"), Some(3000));
+        assert_eq!(
+            parse_retry_after_ms("429 rate limited. Retry-After: 3"),
+            Some(3000)
+        );
         assert_eq!(parse_retry_after_ms("please try again in 2.5s"), Some(2500));
-        assert_eq!(parse_retry_after_ms("retry-after-ms: 1500; resets in 2 minutes"), Some(120_000));
+        assert_eq!(
+            parse_retry_after_ms("retry-after-ms: 1500; resets in 2 minutes"),
+            Some(120_000)
+        );
         assert_eq!(parse_retry_after_ms("boom"), None);
     }
 
@@ -529,11 +627,17 @@ mod tests {
         let a = r.begin_attempt(&f, 0.0);
         assert!(a.budget_exhausted);
         match r.finish_attempt(&a, false) {
-            Verdict::GiveUp { frame, error_message } => {
+            Verdict::GiveUp {
+                frame,
+                error_message,
+            } => {
                 assert_eq!(frame["type"], "auto_retry_end");
                 assert_eq!(frame["success"], false);
                 assert_eq!(frame["attempt"], 2);
-                assert_eq!(error_message.as_deref(), Some("Retry budget exhausted after 2 retries: 503 overloaded"));
+                assert_eq!(
+                    error_message.as_deref(),
+                    Some("Retry budget exhausted after 2 retries: 503 overloaded")
+                );
             }
             Verdict::Retry { .. } => panic!("expected give-up"),
         }
@@ -566,7 +670,12 @@ mod tests {
         match r.finish_attempt(&a, false) {
             Verdict::GiveUp { frame, .. } => {
                 let e = frame["finalError"].as_str().unwrap();
-                assert!(e.starts_with("Provider requested 7200000ms wait, exceeds retry.maxDelayMs (60000ms)"), "{e}");
+                assert!(
+                    e.starts_with(
+                        "Provider requested 7200000ms wait, exceeds retry.maxDelayMs (60000ms)"
+                    ),
+                    "{e}"
+                );
             }
             Verdict::Retry { .. } => panic!("expected give-up"),
         }
@@ -581,7 +690,10 @@ mod tests {
         r.commit_switch("p/a", None, None);
         r.finish_attempt(&a, true);
         let frames = r.on_settled_ok("q/b");
-        let kinds: Vec<_> = frames.iter().map(|f| f["type"].as_str().unwrap().to_string()).collect();
+        let kinds: Vec<_> = frames
+            .iter()
+            .map(|f| f["type"].as_str().unwrap().to_string())
+            .collect();
         assert_eq!(kinds, ["retry_fallback_succeeded", "auto_retry_end"]);
         assert_eq!(frames[0]["role"], "default");
         assert_eq!(frames[1]["success"], true);
@@ -676,7 +788,9 @@ mod tests {
 
     async fn harness_with(script: impl FnOnce(&ScriptedProvider), cfg: RecoveryConfig) -> Harness {
         let primary = pa_model("p", "a");
-        let provider = std::sync::Arc::new(ScriptedProvider::new(json_round_trip(&primary).expect("agent model")));
+        let provider = std::sync::Arc::new(ScriptedProvider::new(
+            json_round_trip(&primary).expect("agent model"),
+        ));
         script(&provider);
         let inner = provider.stream_fn();
         let models_seen = std::sync::Arc::new(Mutex::new(Vec::new()));
@@ -697,7 +811,9 @@ mod tests {
             ..AgentOptions::default()
         });
         let cwd = std::env::temp_dir();
-        let persist = crate::persist::attach_with(&agent, &cwd, true).await.expect("session");
+        let persist = crate::persist::attach_with(&agent, &cwd, true)
+            .await
+            .expect("session");
         let session_file = persist.path();
         let target = std::sync::Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
             api_key: Some("test-key".into()),
@@ -709,13 +825,30 @@ mod tests {
         let resolver: Resolver = std::sync::Arc::new(|sel: String| {
             let out: Result<ResolvedModel> = (|| {
                 let base = sel.split(':').next().unwrap_or(&sel);
-                let (p, i) = base.split_once('/').ok_or_else(|| anyhow::anyhow!("bad selector"))?;
+                let (p, i) = base
+                    .split_once('/')
+                    .ok_or_else(|| anyhow::anyhow!("bad selector"))?;
                 Ok(resolved(p, i))
             })();
             Box::pin(async move { out })
         });
-        let rt = Runtime::start_with(std::sync::Arc::new(agent), target, cwd, persist, tx, resolver, Some(cfg)).await;
-        Harness { rt, rx, models_seen, session_file, _provider: provider }
+        let rt = Runtime::start_with(
+            std::sync::Arc::new(agent),
+            target,
+            cwd,
+            persist,
+            tx,
+            resolver,
+            Some(cfg),
+        )
+        .await;
+        Harness {
+            rt,
+            rx,
+            models_seen,
+            session_file,
+            _provider: provider,
+        }
     }
 
     fn fast_cfg(chain: &[&str], max_retries: u32, base_delay_ms: u64) -> RecoveryConfig {
@@ -729,7 +862,10 @@ mod tests {
     async fn until_settled(rx: &mut UnboundedReceiver<Value>) -> Vec<Value> {
         let mut out = Vec::new();
         loop {
-            let f = tokio::time::timeout(Duration::from_secs(30), rx.recv()).await.expect("frame in time").expect("open");
+            let f = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .expect("frame in time")
+                .expect("open");
             let done = f["type"] == "session_settled";
             out.push(f);
             if done {
@@ -742,7 +878,17 @@ mod tests {
         frames
             .iter()
             .map(|f| f["type"].as_str().unwrap_or("?").to_string())
-            .filter(|k| !matches!(k.as_str(), "message_start" | "message_update" | "message_end" | "turn_start" | "turn_end" | "queue_update"))
+            .filter(|k| {
+                !matches!(
+                    k.as_str(),
+                    "message_start"
+                        | "message_update"
+                        | "message_end"
+                        | "turn_start"
+                        | "turn_end"
+                        | "queue_update"
+                )
+            })
             .collect()
     }
 
@@ -752,8 +898,17 @@ mod tests {
 
     #[tokio::test]
     async fn retry_saga_with_fallback_switch_orders_frames_and_entries() {
-        let mut h = harness(&[Err("503 Service Unavailable: overloaded"), Ok("hello from b")], fast_cfg(&["q/b"], 3, 1)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.expect("prompt");
+        let mut h = harness(
+            &[
+                Err("503 Service Unavailable: overloaded"),
+                Ok("hello from b"),
+            ],
+            fast_cfg(&["q/b"], 3, 1),
+        )
+        .await;
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .expect("prompt");
         let frames = until_settled(&mut h.rx).await;
         assert_eq!(
             kinds(&frames),
@@ -776,86 +931,195 @@ mod tests {
         assert_eq!(get("retry_fallback_applied")["to"], "q/b");
         assert_eq!(get("retry_fallback_applied")["role"], "default");
         let start = get("auto_retry_start");
-        assert_eq!((start["attempt"].clone(), start["maxAttempts"].clone(), start["delayMs"].clone()), (json!(1), json!(3), json!(0)));
+        assert_eq!(
+            (
+                start["attempt"].clone(),
+                start["maxAttempts"].clone(),
+                start["delayMs"].clone()
+            ),
+            (json!(1), json!(3), json!(0))
+        );
         assert_eq!(get("retry_fallback_succeeded")["model"], "q/b");
         let end = get("auto_retry_end");
-        assert_eq!((end["success"].clone(), end["attempt"].clone()), (json!(true), json!(1)));
+        assert_eq!(
+            (end["success"].clone(), end["attempt"].clone()),
+            (json!(true), json!(1))
+        );
         let ends: Vec<_> = frames.iter().filter(|f| f["type"] == "agent_end").collect();
-        assert_eq!((ends[0]["isTerminal"].clone(), ends[0]["yielded"].clone()), (json!(false), json!(false)));
+        assert_eq!(
+            (ends[0]["isTerminal"].clone(), ends[0]["yielded"].clone()),
+            (json!(false), json!(false))
+        );
         assert_eq!(ends[1]["isTerminal"], true);
         assert_eq!(get("prompt_result")["status"], "completed");
-        assert_eq!(*h.models_seen.lock().unwrap(), ["a", "b"], "second attempt ran on the fallback model");
+        assert_eq!(
+            *h.models_seen.lock().unwrap(),
+            ["a", "b"],
+            "second attempt ran on the fallback model"
+        );
 
         let entries = session_entries(&h.session_file);
-        let changes: Vec<_> = entries.iter().filter(|e| e["type"] == "model_change").collect();
+        let changes: Vec<_> = entries
+            .iter()
+            .filter(|e| e["type"] == "model_change")
+            .collect();
         let last = changes.last().unwrap();
         assert_eq!(last["model"], "q/b");
         assert_eq!(last["role"], "fallback");
         assert_eq!(last["resolvedModelIsFallback"], true);
-        let assistants: Vec<_> = entries.iter().filter(|e| e["type"] == "message" && e["message"]["role"] == "assistant").collect();
-        assert_eq!(assistants.len(), 1, "the failed turn is not persisted: {assistants:?}");
+        let assistants: Vec<_> = entries
+            .iter()
+            .filter(|e| e["type"] == "message" && e["message"]["role"] == "assistant")
+            .collect();
+        assert_eq!(
+            assistants.len(),
+            1,
+            "the failed turn is not persisted: {assistants:?}"
+        );
         assert_eq!(assistants[0]["message"]["stopReason"], "stop");
     }
 
     #[tokio::test]
     async fn retry_on_same_model_backs_off_then_succeeds() {
-        let mut h = harness(&[Err("503 overloaded"), Err("503 overloaded"), Ok("finally")], fast_cfg(&[], 5, 5)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.expect("prompt");
+        let mut h = harness(
+            &[Err("503 overloaded"), Err("503 overloaded"), Ok("finally")],
+            fast_cfg(&[], 5, 5),
+        )
+        .await;
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .expect("prompt");
         let frames = until_settled(&mut h.rx).await;
         let k = kinds(&frames);
         assert_eq!(
             k,
             [
-                "agent_start", "auto_retry_start", "agent_end", "agent_start", "auto_retry_start", "agent_end",
-                "agent_start", "auto_retry_end", "agent_end", "prompt_result", "session_settled"
+                "agent_start",
+                "auto_retry_start",
+                "agent_end",
+                "agent_start",
+                "auto_retry_start",
+                "agent_end",
+                "agent_start",
+                "auto_retry_end",
+                "agent_end",
+                "prompt_result",
+                "session_settled"
             ]
         );
-        let attempts: Vec<_> = frames.iter().filter(|f| f["type"] == "auto_retry_start").map(|f| f["attempt"].clone()).collect();
+        let attempts: Vec<_> = frames
+            .iter()
+            .filter(|f| f["type"] == "auto_retry_start")
+            .map(|f| f["attempt"].clone())
+            .collect();
         assert_eq!(attempts, [json!(1), json!(2)]);
-        assert_eq!(frames.iter().find(|f| f["type"] == "auto_retry_end").unwrap()["attempt"], 2);
+        assert_eq!(
+            frames
+                .iter()
+                .find(|f| f["type"] == "auto_retry_end")
+                .unwrap()["attempt"],
+            2
+        );
         assert_eq!(*h.models_seen.lock().unwrap(), ["a", "a", "a"]);
         assert!(!frames.iter().any(|f| f["type"] == "model_changed"));
         let users: Vec<_> = frames
             .iter()
             .filter(|f| f["type"] == "message_end" && f["message"]["role"] == "user")
             .collect();
-        assert_eq!(users[0]["message"]["attribution"], "user", "frame: {}", users[0]);
+        assert_eq!(
+            users[0]["message"]["attribution"], "user",
+            "frame: {}",
+            users[0]
+        );
         let entries = session_entries(&h.session_file);
-        let user = entries.iter().find(|e| e["message"]["role"] == "user").expect("user entry");
+        let user = entries
+            .iter()
+            .find(|e| e["message"]["role"] == "user")
+            .expect("user entry");
         assert_eq!(user["message"]["attribution"], "user", "entry: {user}");
         let raw = std::fs::read_to_string(&h.session_file).unwrap();
-        let line = raw.lines().find(|l| l.contains("\"role\":\"user\"")).unwrap();
-        assert!(line.find("\"content\"").unwrap() < line.find("\"attribution\"").unwrap(), "{line}");
+        let line = raw
+            .lines()
+            .find(|l| l.contains("\"role\":\"user\""))
+            .unwrap();
+        assert!(
+            line.find("\"content\"").unwrap() < line.find("\"attribution\"").unwrap(),
+            "{line}"
+        );
     }
 
     #[tokio::test]
     async fn exhausted_budget_closes_saga_and_persists_the_failure() {
-        let mut h = harness(&[Err("503 overloaded"), Err("503 overloaded")], fast_cfg(&[], 1, 1)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.expect("prompt");
+        let mut h = harness(
+            &[Err("503 overloaded"), Err("503 overloaded")],
+            fast_cfg(&[], 1, 1),
+        )
+        .await;
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .expect("prompt");
         let frames = until_settled(&mut h.rx).await;
         assert_eq!(
             kinds(&frames),
-            ["agent_start", "auto_retry_start", "agent_end", "agent_start", "auto_retry_end", "agent_end", "prompt_result", "session_settled"]
+            [
+                "agent_start",
+                "auto_retry_start",
+                "agent_end",
+                "agent_start",
+                "auto_retry_end",
+                "agent_end",
+                "prompt_result",
+                "session_settled"
+            ]
         );
-        let end = frames.iter().find(|f| f["type"] == "auto_retry_end").unwrap();
-        assert_eq!((end["success"].clone(), end["attempt"].clone(), end["finalError"].clone()), (json!(false), json!(1), json!("503 overloaded")));
-        let result = frames.iter().find(|f| f["type"] == "prompt_result").unwrap();
+        let end = frames
+            .iter()
+            .find(|f| f["type"] == "auto_retry_end")
+            .unwrap();
+        assert_eq!(
+            (
+                end["success"].clone(),
+                end["attempt"].clone(),
+                end["finalError"].clone()
+            ),
+            (json!(false), json!(1), json!("503 overloaded"))
+        );
+        let result = frames
+            .iter()
+            .find(|f| f["type"] == "prompt_result")
+            .unwrap();
         assert_eq!(result["status"], "error");
-        assert_eq!(result["error"]["message"], "Retry budget exhausted after 1 retry: 503 overloaded");
-        tokio::time::timeout(Duration::from_secs(5), h.rt.wait_settled()).await.expect("settled");
+        assert_eq!(
+            result["error"]["message"],
+            "Retry budget exhausted after 1 retry: 503 overloaded"
+        );
+        tokio::time::timeout(Duration::from_secs(5), h.rt.wait_settled())
+            .await
+            .expect("settled");
         let entries = session_entries(&h.session_file);
-        let failed: Vec<_> = entries.iter().filter(|e| e["message"]["stopReason"] == "error").collect();
+        let failed: Vec<_> = entries
+            .iter()
+            .filter(|e| e["message"]["stopReason"] == "error")
+            .collect();
         assert_eq!(failed.len(), 1, "only the terminal failure is persisted");
-        assert_eq!(failed[0]["message"]["errorMessage"], "Retry budget exhausted after 1 retry: 503 overloaded");
+        assert_eq!(
+            failed[0]["message"]["errorMessage"],
+            "Retry budget exhausted after 1 retry: 503 overloaded"
+        );
     }
 
     #[tokio::test]
     async fn abort_retry_during_backoff_ends_cancelled() {
         let mut h = harness(&[Err("503 overloaded")], fast_cfg(&[], 5, 60_000)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.expect("prompt");
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .expect("prompt");
         let mut frames = Vec::new();
         loop {
-            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.expect("frame").expect("open");
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv())
+                .await
+                .expect("frame")
+                .expect("open");
             let start = f["type"] == "auto_retry_start";
             frames.push(f);
             if start {
@@ -865,29 +1129,75 @@ mod tests {
         h.rt.abort_retry();
         frames.extend(until_settled(&mut h.rx).await);
         let k = kinds(&frames);
-        assert_eq!(k, ["agent_start", "auto_retry_start", "auto_retry_end", "agent_end", "prompt_result", "session_settled"]);
-        let end = frames.iter().find(|f| f["type"] == "auto_retry_end").unwrap();
-        assert_eq!((end["success"].clone(), end["finalError"].clone()), (json!(false), json!("Retry cancelled")));
-        assert_eq!(frames.iter().find(|f| f["type"] == "prompt_result").unwrap()["status"], "error");
+        assert_eq!(
+            k,
+            [
+                "agent_start",
+                "auto_retry_start",
+                "auto_retry_end",
+                "agent_end",
+                "prompt_result",
+                "session_settled"
+            ]
+        );
+        let end = frames
+            .iter()
+            .find(|f| f["type"] == "auto_retry_end")
+            .unwrap();
+        assert_eq!(
+            (end["success"].clone(), end["finalError"].clone()),
+            (json!(false), json!("Retry cancelled"))
+        );
+        assert_eq!(
+            frames
+                .iter()
+                .find(|f| f["type"] == "prompt_result")
+                .unwrap()["status"],
+            "error"
+        );
     }
 
     #[tokio::test]
     async fn non_retryable_error_settles_without_a_saga() {
         let mut h = harness(&[Err("401 invalid api key")], fast_cfg(&["q/b"], 3, 1)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.expect("prompt");
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .expect("prompt");
         let frames = until_settled(&mut h.rx).await;
-        assert_eq!(kinds(&frames), ["agent_start", "agent_end", "prompt_result", "session_settled"]);
-        assert_eq!(frames.iter().find(|f| f["type"] == "agent_end").unwrap()["isTerminal"], true);
+        assert_eq!(
+            kinds(&frames),
+            [
+                "agent_start",
+                "agent_end",
+                "prompt_result",
+                "session_settled"
+            ]
+        );
+        assert_eq!(
+            frames.iter().find(|f| f["type"] == "agent_end").unwrap()["isTerminal"],
+            true
+        );
         let entries = session_entries(&h.session_file);
-        assert_eq!(entries.iter().filter(|e| e["message"]["stopReason"] == "error").count(), 1);
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| e["message"]["stopReason"] == "error")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn abort_reports_the_command_response_before_prompt_result() {
         let mut h = harness_with(|p| p.push_stalled_turn("partial"), fast_cfg(&[], 3, 1)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.expect("prompt");
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .expect("prompt");
         loop {
-            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.expect("frame").expect("open");
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv())
+                .await
+                .expect("frame")
+                .expect("open");
             if f["type"] == "message_start" && f["message"]["role"] == "assistant" {
                 break;
             }
@@ -896,9 +1206,23 @@ mod tests {
         h.rt.send(reply);
         let frames = until_settled(&mut h.rx).await;
         let k = kinds(&frames);
-        assert_eq!(k, ["agent_end", "response", "prompt_result", "session_settled"], "{k:?}");
-        let result = frames.iter().find(|f| f["type"] == "prompt_result").unwrap();
-        assert_eq!((result["status"].clone(), result["id"].clone(), result["sessionSettled"].clone()), (json!("aborted"), json!("p1"), json!(true)));
+        assert_eq!(
+            k,
+            ["agent_end", "response", "prompt_result", "session_settled"],
+            "{k:?}"
+        );
+        let result = frames
+            .iter()
+            .find(|f| f["type"] == "prompt_result")
+            .unwrap();
+        assert_eq!(
+            (
+                result["status"].clone(),
+                result["id"].clone(),
+                result["sessionSettled"].clone()
+            ),
+            (json!("aborted"), json!("p1"), json!(true))
+        );
         let end = frames.iter().find(|f| f["type"] == "agent_end").unwrap();
         assert_eq!(end["isTerminal"], true);
     }
@@ -907,20 +1231,37 @@ mod tests {
     async fn user_model_switch_and_thinking_changes_are_journaled_with_omp_shapes() {
         let mut h = harness(&[], fast_cfg(&[], 3, 1)).await;
         h.rt.set_model("q", "b").await.expect("switch");
-        h.rt.set_thinking_level(pa_agent::types::ThinkingLevel::High).await;
-        h.rt.set_thinking_level(pa_agent::types::ThinkingLevel::High).await; // unchanged: silent
+        h.rt.set_thinking_level(pa_agent::types::ThinkingLevel::High)
+            .await;
+        h.rt.set_thinking_level(pa_agent::types::ThinkingLevel::High)
+            .await; // unchanged: silent
         h.rt.cycle_to("r", "c").await.expect("cycle");
         let mut frames = Vec::new();
         while let Ok(f) = h.rx.try_recv() {
             frames.push(f);
         }
-        let k: Vec<_> = frames.iter().map(|f| f["type"].as_str().unwrap().to_string()).collect();
-        assert_eq!(k, ["model_changed", "thinking_level_changed", "model_changed"], "{frames:?}");
-        assert_eq!(frames[1], json!({"type": "thinking_level_changed", "thinkingLevel": "high"}));
+        let k: Vec<_> = frames
+            .iter()
+            .map(|f| f["type"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            k,
+            ["model_changed", "thinking_level_changed", "model_changed"],
+            "{frames:?}"
+        );
+        assert_eq!(
+            frames[1],
+            json!({"type": "thinking_level_changed", "thinkingLevel": "high"})
+        );
         let entries = session_entries(&h.session_file);
         let shapes: Vec<_> = entries
             .iter()
-            .filter(|e| matches!(e["type"].as_str(), Some("model_change" | "thinking_level_change")))
+            .filter(|e| {
+                matches!(
+                    e["type"].as_str(),
+                    Some("model_change" | "thinking_level_change")
+                )
+            })
             .map(|e| {
                 let mut m = e.as_object().unwrap().clone();
                 for k in ["id", "parentId", "timestamp"] {
@@ -964,8 +1305,16 @@ mod tests {
         assert!(r.is_cooling("p/a", 1_001));
         r.reconfigure(cfg(&["r/c"]));
         r.clear_cooldown("q/b");
-        assert!(r.is_cooling("p/a", 1_001), "unrelated cooldown survives a model switch");
-        assert!(r.on_settled_ok("q/b").iter().all(|f| f["type"] != "retry_fallback_succeeded"), "ownership ended");
+        assert!(
+            r.is_cooling("p/a", 1_001),
+            "unrelated cooldown survives a model switch"
+        );
+        assert!(
+            r.on_settled_ok("q/b")
+                .iter()
+                .all(|f| f["type"] != "retry_fallback_succeeded"),
+            "ownership ended"
+        );
     }
 
     // ------------------------------------------------ review round 3 regressions
@@ -974,7 +1323,10 @@ mod tests {
     async fn until_backoff(h: &mut Harness) -> Vec<Value> {
         let mut frames = Vec::new();
         loop {
-            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.expect("frame").expect("open");
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv())
+                .await
+                .expect("frame")
+                .expect("open");
             let start = f["type"] == "auto_retry_start";
             frames.push(f);
             if start {
@@ -988,7 +1340,9 @@ mod tests {
         for _ in 0..30 {
             let mut h = harness(&[Err("401 invalid api key")], fast_cfg(&[], 3, 1)).await;
             // open a saga so `on_error_settled` has something to close
-            h.rt.prompt(Some(json!("p")), "hi", None, Vec::new()).await.unwrap();
+            h.rt.prompt(Some(json!("p")), "hi", None, Vec::new())
+                .await
+                .unwrap();
             let rt = h.rt.clone();
             let poller = tokio::spawn(async move {
                 for _ in 0..200 {
@@ -996,15 +1350,22 @@ mod tests {
                     tokio::task::yield_now().await;
                 }
             });
-            tokio::time::timeout(Duration::from_secs(10), until_settled(&mut h.rx)).await.expect("no deadlock");
-            tokio::time::timeout(Duration::from_secs(10), poller).await.expect("state() finished").unwrap();
+            tokio::time::timeout(Duration::from_secs(10), until_settled(&mut h.rx))
+                .await
+                .expect("no deadlock");
+            tokio::time::timeout(Duration::from_secs(10), poller)
+                .await
+                .expect("state() finished")
+                .unwrap();
         }
     }
 
     #[tokio::test]
     async fn new_session_during_backoff_cancels_it_and_leaves_the_new_file_clean() {
         let mut h = harness(&[Err("503 overloaded")], fast_cfg(&[], 5, 60_000)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.unwrap();
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .unwrap();
         until_backoff(&mut h).await;
         h.rt.new_session(None).await.expect("new session");
         let rest = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1020,61 +1381,127 @@ mod tests {
         })
         .await
         .expect("saga ended promptly");
-        assert!(rest.iter().any(|f| f["type"] == "auto_retry_end" && f["finalError"] == "Retry cancelled"), "{rest:?}");
+        assert!(
+            rest.iter()
+                .any(|f| f["type"] == "auto_retry_end" && f["finalError"] == "Retry cancelled"),
+            "{rest:?}"
+        );
         let entries = session_entries(&h.rt.session_file());
-        assert!(entries.iter().all(|e| e["message"]["stopReason"] != "error"), "old failure leaked into the new session");
+        assert!(
+            entries
+                .iter()
+                .all(|e| e["message"]["stopReason"] != "error"),
+            "old failure leaked into the new session"
+        );
         assert!(!h.rt.state().await["isSettled"].is_null());
         assert_eq!(h.rt.state().await["isSettled"], true);
     }
 
     #[tokio::test]
     async fn prompt_during_backoff_does_not_inherit_the_old_turns_result() {
-        let mut h = harness(&[Err("503 overloaded"), Ok("fresh")], fast_cfg(&[], 5, 60_000)).await;
-        h.rt.prompt(Some(json!("old")), "first", None, Vec::new()).await.unwrap();
+        let mut h = harness(
+            &[Err("503 overloaded"), Ok("fresh")],
+            fast_cfg(&[], 5, 60_000),
+        )
+        .await;
+        h.rt.prompt(Some(json!("old")), "first", None, Vec::new())
+            .await
+            .unwrap();
         until_backoff(&mut h).await;
-        h.rt.prompt(Some(json!("new")), "second", None, Vec::new()).await.unwrap();
+        h.rt.prompt(Some(json!("new")), "second", None, Vec::new())
+            .await
+            .unwrap();
         let mut frames = Vec::new();
-        while frames.iter().filter(|f: &&Value| f["type"] == "prompt_result").count() < 2 {
-            frames.push(tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.expect("frame").expect("open"));
+        while frames
+            .iter()
+            .filter(|f: &&Value| f["type"] == "prompt_result")
+            .count()
+            < 2
+        {
+            frames.push(
+                tokio::time::timeout(Duration::from_secs(30), h.rx.recv())
+                    .await
+                    .expect("frame")
+                    .expect("open"),
+            );
         }
-        let detail: Vec<_> = frames.iter().filter(|f| f["type"] == "prompt_result").map(ToString::to_string).collect();
-        let results: Vec<_> = frames.iter().filter(|f| f["type"] == "prompt_result").map(|f| (f["id"].clone(), f["status"].clone())).collect();
-        assert_eq!(results, [(json!("old"), json!("error")), (json!("new"), json!("completed"))], "{detail:?}");
+        let detail: Vec<_> = frames
+            .iter()
+            .filter(|f| f["type"] == "prompt_result")
+            .map(ToString::to_string)
+            .collect();
+        let results: Vec<_> = frames
+            .iter()
+            .filter(|f| f["type"] == "prompt_result")
+            .map(|f| (f["id"].clone(), f["status"].clone()))
+            .collect();
+        assert_eq!(
+            results,
+            [
+                (json!("old"), json!("error")),
+                (json!("new"), json!("completed"))
+            ],
+            "{detail:?}"
+        );
     }
 
     #[tokio::test]
     async fn cancelled_retry_never_persists_the_superseded_turn() {
         let mut h = harness(&[Err("503 overloaded")], fast_cfg(&[], 5, 60_000)).await;
-        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new()).await.unwrap();
+        h.rt.prompt(Some(json!("p1")), "hi", None, Vec::new())
+            .await
+            .unwrap();
         until_backoff(&mut h).await;
         h.rt.abort().await;
         until_settled(&mut h.rx).await;
         let entries = session_entries(&h.session_file);
         // omp: a failed attempt reaches the file only when the saga gives up; a cancel is not that.
-        assert!(entries.iter().all(|e| e["message"]["stopReason"] != "error"));
+        assert!(entries
+            .iter()
+            .all(|e| e["message"]["stopReason"] != "error"));
     }
 
     #[tokio::test]
     async fn queue_edits_match_exactly_and_touch_one_message() {
         let mut h = harness_with(|p| p.push_stalled_turn("busy"), fast_cfg(&[], 3, 1)).await;
-        h.rt.prompt(Some(json!("p")), "run", None, Vec::new()).await.unwrap();
+        h.rt.prompt(Some(json!("p")), "run", None, Vec::new())
+            .await
+            .unwrap();
         loop {
-            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv()).await.unwrap().unwrap();
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
             if f["type"] == "message_start" && f["message"]["role"] == "assistant" {
                 break;
             }
         }
         for t in ["fix the bug", "fix the bug", "fix"] {
-            h.rt.prompt(None, t, Some("followUp"), Vec::new()).await.unwrap();
+            h.rt.prompt(None, t, Some("followUp"), Vec::new())
+                .await
+                .unwrap();
         }
         let q = |rt: &Runtime| rt.queued_previews().1;
         assert_eq!(q(&h.rt), ["fix the bug", "fix the bug", "fix"]);
-        assert!(!h.rt.remove_queued("fix the", "followUp"), "prefix must not match");
+        assert!(
+            !h.rt.remove_queued("fix the", "followUp"),
+            "prefix must not match"
+        );
         assert!(!h.rt.remove_queued("fix", "steering"), "wrong queue");
         assert!(h.rt.remove_queued("fix", "followUp"));
-        assert_eq!(q(&h.rt), ["fix the bug", "fix the bug"], "exactly one, and the right one");
+        assert_eq!(
+            q(&h.rt),
+            ["fix the bug", "fix the bug"],
+            "exactly one, and the right one"
+        );
         assert!(h.rt.promote_queued("fix the bug"));
-        assert_eq!((h.rt.queued_previews().0, q(&h.rt)), (vec!["fix the bug".to_string()], vec!["fix the bug".to_string()]));
+        assert_eq!(
+            (h.rt.queued_previews().0, q(&h.rt)),
+            (
+                vec!["fix the bug".to_string()],
+                vec!["fix the bug".to_string()]
+            )
+        );
         assert!(!h.rt.promote_queued("fix"));
         h.rt.abort().await;
     }
@@ -1104,6 +1531,9 @@ mod tests {
         let ticks_during = ticks.load(std::sync::atomic::Ordering::SeqCst);
         ticker.abort();
         assert_eq!(model.api_key.as_deref(), Some("k"));
-        assert!(ticks_during >= 10, "executor blocked during the slow key: {ticks_during} ticks");
+        assert!(
+            ticks_during >= 10,
+            "executor blocked during the slow key: {ticks_during} ticks"
+        );
     }
 }

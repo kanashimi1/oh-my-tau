@@ -53,10 +53,13 @@ pub struct Frame {
     pub detail: Option<String>,
 }
 
-/// Validated OpenAI Responses replacement history (`openaiResponsesHistory` payload).
+/// Validated `OpenAI` Responses replacement history (`openaiResponsesHistory` payload).
 #[must_use]
 pub fn openai_remote_payload(compaction: &Value) -> Option<Value> {
-    let candidate = compaction.get("preserveData")?.get("openaiRemoteCompaction")?.as_object()?;
+    let candidate = compaction
+        .get("preserveData")?
+        .get("openaiRemoteCompaction")?
+        .as_object()?;
     let provider = candidate.get("provider").and_then(Value::as_str)?;
     if provider.is_empty() {
         return None;
@@ -74,7 +77,11 @@ pub fn anthropic_compaction_payload(compaction: &Value) -> Option<Value> {
     let candidate = compaction.get("preserveData")?.get("anthropicCompaction")?;
     let provider = str_field(candidate, "provider").filter(|p| !p.is_empty())?;
     let content = str_field(candidate, "content").filter(|c| !c.is_empty())?;
-    let opt_str = |key: &str| str_field(candidate, key).filter(|v| !v.is_empty()).map(str::to_owned);
+    let opt_str = |key: &str| {
+        str_field(candidate, key)
+            .filter(|v| !v.is_empty())
+            .map(str::to_owned)
+    };
     let mut payload = Map::new();
     payload.insert("type".into(), "anthropicCompaction".into());
     payload.insert("provider".into(), provider.into());
@@ -117,7 +124,11 @@ pub fn get_preserved_archive(preserve_data: Option<&Value>) -> Option<Archive> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let text = |key: &str| str_field(candidate, key).filter(|t| !t.is_empty()).map(str::to_owned);
+    let text = |key: &str| {
+        str_field(candidate, key)
+            .filter(|t| !t.is_empty())
+            .map(str::to_owned)
+    };
     let source_text = text("text");
     let text_head = text("textHead");
     let text_tail = text("textTail");
@@ -126,7 +137,10 @@ pub fn get_preserved_archive(preserve_data: Option<&Value>) -> Option<Archive> {
     }
     Some(Archive {
         frames,
-        truncated_chars: candidate.get("truncatedChars").and_then(Value::as_f64).unwrap_or(0.0),
+        truncated_chars: candidate
+            .get("truncatedChars")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
         text: source_text,
         text_head,
         text_tail,
@@ -136,7 +150,10 @@ pub fn get_preserved_archive(preserve_data: Option<&Value>) -> Option<Archive> {
 /// `hasLegacySnapcompactFrames`: frames without shape metadata.
 #[must_use]
 pub fn has_legacy_frames(archive: &Archive) -> bool {
-    archive.frames.iter().any(|f| f.font.is_none() && f.variant.is_none())
+    archive
+        .frames
+        .iter()
+        .any(|f| f.font.is_none() && f.variant.is_none())
 }
 
 /// `snapcompactFrameDataBytes` (no blob resolver: raw payload lengths).
@@ -148,12 +165,13 @@ pub fn frame_data_bytes(archive: &Archive) -> usize {
 /// `archiveSourceText`: the archive's source text as plain text for LLM use.
 #[must_use]
 pub fn archive_source_text(archive: &Archive) -> Option<String> {
-    let text = match archive_text(archive) {
-        Some(text) => text,
-        None => return None,
-    };
+    let text = archive_text(archive)?;
     let elided = elide_data_urls(&to_plain_text(&text), true);
-    if elided.is_empty() { None } else { Some(elided) }
+    if elided.is_empty() {
+        None
+    } else {
+        Some(elided)
+    }
 }
 
 fn archive_text(archive: &Archive) -> Option<String> {
@@ -167,7 +185,11 @@ fn archive_text(archive: &Archive) -> Option<String> {
     if let Some(tail) = archive.text_tail.as_deref().filter(|t| !t.is_empty()) {
         parts.push(tail);
     }
-    if parts.is_empty() { None } else { Some(parts.join(&NEWLINE_GLYPH.to_string())) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(&NEWLINE_GLYPH.to_string()))
+    }
 }
 
 /// `isCrashRiskLegacySnapcompactArchive`: the conservative LLM-payload guard for
@@ -187,7 +209,11 @@ pub fn is_crash_risk_legacy_archive(archive: &Archive) -> bool {
 /// else keeps frames within [`FRAME_DATA_BYTES_BUDGET`].
 #[must_use]
 pub fn history_blocks_for_context(archive: &Archive) -> Vec<Value> {
-    let max = if is_crash_risk_legacy_archive(archive) { 0 } else { FRAME_DATA_BYTES_BUDGET };
+    let max = if is_crash_risk_legacy_archive(archive) {
+        0
+    } else {
+        FRAME_DATA_BYTES_BUDGET
+    };
     history_blocks(archive, Some(max))
 }
 
@@ -198,7 +224,11 @@ pub fn history_blocks(archive: &Archive, max_frame_data_bytes: Option<usize>) ->
     let has_images = blocks.iter().any(|b| str_field(b, "type") == Some("image"));
     let has_omitted_images = blocks.iter().any(|b| str_field(b, "type") == Some("text"));
     if let Some(head) = &archive.text_head {
-        let suffix = if has_images { "\n-------------- imaged middle below\n" } else { "" };
+        let suffix = if has_images {
+            "\n-------------- imaged middle below\n"
+        } else {
+            ""
+        };
         let text = format!("{}{}", elide_data_urls(&to_plain_text(head), true), suffix);
         blocks.insert(0, json!({"type": "text", "text": text}));
     }
@@ -211,10 +241,17 @@ pub fn history_blocks(archive: &Archive, max_frame_data_bytes: Option<usize>) ->
             ""
         };
         let text = format!("{}{}", prefix, elide_data_urls(&to_plain_text(tail), true));
-        match blocks.last_mut().filter(|b| str_field(b, "type") == Some("text")) {
+        match blocks
+            .last_mut()
+            .filter(|b| str_field(b, "type") == Some("text"))
+        {
             Some(last) => {
                 if let Some(obj) = last.as_object_mut() {
-                    let prev = obj.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+                    let prev = obj
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
                     obj.insert("text".into(), Value::String(format!("{prev}{text}")));
                 }
             }
@@ -264,7 +301,7 @@ fn locale_number(n: usize) -> String {
     let digits = n.to_string();
     let mut grouped = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(c);
@@ -309,10 +346,6 @@ fn omitted_frame_notice(omitted_frames: usize, omitted_bytes: usize) -> String {
 
 /// `frameBlocks`: blocks for the imaged middle, gap runs merged per cause.
 fn frame_blocks(slots: &[Slot]) -> Vec<Value> {
-    let mut blocks = Vec::new();
-    let mut pending_gap: Option<&'static str> = None;
-    let mut pending_frames = 0usize;
-    let mut pending_bytes = 0usize;
     fn flush(
         blocks: &mut Vec<Value>,
         pending_gap: &mut Option<&'static str>,
@@ -328,10 +361,19 @@ fn frame_blocks(slots: &[Slot]) -> Vec<Value> {
         *pending_frames = 0;
         *pending_bytes = 0;
     }
+    let mut blocks = Vec::new();
+    let mut pending_gap: Option<&'static str> = None;
+    let mut pending_frames = 0usize;
+    let mut pending_bytes = 0usize;
     for slot in slots {
         match slot {
             Slot::Frame(frame) => {
-                flush(&mut blocks, &mut pending_gap, &mut pending_frames, &mut pending_bytes);
+                flush(
+                    &mut blocks,
+                    &mut pending_gap,
+                    &mut pending_frames,
+                    &mut pending_bytes,
+                );
                 let mut image = Map::new();
                 image.insert("type".into(), "image".into());
                 image.insert("data".into(), frame.data.clone().into());
@@ -343,14 +385,24 @@ fn frame_blocks(slots: &[Slot]) -> Vec<Value> {
             }
             Slot::Unavailable => {
                 if pending_gap == Some("budget") {
-                    flush(&mut blocks, &mut pending_gap, &mut pending_frames, &mut pending_bytes);
+                    flush(
+                        &mut blocks,
+                        &mut pending_gap,
+                        &mut pending_frames,
+                        &mut pending_bytes,
+                    );
                 }
                 pending_gap = Some("unavailable");
                 pending_frames += 1;
             }
             Slot::Omitted(bytes) => {
                 if pending_gap == Some("unavailable") {
-                    flush(&mut blocks, &mut pending_gap, &mut pending_frames, &mut pending_bytes);
+                    flush(
+                        &mut blocks,
+                        &mut pending_gap,
+                        &mut pending_frames,
+                        &mut pending_bytes,
+                    );
                 }
                 pending_gap = Some("budget");
                 pending_frames += 1;
@@ -358,18 +410,25 @@ fn frame_blocks(slots: &[Slot]) -> Vec<Value> {
             }
         }
     }
-    flush(&mut blocks, &mut pending_gap, &mut pending_frames, &mut pending_bytes);
+    flush(
+        &mut blocks,
+        &mut pending_gap,
+        &mut pending_frames,
+        &mut pending_bytes,
+    );
     blocks
 }
 
 /// `toPlainText`: drop dim toggles, print newline glyphs as real newlines.
 #[must_use]
 pub fn to_plain_text(text: &str) -> String {
-    text.replace(['\u{000e}', '\u{000f}'], "").replace(NEWLINE_GLYPH, "\n")
+    text.replace(['\u{000e}', '\u{000f}'], "")
+        .replace(NEWLINE_GLYPH, "\n")
 }
 
-static ELIDED_MARKER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\s*\[(?:…|\.{3})[0-9]+ch elided(?:…|\.{3})\]\s*").expect("static regex"));
+static ELIDED_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s*\[(?:…|\.{3})[0-9]+ch elided(?:…|\.{3})\]\s*").expect("static regex")
+});
 
 static CANONICAL_BASE64: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:[0-9A-Za-z+/]{4})*(?:[0-9A-Za-z+/]{4}|[0-9A-Za-z+/]{3}=|[0-9A-Za-z+/]{2}==)$")
@@ -379,8 +438,7 @@ static CANONICAL_BASE64: LazyLock<Regex> = LazyLock::new(|| {
 static DATA_URL_ATOM: LazyLock<Regex> = LazyLock::new(|| {
     let media_token = r"[0-9A-Za-z_!#$%&'*+.^|~-]+";
     Regex::new(&format!(
-        r"(?i)data:([0-9A-Za-z][0-9A-Za-z_.+-]*/[0-9A-Za-z_.+-]+(?:;{m}={m})*);base64,([0-9A-Za-z+/=]*(?:\s*\[(?:…|\.\.\.)[0-9]+ch elided(?:…|\.\.\.)\]\s*[0-9A-Za-z+/=]*)?)(\s*\))?",
-        m = media_token
+        r"(?i)data:([0-9A-Za-z][0-9A-Za-z_.+-]*/[0-9A-Za-z_.+-]+(?:;{media_token}={media_token})*);base64,([0-9A-Za-z+/=]*(?:\s*\[(?:…|\.\.\.)[0-9]+ch elided(?:…|\.\.\.)\]\s*[0-9A-Za-z+/=]*)?)(\s*\))?"
     ))
     .expect("static regex")
 });
@@ -390,11 +448,17 @@ static DATA_URL_ATOM: LazyLock<Regex> = LazyLock::new(|| {
 fn adjacent_markdown_opener_start(text: &str, data_index: usize, cursor: usize) -> Option<usize> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let char_before = |pos: usize| -> Option<(usize, char)> {
-        chars.iter().rev().find(|(off, _)| *off < pos).map(|(off, c)| (*off, *c))
+        chars
+            .iter()
+            .rev()
+            .find(|(off, _)| *off < pos)
+            .map(|(off, c)| (*off, *c))
     };
     let mut i = data_index;
     while i > cursor {
-        let Some((off, c)) = char_before(i) else { break };
+        let Some((off, c)) = char_before(i) else {
+            break;
+        };
         if !c.is_whitespace() {
             break;
         }
@@ -403,11 +467,15 @@ fn adjacent_markdown_opener_start(text: &str, data_index: usize, cursor: usize) 
     if i <= cursor {
         return None;
     }
-    let Some((paren_off, '(')) = char_before(i) else { return None };
+    let Some((paren_off, '(')) = char_before(i) else {
+        return None;
+    };
     if paren_off <= cursor {
         return None;
     }
-    let Some((bracket_off, ']')) = char_before(paren_off) else { return None };
+    let Some((bracket_off, ']')) = char_before(paren_off) else {
+        return None;
+    };
     if bracket_off < cursor {
         return None;
     }
@@ -438,6 +506,9 @@ fn adjacent_markdown_opener_start(text: &str, data_index: usize, cursor: usize) 
 /// wrapper included — with its metadata placeholder. `archive_context` marks
 /// archive text (sliced at arbitrary offsets), where every recognized prefix
 /// is elided; intact source text keeps short prose mentions.
+/// One elided data URL: byte span in the source, mime, payload, closing wrapper.
+type MatchedDataUrl<'a> = (usize, usize, Option<&'a str>, String, Option<String>);
+
 #[must_use]
 pub fn elide_data_urls(text: &str, archive_context: bool) -> String {
     if !text.to_lowercase().contains(";base64,") {
@@ -445,7 +516,7 @@ pub fn elide_data_urls(text: &str, archive_context: bool) -> String {
     }
     let mut out: Vec<String> = Vec::new();
     let mut cursor = 0usize;
-    let mut matched: Vec<(usize, usize, Option<&str>, String, Option<String>)> = Vec::new();
+    let mut matched: Vec<MatchedDataUrl<'_>> = Vec::new();
     for caps in DATA_URL_ATOM.captures_iter(text) {
         let whole = caps.get(0).expect("match");
         matched.push((
@@ -474,9 +545,12 @@ pub fn elide_data_urls(text: &str, archive_context: bool) -> String {
             }
             None => payload.len(),
         };
-        let placeholder = format!("[data URL omitted: {}, {b64_chars} base64 chars]", mime.unwrap_or(""));
-        let opener_start = adjacent_markdown_opener_start(text, url_start, cursor)
-            .filter(|o| *o >= cursor);
+        let placeholder = format!(
+            "[data URL omitted: {}, {b64_chars} base64 chars]",
+            mime.unwrap_or("")
+        );
+        let opener_start =
+            adjacent_markdown_opener_start(text, url_start, cursor).filter(|o| *o >= cursor);
         let emit_start = opener_start.unwrap_or(url_start);
         out.push(text[cursor..emit_start].to_owned());
         if opener_start.is_some() && closer.is_some() {

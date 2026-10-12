@@ -70,6 +70,7 @@ impl ServiceState {
         }
     }
 
+    #[allow(dead_code)] // proc:// surface state query, wired with the service inspector
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Exited | Self::Failed)
     }
@@ -81,6 +82,7 @@ impl ServiceState {
 /// record is the shared snapshot the `proc://` surface renders from.
 pub struct Service {
     pub name: String,
+    #[allow(dead_code)] // rendered by the proc:// surface in the full broker UI
     pub command: String,
     pub started: Instant,
     pub state: ServiceState,
@@ -103,7 +105,11 @@ impl Service {
 
     /// The captured log tail, trimmed.
     pub fn log(&self) -> String {
-        self.output.lock().expect("service output poisoned").trim_end().to_string()
+        self.output
+            .lock()
+            .expect("service output poisoned")
+            .trim_end()
+            .to_string()
     }
 }
 
@@ -139,7 +145,12 @@ impl JobRegistry {
     }
 
     pub fn get(&self, id: &str) -> Option<Job> {
-        self.inner.lock().expect("job registry poisoned").jobs.get(id).cloned()
+        self.inner
+            .lock()
+            .expect("job registry poisoned")
+            .jobs
+            .get(id)
+            .cloned()
     }
 
     pub fn update(&self, id: &str, f: impl FnOnce(&mut Job)) {
@@ -151,7 +162,11 @@ impl JobRegistry {
 
     fn sorted(&self) -> Vec<(String, Job)> {
         let inner = self.inner.lock().expect("job registry poisoned");
-        let mut v: Vec<(String, Job)> = inner.jobs.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut v: Vec<(String, Job)> = inner
+            .jobs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
@@ -161,20 +176,31 @@ impl JobRegistry {
     pub fn insert_service(&self, service: Service) -> Arc<Mutex<Service>> {
         let arc = Arc::new(Mutex::new(service));
         let mut inner = self.inner.lock().expect("job registry poisoned");
-        if let Some(old) = inner.services.insert(arc.lock().expect("service poisoned").name.clone(), arc.clone()) {
+        if let Some(old) = inner.services.insert(
+            arc.lock().expect("service poisoned").name.clone(),
+            arc.clone(),
+        ) {
             old.lock().expect("service poisoned").kill_requested = true;
         }
         arc
     }
 
     pub fn service(&self, name: &str) -> Option<Arc<Mutex<Service>>> {
-        self.inner.lock().expect("job registry poisoned").services.get(name).cloned()
+        self.inner
+            .lock()
+            .expect("job registry poisoned")
+            .services
+            .get(name)
+            .cloned()
     }
 
     fn services_sorted(&self) -> Vec<(String, Arc<Mutex<Service>>)> {
         let inner = self.inner.lock().expect("job registry poisoned");
-        let mut v: Vec<(String, Arc<Mutex<Service>>)> =
-            inner.services.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let mut v: Vec<(String, Arc<Mutex<Service>>)> = inner
+            .services
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
         v
     }
@@ -215,7 +241,9 @@ pub fn format_duration(ms: u64) -> String {
 pub fn background_notice(job_id: &str, timeout_secs: Option<f64>) -> String {
     let deadline = match timeout_secs {
         None => " (no deadline)".to_string(),
-        Some(t) => format!(" (killed once it has run {t}s in total; `timeout: 0` disables the deadline)"),
+        Some(t) => {
+            format!(" (killed once it has run {t}s in total; `timeout: 0` disables the deadline)")
+        }
     };
     format!(
         "Backgrounded as job {job_id}{deadline}; its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken."
@@ -226,6 +254,7 @@ pub fn background_notice(job_id: &str, timeout_secs: Option<f64>) -> String {
 ///
 /// # Errors
 /// Writable-only targets, unknown ids and malformed URLs (omp's error texts).
+#[allow(clippy::too_many_lines)] // proc:// render: one read across all service fields, mirrors omp's proc surface
 pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
     // `url` is everything after `proc://`.
     if url.contains('?') || url.contains('#') || url == "/mode" || url == "/kill" {
@@ -252,21 +281,39 @@ pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
             .into_iter()
             .map(|(job_id, job)| {
                 let duration = match job.ended {
-                    None => format!("up {}", format_duration(u64::try_from(now.duration_since(job.started).as_millis()).unwrap_or(u64::MAX))),
-                    Some(elapsed) => format!("in {}", format_duration(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))),
+                    None => format!(
+                        "up {}",
+                        format_duration(
+                            u64::try_from(now.duration_since(job.started).as_millis())
+                                .unwrap_or(u64::MAX)
+                        )
+                    ),
+                    Some(elapsed) => format!(
+                        "in {}",
+                        format_duration(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+                    ),
                 };
-                format!("{job_id} [bash] {} {duration} — {}", job.status.as_str(), squash(&job.command))
+                format!(
+                    "{job_id} [bash] {} {duration} — {}",
+                    job.status.as_str(),
+                    squash(&job.command)
+                )
             })
             .collect();
         // Services ride along (omp `serviceStatus` / ps-data service rows).
         for (name, service) in env.jobs.services_sorted() {
             let service = service.lock().expect("service poisoned");
             let end = service.exited_at.unwrap_or(now);
-            let age = format_duration(u64::try_from(end.duration_since(service.started).as_millis()).unwrap_or(u64::MAX));
+            let age = format_duration(
+                u64::try_from(end.duration_since(service.started).as_millis()).unwrap_or(u64::MAX),
+            );
             rows.push(format!(
                 "{name} [service] — {} — up {age}{}",
                 service.state.as_str(),
-                service.pid.map(|p| format!(" — pid {p}")).unwrap_or_default()
+                service
+                    .pid
+                    .map(|p| format!(" — pid {p}"))
+                    .unwrap_or_default()
             ));
         }
         let text = if rows.is_empty() {
@@ -277,7 +324,11 @@ pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
         return Ok(AgentToolResult::text(text));
     }
     if let Some(job) = env.jobs.get(id) {
-        let mut lines = vec![format!("{id} [bash] — {} — {}", job.status.as_str(), job.command)];
+        let mut lines = vec![format!(
+            "{id} [bash] — {} — {}",
+            job.status.as_str(),
+            job.command
+        )];
         if let Some(result) = &job.result {
             lines.push(result.clone());
         }
@@ -299,11 +350,16 @@ pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
     {
         let service = service.lock().expect("service poisoned");
         let end = service.exited_at.unwrap_or_else(Instant::now);
-        let age = format_duration(u64::try_from(end.duration_since(service.started).as_millis()).unwrap_or(u64::MAX));
+        let age = format_duration(
+            u64::try_from(end.duration_since(service.started).as_millis()).unwrap_or(u64::MAX),
+        );
         let mut lines = vec![format!(
             "{id} [service] — {} — up {age}{}",
             service.state.as_str(),
-            service.pid.map(|p| format!(" — pid {p}")).unwrap_or_default()
+            service
+                .pid
+                .map(|p| format!(" — pid {p}"))
+                .unwrap_or_default()
         )];
         let log = service.log();
         if !log.is_empty() {
@@ -331,8 +387,13 @@ mod tests {
     #[test]
     fn notice_matches_omp_text() {
         let n = background_notice("bg_1", Some(300.0));
-        assert!(n.starts_with("Backgrounded as job bg_1 (killed once it has run 300s in total"), "{n}");
+        assert!(
+            n.starts_with("Backgrounded as job bg_1 (killed once it has run 300s in total"),
+            "{n}"
+        );
         assert!(n.contains("Do NOT poll for it"), "{n}");
-        assert!(background_notice("bg_2", None).starts_with("Backgrounded as job bg_2 (no deadline)"));
+        assert!(
+            background_notice("bg_2", None).starts_with("Backgrounded as job bg_2 (no deadline)")
+        );
     }
 }

@@ -1435,7 +1435,7 @@ mod online_live_tests {
     async fn live_prompted_judgment() {
         // The live `judge` role resolves to a native (typesafe) candidate, so build the
         // prompted-chat candidate directly from the `zai/glm-5.3-flash` model.
-        let model = crate::resolve(&"zai/glm-5.3-flash".to_string()).expect("resolve judge model");
+        let model = crate::resolve("zai/glm-5.3-flash").expect("resolve judge model");
         let candidate = JudgeCandidate { kind: JudgeKind::Online, model, url: None };
         let mut questions = Map::new();
         questions.insert(

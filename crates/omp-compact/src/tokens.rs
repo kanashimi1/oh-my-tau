@@ -49,7 +49,12 @@ fn json_string(v: &Value) -> String {
     omp_session::entries::to_js_string(v).unwrap_or_else(|_| "null".to_owned())
 }
 
-fn content_blocks(content: &Value, fragments: &mut Vec<String>, extra: &mut u64, t: &dyn Tokenizer) {
+fn content_blocks(
+    content: &Value,
+    fragments: &mut Vec<String>,
+    extra: &mut u64,
+    t: &dyn Tokenizer,
+) {
     match content {
         Value::String(s) => fragments.push(s.clone()),
         Value::Array(blocks) => {
@@ -87,12 +92,21 @@ pub fn count_message(t: &dyn Tokenizer, message: &Value, options: CountOptions) 
             return sum(&fragments);
         }
         "assistant" => {
-            for block in message.get("content").and_then(Value::as_array).into_iter().flatten() {
+            for block in message
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 match str_field(block, "type") {
-                    Some("text") => fragments.push(str_field(block, "text").unwrap_or("").to_owned()),
+                    Some("text") => {
+                        fragments.push(str_field(block, "text").unwrap_or("").to_owned());
+                    }
                     Some("thinking") => {
                         fragments.push(str_field(block, "thinking").unwrap_or("").to_owned());
-                        if let Some(sig) = str_field(block, "thinkingSignature").filter(|s| !s.is_empty()) {
+                        if let Some(sig) =
+                            str_field(block, "thinkingSignature").filter(|s| !s.is_empty())
+                        {
                             if !options.exclude_encrypted_reasoning {
                                 fragments.push(sig.to_owned());
                             }
@@ -100,7 +114,11 @@ pub fn count_message(t: &dyn Tokenizer, message: &Value, options: CountOptions) 
                     }
                     Some("toolCall") => {
                         fragments.push(str_field(block, "name").unwrap_or("").to_owned());
-                        fragments.push(block.get("arguments").map_or_else(|| "null".to_owned(), json_string));
+                        fragments.push(
+                            block
+                                .get("arguments")
+                                .map_or_else(|| "null".to_owned(), json_string),
+                        );
                     }
                     Some("redactedThinking") => {
                         if !options.exclude_encrypted_reasoning {
@@ -108,7 +126,11 @@ pub fn count_message(t: &dyn Tokenizer, message: &Value, options: CountOptions) 
                         }
                     }
                     Some("anthropicServerTool") if !options.exclude_encrypted_reasoning => {
-                        fragments.push(block.get("block").map_or_else(|| "null".to_owned(), json_string));
+                        fragments.push(
+                            block
+                                .get("block")
+                                .map_or_else(|| "null".to_owned(), json_string),
+                        );
                     }
                     _ => {}
                 }
