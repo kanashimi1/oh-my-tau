@@ -119,6 +119,10 @@ pub fn run(args: &[String]) -> Result<i32> {
         if Duration::from_secs(now_secs.saturating_sub(file.mtime)) < opts.cold_after {
             continue; // not cold yet
         }
+        if held_open_elsewhere(&file.path) {
+            skipped_active += 1; // a running process still owns the file
+            continue;
+        }
         would_archive += 1;
         bytes += file.size;
         if opts.apply {
@@ -205,6 +209,44 @@ fn scan_sessions(root: &Path) -> Result<Vec<SessionFile>> {
     Ok(out)
 }
 
+/// TS `tryAcquireSessionFileLease`: a session file a running process still
+/// holds open is live and must not be archived (the port has no lease
+/// sidecars, so probe `/proc/<pid>/fd` on Linux). Conservative: an
+/// unprobeable state is treated as live, mirroring "an unknown owner is
+/// treated as live". Non-Linux falls back to the write grace only.
+#[cfg(target_os = "linux")]
+fn held_open_elsewhere(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(real) = fs::canonicalize(path) else {
+        return true; // vanished or unreadable: do not touch
+    };
+    let target = real.as_os_str().as_bytes();
+    let Ok(procs) = fs::read_dir("/proc") else {
+        return true; // unprobeable → live
+    };
+    for proc in procs.filter_map(std::result::Result::ok) {
+        if !proc.file_name().as_bytes().iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let Ok(fds) = fs::read_dir(proc.path().join("fd")) else {
+            continue;
+        };
+        for fd in fds.filter_map(std::result::Result::ok) {
+            if let Ok(link) = fs::read_link(fd.path()) {
+                if link.as_os_str().as_bytes() == target {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+fn held_open_elsewhere(_path: &Path) -> bool {
+    false
+}
+
 /// TS `runArchiveGc` destination: `<archiveRoot>/<relative-path>.gz`; the
 /// source file is removed only after the archive lands intact.
 fn archive_session(sessions_root: &Path, archive_root: &Path, path: &Path) -> Result<()> {
@@ -224,11 +266,19 @@ fn archive_session(sessions_root: &Path, archive_root: &Path, path: &Path) -> Re
     std::io::copy(&mut input, &mut encoder)?;
     encoder.flush()?;
     drop(encoder);
-    // Verify the archive is readable before releasing the source.
+    // Verify the archive is readable before releasing the source. Streamed
+    // size count (no read_to_end: sessions can be large).
     let mut check = flate2::read::GzDecoder::new(fs::File::open(&dest)?);
-    let mut buf = Vec::new();
-    check.read_to_end(&mut buf)?;
-    if buf.len() as u64 != input.metadata()?.len() {
+    let mut counted = 0u64;
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        let n = check.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        counted += n as u64;
+    }
+    if counted != input.metadata()?.len() {
         anyhow::bail!("archive size mismatch: {}", dest.display());
     }
     fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
@@ -258,6 +308,18 @@ mod tests {
         assert_eq!(format_bytes(512), "512B");
         assert_eq!(format_bytes(1536), "1.5KB");
         assert_eq!(format_bytes(2_412_000), "2.3MB");
+    }
+
+    /// Review #5: a session file another (or this) process holds open is
+    /// live: `gc --apply` must not archive it, and a closed file passes.
+    #[test]
+    fn held_open_file_is_treated_as_live() {
+        let file = std::env::temp_dir().join(format!("omp-rs-gc-live-{}-{}", std::process::id(), "x"));
+        std::fs::write(&file, "x").unwrap();
+        let open = fs::File::open(&file).unwrap();
+        assert!(held_open_elsewhere(&file), "open fd must read as live");
+        drop(open);
+        let _ = fs::remove_file(&file);
     }
 
     #[test]

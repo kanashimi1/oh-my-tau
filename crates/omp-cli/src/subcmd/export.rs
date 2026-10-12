@@ -290,6 +290,31 @@ fn theme_vars(scheme: &[(&str, &str)]) -> String {
 mod tests {
     use super::*;
 
+    /// Review #6: TS writes the export with `Bun.write`, which silently
+    /// replaces an existing file — the port's `fs::write` matches. Pin the
+    /// behavior so a "protective" change cannot silently diverge from TS.
+    #[test]
+    fn export_overwrites_an_existing_output_like_ts() {
+        let dir = std::env::temp_dir();
+        let session = dir.join(format!("omp-rs-export-ow-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &session,
+            concat!(
+                r#"{"type":"session","version":3,"id":"s1","timestamp":"t","cwd":"/x"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let out = dir.join(format!("omp-rs-export-ow-{}.html", std::process::id()));
+        std::fs::write(&out, "previous contents").unwrap();
+        let code = run(&[session.to_string_lossy().into_owned(), "-o".into(), out.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(code, 0);
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert!(written.starts_with("<!DOCTYPE html>"), "overwritten: {written:?}");
+        std::fs::remove_file(&session).ok();
+        std::fs::remove_file(&out).ok();
+    }
+
     #[test]
     fn minify_css_matches_ts_pipeline() {
         let css = "/* comment */ a {\n  color: red;\n}\n";

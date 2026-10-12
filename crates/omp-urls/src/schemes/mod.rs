@@ -38,6 +38,11 @@ pub struct SkillEntry {
     /// Absolute path of the skill's base directory.
     pub base_dir: String,
     pub description: String,
+    /// Agent-plugin skills (TS `skill.containRoot`): the package root every
+    /// resolved target, including the bare instruction file and base
+    /// directory, must canonically stay within. `None` = plain skill:
+    /// lexical containment only, like TS.
+    pub contain_root: Option<String>,
 }
 
 /// A rule from the project rulebook (TS: `capability/rule.ts`).

@@ -63,6 +63,8 @@ pub struct CfgSetting {
     pub default: serde_json::Value,
     /// Which layer owns the effective value.
     pub provenance: &'static str,
+    /// TS `credential: true` — the effective value renders as `<redacted>`.
+    pub credential: bool,
 }
 
 /// Collect the config view from a loaded settings scope (TS `allSettings()` +
@@ -84,6 +86,7 @@ pub fn collect_settings(settings: &omp_settings::Settings) -> Vec<CfgSetting> {
                     serde_yaml_ng::from_str::<serde_json::Value>(yaml).unwrap_or(serde_json::Value::Null)
                 }),
             provenance: provenance_label(settings.provenance(def.id)),
+            credential: def.credential,
         })
         .collect();
     // Ordered by id segment by segment so each namespace's members stay contiguous (TS sort).
@@ -110,8 +113,15 @@ fn provenance_label(prov: Option<omp_settings::Provenance>) -> &'static str {
     }
 }
 
-/// TS `formatValue`: null → `null`, bool/number bare, everything else JSON.
-fn format_value(value: &serde_json::Value) -> String {
+/// TS `REDACTED` (cfg-protocol.ts).
+const REDACTED: &str = "<redacted>";
+
+/// TS `formatValue`: null → `null`, bool/number bare, everything else JSON;
+/// credential settings redact any non-empty value.
+fn format_value(setting: &CfgSetting, value: &serde_json::Value) -> String {
+    if setting.credential && value.as_str().is_some_and(|s| !s.is_empty()) {
+        return REDACTED.to_string();
+    }
     match value {
         serde_json::Value::Null => "null".to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
@@ -183,7 +193,7 @@ fn tree_comment(setting: &CfgSetting) -> String {
         parts.push(choices.join("|"));
     }
     if setting.value != setting.default {
-        parts.push(format!("default {}", format_value(&setting.default)));
+        parts.push(format!("default {}", format_value(setting, &setting.default)));
     }
     if parts.is_empty() {
         String::new()
@@ -218,7 +228,7 @@ pub fn render_tree(rows: &[CfgSetting], members: &[usize], prefix: &str) -> (Str
             "{}{}: {}{}",
             indent,
             segments.last().unwrap_or(&""),
-            format_value(&setting.value),
+            format_value(setting, &setting.value),
             tree_comment(setting)
         ));
     }
@@ -228,9 +238,9 @@ pub fn render_tree(rows: &[CfgSetting], members: &[usize], prefix: &str) -> (Str
 /// One setting in full: value, type, default, source (TS `renderLeaf`).
 pub fn render_leaf(setting: &CfgSetting) -> String {
     let mut lines = vec![
-        format!("{}: {}", setting.id, format_value(&setting.value)),
+        format!("{}: {}", setting.id, format_value(setting, &setting.value)),
         format!("type: {}", setting.ty),
-        format!("default: {}", format_value(&setting.default)),
+        format!("default: {}", format_value(setting, &setting.default)),
         format!("source: {}", setting.provenance),
     ];
     if let Some(choices) = &setting.enum_values {
@@ -321,7 +331,57 @@ mod tests {
             value,
             default,
             provenance: "default",
+            credential: false,
         }
+    }
+
+    /// Review #1: credential settings (TS `credential: true`) must redact in
+    /// leaf and tree renders, any non-empty value, while empty strings stay
+    /// visible — matching TS `formatValue`'s `isCredential` guard.
+    #[test]
+    fn credential_values_are_redacted_like_ts() {
+        let secret = "super-secret-broker-token";
+        let mut cred = setting(
+            "auth.broker.token",
+            "string",
+            serde_json::json!(secret),
+            serde_json::Value::Null,
+        );
+        cred.credential = true;
+        let leaf = render_leaf(&cred);
+        assert!(leaf.contains("<redacted>"), "{leaf}");
+        assert!(!leaf.contains(secret), "cleartext leak: {leaf}");
+        // Tree render redacts too.
+        let (tree, _) = render_tree(&[cred.clone()], &[0], "");
+        assert!(tree.contains("<redacted>"), "{tree}");
+        assert!(!tree.contains(secret), "cleartext leak: {tree}");
+        // Empty value is NOT redacted (TS `value !== ""`).
+        let mut empty = cred.clone();
+        empty.value = serde_json::json!("");
+        let leaf = render_leaf(&empty);
+        assert!(leaf.starts_with("auth.broker.token: \"\""), "{leaf}");
+        // Non-credential settings are untouched.
+        let plain = setting("model.name", "string", serde_json::json!("kimi"), serde_json::json!(""));
+        assert!(render_leaf(&plain).contains("kimi"));
+    }
+
+    /// The schema flags exactly the TS credential settings.
+    #[test]
+    fn credential_flags_match_ts_registry() {
+        for id in [
+            "auth.broker.token",
+            "mnemopi.embeddingApiKey",
+            "mnemopi.llmApiKey",
+            "images.urls.credentials",
+            "hindsight.apiToken",
+            "dev.autoqaPush.token",
+            "searxng.token",
+            "searxng.basicPassword",
+        ] {
+            assert!(omp_settings::lookup(id).is_some_and(|d| d.credential), "{id}");
+        }
+        assert!(!omp_settings::lookup("searxng.endpoint").unwrap().credential);
+        assert!(!omp_settings::lookup("modelRoles").unwrap().credential);
     }
 
     fn rows() -> Vec<CfgSetting> {

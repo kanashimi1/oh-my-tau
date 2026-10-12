@@ -48,6 +48,9 @@ fn load_skills_dir(dir: &Path, skills: &mut Vec<SkillEntry>) {
             file_path: file.to_string_lossy().into_owned(),
             base_dir: path.to_string_lossy().into_owned(),
             description,
+            // Plain discovered skills have no plugin package root (TS
+            // `skill.containRoot` is agent-plugin-only); lexical rules apply.
+            contain_root: None,
         });
     }
 }
@@ -82,15 +85,36 @@ pub fn skill_target_path(url: &InternalUrl, skills: &[SkillEntry], directory: bo
         }
     };
 
-    if path_part.is_empty() {
-        return Ok(PathBuf::from(if directory { &skill.base_dir } else { &skill.file_path }));
-    }
-    let relative = decode_component(path_part);
-    validate_relative_path(&relative, "skill")?;
-    let resolved = Path::new(&skill.base_dir).join(&relative);
-    let base = Path::new(&skill.base_dir);
-    if resolved != base && !resolved.starts_with(base) {
-        return Err("Path traversal is not allowed".to_string());
+    let resolved = if path_part.is_empty() {
+        PathBuf::from(if directory { &skill.base_dir } else { &skill.file_path })
+    } else {
+        let relative = decode_component(path_part);
+        validate_relative_path(&relative, "skill")?;
+        let resolved = Path::new(&skill.base_dir).join(&relative);
+        let base = Path::new(&skill.base_dir);
+        if resolved != base && !resolved.starts_with(base) {
+            return Err("Path traversal is not allowed".to_string());
+        }
+        resolved
+    };
+    // Agent Plugin skills (§4.1, TS `resolveContainedPath`): every target,
+    // including the bare instruction file and base directory, must resolve
+    // canonically within the plugin root; symlinks may only target files
+    // inside the same package. Fails closed on unresolvable targets.
+    if let Some(root) = &skill.contain_root {
+        let escape = format!(
+            "skill:// path resolves outside the plugin root: {}",
+            url.raw_href
+        );
+        let real_root = std::fs::canonicalize(root).map_err(|_| escape.clone())?;
+        let real = std::fs::canonicalize(&resolved).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => e.to_string(),
+            _ => escape.clone(),
+        })?;
+        if real != real_root && !real.starts_with(&real_root) {
+            return Err(escape);
+        }
+        return Ok(real);
     }
     Ok(resolved)
 }
@@ -192,7 +216,58 @@ mod tests {
             file_path: format!("/tmp/skills/{name}/SKILL.md"),
             base_dir: format!("/tmp/skills/{name}"),
             description: String::new(),
+            contain_root: None,
         }
+    }
+
+    /// Review #3: agent-plugin skills (`contain_root`) must canonically
+    /// contain every target — a symlink escaping the package is rejected
+    /// (TS `resolveContainedPath`), while plain skills stay lexical.
+    #[test]
+    fn plugin_containment_rejects_escaping_symlinks() {
+        let root = std::env::temp_dir().join(format!("omp-skill-contain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let skill_dir = root.join("pkg/skill");
+        let outside = root.join("secret.txt");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(&outside, "top secret").unwrap();
+        std::fs::write(skill_dir.join("SKILL.md"), "skill").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, skill_dir.join("leak")).unwrap();
+
+        let mut entry = skill("demo");
+        entry.base_dir = skill_dir.to_string_lossy().into_owned();
+        entry.file_path = skill_dir.join("SKILL.md").to_string_lossy().into_owned();
+        entry.contain_root = Some(root.join("pkg").to_string_lossy().into_owned());
+
+        // A symlink pointing outside the plugin root is refused.
+        #[cfg(unix)]
+        {
+            let url = parse_internal_url("skill://demo/leak").unwrap();
+            let err = skill_target_path(&url, &[entry.clone()], false).unwrap_err();
+            assert!(err.contains("outside the plugin root"), "{err}");
+        }
+        // An in-package file resolves (to its canonical path).
+        let url = parse_internal_url("skill://demo/SKILL.md").unwrap();
+        let got = skill_target_path(&url, &[entry.clone()], false).unwrap();
+        assert_eq!(got, std::fs::canonicalize(skill_dir.join("SKILL.md")).unwrap());
+        // Missing target surfaces as not-found, not as a containment pass.
+        let url = parse_internal_url("skill://demo/nope.md").unwrap();
+        assert!(skill_target_path(&url, &[entry], false).is_err());
+
+        // Plain skills (no contain_root) keep the lexical rule: the same
+        // symlink resolves, matching TS non-plugin behavior.
+        #[cfg(unix)]
+        {
+            let mut plain = skill("demo");
+            plain.base_dir = skill_dir.to_string_lossy().into_owned();
+            let url = parse_internal_url("skill://demo/leak").unwrap();
+            assert_eq!(
+                skill_target_path(&url, &[plain], false).unwrap(),
+                skill_dir.join("leak")
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

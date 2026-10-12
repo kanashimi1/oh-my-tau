@@ -48,7 +48,7 @@ fn list(json: bool) {
         let mut out = serde_json::Map::new();
         for def in SETTINGS {
             let value = settings.get(def.id);
-            if is_credential(def.id) && value.as_str().is_some_and(|s| !s.is_empty()) {
+            if def.credential && value.as_str().is_some_and(|s| !s.is_empty()) {
                 out.insert(
                     def.id.to_string(),
                     Value::Object(serde_json::Map::from_iter([
@@ -82,7 +82,7 @@ fn list(json: bool) {
         }
         let value = settings.get(def.id);
         let is_secret_string = value.as_str().is_some_and(|s| !s.is_empty());
-        let rendered = if is_credential(def.id) && is_secret_string { REDACTED.to_string() } else { format_value(&value) };
+        let rendered = if def.credential && is_secret_string { REDACTED.to_string() } else { format_value(&value) };
         println!("  {} = {} {}", def.id, rendered, type_display(def.ty));
     }
 }
@@ -106,22 +106,6 @@ fn get(key: &str, json: bool) -> Result<()> {
         println!("{}", format_value(&value));
     }
     Ok(())
-}
-
-/// TS redacts credentials in `list` output (values only, and only strings —
-/// `reserveTokens` is a number, `showTokenUsage` a boolean, neither is a
-/// credential). The generated table has no `isCredential` flag; a segment
-/// named exactly `token`/`secret`/`password`/`credentials`, or containing
-/// `apikey`, covers the registry's credential settings.
-fn is_credential(id: &str) -> bool {
-    id.split('.').any(|segment| {
-        let lower = segment.to_lowercase();
-        lower == "token"
-            || lower == "secret"
-            || lower == "password"
-            || lower == "credentials"
-            || lower.contains("apikey")
-    })
 }
 
 fn format_value(value: &Value) -> String {

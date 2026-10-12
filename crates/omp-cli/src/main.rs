@@ -54,10 +54,10 @@ fn parse_args() -> Result<Args> {
     if let Some(name) = argv.first().filter(|a| !a.starts_with('-')) {
         if subcmd::known(name) {
             match subcmd::run(name, &argv[1..]) {
-                Ok(code) => std::process::exit(code),
+                Ok(code) => exit(code),
                 Err(e) => {
                     eprintln!("Error: {e:#}");
-                    std::process::exit(1);
+                    exit(1);
                 }
             }
         }
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
         // owns the exporter.
         return match subcmd::run("export", &[path]) {
             Ok(code) => {
-                std::process::exit(code);
+                exit(code);
             }
             Err(e) => Err(e),
         };
@@ -393,7 +393,7 @@ async fn main() -> Result<()> {
                     e.shutdown().await;
                 }
                 eprintln!("omp-rs: stopped after --max-time {:?}", args.max_time_raw.as_deref().unwrap_or(""));
-                std::process::exit(124);
+                exit(124);
             }
         }
     } else {
@@ -410,12 +410,13 @@ async fn main() -> Result<()> {
                 print!("{text}");
             }
         }
+        shutdown_lsp();
         return Ok(());
     }
     match agent::last_assistant(&messages) {
         Some((_, Some(err))) => {
             eprintln!("error: {err}");
-            std::process::exit(1);
+            exit(1);
         }
         Some((text, None)) => {
             if print_thoughts {
@@ -425,8 +426,12 @@ async fn main() -> Result<()> {
             }
             println!("{text}");
         }
-        None => bail!("no assistant response"),
+        None => {
+            shutdown_lsp();
+            bail!("no assistant response");
+        }
     }
+    shutdown_lsp();
     Ok(())
 }
 
@@ -449,6 +454,32 @@ fn last_thinking(messages: &[pa_agent::types::AgentMessage]) -> Option<String> {
         }
         _ => None,
     })
+}
+
+/// TS `postmortem.register("lsp-shutdown", …)`: the LSP client registry is a
+/// process static (it never drops), so `shutdown_all` must run explicitly on
+/// every exit path instead of relying on `kill_on_drop`.
+fn shutdown_lsp() {
+    let _ = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map(|rt| rt.block_on(omp_lsp::client::shutdown_all()));
+}
+
+/// `shutdown_lsp` + `process::exit` (the only way main may terminate).
+fn exit(code: i32) -> ! {
+    shutdown_lsp();
+    std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    /// Review #2: the exit helper's shutdown leg must complete cleanly with an
+    /// empty registry (a no-op, but proves the runtime dance is sound).
+    #[test]
+    fn shutdown_lsp_runs_without_a_runtime_client() {
+        super::shutdown_lsp();
+    }
 }
 
 /// Print-mode run: extension lifecycle hook points, optional session resume

@@ -66,7 +66,11 @@ fn parse_chunk(chunk: &str, pin_bare: bool) -> Result<Option<LineRange>> {
     let rhs: Option<usize> = c.get(3).and_then(|m| m.as_str().parse().ok());
     let end = match sep {
         Some("+") => match rhs {
-            Some(n) if n >= 1 => Some(start + n - 1),
+            // Checked math: `start` may be `usize::MAX` (parse-overflow
+            // fallback) and TS's f64 grammar has no overflow — saturating
+            // keeps the same benign empty-window behavior instead of
+            // panicking (debug) or wrapping (release).
+            Some(n) if n >= 1 => Some(start.saturating_add(n - 1)),
             _ => bail!(
                 "Invalid range {start}+{}: count must be >= 1.",
                 rhs.unwrap_or(0)
@@ -99,7 +103,7 @@ fn parse_ranges(sel: &str) -> Result<Option<Vec<LineRange>>> {
             None => merged.push(r),
             Some(last) => {
                 let Some(last_end) = last.end else { continue };
-                if r.start <= last_end + 1 {
+                if r.start <= last_end.saturating_add(1) {
                     if r.end.is_none_or(|e| e > last_end) {
                         last.end = r.end;
                     }
@@ -839,6 +843,44 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Review #4: absurd numeric selectors must not overflow (debug panic /
+    /// release wrap); TS's f64 grammar turns them into benign empty windows,
+    /// which the saturating arithmetic preserves.
+    #[test]
+    fn huge_numeric_selectors_do_not_overflow() {
+        // Parse-overflow fallback start + count.
+        let sel = parse_sel("99999999999999999999999+2").unwrap();
+        match sel {
+            Selector::Lines { ranges, .. } => {
+                assert_eq!(ranges[0].start, usize::MAX);
+                assert_eq!(ranges[0].end, Some(usize::MAX));
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+        // Huge-but-parseable bounds merge without `last_end + 1` overflow.
+        let sel = parse_sel("18446744073709551610-18446744073709551615,18446744073709551615").unwrap();
+        match sel {
+            Selector::Lines { ranges, .. } => {
+                assert_eq!(ranges.len(), 1);
+                assert_eq!(ranges[0].end, Some(usize::MAX));
+            }
+            other => panic!("expected lines, got {other:?}"),
+        }
+        // TS error texts are preserved verbatim.
+        assert_eq!(
+            parse_sel("0").unwrap_err().to_string(),
+            "Line selector 0 is invalid; lines are 1-indexed. Use :1."
+        );
+        assert_eq!(
+            parse_sel("5+0").unwrap_err().to_string(),
+            "Invalid range 5+0: count must be >= 1."
+        );
+        assert_eq!(
+            parse_sel("5-2").unwrap_err().to_string(),
+            "Invalid range 5-2: end must be >= start."
+        );
     }
 
     #[test]
