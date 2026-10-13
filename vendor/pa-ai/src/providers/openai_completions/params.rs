@@ -26,7 +26,10 @@ pub(crate) fn build_params(
     let messages = convert_messages(model, context, compat);
     let mut params = Map::new();
     params.insert("model".into(), json!(model.id));
-    params.insert("messages".into(), json!(messages));
+    // Move the converted messages into the params tree: `json!(messages)`
+    // would deep-clone the whole per-turn context (the largest transient
+    // allocation of the turn), which mimalloc then retains committed.
+    params.insert("messages".into(), Value::Array(messages));
     params.insert("stream".into(), json!(true));
 
     let prompt_cache_key = if (model.base_url.contains("api.openai.com")
@@ -78,8 +81,8 @@ pub(crate) fn build_params(
         // tool_calls/tool_results.
         tools = Some(Vec::new());
     }
-    if let Some(tools) = &tools {
-        params.insert("tools".into(), json!(tools));
+    if let Some(tools) = tools {
+        params.insert("tools".into(), Value::Array(tools));
     }
 
     if let Some(cache_control) = cache_control {

@@ -1,0 +1,45 @@
+{
+  "ts": "2026-10-13T01-43-00",
+  "quick": false,
+  "repeats": 12,
+  "workdir": "/home/kaneki/fleet-split/omp-rs",
+  "bins": [
+    "omp-rs",
+    "omp"
+  ],
+  "mock": {
+    "port": 48841,
+    "latencyMs": 0
+  },
+  "results": [
+    {
+      "scenario": "s3",
+      "bins": {
+        "omp-rs": {
+          "ok": true,
+          "runs": {
+            "n": 12,
+            "median": 89.24839999999995,
+            "p95": 2124.2474970000003,
+            "min": 60.199915000001056,
+            "max": 2124.2474970000003
+          },
+          "extra": {
+            "dispatchGapMs": {
+              "n": 24,
+              "median": 34,
+              "p95": 222,
+              "min": 7,
+              "max": 1873
+            },
+            "note": "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)"
+          }
+        },
+        "omp": {
+          "ok": false,
+          "error": "Error: rpc process closed stdout"
+        }
+      }
+    }
+  ]
+}

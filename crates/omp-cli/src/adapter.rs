@@ -194,12 +194,16 @@ pub fn stream_once(
     context: LlmContext,
     options: StreamRequestOptions,
 ) -> anyhow::Result<Box<dyn ModelStream>> {
-    let messages: Vec<pa_types::ai::Message> = context
-        .messages
-        .iter()
-        .filter_map(json_round_trip)
-        .collect();
-    let tools: Vec<pa_types::ai::Tool> = context.tools.iter().filter_map(json_round_trip).collect();
+    // One round-trip for the whole message/tool vectors instead of one per
+    // item: the same wire shape, but a single Value tree per turn (fewer,
+    // larger transients for the allocator to retain) instead of a deep
+    // clone per message.
+    let messages: Vec<pa_types::ai::Message> = json_round_trip(&context.messages).unwrap_or_else(|| {
+        context.messages.iter().filter_map(json_round_trip).collect()
+    });
+    let tools: Vec<pa_types::ai::Tool> = json_round_trip(&context.tools).unwrap_or_else(|| {
+        context.tools.iter().filter_map(json_round_trip).collect()
+    });
     let ai_context = pa_types::ai::Context {
         system_prompt: context.system_prompt,
         messages,

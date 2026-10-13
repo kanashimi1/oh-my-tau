@@ -154,9 +154,43 @@ fn usage_err(msg: &str) -> anyhow::Error {
     anyhow::anyhow!("{msg}\nRun `omp --help` for available flags.")
 }
 
+/// mimalloc reads `MIMALLOC_*` options once at process load (`_mi_options_init`),
+/// before `main` runs, so the tuning env must exist before exec. When unset,
+/// set it and re-exec ourselves (`exec`, same pid/stdio/argv); the marker env
+/// stops the recursion. The default 10s purge delay keeps the large per-turn
+/// wire-context transients (request body, payload trees) committed in
+/// mimalloc segments — measured as ~0.15 MB/turn linear RSS growth
+/// (Tails.md, GrowthFix.md). A zero delay returns fully-free segments to the
+/// OS immediately. An explicit user `MIMALLOC_PURGE_DELAY` or the
+/// `OMP_RS_NO_MEM_REEXEC` opt-out skips the re-exec.
+fn ensure_mimalloc_env() {
+    if std::env::var_os("MIMALLOC_PURGE_DELAY").is_some()
+        || std::env::var_os("OMP_RS_NO_MEM_REEXEC").is_some()
+    {
+        return;
+    }
+    std::env::set_var("MIMALLOC_PURGE_DELAY", "0");
+    // Cross-heap collection every N generic allocations: per-turn large
+    // wire buffers are allocated/freed across tokio worker threads, and
+    // their segments otherwise stay committed in the owning thread's cache
+    // (measured ~0.06 MB/turn residual after purge alone; GrowthFix.md).
+    std::env::set_var("MIMALLOC_GENERIC_COLLECT", "100");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe().unwrap_or_else(|_| "/proc/self/exe".into());
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let error = std::process::Command::new(exe).args(&args).exec();
+        // `exec` only returns on failure; keep running without the tuning
+        // rather than refuse to start.
+        eprintln!("omp-rs: allocator-tuning re-exec failed: {error}");
+    }
+}
+
 #[allow(clippy::too_many_lines)] // sequential startup guard clauses; mirrors omp's main flow
 #[tokio::main]
 async fn main() -> Result<()> {
+    ensure_mimalloc_env();
     let mut args = parse_args()?;
     if args.no_title {
         // TS `PI_NO_TITLE`: read by the auto-title hook in `runtime::spawn_auto_title`.
