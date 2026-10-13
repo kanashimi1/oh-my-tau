@@ -45,6 +45,7 @@ pi-walker = { path = "../../vendor/pi-walker" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 omp-settings = { path = "../omp-settings" }
+omp-tui = { path = "../omp-tui" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 flate2 = "1"

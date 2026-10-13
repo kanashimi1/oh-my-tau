@@ -1,0 +1,76 @@
+//! `omp-tui`: the interactive terminal UI for omp-rs — a Rust reimplementation
+//! of omp's `pi-tui` TypeScript TUI (read the port specs under
+//! `runs/omp-rust/tui-spec/` before touching any module).
+//!
+//! # Architecture in one paragraph
+//!
+//! [`run`] owns the terminal (raw mode + alternate screen via crossterm) and a
+//! ratatui draw loop. The agent session talks to the UI through two channels:
+//! the omp-cli `Runtime` forwards its JSON event frames into
+//! [`events::AppEvent`] values (via `RunConfig::frames`), and the UI sends
+//! [`action::Action`] values back through a [`port::RuntimePort`] implemented
+//! by the embedding crate (omp-cli). Every on-screen widget implements
+//! [`component::Component`]; all colors/spacing come from [`theme::Theme`],
+//! all key handling goes through [`keys::Keymap`].
+//!
+//! # Module ownership
+//!
+//! Each top-level module (and each `mod.rs` + its children) is owned by one
+//! implementer. Do not edit files outside your module; extend shared
+//! contracts (`component`, `theme`, `keys`, `events`, `action`, `port`) only
+//! by agreement recorded in `runs/omp-rust/tui-spec/ARCHITECTURE.md`.
+
+pub mod action;
+pub mod app;
+pub mod autocomplete;
+pub mod chat;
+pub mod component;
+pub mod controller;
+pub mod editor;
+pub mod events;
+pub mod extension_ui;
+pub mod images;
+pub mod keys;
+pub mod overlays;
+pub mod port;
+pub mod status_line;
+pub mod theme;
+pub mod tools;
+
+use std::path::PathBuf;
+
+use tokio::sync::mpsc::UnboundedReceiver;
+
+pub use action::{Action, SubmitBehavior};
+pub use app::App;
+pub use events::AppEvent;
+pub use port::RuntimePort;
+pub use theme::Theme;
+
+/// Everything [`run`] needs from the embedding binary (omp-cli).
+pub struct RunConfig {
+    /// Frames from the omp-cli `Runtime` event stream (`Runtime::start`'s
+    /// `out` channel). One `serde_json::Value` per line-shaped frame; parsed
+    /// by [`events::parse_frame`].
+    pub frames: UnboundedReceiver<serde_json::Value>,
+    /// Model reference shown in the status line until the first
+    /// `model_changed` frame arrives (`provider/id`).
+    pub model: String,
+    /// Working directory the session runs in (status line / chrome).
+    pub cwd: PathBuf,
+}
+
+/// Run the interactive TUI until the user quits (Ctrl+C / Ctrl+Q / `:q` in
+/// the future vim mode) or the terminal disappears.
+///
+/// This installs raw mode + the alternate screen, pumps crossterm input
+/// events and `Runtime` frames, dispatches [`Action`]s to `port`, and draws
+/// [`App`] each tick. Terminal state is restored on every exit path,
+/// including panics.
+///
+/// # Errors
+///
+/// Returns an error if the terminal cannot be initialized or a draw fails.
+pub async fn run(cfg: RunConfig, port: impl RuntimePort) -> anyhow::Result<()> {
+    controller::run(cfg, port).await
+}

@@ -17,6 +17,7 @@ mod sysprompt;
 mod title;
 mod tools;
 mod tree;
+mod tui;
 
 use std::path::{Path, PathBuf};
 
@@ -403,8 +404,28 @@ async fn main() -> Result<()> {
     if let Err(e) = &session {
         eprintln!("omp-rs: session persistence disabled: {e:#}");
     }
-    // omp-rs has no interactive TUI: a positional prompt already implies
-    // headless mode (as does an explicit -p), matching the TS CLI's non-TTY path.
+    // Interactive TUI: TTY on stdin+stdout, no -p/--mode/prompt, nothing to
+    // resume — TS enters `interactive-mode.ts` on exactly this condition.
+    // Session resume in the TUI is a follow-up (the picker overlay), so
+    // resume flags keep falling through to the headless guard below.
+    if args.mode.is_none()
+        && !args.print
+        && args.prompt.is_none()
+        && args.resume.is_none()
+        && !args.continue_prev
+        && args.fork.is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout())
+    {
+        let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
+        let result = tui::run(agent, target, cwd, persistence).await;
+        if let Some(e) = &extensions {
+            e.shutdown().await;
+        }
+        return result;
+    }
+    // A positional prompt already implies headless mode (as does an explicit
+    // -p), matching the TS CLI's non-TTY path.
     let headless = args.print || args.prompt.is_some();
     let Some(prompt) = args.prompt else {
         if let Some(e) = &extensions {
