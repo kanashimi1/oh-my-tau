@@ -1,0 +1,110 @@
+defaultThinkingLevel: auto
+dev:
+  autoqaConsent: granted
+display:
+  shimmer: classic
+  showTokenUsage: true
+  hideToolActivity: false
+  subagentLivePreview: true
+  pinnedAgents: full
+hideThinkingBlock: true
+omitThinking: false
+mcp:
+  {}
+modelRoles:
+  smol: zai/glm-5.3-flash:minimal
+  judge: openrouter/typesafe/jev-1.13
+  default: kimi-code/kimi-for-coding
+setupVersion: 2
+stt:
+  enabled: true
+symbolPreset: unicode
+theme:
+  dark: amethyst
+  light: amethyst
+skills:
+  enabled: false
+  enableSkillCommands: false
+  enableCodexUser: false
+  enableClaudeUser: false
+  enableClaudeProject: false
+  enablePiUser: false
+  enablePiProject: false
+  enableAgentsUser: false
+  enableAgentsProject: false
+commands:
+  enableClaudeUser: false
+  enableClaudeProject: false
+  enableOpencodeUser: false
+  enableOpencodeProject: false
+inlineToolDescriptors: "off"
+includeModelInPrompt: false
+memories:
+  summaryInjectionTokenLimit: 400
+  enabled: false
+mnemopi:
+  injectionTokenLimit: 400
+eval:
+  py: true
+  js: true
+browser:
+  headless: true
+statusLine:
+  separator: powerline-thin
+  preset: compact
+  contextLine: annotated
+  transparent: true
+  sessionAccent: true
+  compactThinkingLevel: false
+terminal:
+  showProgress: false
+tui:
+  textSizing: false
+  reactions: true
+composer:
+  shape: box
+  tokenRate: true
+task:
+  maxEffort: high
+  agentModelOverrides:
+    kimi-coder: kimi-code/kimi-for-coding
+    scout-glm: zai/glm-5.3-flash
+retry:
+  fallbackChains:
+    judge:
+      - commandcode/typesafe/jev
+      - zai/glm-5.3-flash
+  maxRetries: 3
+  maxDelayMs: 10000
+providers:
+  streamFirstEventTimeoutSeconds: 20
+  openai-codex:
+    codeMode: auto
+startup:
+  checkUpdate: false
+title:
+  refreshOnReplan: false
+personality: none
+includeWorkspaceTree: false
+memory:
+  backend: "off"
+advisor:
+  enabled: false
+prewalk:
+  enabled: false
+astGrep:
+  enabled: true
+speech:
+  enabled: false
+tools:
+  xdevDocs: catalog
+power:
+  sleepPrevention: "off"
+compaction:
+  midTurnEnabled: false
+  asyncEnabled: false
+  methodOrder:
+    - snapcompact
+    - handoff
+    - shake
+    - soft

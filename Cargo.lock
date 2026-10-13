@@ -1650,12 +1650,18 @@ dependencies = [
  "anyhow",
  "crossterm",
  "futures",
+ "omp-session",
  "parking_lot",
+ "pi-ast",
+ "pi-edit",
  "ratatui",
  "serde_json",
  "thiserror",
  "tokio",
  "tracing",
+ "tree-sitter",
+ "unicode-segmentation",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

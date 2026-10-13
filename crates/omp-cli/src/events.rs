@@ -208,3 +208,40 @@ pub fn frame(e: &AgentEvent) -> Value {
         }),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Session-level frames `Runtime` emits around the agent's own event stream
+// (TS `AgentSession` / `TodoTracker` shapes, wire field names match omp).
+// ---------------------------------------------------------------------------
+
+/// omp `tool_stream_update` frame: an incremental preview chunk from a
+/// streaming tool (`pi-agent-core` `tool_stream_update`). `update` is
+/// tool-specific opaque data (e.g. an edit-tool diff hunk); the wire shape
+/// matches TS exactly (`{type, toolCallId, toolName, update?}`).
+#[must_use]
+pub fn tool_stream_update_frame(tool_call_id: &str, tool_name: &str, update: &Value) -> Value {
+    json!({"type":"tool_stream_update","toolCallId":tool_call_id,"toolName":tool_name,"update":update})
+}
+
+/// omp `notice` frame: transient info/warning/error row (TS `AgentSession.emitNotice`).
+#[must_use]
+pub fn notice_frame(level: &str, message: &str, source: Option<&str>) -> Value {
+    let mut v = json!({"type":"notice","level":level,"message":message});
+    if let Some(s) = source {
+        v["source"] = json!(s);
+    }
+    v
+}
+
+/// omp `todo_reminder` frame (`TodoTracker.checkCompletion`): the run stopped
+/// with `todos` still incomplete; `attempt`/`maxAttempts` count the nudges.
+#[must_use]
+pub fn todo_reminder_frame(todos: &Value, attempt: u32, max_attempts: u32) -> Value {
+    json!({"type":"todo_reminder","todos":todos,"attempt":attempt,"maxAttempts":max_attempts})
+}
+
+/// omp `todo_auto_clear` frame: the todo plan auto-cleared (nothing left open).
+#[must_use]
+pub fn todo_auto_clear_frame() -> Value {
+    json!({"type":"todo_auto_clear"})
+}

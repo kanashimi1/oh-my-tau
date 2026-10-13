@@ -58,9 +58,15 @@ impl KeyCombo {
         // Shift is implied by uppercase char codes; compare char-invariant.
         match (self.code, event.code) {
             (KeyCode::Char(a), KeyCode::Char(b)) => {
-                a.eq_ignore_ascii_case(&b) && mods.contains(KeyModifiers::SHIFT) == self.modifiers.contains(KeyModifiers::SHIFT)
+                a.eq_ignore_ascii_case(&b)
+                    && mods.contains(KeyModifiers::SHIFT)
+                        == self.modifiers.contains(KeyModifiers::SHIFT)
             }
-            (a, b) => a == b && mods.contains(KeyModifiers::SHIFT) == self.modifiers.contains(KeyModifiers::SHIFT),
+            (a, b) => {
+                a == b
+                    && mods.contains(KeyModifiers::SHIFT)
+                        == self.modifiers.contains(KeyModifiers::SHIFT)
+            }
         }
     }
 }

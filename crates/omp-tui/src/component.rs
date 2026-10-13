@@ -58,4 +58,13 @@ pub trait Component {
     fn wants_focus(&self) -> bool {
         false
     }
+
+    /// Drain intents produced by the most recent `handle_key` calls.
+    /// Interactive components (overlays, editor) push [`Action`]s here
+    /// instead of talking to the runtime directly; the app drains after each
+    /// routing step and dispatches them through [`crate::RuntimePort`].
+    /// Default: none.
+    fn take_actions(&mut self) -> Vec<crate::action::Action> {
+        Vec::new()
+    }
 }

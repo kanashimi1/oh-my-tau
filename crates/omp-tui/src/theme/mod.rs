@@ -54,7 +54,10 @@ impl Theme {
     /// Unknown names return `"?"` rather than panicking.
     #[must_use]
     pub fn glyph(&self, name: &str) -> &'static str {
-        glyphs(self.glyph_set.as_str()).get(name).copied().unwrap_or("?")
+        glyphs(self.glyph_set.as_str())
+            .get(name)
+            .copied()
+            .unwrap_or("?")
     }
 
     /// Insert/override a token (used by the loader and tests).

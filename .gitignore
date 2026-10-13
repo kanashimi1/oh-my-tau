@@ -3,3 +3,4 @@ target/
 vendor-src/
 .wsckpt/
 bench/tmp/
+.venv/

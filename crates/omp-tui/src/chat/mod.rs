@@ -9,6 +9,10 @@
 pub mod code;
 pub mod markdown;
 pub mod messages;
+pub mod reveal;
 pub mod thinking;
 
-pub use messages::{ChatEntry, ChatRole, Messages};
+pub use messages::{
+    AssistantMsg, AssistantSegment, ChatEntry, ChatKind, ChatRole, Compaction, Custom, ExecStatus,
+    Execution, Messages, ReadGroup, ReadItem, ToolCard, ToolStatus, Usage,
+};

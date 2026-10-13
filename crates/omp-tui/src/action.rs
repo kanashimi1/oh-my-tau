@@ -49,6 +49,24 @@ pub enum Action {
         id: String,
         value: serde_json::Value,
     },
+    /// Resume a session from the picker (`Runtime::load_session`), or fork it
+    /// (`tree::fork`) when `fork` is set.
+    ResumeSession {
+        /// Session journal file to load.
+        path: std::path::PathBuf,
+        /// Fork into a new session id instead of resuming in place.
+        fork: bool,
+    },
+    /// Synthetic "continue" directive (TS `prompts/system/manual-continue.md`,
+    /// sent as a user-initiated synthetic prompt).
+    Continue,
+    /// Rewind the session tree to just before the given entry (double-Esc /
+    /// tree navigator; user-authored targets re-prompt the message, TS
+    /// `AgentSession.navigateTree`).
+    Rewind {
+        /// Target journal entry id.
+        entry_id: String,
+    },
     /// Scroll the chat backlog.
     Scroll(ScrollDir),
     /// Leave the TUI (Ctrl+C on the idle editor / `:q` future).

@@ -137,9 +137,25 @@ fn resolve_resume_target(
                 "Session \"{value}\" not found.\nRun `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."
             ),
         },
-        Some(Resume::Yes) => bail!(
-            "omp-rs: bare --resume needs the interactive session picker; pass a session id prefix or path"
-        ),
+        Some(Resume::Yes) => {
+                // TS opens the session picker (apps/session-picker.ts);
+                // non-TTY keeps the headless error.
+                if std::io::IsTerminal::is_terminal(&std::io::stdin())
+                    && std::io::IsTerminal::is_terminal(&std::io::stdout())
+                {
+                    match omp_tui::overlays::sessions::select_session_standalone(
+                        dir,
+                        "Resume session",
+                    ) {
+                        Some(p) => Ok(Some(p)),
+                        None => bail!("resume cancelled"),
+                    }
+                } else {
+                    bail!(
+                        "omp-rs: bare --resume needs the interactive session picker; pass a session id prefix or path"
+                    )
+                }
+            }
         None => {
             if continue_prev {
                 // TS starts a fresh session when there is no previous one.
@@ -404,21 +420,19 @@ async fn main() -> Result<()> {
     if let Err(e) = &session {
         eprintln!("omp-rs: session persistence disabled: {e:#}");
     }
-    // Interactive TUI: TTY on stdin+stdout, no -p/--mode/prompt, nothing to
-    // resume — TS enters `interactive-mode.ts` on exactly this condition.
-    // Session resume in the TUI is a follow-up (the picker overlay), so
-    // resume flags keep falling through to the headless guard below.
+    // Interactive TUI: TTY on stdin+stdout, no -p/--mode/prompt — TS enters
+    // `interactive-mode.ts` on exactly this condition. `--resume`/`--continue`
+    // bring their resolved session file along; `--fork` stays headless for
+    // now.
     if args.mode.is_none()
         && !args.print
         && args.prompt.is_none()
-        && args.resume.is_none()
-        && !args.continue_prev
         && args.fork.is_none()
         && std::io::IsTerminal::is_terminal(&std::io::stdin())
         && std::io::IsTerminal::is_terminal(&std::io::stdout())
     {
         let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
-        let result = tui::run(agent, target, cwd, persistence).await;
+        let result = tui::run(agent, target, cwd, persistence, resume_target).await;
         if let Some(e) = &extensions {
             e.shutdown().await;
         }

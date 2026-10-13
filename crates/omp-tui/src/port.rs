@@ -14,6 +14,17 @@ use serde_json::Value;
 
 use crate::action::SubmitBehavior;
 
+/// The synthetic "continue" directive text, verbatim from TS
+/// `prompts/system/manual-continue.md` (sent with `synthetic: true,
+/// userInitiated: true` by the `.`/`c` shortcut).
+pub const MANUAL_CONTINUE_PROMPT: &str = "\
+Continue.
+
+MUST resume most recent intent; complete unfinished work.
+If interrupted mid-step: resume where stopped.
+NEVER pause to summarize progress, re-confirm plan, or ask whether to proceed; continue.
+";
+
 /// Synchronous bridge to the agent runtime.
 pub trait RuntimePort: Send + Sync + 'static {
     /// Submit a prompt. `behavior` is `Some` when the agent is streaming
@@ -46,6 +57,25 @@ pub trait RuntimePort: Send + Sync + 'static {
 
     /// Answer an extension dialog (`extension_ui_response` frame).
     fn extension_ui_response(&self, id: String, value: Value);
+
+    /// Resume a session journal (`Runtime::load_session`) or fork it
+    /// (`tree::fork`) when `fork` is set.
+    fn resume_session(&self, path: std::path::PathBuf, fork: bool);
+
+    /// Send the synthetic continue directive ([`MANUAL_CONTINUE_PROMPT`]).
+    fn continue_run(&self);
+
+    /// Cancel a pending retry backoff (`Runtime::abort_retry`).
+    fn abort_retry(&self);
+
+    /// Rewind the session tree to just before `entry_id`
+    /// (`tree::navigate_tree`); user-authored targets re-prompt the message.
+    fn rewind_entry(&self, entry_id: String);
+
+    /// Cancel a running auto-compaction. No-op in omp-rs until the runtime
+    /// grows a compaction-abort RPC; the method exists so app wiring is
+    /// stable.
+    fn abort_compaction(&self);
 }
 
 /// A recording fake for tests. Every call appends to [`Self::log`].
@@ -92,5 +122,20 @@ impl RuntimePort for FakePort {
     }
     fn extension_ui_response(&self, id: String, value: Value) {
         self.record(format!("extension_ui_response({id}, {value})"));
+    }
+    fn resume_session(&self, path: std::path::PathBuf, fork: bool) {
+        self.record(format!("resume_session({path:?}, fork={fork})"));
+    }
+    fn continue_run(&self) {
+        self.record("continue_run()".into());
+    }
+    fn abort_retry(&self) {
+        self.record("abort_retry()".into());
+    }
+    fn abort_compaction(&self) {
+        self.record("abort_compaction()".into());
+    }
+    fn rewind_entry(&self, entry_id: String) {
+        self.record(format!("rewind_entry({entry_id})"));
     }
 }

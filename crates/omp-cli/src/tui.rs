@@ -27,9 +27,26 @@ pub async fn run(
     target: Target,
     cwd: PathBuf,
     persist: Persistence,
+    resume: Option<PathBuf>,
 ) -> Result<()> {
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     let rt = Runtime::start(Arc::new(agent), target, cwd.clone(), persist, tx).await;
+    if let Some(path) = resume {
+        rt.load_session(&path, None).await?;
+        rt.publish_session_file();
+    }
+    // Session renames have no dedicated runtime frame (they reach hosts via
+    // the `sessionName` field of `state` dumps and this listener); forward
+    // them into the UI stream as `session_name_changed` frames.
+    {
+        let listener_rt = rt.clone();
+        rt.set_name_listener(Some(Arc::new(move |name: &str| {
+            listener_rt.send(serde_json::json!({
+                "type": "session_name_changed",
+                "name": name,
+            }));
+        })));
+    }
     let model = {
         let s = rt.agent.state().await;
         format!("{}/{}", s.model.provider, s.model.id)
@@ -132,10 +149,81 @@ impl omp_tui::RuntimePort for Port {
     }
 
     fn extension_ui_response(&self, id: String, value: Value) {
-        self.rt.send(serde_json::json!({
+        // Envelope shape must match the RPC loop's resolution: `answers` /
+        // `value` / `cancelled` live at the TOP level of the frame (see
+        // `tools/ask.rs::results_from_response`), not nested under a key.
+        let mut envelope = serde_json::json!({
             "type": "extension_ui_response",
             "id": id,
-            "response": value,
-        }));
+        });
+        if let serde_json::Value::Object(members) = value {
+            if let serde_json::Value::Object(env) = &mut envelope {
+                env.extend(members);
+            }
+        }
+        crate::rpc::resolve_pending_ui_request(&id, envelope.clone());
+        self.rt.send(envelope);
+    }
+
+    fn resume_session(&self, path: PathBuf, fork: bool) {
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            let result: anyhow::Result<()> = if fork {
+                crate::tree::fork(&rt, None)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("{e:?}"))
+            } else {
+                rt.load_session(&path, None).await
+            };
+            if let Err(e) = result {
+                rt.send(serde_json::json!({
+                    "type": "prompt_result",
+                    "success": false,
+                    "error": format!("resume failed: {e:#}"),
+                }));
+            }
+            rt.publish_session_file();
+        });
+    }
+
+    fn continue_run(&self) {
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            if let Err(e) = rt
+                .prompt(None, omp_tui::MANUAL_CONTINUE_PROMPT, None, Vec::new())
+                .await
+            {
+                rt.send(serde_json::json!({
+                    "type": "prompt_result",
+                    "success": false,
+                    "error": e.message,
+                }));
+            }
+        });
+    }
+
+    fn abort_retry(&self) {
+        self.rt.abort_retry();
+    }
+
+    fn rewind_entry(&self, entry_id: String) {
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                crate::tree::navigate_tree(&rt, &entry_id, &serde_json::json!({}), None).await
+            {
+                rt.send(serde_json::json!({
+                    "type": "prompt_result",
+                    "success": false,
+                    "error": format!("rewind failed: {e:?}"),
+                }));
+            }
+        });
+    }
+
+    fn abort_compaction(&self) {
+        // No compaction-abort RPC in the omp-rs runtime yet; kept as a
+        // stable no-op so the app wiring does not change when it lands.
     }
 }

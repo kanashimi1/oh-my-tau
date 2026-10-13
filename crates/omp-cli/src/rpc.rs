@@ -40,6 +40,16 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Resolve a pending ask-UI dialog (`RpcAskUi` waiter) by frame id; no-op
+/// when no waiter is registered. Also called from the interactive TUI's
+/// bridge (`tui.rs`), which never runs the RPC command loop.
+pub fn resolve_pending_ui_request(id: &str, frame: Value) {
+    let tx = lock(&PENDING_UI_REQUESTS).remove(id);
+    if let Some(tx) = tx {
+        let _ = tx.send(frame);
+    }
+}
+
 /// Pending RPC ask-UI dialogs (`extension_ui_request` id → waiter).
 static PENDING_UI_REQUESTS: LazyLock<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -1415,10 +1425,7 @@ pub async fn run_with(
         if kind == "extension_ui_response" {
             // Resolve a pending ask-UI dialog (see `RpcAskUi`).
             if let Some(id) = cmd.get("id").and_then(Value::as_str) {
-                let tx = lock(&PENDING_UI_REQUESTS).remove(id);
-                if let Some(tx) = tx {
-                    let _ = tx.send(cmd.clone());
-                }
+                resolve_pending_ui_request(id, cmd.clone());
             }
             continue;
         }

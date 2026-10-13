@@ -1,0 +1,45 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"title": "Pi Coding Agent Theme",
+	"description": "Theme schema for Pi coding agent",
+	"type": "object",
+	"required": ["name", "colors"],
+	"properties": {
+		"$schema": {
+			"type": "string",
+			"description": "JSON schema reference"
+		},
+		"name": {
+			"type": "string",
+			"pattern": "^[^/]+$",
+			"description": "Theme name. Must not contain '/' because it is reserved for automatic light/dark theme settings."
+		},
+		"appearance": {
+			"type": "string",
+			"enum": ["dark", "light"],
+			"description": "Background the theme is designed for. Detected from the theme colors when omitted."
+		},
+		"vars": {
+			"type": "object",
+			"description": "Reusable color variables",
+			"additionalProperties": { }
+		},
+		"colors": {
+			"type": "object",
+			"description": "Theme color definitions (scrollbar, thinkingMax, and search highlight colors are optional and use compatible fallbacks)",
+			"required": [ ],
+			"properties": { },
+			"additionalProperties": false
+		},
+		"export": {
+			"type": "object",
+			"description": "Optional colors for HTML export (defaults derived from userMessageBg if not specified)",
+			"properties": { },
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false,
+	"$defs": {
+		"colorValue": { }
+	}
+}

@@ -23,7 +23,9 @@
 pub mod action;
 pub mod app;
 pub mod autocomplete;
+pub mod bracketed_paste;
 pub mod chat;
+pub mod chrome;
 pub mod component;
 pub mod controller;
 pub mod editor;
@@ -31,8 +33,10 @@ pub mod events;
 pub mod extension_ui;
 pub mod images;
 pub mod keys;
+pub mod mouse;
 pub mod overlays;
 pub mod port;
+pub mod render;
 pub mod status_line;
 pub mod theme;
 pub mod tools;
@@ -44,7 +48,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub use action::{Action, SubmitBehavior};
 pub use app::App;
 pub use events::AppEvent;
-pub use port::RuntimePort;
+pub use port::{RuntimePort, MANUAL_CONTINUE_PROMPT};
 pub use theme::Theme;
 
 /// Everything [`run`] needs from the embedding binary (omp-cli).

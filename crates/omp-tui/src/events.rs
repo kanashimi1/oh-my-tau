@@ -69,6 +69,15 @@ pub enum AppEvent {
     /// `{"type":"extension_ui_request", "id", "method", ...}` — an extension
     /// `ask` dialog the UI must answer with `Action::ExtensionUiResponse`.
     ExtensionUiRequest(Value),
+    /// `{"type":"session_name_changed", "name": "..."}` — the session was
+    /// renamed (user `/rename` or auto-title). Emitted by the omp-cli TUI
+    /// bridge via the runtime's name listener; also appears as `sessionName`
+    /// inside periodic `state` frames.
+    SessionNameChanged(String),
+    /// `{"type":"extension_ui_response", "id", ...}` — the answer to a
+    /// pending extension dialog (echoed back through the runtime stream so
+    /// the UI can retire its queue entry).
+    ExtensionUiResponse(Value),
     /// Any frame without a dedicated variant; kept verbatim.
     Unknown(Value),
 }
@@ -93,7 +102,9 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
                 .get("id")
                 .and_then(Value::as_str)
                 .map(std::string::ToString::to_string),
-            success: frame.get("success").is_some_and(|v| v == &Value::from(true)),
+            success: frame
+                .get("success")
+                .is_some_and(|v| v == &Value::from(true)),
             frame: frame.clone(),
         },
         "session_settled" => AppEvent::SessionSettled,
@@ -105,13 +116,21 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
         "thinking_level_changed" | "thinking_level_change" => {
             AppEvent::ThinkingLevelChanged(frame.clone())
         }
-        "auto_compaction_start" | "auto_compaction_end" => {
-            AppEvent::AutoCompaction(frame.clone())
-        }
-        "auto_retry_start" | "auto_retry_end" | "retry_fallback_applied"
+        "auto_compaction_start" | "auto_compaction_end" => AppEvent::AutoCompaction(frame.clone()),
+        "auto_retry_start"
+        | "auto_retry_end"
+        | "retry_fallback_applied"
         | "retry_fallback_succeeded" => AppEvent::Retry(frame.clone()),
         "available_commands_update" => AppEvent::AvailableCommands(frame.clone()),
         "extension_ui_request" => AppEvent::ExtensionUiRequest(frame.clone()),
+        "extension_ui_response" => AppEvent::ExtensionUiResponse(frame.clone()),
+        "session_name_changed" => AppEvent::SessionNameChanged(
+            frame
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        ),
         _ => AppEvent::Unknown(frame.clone()),
     }
 }
@@ -136,7 +155,10 @@ mod tests {
 
     #[test]
     fn classifies_core_frames() {
-        assert_eq!(parse_frame(&json!({"type":"agent_start"})), AppEvent::AgentStart);
+        assert_eq!(
+            parse_frame(&json!({"type":"agent_start"})),
+            AppEvent::AgentStart
+        );
         assert_eq!(
             parse_frame(&json!({"type":"session_settled"})),
             AppEvent::SessionSettled

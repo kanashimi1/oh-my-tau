@@ -1,50 +1,357 @@
-//! The chat message model — consumes runtime frames and keeps render-ready
-//! entries. Port of `pi-tui/src/chat/chat-messages.ts`.
+//! The chat transcript model — consumes runtime frames and keeps render-ready
+//! entries. Port of the data half of `pi-tui/src/chat/chat-transcript-builder.ts`
+//! (rendering lives in `markdown`/`thinking` and `crate::tools`).
 //!
-//! MVP: entries are (role, text) pairs; streaming assistant text deltas
-//! append to the newest entry. Tool calls, subagent trees, rewinds and
-//! compaction markers arrive as dedicated `ChatEntry` kinds once the tool
-//! renderer modules land.
+//! Responsibilities (spec `chat.md` §1–2, §9):
+//! - every message role becomes an ordered [`ChatEntry`]: user bubble,
+//!   assistant segments, tool cards, read groups, bash/python execution,
+//!   compaction/branch dividers, custom messages, usage rows, notices;
+//! - pending tool calls are placed in stream order and matched to their
+//!   results by `toolCallId` (`pending` map, builder §2);
+//! - consecutive `read` calls fold into one [`ReadGroup`] (§7.1);
+//! - [`Messages::finished_len`] decides the committed (scrollback) prefix vs
+//!   the still-live tail — only leading finished entries may retire;
+//! - ctrl+O transcript-wide expansion ([`Messages::toggle_expanded`], §9).
 
+use std::collections::HashMap;
+
+use ratatui::text::Line;
 use serde_json::Value;
 
 use crate::events::AppEvent;
 
-/// Who produced an entry.
+/// Who produced an entry (coarse bucket; renderers take details from
+/// [`ChatEntry::kind`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatRole {
     /// A user prompt.
     User,
     /// The assistant.
     Assistant,
-    /// A tool call or result summary.
+    /// A tool card, read group or bash/python execution.
     Tool,
-    /// A system/runtime notice (compaction, retry, errors).
+    /// A system/runtime notice (compaction, branch, custom, usage, errors).
     System,
 }
 
-/// One logical chat entry.
+/// One block of an assistant message, in stream order.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ChatEntry {
-    /// Producer.
-    pub role: ChatRole,
-    /// Accumulated display text.
-    pub text: String,
+pub enum AssistantSegment {
+    /// Markdown text.
+    Text {
+        /// Accumulated text.
+        text: String,
+    },
+    /// Reasoning text (rendered collapsed by default, §5).
+    Thinking {
+        /// Accumulated thinking.
+        text: String,
+    },
 }
 
-impl ChatEntry {
-    /// Append streamed text to this entry.
-    pub fn push_str(&mut self, s: &str) {
-        self.text.push_str(s);
+impl AssistantSegment {
+    /// The segment's text.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text { text } | Self::Thinking { text } => text,
+        }
     }
 }
 
-/// The ordered chat model.
+/// Terminal state of a tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    /// Card created, no result yet.
+    Pending,
+    /// Streaming/partial result received.
+    Running,
+    /// Finished successfully.
+    Ok,
+    /// Finished with an error.
+    Error,
+}
+
+impl ToolStatus {
+    /// Whether the call has settled (result or error received).
+    #[must_use]
+    pub fn settled(self) -> bool {
+        matches!(self, Self::Ok | Self::Error)
+    }
+}
+
+/// A pending tool card (builder `#pendingTools`, §2). Results land here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCard {
+    /// `toolCallId`.
+    pub call_id: String,
+    /// Tool name.
+    pub name: String,
+    /// Accumulated arguments object (may be partial while streaming).
+    pub args: Value,
+    /// Settlement state.
+    pub status: ToolStatus,
+    /// Result text (partial or final).
+    pub result_text: Option<String>,
+    /// True until the final result arrived.
+    pub partial: bool,
+}
+
+/// One read inside a [`ReadGroup`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadItem {
+    /// `toolCallId`.
+    pub call_id: String,
+    /// Canonical path (`path`, legacy alias `file_path`).
+    pub path: String,
+    /// Settlement state.
+    pub status: ToolStatus,
+    /// Optional content preview.
+    pub preview: Option<String>,
+}
+
+/// Consecutive filesystem reads folded into one compact group (§7.1).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadGroup {
+    /// Reads in call order.
+    pub reads: Vec<ReadItem>,
+    /// Turn usage attached beneath the group when the turn was reads-only.
+    pub usage: Option<Usage>,
+    /// False once a non-read entry displaced the group (no more folding).
+    pub open: bool,
+}
+
+/// State of a `!`/`$` execution block (§7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecStatus {
+    /// Still running.
+    Running,
+    /// Exited 0.
+    Complete,
+    /// Cancelled by the user.
+    Cancelled,
+    /// Non-zero exit.
+    Error,
+}
+
+/// A bash (`!`) or python (`$`) execution entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Execution {
+    /// `toolCallId` (empty for persisted transcript entries).
+    pub call_id: String,
+    /// The command/source line.
+    pub command: String,
+    /// Accumulated output.
+    pub output: String,
+    /// Settlement state.
+    pub status: ExecStatus,
+    /// Exit code when finished.
+    pub exit_code: Option<i64>,
+    /// `!!`/`$$` — excluded from context (renders dim).
+    pub excluded: bool,
+}
+
+/// Token usage tallies (assistant message `usage` field).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Usage {
+    /// Input tokens.
+    pub input: u64,
+    /// Output tokens.
+    pub output: u64,
+    /// Cache-read tokens.
+    pub cache_read: u64,
+    /// Cache-write tokens.
+    pub cache_write: u64,
+}
+
+/// A compaction/handoff divider (§10).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Compaction {
+    /// Method: `remote|soft|handoff|snapcompact|shake|…`.
+    pub method: String,
+    /// Context size before compaction.
+    pub tokens_before: u64,
+    /// Context size after (absent for legacy methods).
+    pub tokens_after: Option<u64>,
+    /// Summary text (markdown).
+    pub summary: String,
+    /// Optional warning.
+    pub warning: Option<String>,
+}
+
+impl Compaction {
+    /// Divider label (`remote-compacted|soft-compacted|handed-off|
+    /// snap-compacted|shaken|compacted`, §10).
+    #[must_use]
+    pub fn label(&self) -> &str {
+        match self.method.as_str() {
+            "remote" => "remote-compacted",
+            "soft" => "soft-compacted",
+            "handoff" => "handed-off",
+            "snapcompact" => "snap-compacted",
+            "shake" => "shaken",
+            _ => "compacted",
+        }
+    }
+}
+
+/// A `custom`/`custom_message` transcript entry (§11).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Custom {
+    /// `customType` (or the message role for unknown custom roles).
+    pub custom_type: String,
+    /// Flattened text content.
+    pub content_text: String,
+    /// `display === false` — render nothing.
+    pub display: bool,
+    /// `attribution`: `user|agent`.
+    pub attribution: String,
+}
+
+/// The typed payload of one transcript entry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChatKind {
+    /// User/developer prompt bubble (§4).
+    User {
+        /// Flattened text.
+        text: String,
+        /// Synthetic (advisor dump etc.) — collapsed by default.
+        synthetic: bool,
+        /// Live-steered marker (`*` badge).
+        live_steered: bool,
+    },
+    /// Assistant message (§3).
+    Assistant(AssistantMsg),
+    /// One tool card (§7).
+    Tool(ToolCard),
+    /// Folded consecutive reads (§7.1).
+    ReadGroup(ReadGroup),
+    /// Bash `!` execution (§7.2).
+    Bash(Execution),
+    /// Python `$` execution (§7.2).
+    Python(Execution),
+    /// Compaction/handoff divider (§10).
+    Compaction(Compaction),
+    /// Branch summary divider (§10).
+    Branch {
+        /// Summary text.
+        summary: String,
+    },
+    /// Custom message box (§11).
+    Custom(Custom),
+    /// Standalone deferred usage row (§2 usage flush).
+    Usage(Usage),
+    /// Retry/compaction/runtime notice.
+    Notice(String),
+}
+
+/// Assistant message payload (§3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssistantMsg {
+    /// Text/thinking blocks in stream order.
+    pub segments: Vec<AssistantSegment>,
+    /// `stopReason` once settled.
+    pub stop_reason: Option<String>,
+    /// `errorMessage` when the turn failed.
+    pub error_message: Option<String>,
+    /// Billed usage once settled.
+    pub usage: Option<Usage>,
+    /// True while the message is still streaming.
+    pub live: bool,
+}
+
+impl AssistantMsg {
+    /// Joined markdown text (thinking excluded — renderers walk `segments`).
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.segments
+            .iter()
+            .filter_map(|s| match s {
+                AssistantSegment::Text { text } => Some(text.as_str()),
+                AssistantSegment::Thinking { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+}
+
+/// One logical chat entry: a coarse [`ChatRole`] bucket plus the typed
+/// [`ChatKind`] payload and a `finished` flag (scrollback-commit gate).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatEntry {
+    /// Coarse producer bucket (kept as a field for the naive app renderer).
+    pub role: ChatRole,
+    /// One-line display summary (kept as a field for the naive renderer).
+    pub text: String,
+    /// Typed payload for real renderers.
+    pub kind: ChatKind,
+    finished: bool,
+}
+
+impl ChatEntry {
+    /// Whether this entry may retire into committed scrollback: entries only
+    /// ever transition live → finished, so the committed prefix is the
+    /// leading run of finished entries (`Messages::finished_len`).
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    /// Whether ctrl+O expansion applies (tool cards, read groups,
+    /// executions, dividers, synthetic inputs — §9).
+    #[must_use]
+    pub fn is_expandable(&self) -> bool {
+        matches!(
+            self.kind,
+            ChatKind::Tool(_)
+                | ChatKind::ReadGroup(_)
+                | ChatKind::Bash(_)
+                | ChatKind::Python(_)
+                | ChatKind::Compaction(_)
+                | ChatKind::Branch { .. }
+                | ChatKind::User {
+                    synthetic: true,
+                    ..
+                }
+        )
+    }
+
+    fn new(role: ChatRole, text: String, kind: ChatKind, finished: bool) -> Self {
+        Self {
+            role,
+            text,
+            kind,
+            finished,
+        }
+    }
+}
+
+/// The ordered chat transcript model.
 #[derive(Debug, Clone, Default)]
 pub struct Messages {
     entries: Vec<ChatEntry>,
-    /// Whether the newest entry is still receiving deltas.
+    /// `toolCallId` → entry index of its card / read group.
+    pending: HashMap<String, usize>,
+    /// Entry index of the assistant message currently streaming.
+    live_assistant: Option<usize>,
+    /// The read group still accepting consecutive reads (`None` once any
+    /// other entry displaced it).
+    open_group: Option<usize>,
+    /// A locally echoed user prompt still awaits its runtime echo (dedupe
+    /// against `message_*` frames).
+    user_echo_pending: bool,
+    /// Usage captured at `message_end`, flushed when the turn settles.
+    pending_usage: Option<Usage>,
+    /// Number of leading assistant content parts already frozen into
+    /// earlier (pre-tool) entries; later updates skip them.
+    split_skip: usize,
+    /// Total text/thinking parts in the last processed assistant message.
+    seen_parts: usize,
     streaming: bool,
+    expanded: bool,
+    /// Entries [`..committed`](Self::committed) have already been retired
+    /// into the terminal scrollback by the shell renderer.
+    committed: usize,
 }
 
 impl Messages {
@@ -54,7 +361,7 @@ impl Messages {
         Self::default()
     }
 
-    /// All entries (render only a window of these).
+    /// All entries, oldest first.
     #[must_use]
     pub fn entries(&self) -> &[ChatEntry] {
         &self.entries
@@ -66,75 +373,907 @@ impl Messages {
         self.streaming
     }
 
-    /// Apply one runtime event.
+    /// Transcript-wide expansion state (ctrl+O, action `app.tools.expand`).
+    #[must_use]
+    pub fn expanded(&self) -> bool {
+        self.expanded
+    }
+
+    /// Set transcript-wide expansion; applies to every expandable entry (§9).
+    pub fn set_expanded(&mut self, expanded: bool) {
+        self.expanded = expanded;
+    }
+
+    /// Toggle transcript-wide expansion (ctrl+O).
+    pub fn toggle_expanded(&mut self) {
+        self.expanded = !self.expanded;
+    }
+
+    /// Length of the leading run of finished entries — those may be
+    /// committed to scrollback; everything from this index on is live.
+    #[must_use]
+    pub fn finished_len(&self) -> usize {
+        self.entries
+            .iter()
+            .position(|e| !e.is_finished())
+            .unwrap_or(self.entries.len())
+    }
+
+    /// Number of entries already retired into terminal scrollback (the
+    /// commit watermark). Entries `[committed_len()..]` must be the only
+    /// ones the live region redraws.
+    #[must_use]
+    pub fn committed_len(&self) -> usize {
+        self.committed
+    }
+
+    /// The live region: entries at/after the commit watermark (`ShellRender`
+    /// invariant — committed entries are never re-drawn in the live region).
+    #[must_use]
+    pub fn live_tail(&self) -> &[ChatEntry] {
+        &self.entries[self.committed..]
+    }
+
+    /// Rows of newly finished entries for scrollback commit (`ShellRender`).
+    /// Advances the commit watermark; later calls only return entries that
+    /// finished since the last call. Stopgap renderer: wraps each entry's
+    /// summary text; themed rendering lands with the chat renderer.
+    pub fn take_committed_rows(&mut self, width: u16) -> Vec<Line<'static>> {
+        let end = self.finished_len();
+        let rows = render_rows(&self.entries[self.committed..end], width.max(1) as usize);
+        self.committed = end;
+        rows
+    }
+
+    /// Rows for the whole transcript (resize rebuild inside tmux/herdr).
+    /// Resets the commit watermark to the finished prefix: rows past it are
+    /// the live tail the live region keeps redrawing.
+    pub fn all_rows(&mut self, width: u16) -> Vec<Line<'static>> {
+        let rows = render_rows(&self.entries, width.max(1) as usize);
+        self.committed = self.finished_len();
+        rows
+    }
+
+    /// Apply one runtime event (live path).
     pub fn apply(&mut self, event: &AppEvent) {
         match event {
             AppEvent::AgentStart | AppEvent::TurnStart => self.streaming = true,
             AppEvent::AgentEnd(_) | AppEvent::TurnEnd(_) | AppEvent::SessionSettled => {
                 self.streaming = false;
+                self.seal_turn();
             }
-            AppEvent::MessageUpdate(frame) => self.apply_message_update(frame),
+            AppEvent::MessageStart(frame) => {
+                if let Some(message) = frame.get("message") {
+                    self.begin_message(message);
+                }
+            }
+            AppEvent::MessageUpdate(frame) => {
+                if let Some(message) = frame.get("message") {
+                    self.update_message(message, true);
+                }
+            }
             AppEvent::MessageEnd(frame) => {
-                self.apply_message_update(frame);
-                self.streaming = false;
+                if let Some(message) = frame.get("message") {
+                    self.update_message(message, false);
+                }
             }
+            AppEvent::ToolExecutionStart(frame) => self.tool_start(frame),
+            AppEvent::ToolExecutionUpdate(frame) => self.tool_update(frame),
+            AppEvent::ToolExecutionEnd(frame) => self.tool_end(frame),
             AppEvent::PromptResult { success, frame, .. } => {
                 if !success {
                     let msg = frame
                         .get("error")
                         .and_then(Value::as_str)
                         .unwrap_or("prompt failed");
-                    self.push(ChatRole::System, format!("error: {msg}"));
+                    self.push(ChatEntry::new(
+                        ChatRole::System,
+                        format!("error: {msg}"),
+                        ChatKind::Notice(format!("error: {msg}")),
+                        true,
+                    ));
                 }
             }
             AppEvent::Retry(frame) => {
                 let kind = frame.get("type").and_then(Value::as_str).unwrap_or("retry");
-                self.push(ChatRole::System, format!("[{kind}]"));
+                self.push(ChatEntry::new(
+                    ChatRole::System,
+                    format!("[{kind}]"),
+                    ChatKind::Notice(format!("[{kind}]")),
+                    true,
+                ));
             }
             AppEvent::AutoCompaction(frame) => {
-                let kind = frame.get("type").and_then(Value::as_str).unwrap_or("compaction");
-                self.push(ChatRole::System, format!("[{kind}]"));
+                let kind = frame
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("compaction");
+                self.push(ChatEntry::new(
+                    ChatRole::System,
+                    format!("[{kind}]"),
+                    ChatKind::Notice(format!("[{kind}]")),
+                    true,
+                ));
             }
             _ => {}
         }
     }
 
+    /// Reset and rebuild from a persisted message array (`agent_end`'s
+    /// `messages`, a resumed session's entries). Everything is finished.
+    pub fn rebuild(&mut self, messages: &[Value]) {
+        *self = Self::new();
+        for message in messages {
+            self.append_message(message, true);
+        }
+        self.seal_turn();
+    }
+
+    /// Record a purely local UI notice (app-level echo, not a runtime
+    /// frame): "retry aborted", "unknown command /x", hints, etc.
+    pub fn push_system(&mut self, text: &str) {
+        self.push(ChatEntry::new(
+            ChatRole::System,
+            text.to_owned(),
+            ChatKind::Notice(text.to_owned()),
+            true,
+        ));
+    }
+
     /// Record a locally-submitted user prompt (echoed immediately).
     pub fn push_user(&mut self, text: &str) {
-        self.push(ChatRole::User, text.to_owned());
+        self.user_echo_pending = true;
+        let entry = ChatEntry::new(
+            ChatRole::User,
+            text.to_owned(),
+            ChatKind::User {
+                text: text.to_owned(),
+                synthetic: false,
+                live_steered: self.streaming,
+            },
+            true,
+        );
+        self.push(entry);
     }
 
-    fn push(&mut self, role: ChatRole, text: String) {
-        self.entries.push(ChatEntry { role, text });
+    // ---- internal helpers -------------------------------------------------
+
+    fn push(&mut self, entry: ChatEntry) -> usize {
+        if !matches!(entry.kind, ChatKind::ReadGroup(_)) {
+            // Any non-read entry displaces the open read group.
+            self.open_group = None;
+        }
+        self.entries.push(entry);
+        self.entries.len() - 1
     }
 
-    /// Merge an assistant message payload (TS wire shape: `content[]` with
-    /// `text` parts) into the newest assistant entry, or start one.
-    fn apply_message_update(&mut self, frame: &Value) {
-        let Some(message) = frame.get("message") else {
+    fn begin_message(&mut self, message: &Value) {
+        if role_of(message) == "assistant" && self.live_assistant.is_none() {
+            let idx = self.push(assistant_entry(Vec::new(), true));
+            self.live_assistant = Some(idx);
+            self.streaming = true;
+        }
+    }
+
+    /// Merge an accumulated message payload into the transcript.
+    fn update_message(&mut self, message: &Value, live: bool) {
+        match role_of(message) {
+            "assistant" => {
+                let (segments, total) = assistant_segments(message, self.split_skip);
+                self.seen_parts = total;
+                match self.live_assistant {
+                    Some(idx) => {
+                        let entry = &mut self.entries[idx];
+                        if let ChatKind::Assistant(a) = &mut entry.kind {
+                            a.segments = segments;
+                            a.live = live;
+                            entry.text = a.text();
+                        }
+                    }
+                    None if !segments.is_empty() => {
+                        let idx = self.push(assistant_entry(segments, live));
+                        self.live_assistant = Some(idx);
+                        if let Some(entry) = self.entries.last_mut() {
+                            if let ChatKind::Assistant(a) = &mut entry.kind {
+                                entry.text = a.text();
+                            }
+                        }
+                    }
+                    None => {}
+                }
+                if !live {
+                    // Settle: capture stop reason / error / deferred usage.
+                    self.streaming = false;
+                    let idx = self
+                        .live_assistant
+                        .take()
+                        .or_else(|| self.last_assistant_index());
+                    if let Some(idx) = idx {
+                        let entry = &mut self.entries[idx];
+                        if let ChatKind::Assistant(a) = &mut entry.kind {
+                            a.live = false;
+                            a.stop_reason = str_field(message, "stopReason").map(String::from);
+                            a.error_message = str_field(message, "errorMessage").map(String::from);
+                            a.usage = parse_usage(message.get("usage"));
+                        }
+                        entry.finished = true;
+                    }
+                    self.pending_usage = parse_usage(message.get("usage"));
+                    self.split_skip = 0;
+                }
+            }
+            _ => self.append_message(message, !live),
+        }
+    }
+
+    /// Append a full (persisted-shaped) message by role (§1 dispatch table).
+    #[allow(clippy::too_many_lines)] // one arm per wire role; splitting buys nothing
+    fn append_message(&mut self, message: &Value, finished: bool) {
+        match role_of(message) {
+            "user" | "developer" => {
+                let text = flatten_content(message.get("content"));
+                // Dedupe the runtime echo of a locally submitted prompt.
+                if self.user_echo_pending
+                    && self
+                        .entries
+                        .last()
+                        .is_some_and(|e| e.role == ChatRole::User && e.text == text)
+                {
+                    self.user_echo_pending = false;
+                    return;
+                }
+                self.user_echo_pending = false;
+                let synthetic = message
+                    .get("synthetic")
+                    .is_some_and(|v| v == &Value::Bool(true));
+                let live_steered = message
+                    .get("liveSteered")
+                    .is_some_and(|v| v == &Value::Bool(true));
+                self.push(ChatEntry::new(
+                    ChatRole::User,
+                    text.clone(),
+                    ChatKind::User {
+                        text,
+                        synthetic,
+                        live_steered,
+                    },
+                    finished,
+                ));
+            }
+            "toolResult" => {
+                let call_id = str_field(message, "toolCallId").unwrap_or("");
+                let status = if message
+                    .get("isError")
+                    .is_some_and(|v| v == &Value::Bool(true))
+                {
+                    ToolStatus::Error
+                } else {
+                    ToolStatus::Ok
+                };
+                let text = flatten_content(message.get("content"));
+                self.apply_tool_result(call_id, status, text);
+            }
+            "bashExecution" | "pythonExecution" | "jsExecution" => {
+                let role = role_of(message);
+                let command = str_field(message, "command")
+                    .or_else(|| str_field(message, "code"))
+                    .unwrap_or("")
+                    .to_owned();
+                let output = str_field(message, "output").unwrap_or("").to_owned();
+                let exit_code = message.get("exitCode").and_then(Value::as_i64);
+                let cancelled = message
+                    .get("cancelled")
+                    .is_some_and(|v| v == &Value::Bool(true));
+                let status = if cancelled {
+                    ExecStatus::Cancelled
+                } else {
+                    match exit_code {
+                        Some(code) if code != 0 => ExecStatus::Error,
+                        _ => ExecStatus::Complete,
+                    }
+                };
+                let excluded = message
+                    .get("excludeFromContext")
+                    .is_some_and(|v| v == &Value::Bool(true));
+                let exec = Execution {
+                    call_id: String::new(),
+                    command,
+                    output,
+                    status,
+                    exit_code,
+                    excluded,
+                };
+                let text = exec_summary(&exec);
+                let kind = if role == "bashExecution" {
+                    ChatKind::Bash(exec)
+                } else {
+                    ChatKind::Python(exec)
+                };
+                self.push(ChatEntry::new(ChatRole::Tool, text, kind, finished));
+            }
+            "compactionSummary" | "compaction" => {
+                let method = str_field(message, "method").unwrap_or("").to_owned();
+                let tokens_before = message
+                    .get("tokensBefore")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let tokens_after = message.get("tokensAfter").and_then(Value::as_u64);
+                let summary = str_field(message, "summary").unwrap_or("").to_owned();
+                let warning = str_field(message, "warning").map(String::from);
+                let text = compaction_text(&method, tokens_before, tokens_after);
+                self.push(ChatEntry::new(
+                    ChatRole::System,
+                    text,
+                    ChatKind::Compaction(Compaction {
+                        method,
+                        tokens_before,
+                        tokens_after,
+                        summary,
+                        warning,
+                    }),
+                    finished,
+                ));
+            }
+            "branchSummary" | "branch_summary" => {
+                let summary = str_field(message, "summary").unwrap_or("").to_owned();
+                let text = format!("branch: {}", first_line(&summary));
+                self.push(ChatEntry::new(
+                    ChatRole::System,
+                    text,
+                    ChatKind::Branch { summary },
+                    finished,
+                ));
+            }
+            other => {
+                // custom / custom_message / hookMessage / unknown roles.
+                let custom_type = str_field(message, "customType").unwrap_or(other).to_owned();
+                let content_text = match message.get("content") {
+                    Some(Value::String(s)) => s.clone(),
+                    other_content => flatten_content(other_content),
+                };
+                let display = message
+                    .get("display")
+                    .is_none_or(|v| v != &Value::Bool(false));
+                let attribution = str_field(message, "attribution")
+                    .unwrap_or("agent")
+                    .to_owned();
+                self.push(ChatEntry::new(
+                    ChatRole::System,
+                    format!("[{custom_type}] {}", first_line(&content_text)),
+                    ChatKind::Custom(Custom {
+                        custom_type,
+                        content_text,
+                        display,
+                        attribution,
+                    }),
+                    finished,
+                ));
+            }
+        }
+    }
+
+    // ---- tools ------------------------------------------------------------
+
+    fn tool_start(&mut self, frame: &Value) {
+        // A tool call finishes the assistant's leading segment immediately
+        // (TS snap on `hasToolCalls`): freeze it; text arriving after the
+        // tool card lands in a fresh assistant entry after the card.
+        if let Some(idx) = self.live_assistant.take() {
+            self.split_skip = self.seen_parts;
+            if let Some(entry) = self.entries.get_mut(idx) {
+                if let ChatKind::Assistant(a) = &mut entry.kind {
+                    a.live = false;
+                }
+                entry.finished = true;
+            }
+        }
+        let call_id = str_field(frame, "toolCallId").unwrap_or("").to_owned();
+        let name = str_field(frame, "toolName").unwrap_or("tool").to_owned();
+        let args = frame.get("args").cloned().unwrap_or(Value::Null);
+        if name == "read" {
+            let path = arg_str(&args, "path")
+                .or_else(|| arg_str(&args, "file_path"))
+                .unwrap_or("")
+                .to_owned();
+            let item = ReadItem {
+                call_id: call_id.clone(),
+                path,
+                status: ToolStatus::Pending,
+                preview: None,
+            };
+            let idx = match self.open_group {
+                Some(idx) => match &mut self.entries[idx].kind {
+                    ChatKind::ReadGroup(g) if g.open => {
+                        g.reads.push(item);
+                        idx
+                    }
+                    _ => self.push_read_group(item),
+                },
+                None => self.push_read_group(item),
+            };
+            self.open_group = Some(idx);
+            self.pending.insert(call_id, idx);
+            return;
+        }
+        if name == "bash" || name == "eval" {
+            let command = arg_str(&args, "command")
+                .or_else(|| arg_str(&args, "code"))
+                .unwrap_or("")
+                .to_owned();
+            let excluded = arg_flag(&args, "excludeFromContext");
+            let exec = Execution {
+                call_id: call_id.clone(),
+                command,
+                output: String::new(),
+                status: ExecStatus::Running,
+                exit_code: None,
+                excluded,
+            };
+            let text = exec_summary(&exec);
+            let kind = if name == "bash" {
+                ChatKind::Bash(exec)
+            } else {
+                ChatKind::Python(exec)
+            };
+            let idx = self.push(ChatEntry::new(ChatRole::Tool, text, kind, false));
+            self.pending.insert(call_id, idx);
+            return;
+        }
+        let text = tool_summary(&name, &args);
+        let idx = self.push(ChatEntry::new(
+            ChatRole::Tool,
+            text,
+            ChatKind::Tool(ToolCard {
+                call_id: call_id.clone(),
+                name,
+                args,
+                status: ToolStatus::Pending,
+                result_text: None,
+                partial: true,
+            }),
+            false,
+        ));
+        self.pending.insert(call_id, idx);
+    }
+
+    fn push_read_group(&mut self, item: ReadItem) -> usize {
+        let text = format!("read {}", item.path);
+        self.push(ChatEntry::new(
+            ChatRole::Tool,
+            text,
+            ChatKind::ReadGroup(ReadGroup {
+                reads: vec![item],
+                usage: None,
+                open: true,
+            }),
+            false,
+        ))
+    }
+
+    fn tool_update(&mut self, frame: &Value) {
+        let call_id = str_field(frame, "toolCallId").unwrap_or("");
+        let Some(&idx) = self.pending.get(call_id) else {
             return;
         };
-        let text: String = message
-            .get("content")
-            .and_then(Value::as_array)
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|p| p.get("text").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-            .unwrap_or_default();
-        if text.is_empty() {
-            return;
+        if let Some(args) = frame.get("args") {
+            self.with_tool_card(idx, |card| card.args = args.clone());
         }
-        match self.entries.last_mut() {
-            Some(last) if last.role == ChatRole::Assistant && self.streaming => {
-                last.text = text;
+        if let Some(partial) = frame.get("partialResult") {
+            let text = result_text(partial);
+            self.with_tool_card(idx, |card| {
+                card.result_text = Some(text.clone());
+                if !card.status.settled() {
+                    card.status = ToolStatus::Running;
+                }
+            });
+            if let Some(entry) = self.entries.get_mut(idx) {
+                match &mut entry.kind {
+                    ChatKind::ReadGroup(g) => {
+                        if let Some(item) = g.reads.iter_mut().find(|r| r.call_id == call_id) {
+                            item.status = ToolStatus::Running;
+                        }
+                    }
+                    ChatKind::Bash(e) | ChatKind::Python(e) => {
+                        e.output = text;
+                        entry.text = exec_summary(e);
+                    }
+                    _ => {}
+                }
             }
-            _ => self.push(ChatRole::Assistant, text),
         }
     }
+
+    fn tool_end(&mut self, frame: &Value) {
+        let call_id = str_field(frame, "toolCallId").unwrap_or("");
+        let is_error = frame
+            .get("isError")
+            .is_some_and(|v| v == &Value::Bool(true));
+        let text = frame.get("result").map_or_else(String::new, result_text);
+        let status = if is_error {
+            ToolStatus::Error
+        } else {
+            ToolStatus::Ok
+        };
+        if !self.pending.contains_key(call_id) {
+            // Result without a card: create one (builder `#appendToolResult`).
+            self.push(ChatEntry::new(
+                ChatRole::Tool,
+                format!("tool result: {}", first_line(&text)),
+                ChatKind::Tool(ToolCard {
+                    call_id: call_id.to_owned(),
+                    name: str_field(frame, "toolName").unwrap_or("tool").to_owned(),
+                    args: Value::Null,
+                    status,
+                    result_text: Some(text),
+                    partial: false,
+                }),
+                true,
+            ));
+            return;
+        }
+        self.apply_tool_result(call_id, status, text);
+    }
+
+    /// Route a settled result into the card / read item / execution.
+    fn apply_tool_result(&mut self, call_id: &str, status: ToolStatus, text: String) {
+        let Some(&idx) = self.pending.get(call_id) else {
+            return;
+        };
+        self.with_tool_card(idx, |card| {
+            card.status = status;
+            card.result_text = Some(text.clone());
+            card.partial = false;
+        });
+        if let Some(entry) = self.entries.get_mut(idx) {
+            match &mut entry.kind {
+                ChatKind::ReadGroup(g) => {
+                    if let Some(item) = g.reads.iter_mut().find(|r| r.call_id == call_id) {
+                        item.status = status;
+                        item.preview = Some(text.clone());
+                    }
+                    let summary = if g.reads.len() == 1 {
+                        format!("read {}", g.reads[0].path)
+                    } else {
+                        format!("read {} files", g.reads.len())
+                    };
+                    entry.text = summary;
+                    if !g.open && g.reads.iter().all(|r| r.status.settled()) {
+                        entry.finished = true;
+                    }
+                }
+                ChatKind::Bash(e) | ChatKind::Python(e) => {
+                    e.output = text;
+                    e.status = if status.settled() && status == ToolStatus::Error {
+                        ExecStatus::Error
+                    } else if e.status == ExecStatus::Running {
+                        ExecStatus::Complete
+                    } else {
+                        e.status
+                    };
+                    entry.text = exec_summary(e);
+                    entry.finished = true;
+                }
+                ChatKind::Tool(_) => {
+                    entry.finished = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn last_assistant_index(&self) -> Option<usize> {
+        self.entries
+            .iter()
+            .rposition(|e| matches!(e.kind, ChatKind::Assistant(_)))
+    }
+
+    fn with_tool_card(&mut self, idx: usize, f: impl FnOnce(&mut ToolCard)) {
+        if let Some(entry) = self.entries.get_mut(idx) {
+            if let ChatKind::Tool(card) = &mut entry.kind {
+                f(card);
+            }
+        }
+    }
+
+    /// Turn settled: close the live assistant, seal abandoned pending tools
+    /// and flush the deferred usage row (§2 `#flushPendingUsage`).
+    fn seal_turn(&mut self) {
+        self.split_skip = 0;
+        if let Some(idx) = self.live_assistant.take() {
+            if let Some(entry) = self.entries.get_mut(idx) {
+                if let ChatKind::Assistant(a) = &mut entry.kind {
+                    a.live = false;
+                }
+                entry.finished = true;
+            }
+        }
+        for entry in &mut self.entries {
+            match &mut entry.kind {
+                ChatKind::Tool(card) if card.partial => {
+                    // Turn abandoned the call without a result (`seal()`).
+                    card.partial = false;
+                    entry.finished = true;
+                }
+                ChatKind::ReadGroup(g) if g.open => {
+                    g.open = false;
+                    entry.finished = true;
+                }
+                _ => {}
+            }
+        }
+        if let Some(usage) = self.pending_usage.take() {
+            let text = usage_text(usage);
+            let mut attached = false;
+            if let Some(last) = self.entries.last_mut() {
+                if let ChatKind::ReadGroup(g) = &mut last.kind {
+                    g.usage = Some(usage);
+                    g.open = false;
+                    last.finished = true;
+                    attached = true;
+                }
+            }
+            if !attached {
+                self.push(ChatEntry::new(
+                    ChatRole::System,
+                    text,
+                    ChatKind::Usage(usage),
+                    true,
+                ));
+            }
+        }
+    }
+}
+
+// ---- payload helpers (TS wire shapes, spec section 1) -----------------------
+
+fn str_field<'v>(value: &'v Value, key: &str) -> Option<&'v str> {
+    value.get(key).and_then(Value::as_str)
+}
+
+fn role_of(message: &Value) -> &str {
+    str_field(message, "role").unwrap_or("")
+}
+
+fn arg_str<'v>(args: &'v Value, key: &str) -> Option<&'v str> {
+    args.get(key).and_then(Value::as_str)
+}
+
+fn arg_flag(args: &Value, key: &str) -> bool {
+    args.get(key).is_some_and(|v| v == &Value::Bool(true))
+}
+
+/// Flatten `content` (`string | [{text}] | {text}`) to plain text.
+fn flatten_content(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join(""),
+        Some(Value::Object(_)) => str_field(content.unwrap_or(&Value::Null), "text")
+            .unwrap_or("")
+            .to_owned(),
+        _ => String::new(),
+    }
+}
+
+/// Build the ordered text/thinking segments of an assistant message,
+/// skipping the first `skip` text/thinking content parts (already frozen
+/// into pre-tool entries). Returns the segments and the total part count.
+fn assistant_segments(message: &Value, skip: usize) -> (Vec<AssistantSegment>, usize) {
+    let mut out: Vec<AssistantSegment> = Vec::new();
+    let Some(parts) = message.get("content").and_then(Value::as_array) else {
+        return (out, 0);
+    };
+    let mut seen = 0usize;
+    for part in parts {
+        let kind = part.get("type").and_then(Value::as_str);
+        if !matches!(kind, Some("text" | "thinking")) {
+            continue;
+        }
+        if seen < skip {
+            seen += 1;
+            continue;
+        }
+        seen += 1;
+        match kind {
+            Some("text") => {
+                let text = part.get("text").and_then(Value::as_str).unwrap_or("");
+                match out.last_mut() {
+                    Some(AssistantSegment::Text { text: t }) => t.push_str(text),
+                    _ if !text.is_empty() => {
+                        out.push(AssistantSegment::Text { text: text.into() });
+                    }
+                    _ => {}
+                }
+            }
+            Some("thinking") => {
+                let text = part
+                    .get("thinking")
+                    .or_else(|| part.get("text"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned();
+                out.push(AssistantSegment::Thinking { text });
+            }
+            _ => {}
+        }
+    }
+    (out, seen)
+}
+
+fn assistant_entry(segments: Vec<AssistantSegment>, live: bool) -> ChatEntry {
+    let text = segments
+        .iter()
+        .filter_map(|s| match s {
+            AssistantSegment::Text { text } => Some(text.as_str()),
+            AssistantSegment::Thinking { .. } => None,
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    ChatEntry::new(
+        ChatRole::Assistant,
+        text,
+        ChatKind::Assistant(AssistantMsg {
+            segments,
+            stop_reason: None,
+            error_message: None,
+            usage: None,
+            live,
+        }),
+        !live,
+    )
+}
+
+fn parse_usage(value: Option<&Value>) -> Option<Usage> {
+    let usage = value?;
+    let parsed = Usage {
+        input: usage.get("input").and_then(Value::as_u64).unwrap_or(0),
+        output: usage.get("output").and_then(Value::as_u64).unwrap_or(0),
+        cache_read: usage.get("cacheRead").and_then(Value::as_u64).unwrap_or(0),
+        cache_write: usage.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0),
+    };
+    (parsed.input != 0 || parsed.output != 0 || parsed.cache_read != 0 || parsed.cache_write != 0)
+        .then_some(parsed)
+}
+
+fn usage_text(usage: Usage) -> String {
+    format!(
+        "{} in / {} out",
+        compact_number(usage.input),
+        compact_number(usage.output)
+    )
+}
+
+/// `256K`-style compact token amounts (section 10 `formatNumber`).
+#[allow(clippy::cast_precision_loss)] // display-only rounding of token counts
+fn compact_number(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+fn compaction_text(method: &str, before: u64, after: Option<u64>) -> String {
+    let mut text = Compaction {
+        method: method.to_owned(),
+        tokens_before: before,
+        tokens_after: after,
+        summary: String::new(),
+        warning: None,
+    }
+    .label()
+    .to_owned();
+    if let Some(after) = after {
+        use std::fmt::Write as _;
+        let _ = write!(text, " · {}→{}", compact_number(before), compact_number(after));
+    }
+    text
+}
+
+fn first_line(text: &str) -> &str {
+    text.lines().next().unwrap_or("")
+}
+
+/// Short inline args preview for a tool card's summary line.
+fn tool_summary(name: &str, args: &Value) -> String {
+    let detail = match args {
+        Value::Object(map) => map
+            .iter()
+            .find(|(k, _)| *k != "excludeFromContext")
+            .and_then(|(_, v)| match v {
+                Value::String(s) => Some(first_line(s).to_owned()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    if detail.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name} {detail}")
+    }
+}
+
+fn exec_summary(exec: &Execution) -> String {
+    let marker = if exec.excluded { "!" } else { "$" };
+    let state = match exec.status {
+        ExecStatus::Running => "…".to_owned(),
+        ExecStatus::Complete => String::new(),
+        ExecStatus::Cancelled => " (cancelled)".to_owned(),
+        ExecStatus::Error => format!(" (exit {})", exec.exit_code.unwrap_or(-1)),
+    };
+    format!("{marker} {}{state}", first_line(&exec.command))
+}
+
+/// Extract display text from a tool `result` / `partialResult` payload.
+fn result_text(result: &Value) -> String {
+    match result {
+        Value::String(s) => s.clone(),
+        Value::Object(_) => {
+            let content = result.get("content").map_or_else(
+                || {
+                    str_field(result, "output")
+                        .or_else(|| str_field(result, "text"))
+                        .unwrap_or("")
+                        .to_owned()
+                },
+                |c| flatten_content(Some(c)),
+            );
+            if content.is_empty() {
+                // Details-only result (diffs, suffix resolutions…): keep the
+                // card's text empty rather than dumping raw JSON.
+                String::new()
+            } else {
+                content
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Stopgap transcript row rendering: wrap each entry's summary text at
+/// `width` display cells (char-count based; wcwidth-aware wrapping is the
+/// chat renderer's job).
+fn render_rows(entries: &[ChatEntry], width: usize) -> Vec<Line<'static>> {
+    let mut rows = Vec::new();
+    for entry in entries {
+        let text = &entry.text;
+        if text.is_empty() {
+            rows.push(Line::from(""));
+            continue;
+        }
+        let mut line = String::new();
+        for word in text.split_whitespace() {
+            if !line.is_empty() && line.len() + 1 + word.len() > width {
+                rows.push(Line::from(std::mem::take(&mut line)));
+                line.clear();
+            } else if !line.is_empty() {
+                line.push(' ');
+            }
+            // Long single words get hard-clipped.
+            if word.len() > width {
+                for chunk in word.as_bytes().chunks(width.max(1)) {
+                    let piece = String::from_utf8_lossy(chunk).into_owned();
+                    if !line.is_empty() {
+                        rows.push(Line::from(std::mem::take(&mut line)));
+                    }
+                    rows.push(Line::from(piece));
+                }
+                continue;
+            }
+            line.push_str(word);
+        }
+        if !line.is_empty() {
+            rows.push(Line::from(line));
+        }
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -142,27 +1281,343 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn msg_update(text: &str) -> AppEvent {
+        AppEvent::MessageUpdate(json!({
+            "type": "message_update",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
+        }))
+    }
+
+    fn msg_end(text: &str) -> AppEvent {
+        AppEvent::MessageEnd(json!({
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
+        }))
+    }
+
     #[test]
     fn streams_assistant_text_into_one_entry() {
         let mut m = Messages::new();
         m.apply(&AppEvent::AgentStart);
-        let delta = |t: &str| {
-            AppEvent::MessageUpdate(json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":t}]}}))
-        };
-        m.apply(&delta("hel"));
-        m.apply(&delta("hello"));
+        m.apply(&msg_update("hel"));
+        m.apply(&msg_update("hello"));
         assert_eq!(m.entries().len(), 1);
         assert_eq!(m.entries()[0].text, "hello");
-        m.apply(&AppEvent::MessageEnd(json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}})));
+        assert_eq!(m.finished_len(), 0); // still live
+        m.apply(&msg_end("hello"));
         assert!(!m.is_streaming());
+        assert_eq!(m.finished_len(), 1);
     }
 
     #[test]
-    fn user_prompt_echoes_as_own_entry() {
+    fn assistant_keeps_thinking_segments_in_order() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&AppEvent::MessageUpdate(json!({
+            "type": "message_update",
+            "message": {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm"},
+                {"type": "text", "text": "answer"}
+            ]}
+        })));
+        let ChatKind::Assistant(a) = &m.entries()[0].kind else {
+            panic!("expected assistant");
+        };
+        assert_eq!(a.segments.len(), 2);
+        assert!(matches!(&a.segments[0], AssistantSegment::Thinking { text } if text == "hmm"));
+        assert!(matches!(&a.segments[1], AssistantSegment::Text { text } if text == "answer"));
+    }
+
+    #[test]
+    fn user_prompt_echoes_and_dedupes_runtime_echo() {
         let mut m = Messages::new();
         m.push_user("do a thing");
-        m.apply(&AppEvent::AgentStart);
+        m.apply(&AppEvent::MessageStart(json!({
+            "type": "message_start",
+            "message": {"role": "user", "content": [{"type": "text", "text": "do a thing"}]}
+        })));
         assert_eq!(m.entries().len(), 1);
         assert_eq!(m.entries()[0].role, ChatRole::User);
+    }
+
+    #[test]
+    fn pending_tool_placed_and_settled_by_call_id() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&msg_update("let me look"));
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start",
+            "toolCallId": "c1",
+            "toolName": "edit",
+            "args": {"path": "src/lib.rs"}
+        })));
+        assert_eq!(m.entries().len(), 2);
+        assert_eq!(m.finished_len(), 1); // assistant not settled, tool live
+        m.apply(&AppEvent::ToolExecutionEnd(json!({
+            "type": "tool_execution_end",
+            "toolCallId": "c1",
+            "toolName": "edit",
+            "result": {"content": [{"type": "text", "text": "done"}]},
+            "isError": false
+        })));
+        let ChatKind::Tool(card) = &m.entries()[1].kind else {
+            panic!("expected tool card");
+        };
+        assert_eq!(card.status, ToolStatus::Ok);
+        assert!(!card.partial);
+        assert!(m.entries()[1].is_finished());
+        m.apply(&msg_end("let me look"));
+        assert_eq!(m.finished_len(), 2);
+    }
+
+    #[test]
+    fn consecutive_reads_fold_into_one_group() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        for (id, path) in [("r1", "a.rs"), ("r2", "b.rs")] {
+            m.apply(&AppEvent::ToolExecutionStart(json!({
+                "type": "tool_execution_start",
+                "toolCallId": id,
+                "toolName": "read",
+                "args": {"path": path}
+            })));
+        }
+        assert_eq!(m.entries().len(), 1);
+        let ChatKind::ReadGroup(g) = &m.entries()[0].kind else {
+            panic!("expected read group");
+        };
+        assert_eq!(g.reads.len(), 2);
+        assert!(g.open);
+        // A non-read tool displaces the group.
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start",
+            "toolCallId": "e1",
+            "toolName": "edit",
+            "args": {}
+        })));
+        assert_eq!(m.entries().len(), 2);
+        // The displaced group no longer accepts reads.
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start",
+            "toolCallId": "r3",
+            "toolName": "read",
+            "args": {"path": "c.rs"}
+        })));
+        assert_eq!(m.entries().len(), 3);
+    }
+
+    #[test]
+    fn read_group_collects_usage_on_flush() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&msg_update("reading"));
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start", "toolCallId": "r1",
+            "toolName": "read", "args": {"path": "a.rs"}
+        })));
+        m.apply(&msg_end("reading"));
+        m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
+        let last = m.entries().last().unwrap();
+        let ChatKind::ReadGroup(g) = &last.kind else {
+            panic!("usage should attach under the read group, got {last:?}");
+        };
+        assert!(g.usage.is_none()); // no usage in the message; group still last
+    }
+
+    #[test]
+    fn deferred_usage_row_appended_after_turn() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&AppEvent::MessageEnd(json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi"}],
+                "usage": {"input": 256_000, "output": 20_000, "cacheRead": 0, "cacheWrite": 0},
+                "stopReason": "stop"
+            }
+        })));
+        assert_eq!(m.entries().len(), 1); // usage deferred, not yet a row
+        m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
+        let last = m.entries().last().unwrap();
+        assert!(matches!(last.kind, ChatKind::Usage(_)));
+        assert_eq!(m.finished_len(), m.entries().len());
+    }
+
+    #[test]
+    fn bash_execution_tracks_output_and_exit() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start",
+            "toolCallId": "b1",
+            "toolName": "bash",
+            "args": {"command": "cargo test", "excludeFromContext": true}
+        })));
+        let ChatKind::Bash(e) = &m.entries()[0].kind else {
+            panic!("expected bash entry");
+        };
+        assert_eq!(e.status, ExecStatus::Running);
+        assert!(e.excluded);
+        m.apply(&AppEvent::ToolExecutionEnd(json!({
+            "type": "tool_execution_end",
+            "toolCallId": "b1",
+            "toolName": "bash",
+            "result": {"content": [{"type": "text", "text": "test result: ok"}]},
+            "isError": false
+        })));
+        let ChatKind::Bash(e) = &m.entries()[0].kind else {
+            panic!("expected bash entry");
+        };
+        assert_eq!(e.status, ExecStatus::Complete);
+        assert_eq!(e.output, "test result: ok");
+        assert!(m.entries()[0].is_finished());
+    }
+
+    #[test]
+    fn rebuild_dispatches_all_message_roles() {
+        let mut m = Messages::new();
+        m.rebuild(&[
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "hello"}],
+                   "usage": {"input": 10, "output": 5}, "stopReason": "stop"}),
+            json!({"role": "bashExecution", "command": "ls", "output": "a\nb", "exitCode": 0}),
+            json!({"role": "compactionSummary", "method": "soft",
+                    "tokensBefore": 256_000, "tokensAfter": 20_000, "summary": "we talked"}),
+            json!({"role": "branchSummary", "summary": "side quest"}),
+            json!({"role": "custom", "customType": "advisor", "content": "note",
+                    "display": true, "attribution": "agent"}),
+        ]);
+        assert_eq!(m.entries().len(), 6);
+        assert!(matches!(m.entries()[2].kind, ChatKind::Bash(_)));
+        let ChatKind::Compaction(c) = &m.entries()[3].kind else {
+            panic!("expected compaction");
+        };
+        assert_eq!(c.label(), "soft-compacted");
+        assert!(matches!(m.entries()[4].kind, ChatKind::Branch { .. }));
+        let ChatKind::Custom(c) = &m.entries()[5].kind else {
+            panic!("expected custom");
+        };
+        assert_eq!(c.custom_type, "advisor");
+        assert!(c.display);
+        assert_eq!(m.finished_len(), 6); // everything finished after rebuild
+    }
+
+    #[test]
+    fn compaction_label_mapping() {
+        assert_eq!(
+            Compaction {
+                method: "remote".into(),
+                tokens_before: 0,
+                tokens_after: None,
+                summary: String::new(),
+                warning: None
+            }
+            .label(),
+            "remote-compacted"
+        );
+        assert_eq!(
+            Compaction {
+                method: "handoff".into(),
+                tokens_before: 0,
+                tokens_after: None,
+                summary: String::new(),
+                warning: None
+            }
+            .label(),
+            "handed-off"
+        );
+        assert_eq!(
+            Compaction {
+                method: "legacy".into(),
+                tokens_before: 0,
+                tokens_after: None,
+                summary: String::new(),
+                warning: None
+            }
+            .label(),
+            "compacted"
+        );
+    }
+
+    #[test]
+    fn committed_rows_advance_watermark() {
+        let mut m = Messages::new();
+        m.push_user("hi");
+        let rows = m.take_committed_rows(80);
+        assert!(!rows.is_empty());
+        assert!(rows[0].to_string().contains("hi"));
+        // Nothing new: no rows.
+        assert!(m.take_committed_rows(80).is_empty());
+        // Streaming entry is not committed until settled.
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&msg_update("working"));
+        assert!(m.take_committed_rows(80).is_empty());
+        m.apply(&msg_end("working"));
+        assert!(!m.take_committed_rows(80).is_empty());
+    }
+
+    #[test]
+    fn all_rows_covers_everything_and_resets_watermark() {
+        let mut m = Messages::new();
+        m.push_user("one");
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&msg_update("two"));
+        let rows = m.all_rows(80);
+        assert!(rows.iter().any(|r| r.to_string().contains("one")));
+        assert!(rows.iter().any(|r| r.to_string().contains("two")));
+        // Live tail not committed; finished prefix is.
+        assert_eq!(m.committed, m.finished_len());
+        assert!(m.take_committed_rows(80).is_empty());
+    }
+
+    #[test]
+    fn render_rows_wraps_at_width() {
+        let rows = render_rows(
+            &[ChatEntry::new(
+                ChatRole::Assistant,
+                "alpha beta gamma delta epsilon zeta".to_owned(),
+                ChatKind::Notice(String::new()),
+                true,
+            )],
+            12,
+        );
+        assert!(rows.len() > 1);
+        assert!(rows.iter().all(|r| r.to_string().len() <= 12));
+    }
+
+    #[test]
+    fn push_system_adds_finished_notice() {
+        let mut m = Messages::new();
+        m.push_system("unknown command /x");
+        assert_eq!(m.entries().len(), 1);
+        assert!(matches!(m.entries()[0].kind, ChatKind::Notice(_)));
+        assert_eq!(m.finished_len(), 1);
+    }
+
+    #[test]
+    fn ctrl_o_toggles_transcript_expansion() {
+        let mut m = Messages::new();
+        assert!(!m.expanded());
+        m.toggle_expanded();
+        assert!(m.expanded());
+        m.set_expanded(false);
+        assert!(!m.expanded());
+    }
+
+    #[test]
+    fn aborted_tool_is_sealed_at_turn_end() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start", "toolCallId": "t1",
+            "toolName": "web_search", "args": {"query": "x"}
+        })));
+        assert_eq!(m.finished_len(), 0);
+        m.apply(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
+        assert_eq!(m.finished_len(), 1);
+        let ChatKind::Tool(card) = &m.entries()[0].kind else {
+            panic!("expected tool card");
+        };
+        assert!(!card.partial);
     }
 }

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Interactive terminal UI for omp-rs (Rust port of omp's pi-tui)"
 
 [dependencies]
+omp-session = { path = "../omp-session" }
 crossterm = { version = "0.28", features = ["event-stream"] }
 ratatui = "0.29"
 tokio = { workspace = true }
@@ -15,6 +16,11 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 parking_lot = "0.12"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+pi-edit = { path = "../../vendor/pi-edit" }
+pi-ast = { path = "../../vendor/pi-ast" }
+tree-sitter = "0.25"
 
 [lints]
 workspace = true
