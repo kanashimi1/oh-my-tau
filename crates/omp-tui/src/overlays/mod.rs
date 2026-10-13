@@ -125,6 +125,36 @@ impl Overlays {
         &mut self.sessions
     }
 
+    /// Mutable access to the model picker (catalogue seeding, `/model`
+    /// query pre-fill).
+    pub fn models_mut(&mut self) -> &mut models::ModelPicker {
+        &mut self.models
+    }
+
+    /// Open the embedded session picker (`/resume`): rescan `dir`, reset the
+    /// query/selection and push the overlay (replacing a stale picker).
+    pub fn open_sessions(&mut self, dir: &std::path::Path) {
+        let mut picker = sessions::SessionPicker::load(dir);
+        picker.set_standalone(false);
+        self.sessions = picker;
+        if !self.stack.contains(&OpenOverlay::Sessions) {
+            self.stack.push(OpenOverlay::Sessions);
+        }
+    }
+
+    /// Open the tree navigator in `mode`, seeded with raw journal entries
+    /// (`/tree` full view, double-Esc rewind column).
+    pub fn open_tree(&mut self, entries: &[serde_json::Value], mode: tree::TreeMode) {
+        self.tree.set_entries(entries, mode);
+        self.tree.title = match mode {
+            tree::TreeMode::Rewind => "rewind".to_owned(),
+            tree::TreeMode::Tree => "tree".to_owned(),
+        };
+        if !self.stack.contains(&OpenOverlay::Tree) {
+            self.stack.push(OpenOverlay::Tree);
+        }
+    }
+
     /// Close the top overlay (esc routing).
     pub fn pop(&mut self) {
         self.stack.pop();

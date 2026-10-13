@@ -13,9 +13,8 @@
 //! base lowercased, `esc`→`escape`, `return`→`enter`, a bare uppercase letter
 //! becomes `shift+<lower>`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -171,7 +170,7 @@ pub fn canonical_key_id(key: &str) -> String {
     let base = match raw_base.to_lowercase().as_str() {
         "esc" => "escape".to_string(),
         "return" => "enter".to_string(),
-        lower => lower,
+        lower => lower.to_string(),
     };
     if is_ascii_uppercase_letter(raw_base) && !modifiers.contains(&"shift") {
         modifiers.push("shift");
@@ -372,7 +371,7 @@ pub fn key_id_from_event(event: &KeyEvent) -> Option<String> {
     }
     // Shift is already expressed by an uppercase char base; add the explicit
     // prefix only for non-char keys (BackTab handled above as plain `tab`).
-    if mods.contains(KeyModifiers::SHIFT) && !event.code.is_char() {
+    if mods.contains(KeyModifiers::SHIFT) && !matches!(event.code, KeyCode::Char(_)) {
         prefixed.push_str("shift+");
     }
     if mods.contains(KeyModifiers::ALT) {
@@ -383,4 +382,217 @@ pub fn key_id_from_event(event: &KeyEvent) -> Option<String> {
     }
     prefixed.push_str(&base);
     Some(canonical_key_id(&prefixed))
+}
+
+/// The user overrides file (TS `app-keybindings.ts` loader): the flat map
+/// `~/.omp/agent/keybindings.yml` (`OMP_AGENT_DIR` when set), where each
+/// value is a key id, a list of key ids, or `[]`/`null` to disable the
+/// binding.
+#[must_use]
+pub fn user_keybindings_path() -> PathBuf {
+    let mut p = std::env::var_os("OMP_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let mut home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+            home.push(".omp");
+            home.push("agent");
+            home
+        });
+    p.push("keybindings.yml");
+    p
+}
+
+/// Load user overrides from `path`. Missing file → empty map (no overrides).
+/// A malformed file yields an error string (the caller surfaces it as a
+/// notice and keeps the defaults, like TS which logs and continues).
+pub fn load_user_bindings(path: &Path) -> Result<UserBindings, String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(UserBindings::new()),
+        Err(e) => return Err(format!("{path:?}: {e}")),
+    };
+    let raw: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&text).map_err(|e| format!("{path:?}: {e}"))?;
+    let mapping = raw
+        .as_mapping()
+        .ok_or_else(|| format!("{path:?}: expected a flat key→keys mapping"))?;
+    let mut out = UserBindings::new();
+    for (k, v) in mapping {
+        let Some(id) = k.as_str() else { continue };
+        let keys: Vec<String> = match v {
+            serde_yaml_ng::Value::Null => Vec::new(),
+            serde_yaml_ng::Value::String(s) => vec![s.clone()],
+            serde_yaml_ng::Value::Sequence(items) => items
+                .iter()
+                .filter_map(|i| i.as_str().map(str::to_owned))
+                .collect(),
+            _ => continue,
+        };
+        out.insert(id.to_owned(), keys);
+    }
+    Ok(out)
+}
+
+/// The startup manager: user overrides from [`user_keybindings_path`], then
+/// defaults. Unreadable/invalid override files are ignored (defaults win) —
+/// the app shows the parse error as a system notice at startup.
+#[must_use]
+pub fn load_default_manager() -> KeybindingsManager {
+    KeybindingsManager::new(load_user_bindings(&user_keybindings_path()).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent as CtKeyEvent, KeyModifiers as CtMods};
+
+    fn ev(code: KeyCode, mods: KeyModifiers) -> CtKeyEvent {
+        CtKeyEvent::new(code, mods)
+    }
+
+    // ---- canonical ids (TS canonicalKeyId) -------------------------------
+
+    #[test]
+    fn canonicalizes_modifier_order_and_aliases() {
+        assert_eq!(canonical_key_id("esc"), "escape");
+        assert_eq!(canonical_key_id("return"), "enter");
+        assert_eq!(canonical_key_id("ctrl+shift+p"), "ctrl+shift+p");
+        assert_eq!(canonical_key_id("shift+ctrl+p"), "ctrl+shift+p");
+        assert_eq!(canonical_key_id("Ctrl+Alt+Right"), "ctrl+alt+right");
+        assert_eq!(canonical_key_id("A"), "shift+a");
+        assert_eq!(canonical_key_id("pageup"), "pageup");
+    }
+
+    #[test]
+    fn event_to_canonical_id() {
+        assert_eq!(
+            key_id_from_event(&ev(KeyCode::Esc, CtMods::NONE)),
+            Some("escape".into())
+        );
+        assert_eq!(
+            key_id_from_event(&ev(KeyCode::Char('c'), CtMods::CONTROL)),
+            Some("ctrl+c".into())
+        );
+        assert_eq!(
+            key_id_from_event(&ev(KeyCode::Char('D'), CtMods::SHIFT)),
+            Some("shift+d".into())
+        );
+        assert_eq!(
+            key_id_from_event(&ev(KeyCode::Up, CtMods::ALT)),
+            Some("alt+up".into())
+        );
+        assert_eq!(
+            key_id_from_event(&ev(KeyCode::Enter, CtMods::CONTROL)),
+            Some("ctrl+enter".into())
+        );
+    }
+
+    // ---- defaults reproduce the app's hard-coded input path --------------
+
+    #[test]
+    fn defaults_reproduce_app_input_bindings() {
+        let km = KeybindingsManager::defaults();
+        assert!(km.matches_event(&ev(KeyCode::Esc, CtMods::NONE), "app.interrupt"));
+        assert!(km.matches_event(&ev(KeyCode::Char('c'), CtMods::CONTROL), "app.clear"));
+        assert!(km.matches_event(&ev(KeyCode::Char('d'), CtMods::CONTROL), "app.exit"));
+        assert!(km.matches_event(&ev(KeyCode::Char('o'), CtMods::CONTROL), "app.tools.expand"));
+        assert!(km.matches_event(&ev(KeyCode::Up, CtMods::ALT), "app.message.dequeue"));
+        assert!(km.matches_event(&ev(KeyCode::Up, CtMods::SHIFT), "app.message.dequeue"));
+        assert!(!km.matches_event(&ev(KeyCode::Char('x'), CtMods::NONE), "app.exit"));
+        assert!(!km.matches_event(&ev(KeyCode::Esc, CtMods::NONE), "app.exit"));
+    }
+
+    #[test]
+    fn shifted_symbol_alias_matches_terminal_reports() {
+        let mut user = UserBindings::new();
+        user.insert("app.tools.expand".into(), vec!["?".into()]);
+        let km = KeybindingsManager::new(user);
+        assert!(km.matches_event(&ev(KeyCode::Char('?'), CtMods::SHIFT), "app.tools.expand"));
+        assert!(km.matches_event(&ev(KeyCode::Char('?'), CtMods::NONE), "app.tools.expand"));
+        // Unchanged bindings keep their defaults.
+        assert!(km.matches_event(&ev(KeyCode::Esc, CtMods::NONE), "app.interrupt"));
+    }
+
+    // ---- user overrides ---------------------------------------------------
+
+    #[test]
+    fn user_override_replaces_default_keys() {
+        let mut user = UserBindings::new();
+        user.insert("app.exit".into(), vec!["ctrl+q".into(), "ctrl+alt+q".into()]);
+        let km = KeybindingsManager::new(user);
+        assert!(km.matches_event(&ev(KeyCode::Char('q'), CtMods::CONTROL), "app.exit"));
+        assert!(!km.matches_event(&ev(KeyCode::Char('d'), CtMods::CONTROL), "app.exit"));
+        assert_eq!(km.get_keys("app.exit"), vec!["ctrl+q", "ctrl+alt+q"]);
+    }
+
+    #[test]
+    fn empty_override_disables_binding() {
+        let mut user = UserBindings::new();
+        user.insert("app.exit".into(), Vec::new());
+        let km = KeybindingsManager::new(user);
+        assert!(!km.matches_event(&ev(KeyCode::Char('d'), CtMods::CONTROL), "app.exit"));
+        assert!(km.get_keys("app.exit").is_empty());
+    }
+
+    #[test]
+    fn detects_user_override_conflicts() {
+        let mut user = UserBindings::new();
+        user.insert("app.exit".into(), vec!["ctrl+q".into()]);
+        user.insert("app.clear".into(), vec!["ctrl+q".into()]);
+        let km = KeybindingsManager::new(user);
+        assert_eq!(km.get_conflicts().len(), 1);
+        assert_eq!(km.get_conflicts()[0].key, "ctrl+q");
+        assert!(km.get_conflicts()[0].bindings.len() == 2);
+    }
+
+    #[test]
+    fn ignores_unknown_binding_ids() {
+        let mut user = UserBindings::new();
+        user.insert("app.nonexistent".into(), vec!["ctrl+q".into()]);
+        let km = KeybindingsManager::new(user);
+        assert!(km.get_conflicts().is_empty());
+        assert!(km.get_keys("app.nonexistent").is_empty());
+    }
+
+    // ---- yml loader -------------------------------------------------------
+
+    fn write_temp_yaml(contents: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "omp-kb-test-{}-{}.yml",
+            std::process::id(),
+            contents.len()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn loads_flat_yaml_overrides() {
+        let path = write_temp_yaml(
+            "app.exit: ctrl+q\napp.clear: [ctrl+c, ctrl+shift+c]\napp.model.select: []\n",
+        );
+        let user = load_user_bindings(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            user.get("app.exit").map(Vec::as_slice),
+            Some(&["ctrl+q".to_owned()][..])
+        );
+        assert_eq!(user.get("app.clear").map(Vec::len), Some(2));
+        assert_eq!(user.get("app.model.select").map(Vec::len), Some(0));
+    }
+
+    #[test]
+    fn missing_yaml_means_no_overrides() {
+        let user =
+            load_user_bindings(&PathBuf::from("/nonexistent/omp-keybindings.yml")).unwrap();
+        assert!(user.is_empty());
+    }
+
+    #[test]
+    fn malformed_yaml_is_an_error_not_a_panic() {
+        let path = write_temp_yaml("app.exit: [unclosed\n  - x");
+        let err = load_user_bindings(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(err.is_err());
+    }
 }

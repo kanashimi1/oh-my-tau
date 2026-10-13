@@ -213,6 +213,14 @@ impl TerminalTitle {
         self.emit(&title);
     }
 
+    /// The last composed title (deduped), or `None` before the first emit.
+    /// On a non-TTY the OSC write is skipped but the composition is still
+    /// recorded, so tests and headless hosts can observe title state.
+    #[must_use]
+    pub fn current_title(&self) -> Option<String> {
+        self.shared.last.lock().clone()
+    }
+
     fn separator_for(&self, state: TitleState) -> &'static str {
         match state {
             TitleState::Idle => ">",
@@ -273,15 +281,17 @@ impl Drop for TerminalTitle {
 
 /// OSC 0 write with dedup; silent no-op when stdout is not a TTY.
 fn write_title(shared: &Shared, title: &str) {
-    if !std::io::stdout().is_terminal() {
-        return;
-    }
     {
         let mut last = shared.last.lock();
         if last.as_deref() == Some(title) {
             return;
         }
+        // Record the composed title even when the write is skipped (non-TTY:
+        // tests and headless consumers observe state through `current`).
         *last = Some(title.to_string());
+    }
+    if !std::io::stdout().is_terminal() {
+        return;
     }
     // crossterm queues the sequence; flush is left to the terminal loop, and
     // the controller draws at ≥ the spinner tick anyway. Emit via SetTitle so

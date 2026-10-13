@@ -33,6 +33,7 @@ pub mod events;
 pub mod extension_ui;
 pub mod images;
 pub mod keys;
+pub mod keybindings;
 pub mod mouse;
 pub mod overlays;
 pub mod port;
@@ -58,10 +59,20 @@ pub struct RunConfig {
     /// by [`events::parse_frame`].
     pub frames: UnboundedReceiver<serde_json::Value>,
     /// Model reference shown in the status line until the first
-    /// `model_changed` frame arrives (`provider/id`).
+    /// `model_changed` frame arrives (`provider/id`); also preselects the
+    /// `/model` picker's current row.
     pub model: String,
     /// Working directory the session runs in (status line / chrome).
     pub cwd: PathBuf,
+    /// Model catalogue for the `/model` picker (providers with credentials,
+    /// omp-cli `runtime::available_models`).
+    pub models: Vec<overlays::models::ModelEntry>,
+    /// The current folder's session dir backing the embedded `/resume`
+    /// picker.
+    pub sessions_dir: PathBuf,
+    /// Terminal background from the startup OSC 11 probe (`None` →
+    /// COLORFGBG / dark default inside [`theme::detect_appearance`]).
+    pub osc11_bg: Option<theme::Rgb>,
 }
 
 /// Run the interactive TUI until the user quits (Ctrl+C / Ctrl+Q / `:q` in

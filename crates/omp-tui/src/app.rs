@@ -32,7 +32,9 @@
 //! newest cumulative snapshot wins.
 
 use std::collections::VecDeque;
-use std::path::Path;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::Event;
@@ -43,12 +45,17 @@ use ratatui::Frame;
 use serde_json::Value;
 
 use crate::action::{Action, QueueKind, SubmitBehavior};
-use crate::chat::{ChatRole, Messages};
+use crate::chat::Messages;
+use crate::chrome::notify::{send_notification, NotifyProtocol, TerminalNotification};
+use crate::chrome::title::{TerminalTitle, TitleState};
 use crate::component::Component;
 use crate::editor::{Editor, EditorOutcome};
 use crate::events::{parse_frame, AppEvent};
 use crate::extension_ui::ExtensionUi;
+use crate::keybindings::KeybindingsManager;
 use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
+use crate::overlays::models::{parse_model_string, ModelEntry};
+use crate::overlays::tree::TreeMode;
 use crate::overlays::{OpenOverlay, Overlays};
 use crate::port::RuntimePort;
 use crate::status_line::StatusLine;
@@ -61,9 +68,11 @@ const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(500);
 /// Spinner frames for the "Working…" loader (TS loading animation set).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 /// P0 builtin slash commands dispatched through `Action::Slash`
-/// (§4.2 MVP cut: `exit help model effort compact clear context export`).
+/// (§4.2 MVP cut: `exit help model effort compact clear context export`
+/// plus the overlay-backed `resume`/`tree`/`theme`).
 const P0_BUILTINS: &[&str] = &[
-    "exit", "help", "model", "effort", "compact", "clear", "context", "export",
+    "exit", "help", "model", "effort", "compact", "clear", "context", "export", "resume", "tree",
+    "theme",
 ];
 /// Bare-slash commands that require a confirming second Enter (§4.1 step 7).
 const CONFIRM_BARE: &[&str] = &["exit", "clear", "compact", "export"];
@@ -75,6 +84,51 @@ enum Maintenance {
     Compaction,
     /// `auto_retry_start` is in flight.
     Retry,
+}
+
+/// Turn-settle notification dispatcher (chrome.md §13 P0: Bell + OSC +
+/// notify-send fallback honoring `PI_NO_DESKTOP_NOTIFY`).
+///
+/// Every fired notification is recorded (headless-observable for tests);
+/// delivery goes through [`send_notification`] unless the host installs a
+/// hook (tests capture instead of writing escape sequences / spawning
+/// `notify-send`).
+#[derive(Clone, Default)]
+pub struct NotifySink {
+    hook: Option<Arc<dyn Fn(&TerminalNotification) + Send + Sync>>,
+    record: Arc<parking_lot::Mutex<Vec<String>>>,
+}
+
+impl fmt::Debug for NotifySink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NotifySink")
+            .field("hook", &self.hook.is_some())
+            .field("record", &self.record.lock().clone())
+            .finish()
+    }
+}
+
+impl NotifySink {
+    /// Capture deliveries through `hook` instead of the real terminal path.
+    pub fn set_hook(&mut self, hook: Arc<dyn Fn(&TerminalNotification) + Send + Sync>) {
+        self.hook = Some(hook);
+    }
+
+    /// Record + deliver one notification.
+    pub fn fire(&self, n: &TerminalNotification) {
+        use crate::chrome::notify::notification_to_line;
+        self.record.lock().push(notification_to_line(n));
+        match &self.hook {
+            Some(hook) => hook(n),
+            None => send_notification(NotifyProtocol::Bell, n),
+        }
+    }
+
+    /// Recorded `notification_to_line` strings, in fire order.
+    #[must_use]
+    pub fn record(&self) -> Vec<String> {
+        self.record.lock().clone()
+    }
 }
 
 /// Serialized frame pump: single queue, 33 ms `message_update` coalescing,
@@ -183,6 +237,23 @@ pub struct App {
     last_ctrl_c: Option<Instant>,
     /// `/exit` requested a quit; surfaced by the next submit return.
     quit_requested: bool,
+    /// Resolved keybindings (defaults + `~/.omp/agent/keybindings.yml`);
+    /// the app input path matches against these instead of hard-coded
+    /// chords (interactive P0 #15 / review2 §11 #15).
+    keys: KeybindingsManager,
+    /// Terminal title run-state owner (chrome P0 §8): Working on
+    /// `agent_start`, Idle on settle; disposed with the app.
+    title: TerminalTitle,
+    /// Title label: session name once known, else the cwd basename.
+    title_label: String,
+    /// Turn-settle notifications (chrome P0 notifications).
+    notify: NotifySink,
+    /// Raw journal entries (`message_end` frames normalized to
+    /// `{type:"message",id,parentId,message}`) feeding the rewind column /
+    /// tree overlay; reset when a session is resumed.
+    journal: Vec<Value>,
+    /// The current folder's session dir (`/resume` embedded picker source).
+    sessions_dir: PathBuf,
 }
 
 impl App {
@@ -193,10 +264,12 @@ impl App {
             || cwd.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
         );
+        let title = TerminalTitle::new();
+        title.init(TitleState::Idle, Some(&dir));
         Self {
             messages: Messages::new(),
             editor: Editor::new(),
-            status: StatusLine::new(model, dir),
+            status: StatusLine::new(model, dir.clone()),
             overlays: Overlays::default(),
             extension_ui: ExtensionUi::new(),
             theme: Theme::default(),
@@ -211,12 +284,74 @@ impl App {
             last_esc: None,
             last_ctrl_c: None,
             quit_requested: false,
+            keys: KeybindingsManager::defaults(),
+            title,
+            title_label: dir,
+            notify: NotifySink::default(),
+            journal: Vec::new(),
+            sessions_dir: PathBuf::new(),
         }
     }
 
-    /// Replace the app-wide theme (ThemeLoader startup + hot-swap).
+    /// Replace the app-wide theme (ThemeLoader startup + hot-swap). The
+    /// transcript renderer is synced here — not per frame — so a hot-swap
+    /// lands everywhere on the next paint (tui-ChatRenderWire caveat).
     pub fn set_theme(&mut self, theme: Theme) {
+        self.messages.set_theme(theme.clone());
         self.theme = theme;
+    }
+
+    /// Seed the `/model` picker catalogue + the embedded `/resume` session
+    /// dir from the run configuration (called once by the controller).
+    pub fn configure(&mut self, models: Vec<ModelEntry>, sessions_dir: PathBuf) {
+        let current = Some(self.status.model.clone());
+        let picker = self.overlays.models_mut();
+        picker.models = models;
+        picker.current = current;
+        self.sessions_dir = sessions_dir;
+    }
+
+    /// Load user key overrides from `~/.omp/agent/keybindings.yml`
+    /// (`OMP_AGENT_DIR` aware). Returns a human-readable error when the file
+    /// exists but cannot be parsed (defaults stay in effect).
+    pub fn load_user_keybindings(&mut self) -> Option<String> {
+        let path = crate::keybindings::user_keybindings_path();
+        match crate::keybindings::load_user_bindings(&path) {
+            Ok(user) => {
+                let conflicts = {
+                    let km = KeybindingsManager::new(user.clone());
+                    km.get_conflicts().len()
+                };
+                self.keys = KeybindingsManager::new(user);
+                (conflicts > 0).then(|| {
+                    format!("keybindings: {conflicts} conflicting override(s) in {path:?}; first binding wins on the input path")
+                })
+            }
+            Err(e) => Some(format!("keybindings: {e}; defaults in effect")),
+        }
+    }
+
+    /// The terminal title owner (tests + controller dispose).
+    #[must_use]
+    pub fn title(&self) -> &TerminalTitle {
+        &self.title
+    }
+
+    /// Stop the title spinner and latch teardown (controller calls this on
+    /// exit; [`TerminalTitle`]'s `Drop` also covers panic paths).
+    pub fn dispose_title(&mut self) {
+        self.title.dispose();
+    }
+
+    /// The turn-settle notification sink (delivery hook + fired record).
+    #[must_use]
+    pub fn notify_sink(&self) -> &NotifySink {
+        &self.notify
+    }
+
+    /// Install a custom notification delivery hook (tests).
+    pub fn set_notify_hook(&mut self, hook: Arc<dyn Fn(&TerminalNotification) + Send + Sync>) {
+        self.notify.set_hook(hook);
     }
 
     /// Enqueue one raw runtime frame for serialized, coalesced dispatch.
@@ -253,12 +388,50 @@ impl App {
     /// Apply one classified runtime event directly (tests + compat path).
     pub fn apply_event(&mut self, event: &AppEvent) {
         match &event {
-            AppEvent::AgentStart | AppEvent::TurnStart => {
+            AppEvent::AgentStart => {
+                self.status.streaming = true;
+                self.pending_submission = false;
+                self.title.set_state(TitleState::Working, Some(&self.title_label));
+            }
+            AppEvent::TurnStart => {
                 self.status.streaming = true;
                 self.pending_submission = false;
             }
-            AppEvent::AgentEnd(_) | AppEvent::TurnEnd(_) | AppEvent::SessionSettled => {
+            AppEvent::AgentEnd(_) | AppEvent::TurnEnd(_) => {
                 self.status.streaming = false;
+                self.title.set_state(TitleState::Idle, Some(&self.title_label));
+            }
+            AppEvent::SessionSettled => {
+                self.status.streaming = false;
+                self.title.set_state(TitleState::Idle, Some(&self.title_label));
+                self.notify_turn_settled(None);
+            }
+            AppEvent::PromptResult {
+                success, frame, ..
+            } => {
+                if !success {
+                    let error = frame
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
+                    self.title.set_state(TitleState::Idle, Some(&self.title_label));
+                    self.notify_turn_settled(error);
+                }
+            }
+            AppEvent::MessageEnd(frame) => {
+                if let Some(entry) = journal_entry(frame) {
+                    self.journal.push(entry);
+                }
+            }
+            AppEvent::SessionNameChanged(name) => {
+                self.title_label = name.clone();
+                // Re-emit the current state with the new label.
+                let state = if self.status.streaming {
+                    TitleState::Working
+                } else {
+                    TitleState::Idle
+                };
+                self.title.set_state(state, Some(name));
             }
             AppEvent::MessageStart(_) => self.pending_submission = false,
             AppEvent::ModelChanged(frame) => {
@@ -272,7 +445,8 @@ impl App {
                         Some(format!("{p}/{id}"))
                     })
                 {
-                    self.status.model = m;
+                    self.status.model = m.clone();
+                    self.overlays.models_mut().current = Some(m);
                 }
             }
             AppEvent::QueueUpdate {
@@ -307,6 +481,19 @@ impl App {
         self.messages.apply(event);
     }
 
+    /// Fire the turn-settle notification (chrome P0): error body on failure,
+    /// plain completion on success. Delivery honors `PI_NO_DESKTOP_NOTIFY`
+    /// inside [`send_notification`].
+    fn notify_turn_settled(&mut self, error: Option<String>) {
+        let body = match error {
+            Some(e) => format!("Turn failed: {e}"),
+            None => "Turn complete".to_owned(),
+        };
+        let mut n = TerminalNotification::body(body);
+        n.title = Some("omp".to_owned());
+        self.notify.fire(&n);
+    }
+
     /// Handle one terminal event. Returns `false` when the app should quit.
     pub fn handle_terminal_event(&mut self, event: &Event, port: &impl RuntimePort) -> bool {
         let Event::Key(key) = event else {
@@ -325,7 +512,12 @@ impl App {
             Action::PromoteQueued { text } => port.promote_queued(text),
             Action::Abort => port.abort(),
             Action::Continue => port.continue_run(),
-            Action::ResumeSession { path, fork } => port.resume_session(path, fork),
+            Action::ResumeSession { path, fork } => {
+                // A resumed session replaces the transcript: drop the
+                // journal feeding the rewind/tree overlays.
+                self.journal.clear();
+                port.resume_session(path, fork);
+            }
             Action::Rewind { entry_id } => port.rewind_entry(entry_id),
             Action::SetModel { provider, id } => port.set_model(provider, id),
             Action::SetThinkingLevel(level) => port.set_thinking_level(level),
@@ -349,26 +541,32 @@ impl App {
 
     /// Handle a key event; `None` means quit.
     fn handle_key(&mut self, key: KeyEvent, port: &impl RuntimePort, now: Instant) -> Option<bool> {
-        // Global keys, active even under overlays.
-        match key.code {
-            KeyCode::Char('?') => {
-                self.overlays.toggle(OpenOverlay::Help);
-                return Some(true);
-            }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                return None; // Ctrl+D: immediate exit (§6 handleCtrlD)
-            }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.messages.toggle_expanded(); // app.tools.expand (chat.md)
-                return Some(true);
-            }
-            _ => {}
+        // Global keys, active even under overlays. `?` toggles help (TS
+        // hard-codes this chord outside the keybindings table); everything
+        // else resolves through the KeybindingsManager so user overrides
+        // from ~/.omp/agent/keybindings.yml apply (review2 §11 #15).
+        if key.code == KeyCode::Char('?') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.overlays.toggle(OpenOverlay::Help);
+            return Some(true);
+        }
+        if self.keys.matches_event(&key, "app.exit") {
+            return None; // exit (§6 handleCtrlD)
+        }
+        if self.keys.matches_event(&key, "app.tools.expand") {
+            self.messages.toggle_expanded(); // app.tools.expand (chat.md)
+            return Some(true);
         }
 
         // Overlay focus: route keys to the stack, top first. Esc closes the
-        // top overlay only when it ignored the key (help/palette ignore esc).
+        // top overlay only when it ignored the key (help/palette ignore esc;
+        // the tree navigator consumes esc as "cancel", so it is closed by
+        // the host explicitly).
         if self.overlays.wants_focus() {
             if key.code == KeyCode::Esc {
+                if self.overlays.open() == Some(OpenOverlay::Tree) {
+                    self.overlays.pop();
+                    return Some(true);
+                }
                 if !self.overlays.handle_key(key).consumed() {
                     self.overlays.pop();
                 }
@@ -379,9 +577,10 @@ impl App {
             return Some(consumed || self.overlays.wants_focus());
         }
 
-        // Ctrl+C: first tap clears the editor draft, double-tap within
-        // 500 ms exits (§6 handleCtrlC; exit code 130 comes from the CLI).
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Ctrl+C discipline: first tap clears the editor draft, double-tap
+        // within 500 ms exits (§6 handleCtrlC; exit code 130 comes from the
+        // CLI). Bound via `app.clear`.
+        if self.keys.matches_event(&key, "app.clear") {
             if self
                 .last_ctrl_c
                 .is_some_and(|t| now.duration_since(t) <= DOUBLE_TAP_WINDOW)
@@ -402,14 +601,15 @@ impl App {
             return Some(true);
         }
 
-        // alt+up: restore the most recently queued message to the editor
-        // (steering first, then follow-up; §5.3 handleDequeue).
-        if key.code == KeyCode::Up && key.modifiers.contains(KeyModifiers::ALT) {
+        // Restore the most recently queued message to the editor
+        // (steering first, then follow-up; §5.3 handleDequeue); the chord
+        // is the `app.message.dequeue` binding (default alt+up, shift+up).
+        if self.keys.matches_event(&key, "app.message.dequeue") {
             self.dequeue_to_editor(port);
             return Some(true);
         }
 
-        if key.code == KeyCode::Esc {
+        if self.keys.matches_event(&key, "app.interrupt") {
             return Some(self.esc_ladder(now, port));
         }
 
@@ -422,7 +622,7 @@ impl App {
                 }
                 Some(true)
             }
-            EditorOutcome::Interrupt => Some(true), // ctrl+c handled above
+            EditorOutcome::Interrupt => Some(true), // app.clear handled above
             EditorOutcome::Edited => Some(true),
         }
     }
@@ -465,14 +665,20 @@ impl App {
             return true;
         }
 
-        // Step 14: double-Esc within 500 ms runs the configured action
-        // (default `rewind` — the rewind selector is P1, so this is a
-        // repaint-only no-op for now, keeping the timing state correct).
+        // Step 14: double-Esc within 500 ms opens the rewind selector
+        // (overlays-b P0 #4 + interactive P0 #4): the user-message column
+        // along the live branch, fed by the journal accumulated from
+        // `message_end` frames. Enter confirms → `Action::Rewind`.
         if self
             .last_esc
             .is_some_and(|t| now.duration_since(t) <= DOUBLE_TAP_WINDOW)
         {
             self.last_esc = None;
+            if self.journal.is_empty() {
+                self.push_system("nothing to rewind yet".into());
+            } else {
+                self.overlays.open_tree(&self.journal.clone(), TreeMode::Rewind);
+            }
         } else {
             self.last_esc = Some(now);
         }
@@ -670,13 +876,24 @@ impl App {
     }
 
     /// Step 8: run a P0 builtin slash command (`exit` locally quits, `help`
-    /// opens the keyhints overlay, the rest dispatch to the runtime's
-    /// slash module via [`Action::Slash`]).
+    /// opens the keyhints overlay, `model`/`resume`/`tree` open their
+    /// overlays, `theme` hot-swaps locally, the rest dispatch to the
+    /// runtime's slash module via [`Action::Slash`]).
     fn execute_slash(&mut self, name: &str, args: &str, port: &impl RuntimePort) -> bool {
         self.armed_bare_command = None;
         match name {
             "exit" => self.quit_requested = true,
             "help" => self.overlays.toggle(OpenOverlay::Help),
+            "model" => self.slash_model(args, port),
+            "resume" => self.slash_resume(),
+            "tree" => {
+                if self.journal.is_empty() {
+                    self.push_system("no session tree yet".into());
+                } else {
+                    self.overlays.open_tree(&self.journal.clone(), TreeMode::Tree);
+                }
+            }
+            "theme" => self.slash_theme(args),
             _ => self.dispatch(
                 Action::Slash {
                     name: name.to_owned(),
@@ -686,6 +903,71 @@ impl App {
             ),
         }
         true
+    }
+
+    /// `/model`: bare or query form opens the picker (overlays-b P0 #1);
+    /// an exact `provider/id` that exists in the catalogue still goes
+    /// through the runtime slash dispatch (TS `setModel` path). Picking a
+    /// row drains `Action::SetModel` → `port.set_model`.
+    fn slash_model(&mut self, args: &str, port: &impl RuntimePort) {
+        let exact = parse_model_string(args).is_some_and(|(provider, id, _)| {
+            let selector = format!("{provider}/{id}").to_lowercase();
+            self.overlays
+                .models_mut()
+                .models
+                .iter()
+                .any(|m| m.selector().to_lowercase() == selector)
+        });
+        if exact {
+            self.dispatch(
+                Action::Slash {
+                    name: "model".to_owned(),
+                    args: args.to_owned(),
+                },
+                port,
+            );
+            return;
+        }
+        // Picker path: open (or re-open) and pre-fill the search query.
+        if self.overlays.open() == Some(OpenOverlay::Models) {
+            self.overlays.pop();
+        }
+        self.overlays.toggle(OpenOverlay::Models);
+        if !args.is_empty() {
+            let picker = self.overlays.models_mut();
+            picker.query = args.to_owned();
+            picker.selected = 0;
+        }
+    }
+
+    /// `/resume`: open the embedded session picker (overlays-b P0 #10); the
+    /// pick resolves to `Action::ResumeSession` via the overlay drain.
+    fn slash_resume(&mut self) {
+        if self.sessions_dir.as_os_str().is_empty() {
+            self.push_system("session storage is not available in this session".into());
+            return;
+        }
+        self.overlays.open_sessions(&self.sessions_dir);
+    }
+
+    /// `/theme`: bare lists the loadable themes; with a name it hot-swaps
+    /// the app theme immediately (chrome.md §7, settings hot-swap half).
+    fn slash_theme(&mut self, args: &str) {
+        if args.is_empty() {
+            let names: Vec<String> = crate::theme::available_themes()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
+            self.push_system(format!("available themes: {}", names.join(", ")));
+            return;
+        }
+        match crate::theme::load(args) {
+            Ok(theme) => {
+                self.set_theme(theme);
+                self.push_system(format!("theme set to {args}"));
+            }
+            Err(e) => self.push_system(format!("theme error: {e}")),
+        }
     }
 
     // ---- Live-region layout (ShellRender commit/live API) ----------------
@@ -823,9 +1105,11 @@ impl App {
     }
 
     /// The `app.message.dequeue` binding, formatted for the band hint
-    /// (TS `formatKeyHint`; the keybindings loader will make this dynamic).
-    fn dequeue_hint(&self) -> &'static str {
-        "alt+up"
+    /// (TS `formatKeyHint`): first resolved key, static fallback.
+    fn dequeue_hint(&self) -> String {
+        self.keys
+            .first_key("app.message.dequeue")
+            .unwrap_or_else(|| "alt+up".to_owned())
     }
 
     /// The "Working…" loader row (spinner + optional maintenance label).
@@ -854,8 +1138,8 @@ impl App {
     /// once per frame here in the draw loop (chat.md §8).
     fn render_chat(&mut self, frame: &mut Frame<'_>, area: Rect) {
         use ratatui::widgets::Paragraph;
-        // Keep the transcript renderer on the app theme (hot-swap path).
-        self.messages.set_theme(self.theme.clone());
+        // The transcript renderer's theme is synced by `set_theme` only
+        // (startup load + `/theme` hot-swap), not per frame.
         self.messages.tick_reveal();
         let height = area.height as usize;
         let base = self.messages.committed_len();
@@ -877,21 +1161,27 @@ fn now_millis() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// Char-truncate to `width` display columns (approximation: chars, not
-/// graphemes; TS uses `TruncatedText` with the same intent).
-fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_owned();
+/// Normalize a `message_end` frame into the journal shape the session tree
+/// expects (`{type:"message", id, parentId?, message}`; omp-session `tree`
+/// helpers read exactly these fields). `None` when the message has no id.
+fn journal_entry(frame: &Value) -> Option<Value> {
+    let message = frame.get("message")?;
+    let id = message.get("id").and_then(Value::as_str)?;
+    let mut entry = serde_json::json!({
+        "type": "message",
+        "id": id,
+        "message": message,
+    });
+    if let Some(parent) = message.get("parentId").and_then(Value::as_str) {
+        entry["parentId"] = Value::from(parent);
     }
-    text.chars()
-        .take(width.saturating_sub(1))
-        .collect::<String>()
-        + "…"
+    Some(entry)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::ChatRole;
     use crate::port::FakePort;
     use crossterm::event::{KeyCode as CtKeyCode, KeyEvent as CtKeyEvent, KeyModifiers as CtMods};
     use ratatui::backend::TestBackend;
@@ -1019,15 +1309,58 @@ mod tests {
     }
 
     #[test]
-    fn builtin_slash_dispatches_and_exit_quits() {
+    fn slash_model_exact_id_dispatches_to_runtime() {
         let mut app = app();
         let port = port();
+        app.configure(
+            vec![ModelEntry::new("zai", "glm", Some(128_000))],
+            PathBuf::new(),
+        );
         type_text(&mut app, &port, "/model zai/glm");
         assert!(enter(&mut app, &port));
+        // An exact catalogue id goes through the runtime slash dispatch.
         assert_eq!(
             log(&port),
             vec!["run_slash(model, \"zai/glm\")".to_string()]
         );
+        assert_eq!(app.overlays.open(), None);
+    }
+
+    #[test]
+    fn slash_model_bare_or_query_opens_picker() {
+        for args in ["", "glm"] {
+            let mut app = app();
+            let port = port();
+            app.configure(
+                vec![ModelEntry::new("zai", "glm", Some(128_000))],
+                PathBuf::new(),
+            );
+            type_text(&mut app, &port, &format!("/model {args}"));
+            assert!(enter(&mut app, &port), "args: {args:?}");
+            assert_eq!(
+                app.overlays.open(),
+                Some(OpenOverlay::Models),
+                "args: {args:?}"
+            );
+            assert!(log(&port).is_empty(), "no port calls for picker");
+        }
+    }
+
+    #[test]
+    fn model_picker_pick_dispatches_set_model_and_closes() {
+        let mut app = app();
+        let port = port();
+        app.configure(
+            vec![ModelEntry::new("zai", "glm", Some(128_000))],
+            PathBuf::new(),
+        );
+        type_text(&mut app, &port, "/model");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Models));
+        // Enter on the highlighted row drains SetModel → port.set_model.
+        assert!(enter(&mut app, &port));
+        assert_eq!(log(&port), vec!["set_model(zai, glm)".to_string()]);
+        assert_eq!(app.overlays.open(), None);
     }
 
     #[test]
@@ -1346,5 +1679,256 @@ mod tests {
             status_row.contains("zai/glm-5.3-flash"),
             "row: {status_row:?}"
         );
+    }
+
+    // ---- /resume, /tree, /theme overlay wiring ----------------------------
+
+    #[test]
+    fn slash_resume_opens_embedded_session_picker() {
+        let mut app = app();
+        let port = port();
+        let dir = std::env::temp_dir().join(format!("omp-resume-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A minimal journal: title line + session header.
+        let file = dir.join("sess.jsonl");
+        std::fs::write(
+            &file,
+            concat!(
+                "{\"type\":\"title\",\"title\":\"demo session\"}\n",
+                "{\"type\":\"session\",\"id\":\"s1\",\"cwd\":\"/repo\"}\n",
+            ),
+        )
+        .unwrap();
+        app.configure(Vec::new(), dir.clone());
+        type_text(&mut app, &port, "/resume");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Sessions));
+        // Enter resumes the highlighted session through the port.
+        assert!(enter(&mut app, &port));
+        let calls = log(&port);
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("resume_session(") && c.contains("sess.jsonl")),
+            "calls: {calls:?}"
+        );
+        assert_eq!(app.overlays.open(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn slash_tree_opens_tree_overlay_from_journal() {
+        let mut app = app();
+        let port = port();
+        push_user_turn(&mut app, "u1", None, "first question");
+        push_user_turn(&mut app, "u2", Some("u1"), "follow up");
+        type_text(&mut app, &port, "/tree");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Tree));
+        assert!(app.has_fullscreen_overlay());
+    }
+
+    #[test]
+    fn slash_theme_lists_and_hot_swaps() {
+        let mut app = app();
+        let port = port();
+        type_text(&mut app, &port, "/theme");
+        assert!(enter(&mut app, &port));
+        assert!(app
+            .messages
+            .entries()
+            .iter()
+            .any(|e| e.text.contains("available themes:")));
+        type_text(&mut app, &port, "/theme light");
+        assert!(enter(&mut app, &port));
+        // The transcript renderer follows the app theme (set_theme is the
+        // single sync point, not a per-frame copy).
+        assert_eq!(
+            app.theme.color("accent"),
+            app.messages.theme().color("accent")
+        );
+        assert_ne!(
+            app.theme.color("accent"),
+            Theme::default().color("accent")
+        );
+    }
+
+    #[test]
+    fn theme_setter_syncs_transcript_renderer_once() {
+        let mut app = app();
+        let before = app.messages.theme().color("accent");
+        let t = crate::theme::load("dark").expect("builtin dark theme");
+        app.set_theme(t.clone());
+        assert_eq!(app.messages.theme().color("accent"), t.color("accent"));
+        assert_ne!(before, t.color("accent"));
+    }
+
+    // ---- double-Esc rewind --------------------------------------------------
+
+    #[test]
+    fn double_esc_opens_rewind_tree_and_confirms() {
+        let mut app = app();
+        let port = port();
+        push_user_turn(&mut app, "u1", None, "first question");
+        push_user_turn(&mut app, "u2", Some("u1"), "follow up");
+        let t0 = Instant::now();
+        let esc = || key(CtKeyCode::Esc);
+        assert!(app.handle_key(esc(), &port, t0).is_some());
+        assert_eq!(app.overlays.open(), None); // first Esc is timing state
+        assert!(app
+            .handle_key(esc(), &port, t0 + Duration::from_millis(100))
+            .is_some());
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Tree));
+        // Enter confirms the rewind target → port.rewind_entry.
+        assert!(enter(&mut app, &port));
+        let calls = log(&port);
+        assert!(
+            calls.iter().any(|c| c.starts_with("rewind_entry(")),
+            "calls: {calls:?}"
+        );
+        assert_eq!(app.overlays.open(), None);
+    }
+
+    #[test]
+    fn double_esc_without_history_shows_notice() {
+        let mut app = app();
+        let port = port();
+        let t0 = Instant::now();
+        assert!(app.handle_key(key(CtKeyCode::Esc), &port, t0).is_some());
+        assert!(app
+            .handle_key(key(CtKeyCode::Esc), &port, t0 + Duration::from_millis(50))
+            .is_some());
+        assert_eq!(app.overlays.open(), None);
+        assert!(app
+            .messages
+            .entries()
+            .iter()
+            .any(|e| e.text.contains("nothing to rewind")));
+    }
+
+    // ---- terminal title -----------------------------------------------------
+
+    #[test]
+    fn title_follows_agent_start_and_end() {
+        let mut app = app();
+        let title = app.title().current_title().unwrap_or_default();
+        assert!(title.contains("repo"), "initial title: {title:?}");
+        app.apply_event(&AppEvent::AgentStart);
+        let working = app.title().current_title().unwrap_or_default();
+        assert!(working.starts_with('π'), "working title: {working:?}");
+        assert!(working.contains("repo"), "working title: {working:?}");
+        app.apply_event(&AppEvent::AgentEnd(json!({})));
+        let idle = app.title().current_title().unwrap_or_default();
+        assert!(idle.contains('>'), "idle title: {idle:?}");
+    }
+
+    // ---- notifications ------------------------------------------------------
+
+    #[test]
+    fn session_settled_fires_turn_notification() {
+        let mut app = app();
+        app.apply_event(&AppEvent::SessionSettled);
+        assert_eq!(
+            app.notify_sink().record(),
+            vec!["omp: Turn complete".to_string()]
+        );
+    }
+
+    #[test]
+    fn failed_prompt_result_fires_error_notification() {
+        let mut app = app();
+        app.apply_event(&AppEvent::PromptResult {
+            id: None,
+            success: false,
+            frame: json!({"type":"prompt_result","success":false,"error":"kaboom"}),
+        });
+        assert_eq!(
+            app.notify_sink().record(),
+            vec!["omp: Turn failed: kaboom".to_string()]
+        );
+    }
+
+    #[test]
+    fn notify_hook_intercepts_delivery() {
+        let mut app = app();
+        let got = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let sink_got = got.clone();
+        app.set_notify_hook(std::sync::Arc::new(move |n| {
+            sink_got.lock().push(n.body.clone());
+        }));
+        app.apply_event(&AppEvent::SessionSettled);
+        assert_eq!(got.lock().clone(), vec!["Turn complete".to_string()]);
+    }
+
+    // ---- keymap engine on the input path ---------------------------------
+
+    #[test]
+    fn input_path_uses_keymap_overrides() {
+        let mut app = app();
+        let port = port();
+        // Rebind app.exit to ctrl+q; ctrl+d must stop quitting.
+        let mut user = crate::keybindings::UserBindings::new();
+        user.insert("app.exit".into(), vec!["ctrl+q".into()]);
+        let mut km = crate::keybindings::KeybindingsManager::new(user);
+        std::mem::swap(&mut app.keys, &mut km);
+        assert!(app.handle_key(ctrl('d'), &port, Instant::now()).is_some());
+        assert_eq!(app.handle_key(ctrl('q'), &port, Instant::now()), None);
+    }
+
+    #[test]
+    fn input_path_rebound_dequeue_chord() {
+        let mut app = app();
+        let port = port();
+        app.apply_event(&AppEvent::QueueUpdate {
+            steering: vec!["one".into()],
+            follow_up: Vec::new(),
+        });
+        // Rebind dequeue to ctrl+n.
+        let mut user = crate::keybindings::UserBindings::new();
+        user.insert("app.message.dequeue".into(), vec!["ctrl+n".into()]);
+        let mut km = crate::keybindings::KeybindingsManager::new(user);
+        std::mem::swap(&mut app.keys, &mut km);
+        assert!(press(&mut app, &port, ctrl('n')));
+        assert_eq!(app.editor.text(), "one");
+        assert_eq!(
+            log(&port),
+            vec!["remove_queued(\"one\", Steering)".to_string()]
+        );
+    }
+
+    #[test]
+    fn band_hint_reflects_dequeue_binding() {
+        let mut app = app();
+        let _port = port();
+        app.apply_event(&AppEvent::QueueUpdate {
+            steering: vec!["x".into()],
+            follow_up: Vec::new(),
+        });
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let band: Vec<String> = (15..22)
+            .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect())
+            .collect();
+        let text = band.join("\n");
+        assert!(text.contains("alt+up to edit"), "{text}");
+    }
+
+    /// Push one user turn through `message_end` so the rewind journal has a
+    /// realistic entry (`{id, parentId?, role, content}` inside `message`).
+    fn push_user_turn(app: &mut App, id: &str, parent: Option<&str>, text: &str) {
+        let mut message = serde_json::json!({
+            "id": id,
+            "role": "user",
+            "content": [{"type": "text", "text": text}],
+        });
+        if let Some(p) = parent {
+            message["parentId"] = Value::from(p);
+        }
+        app.apply_event(&AppEvent::MessageEnd(json!({
+            "type": "message_end",
+            "message": message,
+        })));
     }
 }

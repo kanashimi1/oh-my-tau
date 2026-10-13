@@ -71,6 +71,23 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     let mut frames = cfg.frames;
     let mut app = App::new(cfg.model, &cfg.cwd);
 
+    // Chrome/theme startup (chrome.md §13 P0):
+    // - theme: OSC 11 / COLORFGBG appearance → `theme.dark`/`theme.light`
+    //   (review2 §11 #6) instead of the 8-token hard-coded default.
+    // - keybindings: user overrides from ~/.omp/agent/keybindings.yml
+    //   (review2 §11 #15).
+    // - model catalogue + session dir for the `/model` and `/resume`
+    //   overlays.
+    let appearance = crate::theme::detect_appearance(cfg.osc11_bg);
+    match crate::theme::load_configured(None, None, appearance) {
+        Ok(theme) => app.set_theme(theme),
+        Err(e) => tracing::warn!("theme load failed, keeping default: {e}"),
+    }
+    if let Some(warning) = app.load_user_keybindings() {
+        tracing::warn!("{warning}");
+    }
+    app.configure(cfg.models, cfg.sessions_dir);
+
     shell.draw_live(|f| app.render(f)).context("initial draw")?;
 
     loop {
@@ -128,6 +145,9 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
             shell.draw_live(|f| app.render(f)).context("draw")?;
         }
     }
+    // Teardown the terminal title (stops the spinner thread) before the
+    // shell restores the screen; the app's `Drop` is the panic-path backup.
+    app.dispose_title();
     Ok(())
 }
 
@@ -169,4 +189,144 @@ fn install_panic_hook() {
         let _ = out.flush();
         default(info);
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    //! FakePort-driven smoke tests for the controller's frame→app pipeline
+    //! (review2 §8: controller.rs had zero tests). The terminal `Shell`
+    //! itself needs a TTY, so these drive the same per-frame entry point the
+    //! select loop uses (`App::push_frame` + `pump_events` + `handle_key`)
+    //! and render through `TestBackend`.
+
+    use super::*;
+    use crate::app::App;
+    use crate::port::FakePort;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use serde_json::json;
+    use std::path::Path;
+
+    /// The frame path of the `drive` loop: enqueue + apply.
+    fn apply_frame(app: &mut App, frame: &serde_json::Value, now: Instant) -> bool {
+        app.push_frame(frame, now);
+        app.pump_events(now)
+    }
+
+    fn test_app() -> App {
+        App::new("p/m".into(), Path::new("/repo"))
+    }
+
+    #[test]
+    fn agent_frames_drive_title_and_notify() {
+        let mut app = test_app();
+        let t0 = Instant::now();
+
+        apply_frame(&mut app, &json!({"type":"agent_start"}), t0);
+        let title = app.title().current_title().unwrap_or_default();
+        assert!(title.starts_with('π'), "title: {title:?}");
+        assert!(title.contains("repo"), "title: {title:?}");
+
+        app.push_frame(
+            &json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}),
+            t0,
+        );
+        assert!(app.pump_events(t0 + Duration::from_millis(40)));
+        apply_frame(&mut app, &json!({"type":"agent_end"}), t0);
+        let title = app.title().current_title().unwrap_or_default();
+        assert!(title.contains('>'), "idle title: {title:?}");
+
+        // Turn settle fires the notification (recorded by the sink).
+        assert!(apply_frame(&mut app, &json!({"type":"session_settled"}), t0));
+        assert_eq!(app.notify_sink().record(), vec!["omp: Turn complete".to_string()]);
+    }
+
+    #[test]
+    fn failed_prompt_result_notifies_and_idles_title() {
+        let mut app = test_app();
+        let t0 = Instant::now();
+        app.push_frame(&json!({"type":"agent_start"}), t0);
+        app.pump_events(t0);
+        app.push_frame(
+            &json!({"type":"prompt_result","success":false,"error":"boom"}),
+            t0,
+        );
+        app.pump_events(t0);
+        assert_eq!(
+            app.notify_sink().record(),
+            vec!["omp: Turn failed: boom".to_string()]
+        );
+        let _port = FakePort::default();
+    }
+
+    #[test]
+    fn frame_pipeline_renders_and_dispatches_keys() {
+        let mut app = test_app();
+        let port = FakePort::default();
+        let t0 = Instant::now();
+
+        apply_frame(
+            &mut app,
+            &json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}),
+            t0,
+        );
+        apply_frame(&mut app, &json!({"type":"agent_end"}), t0);
+
+        // A keystroke through the controller entry point submits a prompt.
+        assert!(app.handle_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            &port
+        ));
+        assert!(app.handle_terminal_event(
+            &Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &port
+        ));
+        assert_eq!(
+            port.log.lock().clone(),
+            vec!["submit(None, \"q\", None)".to_string()]
+        );
+
+        // The app still paints onto a TestBackend after the frame burst.
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..80).map(|x| buf[(x, 7)].symbol()).collect();
+        assert!(row.contains('❯'), "editor row: {row:?}");
+    }
+
+    #[test]
+    fn fullscreen_overlay_flag_follows_tree_overlay() {
+        let mut app = test_app();
+        let port = FakePort::default();
+        let t0 = Instant::now();
+        // user message → assistant reply, with ids/parentIds
+        apply_frame(
+            &mut app,
+            &json!({"type":"message_end","message":{"id":"u1","role":"user","content":[{"type":"text","text":"first"}]}}),
+            t0,
+        );
+        apply_frame(
+            &mut app,
+            &json!({"type":"message_end","message":{"id":"a1","parentId":"u1","role":"assistant","content":[{"type":"text","text":"ok"}]}}),
+            t0,
+        );
+        // double-Esc on an idle, empty editor opens the rewind tree
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.handle_terminal_event(&esc, &port));
+        assert!(!app.has_fullscreen_overlay());
+        assert!(app.handle_terminal_event(&esc, &port));
+        assert!(app.has_fullscreen_overlay(), "rewind tree is fullscreen");
+
+        // Enter confirms the rewind selection → port.rewind_entry.
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.handle_terminal_event(&enter, &port));
+        assert!(port
+            .log
+            .lock()
+            .iter()
+            .any(|c| c.starts_with("rewind_entry(")));
+        assert!(!app.has_fullscreen_overlay(), "tree closed after rewind");
+    }
 }

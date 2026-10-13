@@ -7,6 +7,7 @@
 pub mod banner;
 pub mod hud;
 pub mod notify;
+pub mod osc11;
 pub mod startup;
 pub mod title;
 
@@ -16,5 +17,6 @@ pub use notify::{
     format_notification, notification_to_line, send_notification, NotifyProtocol,
     TerminalNotification, Urgency,
 };
+pub use osc11::{parse_osc11_response, probe_osc11_background};
 pub use startup::StartupCache;
 pub use title::{TerminalTitle, TitleSpinner, TitleState};

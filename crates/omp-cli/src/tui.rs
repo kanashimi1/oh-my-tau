@@ -29,7 +29,31 @@ pub async fn run(
     persist: Persistence,
     resume: Option<PathBuf>,
 ) -> Result<()> {
+    // OSC 11 background probe: must run before the TUI takes over the
+    // terminal (the response bytes would otherwise land in the crossterm
+    // event stream). Drives theme.dark/theme.light selection in the app.
+    let osc11_bg = omp_tui::chrome::probe_osc11_background(std::time::Duration::from_millis(200));
+    // The embedded `/resume` picker lists this folder's session dir (the
+    // live session file's parent; same slug rule as `persist::sessions_dir`).
+    let sessions_dir = persist
+        .path()
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
+    // Model catalogue for the `/model` picker: providers with credentials
+    // (same source the RPC `get_available_models` and `/model` builtin use).
+    let models = crate::runtime::available_models(None)
+        .await
+        .into_iter()
+        .map(|m| {
+            omp_tui::overlays::models::ModelEntry::new(
+                &m.provider,
+                &m.id,
+                Some(m.context_window),
+            )
+        })
+        .collect();
     let rt = Runtime::start(Arc::new(agent), target, cwd.clone(), persist, tx).await;
     if let Some(path) = resume {
         rt.load_session(&path, None).await?;
@@ -57,6 +81,9 @@ pub async fn run(
             frames: rx,
             model,
             cwd,
+            models,
+            sessions_dir,
+            osc11_bg,
         },
         port,
     )
