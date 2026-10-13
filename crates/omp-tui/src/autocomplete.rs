@@ -1636,7 +1636,9 @@ impl Component for Autocomplete {
             return;
         }
         // Bottom-anchored popup list above the editor.
-        let visible = usize::min(self.max_visible, self.items.len());
+        // Keep the footer hint row: never show more rows than fit above it.
+        let fit = usize::from(area.height.saturating_sub(1)).max(1);
+        let visible = self.max_visible.min(self.items.len()).min(fit);
         let height = u16::min(area.height, visible as u16 + 1);
         let popup = Rect {
             x: area.x,
@@ -1652,7 +1654,9 @@ impl Component for Autocomplete {
         let width = popup.width as usize;
 
         let mut rows: Vec<Line<'static>> = Vec::with_capacity(visible);
-        for (i, item) in self.items.iter().take(visible).enumerate() {
+        // Scroll the window so the selected row stays visible.
+        let first = self.selected.saturating_sub(visible - 1);
+        for (i, item) in self.items.iter().enumerate().skip(first).take(visible) {
             let is_selected = i == self.selected;
             let base = if is_selected {
                 Style::default()

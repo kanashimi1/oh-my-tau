@@ -159,6 +159,13 @@ impl Editor {
         self.note_action(LastAction::Other);
     }
 
+    /// Apply an autocomplete pick: replace the buffer with `lines` and
+    /// place the cursor at (`line`, byte `col`). Undoable.
+    pub fn apply_completion(&mut self, lines: Vec<String>, line: usize, col: usize) {
+        self.record_undo();
+        self.replace_lines(lines, Cursor { line, col });
+    }
+
     /// Insert one character at the cursor.
     pub fn insert_char(&mut self, c: char) {
         if self.history_nav.browsing() {
@@ -998,6 +1005,54 @@ mod render_tests {
         }
         let content = render_row(&e, 1, 40, 5);
         assert!(content.contains("❯ hello"), "content: {content:?}");
+    }
+
+    fn type_str(e: &mut Editor, s: &str) {
+        for c in s.chars() {
+            let _ = e.handle_key(crate::keys::KeyEvent::new(
+                crate::keys::KeyCode::Char(c),
+                KeyModifiers::NONE,
+            ));
+        }
+    }
+
+    /// Column of the inverse-video cursor cell on row `y`.
+    fn cursor_col(e: &Editor, y: u16, width: u16, height: u16) -> Option<u16> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| e.render(f, f.area(), &crate::theme::Theme::default()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..width).find(|&x| {
+            buf[(x, y)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        })
+    }
+
+    #[test]
+    fn cursor_sits_after_last_typed_char_past_the_gutter() {
+        // Regression: the cursor ignored the 2-cell `❯ ` gutter and was drawn
+        // two cells left (on the last-but-one char).
+        let mut e = Editor::new();
+        type_str(&mut e, "hello world");
+        // border(1) + gutter(2) + 11 chars => column 14.
+        assert_eq!(cursor_col(&e, 1, 40, 5), Some(14));
+    }
+
+    #[test]
+    fn wrapped_rows_keep_gutter_indent_and_cursor() {
+        // Regression: continuation rows were indented by their byte offset,
+        // pushing text off-screen. Width 20 => 16 text cells per row.
+        let mut e = Editor::new();
+        type_str(&mut e, "abcdefghijklmnopqrstu");
+        let height = e.desired_height(20);
+        assert_eq!(height, 4, "two wrapped rows + borders");
+        let r1 = render_row(&e, 1, 20, height);
+        let r2 = render_row(&e, 2, 20, height);
+        assert_eq!(r1, "│❯ abcdefghijklmnop│");
+        assert_eq!(r2, "│  qrstu           │");
+        assert_eq!(cursor_col(&e, 2, 20, height), Some(8));
     }
 
     #[test]

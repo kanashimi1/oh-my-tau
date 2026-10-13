@@ -45,6 +45,7 @@ use ratatui::Frame;
 use serde_json::Value;
 
 use crate::action::{Action, QueueKind, SubmitBehavior};
+use crate::autocomplete::Autocomplete;
 use crate::chat::Messages;
 use crate::chrome::notify::{send_notification, NotifyProtocol, TerminalNotification};
 use crate::chrome::title::{TerminalTitle, TitleState};
@@ -208,6 +209,8 @@ impl EventPump {
 pub struct App {
     messages: Messages,
     editor: Editor,
+    /// Slash / `@file` / path completion popup above the editor.
+    autocomplete: Autocomplete,
     status: StatusLine,
     overlays: Overlays,
     extension_ui: ExtensionUi,
@@ -269,6 +272,7 @@ impl App {
         Self {
             messages: Messages::new(),
             editor: Editor::new(),
+            autocomplete: Autocomplete::new(cwd.to_path_buf()),
             status: StatusLine::new(model, dir.clone()),
             overlays: Overlays::default(),
             extension_ui: ExtensionUi::new(),
@@ -476,6 +480,7 @@ impl App {
                 self.messages.apply(event);
             }
             AppEvent::ExtensionUiRequest(frame) => self.extension_ui.push(frame),
+            AppEvent::AvailableCommands(frame) => self.autocomplete.update_commands(frame),
             _ => {}
         }
         self.messages.apply(event);
@@ -545,7 +550,10 @@ impl App {
         // hard-codes this chord outside the keybindings table); everything
         // else resolves through the KeybindingsManager so user overrides
         // from ~/.omp/agent/keybindings.yml apply (review2 §11 #15).
-        if key.code == KeyCode::Char('?') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+        if key.code == KeyCode::Char('?')
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && (self.editor.is_empty() || self.overlays.open() == Some(OpenOverlay::Help))
+        {
             self.overlays.toggle(OpenOverlay::Help);
             return Some(true);
         }
@@ -609,21 +617,70 @@ impl App {
             return Some(true);
         }
 
+        // Slash / @file popup owns navigation keys while open (editor.md
+        // §9): ↑/↓/PgUp/PgDn select, Tab accepts, Enter accepts and — for a
+        // leading slash command — submits, Esc dismisses before the ladder.
+        if self.autocomplete.open {
+            let enter = key.code == KeyCode::Enter && key.modifiers.is_empty();
+            if self.autocomplete.handle_key(key).consumed() {
+                if let Some((item, prefix)) = self.autocomplete.take_confirmed() {
+                    let cur = self.editor.structured_cursor();
+                    let applied = self.autocomplete.apply_completion(
+                        self.editor.text_buffer().lines(),
+                        cur.line,
+                        cur.col,
+                        &item,
+                        &prefix,
+                    );
+                    self.editor
+                        .apply_completion(applied.lines, applied.cursor_line, applied.cursor_col);
+                    let is_slash = crate::autocomplete::find_leading_slash_command_start(&prefix)
+                        .is_some()
+                        && !item.value.starts_with('/');
+                    if enter && is_slash {
+                        return self.submit_editor(port);
+                    }
+                    self.refresh_autocomplete();
+                }
+                return Some(true);
+            }
+        }
+
         if self.keys.matches_event(&key, "app.interrupt") {
             return Some(self.esc_ladder(now, port));
         }
 
         match self.editor.handle_key(key) {
-            EditorOutcome::Submit => {
-                let text = self.editor.take();
-                if !self.submit_pipeline(text, port) || self.quit_requested {
-                    self.quit_requested = false;
-                    return None;
-                }
+            EditorOutcome::Submit => self.submit_editor(port),
+            EditorOutcome::Interrupt => Some(true), // app.clear handled above
+            EditorOutcome::Edited => {
+                self.refresh_autocomplete();
                 Some(true)
             }
-            EditorOutcome::Interrupt => Some(true), // app.clear handled above
-            EditorOutcome::Edited => Some(true),
+        }
+    }
+
+    /// Submit the editor draft through the submit pipeline; `None` = quit.
+    fn submit_editor(&mut self, port: &impl RuntimePort) -> Option<bool> {
+        self.autocomplete.close();
+        let text = self.editor.take();
+        if !self.submit_pipeline(text, port) || self.quit_requested {
+            self.quit_requested = false;
+            return None;
+        }
+        Some(true)
+    }
+
+    /// Recompute popup suggestions for the text before the cursor (opens,
+    /// updates or closes the popup).
+    fn refresh_autocomplete(&mut self) {
+        let cur = self.editor.structured_cursor();
+        if self
+            .autocomplete
+            .suggestions(self.editor.text_buffer().lines(), cur.line, cur.col)
+            .is_none()
+        {
+            self.autocomplete.close();
         }
     }
 
@@ -1039,6 +1096,7 @@ impl App {
         self.render_loader(frame, chunks[1]);
         self.editor.render(frame, chunks[2], &self.theme);
         self.status.render(frame, chunks[3], &self.theme);
+        self.render_autocomplete(frame, area, chunks[2]);
         self.overlays.render(frame, area, &self.theme);
         self.extension_ui.render(frame, area, &self.theme);
     }
@@ -1063,8 +1121,20 @@ impl App {
         self.render_loader(frame, chunks[2]);
         self.editor.render(frame, chunks[3], &self.theme);
         self.status.render(frame, chunks[4], &self.theme);
+        self.render_autocomplete(frame, frame.area(), chunks[3]);
         self.overlays.render(frame, frame.area(), &self.theme);
         self.extension_ui.render(frame, frame.area(), &self.theme);
+    }
+
+    /// Draw the completion popup bottom-anchored just above the editor box.
+    fn render_autocomplete(&self, frame: &mut Frame<'_>, area: Rect, editor: Rect) {
+        let above = Rect {
+            x: editor.x,
+            y: area.y,
+            width: editor.width,
+            height: editor.y.saturating_sub(area.y),
+        };
+        self.autocomplete.render(frame, above, &self.theme);
     }
 
     /// The queued-messages band (§5.2 ANSI visuals): a spacer, per-group
@@ -1381,6 +1451,76 @@ mod tests {
         type_text(&mut app, &port, "/help");
         assert!(enter(&mut app, &port));
         assert_eq!(app.overlays.open(), Some(OpenOverlay::Help));
+    }
+
+    fn with_catalog(app: &mut App) {
+        app.apply_event(&AppEvent::AvailableCommands(json!({
+            "type": "available_commands_update",
+            "commands": [
+                {"name": "help", "description": "Show help", "source": "builtin"},
+                {"name": "model", "description": "Pick model", "source": "builtin"},
+                {"name": "compact", "description": "Compact context", "source": "builtin"}
+            ]
+        })));
+    }
+
+    fn screen(app: &mut App, w: u16, h: u16) -> String {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| app.render(f)).unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn typing_slash_shows_command_popup_above_editor() {
+        // Regression: `/` showed nothing — the popup was never wired.
+        let mut app = app();
+        let port = port();
+        with_catalog(&mut app);
+        type_text(&mut app, &port, "/");
+        let s = screen(&mut app, 60, 14);
+        assert!(s.contains("help") && s.contains("model") && s.contains("compact"), "{s}");
+        type_text(&mut app, &port, "mo");
+        let s = screen(&mut app, 60, 14);
+        // Best match first and selected (lower-ranked fuzzy hits may follow).
+        assert!(s.contains("❯ model"), "filtered: {s}");
+        assert!(!s.contains("help"), "non-matching rows dropped: {s}");
+    }
+
+    #[test]
+    fn enter_in_slash_popup_completes_and_runs_command() {
+        let mut app = app();
+        let port = port();
+        with_catalog(&mut app);
+        type_text(&mut app, &port, "/he");
+        assert!(app.autocomplete.open);
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Help));
+        assert!(app.editor.is_empty());
+    }
+
+    #[test]
+    fn esc_closes_popup_and_keeps_draft() {
+        let mut app = app();
+        let port = port();
+        with_catalog(&mut app);
+        type_text(&mut app, &port, "/co");
+        assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+        assert!(!app.autocomplete.open);
+        assert_eq!(app.editor.text(), "/co");
+    }
+
+    #[test]
+    fn question_mark_is_text_inside_a_draft() {
+        // Regression: `?` toggled help even mid-sentence.
+        let mut app = app();
+        let port = port();
+        type_text(&mut app, &port, "why?");
+        assert_eq!(app.editor.text(), "why?");
+        assert_eq!(app.overlays.open(), None);
     }
 
     #[test]

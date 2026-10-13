@@ -59,6 +59,10 @@ pub async fn run(
         rt.load_session(&path, None).await?;
         rt.publish_session_file();
     }
+    // Slash catalog for the editor's `/` popup: builtins + extension/file
+    // commands, same start-up announce sequence as RPC mode.
+    rt.set_available_commands(crate::rpc::slash::dynamic_commands(&rt).await);
+    rt.announce_commands();
     // Session renames have no dedicated runtime frame (they reach hosts via
     // the `sessionName` field of `state` dumps and this listener); forward
     // them into the UI stream as `session_name_changed` frames.

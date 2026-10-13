@@ -366,6 +366,12 @@ impl Shell<ShellBackend, io::Stdout> {
         }
         entry.flush()?;
         let screen = Rect::from((Position::ORIGIN, term.size()?));
+        // The inline viewport may land on rows that still hold old output
+        // (e.g. a previous session's last frame). ratatui's diff assumes a
+        // blank area, so erase it once; otherwise stale glyphs survive in
+        // cells we never repaint.
+        let mut term = term;
+        term.clear()?;
         Ok(Self {
             term,
             raw: io::stdout(),
@@ -446,6 +452,9 @@ impl Shell<ShellBackend, io::Stdout> {
         }
         out.push_str(BRACKETED_PASTE_OFF);
         out.push_str(DECCKM_NORMAL);
+        // Erase the live region (cursor is parked on its top row) so the
+        // shell prompt does not print over a stale editor/status frame.
+        out.push_str("\r\x1b[J");
         out.push_str("\x1b[?25h");
         self.raw.raw(&out)?;
         ratatui::backend::Backend::flush(self.term.backend_mut())?;

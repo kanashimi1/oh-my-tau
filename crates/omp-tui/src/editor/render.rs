@@ -62,7 +62,8 @@ impl Editor {
     /// 2 border rows, capped at [`Editor::max_height`] (TS `setMaxHeight`).
     #[must_use]
     pub fn desired_height(&self, width: u16) -> u16 {
-        let content_width = width.saturating_sub(2).max(1) as usize;
+        // Border (2) + prompt gutter (`❯ `, 2 cells) — must match `render`.
+        let content_width = width.saturating_sub(4).max(1) as usize;
         let rows = if self.buffer.is_empty() {
             1
         } else {
@@ -136,30 +137,29 @@ impl Component for Editor {
             return;
         }
 
-        let rows = layout(self.buffer.lines(), content_width);
+        // Every content row reserves the prompt-gutter width: the glyph on
+        // the very first row, blank indent on the rest — so wrap width and
+        // cursor column both account for it.
+        let gutter = format!("{} ", theme.glyph("prompt"));
+        let gutter_w = display_width(&gutter);
+        let rows = layout(self.buffer.lines(), content_width.saturating_sub(gutter_w).max(1));
         self.sync_scroll(&rows, content_height);
         let offset = self.scroll_offset.get();
         let visible: Vec<Line<'_>> = rows
             .iter()
+            .enumerate()
             .skip(offset)
             .take(content_height)
-            .enumerate()
             .map(|(i, r)| {
-                // Prompt gutter on the first visible row when it is the
-                // start of the first logical line (`#getPromptGutter`).
-                let lead: Span<'_> = if i == 0 && r.start == 0 {
-                    Span::styled(
-                        format!("{} ", theme.glyph("prompt")),
-                        Style::default().fg(theme.color("accent")),
-                    )
+                let lead: Span<'_> = if i == 0 {
+                    Span::styled(gutter.clone(), Style::default().fg(theme.color("accent")))
                 } else {
-                    Span::raw(" ".repeat(r.start))
+                    Span::raw(" ".repeat(gutter_w))
                 };
                 Line::from(vec![lead, Span::raw(r.text.as_str())])
             })
             .collect();
-        let text = Paragraph::new(visible).wrap(Wrap { trim: false });
-        frame.render_widget(text, inner);
+        frame.render_widget(Paragraph::new(visible), inner);
 
         // Cursor: find its visual row/column and invert the cell.
         let cursor = self.buffer.cursor();
@@ -175,12 +175,17 @@ impl Component for Editor {
                 break;
             }
         }
-        let before = &rows
+        let before = rows
             .get(vis_row)
             .map_or("", |r| &r.text[..col_in_row.min(r.text.len())]);
+        let cursor_area = Rect {
+            x: inner.x + u16::try_from(gutter_w).unwrap_or(0),
+            width: inner.width.saturating_sub(u16::try_from(gutter_w).unwrap_or(0)),
+            ..inner
+        };
         Self::draw_cursor(
             frame.buffer_mut(),
-            inner,
+            cursor_area,
             before,
             vis_row.saturating_sub(offset),
             col_in_row,
