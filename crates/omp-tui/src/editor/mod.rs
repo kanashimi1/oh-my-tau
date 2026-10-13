@@ -39,6 +39,22 @@ pub use submit::{SubmitKind, SubmitRequest};
 
 use dispatch::LastAction;
 use render::ScrollOffset;
+use crate::keys::KeyEvent;
+
+/// Char index → byte offset within a line (`line.len()` when past the end).
+fn byte_col(line: &str, char_col: usize) -> usize {
+    line.char_indices()
+        .nth(char_col)
+        .map_or(line.len(), |(byte, _)| byte)
+}
+
+/// Char-index slice of a line (end-exclusive; `usize::MAX` means the rest).
+fn char_slice(line: &str, start: usize, end: usize) -> String {
+    line.chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect()
+}
 
 /// What the editor wants to happen after handling a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +87,7 @@ pub struct Editor {
     submit_kind: submit::SubmitKind,
     last_action: LastAction,
     yank_span: Option<(usize, usize, usize)>,
+    vim: Option<vim::VimState>,
 }
 
 impl Default for Editor {
@@ -99,6 +116,7 @@ impl Editor {
             submit_kind: submit::SubmitKind::Normal,
             last_action: LastAction::Other,
             yank_span: None,
+            vim: None,
         }
     }
 
@@ -343,6 +361,252 @@ impl Editor {
             self.buffer.insert_str(text);
         }
     }
+    // -- vim modal editing (TS editor.ts:901-940) ----------------------------
+
+    /// Enable Vim-style modal editing. Toggling always drops back to Insert
+    /// mode so the editor is immediately editable (`setVimMode` :903).
+    pub fn set_vim_mode(&mut self, enabled: bool) {
+        if enabled == self.vim.is_some() {
+            return;
+        }
+        if enabled {
+            let mut state = vim::VimState::new();
+            state.mode = vim::VimMode::Insert;
+            self.vim = Some(state);
+        } else {
+            self.vim = None;
+        }
+    }
+
+    /// Whether Vim mode is active (`vimEnabled` :916).
+    #[must_use]
+    pub fn vim_enabled(&self) -> bool {
+        self.vim.is_some()
+    }
+
+    /// Current modal state; `None` when Vim mode is off (the host renders no
+    /// mode badge then) (`vimMode` :911).
+    #[must_use]
+    pub fn vim_mode(&self) -> Option<vim::VimMode> {
+        self.vim.as_ref().map(|v| v.mode)
+    }
+
+    /// Half-typed Vim command (`"2d"`, `"g"`), or `""` when nothing is
+    /// pending (`vimPending` :921).
+    #[must_use]
+    pub fn vim_pending(&self) -> String {
+        self.vim.as_ref().map_or(String::new(), vim::VimState::pending_text)
+    }
+
+    /// Hosts bind Escape to interrupt/clear; in Vim mode it first has to
+    /// mean "leave Insert mode" or "cancel the half-typed command"
+    /// (`vimConsumesEscape` :937).
+    #[must_use]
+    pub fn vim_consumes_escape(&self) -> bool {
+        match &self.vim {
+            None => false,
+            Some(v) => v.mode != vim::VimMode::Normal || v.pending(),
+        }
+    }
+
+    /// Route one key through the Vim state machine. Returns `Some(outcome)`
+    /// when Vim consumed the key; `None` means the caller's regular pipeline
+    /// handles it (TS `#handleVimInput` :2234).
+    pub(crate) fn vim_handle_key(&mut self, key: KeyEvent) -> Option<EditorOutcome> {
+        if self.vim.is_none() {
+            return None;
+        }
+        let snapshot = vim::VimBuffer::from_flat(&self.buffer.text(), self.buffer.flat_cursor());
+        let (consumed, commands) = {
+            let state = self.vim.as_mut().expect("checked above");
+            state.handle_key(key, &snapshot)
+        };
+        if !consumed {
+            return None;
+        }
+        self.apply_vim_commands(commands);
+        Some(EditorOutcome::Edited)
+    }
+
+    fn apply_vim_commands(&mut self, commands: Vec<vim::VimCommand>) {
+        use vim::VimCommand as C;
+        for command in commands {
+            match command {
+                C::Move { to } => self.move_vim_cursor(to),
+                C::Mode(_) => {
+                    self.note_action(LastAction::Other);
+                }
+                C::Yank { from, to, linewise } => {
+                    let body = self.slice_vim_range(from, to, linewise);
+                    // The trailing newline is what marks a register linewise,
+                    // so `p` puts it back as whole lines rather than splicing
+                    // it mid-line (TS `#applyVimCommands` :2293).
+                    let text = if linewise { format!("{body}\n") } else { body };
+                    if !text.is_empty() {
+                        self.push_kill(&text, false);
+                        if let Some(state) = self.vim.as_mut() {
+                            state.register = Some(text);
+                        }
+                    }
+                    self.move_vim_cursor(from);
+                }
+                C::Delete {
+                    from,
+                    to,
+                    linewise,
+                    insert: _,
+                } => self.delete_vim_range(from, to, linewise),
+                C::OpenLine { below } => self.open_vim_line(below),
+                C::Paste { after, count } => self.paste_vim_register(after, count),
+                C::Undo => self.apply_undo(),
+            }
+        }
+        self.clamp_vim_cursor();
+    }
+
+    fn move_vim_cursor(&mut self, to: vim::VimPosition) {
+        let line = to.line.min(self.buffer.lines().len().saturating_sub(1));
+        let col = byte_col(self.buffer.lines()[line].as_str(), to.col);
+        self.buffer.set_cursor(Cursor { line, col });
+    }
+
+    /// Normal mode rests the cursor *on* a grapheme; Insert and Visual may
+    /// sit one past the end (TS `#clampVimCursor` :2327).
+    fn clamp_vim_cursor(&mut self) {
+        if self.vim.as_ref().map_or(true, |v| v.mode != vim::VimMode::Normal) {
+            return;
+        }
+        let line = self.buffer.cursor().line;
+        let text = self.buffer.lines()[line].clone();
+        let chars = text.chars().count();
+        if chars > 0 {
+            let last = byte_col(&text, chars - 1);
+            if self.buffer.cursor().col > last {
+                self.buffer.set_cursor(Cursor { line, col: last });
+            }
+        }
+    }
+
+    /// Text covered by a half-open `[from, to)` range. Linewise ranges take
+    /// whole lines. Positions are char indices.
+    fn slice_vim_range(&self, from: vim::VimPosition, to: vim::VimPosition, linewise: bool) -> String {
+        let lines = self.buffer.lines();
+        if linewise {
+            let last = to.line.min(lines.len().saturating_sub(1));
+            return lines[from.line..=last].join("\n");
+        }
+        if from.line == to.line {
+            let line = &lines[from.line.min(lines.len() - 1)];
+            return char_slice(line, from.col, to.col);
+        }
+        let mut parts = vec![char_slice(&lines[from.line], from.col, usize::MAX)];
+        for line in lines.iter().take(to.line).skip(from.line + 1) {
+            parts.push(line.clone());
+        }
+        parts.push(char_slice(&lines[to.line.min(lines.len() - 1)], 0, to.col));
+        parts.join("\n")
+    }
+
+    fn delete_vim_range(&mut self, from: vim::VimPosition, to: vim::VimPosition, linewise: bool) {
+        let mut lines: Vec<String> = self.buffer.lines().to_vec();
+        if linewise {
+            let last = to.line.min(lines.len() - 1);
+            let removed = lines[from.line..=last].join("\n");
+            if removed.is_empty() && from.line == last && lines.len() == 1 {
+                return;
+            }
+            self.record_undo();
+            self.push_kill(&format!("{removed}\n"), false);
+            lines.drain(from.line..=last);
+            if lines.is_empty() {
+                lines.push(String::new());
+            }
+            let line = from.line.min(lines.len() - 1);
+            self.replace_lines(lines, Cursor { line, col: 0 });
+            return;
+        }
+        let removed = self.slice_vim_range(from, to, false);
+        if removed.is_empty() {
+            return;
+        }
+        self.record_undo();
+        self.push_kill(&removed, false);
+        let last = to.line.min(lines.len() - 1);
+        let head = char_slice(&lines[from.line], 0, from.col);
+        let tail = char_slice(&lines[last], to.col, usize::MAX);
+        lines.splice(from.line..=last, [format!("{head}{tail}")]);
+        self.replace_lines(
+            lines,
+            Cursor {
+                line: from.line,
+                col: head.len(),
+            },
+        );
+    }
+
+    fn open_vim_line(&mut self, below: bool) {
+        self.record_undo();
+        let mut lines: Vec<String> = self.buffer.lines().to_vec();
+        let at = if below {
+            self.buffer.cursor().line + 1
+        } else {
+            self.buffer.cursor().line
+        };
+        let at = at.min(lines.len());
+        lines.insert(at, String::new());
+        self.replace_lines(lines, Cursor { line: at, col: 0 });
+    }
+
+    fn paste_vim_register(&mut self, after: bool, count: usize) {
+        let Some(state) = self.vim.as_ref() else { return };
+        let Some(entry) = state.register.clone() else { return };
+        if entry.is_empty() {
+            return;
+        }
+        self.record_undo();
+        let linewise = entry.ends_with('\n');
+        let mut lines: Vec<String> = self.buffer.lines().to_vec();
+        let cur = self.buffer.cursor();
+        if linewise {
+            let body: Vec<String> = entry
+                .trim_end_matches('\n')
+                .split('\n')
+                .map(str::to_owned)
+                .collect();
+            let at = (if after { cur.line + 1 } else { cur.line }).min(lines.len());
+            let mut payload = Vec::with_capacity(body.len() * count);
+            for _ in 0..count {
+                payload.extend(body.iter().cloned());
+            }
+            lines.splice(at..at, payload);
+            self.replace_lines(lines, Cursor { line: at, col: 0 });
+        } else {
+            let line_text = lines[cur.line].clone();
+            let cursor_char = line_text[..cur.col.min(line_text.len())].chars().count();
+            let at = if after {
+                byte_col(&line_text, cursor_char + 1)
+            } else {
+                cur.col
+            };
+            let payload = entry.repeat(count);
+            let last_char = payload.char_indices().last().map_or(0, |(i, _)| i);
+            lines[cur.line] = format!(
+                "{}{payload}{}",
+                &line_text[..at.min(line_text.len())],
+                &line_text[at.min(line_text.len())..]
+            );
+            self.replace_lines(lines, Cursor { line: cur.line, col: at + last_char });
+        }
+    }
+
+    /// Rebuild the buffer from logical lines and park the cursor.
+    fn replace_lines(&mut self, lines: Vec<String>, cursor: Cursor) {
+        self.buffer.set_text(&lines.join("\n"));
+        self.buffer.set_cursor(cursor);
+        self.history_nav.reset();
+        self.note_action(LastAction::Other);
+    }
+
     // -- submit --------------------------------------------------------------
 
     pub(crate) fn set_submit_kind(&mut self, kind: submit::SubmitKind) {

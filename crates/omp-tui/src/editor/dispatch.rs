@@ -48,6 +48,14 @@ impl Editor {
         let alt = mods.contains(KeyModifiers::ALT);
         let shift = mods.contains(KeyModifiers::SHIFT);
 
+        // -- vim modal editing (TS editor.ts:1813, :2234) -------------------
+        // Escape is the one key Vim owns in every mode; everything else in
+        // Insert mode and every unmapped chord falls through to the pipeline
+        // below, so behavior with Vim off is untouched.
+        if let Some(outcome) = self.vim_handle_key(key) {
+            return outcome;
+        }
+
         match key.code {
             // -- app-level -------------------------------------------------
             Char('c') if ctrl => EditorOutcome::Interrupt,
@@ -295,5 +303,110 @@ impl Editor {
         let line = self.buffer.cursor().line;
         let len = self.buffer.lines()[line].len();
         self.buffer.replace_range(line, len - 1, len, "");
+    }
+}
+
+#[cfg(test)]
+mod vim_dispatch_tests {
+    use super::super::vim::VimMode;
+    use super::*;
+    use crate::keys::KeyCode;
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn esc() -> KeyEvent {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    fn type_str(e: &mut Editor, s: &str) {
+        for c in s.chars() {
+            let _ = e.handle_key(key(c));
+        }
+    }
+
+    #[test]
+    fn vim_mode_roundtrip_insert_normal_delete() {
+        let mut e = Editor::new();
+        e.set_vim_mode(true);
+        assert!(e.vim_enabled());
+        assert_eq!(e.vim_mode(), Some(VimMode::Insert));
+        // Insert mode owns Escape (it leaves insert first).
+        assert!(e.vim_consumes_escape());
+
+        type_str(&mut e, "hello world");
+        assert_eq!(e.text(), "hello world");
+
+        let _ = e.handle_key(esc());
+        assert_eq!(e.vim_mode(), Some(VimMode::Normal));
+        assert_eq!(e.structured_cursor().col, 10);
+        // Idle Normal mode: Escape is not consumed (the app's interrupt).
+        let outcome = e.vim_handle_key(esc());
+        assert!(outcome.is_none());
+
+        // `0dw` deletes the first word plus the gap.
+        let _ = e.handle_key(key('0'));
+        let _ = e.handle_key(key('d'));
+        assert_eq!(e.vim_pending(), "d");
+        let _ = e.handle_key(key('w'));
+        assert_eq!(e.text(), "world");
+        assert_eq!(e.vim_pending(), "");
+    }
+
+    #[test]
+    fn vim_dd_yank_and_paste_linewise() {
+        let mut e = Editor::new();
+        e.set_vim_mode(true);
+        type_str(&mut e, "foo");
+        let _ = e.handle_key(esc());
+        let _ = e.handle_key(key('y'));
+        let _ = e.handle_key(key('y'));
+        assert_eq!(e.text(), "foo"); // yank does not change the text
+        let _ = e.handle_key(key('p'));
+        assert_eq!(e.text(), "foo\nfoo");
+        // Cursor parked on the pasted line, still Normal.
+        assert_eq!(e.vim_mode(), Some(VimMode::Normal));
+        assert_eq!(e.structured_cursor().line, 1);
+        // Undo restores the single line.
+        let _ = e.handle_key(key('u'));
+        assert_eq!(e.text(), "foo");
+    }
+
+    #[test]
+    fn vim_visual_delete_and_escape_pending() {
+        let mut e = Editor::new();
+        e.set_vim_mode(true);
+        type_str(&mut e, "abcdef");
+        e.handle_key(esc()); // cursor on 'f' (col 5)
+        let _ = e.handle_key(key('0'));
+        let _ = e.handle_key(key('v'));
+        assert_eq!(e.vim_mode(), Some(VimMode::Visual));
+        let _ = e.handle_key(key('l'));
+        let _ = e.handle_key(key('l'));
+        let _ = e.handle_key(key('d'));
+        assert_eq!(e.text(), "def");
+        assert_eq!(e.vim_mode(), Some(VimMode::Normal));
+
+        // Half-typed operator + Escape: nothing changes.
+        let before = e.text();
+        let _ = e.handle_key(key('d'));
+        assert_eq!(e.vim_pending(), "d");
+        let _ = e.handle_key(esc());
+        assert_eq!(e.vim_pending(), "");
+        assert_eq!(e.text(), before);
+    }
+
+    #[test]
+    fn vim_off_keeps_plain_typing_semantics() {
+        let mut e = Editor::new();
+        assert!(!e.vim_enabled());
+        assert_eq!(e.vim_mode(), None);
+        assert!(!e.vim_consumes_escape());
+        // Keys type through; Escape is a no-op like before vim existed.
+        type_str(&mut e, "dw");
+        let outcome = e.handle_key(esc());
+        assert_eq!(outcome, EditorOutcome::Edited);
+        assert_eq!(e.text(), "dw");
     }
 }

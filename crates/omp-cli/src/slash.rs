@@ -453,6 +453,62 @@ pub async fn dispatch_builtin(
             }
             Some(Handled { agent_invoked: false })
         }
+        "clear" => {
+            // TS `/clear`: close the active session and start a fresh one
+            // (same work as the RPC `new_session` command).
+            if rt.state().await.get("isStreaming").and_then(serde_json::Value::as_bool) == Some(true) {
+                return Some(usage(
+                    rt,
+                    "Wait for the current response to finish or abort it before starting a new session.",
+                ));
+            }
+            match rt.new_session(None).await {
+                Ok(()) => output(rt, "New session started."),
+                Err(e) => return Some(usage(rt, &format!("Failed to start a new session: {e:#}"))),
+            }
+            Some(Handled { agent_invoked: false })
+        }
+        "export" => {
+            // TS `/export [path] [--themes]` writes the session to a file and
+            // reports the path. omp-rs has no HTML renderer; the transcript is
+            // written as markdown (role/content pairs, same shape as /dump).
+            let mut target: Option<String> = None;
+            for tok in args.split_whitespace() {
+                match tok {
+                    "--themes" => {} // HTML-only option; accepted for TS parity.
+                    "--copy" | "clipboard" | "copy" => {
+                        return Some(usage(rt, "Use /dump to copy the session to clipboard."));
+                    }
+                    t => target = Some(t.to_string()),
+                }
+            }
+            let path = match target {
+                Some(p) => PathBuf::from(p),
+                None => rt
+                    .cwd
+                    .join(format!("session-{}-export.md", rt.session_id())),
+            };
+            let mut text = String::new();
+            for m in rt.messages().await {
+                if let (Some(role), Some(content)) = (
+                    m.get("role").and_then(|v| v.as_str()),
+                    m.get("content").and_then(|v| v.as_str()),
+                ) {
+                    text.push_str(role);
+                    text.push_str(": ");
+                    text.push_str(content);
+                    text.push('\n');
+                }
+            }
+            if text.is_empty() {
+                text = "(empty session)".into();
+            }
+            match std::fs::write(&path, text) {
+                Ok(()) => output(rt, &format!("Session exported to: {}", path.display())),
+                Err(e) => return Some(usage(rt, &format!("Failed to export session: {e}"))),
+            }
+            Some(Handled { agent_invoked: false })
+        }
         "retry" => {
             if rt.state().await.get("isStreaming").and_then(serde_json::Value::as_bool) == Some(true) {
                 Some(usage(rt, "Wait for the current response to finish or abort it before retrying."))
