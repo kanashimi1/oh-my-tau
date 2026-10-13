@@ -23,5 +23,8 @@ pi-edit = { path = "../../vendor/pi-edit" }
 pi-ast = { path = "../../vendor/pi-ast" }
 tree-sitter = "0.25"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["event"] }
+
 [lints]
 workspace = true

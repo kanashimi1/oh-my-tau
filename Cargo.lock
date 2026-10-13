@@ -1655,6 +1655,7 @@ dependencies = [
  "pi-ast",
  "pi-edit",
  "ratatui",
+ "rustix 1.1.5",
  "serde_json",
  "serde_yaml_ng",
  "thiserror",

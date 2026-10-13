@@ -48,13 +48,17 @@ pub fn parse_osc11_response(bytes: &[u8]) -> Option<Rgb> {
 /// Ask the terminal for its background color; `None` on any failure.
 ///
 /// Enables raw mode so the response arrives byte-wise, writes the query to
-/// `/dev/tty`, then polls (via `crossterm::event::poll`, which only checks
-/// readiness — nothing is consumed from the buffer) and reads the response
-/// from a dedicated `/dev/tty` handle. Restores the previous mode on every
-/// path.
+/// `/dev/tty`, then waits with `poll(2)` on that same handle and reads the
+/// response from it. `crossterm::event::poll` must NOT be used here: it reads
+/// pending stdin bytes into crossterm's internal event queue, so the reply is
+/// consumed there and the blocking `read` below hangs forever (startup froze
+/// on every terminal that answers OSC 11). Restores the previous mode on
+/// every path.
+#[cfg(unix)]
 #[must_use]
 pub fn probe_osc11_background(timeout: Duration) -> Option<Rgb> {
     use std::io::IsTerminal;
+    use rustix::event::{poll, PollFd, PollFlags, Timespec};
     if !std::io::stdout().is_terminal() {
         return None;
     }
@@ -72,7 +76,9 @@ pub fn probe_osc11_background(timeout: Duration) -> Option<Rgb> {
         let mut byte = [0u8; 1];
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            if !crossterm::event::poll(remaining).unwrap_or(false) {
+            let mut fds = [PollFd::new(&tty, PollFlags::IN)];
+            let wait = Timespec::try_from(remaining).ok()?;
+            if !matches!(poll(&mut fds, Some(&wait)), Ok(n) if n > 0) {
                 break;
             }
             if tty.read(&mut byte).ok()? == 0 {
@@ -88,6 +94,13 @@ pub fn probe_osc11_background(timeout: Duration) -> Option<Rgb> {
     })();
     let _ = crossterm::terminal::disable_raw_mode();
     result
+}
+
+/// Non-unix: no probe (COLORFGBG / dark default apply).
+#[cfg(not(unix))]
+#[must_use]
+pub fn probe_osc11_background(_timeout: Duration) -> Option<Rgb> {
+    None
 }
 
 #[cfg(test)]
