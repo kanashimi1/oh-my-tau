@@ -44,6 +44,20 @@ pub const MOUSE_TRACKING_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
 /// Destructive reset: ED2 **before** ED3 (tmux implements ED2 by scrolling the
 /// live screen into pane history; ED3-first would duplicate it, core.md §2.5).
 pub const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[H\x1b[2J\x1b[3J";
+/// OSC 133 shell-integration prompt-zone marks (TS `user-message.ts`
+/// `OSC133_*`): a committed batch is wrapped zone-start → zone-end so
+/// multiplexers group the transcript block as one prompt zone. The zone is
+/// always closed inside the same paint (`133;B` latches a sticky `.input`
+/// cursor semantic in Ghostty unless `133;C`/`133;D` follow immediately).
+pub const OSC133_ZONE_START: &str = "\x1b]133;A\x07";
+/// Zone end (`133;B`).
+pub const OSC133_ZONE_END: &str = "\x1b]133;B\x07";
+/// Command start (`133;C`) — clears the sticky input state.
+pub const OSC133_COMMAND_START: &str = "\x1b]133;C\x07";
+/// Command done (`133;D;0`).
+pub const OSC133_COMMAND_DONE: &str = "\x1b]133;D;0\x07";
+/// The zone-close trailer: end + command start + command done.
+pub const OSC133_ZONE_CLOSE: &str = "\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07";
 /// xterm `modifyOtherKeys` fallback when the kitty protocol is unavailable
 /// (core.md §6.1 step 4). Env-gated (`OMP_TUI_MODIFY_OTHER_KEYS=1`).
 pub const MODIFY_OTHER_KEYS_ON: &str = "\x1b[>4;2m";
@@ -490,6 +504,13 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
     /// (pushing them into native scrollback) and never redraw them. Empty
     /// batches are a no-op so callers can drain unconditionally.
     ///
+    /// The batch is bracketed with OSC 133 prompt-zone marks written raw
+    /// around the insert (inside the same synchronized paint): embedding the
+    /// escapes in row content would clip them against the cell-grid width.
+    /// The zone opens and closes inside this one paint, matching the TS
+    /// `user-message.ts` discipline (Ghostty's sticky `133;B` input semantic
+    /// is cleared by the immediate `133;C`/`133;D;0`).
+    ///
     /// # Errors
     ///
     /// Fails if the scroll/insert writes fail.
@@ -498,11 +519,13 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
             return Ok(());
         }
         self.paint_begin()?;
+        self.raw.raw(OSC133_ZONE_START)?;
         let frame = self.term.insert_before(u16::try_from(lines.len()).unwrap_or(u16::MAX), |buf| {
             let area = buf.area;
             Paragraph::new(lines.to_vec()).render(area, buf);
         });
         let result = frame;
+        self.raw.raw(OSC133_ZONE_CLOSE)?;
         self.paint_end()?;
         result
     }
@@ -745,6 +768,37 @@ mod tests {
             .unwrap();
         let live = rows.iter().position(|r| r.starts_with("live")).unwrap();
         assert!(h1 < live, "history must be above the live region: {rows:?}");
+    }
+
+    #[test]
+    fn commit_wraps_batch_in_osc133_prompt_zone() {
+        let backend = TestBackend::new(20, 10);
+        let term = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(3),
+            },
+        )
+        .unwrap();
+        let rec = Recorder::default();
+        let mut shell = Shell::new_for_backend(term, rec.clone(), 3, false);
+        shell.set_live(&[line("live")]).unwrap();
+        rec.take();
+        shell.commit(&[line("history-1")]).unwrap();
+        shell.set_live(&[line("live")]).unwrap();
+        // The zone marks are written raw, inside the same paint, in order.
+        let written = rec.take().join("");
+        let start_at = written.find(OSC133_ZONE_START).expect("zone start emitted");
+        let close_at = written.find(OSC133_ZONE_CLOSE).expect("zone close emitted");
+        assert!(start_at < close_at, "{written:?}");
+        assert!(written[..start_at].contains(HIDE_CURSOR), "{written:?}");
+        assert!(written[close_at..].contains(ENABLE_AUTOWRAP), "{written:?}");
+        // The committed row itself lands in the buffer above the live row.
+        let buf = shell.term.backend().buffer();
+        let rows: Vec<String> = (0..10).map(|y| row(buf, y)).collect();
+        let h1 = rows.iter().position(|r| r.starts_with("history-1")).unwrap();
+        let live = rows.iter().position(|r| r.starts_with("live")).unwrap();
+        assert!(h1 < live, "{rows:?}");
     }
 
     #[test]

@@ -757,10 +757,12 @@ mod tests {
         path
     }
 
-    /// Appending bumps mtime, making recency ordering deterministic.
+    /// Pushes mtime 60 s into the future so recency ordering is deterministic
+    /// (appending alone can land in the same mtime tick under load).
     fn bump_mtime(path: &Path) {
-        let mut f = fs::OpenOptions::new().append(true).open(path).unwrap();
-        writeln!(f).unwrap();
+        let f = fs::OpenOptions::new().append(true).open(path).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        f.set_modified(later).unwrap();
     }
 
     fn key(code: KeyCode) -> KeyEvent {

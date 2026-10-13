@@ -22,7 +22,7 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
-use super::ToolRenderer;
+use super::{error_detail_lines, ToolRenderer};
 
 /// Collapsed snippet height (`PREVIEW_LIMITS.OUTPUT_COLLAPSED`).
 pub const COLLAPSED_PREVIEW_LINES: usize = 10;
@@ -491,9 +491,7 @@ pub fn result_lines(
             "error",
             format!("{} Read {path}{range}", theme.glyph("failure")),
         )]));
-        for text in result.error_text.lines() {
-            lines.push(Line::from(p.span("error", text.to_owned())));
-        }
+        lines.extend(error_detail_lines(&result.error_text, usize::MAX, theme));
         return lines;
     }
     let title = result_title(args, result);
@@ -878,6 +876,26 @@ mod tests {
         let flat: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(flat[0].contains("Read"), "{flat:?}");
         assert!(flat[1].contains("file not found"));
+    }
+
+    #[test]
+    fn error_body_strips_prefix_and_indents_two_columns() {
+        let theme = theme();
+        let frame = serde_json::json!({
+            "toolName": "read", "isError": true,
+            "result": {"content": [{"type": "text", "text": "Error: file not found"}]}
+        });
+        let args = ReadRenderArgs::from_call(&frame);
+        let result = parse_result(&frame);
+        let lines = result_lines(&args, &result, false, &theme);
+        let flat: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert_eq!(flat[1], "  file not found", "{flat:?}");
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .all(|s| s.style.fg == Some(theme.color("error")))
+        );
     }
 
     #[test]

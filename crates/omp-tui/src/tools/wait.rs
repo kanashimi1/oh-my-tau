@@ -30,6 +30,10 @@ impl ToolRenderer for Wait {
     }
 
     fn render(&self, frame: &mut ratatui::Frame<'_>, area: Rect, call: &Value, theme: &Theme) {
+        if let Some(waited) = waited_of(call) {
+            paint(frame, area, message_card_lines(&waited, false, theme));
+            return;
+        }
         let title = head_title(call, "wait");
         let icon = if is_error(call) {
             theme.glyph("failure")
@@ -50,6 +54,166 @@ impl ToolRenderer for Wait {
         lines.extend(roster_rows(call, theme));
         paint(frame, area, lines);
     }
+
+    fn render_frame(
+        &self,
+        frame: &Value,
+        expanded: bool,
+        theme: &Theme,
+    ) -> Vec<Line<'static>> {
+        // Pending: a single `⧗ Wait` line (TS `waitRenderCall`).
+        let Some(result) = frame.get("result") else {
+            return vec![status_line(theme, "⧗", "Wait", "", Vec::new())];
+        };
+        let details = result.get("details");
+        // Message waited: inline IRC message card (`wait.ts:748-769`).
+        if let Some(waited) = details.and_then(|d| d.get("waited")) {
+            return message_card_lines(waited, expanded, theme);
+        }
+        // Interrupted: `ⓘ Wait — interrupted by message`.
+        if details
+            .and_then(|d| d.get("interrupted"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return vec![status_line(
+                theme,
+                "ⓘ",
+                "Wait",
+                "interrupted by message",
+                Vec::new(),
+            )];
+        }
+        // Jobs/agents roster, transcript-shaped frame (`result.details.jobs`).
+        let icon = if result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            theme.glyph("failure")
+        } else if jobs_of(frame).iter().any(|j| status(j) == "failed") {
+            "⚠"
+        } else if jobs_of(frame).iter().any(|j| status(j) == "running") {
+            "ℹ"
+        } else {
+            theme.glyph("success")
+        };
+        let mut lines = vec![status_line(
+            theme,
+            icon,
+            &head_title(frame, "wait"),
+            "",
+            count_meta(frame, theme),
+        )];
+        lines.extend(roster_rows(frame, theme));
+        lines
+    }
+}
+
+/// Collapsed/expanded body line caps for a message card (TS wait.ts
+/// `BODY_LINES_COLLAPSED` / `BODY_LINES_EXPANDED`).
+pub(crate) const BODY_LINES_COLLAPSED: usize = 2;
+/// Expanded body line cap.
+pub(crate) const BODY_LINES_EXPANDED: usize = 12;
+/// Per-line width cap for message bodies (TS `BODY_LINE_WIDTH`).
+pub(crate) const BODY_LINE_WIDTH: usize = 100;
+
+/// Borrow the waited peer message (`details.waited`), if any.
+pub(crate) fn waited_of(call: &Value) -> Option<Value> {
+    details_of(call)?
+        .get("waited")
+        .filter(|w| w.is_object())
+        .cloned()
+}
+
+/// Transcript lines for a waited IRC message (TS `wait.ts` message branch +
+/// `createIrcMessageCard`): `IRC ← <from>` head with `age` / `reply` meta and
+/// a quote-bordered, width-capped body.
+#[must_use]
+pub fn message_card_lines(waited: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
+    let from = waited.get("from").and_then(Value::as_str).unwrap_or("?");
+    let body = waited.get("body").and_then(Value::as_str).unwrap_or("");
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(ts) = waited.get("ts").and_then(Value::as_u64) {
+        let now = now_ms();
+        if now > ts {
+            meta.push(age_label(now - ts));
+        }
+    }
+    if waited.get("replyTo").is_some() {
+        meta.push("reply".to_owned());
+    }
+    let mut spans = vec![
+        styled(theme, "accent", "IRC"),
+        Span::raw(" "),
+        styled(theme, "text", format!("← {from}")),
+    ];
+    for m in meta {
+        spans.push(Span::raw(" "));
+        spans.push(styled(theme, "text_muted", m));
+    }
+    let mut lines = vec![Line::from(spans)];
+    lines.extend(message_body_lines(body, expanded, theme));
+    lines
+}
+
+/// Quote-bordered message body rows (`  │ <line>`), blank lines dropped,
+/// capped to the collapsed/expanded budget with a dim `… +N more lines` tail.
+#[must_use]
+pub fn message_body_lines(
+    body: &str,
+    expanded: bool,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let cap = if expanded {
+        BODY_LINES_EXPANDED
+    } else {
+        BODY_LINES_COLLAPSED
+    };
+    let rows: Vec<&str> = body.lines().filter(|l| !l.trim().is_empty()).collect();
+    let shown = cap.min(rows.len());
+    let mut lines: Vec<Line<'static>> = rows[..shown]
+        .iter()
+        .map(|l| {
+            Line::from(vec![
+                Span::raw("  "),
+                styled(theme, "text_muted", "│ "),
+                styled(theme, "toolOutput", truncate(l.trim(), BODY_LINE_WIDTH)),
+            ])
+        })
+        .collect();
+    let hidden = rows.len() - shown;
+    if hidden > 0 {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            styled(theme, "text_muted", "│ "),
+            styled(
+                theme,
+                "text_muted",
+                format!("… +{hidden} more {}", if hidden == 1 { "line" } else { "lines" }),
+            ),
+        ]));
+    }
+    lines
+}
+
+/// Compact age label for a millisecond delta (TS `formatAge`): `45s`/`12m`/`3h`.
+#[must_use]
+pub fn age_label(elapsed_ms: u64) -> String {
+    let secs = (elapsed_ms / 1000).max(1);
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h", secs / 3_600)
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Head title for the roster (`jobsRenderResult` header wording).
@@ -266,5 +430,78 @@ mod tests {
         assert_eq!(format_duration(500), "500ms");
         assert_eq!(format_duration(1_500), "1.5s");
         assert_eq!(format_duration(65_000), "1m 05s");
+    }
+
+    fn flat(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn message_card_renders_irc_head_reply_meta_and_quoted_body() {
+        let waited = json!({"from": "alice", "body": "hello\n\nworld", "replyTo": "agent://bob"});
+        let lines = message_card_lines(&waited, false, &Theme::default());
+        let flat = flat(&lines);
+        assert_eq!(flat[0], "IRC ← alice reply", "{flat:?}");
+        assert_eq!(flat[1], "  │ hello", "{flat:?}");
+        assert_eq!(flat[2], "  │ world", "{flat:?}");
+    }
+
+    #[test]
+    fn message_body_collapses_with_more_lines_hint() {
+        let theme = Theme::default();
+        let body = "l1\nl2\nl3\nl4";
+        let collapsed = message_body_lines(body, false, &theme);
+        assert_eq!(collapsed.len(), 3);
+        let flat = flat(&collapsed);
+        assert_eq!(flat[2], "  │ … +2 more lines", "{flat:?}");
+        let expanded = message_body_lines(body, true, &theme);
+        assert_eq!(expanded.len(), 4);
+    }
+
+    #[test]
+    fn render_frame_waited_branch_renders_message_card() {
+        let frame = json!({"toolCallId": "1", "toolName": "wait", "args": {},
+            "result": {"content": [], "details": {"waited": {"from": "alice", "body": "hi"}}}});
+        let flat = flat(&Wait.render_frame(&frame, false, &Theme::default()));
+        assert!(flat[0].starts_with("IRC ← alice"), "{flat:?}");
+        assert!(flat.iter().any(|l| l == "  │ hi"), "{flat:?}");
+    }
+
+    #[test]
+    fn render_frame_pending_and_interrupted_rows() {
+        let theme = Theme::default();
+        let pending = flat(&Wait.render_frame(&json!({"toolName": "wait"}), false, &theme));
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].contains('⧗'), "{pending:?}");
+        assert!(pending[0].contains("Wait"), "{pending:?}");
+        let interrupted = json!({"toolCallId": "1", "toolName": "wait", "args": {},
+            "result": {"content": [], "details": {"interrupted": true}}});
+        let flat = flat(&Wait.render_frame(&interrupted, false, &theme));
+        assert_eq!(flat.len(), 1);
+        assert!(flat[0].contains('ⓘ'), "{flat:?}");
+        assert!(flat[0].contains("interrupted by message"), "{flat:?}");
+    }
+
+    #[test]
+    fn render_frame_roster_branch_keeps_rows() {
+        let frame = json!({"toolCallId": "1", "toolName": "wait", "args": {},
+            "result": {"content": [], "details": {"jobs": [
+                {"id": "a", "status": "failed", "label": "build", "durationMs": 10, "exitCode": 1}
+            ]}}});
+        let flat = flat(&Wait.render_frame(&frame, false, &Theme::default()));
+        let text = flat.join("\n");
+        assert!(text.contains("1 jobs settled"), "{text}");
+        assert!(text.contains("1 failed"), "{text}");
+        assert!(text.contains("build"), "{text}");
+    }
+
+    #[test]
+    fn age_label_buckets() {
+        assert_eq!(age_label(500), "1s");
+        assert_eq!(age_label(65_000), "1m");
+        assert_eq!(age_label(3_700_000), "1h");
     }
 }

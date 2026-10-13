@@ -18,7 +18,11 @@ use std::collections::HashMap;
 use ratatui::text::Line;
 use serde_json::Value;
 
+use crate::chat::blocks;
+use crate::chat::reveal::{RevealBlock, StreamingRevealController};
+use crate::chat::thinking::{format_thinking_for_display, ThinkingDisplay};
 use crate::events::AppEvent;
+use crate::theme::Theme;
 
 /// Who produced an entry (coarse bucket; renderers take details from
 /// [`ChatEntry::kind`]).
@@ -162,6 +166,10 @@ pub struct Usage {
     pub cache_read: u64,
     /// Cache-write tokens.
     pub cache_write: u64,
+    /// Provider-reported request duration (ms) — drives the tok/s rate.
+    pub duration_ms: Option<u64>,
+    /// Time to first token (ms), when the provider reports it.
+    pub ttft_ms: Option<u64>,
 }
 
 /// A compaction/handoff divider (§10).
@@ -324,10 +332,28 @@ impl ChatEntry {
             finished,
         }
     }
+
+    /// Test constructor over the typed payload (block-renderer unit tests).
+    #[cfg(test)]
+    pub fn new_for_test(role: ChatRole, kind: ChatKind) -> Self {
+        let text = match &kind {
+            ChatKind::Assistant(a) => a.text(),
+            ChatKind::Tool(card) => format!("{} {}", card.name, card.call_id),
+            ChatKind::User { text, .. } => text.clone(),
+            ChatKind::Bash(e) | ChatKind::Python(e) => e.command.clone(),
+            ChatKind::Notice(t) => t.clone(),
+            ChatKind::Branch { summary } => summary.clone(),
+            ChatKind::Compaction(c) => c.label().to_owned(),
+            ChatKind::Custom(c) => c.content_text.clone(),
+            ChatKind::ReadGroup(g) => format!("{} reads", g.reads.len()),
+            ChatKind::Usage(_) => String::new(),
+        };
+        Self::new(role, text, kind, true)
+    }
 }
 
 /// The ordered chat transcript model.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Messages {
     entries: Vec<ChatEntry>,
     /// `toolCallId` → entry index of its card / read group.
@@ -352,6 +378,34 @@ pub struct Messages {
     /// Entries [`..committed`](Self::committed) have already been retired
     /// into the terminal scrollback by the shell renderer.
     committed: usize,
+    /// Theme the block renderer resolves tokens through.
+    theme: Theme,
+    /// Smooth streaming reveal (chat.md §8); ticked by the draw loop.
+    reveal: StreamingRevealController,
+    /// Last revealed snapshot (live tail renders this instead of the raw
+    /// segments while smooth reveal is catching up).
+    reveal_display: Option<Vec<RevealBlock>>,
+}
+
+impl Default for Messages {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            pending: HashMap::new(),
+            live_assistant: None,
+            open_group: None,
+            user_echo_pending: false,
+            pending_usage: None,
+            split_skip: 0,
+            seen_parts: 0,
+            streaming: false,
+            expanded: false,
+            committed: 0,
+            theme: Theme::default(),
+            reveal: StreamingRevealController::new(true),
+            reveal_display: None,
+        }
+    }
 }
 
 impl Messages {
@@ -416,11 +470,16 @@ impl Messages {
 
     /// Rows of newly finished entries for scrollback commit (`ShellRender`).
     /// Advances the commit watermark; later calls only return entries that
-    /// finished since the last call. Stopgap renderer: wraps each entry's
-    /// summary text; themed rendering lands with the chat renderer.
+    /// finished since the last call. Rows go through the chat block
+    /// renderer: user bubbles, markdown bodies, tool family cards.
     pub fn take_committed_rows(&mut self, width: u16) -> Vec<Line<'static>> {
         let end = self.finished_len();
-        let rows = render_rows(&self.entries[self.committed..end], width.max(1) as usize);
+        let theme = &self.theme;
+        let expanded = self.expanded;
+        let mut rows = Vec::new();
+        for entry in &self.entries[self.committed..end] {
+            rows.extend(blocks::entry_lines(entry, expanded, usize::from(width).max(8), theme));
+        }
         self.committed = end;
         rows
     }
@@ -429,9 +488,50 @@ impl Messages {
     /// Resets the commit watermark to the finished prefix: rows past it are
     /// the live tail the live region keeps redrawing.
     pub fn all_rows(&mut self, width: u16) -> Vec<Line<'static>> {
-        let rows = render_rows(&self.entries, width.max(1) as usize);
+        let theme = &self.theme;
+        let expanded = self.expanded;
+        let mut rows = Vec::new();
+        for entry in &self.entries {
+            rows.extend(blocks::entry_lines(entry, expanded, usize::from(width).max(8), theme));
+        }
         self.committed = self.finished_len();
         rows
+    }
+
+    /// Theme the block renderer resolves tokens through.
+    #[must_use]
+    pub fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    /// Replace the renderer theme (user theme load, tests).
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
+    /// One draw-loop reveal tick (chat.md §8, 30 fps cadence). Call once per
+    /// frame from the draw loop; the live tail renders the returned
+    /// snapshot until the next tick.
+    pub fn tick_reveal(&mut self) {
+        if let Some(blocks) = self.reveal.tick() {
+            self.reveal_display = Some(blocks);
+        }
+    }
+
+    /// Rows for the live-tail entry at `idx` (transcript index). A live
+    /// assistant entry renders the reveal snapshot when one exists; every
+    /// other entry renders through [`blocks::entry_lines`].
+    #[must_use]
+    pub fn entry_lines_at(&self, idx: usize, width: usize) -> Vec<Line<'static>> {
+        let entry = &self.entries[idx];
+        if let ChatKind::Assistant(a) = &entry.kind {
+            if a.live {
+                if let Some(snapshot) = &self.reveal_display {
+                    return blocks::revealed_lines(snapshot, width.max(8), &self.theme);
+                }
+            }
+        }
+        blocks::entry_lines(entry, self.expanded, width.max(8), &self.theme)
     }
 
     /// Apply one runtime event (live path).
@@ -502,7 +602,9 @@ impl Messages {
     /// Reset and rebuild from a persisted message array (`agent_end`'s
     /// `messages`, a resumed session's entries). Everything is finished.
     pub fn rebuild(&mut self, messages: &[Value]) {
+        let theme = std::mem::take(&mut self.theme);
         *self = Self::new();
+        self.theme = theme;
         for message in messages {
             self.append_message(message, true);
         }
@@ -561,6 +663,10 @@ impl Messages {
             "assistant" => {
                 let (segments, total) = assistant_segments(message, self.split_skip);
                 self.seen_parts = total;
+                if live {
+                    self.reveal
+                        .set_target(reveal_blocks(&segments, &ThinkingDisplay::default()));
+                }
                 match self.live_assistant {
                     Some(idx) => {
                         let entry = &mut self.entries[idx];
@@ -584,6 +690,7 @@ impl Messages {
                 if !live {
                     // Settle: capture stop reason / error / deferred usage.
                     self.streaming = false;
+                    self.reveal_display = Some(self.reveal.finish());
                     let idx = self
                         .live_assistant
                         .take()
@@ -758,6 +865,8 @@ impl Messages {
         // A tool call finishes the assistant's leading segment immediately
         // (TS snap on `hasToolCalls`): freeze it; text arriving after the
         // tool card lands in a fresh assistant entry after the card.
+        self.reveal.snap_to_tool_call();
+        self.reveal_display = None;
         if let Some(idx) = self.live_assistant.take() {
             self.split_skip = self.seen_parts;
             if let Some(entry) = self.entries.get_mut(idx) {
@@ -1128,11 +1237,18 @@ fn assistant_entry(segments: Vec<AssistantSegment>, live: bool) -> ChatEntry {
 
 fn parse_usage(value: Option<&Value>) -> Option<Usage> {
     let usage = value?;
+    let ms = |key: &str| -> Option<u64> {
+        let v = usage.get(key)?;
+        v.as_u64()
+            .or_else(|| v.as_f64().map(|f| f.round().max(0.0) as u64))
+    };
     let parsed = Usage {
         input: usage.get("input").and_then(Value::as_u64).unwrap_or(0),
         output: usage.get("output").and_then(Value::as_u64).unwrap_or(0),
         cache_read: usage.get("cacheRead").and_then(Value::as_u64).unwrap_or(0),
         cache_write: usage.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0),
+        duration_ms: ms("duration"),
+        ttft_ms: ms("ttft"),
     };
     (parsed.input != 0 || parsed.output != 0 || parsed.cache_read != 0 || parsed.cache_write != 0)
         .then_some(parsed)
@@ -1237,43 +1353,19 @@ fn result_text(result: &Value) -> String {
     }
 }
 
-/// Stopgap transcript row rendering: wrap each entry's summary text at
-/// `width` display cells (char-count based; wcwidth-aware wrapping is the
-/// chat renderer's job).
-fn render_rows(entries: &[ChatEntry], width: usize) -> Vec<Line<'static>> {
-    let mut rows = Vec::new();
-    for entry in entries {
-        let text = &entry.text;
-        if text.is_empty() {
-            rows.push(Line::from(""));
-            continue;
-        }
-        let mut line = String::new();
-        for word in text.split_whitespace() {
-            if !line.is_empty() && line.len() + 1 + word.len() > width {
-                rows.push(Line::from(std::mem::take(&mut line)));
-                line.clear();
-            } else if !line.is_empty() {
-                line.push(' ');
-            }
-            // Long single words get hard-clipped.
-            if word.len() > width {
-                for chunk in word.as_bytes().chunks(width.max(1)) {
-                    let piece = String::from_utf8_lossy(chunk).into_owned();
-                    if !line.is_empty() {
-                        rows.push(Line::from(std::mem::take(&mut line)));
-                    }
-                    rows.push(Line::from(piece));
-                }
-                continue;
-            }
-            line.push_str(word);
-        }
-        if !line.is_empty() {
-            rows.push(Line::from(line));
-        }
-    }
-    rows
+/// Build reveal blocks from assistant segments (chat.md §8): thinking text
+/// is kept in display form, mirroring TS `rawThinking`.
+fn reveal_blocks(segments: &[AssistantSegment], settings: &ThinkingDisplay) -> Vec<RevealBlock> {
+    segments
+        .iter()
+        .map(|s| match s {
+            AssistantSegment::Text { text } => RevealBlock::Text(text.clone()),
+            AssistantSegment::Thinking { text } => RevealBlock::Thinking {
+                display: format_thinking_for_display(text, settings.prose_only),
+                raw: text.clone(),
+            },
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1571,18 +1663,25 @@ mod tests {
     }
 
     #[test]
-    fn render_rows_wraps_at_width() {
-        let rows = render_rows(
-            &[ChatEntry::new(
-                ChatRole::Assistant,
-                "alpha beta gamma delta epsilon zeta".to_owned(),
-                ChatKind::Notice(String::new()),
+    fn committed_rows_render_through_block_renderer() {
+        // Error notices wrap at the block width through format_error_block.
+        let rows = blocks::entry_lines(
+            &ChatEntry::new(
+                ChatRole::System,
+                "error: alpha beta gamma delta epsilon zeta".to_owned(),
+                ChatKind::Notice("error: alpha beta gamma delta epsilon zeta".to_owned()),
                 true,
-            )],
-            12,
+            ),
+            false,
+            20,
+            &crate::theme::Theme::default(),
         );
         assert!(rows.len() > 1);
-        assert!(rows.iter().all(|r| r.to_string().len() <= 12));
+        assert!(rows[0].to_string().contains("Error:"));
+        // Continuation rows hang under the prefix within the width budget.
+        assert!(rows[1..]
+            .iter()
+            .all(|r| r.to_string().len() <= 20));
     }
 
     #[test]
@@ -1602,6 +1701,27 @@ mod tests {
         assert!(m.expanded());
         m.set_expanded(false);
         assert!(!m.expanded());
+    }
+
+    #[test]
+    fn settled_bash_tool_renders_family_card_rows() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start", "toolCallId": "b1",
+            "toolName": "bash", "args": {"command": "cargo test -p omp-tui"}
+        })));
+        m.apply(&AppEvent::ToolExecutionEnd(json!({
+            "type": "tool_execution_end", "toolCallId": "b1",
+            "toolName": "bash",
+            "result": {"text": "test result: ok. 7 passed"}
+        })));
+        m.apply(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
+        let rows = m.take_committed_rows(80);
+        assert!(rows.len() > 1, "bash card must render multiple rows");
+        let joined = rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        assert!(joined.contains("cargo test -p omp-tui"), "{joined}");
+        assert!(joined.contains("7 passed"), "{joined}");
     }
 
     #[test]

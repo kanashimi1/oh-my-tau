@@ -14,10 +14,10 @@ use serde_json::Value;
 use crate::theme::Theme;
 
 use super::edit::{
-    arg_str, args_of, error_detail_lines, frame_card, phase_of, result_text,
-    streaming_preview_lines, truncate_width, Phase,
+    arg_str, args_of, frame_card, phase_of, result_text, streaming_preview_lines,
+    truncate_width, Phase,
 };
-use super::ToolRenderer;
+use super::{error_detail_lines, ToolRenderer};
 
 /// Rows shown in the collapsed settled preview (TS `WRITE_PREVIEW_LINES`).
 pub const WRITE_PREVIEW_LINES: usize = 6;

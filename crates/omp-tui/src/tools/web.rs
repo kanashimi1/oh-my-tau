@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
-use super::ToolRenderer;
+use super::{error_detail_lines, result_text, ToolRenderer};
 
 /// Collapsed source cap (TS `MAX_COLLAPSED_ITEMS`).
 const MAX_COLLAPSED_SOURCES: usize = 5;
@@ -125,7 +125,7 @@ pub fn result_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     if result.get("isError").and_then(Value::as_bool) == Some(true) {
-        return vec![Line::from(vec![
+        let mut lines = vec![Line::from(vec![
             Span::styled(
                 format!("{} ", theme.glyph("failure")),
                 Style::new().fg(theme.color("error")),
@@ -135,6 +135,14 @@ pub fn result_lines(
                 Style::new().fg(theme.color("error")).bold(),
             ),
         ])];
+        // Error body per TS `formatErrorDetail`: `Error: ` prefix stripped,
+        // two-column indent, error color.
+        if let Some(text) = result_text(result) {
+            if !text.trim().is_empty() {
+                lines.extend(error_detail_lines(&text, width, theme));
+            }
+        }
+        return lines;
     }
     if is_fetch(args(call)) {
         return fetch_result_lines(result, theme, expanded, width);
@@ -559,6 +567,23 @@ mod tests {
         let result = json!({"isError": true});
         let lines = result_lines(&json!({"arguments":{"query":"q"}}), &result, &t, false, 80);
         assert_eq!(lines.len(), 1);
+    }
+
+    #[test]
+    fn error_result_renders_stripped_indented_detail_body() {
+        let t = theme();
+        let result = json!({
+            "isError": true,
+            "content": [{"type": "text", "text": "Error: rate limited, retry later"}]
+        });
+        let lines = result_lines(&json!({"arguments":{"query":"q"}}), &result, &t, false, 80);
+        assert_eq!(lines.len(), 2);
+        let flat: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert!(flat[0].contains('✗') || flat[0].contains('x'), "{flat:?}");
+        assert_eq!(flat[1], "  rate limited, retry later");
     }
 
     #[test]

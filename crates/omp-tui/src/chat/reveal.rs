@@ -173,7 +173,7 @@ pub fn streaming_string_keys(tool: &str) -> &'static [&'static str] {
 
 /// Smooth streaming reveal of assistant blocks
 /// (TS `StreamingRevealController`).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StreamingRevealController {
     target: Vec<RevealBlock>,
     total: usize,

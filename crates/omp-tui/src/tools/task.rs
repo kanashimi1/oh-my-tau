@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
-use super::ToolRenderer;
+use super::{error_detail_lines, ToolRenderer};
 
 /// Nested-agent rendering stops at this depth (TS `MAX_NESTED_TASK_RENDER_DEPTH`).
 pub const MAX_NESTED_TASK_RENDER_DEPTH: usize = 8;
@@ -1694,6 +1694,12 @@ fn render_agent_result_lines(
                 out,
             );
         }
+    } else if !success && result.output.trim().is_empty() {
+        // Failure with no output: the error text is the whole story — render
+        // it as an error-detail block (TS `formatErrorDetail` semantics).
+        if let Some(err) = result.error.as_deref().filter(|e| !e.trim().is_empty()) {
+            out.extend(error_detail_lines(err, usize::MAX, theme));
+        }
     }
 
     // Yield sections assembled from incremental yields, else an output preview.
@@ -2633,6 +2639,25 @@ mod tests {
         assert!(text.contains("45.0s"), "{text}");
         assert!(text.contains("… 1 more line"), "{text}");
         assert!(text.contains("total 1m30s"), "{text}");
+    }
+
+    #[test]
+    fn failed_result_without_output_renders_error_detail_block() {
+        let theme = Theme::default();
+        let call = json!({
+            "name": "task",
+            "arguments": {"task": "explore"},
+            "details": {"results": [{
+                "index": 0, "id": "Gruff", "agent": "scout", "exitCode": 1,
+                "output": "", "error": "Error: provider exploded",
+                "durationMs": 1_000
+            }]}
+        });
+        let lines = card_lines(&call, &theme, &RenderCtx::live(120, NOW));
+        let text = line_text(&lines).join("\n");
+        assert!(text.contains("failed"), "{text}");
+        assert!(text.contains("  provider exploded"), "{text}");
+        assert!(!text.contains("Error: provider"), "{text}");
     }
 
     #[test]

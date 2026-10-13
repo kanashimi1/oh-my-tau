@@ -847,42 +847,26 @@ impl App {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    /// One chat entry as a single committed row (`take_scrollback_lines`
-    /// fallback rows).
-    fn entry_line(&self, e: &crate::chat::ChatEntry, width: u16) -> Line<'static> {
-        let theme = &self.theme;
-        let (glyph, color) = match e.role {
-            ChatRole::User => (theme.glyph("prompt"), theme.color("accent")),
-            ChatRole::Assistant => ("", theme.color("text")),
-            ChatRole::Tool => ("●", theme.color("warning")),
-            ChatRole::System => ("!", theme.color("text_muted")),
-        };
-        let text: String = e.text.lines().collect::<Vec<_>>().join(" ⏎ ");
-        let text = truncate(&text, width as usize);
-        if glyph.is_empty() {
-            Line::from(Span::styled(text, Style::default().fg(color)))
-        } else {
-            Line::from(vec![
-                Span::styled(format!("{glyph} "), Style::default().fg(color)),
-                Span::raw(text),
-            ])
-        }
-    }
-
     /// The uncommitted chat tail: entries at/after the commit watermark
     /// only — committed rows live in terminal scrollback and must never be
-    /// re-drawn here (ShellRender invariant).
-    fn render_chat(&self, frame: &mut Frame<'_>, area: Rect) {
+    /// re-drawn here (ShellRender invariant). Rows come from the chat block
+    /// renderer (`chat::blocks`); the streaming reveal controller is ticked
+    /// once per frame here in the draw loop (chat.md §8).
+    fn render_chat(&mut self, frame: &mut Frame<'_>, area: Rect) {
         use ratatui::widgets::Paragraph;
+        // Keep the transcript renderer on the app theme (hot-swap path).
+        self.messages.set_theme(self.theme.clone());
+        self.messages.tick_reveal();
         let height = area.height as usize;
-        let tail = self.messages.live_tail();
-        let skip = tail.len().saturating_sub(height + self.scroll as usize);
-        let take = tail.len().saturating_sub(skip);
-        let lines: Vec<Line<'static>> = tail[skip..take]
-            .iter()
-            .map(|e| self.entry_line(e, area.width))
-            .collect();
-        frame.render_widget(Paragraph::new(lines), area);
+        let base = self.messages.committed_len();
+        let tail_len = self.messages.entries().len() - base;
+        let width = usize::from(area.width).max(8);
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for idx in base..base + tail_len {
+            lines.extend(self.messages.entry_lines_at(idx, width));
+        }
+        let skip = lines.len().saturating_sub(height + self.scroll as usize);
+        frame.render_widget(Paragraph::new(lines[skip..].to_vec()), area);
     }
 }
 
@@ -1328,7 +1312,10 @@ mod tests {
         assert!(enter(&mut app, &port));
         let committed = app.messages.committed_len();
         let lines = app.take_scrollback_lines(80, false);
-        assert_eq!(lines.len(), app.messages.committed_len() - committed);
+        // Rich rendering emits several rows per entry; the watermark must
+        // advance over every finished entry.
+        assert!(!lines.is_empty());
+        assert!(app.messages.committed_len() > committed);
         // The live tail must exclude everything committed so far.
         assert_eq!(
             app.messages.live_tail().len() + app.messages.committed_len(),
@@ -1336,7 +1323,8 @@ mod tests {
         );
         // Rebuild returns the full transcript and re-bases the watermark.
         let full = app.take_scrollback_lines(80, true);
-        assert_eq!(full.len(), app.messages.entries().len());
+        assert!(!full.is_empty());
+        assert_eq!(app.messages.committed_len(), app.messages.finished_len());
     }
 
     #[test]

@@ -51,7 +51,7 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
-use super::ToolRenderer;
+use super::{error_detail_lines, ToolRenderer};
 
 /// Default collapsed shell output preview height (TS `BASH_DEFAULT_PREVIEW_LINES`).
 pub const BASH_DEFAULT_PREVIEW_LINES: usize = 10;
@@ -1207,28 +1207,34 @@ impl<'a> BashCard<'a> {
         );
         lines.extend(cmd_lines);
 
-        // (2) Output section.
+        // (2) Output section. A settled error whose entire output is an
+        //     `Error: ` failure notice renders as an error-detail block (TS
+        //     `formatErrorDetail`) instead of a plain output pane.
         lines.push(Line::from(Span::styled(
             "Output",
             Style::default()
                 .fg(themed(theme, "toolTitle", "text_muted"))
                 .add_modifier(Modifier::BOLD),
         )));
-        let output_style = Style::default().fg(themed(theme, "toolOutput", "text"));
-        let out_lines: Vec<Line<'static>> = if self.output.trim().is_empty() {
-            Vec::new()
+        if self.is_error && !self.is_partial && self.output.starts_with("Error: ") {
+            lines.extend(error_detail_lines(&self.output, usize::MAX, theme));
         } else {
-            self.output
-                .split('\n')
-                .map(|l| Line::from(Span::styled(replace_tabs(l), output_style)))
-                .collect()
-        };
-        lines.extend(cap_output_tail(
-            out_lines,
-            self.preview_lines,
-            self.expanded,
-            viewport_rows,
-        ));
+            let output_style = Style::default().fg(themed(theme, "toolOutput", "text"));
+            let out_lines: Vec<Line<'static>> = if self.output.trim().is_empty() {
+                Vec::new()
+            } else {
+                self.output
+                    .split('\n')
+                    .map(|l| Line::from(Span::styled(replace_tabs(l), output_style)))
+                    .collect()
+            };
+            lines.extend(cap_output_tail(
+                out_lines,
+                self.preview_lines,
+                self.expanded,
+                viewport_rows,
+            ));
+        }
 
         // (3) Dim stats line — only the parts that apply.
         let stats = bash_stats_parts(
@@ -1838,6 +1844,17 @@ mod tests {
         call["result"]["details"]["timedOut"] = serde_json::json!(true);
         let (_, phase) = render_to_string(&call, 60, 12);
         assert_eq!(phase, BashPhase::Warning);
+    }
+
+    #[test]
+    fn error_notice_output_renders_error_detail_block() {
+        let mut call = sample_result_call();
+        call["result"]["isError"] = serde_json::json!(true);
+        call["result"]["content"][0]["text"] = serde_json::json!("Error: timed out after 30s");
+        let (text, phase) = render_to_string(&call, 60, 12);
+        assert_eq!(phase, BashPhase::Error);
+        assert!(text.contains("  timed out after 30s"), "{text}");
+        assert!(!text.contains("Error: timed out"), "{text}");
     }
 
     #[test]

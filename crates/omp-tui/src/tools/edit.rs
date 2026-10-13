@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
-use super::ToolRenderer;
+use super::{error_detail_lines, ToolRenderer};
 
 /// Collapse budgets (TS `PREVIEW_LIMITS` edit-specific rows:
 /// `DIFF_COLLAPSED_HUNKS` / `DIFF_COLLAPSED_LINES`).
@@ -217,21 +217,6 @@ pub(crate) fn frame_card(
         Span::styled("╯".to_owned(), border),
     ]));
     out
-}
-
-/// Error-detail body lines: leading `Error: ` stripped, each line red and
-/// indented two spaces (TS `formatErrorDetail`).
-pub(crate) fn error_detail_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let inner = width.saturating_sub(4).max(1);
-    text.lines()
-        .map(|l| {
-            let l = l.strip_prefix("Error: ").unwrap_or(l);
-            Line::from(Span::styled(
-                format!("  {}", truncate_width(l, inner)),
-                Style::default().fg(theme.color("error")),
-            ))
-        })
-        .collect()
 }
 
 /// Concatenated text blocks of a tool-result message.

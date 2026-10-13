@@ -13,7 +13,9 @@ use serde_json::Value;
 use crate::theme::Theme;
 
 use super::{
-    args_inline, args_of, is_error, paint, result_text, status_line, styled, ToolRenderer,
+    args_inline, args_of, error_detail_lines, is_error, json_tree_lines, paint, result_text,
+    status_line, styled, ToolRenderer, JSON_TREE_MAX_DEPTH_EXPANDED, JSON_TREE_MAX_LINES_EXPANDED,
+    JSON_TREE_SCALAR_LEN_EXPANDED,
 };
 
 /// Tool-name prefix for MCP tool calls (`MCP_TOOL_NAME_PREFIX`).
@@ -63,42 +65,126 @@ impl ToolRenderer for Mcp {
         }
         match result_text(call) {
             None => lines.push(Line::from(styled(theme, "text_muted", "(no output)"))),
-            Some(text) => {
-                let trimmed = text.trim();
-                if trimmed.is_empty() {
-                    lines.push(Line::from(styled(theme, "text_muted", "(no output)")));
-                } else if let Some(parsed) = parse_json_tree(trimmed) {
-                    let cap = OUTPUT_COLLAPSED.min(parsed.len());
-                    for row in &parsed[..cap] {
-                        lines.push(Line::from(styled(theme, "toolOutput", row.clone())));
-                    }
-                    if parsed.len() > OUTPUT_EXPANDED {
-                        lines.push(Line::from(styled(theme, "text_muted", "…")));
-                    } else if parsed.len() > cap {
-                        lines.push(Line::from(styled(
-                            theme,
-                            "text_muted",
-                            format!("… {} more lines [ctrl+o: Expand]", parsed.len() - cap),
-                        )));
-                    }
-                } else {
-                    let body: Vec<&str> = trimmed.lines().collect();
-                    let cap = OUTPUT_COLLAPSED.min(body.len());
-                    for line in &body[..cap] {
-                        lines.push(Line::from(styled(theme, "toolOutput", (*line).to_owned())));
-                    }
-                    if body.len() > cap {
-                        lines.push(Line::from(styled(
-                            theme,
-                            "text_muted",
-                            format!("… {} more lines [ctrl+o: Expand]", body.len() - cap),
-                        )));
-                    }
-                }
-            }
+            Some(text) => lines.extend(output_pane_lines(theme, &text, false)),
         }
         paint(frame, area, lines);
     }
+
+    fn render_frame(
+        &self,
+        frame: &Value,
+        expanded: bool,
+        theme: &Theme,
+    ) -> Vec<Line<'static>> {
+        let name = frame
+            .get("toolName")
+            .and_then(Value::as_str)
+            .unwrap_or("MCP");
+        let label = parse_mcp_name(name).unwrap_or_else(|| "MCP".to_owned());
+        let result = frame.get("result");
+        let settled = result.is_some();
+        let error = result
+            .and_then(|r| r.get("isError"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let icon = if error {
+            theme.glyph("failure")
+        } else if settled {
+            "⚙"
+        } else {
+            "⧗"
+        };
+        let mut lines = vec![status_line(theme, icon, &label, "", Vec::new())];
+        let args = frame
+            .get("args")
+            .filter(|a| a.is_object() && !a.as_object().is_some_and(serde_json::Map::is_empty));
+        if !settled {
+            let inline = args_inline(args, INLINE_BUDGET);
+            if !inline.is_empty() && inline != "{}" {
+                lines.push(Line::from(styled(theme, "text_muted", format!(" └─ {inline}"))));
+            }
+            return lines;
+        }
+        if let Some(args) = args.filter(|_| expanded) {
+            // Expanded Args section (TS `mcp.ts` `buildMcpArgsSection`).
+            lines.push(Line::from(styled(theme, "text_muted", "Args")));
+            let (tree, truncated) = json_tree_lines(
+                args,
+                JSON_TREE_MAX_DEPTH_EXPANDED,
+                JSON_TREE_MAX_LINES_EXPANDED,
+                JSON_TREE_SCALAR_LEN_EXPANDED,
+            );
+            for row in tree {
+                lines.push(Line::from(styled(theme, "toolOutput", row)));
+            }
+            if truncated {
+                lines.push(Line::from(styled(theme, "text_muted", "…")));
+            }
+        }
+        if error {
+            // Error results render the error detail (TS `formatErrorDetail`):
+            // `Error: ` prefix stripped, two-column indent, error color.
+            match result_text(frame) {
+                Some(text) if !text.trim().is_empty() => {
+                    lines.extend(error_detail_lines(&text, usize::MAX, theme));
+                }
+                _ => lines.push(Line::from(styled(theme, "text_muted", "(no output)"))),
+            }
+            return lines;
+        }
+        match result_text(frame) {
+            None => lines.push(Line::from(styled(theme, "text_muted", "(no output)"))),
+            Some(text) => lines.extend(output_pane_lines(theme, &text, expanded)),
+        }
+        lines
+    }
+}
+
+/// Capped output pane shared by the frame and transcript renderers: JSON
+/// text pretty-prints as a tree, raw text is capped to the collapsed budget
+/// with a dim expand hint (`formatOutputPaneLines` simplified to hard caps).
+fn output_pane_lines(theme: &Theme, text: &str, expanded: bool) -> Vec<Line<'static>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return vec![Line::from(styled(theme, "text_muted", "(no output)"))];
+    }
+    if let Some(parsed) = parse_json_tree(trimmed) {
+        let cap = if expanded {
+            OUTPUT_EXPANDED.min(parsed.len())
+        } else {
+            OUTPUT_COLLAPSED.min(parsed.len())
+        };
+        let mut lines: Vec<Line<'static>> = parsed[..cap]
+            .iter()
+            .map(|row| Line::from(styled(theme, "toolOutput", row.clone())))
+            .collect();
+        if parsed.len() > cap {
+            lines.push(Line::from(styled(
+                theme,
+                "text_muted",
+                format!("… {} more lines [ctrl+o: Expand]", parsed.len() - cap),
+            )));
+        }
+        return lines;
+    }
+    let body: Vec<&str> = trimmed.lines().collect();
+    let cap = if expanded {
+        OUTPUT_EXPANDED.min(body.len())
+    } else {
+        OUTPUT_COLLAPSED.min(body.len())
+    };
+    let mut lines: Vec<Line<'static>> = body[..cap]
+        .iter()
+        .map(|line| Line::from(styled(theme, "toolOutput", (*line).to_owned())))
+        .collect();
+    if body.len() > cap {
+        lines.push(Line::from(styled(
+            theme,
+            "text_muted",
+            format!("… {} more lines [ctrl+o: Expand]", body.len() - cap),
+        )));
+    }
+    lines
 }
 
 /// `server/tool` label from the `mcp__<server>_<tool>` name.
@@ -217,5 +303,56 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(text.contains("(no output)"));
+    }
+
+    fn flat(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn error_result_renders_error_detail_rows() {
+        let frame = json!({
+            "toolCallId": "1", "toolName": "mcp__fs__read", "args": {"path": "/x"},
+            "result": {"content": [{"type": "text", "text": "Error: no such file"}],
+                       "isError": true}
+        });
+        let lines = Mcp.render_frame(&frame, false, &Theme::default());
+        let flat = flat(&lines);
+        assert!(flat[0].contains("fs/read"), "{flat:?}");
+        assert!(
+            flat.iter().any(|l| l == "  no such file"),
+            "{flat:?}"
+        );
+        assert!(!flat.iter().any(|l| l.contains("Error: no such")), "{flat:?}");
+    }
+
+    #[test]
+    fn expanded_result_renders_args_json_tree() {
+        let frame = json!({
+            "toolCallId": "1", "toolName": "mcp__fs__write", "args": {"path": "/x", "opts": {"deep": true}},
+            "result": {"content": [{"type": "text", "text": "ok"}], "isError": false}
+        });
+        let theme = Theme::default();
+        let expanded = flat(&Mcp.render_frame(&frame, true, &theme));
+        assert!(expanded.iter().any(|l| l == "Args"), "{expanded:?}");
+        assert!(
+            expanded.iter().any(|l| l.contains("├─ path: \"/x\"")),
+            "{expanded:?}"
+        );
+        assert!(expanded.iter().any(|l| l.contains("opts")), "{expanded:?}");
+        // Collapsed: no Args section, inline row instead.
+        let collapsed = flat(&Mcp.render_frame(&frame, false, &theme));
+        assert!(!collapsed.iter().any(|l| l == "Args"), "{collapsed:?}");
+    }
+
+    #[test]
+    fn pending_frame_renders_dim_args_row() {
+        let frame = json!({"toolCallId": "1", "toolName": "mcp__fs__read", "args": {"path": "/x"}});
+        let flat = flat(&Mcp.render_frame(&frame, false, &Theme::default()));
+        assert!(flat[0].contains('⧗'), "{flat:?}");
+        assert!(flat.iter().any(|l| l.contains("└─")), "{flat:?}");
     }
 }

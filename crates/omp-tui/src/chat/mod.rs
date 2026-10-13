@@ -6,6 +6,7 @@
 //! blocks via the submodules: [`markdown`] for assistant text,
 //! [`thinking`] for reasoning blocks, [`code`] for fenced code highlighting.
 
+pub mod blocks;
 pub mod code;
 pub mod markdown;
 pub mod messages;
