@@ -197,6 +197,136 @@ async fn shared_daemon_sessions_are_isolated() {
     assert!(gone.is_ok(), "shared daemon did not exit after last session");
 }
 
+/// Find the shared-daemon pid by its `OMP_RS_EXT_SOCKET` env var (the daemon's
+/// cmdline is just `bun .../shard.ts`, shared with any other test daemon).
+fn daemon_pid(sock: &std::path::Path) -> Option<u32> {
+    let needle = format!("OMP_RS_EXT_SOCKET={}", sock.display());
+    for entry in std::fs::read_dir("/proc").ok()? {
+        let Ok(entry) = entry else { continue };
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else {
+            continue;
+        };
+        if env
+            .windows(needle.len())
+            .any(|w| w == needle.as_bytes())
+        {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// `kill -9` on the shared daemon mid-session: in-flight RPCs fail cleanly,
+/// the session transparently falls back to a private host (generation bump),
+/// extensions re-load, and emits/hooks fire again — the next prompt works.
+#[tokio::test]
+async fn shared_daemon_death_falls_back_to_private_host() {
+    let dir = std::env::temp_dir().join(format!("omp-ext-shared-death-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("ext.sock");
+    let mut cfg = config();
+    cfg.shared_socket = Some(sock.clone());
+    // On-the-fly extension with a tool that never answers, so an RPC can be
+    // genuinely in flight when the daemon dies.
+    let slow = dir.join("slow.ts");
+    std::fs::write(
+        &slow,
+        r#"export default function (pi: any): void {
+  pi.registerTool({
+    name: "fx_slow", label: "Slow", description: "never returns",
+    parameters: {},
+    async execute() { await new Promise(() => {}); return { content: [] }; },
+  });
+}
+"#,
+    )
+    .unwrap();
+    let paths = [fixture("fixture.ts"), slow];
+
+    let host = ExtHost::spawn(&cfg).await.unwrap();
+    let _rx = host.take_incoming().unwrap();
+    host.load(
+        Some(&paths),
+        None,
+        "/tmp",
+        Some(json!({"sessionId": "s1", "sessionName": "old title"})),
+    )
+    .await
+    .unwrap();
+    let r = host.call_tool("fx_echo", "e1", json!({"text":"x"}), None).await.unwrap();
+    assert_eq!(r["content"][0]["text"], "echo:x");
+    let pid = daemon_pid(&sock).expect("shared daemon running");
+
+    // Subscribe before the kill: `watch::subscribe` does not replay a bump
+    // that already happened.
+    let mut generations = host.reconnections();
+
+    // Kill the daemon while an RPC is in flight: it must error, not hang.
+    let in_flight = {
+        let host = host.clone();
+        tokio::spawn(
+            async move { host.call_tool("fx_slow", "h", json!({}), None).await },
+        )
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let killed = std::process::Command::new("kill")
+        .args(["-9"])
+        .arg(pid.to_string())
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let res = tokio::time::timeout(Duration::from_secs(10), in_flight)
+        .await
+        .expect("in-flight RPC must not hang")
+        .unwrap();
+    assert!(res.is_err(), "in-flight call must fail cleanly: {res:?}");
+
+    // Transparent fallback: a reconnect generation is published.
+    let bumped = tokio::time::timeout(Duration::from_secs(15), generations.changed())
+        .await
+        .expect("private-host fallback after daemon death");
+    assert!(bumped.is_ok(), "generation watch not dropped");
+    assert!(host.may_reconnect());
+
+    // Like the omp-cli supervisor: re-load extensions on the fresh host.
+    let mut rx = host.take_incoming().expect("fresh incoming channel");
+    host.load(
+        Some(&paths),
+        None,
+        "/tmp",
+        Some(json!({"sessionId": "s1", "sessionName": "old title"})),
+    )
+    .await
+    .unwrap();
+
+    // Hooks fire again: session_start -> append_entry from the reloaded ext.
+    host.emit(json!({"type":"session_start"}), None).await.unwrap();
+    let mut seen = None;
+    while let Ok(Some(m)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+        if let HostMessage::Notification { method, params } = m {
+            if method == "append_entry" {
+                seen = Some(params);
+                break;
+            }
+        }
+    }
+    let p = seen.expect("append_entry after recovery");
+    assert_eq!(p["customType"], "fixture-started");
+    assert_eq!(p["data"]["sid"], "s1");
+    assert_eq!(p["data"]["cwd"], "/tmp");
+
+    // The next prompt works: tool calls on the private fallback host. Fresh
+    // module state means the per-session counter restarted at 1.
+    let r = host.call_tool("fx_echo", "e2", json!({"text":"z"}), None).await.unwrap();
+    assert_eq!(r["content"][0]["text"], "echo:z");
+    assert_eq!(r["details"]["n"], 1, "fallback host has fresh extension state");
+
+    host.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn tools_and_commands() {
     let (host, mut rx) = loaded().await;

@@ -258,7 +258,53 @@ impl SessionWriter {
         })
     }
 
-    /// Append `ttsr_injection`.
+    /// Patch the fixed-width 256-byte title slot at line 1 (`FileSessionStorage.updateSessionTitle`).
+    ///
+    /// When the file has no title slot yet (sessions created before titling), one is
+    /// prepended by an atomic rewrite, so line 1 is always the slot afterwards — the same
+    /// on-disk shape omp's `SessionManager` produces.
+    ///
+    /// # Errors
+    /// I/O or serialization failure.
+    pub fn update_title_slot(&mut self, title: &str, source: Option<&str>, timestamp_iso: &str) -> Result<()> {
+        use std::os::unix::fs::FileExt;
+
+        let slot = entries::serialize_title_slot(title, source, timestamp_iso)?;
+        let slot_bytes = slot.as_bytes();
+
+        let first_line_is_slot = {
+            let mut f = BufReader::new(File::open(&self.path)?);
+            let mut line = Vec::new();
+            // A slot line is exactly TITLE_SLOT_BYTES including the newline.
+            (f.read_until(b'\n', &mut line)? == entries::TITLE_SLOT_BYTES)
+                && serde_json::from_slice::<Value>(&line)
+                    .ok()
+                    .and_then(|v| v.get("type").and_then(Value::as_str).map(str::to_owned))
+                    .as_deref()
+                    == Some("title")
+        };
+
+        if first_line_is_slot {
+            let f = OpenOptions::new().write(true).open(&self.path)?;
+            f.write_all_at(slot_bytes, 0)?;
+            f.sync_data()?;
+            return Ok(());
+        }
+
+        // No slot yet: prepend one, atomically, and re-open the append handle.
+        let body = std::fs::read_to_string(&self.path)?;
+        let tmp = self.path.with_extension("jsonl.title-tmp");
+        {
+            let mut f = File::create(&tmp)?;
+            f.write_all(slot_bytes)?;
+            f.write_all(body.as_bytes())?;
+            f.sync_data()?;
+        }
+        std::fs::rename(&tmp, &self.path)?;
+        self.file = OpenOptions::new().append(true).open(&self.path)?;
+        Ok(())
+    }
+
     ///
     /// # Errors
     /// Serialization or I/O failure.
@@ -813,6 +859,42 @@ mod tests {
             assert!(l.omp().is_some(), "not modeled: {raw}");
             assert_eq!(round_trip(&l), RoundTrip::Exact, "{raw}");
         }
+    }
+
+    #[test]
+    fn update_title_slot_prepends_then_patches_in_place() {
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        // Fresh omp-rs file: header at line 1, no slot yet -> prepend path.
+        let mut w = SessionWriter::create(&dir, "/", "s1", "2026-10-11T00:00:00.000Z").unwrap();
+        w.append_title_change("First", "auto", None, None, "2026-10-11T00:00:01.000Z")
+            .unwrap();
+        w.update_title_slot("First", Some("auto"), "2026-10-11T00:00:01.000Z")
+            .unwrap();
+        let loaded = load(&w.path).unwrap();
+        let slot = loaded.title_slot.expect("slot prepended");
+        assert_eq!(slot.title, "First");
+        assert_eq!(slot.source.as_deref(), Some("auto"));
+        // Line 1 is exactly 256 bytes; the header follows, then the entry.
+        let raw = std::fs::read_to_string(&w.path).unwrap();
+        let mut lines = raw.lines();
+        assert_eq!(lines.next().unwrap().len() + 1, entries::TITLE_SLOT_BYTES);
+        assert!(lines.next().unwrap().contains("\"type\":\"session\""));
+        // Appending after the rewrite still chains to the last entry.
+        w.append_title_change("Second", "user", Some("First"), None, "2026-10-11T00:00:02.000Z")
+            .unwrap();
+        // Second update patches the slot in place without growing the file.
+        let before = std::fs::metadata(&w.path).unwrap().len();
+        w.update_title_slot("Second", Some("user"), "2026-10-11T00:00:02.000Z")
+            .unwrap();
+        let after = std::fs::metadata(&w.path).unwrap().len();
+        assert_eq!(before, after, "in-place patch keeps the file size");
+        let loaded = load(&w.path).unwrap();
+        assert_eq!(loaded.title_slot.as_ref().map(|s| s.title.as_str()), Some("Second"));
+        assert_eq!(loaded.title_slot.as_ref().and_then(|s| s.source.as_deref()), Some("user"));
+        let raw = std::fs::read_to_string(&w.path).unwrap();
+        assert!(raw.lines().nth(2).unwrap().ends_with("\"title\":\"First\",\"source\":\"auto\"}"), "{raw}");
+        assert!(raw.lines().nth(3).unwrap().ends_with("\"title\":\"Second\",\"previousTitle\":\"First\",\"source\":\"user\"}"), "{raw}");
     }
 
     #[test]

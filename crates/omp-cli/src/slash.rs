@@ -466,7 +466,7 @@ pub async fn dispatch_builtin(
             if args.is_empty() {
                 output(rt, "Could not generate a session title. Use /rename <title> to set one.");
             } else {
-                match rt.set_session_name(args) {
+                match rt.set_session_name(args, "user") {
                     Ok(()) => output(rt, &format!("Session renamed to {args}.")),
                     Err(_) => output(rt, "Session name not changed (a user-set name takes precedence)."),
                 }

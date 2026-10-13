@@ -14,6 +14,7 @@ mod rpc;
 mod runtime;
 pub mod subcmd;
 mod sysprompt;
+mod title;
 mod tools;
 mod tree;
 
@@ -22,10 +23,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use cli::{Args, Resume};
 
-// mimalloc instead of glibc malloc: glibc's per-thread arenas retain the
-// ~90 MB one-time first-turn churn (cross-thread JSON emit between the
-// ext-host pipe tasks and the agent loop) indefinitely; mimalloc returns
-// freed segments promptly. Measured: see runs/omp-rust/reports/AllocMem.md.
+// Allocation strategy, measured (runs/omp-rust/reports/AllocMem.md, Tails.md):
+// glibc malloc retains the cross-thread per-turn churn in per-thread arenas;
+// mimalloc cut that (197 -> 162 MB/session). It still keeps large per-turn
+// wire-context transients committed (~0.15 MB/turn growth, Tails.md) — open.
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -157,6 +158,10 @@ fn usage_err(msg: &str) -> anyhow::Error {
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = parse_args()?;
+    if args.no_title {
+        // TS `PI_NO_TITLE`: read by the auto-title hook in `runtime::spawn_auto_title`.
+        std::env::set_var("OMP_RS_NO_TITLE", "1");
+    }
     if args.help {
         print!("{HELP}");
         return Ok(());
@@ -539,6 +544,16 @@ async fn run_print(
     if let Some(e) = extensions {
         e.attach(rt.clone());
         crate::rpc::slash::set_extensions(e.clone());
+        // Every title change re-sends the ext ctx with the new sessionName so
+        // hosts reading `getSessionName()` (herdr-pane-names) see it at once.
+        let ext = e.clone();
+        rt.set_name_listener(Some(std::sync::Arc::new(move |name: &str| {
+            let ext = ext.clone();
+            let name = name.to_string();
+            tokio::spawn(async move {
+                let _ = ext.set_session_name(Some(name)).await;
+            });
+        })));
     }
     if let Some(path) = resume {
         // `--session-dir` relocates the session store: the resumed transcript
@@ -573,6 +588,9 @@ async fn run_print(
             .map_err(|e| anyhow::anyhow!(e.message))?;
     }
     rt.wait_settled().await;
+    // The automatic title request rides the session lifecycle (TS ties it to
+    // the session, not a single turn); let it land before the process exits.
+    rt.wait_for_title().await;
     Ok(agent.state().await.messages)
 }
 

@@ -123,6 +123,17 @@ pub enum PromptGate {
     Handled,
 }
 
+/// Last session ctx sent to the host; kept so a shared-daemon reconnect (or a
+/// title change) can re-send the full merged ctx (`host.ts set_ctx` merges
+/// into state → `getSessionName()` etc.).
+#[derive(Debug, Clone, Default)]
+struct SessionCtx {
+    session_id: String,
+    session_file: Option<PathBuf>,
+    model: String,
+    session_name: Option<String>,
+}
+
 /// Live extension host and its agent-facing hooks.
 pub struct Extensions {
     pub host: Arc<ExtHost>,
@@ -132,6 +143,16 @@ pub struct Extensions {
     turn: Arc<AtomicU64>,
     /// `session_stop` continuation bookkeeping (TS agent-session fields).
     stop: Arc<Mutex<StopState>>,
+    /// Session cwd (extension `load` param), for reconnect recovery.
+    cwd: PathBuf,
+    /// Explicit `--extension` paths, for reconnect recovery.
+    extra: Vec<PathBuf>,
+    /// Default extensions dir, for reconnect recovery.
+    dir: Option<String>,
+    /// Last session ctx sent to the host.
+    ctx: Mutex<SessionCtx>,
+    /// Runtime attached via [`Extensions::attach`]; re-served on reconnect.
+    rt: Mutex<Option<Arc<Runtime>>>,
 }
 
 impl Extensions {
@@ -173,13 +194,27 @@ impl Extensions {
             );
         }
 
-        Ok(Arc::new(Self {
+        let ext = Arc::new(Self {
             host,
             hooks,
             sub: Mutex::new(None),
             turn: Arc::new(AtomicU64::new(0)),
             stop: Arc::new(Mutex::new(StopState::default())),
-        }))
+            cwd: cwd.to_path_buf(),
+            extra: extra.to_vec(),
+            dir,
+            ctx: Mutex::new(SessionCtx::default()),
+            rt: Mutex::new(None),
+        });
+        if ext.host.may_reconnect() {
+            // Shared-daemon supervisor: on daemon death the host transparently
+            // falls back to a private host; re-load extensions, re-send the
+            // session ctx, re-emit `session_start` (as TS does on extension
+            // reload), and re-serve host->core messages.
+            let ext = ext.clone();
+            tokio::spawn(async move { ext.supervise_reconnect().await });
+        }
+        Ok(ext)
     }
 
     /// `pa-agent` hook points backed by the host.
@@ -211,7 +246,9 @@ impl Extensions {
             .collect())
     }
 
-    /// Merge session info into the host's ctx state.
+    /// Merge session info into the host's ctx state. Also sends the stored
+    /// `sessionName` (see [`Self::set_session_name`]) so the merged state
+    /// stays complete across reconnects.
     ///
     /// # Errors
     /// Transport failure.
@@ -221,13 +258,51 @@ impl Extensions {
         session_file: Option<&Path>,
         model: &str,
     ) -> Result<()> {
-        self.host
-            .set_ctx(json!({
-                "sessionId": session_id,
-                "sessionFile": session_file.map(|p| p.to_string_lossy().into_owned()),
-                "model": model,
-            }))
-            .await
+        {
+            let mut ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            ctx.session_id = session_id.to_string();
+            ctx.session_file = session_file.map(Path::to_path_buf);
+            ctx.model = model.to_string();
+        }
+        self.send_ctx().await
+    }
+
+    /// Update the session title in the host's ctx state (`host.ts set_ctx`
+    /// merges into state → `getSessionName()`), so extensions like
+    /// herdr-pane-names see title changes without re-reading the session file.
+    /// `None` clears the title. Safe to call on every title change: the value
+    /// is stored and the full merged ctx is re-sent. Before the first
+    /// `set_session_ctx` the update is stored only (nothing to merge into).
+    ///
+    /// # Errors
+    /// Transport failure.
+    pub async fn set_session_name(&self, name: Option<String>) -> Result<()> {
+        let ready = {
+            let mut ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            ctx.session_name = name;
+            !ctx.session_id.is_empty()
+        };
+        if ready {
+            self.send_ctx().await?;
+        }
+        Ok(())
+    }
+
+    /// Send the stored session ctx (id/file/model/name) to the host.
+    ///
+    /// # Errors
+    /// Transport failure.
+    async fn send_ctx(&self) -> Result<()> {
+        let body = {
+            let ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            json!({
+                "sessionId": ctx.session_id,
+                "sessionFile": ctx.session_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                "model": ctx.model,
+                "sessionName": ctx.session_name,
+            })
+        };
+        self.host.set_ctx(body).await
     }
 
     /// `session_start` (once per session).
@@ -283,6 +358,24 @@ impl Extensions {
     /// lifecycle forwarding (`agent_*`, `turn_*`, `message_*`,
     /// `tool_execution_*`, `session_stop`).
     pub fn attach(self: &Arc<Self>, rt: Arc<Runtime>) {
+        *self.rt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rt.clone());
+        self.serve_incoming(&rt);
+        let ext = self.clone();
+        tokio::spawn(async move {
+            let sub = ext.subscribe_lifecycle(rt).await;
+            *ext.sub
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sub);
+            // Hold the subscription for the session's lifetime.
+            std::future::pending::<()>().await;
+        });
+    }
+
+    /// Serve host->core messages on the host's current incoming channel.
+    /// Called by [`Self::attach`] and again on every reconnect (the fallback
+    /// host has a fresh channel; the previous consumer's task ends when its
+    /// sender drops).
+    fn serve_incoming(self: &Arc<Self>, rt: &Arc<Runtime>) {
         if let Some(incoming) = self.host.take_incoming() {
             let host = self.host.clone();
             let runtime = rt.clone();
@@ -293,15 +386,63 @@ impl Extensions {
                 }
             });
         }
-        let ext = self.clone();
-        tokio::spawn(async move {
-            let sub = ext.subscribe_lifecycle(rt).await;
-            *ext.sub
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sub);
-            // Hold the subscription for the session's lifetime.
-            std::future::pending::<()>().await;
-        });
+    }
+
+    /// Wait for shared-daemon-death reconnects and recover the session on
+    /// each: re-load extensions, re-send the session ctx, re-emit
+    /// `session_start` (as TS does on extension reload), resume serving
+    /// host->core messages. Emits keep flowing afterwards; a failure is
+    /// logged and the next prompt retries recovery on the following event.
+    async fn supervise_reconnect(self: Arc<Self>) {
+        let mut generations = self.host.reconnections();
+        loop {
+            if generations.changed().await.is_err() {
+                return;
+            }
+            eprintln!(
+                "omp-rs: extension host reconnected; reloading extensions and session ctx"
+            );
+            if let Err(e) = self.recover().await {
+                eprintln!("omp-rs: extension host recovery: {e:#}");
+            }
+        }
+    }
+
+    /// Re-establish session state on a transparently reconnected host.
+    ///
+    /// # Errors
+    /// Transport failure on reload or ctx re-send.
+    async fn recover(self: &Arc<Self>) -> Result<()> {
+        let loaded = self
+            .host
+            .load(
+                if self.extra.is_empty() {
+                    None
+                } else {
+                    Some(&self.extra)
+                },
+                self.dir.as_deref(),
+                &self.cwd.to_string_lossy(),
+                Some(json!({"cwd": self.cwd.to_string_lossy(), "hasUI": false, "branch": []})),
+            )
+            .await?;
+        for err in &loaded.errors {
+            eprintln!(
+                "omp-rs: extension failed to load: {}: {}",
+                err.path, err.error
+            );
+        }
+        self.send_ctx().await?;
+        emit_silent(self.host.emit_session_start(None).await);
+        if let Some(rt) = self
+            .rt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            self.serve_incoming(&rt);
+        }
+        Ok(())
     }
 
     /// `rpc::run_with` `OnStart` hook form of [`Self::attach`].

@@ -979,7 +979,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             if name.is_empty() {
                 return Err(CmdError::new("Session name cannot be empty"));
             }
-            rt.set_session_name(&name).map_err(CmdError::from)?;
+            rt.set_session_name(&name, "user").map_err(CmdError::from)?;
             none()
         }
         "handoff" => {

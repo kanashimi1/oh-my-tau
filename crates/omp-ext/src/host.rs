@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
 
@@ -166,10 +166,48 @@ pub struct ExtHost {
     trace: Option<String>,
     /// Per-session handler budget forwarded with the `load` RPC (shared mode).
     handler_timeout_ms: Option<u64>,
+    /// Config that created this host, kept for the shared-daemon-death
+    /// fallback: respawns a private stdio host on the same `Arc<ExtHost>`.
+    config: HostConfig,
+    /// Bumped (with the new generation number) every time the underlying
+    /// connection was transparently replaced (shared daemon death → private
+    /// fallback). `watch` so late subscribers still see the latest generation.
+    generation: watch::Sender<usize>,
 }
 
 /// Object-safe writer half of `AsyncWriteExt` (child stdin or daemon socket).
 type BoxedWriter = Box<dyn tokio::io::AsyncWrite + Send + Unpin>;
+
+/// Build the per-session stdio host command (`bun ext-host/host.ts`). Shared
+/// by [`ExtHost::spawn`] and the shared-daemon-death fallback, which respawns
+/// the same private host on the existing `Arc<ExtHost>`.
+fn private_command(cfg: &HostConfig) -> Command {
+    let mut cmd = Command::new(&cfg.bun);
+    // `--smol` trades more frequent GC for a smaller heap footprint
+    // (~3-4 MB per session; measured 92.8 → 87.0 MB peak on the 36-extension
+    // suite). Per-event cost impact measured at parity by bench s6.
+    // Opt out with OMP_EXT_NO_SMOL=1 (e.g. older bun without the flag).
+    // Only passed to a real `bun` binary — tests substitute fake runners.
+    if std::env::var_os("OMP_EXT_NO_SMOL").is_none()
+        && cfg.bun.rsplit('/').next().is_some_and(|b| b == "bun" || b.starts_with("bun-"))
+    {
+        cmd.arg("--smol");
+    }
+    cmd.arg(&cfg.host_script)
+        .env("HOOK_TRACE", "0")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(t) = &cfg.trace {
+        cmd.env("OMP_EXT_TRACE", t);
+    }
+    if let Some(ms) = cfg.handler_timeout_ms {
+        cmd.env("OMP_EXT_TIMEOUT_MS", ms.to_string());
+    }
+    cmd.envs(cfg.env.iter().map(|(k, v)| (k, v)));
+    cmd
+}
 
 impl ExtHost {
     /// Spawn `bun <host_script>` (or connect to the shared daemon when
@@ -182,31 +220,7 @@ impl ExtHost {
         if let Some(sock) = &cfg.shared_socket {
             return Self::spawn_shared(cfg, sock).await;
         }
-        let mut cmd = Command::new(&cfg.bun);
-        // `--smol` trades more frequent GC for a smaller heap footprint
-        // (~3-4 MB per session; measured 92.8 → 87.0 MB peak on the 36-extension
-        // suite). Per-event cost impact measured at parity by bench s6.
-        // Opt out with OMP_EXT_NO_SMOL=1 (e.g. older bun without the flag).
-        // Only passed to a real `bun` binary — tests substitute fake runners.
-        if std::env::var_os("OMP_EXT_NO_SMOL").is_none()
-            && cfg.bun.rsplit('/').next().is_some_and(|b| b == "bun" || b.starts_with("bun-"))
-        {
-            cmd.arg("--smol");
-        }
-        cmd.arg(&cfg.host_script)
-            .env("HOOK_TRACE", "0")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        if let Some(t) = &cfg.trace {
-            cmd.env("OMP_EXT_TRACE", t);
-        }
-        if let Some(ms) = cfg.handler_timeout_ms {
-            cmd.env("OMP_EXT_TIMEOUT_MS", ms.to_string());
-        }
-        cmd.envs(cfg.env.iter().map(|(k, v)| (k, v)));
-        let mut child = cmd
+        let mut child = private_command(cfg)
             .spawn()
             .with_context(|| format!("spawn {} {}", cfg.bun, cfg.host_script.display()))?;
         let stdin = child.stdin.take().context("host stdin")?;
@@ -215,6 +229,7 @@ impl ExtHost {
 
         let pending: Pending = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
+        let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
             writer: tokio::sync::Mutex::new(Box::new(stdin)),
@@ -228,6 +243,8 @@ impl ExtHost {
             }),
             trace: cfg.trace.as_ref().map(|t| t.to_string_lossy().into_owned()),
             handler_timeout_ms: cfg.handler_timeout_ms,
+            config: cfg.clone(),
+            generation,
         });
 
         let weak = Arc::downgrade(&host);
@@ -506,6 +523,7 @@ impl ExtHost {
         let (read_half, write_half) = stream.into_split();
         let pending: Pending = Arc::default();
         let (tx, rx) = mpsc::unbounded_channel();
+        let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
             writer: tokio::sync::Mutex::new(Box::new(write_half)),
@@ -519,11 +537,102 @@ impl ExtHost {
             }),
             trace: cfg.trace.as_ref().map(|t| t.to_string_lossy().into_owned()),
             handler_timeout_ms: cfg.handler_timeout_ms,
+            config: cfg.clone(),
+            generation,
         });
 
         let weak = Arc::downgrade(&host);
         tokio::spawn(async move {
             let mut lines = BufReader::new(read_half).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                route(&msg, &pending, weak.upgrade());
+            }
+            // Daemon died (e.g. kill -9): fail everything still waiting so
+            // in-flight emits/tool calls get a clean error, not a hang.
+            for (_, w) in pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .drain()
+            {
+                let _ = w.send(Err("extension host exited".into()));
+            }
+            // Transparent fallback: respawn a private stdio host on the same
+            // `Arc<ExtHost>` so every consumer (hooks, tools, lifecycle
+            // forwarding) keeps working; `reconnections()` subscribers (the
+            // omp-cli supervisor) re-load extensions and re-emit session ctx.
+            if let Some(host) = weak.upgrade() {
+                match host.reconnect_after_daemon_death().await {
+                    Ok(()) => eprintln!(
+                        "omp-rs: shared extension-host daemon lost; fell back to a private host"
+                    ),
+                    Err(e) => eprintln!("omp-rs: shared extension-host daemon lost: {e:#}"),
+                }
+            }
+        });
+        Ok(host)
+    }
+
+    /// Subscribe to connection replacements (shared-daemon death → private
+    /// fallback). The receiver yields the new generation each time the
+    /// underlying connection was transparently re-established; `changed()`
+    /// fires immediately if a reconnect already happened.
+    #[must_use]
+    pub fn reconnections(&self) -> watch::Receiver<usize> {
+        self.generation.subscribe()
+    }
+
+    /// `true` when this host may transparently reconnect (shared mode).
+    /// Private hosts die with their session and never reconnect.
+    #[must_use]
+    pub fn may_reconnect(&self) -> bool {
+        self.config.shared_socket.is_some()
+    }
+
+    /// Respawn a private stdio host on this same `Arc<ExtHost>` after the
+    /// shared daemon's connection ended. Swaps the writer/child, resets the
+    /// `hasHandlers` gate and the incoming channel (the old consumer's
+    /// receiver ends when its sender drops), restarts the reader task, and
+    /// bumps the generation so supervisors can re-load extensions and re-send
+    /// the session ctx.
+    ///
+    /// # Errors
+    /// Spawn failure; the host stays unusable (writes fail cleanly).
+    async fn reconnect_after_daemon_death(self: &Arc<Self>) -> Result<()> {
+        let mut child = private_command(&self.config)
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "reconnect: spawn {} {}",
+                    self.config.bun, self.config.host_script.display()
+                )
+            })?;
+        let stdin = child.stdin.take().context("reconnect: host stdin")?;
+        let stdout = child.stdout.take().context("reconnect: host stdout")?;
+        let stderr = child.stderr.take().context("reconnect: host stderr")?;
+
+        *self.writer.lock().await = Box::new(stdin);
+        *self.child.lock().await = Some(child);
+        *self
+            .subscribed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        let (tx, rx) = mpsc::unbounded_channel();
+        *self
+            .incoming
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Incoming {
+            delivery: Delivery::Pending(VecDeque::new()),
+            tx,
+            rx: Some(rx),
+        };
+
+        let pending: Pending = self.pending.clone();
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let Ok(msg) = serde_json::from_str::<Value>(&line) else {
                     continue;
@@ -538,7 +647,15 @@ impl ExtHost {
                 let _ = w.send(Err("extension host exited".into()));
             }
         });
-        Ok(host)
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                eprintln!("[ext-host] {line}");
+            }
+        });
+        // Publish last, after the new connection is fully usable.
+        self.generation.send_modify(|g| *g += 1);
+        Ok(())
     }
 
     /// Connect to the daemon's socket, spawning it on the first attempt.

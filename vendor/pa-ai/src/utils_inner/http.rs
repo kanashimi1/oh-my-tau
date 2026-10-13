@@ -245,8 +245,8 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
     {
         builder = builder.header("content-type", "application/json");
     }
-    if let Some(body) = &request.body {
-        builder = builder.body(body.clone());
+    if let Some(body) = request.body {
+        builder = builder.body(body);
     }
 
     let send_future = builder.send();
