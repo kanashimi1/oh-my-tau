@@ -5,7 +5,12 @@
 // protocol (pi-coding-agent/src/eval/py/runner.py):
 //
 // Host -> runner:
-//   {"id": str, "code": str, "storeHistory": bool?, "timeoutMs": int?}
+//   {"id": str, "code": str, "storeHistory": bool?, "timeoutMs": int?,
+//    "idleTimeout": bool?}                # idleTimeout: pause the deadline
+//                                          window while the cell awaits host
+//                                          bridge calls (host still enforces)
+//   {"type": "host_reply", "id": "<cellId>:<n>", "ok": bool,
+//    "result": any | "error": str}        # reply to a wait:true host frame
 //   {"type": "exit"}                     # graceful shutdown
 //
 // Runner -> host:
@@ -15,6 +20,8 @@
 //   {"type": "display", "id": ..., "bundle": {<mime>: <value>}}
 //   {"type": "result",  "id": ..., "bundle": {<mime>: <value>}}
 //   {"type": "error",   "id": ..., "ename": str, "evalue": str, "traceback": [str]}
+//   {"type": "host",     "id": "<cellId>:<n>", "op": str, "args": {...},
+//                         "wait": bool}    # cell -> host bridge request
 //   {"type": "done",    "id": ..., "status": "ok"|"error",
 //                        "executionCount": int, "cancelled": bool}
 //
@@ -39,7 +46,6 @@
 "use strict";
 
 const fs = require("node:fs");
-const path = require("node:path");
 
 let currentId = null;
 let executionCount = 0;
@@ -117,67 +123,97 @@ for (const name of consoleMethods) {
 }
 
 // --- prelude helpers --------------------------------------------------------
-// Minimal port of omp's JS prelude (eval/js/shared/prelude.txt + helpers.ts):
-// async read/write/env, display/print/log. Internal-URL delegation and the
-// tool bridge are not ported (spike scope).
-globalThis.display = (...values) => {
-  if (currentId === null) return;
-  emit({ type: "display", id: currentId, bundle: { "text/plain": values.map(formatArg).join(" ") } });
-};
-
+// display/log/phase/read/write/env/tool/output come from the embedded
+// preludes (loaded at startup below) and reach the host through the bridge;
+// only `print` stays native because the preludes deliberately do not define
+// it.
 globalThis.print = (...args) => {
   writeFrame("stdout", args.map(formatArg).join(" ") + "\n");
 };
 
-globalThis.log = message => {
-  writeFrame("stdout", String(message) + "\n");
+// --- host bridge ------------------------------------------------------------
+// Prelude helpers call `globalThis.__ompHostCall(op, args)` (waits for the
+// host reply) and `globalThis.__ompHostNotify(op, args)` (fire-and-forget).
+// Both emit a `host` frame on the protocol channel; for `wait: true` the
+// host answers with a `host_reply` frame on our stdin, routed to the pending
+// promise in the stdin loop below. Host frame ids are `<cellId>:<n>` so the
+// host can attribute them to the running cell.
+let hostCallSeq = 0;
+const pendingHostCalls = new Map();
+
+// Per-cell deadline bookkeeping. The host enforces the deadline (it kills
+// this process on expiry — JS has no safe in-process interrupt), so the
+// runner only tracks it to implement idle-timeout semantics: when the cell
+// request carried `idleTimeout: true`, the deadline window is paused while
+// the cell awaits a host bridge call and re-armed from the remaining budget
+// when the reply arrives.
+let cellDeadline = null;
+
+function armDeadline(timeoutMs, idleTimeout) {
+  if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    cellDeadline = null;
+    return;
+  }
+  cellDeadline = { endsAt: Date.now() + timeoutMs, idle: !!idleTimeout, pausedAt: null };
+}
+
+function pauseDeadline() {
+  if (cellDeadline && cellDeadline.idle && cellDeadline.pausedAt === null) {
+    cellDeadline.pausedAt = Date.now();
+  }
+}
+
+function resumeDeadline() {
+  if (cellDeadline && cellDeadline.pausedAt !== null) {
+    cellDeadline.endsAt += Date.now() - cellDeadline.pausedAt;
+    cellDeadline.pausedAt = null;
+  }
+}
+
+globalThis.__ompHostCall = (op, args) => {
+  if (currentId === null) {
+    return Promise.reject(new Error("the host bridge is only available while a cell is running"));
+  }
+  const id = currentId + ":" + ++hostCallSeq;
+  return new Promise((resolve, reject) => {
+    pendingHostCalls.set(id, { resolve, reject });
+    pauseDeadline();
+    emit({ type: "host", id, op, args, wait: true });
+  });
 };
 
-const resolveCellPath = rawPath => {
-  const p = String(rawPath);
-  return path.isAbsolute(p) ? p : path.join(process.cwd(), p);
+globalThis.__ompHostNotify = (op, args) => {
+  if (currentId === null) return;
+  emit({ type: "host", id: currentId + ":" + ++hostCallSeq, op, args, wait: false });
 };
 
-globalThis.read = async (rawPath, options = {}) => {
-  const filePath = resolveCellPath(rawPath);
-  let text = await Bun.file(filePath).text();
-  const offset = typeof options.offset === "number" ? options.offset : 1;
-  const limit = typeof options.limit === "number" ? options.limit : undefined;
-  if (offset > 1 || limit !== undefined) {
-    const lines = text.split(/\r?\n/);
-    const start = Math.max(0, offset - 1);
-    const end = limit !== undefined ? start + limit : lines.length;
-    text = lines.slice(start, end).join("\n");
+// Display bundles are cell output, not host status: they ride the cell's own
+// `display` frame (omp worker semantics), so they also work without a bridge.
+globalThis.__ompDisplay = (...values) => {
+  if (currentId === null) return;
+  const bundle = { "text/plain": values.map(formatArg).join(" ") };
+  if (values.length === 1 && values[0] !== null && typeof values[0] === "object") {
+    try {
+      bundle["application/json"] = JSON.parse(JSON.stringify(values[0]));
+    } catch {
+      // not JSON-safe: text/plain only
+    }
   }
-  return text;
+  emit({ type: "display", id: currentId, bundle });
 };
 
-globalThis.write = async (rawPath, data) => {
-  const filePath = resolveCellPath(rawPath);
-  if (
-    typeof data !== "string" &&
-    !(data instanceof Blob) &&
-    !(data instanceof ArrayBuffer) &&
-    !ArrayBuffer.isView(data)
-  ) {
-    throw new TypeError("write() expects string, Blob, ArrayBuffer, or TypedArray data");
+function settleHostReply(msg) {
+  const pending = pendingHostCalls.get(msg.id);
+  if (!pending) return false;
+  pendingHostCalls.delete(msg.id);
+  resumeDeadline();
+  if (msg.ok) {
+    pending.resolve(msg.result);
+  } else {
+    pending.reject(new Error(typeof msg.error === "string" ? msg.error : inspect(msg.error)));
   }
-  await Bun.write(filePath, data);
-  return filePath;
-};
-
-globalThis.env = (key, value) => {
-  if (key === undefined || key === null) {
-    return Object.fromEntries(
-      Object.entries(process.env).sort(([a], [b]) => a.localeCompare(b)),
-    );
-  }
-  if (value !== undefined) {
-    process.env[String(key)] = String(value);
-    return value;
-  }
-  return process.env[String(key)];
-};
+  return true;
+}
 
 // --- cell transforms --------------------------------------------------------
 // Scanner over the cell source tracking brace depth and string/comment state
@@ -272,6 +308,17 @@ function scanTopLevel(code) {
       i += 1;
       continue;
     }
+    // `await` anywhere outside strings/comments (also inside a top-level
+    // `try {}`/`if {}` block) needs the async wrapper. An await that only
+    // lives in a nested async function is a harmless false positive: the
+    // cell body is the same, just run inside an async IIFE.
+    if (
+      atWordBoundary(i) &&
+      code.startsWith("await", i) &&
+      !/[A-Za-z0-9_$]/.test(code[i + 5] || " ")
+    ) {
+      hasTopLevelAwait = true;
+    }
     if (depth === 0) {
       if (ch === ";" || ch === "\n") {
         statementStarts.push(i + 1);
@@ -279,13 +326,6 @@ function scanTopLevel(code) {
         pendingTopLevelName = null;
         i += 1;
         continue;
-      }
-      if (
-        atWordBoundary(i) &&
-        code.startsWith("await", i) &&
-        !/[A-Za-z0-9_$]/.test(code[i + 5] || " ")
-      ) {
-        hasTopLevelAwait = true;
       }
       if (/\s/.test(ch)) {
         i += 1;
@@ -358,9 +398,10 @@ function transformCell(code) {
 }
 
 // --- cell execution ---------------------------------------------------------
-async function runCell(id, code) {
+async function runCell(id, code, timeoutMs, idleTimeout) {
   currentId = id;
   executionCount += 1;
+  armDeadline(timeoutMs, idleTimeout);
   emit({ type: "started", id });
 
   let finalExprValue;
@@ -373,6 +414,16 @@ async function runCell(id, code) {
 
   const { source, hasTopLevelAwait } = transformCell(code);
 
+  // Transactional cell (prelude_txn.js): snapshot own globals before the
+  // cell, roll back on failure. Hook absence or errors must never break the
+  // cell (the prelude already swallows internally; belt and braces here).
+  try {
+    if (typeof globalThis.__ompTxnBegin === "function") globalThis.__ompTxnBegin();
+  } catch {
+    // non-fatal
+  }
+  let ok = false;
+
   try {
     // Indirect eval runs in the global scope; the async wrapper keeps cells
     // sloppy so demoted declarations land on globalThis and persist.
@@ -380,6 +431,7 @@ async function runCell(id, code) {
       hasTopLevelAwait ? "(async () => {\n" + source + "\n})()" : source,
     );
     if (hasTopLevelAwait) await evaluated;
+    ok = true;
     if (finalExprSet && finalExprValue !== undefined) {
       emit({ type: "result", id, bundle: { "text/plain": inspect(finalExprValue) } });
     }
@@ -401,7 +453,19 @@ async function runCell(id, code) {
     });
     emit({ type: "done", id, status: "error", executionCount: executionCount, cancelled: false });
   } finally {
+    try {
+      if (typeof globalThis.__ompTxnEnd === "function") globalThis.__ompTxnEnd(ok);
+    } catch {
+      // non-fatal
+    }
     currentId = null;
+    cellDeadline = null;
+    // A cell cannot finish while it still awaits a host reply, but reject
+    // any stragglers so their promises never leak into the next cell.
+    for (const [hostId, pending] of pendingHostCalls) {
+      pendingHostCalls.delete(hostId);
+      pending.reject(new Error("the cell finished before the host replied"));
+    }
     delete globalThis.__omp_set_final_expr__;
   }
 }
@@ -430,10 +494,16 @@ process.stdin.on("data", chunk => {
       // request-sequential shutdown.
       void drain.then(() => process.exit(0));
     }
+    if (msg && msg.type === "host_reply" && typeof msg.id === "string") {
+      settleHostReply(msg);
+      continue;
+    }
     if (msg && typeof msg.id === "string" && typeof msg.code === "string") {
       // Cells are sequential in the real protocol: the Rust host writes one
       // request at a time and waits for `done` before sending the next.
-      drain = drain.then(() => runCell(msg.id, msg.code).catch(() => {}));
+      drain = drain.then(() =>
+        runCell(msg.id, msg.code, msg.timeoutMs, msg.idleTimeout).catch(() => {}),
+      );
 
     }
   }
@@ -441,3 +511,21 @@ process.stdin.on("data", chunk => {
 process.stdin.on("end", () => {
   void drain.then(() => process.exit(0));
 });
+
+// --- prelude loading ----------------------------------------------------------
+// The host (js.rs) embeds the prelude sources via include_str! and injects
+// them as `globalThis.__ompPreludeSources__` (array of { name, source })
+// ahead of this script. Loading is silent like the Python runner's startup
+// cells; a failing prelude is logged to stderr (fd 2) and never emits
+// protocol frames, which would confuse the host's cell loop.
+const PRELUDE_SOURCES = globalThis.__ompPreludeSources__ || [];
+delete globalThis.__ompPreludeSources__;
+for (const prelude of PRELUDE_SOURCES) {
+  try {
+    (0, eval)(prelude.source);
+  } catch (error) {
+    forwardToFd2(
+      `[omp] failed to load prelude ${prelude.name}: ${error && error.message ? error.message : error}\n`,
+    );
+  }
+}

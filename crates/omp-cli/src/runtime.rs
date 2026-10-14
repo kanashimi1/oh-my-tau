@@ -282,7 +282,7 @@ impl Runtime {
         resolver: Resolver,
         recovery_cfg: Option<RecoveryConfig>,
     ) -> Arc<Self> {
-        let live = agent.state().await.model;
+        let live = agent.model().await;
         let edit_mode = edit_mode_for(&live.id);
         let recovery_cfg = match recovery_cfg {
             Some(cfg) => cfg,
@@ -365,12 +365,12 @@ impl Runtime {
 
     /// Session preamble omp writes: `model_change` then `thinking_level_change`.
     async fn record_model_state(&self) {
-        let s = self.agent.state().await;
-        let model = format!("{}/{}", s.model.provider, s.model.id);
+        let m = self.agent.model().await;
+        let model = format!("{}/{}", m.provider, m.id);
         let _ = self.persist.append_model_change(&model, None, false);
         let _ = self
             .persist
-            .append_thinking_level_change(Some(level_name(s.thinking_level)), None);
+            .append_thinking_level_change(Some(level_name(self.agent.thinking_level().await)), None);
     }
 
     // ------------------------------------------------------------- events
@@ -510,7 +510,7 @@ impl Runtime {
                 .map_or_else(crate::persist::now_iso, str::to_owned);
             let agent = self.agent.clone();
             tokio::spawn(async move {
-                let count = agent.state().await.messages.len();
+                let count = agent.message_count().await;
                 crate::tools::checkpoint::shared().set_checkpoint_state(
                     crate::tools::checkpoint::CheckpointState {
                         checkpoint_message_count: count,
@@ -592,9 +592,12 @@ impl Runtime {
                 return;
             };
             let count = state.checkpoint_message_count;
-            let mut messages = rt.agent.state().await.messages.clone();
-            if messages.len() > count {
-                messages.truncate(count);
+            // Only the kept prefix is copied (not the whole transcript, twice).
+            let prefix = rt
+                .agent
+                .with_messages(|m| (m.len() > count).then(|| m.iter().take(count).cloned().collect::<Vec<_>>()))
+                .await;
+            if let Some(mut messages) = prefix {
                 // Carry the report into the cut context like the TS branch view's
                 // rewind-report custom message.
                 messages.push(AgentMessage::Custom(pa_agent::types::CustomAgentMessage {
@@ -997,7 +1000,7 @@ impl Runtime {
 
     /// Port of `#handleRetryableError`: fallback consult, budget/fail-fast checks, backoff.
     async fn handle_retryable(self: &Arc<Self>, failed: &FailedTurn) -> Recovered {
-        let level = self.agent.state().await.thinking_level;
+        let level = self.agent.thinking_level().await;
         let current = self.live_selector_with_level(Some(level));
         let now = u64::try_from(pa_agent::now_ms()).unwrap_or(0);
         let (attempt, candidates) = {
@@ -1101,7 +1104,7 @@ impl Runtime {
 
     /// Before a prompt: return to the primary model once its cooldown expired (`maybeRestoreRetryFallbackPrimary`).
     async fn maybe_restore_primary(&self) {
-        let level = self.agent.state().await.thinking_level;
+        let level = self.agent.thinking_level().await;
         let current = self.live_selector_with_level(Some(level));
         let now = u64::try_from(pa_agent::now_ms()).unwrap_or(0);
         let plan =
@@ -1204,7 +1207,7 @@ impl Runtime {
         images: Vec<pa_agent::types::ImageContent>,
     ) -> Result<(), CmdError> {
         self.spawn_auto_title(message);
-        if self.agent.state().await.is_streaming {
+        if self.agent.is_streaming().await {
             match behavior {
                 Some("steer") => self.agent.steer(user_message(message)),
                 Some("followUp") => self.agent.follow_up(user_message(message)),
@@ -1362,7 +1365,8 @@ impl Runtime {
     }
 
     pub async fn state(&self) -> Value {
-        let s = self.agent.state().await;
+        // Status without the transcript: this answers every `get_state`/slash busy check.
+        let (s, message_count) = self.agent.status().await;
         let retrying = lock(&self.recovery).saga_open();
         let v = {
             let st = lock(&self.settings);
@@ -1384,7 +1388,7 @@ impl Runtime {
                 "fastModeEnabled": false,
                 "tokensPerSecond": null,
                 "fastModeActive": false,
-                "messageCount": s.messages.len(),
+                "messageCount": message_count,
                 "systemPrompt": [s.system_prompt],
                 "dumpTools": s.tools.iter().map(|t| json!({
                     "name": t.name(), "description": t.description(), "parameters": t.parameters(),
@@ -1406,61 +1410,75 @@ impl Runtime {
             out.extend(obj.clone());
         }
         let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
-        if let Some(usage) = context_usage(&s.messages, s.model.context_window, base) {
+        let window = s.model.context_window;
+        if let Some(usage) = self.agent.with_messages(|m| context_usage(m.iter(), window, base)).await {
             out.insert("contextUsage".into(), usage);
         }
         Value::Object(out)
     }
 
     pub async fn messages(&self) -> Vec<Value> {
+        // Shared snapshot: serialize outside the state lock, without a deep copy first.
         self.agent
-            .state()
+            .messages_snapshot()
             .await
-            .messages
             .iter()
             .map(crate::events::message_value)
             .collect()
     }
 
     pub async fn last_assistant_text(&self) -> Option<String> {
-        let s = self.agent.state().await;
-        s.messages.iter().rev().find_map(|m| match m {
-            AgentMessage::Standard(Message::Assistant(a)) => {
-                let t = message_text(&AgentMessage::Standard(Message::Assistant(a.clone())));
-                (a.stop_reason != StopReason::Aborted || !t.is_empty()).then_some(t)
-            }
-            _ => None,
-        })
+        self.agent
+            .with_messages(|messages| {
+                messages.iter().rev().find_map(|m| match m {
+                    AgentMessage::Standard(Message::Assistant(a)) => {
+                        let t = message_text(m);
+                        (a.stop_reason != StopReason::Aborted || !t.is_empty()).then_some(t)
+                    }
+                    _ => None,
+                })
+            })
+            .await
     }
 
     pub async fn session_stats(&self) -> Value {
-        let s = self.agent.state().await;
-        let (mut user, mut assistant, mut calls, mut results) = (0u64, 0u64, 0u64, 0u64);
-        let (mut input, mut output, mut cache_read, mut cache_write, mut cost) =
-            (0u64, 0u64, 0u64, 0u64, 0.0f64);
-        for m in &s.messages {
-            match m {
-                AgentMessage::Standard(Message::User(_)) => user += 1,
-                AgentMessage::Standard(Message::Assistant(a)) => {
-                    assistant += 1;
-                    calls += a.tool_calls().len() as u64;
-                    input += a.usage.input;
-                    output += a.usage.output;
-                    cache_read += a.usage.cache_read;
-                    cache_write += a.usage.cache_write;
-                    cost += a.usage.cost.total;
+        let (s, total) = self.agent.status().await;
+        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
+        let window = s.model.context_window;
+        // One in-place pass over the transcript under the state lock (no copy).
+        let (user, assistant, calls, results, input, output, cache_read, cache_write, cost, usage) = self
+            .agent
+            .with_messages(|messages| {
+                let (mut user, mut assistant, mut calls, mut results) = (0u64, 0u64, 0u64, 0u64);
+                let (mut input, mut output, mut cache_read, mut cache_write, mut cost) =
+                    (0u64, 0u64, 0u64, 0u64, 0.0f64);
+                for m in messages.iter() {
+                    match m {
+                        AgentMessage::Standard(Message::User(_)) => user += 1,
+                        AgentMessage::Standard(Message::Assistant(a)) => {
+                            assistant += 1;
+                            calls += a.tool_calls().len() as u64;
+                            input += a.usage.input;
+                            output += a.usage.output;
+                            cache_read += a.usage.cache_read;
+                            cache_write += a.usage.cache_write;
+                            cost += a.usage.cost.total;
+                        }
+                        AgentMessage::Standard(Message::ToolResult(_)) => results += 1,
+                        AgentMessage::Custom(_) => {}
+                    }
                 }
-                AgentMessage::Standard(Message::ToolResult(_)) => results += 1,
-                AgentMessage::Custom(_) => {}
-            }
-        }
+                let usage = context_usage(messages.iter(), window, base);
+                (user, assistant, calls, results, input, output, cache_read, cache_write, cost, usage)
+            })
+            .await;
         let mut v = json!({
             "sessionId": self.persist.session_id(),
             "userMessages": user,
             "assistantMessages": assistant,
             "toolCalls": calls,
             "toolResults": results,
-            "totalMessages": s.messages.len(),
+            "totalMessages": total,
             "tokens": {
                 "input": input, "output": output, "reasoning": 0,
                 "cacheRead": cache_read, "cacheWrite": cache_write,
@@ -1472,12 +1490,12 @@ impl Runtime {
         if let Some(file) = self.persist.file() {
             v["sessionFile"] = json!(file.display().to_string());
         }
-        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
-        if let Some(u) = context_usage(&s.messages, s.model.context_window, base) {
+        if let Some(u) = usage {
             v["contextUsage"] = u;
         }
         v
     }
+
 
     // ------------------------------------------------------------ session
 
@@ -1532,13 +1550,20 @@ impl Runtime {
     /// entry DOM at all: messages deserialize straight from the line text.
     pub async fn load_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
         self.cancel_retry_and_wait().await;
+        let trace_t0 = std::time::Instant::now();
         macro_rules! rss_trace {
             ($label:expr) => {
                 if std::env::var_os("OMP_RS_RESUME_TRACE").is_some() {
                     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
                         let rss = status.lines().find_map(|l| l.strip_prefix("VmRSS:")).unwrap_or("?");
                         let hwm = status.lines().find_map(|l| l.strip_prefix("VmHWM:")).unwrap_or("?");
-                        eprintln!("[resume-trace] {} rss={} hwm={}", $label, rss.trim(), hwm.trim());
+                        eprintln!(
+                            "[resume-trace] {} t={}ms rss={} hwm={}",
+                            $label,
+                            trace_t0.elapsed().as_millis(),
+                            rss.trim(),
+                            hwm.trim()
+                        );
                     }
                 }
             };
@@ -1546,6 +1571,7 @@ impl Runtime {
         rss_trace!("start");
         let index = omp_session::index::SessionIndex::load(path)
             .with_context(|| format!("cannot read session {}", path.display()))?;
+        rss_trace!("indexed");
         // A compacted session resumes with the rebuilt context (summary + kept tail),
         // not the raw log; checked over the whole journal like the old loader.
         let compacted = index.refs.iter().any(|r| {
@@ -1573,6 +1599,7 @@ impl Runtime {
                 notes_after,
                 head_until,
             )?;
+            rss_trace!("materialized");
             // Rebuild first, then release the entry DOM before converting:
             // the context messages and the typed messages never coexist with
             // the full reduced tree.
@@ -1580,6 +1607,7 @@ impl Runtime {
             // the context, so the two never coexist (resume stays low-RSS).
             let ctx = omp_compact::build_session_context_owned(entries, omp_compact::Leaf::Last)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            rss_trace!("rebuilt");
             messages = crate::compact::context_messages(&ctx);
         } else {
             // No compaction on the journal: messages deserialize straight from
@@ -1593,6 +1621,7 @@ impl Runtime {
                 Ok(())
             })?;
         }
+        rss_trace!("messages");
         // Todo phases (TS `getLatestTodoPhasesFromEntries(getBranch())`).
         let phases = latest_todo_phases(&index, path, &branch)?;
         rss_trace!("loaded");
@@ -1601,6 +1630,7 @@ impl Runtime {
         self.agent.reset().await;
         self.persist.start_new(&self.cwd, dir)?;
         self.publish_session_file();
+        crate::tools::eval_journal::carry_over(path);
         self.record_model_state().await;
         if compacted {
             crate::compact::seed_branch(&self.persist, &index, path)?;
@@ -1785,27 +1815,34 @@ fn latest_todo_phases(
     branch: &[u32],
 ) -> Result<Vec<crate::tools::TodoPhase>> {
     let mut phases: Option<Vec<crate::tools::TodoPhase>> = None;
-    let rev: Vec<u32> = branch.iter().rev().copied().collect();
-    index.for_each_line(path, &rev, |r, raw| {
-        if phases.is_none()
-            && matches!(
-                r.kind,
+    // Only message/custom lines can carry todo state: other kinds are never read.
+    let rev: Vec<u32> = branch
+        .iter()
+        .rev()
+        .copied()
+        .filter(|&i| {
+            matches!(
+                index.refs[i as usize].kind,
                 omp_session::index::EntryKind::Message | omp_session::index::EntryKind::Custom
             )
-            // Cheap pre-filter: a state-changing todo entry mentions the
-            // todo tool or the edit custom type; everything else is
-            // skipped without building its DOM.
-            && (raw.contains("\"toolName\":\"todo\"")
-                || raw.contains("\"customType\":\"user_todo_edit\""))
+        })
+        .collect();
+    index.scan_lines(path, &rev, |_r, raw| {
+        // Cheap pre-filter: a state-changing todo entry mentions the todo tool
+        // or the edit custom type; everything else is skipped without a DOM.
+        if raw.contains("\"toolName\":\"todo\"")
+            || raw.contains("\"customType\":\"user_todo_edit\"")
         {
             if let Ok(v) = serde_json::from_str::<Value>(raw) {
                 let p = crate::tools::phases_from_entries(std::slice::from_ref(&v));
                 if !p.is_empty() {
                     phases = Some(p);
+                    // Newest state wins: nothing older can change the answer.
+                    return Ok(std::ops::ControlFlow::Break(()));
                 }
             }
         }
-        Ok(())
+        Ok(std::ops::ControlFlow::Continue(()))
     })?;
     Ok(phases.unwrap_or_default())
 }
@@ -1998,14 +2035,21 @@ impl Runtime {
         let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
         turn_trace!("[turn-trace] compact-begin rss={}kB", rss_kb());
         let summarizer = self.summarizer()?;
-        let st = self.agent.state().await;
+        // Only the prompt overhead and the model id are needed from the state:
+        // release the snapshot (a full copy of the live context) before the
+        // summarization, which is the compaction's memory peak.
+        let (non_message_tokens, model_id) = {
+            let (st, _) = self.agent.status().await;
+            (
+                u64::try_from(prompt_overhead_chars(&st.system_prompt, &st.tools).div_ceil(4))
+                    .unwrap_or(0),
+                st.model.id,
+            )
+        };
         let settings = lock(&self.compaction).clone();
-        let non_message_tokens =
-            u64::try_from(prompt_overhead_chars(&st.system_prompt, &st.tools).div_ceil(4))
-                .unwrap_or(0);
         let params = crate::compact::CompactParams {
             settings: &settings,
-            model_id: &st.model.id,
+            model_id: &model_id,
             context_window: Some(self.live_window()).filter(|w| *w > 0),
             custom_instructions,
             non_message_tokens,
@@ -2047,20 +2091,22 @@ impl Runtime {
         if !settings.enabled || window == 0 {
             return false;
         }
-        let st = self.agent.state().await;
-        let usage = st
-            .messages
-            .iter()
-            .rev()
-            .find_map(|m| match m {
-                AgentMessage::Standard(Message::Assistant(a))
-                    if !matches!(a.stop_reason, StopReason::Error | StopReason::Aborted) =>
-                {
-                    serde_json::to_value(&a.usage).ok()
-                }
-                _ => None,
-            });
-        let stored = crate::compact::estimate_context_tokens(&st.messages);
+        // Read the live context in place (no snapshot copy of the messages).
+        let mut usage = None;
+        let mut stored = 0;
+        self.agent
+            .mutate_messages(|messages| {
+                usage = messages.iter().rev().find_map(|m| match m {
+                    AgentMessage::Standard(Message::Assistant(a))
+                        if !matches!(a.stop_reason, StopReason::Error | StopReason::Aborted) =>
+                    {
+                        serde_json::to_value(&a.usage).ok()
+                    }
+                    _ => None,
+                });
+                stored = crate::compact::estimate_context_tokens(messages);
+            })
+            .await;
         crate::compact::auto_check(usage, stored, window, &settings)
     }
 
@@ -2138,7 +2184,7 @@ impl Runtime {
             });
         let preferred = match catalog_default {
             Some(l) => l,
-            None => self.agent.state().await.thinking_level,
+            None => self.agent.thinking_level().await,
         };
         self.apply_thinking(preferred).await;
         Ok(info)
@@ -2210,7 +2256,7 @@ impl Runtime {
             .as_ref()
             .map(|t| t.model.clone());
         let effective = model.map_or(requested, |m| crate::model::clamp_level(&m, requested));
-        let current = self.agent.state().await.thinking_level;
+        let current = self.agent.thinking_level().await;
         if current != effective {
             self.agent.set_thinking_level(effective).await;
             let name = level_name(effective);
@@ -2624,24 +2670,33 @@ fn estimate_tokens(m: &AgentMessage) -> u64 {
 
 /// omp `getContextUsage`: the last assistant usage plus an estimate of what followed it, or an
 /// estimate of the whole request (`overhead_chars` = system prompt + tools) before any usage exists.
-fn context_usage(messages: &[AgentMessage], window: u64, overhead_chars: usize) -> Option<Value> {
+/// Last provider-reported usage plus an estimate of everything after it (or the whole
+/// transcript + prompt overhead when no assistant reported usage). One reverse pass, so
+/// it reads the transcript in place (`Agent::with_messages`).
+fn context_usage<'a>(
+    messages: impl DoubleEndedIterator<Item = &'a AgentMessage>,
+    window: u64,
+    overhead_chars: usize,
+) -> Option<Value> {
     if window == 0 {
         return None;
     }
-    let last_usage = messages.iter().rposition(|m| {
-        matches!(m, AgentMessage::Standard(Message::Assistant(a)) if a.usage.total_tokens > 0 && a.stop_reason != StopReason::Aborted)
-    });
-    let tokens = match last_usage {
-        Some(i) => {
-            let AgentMessage::Standard(Message::Assistant(a)) = &messages[i] else {
-                return None;
-            };
-            a.usage.total_tokens + messages[i + 1..].iter().map(estimate_tokens).sum::<u64>()
+    let mut trailing = 0u64;
+    let mut reported = None;
+    for m in messages.rev() {
+        match m {
+            AgentMessage::Standard(Message::Assistant(a))
+                if a.usage.total_tokens > 0 && a.stop_reason != StopReason::Aborted =>
+            {
+                reported = Some(a.usage.total_tokens);
+                break;
+            }
+            _ => trailing += estimate_tokens(m),
         }
-        None => {
-            u64::try_from(overhead_chars.div_ceil(4)).unwrap_or(u64::MAX)
-                + messages.iter().map(estimate_tokens).sum::<u64>()
-        }
+    }
+    let tokens = match reported {
+        Some(total) => total + trailing,
+        None => u64::try_from(overhead_chars.div_ceil(4)).unwrap_or(u64::MAX) + trailing,
     };
     #[allow(clippy::cast_precision_loss)]
     let percent = tokens as f64 / window as f64 * 100.0;
@@ -2945,3 +3000,63 @@ mod todo_reminder_tests {
     }
 }
 
+
+#[cfg(test)]
+mod context_usage_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The previous slice-based implementation, kept as the equivalence oracle.
+    fn reference(messages: &[AgentMessage], window: u64, overhead_chars: usize) -> Option<Value> {
+        if window == 0 {
+            return None;
+        }
+        let last_usage = messages.iter().rposition(|m| {
+            matches!(m, AgentMessage::Standard(Message::Assistant(a)) if a.usage.total_tokens > 0 && a.stop_reason != StopReason::Aborted)
+        });
+        let tokens = match last_usage {
+            Some(i) => {
+                let AgentMessage::Standard(Message::Assistant(a)) = &messages[i] else {
+                    return None;
+                };
+                a.usage.total_tokens + messages[i + 1..].iter().map(estimate_tokens).sum::<u64>()
+            }
+            None => {
+                u64::try_from(overhead_chars.div_ceil(4)).unwrap_or(u64::MAX)
+                    + messages.iter().map(estimate_tokens).sum::<u64>()
+            }
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let percent = tokens as f64 / window as f64 * 100.0;
+        Some(json!({"tokens": tokens, "contextWindow": window, "percent": percent}))
+    }
+
+    fn assistant(text: &str, total: u64, stop: &str) -> AgentMessage {
+        let a: pa_agent::types::AssistantMessage = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": text}], "api": "openai-completions", "provider": "p", "model": "a",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": total,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": stop, "timestamp": 1
+        }))
+        .expect("assistant json");
+        AgentMessage::Standard(Message::Assistant(a))
+    }
+
+    #[test]
+    fn reverse_pass_matches_slice_reference() {
+        let u = |t: &str| AgentMessage::user(t);
+        let cases: Vec<Vec<AgentMessage>> = vec![
+            vec![],
+            vec![u("hello there")],
+            vec![u("q"), assistant("a1", 120, "stop"), u("follow up question")],
+            vec![u("q"), assistant("a1", 120, "stop"), assistant("a2", 0, "stop"), u("x")],
+            vec![u("q"), assistant("a1", 120, "stop"), assistant("aborted", 999, "aborted"), u("y")],
+            vec![assistant("only", 50, "stop")],
+        ];
+        for (k, msgs) in cases.iter().enumerate() {
+            for window in [0u64, 1000] {
+                assert_eq!(context_usage(msgs.iter(), window, 37), reference(msgs, window, 37), "case {k} window {window}");
+            }
+        }
+    }
+}

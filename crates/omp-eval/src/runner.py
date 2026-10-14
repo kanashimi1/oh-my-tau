@@ -5,8 +5,10 @@ host (pi-coding-agent/src/eval/py/runner.py, protocol section):
 
 Host -> wrapper:
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?,
-   "timeoutMs": int?}
+   "timeoutMs": int?, "idleTimeout": bool?}
   {"type": "exit"}                     # graceful shutdown
+  {"type": "host_reply", "id": str, "ok": bool, "result"?/ "error"?}
+                                       # only for host frames with wait:true
 
 Wrapper -> host:
   {"type": "started", "id": ...}
@@ -17,6 +19,14 @@ Wrapper -> host:
   {"type": "error",   "id": ..., "ename": str, "evalue": str, "traceback": [str]}
   {"type": "done",    "id": ..., "status": "ok"|"error",
                        "executionCount": int, "cancelled": bool}
+  {"type": "host",     "id": "<cellId>:<n>", "op": str, "args": {...},
+                       "wait": bool}     # cell-side bridge request; wait:true
+                                       # blocks the cell on a host_reply line
+
+Cell requests may set "idleTimeout": true to make the timeout count only time
+spent outside host bridge calls: the runner pauses its SIGALRM (and the
+escalation watchdog) for the duration of each `__omp_host_call` and re-arms a
+fresh full window when the call returns (TS idle-timeout.ts).
 
 The protocol channel owns fd 1; user stdout/stderr are redirected into typed
 frames by line-buffered proxies so interleaving is preserved.
@@ -50,6 +60,17 @@ _RUNNER_FILE = globals().get("__file__", "<string>")
 _USER_NS: dict = {"__name__": "__main__"}
 _EXECUTION_COUNT = 0
 _CURRENT_RID: str | None = None
+
+# Host bridge state: monotonically numbered per cell so one cell can pipeline
+# several notify frames; `wait` calls read their one host_reply from stdin.
+_HOST_SEQ = 0
+# True while the current cell requested idle-timeout semantics (host request
+# field "idleTimeout"): the SIGALRM is paused for the duration of each host
+# call and re-armed with a fresh full window when the cell resumes.
+_IDLE_TIMEOUT_CELL = False
+_HOST_CALL_DEPTH = 0
+_CURRENT_TIMEOUT_MS: float | None = None
+_WATCHDOG: threading.Timer | None = None
 
 # omp: INTERRUPT_ESCALATION_MS = 5_000
 ESCALATION_SECONDS = 5.0
@@ -131,6 +152,108 @@ def display(obj: object, **reprs: str) -> None:
 _USER_NS["display"] = display
 
 
+def __omp_display(value: object, *, raw: bool = False, kind: str = "display") -> None:
+    """Runner-injected display primitive (TS runner `__ompDisplay`).
+
+    `raw=True` takes a mime bundle dict verbatim (status/image bundles are
+    emitted as display frames of the given `kind`, never as host notifies).
+    Otherwise a bundle is built from repr/json like the builtin display.
+    """
+    if raw:
+        bundle = value
+    else:
+        bundle = {"text/plain": repr(value)}
+        try:
+            json.dumps(value)
+            bundle["application/json"] = value
+        except (TypeError, ValueError):
+            pass
+    _emit({"type": kind, "id": _CURRENT_RID, "bundle": bundle})
+
+
+class OmpHostError(RuntimeError):
+    """Raised in a cell when a host bridge call fails (TS OmpHostError)."""
+
+
+def _pause_cell_alarm() -> None:
+    """Suspend the cell's SIGALRM and escalation watchdog (TS IdleTimeout.pause)."""
+    global _WATCHDOG
+    if hasattr(signal, "setitimer"):
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    if _WATCHDOG is not None:
+        _WATCHDOG.cancel()
+        _WATCHDOG = None
+
+
+def _resume_cell_alarm(rid: str) -> None:
+    """Re-arm with a fresh full window after a host call (TS IdleTimeout.resume)."""
+    global _WATCHDOG
+    if _CURRENT_TIMEOUT_MS and hasattr(signal, "setitimer"):
+        seconds = _CURRENT_TIMEOUT_MS / 1000.0
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        _WATCHDOG = threading.Timer(
+            seconds + ESCALATION_SECONDS, _escalate_kill, args=(rid,)
+        )
+        _WATCHDOG.daemon = True
+        _WATCHDOG.start()
+
+
+def __omp_host_call(op: str, args: dict) -> object:
+    """Blocking host bridge request; raises OmpHostError on host failure."""
+    global _HOST_SEQ, _HOST_CALL_DEPTH
+    rid = _CURRENT_RID
+    if rid is None:
+        raise OmpHostError("host bridge is only available while a cell is running")
+    _HOST_SEQ += 1
+    hid = f"{rid}:{_HOST_SEQ}"
+    outermost = _HOST_CALL_DEPTH == 0
+    _HOST_CALL_DEPTH += 1
+    if outermost and _IDLE_TIMEOUT_CELL:
+        _pause_cell_alarm()
+    try:
+        _emit({"type": "host", "id": hid, "op": op, "args": args, "wait": True})
+        # The host never sends a new cell while one runs, so the reply line on
+        # stdin is unambiguously ours.
+        line = sys.stdin.readline()
+        try:
+            reply = json.loads(line)
+        except ValueError as exc:
+            raise OmpHostError(f"malformed host reply: {line!r}") from exc
+        if reply.get("id") != hid or reply.get("type") != "host_reply":
+            raise OmpHostError(f"unexpected host reply: {reply!r}")
+        if reply.get("ok"):
+            return reply.get("result")
+        raise OmpHostError(str(reply.get("error", "host call failed")))
+    finally:
+        _HOST_CALL_DEPTH -= 1
+        if outermost and _IDLE_TIMEOUT_CELL:
+            _resume_cell_alarm(rid)
+
+
+def __omp_host_notify(op: str, args: dict) -> None:
+    """Fire-and-forget host bridge status (log/phase/progress style)."""
+    global _HOST_SEQ
+    rid = _CURRENT_RID
+    if rid is None:
+        return
+    _HOST_SEQ += 1
+    _emit(
+        {
+            "type": "host",
+            "id": f"{rid}:{_HOST_SEQ}",
+            "op": op,
+            "args": args,
+            "wait": False,
+        }
+    )
+
+
+_USER_NS["__omp_display"] = __omp_display
+_USER_NS["__omp_host_call"] = __omp_host_call
+_USER_NS["__omp_host_notify"] = __omp_host_notify
+_USER_NS["OmpHostError"] = OmpHostError
+
+
 class _CellTimeout(BaseException):
     """Internal interrupt marker (caught by the cell runner, never user code)."""
 
@@ -148,8 +271,9 @@ def _emit_done(rid: str, status: str, cancelled: bool) -> None:
 
 
 def _arm_timeout(rid: str, timeout_ms: float | None) -> None:
-    global _CELL_DONE
+    global _CELL_DONE, _CURRENT_TIMEOUT_MS, _WATCHDOG
     _CELL_DONE = False
+    _CURRENT_TIMEOUT_MS = timeout_ms
     has_alarm = hasattr(signal, "setitimer")
     if timeout_ms is not None and timeout_ms > 0 and has_alarm:
         seconds = timeout_ms / 1000.0
@@ -157,17 +281,22 @@ def _arm_timeout(rid: str, timeout_ms: float | None) -> None:
         signal.setitimer(signal.ITIMER_REAL, seconds)
         # Watchdog: if the cell ignored the alarm (C extension holding the
         # GIL), settle the request and hard-exit so the host unblocks, like
-        # omp's kernel kill + recreate path.
-        watchdog = threading.Timer(seconds + ESCALATION_SECONDS, _escalate_kill, args=(rid,))
-        watchdog.daemon = True
-        watchdog.start()
+        # omp's kernel kill + recreate path. Kept in a global so host-call
+        # pause/resume can cancel and re-create it (idle-timeout cells).
+        _WATCHDOG = threading.Timer(seconds + ESCALATION_SECONDS, _escalate_kill, args=(rid,))
+        _WATCHDOG.daemon = True
+        _WATCHDOG.start()
     elif has_alarm:
         signal.setitimer(signal.ITIMER_REAL, 0)
 
 
 def _disarm_timeout() -> None:
-    global _CELL_DONE
+    global _CELL_DONE, _CURRENT_TIMEOUT_MS, _WATCHDOG
     _CELL_DONE = True
+    _CURRENT_TIMEOUT_MS = None
+    if _WATCHDOG is not None:
+        _WATCHDOG.cancel()
+        _WATCHDOG = None
     if hasattr(signal, "setitimer"):
         signal.setitimer(signal.ITIMER_REAL, 0)
 
@@ -216,13 +345,30 @@ def _run_cell(
     timeout_ms: float | None,
     filename: str = "<cell>",
     store_history: bool = True,
+    idle_timeout: bool = False,
 ) -> None:
-    global _EXECUTION_COUNT, _CURRENT_RID
+    global _EXECUTION_COUNT, _CURRENT_RID, _IDLE_TIMEOUT_CELL
     if store_history:
         _EXECUTION_COUNT += 1
     _CURRENT_RID = rid
+    _IDLE_TIMEOUT_CELL = idle_timeout
     status, cancelled = "ok", False
     _emit({"type": "started", "id": rid})
+    # TS resets the prelude's per-cell call accounting before every user cell.
+    reset_occ = _USER_NS.get("__omp_reset_call_occurrences__")
+    if callable(reset_occ):
+        try:
+            reset_occ()
+        except Exception as exc:  # noqa: BLE001 - hooks never break the cell
+            sys.__stderr__.write(f"txn hook error: {exc!r}\n")
+    # Transactional cells: snapshot names before, commit/rollback after.
+    txn_begin = _USER_NS.get("__omp_txn_begin") if store_history else None
+    txn_end = _USER_NS.get("__omp_txn_end") if store_history else None
+    if callable(txn_begin):
+        try:
+            txn_begin()
+        except Exception as exc:  # noqa: BLE001 - hooks never break the cell
+            sys.__stderr__.write(f"txn hook error: {exc!r}\n")
     old_out, old_err = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = _StreamProxy("stdout"), _StreamProxy("stderr")
     _arm_timeout(rid, timeout_ms)
@@ -265,7 +411,14 @@ def _run_cell(
         status = "error"
         _emit_error(rid, exc)
     finally:
+        if callable(txn_end):
+            # ok=False when the cell raised or was cancelled/timed out
+            try:
+                txn_end(status == "ok" and not cancelled)
+            except Exception as exc:  # noqa: BLE001 - hooks never break the cell
+                sys.__stderr__.write(f"txn hook error: {exc!r}\n")
         _disarm_timeout()
+        _IDLE_TIMEOUT_CELL = False
         sys.stdout.flush()
         sys.stderr.flush()
         sys.stdout, sys.stderr = old_out, old_err
@@ -293,7 +446,8 @@ def main() -> None:
         timeout = float(timeout_ms) if isinstance(timeout_ms, (int, float)) and timeout_ms > 0 else None
         filename = req.get("filename") if isinstance(req.get("filename"), str) else "<cell>"
         store_history = req.get("storeHistory") is not False
-        _run_cell(rid, code, timeout, filename, store_history)
+        idle_timeout = req.get("idleTimeout") is True
+        _run_cell(rid, code, timeout, filename, store_history, idle_timeout)
 
 
 if __name__ == "__main__":

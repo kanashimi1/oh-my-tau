@@ -4,6 +4,14 @@
 //! through its [`JsKernel`] — long-lived subprocesses speaking omp's NDJSON
 //! protocol; state persists across calls. `language` is a required field in
 //! omp's schema, so a missing one is rejected like TS input validation.
+//!
+//! Cells run with the TS eval tool's host bridge ([`EvalBridge`]) so prelude
+//! helpers (`tool.*`, `read`, `write`, `agent`, `judge`, …) reach the session,
+//! with omp's idle-style timeout (the deadline pauses while the cell waits on
+//! a host call, `eval/idle-timeout.ts`) and Esc/abort cooperative cancel.
+//! Over-long output spills to the session artifacts dir and is referenced as
+//! `artifact://<id>` (TS `OutputSink` recovery pointer). Kernel loss is
+//! journaled per session (`eval_journal`) so `%replay` can restore setup.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,12 +20,27 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use omp_eval::js::JsKernel;
-use omp_eval::{CellResult, CellStatus, PythonKernel};
-use pa_agent::types::AgentToolResult;
+use omp_eval::{CancelToken, CellResult, CellStatus, ExecOptions, PythonKernel};
+use pa_agent::abort::AbortSignal;
+use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
+use pa_agent::BoxFut;
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
+use super::eval_bridge::{EvalBridge, OpCtx};
+use super::eval_journal::{self, Lang};
+use super::util::DEFAULT_MAX_BYTES;
 use super::Env;
+
+#[cfg(test)]
+#[path = "eval_tests.rs"]
+mod eval_tests;
+
+/// omp `TOOL_TIMEOUTS.eval` (`tools/tool-timeouts.ts`): default 30 s, clamped
+/// to 1–3600 s when the agent passes a value; `0` disables the deadline.
+const DEFAULT_TIMEOUT_SECS: f64 = 30.0;
+const MIN_TIMEOUT_SECS: f64 = 1.0;
+const MAX_TIMEOUT_SECS: f64 = 3600.0;
 
 /// Static model-facing description (omp `getEvalToolDescription` under the
 /// protocol defaults: py+js advertised, prelude topics linked).
@@ -65,6 +88,59 @@ pub fn schema() -> Value {
     })
 }
 
+/// The `eval` tool proper: receives the call's abort signal and update
+/// callback (the old closure registration dropped both, leaving cells
+/// unabortable and the host bridge blind).
+pub struct EvalTool {
+    env: Arc<Env>,
+}
+
+impl EvalTool {
+    #[must_use]
+    pub fn new(env: Arc<Env>) -> Self {
+        Self { env }
+    }
+}
+
+impl AgentTool for EvalTool {
+    fn name(&self) -> &str {
+        "eval"
+    }
+    fn description(&self) -> &str {
+        DESCRIPTION
+    }
+    fn parameters(&self) -> &Value {
+        static SCHEMA: LazyLock<Value> = LazyLock::new(schema);
+        &SCHEMA
+    }
+    fn execute(
+        self: Arc<Self>,
+        tool_call_id: String,
+        params: Value,
+        signal: AbortSignal,
+        on_update: AgentToolUpdateCallback,
+    ) -> BoxFut<'static, Result<AgentToolResult>> {
+        Box::pin(async move {
+            eval(
+                self.env.clone(),
+                params,
+                CallCtx {
+                    tool_call_id,
+                    signal,
+                    on_update: Some(on_update),
+                },
+            )
+            .await
+        })
+    }
+}
+
+pub(crate) struct CallCtx {
+    pub tool_call_id: String,
+    pub signal: AbortSignal,
+    pub on_update: Option<AgentToolUpdateCallback>,
+}
+
 /// Per-cwd kernel state. The async mutex serializes all kernel ops (cell
 /// execution, reset, replacement) so a `reset: true` or kernel-kill removal
 /// can never drop a kernel while another cell for the same cwd is in flight
@@ -89,8 +165,112 @@ fn slot(cwd: &std::path::Path) -> Arc<AsyncMutex<KernelState>> {
     )
 }
 
-/// Execute one `eval` cell.
-pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
+/// omp `clampTimeout("eval", …)`: resolve the cell deadline — TS default 30 s
+/// when the agent omits `timeout`, `0` disables, otherwise clamped 1–3600 s.
+fn resolve_timeout(args: &Value) -> Option<Duration> {
+    match args.get("timeout").and_then(Value::as_f64) {
+        None => Some(Duration::from_secs_f64(DEFAULT_TIMEOUT_SECS)),
+        Some(0.0) => None,
+        Some(secs) => Some(Duration::from_secs_f64(
+            secs.clamp(MIN_TIMEOUT_SECS, MAX_TIMEOUT_SECS),
+        )),
+    }
+}
+
+/// Runner environment mirroring the TS session (parent `irc`): the preludes
+/// resolve `artifact://` and spill outputs through `PI_EVAL_LOCAL_ROOTS` /
+/// `PI_ARTIFACTS_DIR` / `PI_SESSION_FILE`. Empty when no session file is
+/// installed (tests, `--no-session`) — kernels then run without extra vars.
+fn kernel_env() -> Vec<(String, String)> {
+    let Some(session) = omp_urls::global_session_file() else {
+        return Vec::new();
+    };
+    let mut vars = vec![(
+        "PI_SESSION_FILE".to_owned(),
+        session.to_string_lossy().into_owned(),
+    )];
+    if let Some(dir) = omp_urls::artifacts_directory_for(&session) {
+        vars.push((
+            "PI_ARTIFACTS_DIR".to_owned(),
+            dir.to_string_lossy().into_owned(),
+        ));
+        vars.push((
+            "PI_EVAL_LOCAL_ROOTS".to_owned(),
+            json!({"artifact": dir.to_string_lossy()}).to_string(),
+        ));
+    }
+    vars
+}
+
+/// Cell options: the bridge lives in the blocking task next to the cell it
+/// serves; TS idle-timeout semantics (host calls pause the deadline).
+fn run_opts(bridge: &EvalBridge, timeout: Option<Duration>, cancel: CancelToken) -> ExecOptions<'_> {
+    ExecOptions { timeout, idle_timeout: true, bridge: Some(bridge), cancel: Some(cancel) }
+}
+
+/// Spill `text` to the session artifacts dir as the next free `<id>.log`
+/// (omp `session.allocateOutputArtifact`); returns the `artifact://<id>`
+/// reference. `None` without a session — the caller then keeps full text.
+fn spill_artifact(text: &str) -> Option<String> {
+    let dir = omp_urls::global_session_file()
+        .as_ref()
+        .and_then(|p| omp_urls::artifacts_directory_for(p))?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let used: Vec<u64> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|n| n.split('.').next())
+                .and_then(|p| p.parse().ok())
+        })
+        .collect();
+    let id = (0u64..).find(|i| !used.contains(i))?;
+    std::fs::write(dir.join(format!("{id}.log")), text).ok()?;
+    Some(format!("artifact://{id}"))
+}
+
+/// Cap the rendered output at the TS streaming-output budget (the same
+/// `DEFAULT_MAX_BYTES` inline budget the bash tool uses), spilling the full
+/// text to an artifact as the recovery pointer (TS `OutputSink` +
+/// `formatOutputNotice`). Without a session artifacts dir the full text is
+/// kept: `details` must never point at an artifact that does not exist.
+fn cap_output(text: &str) -> String {
+    if text.len() <= DEFAULT_MAX_BYTES {
+        return text.to_owned();
+    }
+    let (elided, elide_notice) = super::bash::elide_middle(text);
+    let mut out = String::new();
+    if let Some(notice) = elide_notice {
+        out.push_str(&notice);
+        out.push('\n');
+    }
+    match spill_artifact(text) {
+        Some(ref_) => {
+            out.push_str(&elided);
+            out.push_str(&format!("\nFull output ({} bytes): {ref_}", text.len()));
+        }
+        None => {
+            // No artifacts dir: keep the full value rather than lose data.
+            return text.to_owned();
+        }
+    }
+    out
+}
+
+/// True per TS eval error semantics: raised cells, timeouts (interrupted or
+/// kernel-killed) and aborts all render `.error()` (omp `isError: true`).
+fn cell_is_error(result: &CellResult) -> bool {
+    result.cancelled
+        || matches!(
+            result.status,
+            CellStatus::Error | CellStatus::Interrupted | CellStatus::KernelKilled
+        )
+}
+
+/// Execute one `eval` cell (the tool entry point).
+pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolResult> {
     use std::fmt::Write as _;
     // omp's schema requires `language`; a missing one fails TS input
     // validation before execute, so reject it here too (no silent default).
@@ -108,11 +288,9 @@ pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
         "js" | "javascript" => true,
         other => bail!("language must be \"py\" or \"js\" (was {other:?})"),
     };
+    let lang = if is_js { Lang::Js } else { Lang::Py };
 
-    let timeout = match args.get("timeout").and_then(Value::as_f64) {
-        None | Some(0.0) => None,
-        Some(secs) => Some(Duration::from_secs_f64(secs.max(1.0))),
-    };
+    let timeout = resolve_timeout(&args);
     let reset = args.get("reset").and_then(Value::as_bool).unwrap_or(false);
 
     let cwd = env.cwd.clone();
@@ -121,38 +299,141 @@ pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
     let mut state = slot.lock().await;
 
     if reset {
-        // Drop happens here, inside the exclusive section.
-        state.py = None;
-        state.js = None;
+        // omp `reset?` wipes only the requested language's kernel.
+        if is_js {
+            state.js = None;
+        } else {
+            state.py = None;
+        }
     }
 
-    let (result, is_js) = if is_js {
+    // Cooperative cancel: Esc aborts the tool call → the running cell is
+    // interrupted (SIGINT for Python, kill + fresh kernel for JS).
+    let cancel = CancelToken::new();
+    {
+        let signal = ctx.signal.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            signal.aborted().await;
+            cancel.cancel();
+        });
+    }
+
+    // `%replay`: re-run the journaled setup cells in order (omp reloads
+    // prelude setup after a kernel-loss notice instead of retyping it).
+    let replayed = code.trim() == "%replay";
+    let codes: Vec<String> = if replayed {
+        eval_journal::replay_setup(&cwd, lang)
+    } else {
+        vec![code.clone()]
+    };
+    if replayed && codes.is_empty() {
+        return Ok(AgentToolResult {
+            content: vec![pa_agent::types::ToolResultContent::text(
+                "No setup cells recorded for this kernel.",
+            )],
+            details: json!({"replayed": 0}),
+            terminate: None,
+            is_error: None,
+        });
+    }
+
+    // The bridge drives async tool work through the ambient runtime from the
+    // kernel's blocking thread; fresh per cell, like omp's per-request ctx.
+    let rt = tokio::runtime::Handle::current();
+    let make_bridge = || {
+        EvalBridge::new(
+            Arc::clone(&env),
+            OpCtx {
+                cwd: cwd.clone(),
+                signal: ctx.signal.clone(),
+                on_update: ctx.on_update.clone(),
+                tool_call_id: ctx.tool_call_id.clone(),
+            },
+            rt.clone(),
+        )
+    };
+
+
+    let mut kernel_loss_notice: Option<String> = None;
+    let mut results: Vec<CellResult> = Vec::with_capacity(codes.len());
+    if is_js {
         let kernel = if let Some(existing) = state.js.as_ref().filter(|k| k.is_alive()) {
             Arc::clone(existing)
         } else {
+            // JsKernel has no env-var constructor (no in-process interrupt
+            // path needs the session roots there); see port report.
             let fresh = Arc::new(JsKernel::start(omp_eval::js::default_runtime(), &cwd)?);
             state.js = Some(Arc::clone(&fresh));
+            kernel_loss_notice = eval_journal::kernel_started(&cwd, lang);
             fresh
         };
-        let result = tokio::task::spawn_blocking(move || kernel.execute(&code, timeout))
-            .await
-            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
-        (result, true)
+        for cell_code in &codes {
+            let code_c = cell_code.clone();
+            let k = Arc::clone(&kernel);
+            let bridge = make_bridge();
+            let cell_cancel = cancel.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                k.execute_with(&code_c, run_opts(&bridge, timeout, cell_cancel))
+            })
+                .await
+                .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+            eval_journal::record_cell(&cwd, lang, cell_code, &result);
+            let failed = result.status != CellStatus::Ok;
+            results.push(result);
+            if failed {
+                break;
+            }
+        }
     } else {
         let kernel = if let Some(existing) = state.py.as_ref().filter(|k| k.is_alive()) {
             Arc::clone(existing)
         } else {
-            let fresh = Arc::new(PythonKernel::start(omp_eval::default_interpreter(), &cwd)?);
+            let fresh = Arc::new(PythonKernel::start_with_env(
+                omp_eval::default_interpreter(),
+                &cwd,
+                &kernel_env(),
+            )?);
             state.py = Some(Arc::clone(&fresh));
+            kernel_loss_notice = eval_journal::kernel_started(&cwd, lang);
             fresh
         };
-        let result = tokio::task::spawn_blocking(move || kernel.execute(&code, timeout))
-            .await
-            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
-        (result, false)
+        for cell_code in &codes {
+            let code_c = cell_code.clone();
+            let k = Arc::clone(&kernel);
+            let bridge = make_bridge();
+            let cell_cancel = cancel.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                k.execute_with(&code_c, run_opts(&bridge, timeout, cell_cancel))
+            })
+                .await
+                .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+            eval_journal::record_cell(&cwd, lang, cell_code, &result);
+            let failed = result.status != CellStatus::Ok;
+            results.push(result);
+            if failed {
+                break;
+            }
+        }
     };
 
-    let mut text = result.output.clone();
+    let result = results.last().expect("at least one cell result");
+    let mut text = String::new();
+    if let Some(notice) = kernel_loss_notice {
+        // Prepend so the model reads the state-loss warning first (TS
+        // `eval-prelude-notice`).
+        text.push_str(&notice);
+        text.push('\n');
+    }
+    if replayed {
+        let _ = write!(
+            text,
+            "Replayed {} setup cell{}.\n",
+            results.len(),
+            if results.len() == 1 { "" } else { "s" }
+        );
+    }
+    text.push_str(&result.output);
     if is_js {
         if result.timed_out {
             let _ = write!(text, "\n[{}]", CellResult::js_timeout_annotation(timeout));
@@ -168,11 +449,12 @@ pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
             state.py = None;
         }
     }
+    let text = cap_output(&text);
     Ok(AgentToolResult {
         content: vec![pa_agent::types::ToolResultContent::text(text)],
-        details: cell_details(&result),
+        details: cell_details(result, replayed),
         terminate: None,
-        is_error: None,
+        is_error: cell_is_error(result).then_some(true),
     })
 }
 
@@ -183,154 +465,20 @@ pub async fn eval(env: Arc<Env>, args: Value) -> Result<AgentToolResult> {
 /// whole registry would drop a sibling test's live kernel mid-run (its next
 /// cell then loses state or fails on broken kernel I/O).
 #[cfg(test)]
-fn shutdown_slot(cwd: &std::path::Path) {
+pub(crate) fn shutdown_slot(cwd: &std::path::Path) {
     // Dropping the slot drops KernelState, whose kernel Arcs run Drop and
     // settle the runner children.
     SLOTS.lock().expect("kernel registry").remove(cwd);
 }
 
 /// `details` payload: execution counter plus timeout annotations, omp-style.
-fn cell_details(result: &CellResult) -> Value {
+fn cell_details(result: &CellResult, replayed: bool) -> Value {
     json!({
         "executionCount": result.execution_count,
         "status": format!("{:?}", result.status),
         "timedOut": result.timed_out,
         "displays": result.displays,
+        "isError": cell_is_error(result),
+        "replayed": replayed.then_some(true),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Unique cwd per test: parallel tests must not share a kernel slot (a
-    /// JS timeout kill is global to the slot's kernel).
-    fn test_env(tag: &str) -> Arc<Env> {
-        let dir =
-            std::env::temp_dir().join(format!("omp-rs-eval-test-{tag}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Arc::new(Env::new(&dir, false))
-    }
-
-    #[test]
-    fn schema_matches_ts_reference() {
-        let s = schema();
-        let props = s["properties"].as_object().unwrap();
-        assert_eq!(props["language"]["enum"], json!(["py", "js"]));
-        assert_eq!(s["required"], json!(["language", "code"]));
-        assert_eq!(props.len(), 5);
-    }
-
-    #[tokio::test]
-    async fn missing_language_is_rejected_like_ts_validation() {
-        let env = test_env("lang");
-        let err = eval(env.clone(), json!({"code": "1"})).await.unwrap_err();
-        assert!(err.to_string().contains("language"), "got: {err}");
-    }
-
-    #[tokio::test]
-    async fn python_state_persists() {
-        let env = test_env("py");
-        eval(env.clone(), json!({"language": "py", "code": "x = 40 + 2"}))
-            .await
-            .unwrap();
-        let r = eval(env.clone(), json!({"language": "py", "code": "x"}))
-            .await
-            .unwrap();
-        let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
-            panic!("unexpected content");
-        };
-        let text = content.text.clone();
-        assert!(text.contains("42"), "got: {text}");
-        // reset wipes the kernel
-        eval(
-            env.clone(),
-            json!({"language": "py", "code": "x", "reset": true}),
-        )
-        .await
-        .unwrap();
-        shutdown_slot(&env.cwd);
-    }
-
-    #[tokio::test]
-    async fn js_state_persists_and_top_level_await_works() {
-        let env = test_env("js-state");
-        eval(
-            env.clone(),
-            json!({"language": "js", "code": "let acc = await Promise.resolve(40)"}),
-        )
-        .await
-        .unwrap();
-        let r = eval(env.clone(), json!({"language": "js", "code": "acc + 2"}))
-            .await
-            .unwrap();
-        let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
-            panic!("unexpected content");
-        };
-        assert!(content.text.contains("42"), "got: {}", content.text);
-        // js reset wipes the kernel (fresh interpreter on next call)
-        eval(
-            env.clone(),
-            json!({"language": "js", "code": "acc", "reset": true}),
-        )
-        .await
-        .unwrap();
-        let r = eval(env.clone(), json!({"language": "js", "code": "typeof acc"}))
-            .await
-            .unwrap();
-        let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
-            panic!("unexpected content");
-        };
-        assert!(
-            content.text.contains("\"undefined\""),
-            "state wiped: {}",
-            content.text
-        );
-        shutdown_slot(&env.cwd);
-    }
-
-    #[tokio::test]
-    async fn js_error_and_timeout_annotations_match_omp() {
-        let env = test_env("js-timeout");
-        let r = eval(
-            env.clone(),
-            json!({"language": "js", "code": "throw new Error('boom')"}),
-        )
-        .await
-        .unwrap();
-        let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
-            panic!("unexpected content");
-        };
-        assert!(
-            content.text.contains("Error: boom"),
-            "got: {}",
-            content.text
-        );
-
-        let r = eval(
-            env.clone(),
-            json!({"language": "js", "code": "while (true) {}", "timeout": 1}),
-        )
-        .await
-        .unwrap();
-        let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
-            panic!("unexpected content");
-        };
-        assert!(
-            content
-                .text
-                .contains("The JS worker was force-killed and its VM state was reset"),
-            "got: {}",
-            content.text
-        );
-        // kernel recreated transparently
-        let r = eval(env.clone(), json!({"language": "js", "code": "'alive'"}))
-            .await
-            .unwrap();
-        let pa_agent::types::ToolResultContent::Text(content) = &r.content[0] else {
-            panic!("unexpected content");
-        };
-        assert!(content.text.contains("alive"), "got: {}", content.text);
-        shutdown_slot(&env.cwd);
-    }
 }

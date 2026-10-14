@@ -376,6 +376,10 @@ async fn main() -> Result<()> {
     };
     let (agent, target) =
         agent::build_agent(&cwd, selected, extra_tools, extensions.as_ref(), &sp_opts)?;
+    // eval's in-cell bridge: `tool.<name>` dispatches to the session's tools, and
+    // completion()/judge() need the live provider target.
+    crate::tools::eval_bridge::set_session_tools(agent.tools().await);
+    crate::tools::eval_agents::set_runtime_hooks(target.clone());
 
     let session = persist::attach_with(&agent, &cwd, args.no_session).await;
     // Resolve internal URLs (local://, artifact://, agent://, history://)
@@ -384,7 +388,7 @@ async fn main() -> Result<()> {
         omp_urls::set_global_session_file(p.file());
     }
     if let (Some(e), Ok(p)) = (extensions.as_ref(), &session) {
-        let model = agent.state().await.model;
+        let model = agent.model().await;
         let model_ref = format!("{}/{}", model.provider, model.id);
         if let Err(err) = e
             .set_session_ctx(&p.session_id(), p.file().as_deref(), &model_ref)
@@ -616,7 +620,7 @@ async fn run_print(
         if !prompt.is_empty() {
             agent.prompt(prompt.as_str()).await?;
         }
-        return Ok(agent.state().await.messages);
+        return Ok(agent.messages_snapshot().await.into_vec());
     };
     if let Some(e) = extensions {
         e.session_start().await;
@@ -678,7 +682,7 @@ async fn run_print(
     // The automatic title request rides the session lifecycle (TS ties it to
     // the session, not a single turn); let it land before the process exits.
     rt.wait_for_title().await;
-    Ok(agent.state().await.messages)
+    Ok(agent.messages_snapshot().await.into_vec())
 }
 
 #[cfg(test)]

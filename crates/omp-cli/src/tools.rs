@@ -11,6 +11,9 @@ pub mod bash;
 pub mod checkpoint;
 mod edit;
 mod eval;
+pub(crate) mod eval_agents;
+pub(crate) mod eval_bridge;
+pub(crate) mod eval_journal;
 mod find;
 mod jobs;
 pub mod mcp;
@@ -234,12 +237,9 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             Arc::new(|env, args, _| Box::pin(task::task(env, args))),
         ),
         wait::tool(env.clone()),
-        mk(
-            "eval",
-            eval::DESCRIPTION.to_string(),
-            eval::schema(),
-            Arc::new(|env, args, _| Box::pin(eval::eval(env, args))),
-        ),
+        // Own AgentTool: eval needs the abort signal (cell cancel) and on_update
+        // (bridge status events), which the `mk` closure signature drops.
+        Arc::new(eval::EvalTool::new(env.clone())),
         mk(
             "ast_grep",
             ast::AST_GREP_DESCRIPTION.to_string(),

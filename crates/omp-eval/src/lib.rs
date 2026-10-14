@@ -25,6 +25,14 @@
 //! spinning kernels. The host escalates to `kill(-pgid, SIGKILL)` (whole
 //! group, so user-spawned subprocesses of a cell die too) when a runner
 //! refuses a graceful shutdown, and on the JS timeout path.
+//!
+//! Host bridge: cell code (via the preludes) can call back into the host
+//! through [`HostBridge`] — `host` NDJSON frames answered by a `host_reply`
+//! line on the runner's stdin, the NDJSON stand-in for omp's loopback HTTP
+//! bridges. Time spent inside a bridge call can be excluded from the cell
+//! timeout (`ExecOptions::idle_timeout`, TS `idle-timeout.ts`); a
+//! [`CancelToken`] mirrors the TS turn-cancel (SIGINT into the runner,
+//! reusing the escalation path).
 
 #![allow(clippy::missing_errors_doc)] // single io::Error failure mode; per-call docs add noise
 
@@ -48,6 +56,59 @@ pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const RUNNER_SCRIPT: &str = include_str!("runner.py");
 
 pub mod js;
+
+/// Bridge between a running cell and the host process: the cell-side preludes
+/// emit `host` frames (`{"type":"host","id":"<cellId>:<n>","op","args","wait"}`)
+/// on the protocol channel, the kernel forwards them here, and (for
+/// `wait: true`) writes one `host_reply` frame back to the runner's stdin.
+/// This is the NDJSON stand-in for omp's loopback HTTP bridges
+/// (`eval/py/tool-bridge.ts` et al.); op names and `args`/`result` JSON shapes
+/// are verbatim TS bridge payloads.
+pub trait HostBridge: Send + Sync {
+    /// Blocking request from the running cell. `Err(message)` is raised in
+    /// the cell as `OmpHostError` (Python) / a rejected `Error` (JS).
+    fn call(&self, op: &str, args: Value) -> Result<Value, String>;
+    /// Fire-and-forget status from the cell (log/phase/progress).
+    fn notify(&self, op: &str, args: Value);
+}
+
+/// Cooperative cancel for a running cell (TS turn-cancel). Polled by the
+/// kernel at ~50 ms granularity; firing it SIGINTs the Python runner (the
+/// existing escalation path decides whether the kernel survives).
+#[derive(Clone, Default, Debug)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// Options for [`PythonKernel::execute_with`] (and the JS twin).
+#[derive(Default)]
+pub struct ExecOptions<'a> {
+    /// Per-cell deadline; `None` waits indefinitely.
+    pub timeout: Option<Duration>,
+    /// True: the timeout counts only time spent outside `HostBridge::call`
+    /// (omp `IdleTimeout` semantics — each bridge call resets a fresh window,
+    /// and the runner pauses its own alarm around host calls).
+    pub idle_timeout: bool,
+    /// Host bridge serving this cell's `host` frames; `None` replies
+    /// `ok: false, error: "host bridge unavailable"` to `wait: true` calls.
+    pub bridge: Option<&'a dyn HostBridge>,
+    /// Optional cooperative cancel, polled while the cell runs.
+    pub cancel: Option<CancelToken>,
+}
 
 /// Terminal status of one executed cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +250,13 @@ pub(crate) enum Frame {
         evalue: String,
         traceback: Vec<String>,
     },
+    /// Cell-side host bridge request (`wait` selects call vs notify).
+    Host {
+        id: String,
+        op: String,
+        args: Value,
+        wait: bool,
+    },
     Done {
         id: String,
         status: String,
@@ -206,6 +274,7 @@ impl Frame {
             | Frame::Display { id, .. }
             | Frame::Result { id, .. }
             | Frame::Error { id, .. }
+            | Frame::Host { id, .. }
             | Frame::Done { id, .. } => id,
         }
     }
@@ -220,10 +289,16 @@ pub(crate) struct KernelProcess {
 
 impl KernelProcess {
     /// Spawn `program args…` speaking the NDJSON kernel protocol on stdio.
-    pub(crate) fn spawn(program: &str, args: &[&str], cwd: &std::path::Path) -> io::Result<Self> {
+    pub(crate) fn spawn(
+        program: &str,
+        args: &[&str],
+        cwd: &std::path::Path,
+        env: &[(String, String)],
+    ) -> io::Result<Self> {
         let mut child = Command::new(program)
             .args(args)
             .current_dir(cwd)
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             // Own process group: the host can kill the runner plus any
             // subprocesses it spawned (kill(-pgid)) without touching the
             // host's own group.
@@ -301,6 +376,7 @@ pub struct PythonKernel {
     next_id: AtomicU64,
     interpreter: String,
     cwd: std::path::PathBuf,
+    env: Vec<(String, String)>,
 }
 
 impl PythonKernel {
@@ -312,23 +388,58 @@ impl PythonKernel {
     /// Fails when the interpreter cannot be spawned or a startup cell fails
     /// or exceeds the timeout.
     pub fn start(interpreter: &str, cwd: &std::path::Path) -> io::Result<Self> {
+        Self::start_with_env(interpreter, cwd, &[])
+    }
+
+    /// [`PythonKernel::start`] with extra process environment for the runner
+    /// (the eval tool passes `PI_EVAL_LOCAL_ROOTS` / `PI_ARTIFACTS_DIR` /
+    /// `PI_SESSION_FILE` so the preludes resolve internal URLs and spill
+    /// artifacts next to the session).
+    ///
+    /// # Errors
+    /// See [`PythonKernel::start`].
+    pub fn start_with_env(
+        interpreter: &str,
+        cwd: &std::path::Path,
+        env: &[(String, String)],
+    ) -> io::Result<Self> {
         let kernel = Self {
             process: Mutex::new(Some(KernelProcess::spawn(
                 interpreter,
                 &["-u", "-c", RUNNER_SCRIPT],
                 cwd,
+                env,
             )?)),
             next_id: AtomicU64::new(1),
             interpreter: interpreter.to_owned(),
             cwd: cwd.to_path_buf(),
+            env: env.to_vec(),
         };
         kernel.run_startup(&kernel.init_script())?;
-        kernel.run_startup(PRELUDE)?;
+        kernel.run_preloads()?;
         Ok(kernel)
     }
 
+    /// Silent startup cells in TS `preludes.ts` order: io helpers, agent
+    /// helpers, transactional cells. `prelude.py` self-guards with the TS
+    /// `__omp_prelude_loaded__` flag, so no stamp cell precedes it. Loaded via
+    /// `include_str!` so the runner needs no filesystem access to its source.
+    fn run_preloads(&self) -> io::Result<()> {
+        for prelude in [PRELUDE_PY, PRELUDE_AGENTS_PY, PRELUDE_TXN_PY] {
+            self.run_startup(prelude)?;
+        }
+        Ok(())
+    }
+
     fn run_startup(&self, source: &str) -> io::Result<()> {
-        let result = self.execute_opts(source, Some(STARTUP_TIMEOUT), true)?;
+        let result = self.execute_opts(
+            source,
+            &ExecOptions {
+                timeout: Some(STARTUP_TIMEOUT),
+                ..ExecOptions::default()
+            },
+            true,
+        )?;
         // omp's executeWithBudget fails the start on any non-clean cell —
         // including a cancelled/timed-out one (load can push the init or
         // prelude past STARTUP_TIMEOUT). Accepting a wedged kernel here made
@@ -368,10 +479,11 @@ impl PythonKernel {
                 &self.interpreter,
                 &["-u", "-c", RUNNER_SCRIPT],
                 &self.cwd,
+                &self.env,
             )?);
         }
         self.run_startup(&self.init_script())?;
-        self.run_startup(PRELUDE)
+        self.run_preloads()
     }
 
     fn init_script(&self) -> String {
@@ -391,7 +503,22 @@ impl PythonKernel {
     /// # Errors
     /// Fails on broken kernel I/O.
     pub fn execute(&self, code: &str, timeout: Option<Duration>) -> io::Result<CellResult> {
-        self.execute_opts(code, timeout, false)
+        self.execute_with(
+            code,
+            ExecOptions {
+                timeout,
+                ..ExecOptions::default()
+            },
+        )
+    }
+
+    /// Execute one cell with the full option surface: host bridge, cancel
+    /// token and idle-style timeout (TS `executeWithBudget`).
+    ///
+    /// # Errors
+    /// Fails on broken kernel I/O.
+    pub fn execute_with(&self, code: &str, opts: ExecOptions<'_>) -> io::Result<CellResult> {
+        self.execute_opts(code, &opts, false)
     }
 
     // Mirrors the omp host cell-execution flow step by step; splitting would obscure that parity.
@@ -399,7 +526,7 @@ impl PythonKernel {
     fn execute_opts(
         &self,
         code: &str,
-        timeout: Option<Duration>,
+        opts: &ExecOptions<'_>,
         startup: bool,
     ) -> io::Result<CellResult> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst).to_string();
@@ -410,12 +537,20 @@ impl PythonKernel {
                 .ok_or_else(|| io::Error::other("Python kernel is not running"))?;
             // omp host sends storeHistory:false for silent startup/control cells
             let mut req = serde_json::json!({ "id": id, "code": code, "storeHistory": !startup });
-            if let Some(t) = timeout {
+            if let Some(t) = opts.timeout {
                 // runner-enforced SIGALRM + watchdog, see crate docs
                 req.as_object_mut().expect("fresh object").insert(
                     "timeoutMs".into(),
                     Value::from(u64::try_from(t.as_millis()).unwrap_or(u64::MAX)),
                 );
+                if opts.idle_timeout {
+                    // runner pauses/re-arms its alarm around host calls (TS
+                    // idle-timeout.ts); the host below resets a fresh window
+                    // after every HostBridge::call as well.
+                    req.as_object_mut()
+                        .expect("fresh object")
+                        .insert("idleTimeout".into(), Value::from(true));
+                }
             }
             p.stdin.write_all(format!("{req}\n").as_bytes())?;
             p.stdin.flush()?;
@@ -426,11 +561,13 @@ impl PythonKernel {
         let mut error: Option<KernelError> = None;
         let mut status = CellStatus::Ok;
         let execution_count;
-        let mut deadline = timeout.map(|t| Instant::now() + t);
+        let mut deadline = opts.timeout.map(|t| Instant::now() + t);
         let mut in_escalation = false;
+        let mut timed_out = false;
+        let mut cancel = opts.cancel.clone();
 
         loop {
-            match self.recv(deadline, &id) {
+            match self.recv(deadline, &id, cancel.as_ref()) {
                 Ok(frame) => match frame {
                     Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
                         output.push_str(&data);
@@ -444,6 +581,51 @@ impl PythonKernel {
                         }
                     }
                     Frame::Display { bundle, .. } => displays.push(bundle),
+                    Frame::Host {
+                        id: hid,
+                        op,
+                        args,
+                        wait,
+                    } => {
+                        // Cell-side bridge request (TS py/js tool bridges): the
+                        // payload shapes are the TS `args`/`result` verbatim.
+                        if wait {
+                            let reply = match opts.bridge {
+                                Some(bridge) => match bridge.call(&op, args) {
+                                    Ok(result) => serde_json::json!({
+                                        "type": "host_reply",
+                                        "id": hid,
+                                        "ok": true,
+                                        "result": result,
+                                    }),
+                                    Err(error) => serde_json::json!({
+                                        "type": "host_reply",
+                                        "id": hid,
+                                        "ok": false,
+                                        "error": error,
+                                    }),
+                                },
+                                None => serde_json::json!({
+                                    "type": "host_reply",
+                                    "id": hid,
+                                    "ok": false,
+                                    "error": "host bridge unavailable",
+                                }),
+                            };
+                            let mut guard = self.process.lock().expect("kernel lock");
+                            if let Some(p) = guard.as_mut() {
+                                let _ = p.stdin.write_all(format!("{reply}\n").as_bytes());
+                                let _ = p.stdin.flush();
+                            }
+                        } else if let Some(bridge) = opts.bridge {
+                            bridge.notify(&op, args);
+                        }
+                        if opts.idle_timeout {
+                            // Time inside a bridge call does not count (TS
+                            // IdleTimeout.resume starts a fresh full window).
+                            deadline = opts.timeout.map(|t| Instant::now() + t);
+                        }
+                    }
                     Frame::Error {
                         ename,
                         evalue,
@@ -474,8 +656,9 @@ impl PythonKernel {
                         } else if done_status == "error" && status == CellStatus::Ok {
                             status = CellStatus::Error;
                         }
-                        // cancelled (timeout interrupt) outranks the error status:
-                        // omp reports these cells as timed out, not failed
+                        // cancelled (timeout interrupt / turn cancel) outranks the
+                        // error status: omp reports these cells as interrupted,
+                        // not failed
                         if cancelled && status == CellStatus::Error {
                             status = CellStatus::Interrupted;
                         }
@@ -486,7 +669,7 @@ impl PythonKernel {
                             execution_count,
                             error,
                             displays,
-                            timed_out: in_escalation,
+                            timed_out,
                         });
                     }
                     Frame::Started { .. } => {}
@@ -500,6 +683,25 @@ impl PythonKernel {
                     // report KernelKilled, like omp's kill + recreate path.
                     let escalated = Instant::now() + INTERRUPT_ESCALATION;
                     deadline = Some(escalated);
+                    in_escalation = true;
+                    timed_out = true;
+                }
+                Err(RecvOutcome::Cancelled) => {
+                    // Turn cancel (TS): omp's host-side SIGINT into the running
+                    // cell. The interrupt (like the timeout's) lands as
+                    // KeyboardInterrupt("Execution interrupted"); reuse the
+                    // escalation window to let the runner settle.
+                    if let Some(p) = self.process.lock().expect("kernel lock").as_mut() {
+                        if let Ok(pid) = i32::try_from(p.child.id()) {
+                            let _ = nix::sys::signal::kill(
+                                nix::unistd::Pid::from_raw(-pid),
+                                nix::sys::signal::Signal::SIGINT,
+                            );
+                        }
+                    }
+                    // One shot: stop polling the token while the interrupt lands.
+                    cancel = None;
+                    deadline = Some(Instant::now() + INTERRUPT_ESCALATION);
                     in_escalation = true;
                 }
                 Err(RecvOutcome::Disconnected) if in_escalation => {
@@ -525,8 +727,16 @@ impl PythonKernel {
         }
     }
 
-    /// Read the next frame for request `id`; skips stale foreign frames.
-    fn recv(&self, deadline: Option<Instant>, id: &str) -> Result<Frame, RecvOutcome> {
+    /// Read the next frame for request `id`; skips stale foreign frames. Host
+    /// frames carry `<cellId>:<n>` ids and are matched by cell prefix. When a
+    /// cancel token is present it caps the wait at ~50 ms so cancellation is
+    /// observed promptly even without a deadline.
+    fn recv(
+        &self,
+        deadline: Option<Instant>,
+        id: &str,
+        cancel: Option<&CancelToken>,
+    ) -> Result<Frame, RecvOutcome> {
         let wait = |d: Option<Instant>| {
             d.map_or(Duration::from_hours(1), |d| {
                 d.saturating_duration_since(Instant::now())
@@ -541,15 +751,39 @@ impl PythonKernel {
                 if p.dead.load(Ordering::SeqCst) {
                     return Err(RecvOutcome::Disconnected);
                 }
-                p.rx.recv_timeout(wait(deadline))
+                let w = match (deadline, cancel) {
+                    (Some(d), Some(_)) => wait(Some(d)).min(Duration::from_millis(50)),
+                    (d, None) => wait(d),
+                    (None, Some(_)) => Duration::from_millis(50),
+                };
+                p.rx.recv_timeout(w)
             };
             match outcome {
                 Ok(frame) => {
-                    if frame.id() == id {
+                    let fid = frame.id();
+                    // host bridge frames are numbered "<cellId>:<n>" within the cell
+                    if fid == id
+                        || matches!(frame, Frame::Host { .. })
+                            && fid
+                                .strip_prefix(id)
+                                .is_some_and(|rest| rest.starts_with(':'))
+                    {
                         return Ok(frame);
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => return Err(RecvOutcome::TimedOut),
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Some(token) = cancel {
+                        if token.is_cancelled() {
+                            return Err(RecvOutcome::Cancelled);
+                        }
+                        // 50 ms poll granularity: only a real deadline expiry is
+                        // a cell timeout.
+                        if deadline.is_none_or(|d| Instant::now() < d) {
+                            continue;
+                        }
+                    }
+                    return Err(RecvOutcome::TimedOut);
+                }
                 Err(RecvTimeoutError::Disconnected) => return Err(RecvOutcome::Disconnected),
             }
         }
@@ -600,6 +834,8 @@ impl PythonKernel {
 pub(crate) enum RecvOutcome {
     TimedOut,
     Disconnected,
+    /// The cell's [`CancelToken`] fired while waiting on frames.
+    Cancelled,
 }
 
 impl Drop for PythonKernel {
@@ -608,10 +844,10 @@ impl Drop for PythonKernel {
     }
 }
 
-/// Prelude executed at startup (mirrors omp's `__omp_prelude_loaded__` guard);
-/// the runner script already installs `display`, so this only stamps the flag.
-const PRELUDE: &str =
-    "if \"__omp_prelude_loaded__\" not in globals():\n    __omp_prelude_loaded__ = True";
+/// Startup cells loaded in TS `preludes.ts` order (silent, `storeHistory: false`).
+const PRELUDE_PY: &str = include_str!("prelude.py");
+const PRELUDE_AGENTS_PY: &str = include_str!("prelude_agents.py");
+const PRELUDE_TXN_PY: &str = include_str!("prelude_txn.py");
 
 /// Default interpreter resolution (omp falls back to the platform python3).
 #[must_use]
