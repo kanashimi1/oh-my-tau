@@ -117,9 +117,11 @@ fn session_sources(
 /// Hand the resumed history to the TUI (`session_loaded`): the transcript is
 /// rebuilt from the loaded messages (TS `renderInitialMessages`).
 async fn announce_loaded_session(rt: &Runtime) {
+    let name = rt.session_name();
     rt.send(serde_json::json!({
         "type": "session_loaded",
         "messages": rt.messages().await,
+        "name": name,
     }));
 }
 
@@ -291,12 +293,23 @@ impl omp_tui::RuntimePort for Port {
                 rt.load_session(&path, None).await
             };
             match result {
+                // Fork targets the current session: the transcript is already right.
+                Ok(()) if fork => {}
                 Ok(()) => announce_loaded_session(&rt).await,
-                Err(e) => rt.send(serde_json::json!({
-                    "type": "prompt_result",
-                    "success": false,
-                    "error": format!("resume failed: {e:#}"),
-                })),
+                Err(e) => {
+                    rt.send(serde_json::json!({
+                        "type": "prompt_result",
+                        "success": false,
+                        "error": format!("resume failed: {e:#}"),
+                    }));
+                    // A load that failed after the agent reset leaves it with
+                    // no history: clear the transcript to match. An early
+                    // failure (unreadable file) keeps the current session, so
+                    // re-announcing would only re-dump it into scrollback.
+                    if !fork && rt.messages().await.is_empty() {
+                        announce_loaded_session(&rt).await;
+                    }
+                }
             }
             rt.publish_session_file();
         });

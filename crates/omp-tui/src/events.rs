@@ -81,10 +81,15 @@ pub enum AppEvent {
     /// pending extension dialog (echoed back through the runtime stream so
     /// the UI can retire its queue entry).
     ExtensionUiResponse(Value),
-    /// `{"type":"session_loaded", "messages": [...]}` — a session was
-    /// resumed (startup `--resume` or `/resume`): the transcript is replaced
-    /// by the loaded history. Emitted by the omp-cli TUI bridge.
-    SessionLoaded(Vec<Value>),
+    /// `{"type":"session_loaded", "messages": [...], "name": <string|null>}`
+    /// — a session was resumed (startup `--resume` or `/resume`): the
+    /// transcript is replaced by the loaded history and, when present, the
+    /// title label becomes the restored session name. Emitted by the omp-cli
+    /// TUI bridge.
+    SessionLoaded {
+        messages: Vec<Value>,
+        name: Option<String>,
+    },
     /// Any frame without a dedicated variant; kept verbatim.
     Unknown(Value),
 }
@@ -145,15 +150,41 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
                 .unwrap_or_default()
                 .to_owned(),
         ),
-        "session_loaded" => AppEvent::SessionLoaded(
-            frame
+        "session_loaded" => AppEvent::SessionLoaded {
+            messages: frame
                 .get("messages")
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default(),
-        ),
+            name: session_loaded_name(frame),
+        },
         _ => AppEvent::Unknown(frame.clone()),
     }
+}
+
+/// Like [`parse_frame`] but consumes the frame so a `session_loaded` history
+/// (potentially the whole transcript) is moved into the event, not cloned.
+/// Every other frame type parses exactly as [`parse_frame`] does.
+#[must_use]
+pub fn parse_frame_owned(mut frame: Value) -> AppEvent {
+    if frame.get("type").and_then(Value::as_str) == Some("session_loaded") {
+        let name = session_loaded_name(&frame);
+        let messages = match frame.get_mut("messages").map(Value::take) {
+            Some(Value::Array(items)) => items,
+            _ => Vec::new(),
+        };
+        return AppEvent::SessionLoaded { messages, name };
+    }
+    parse_frame(&frame)
+}
+
+/// Optional restored session name of a `session_loaded` frame.
+fn session_loaded_name(frame: &Value) -> Option<String> {
+    frame
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|n| !n.is_empty())
+        .map(str::to_owned)
 }
 
 /// Extract a `Vec<String>` field, tolerating missing/non-string entries.

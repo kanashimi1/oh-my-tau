@@ -120,7 +120,7 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
             }
             maybe_frame = frames.recv() => {
                 let Some(frame) = maybe_frame else { continue };
-                app.push_frame(&frame, Instant::now());
+                app.push_frame_owned(frame, Instant::now());
                 if app.pump_events(Instant::now()) {
                     commit_retired(&mut app, shell).context("commit scrollback")?;
                 }

@@ -457,6 +457,17 @@ impl SessionPicker {
         self.offset = 0;
     }
 
+    /// Whether the selected row may be deleted: deletion enabled and the row
+    /// belongs to the native store (foreign stores such as TS omp's are
+    /// read-only from here; no notice mechanism exists, so it is silent).
+    fn can_delete_selected(&self) -> bool {
+        self.allow_delete
+            && self
+                .filtered
+                .get(self.selected)
+                .is_some_and(|&i| self.sessions[i].source.is_none())
+    }
+
     /// Delete the selected session's file and drop it from the list.
     fn delete_selected(&mut self) {
         let Some(&i) = self.filtered.get(self.selected) else {
@@ -599,12 +610,13 @@ impl Component for SessionPicker {
                 self.selected = self.filtered.len().saturating_sub(1);
             }
             KeyCode::Tab | KeyCode::BackTab => self.toggle_scope(),
-            KeyCode::Delete if self.allow_delete && !self.filtered.is_empty() => {
+            KeyCode::Delete if self.can_delete_selected() => {
                 self.confirm_delete = true;
             }
+            KeyCode::Delete => {}
             KeyCode::Backspace => {
                 if self.query.is_empty() {
-                    if self.allow_delete && !self.filtered.is_empty() {
+                    if self.can_delete_selected() {
                         self.confirm_delete = true;
                     }
                 } else {
@@ -940,6 +952,24 @@ mod tests {
         assert!(!bbb.exists());
         assert_eq!(picker.sessions.len(), 1);
         assert_eq!(picker.selected, 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn foreign_store_rows_are_not_deletable() {
+        let root = fixture_root();
+        let dir = root.join("proj");
+        let ts = write_session(&dir, "tsrow", "Foreign", "/w");
+
+        let mut picker = SessionPicker::load(&dir);
+        picker.sessions[0].source = Some("ts".into());
+        picker.handle_key(key(KeyCode::Delete));
+        assert!(!picker.confirming());
+        picker.handle_key(key(KeyCode::Backspace));
+        assert!(!picker.confirming());
+        picker.handle_key(key(KeyCode::Enter));
+        assert!(ts.exists());
+        assert_eq!(picker.sessions.len(), 1);
         let _ = fs::remove_dir_all(&root);
     }
 

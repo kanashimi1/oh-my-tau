@@ -51,7 +51,7 @@ use crate::chrome::notify::{send_notification, NotifyProtocol, TerminalNotificat
 use crate::chrome::title::{TerminalTitle, TitleState};
 use crate::component::Component;
 use crate::editor::{Editor, EditorOutcome};
-use crate::events::{parse_frame, AppEvent};
+use crate::events::{parse_frame, parse_frame_owned, AppEvent};
 use crate::extension_ui::ExtensionUi;
 use crate::keybindings::KeybindingsManager;
 use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
@@ -88,7 +88,7 @@ const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("resume", "Resume a different session"),
     ("tree", "Navigate session tree (switch branches)"),
     ("theme", "Switch the color theme"),
-    ("clear", "Clear the conversation context in place, keeping the session"),
+    ("clear", "Start a new session (clears the conversation)"),
     ("help", "Show keybindings and commands"),
     ("exit", "Exit the application"),
 ];
@@ -182,6 +182,19 @@ impl EventPump {
             self.queue.push_back((at, AppEvent::MessageUpdate(update)));
         }
         self.queue.push_back((now, event));
+    }
+
+    /// Owned-frame variant of [`Self::push_frame`]; identical queueing, but
+    /// `session_loaded` moves its (large) message array into the event.
+    pub fn push_frame_owned(&mut self, frame: Value, now: Instant) {
+        if frame.get("type").and_then(Value::as_str) == Some("session_loaded") {
+            if let Some((at, update)) = self.pending_update.take() {
+                self.queue.push_back((at, AppEvent::MessageUpdate(update)));
+            }
+            self.queue.push_back((now, parse_frame_owned(frame)));
+        } else {
+            self.push_frame(&frame, now);
+        }
     }
 
     /// Apply every due event to `app`, oldest first (serialized dispatch).
@@ -391,6 +404,12 @@ impl App {
         self.pump.push_frame(frame, now);
     }
 
+    /// Owned-frame variant of [`Self::push_frame`]: a `session_loaded`
+    /// history is moved into its event instead of cloned.
+    pub fn push_frame_owned(&mut self, frame: Value, now: Instant) {
+        self.pump.push_frame_owned(frame, now);
+    }
+
     /// Apply all due events. Returns `true` when anything was applied
     /// (the controller redraws after a pump that returns `true`).
     pub fn pump_events(&mut self, now: Instant) -> bool {
@@ -533,12 +552,15 @@ impl App {
                 self.autocomplete.set_commands(commands);
             }
             AppEvent::CommandOutput(text) => self.push_system(text.clone()),
-            AppEvent::SessionLoaded(messages) => {
+            AppEvent::SessionLoaded { messages, name } => {
                 // The resumed history replaces the transcript; rows already
                 // in terminal scrollback stay, the history is appended below.
                 self.journal.clear();
                 self.status.streaming = false;
                 self.messages.rebuild(messages);
+                if let Some(name) = name {
+                    self.title_label.clone_from(name);
+                }
                 self.title.set_state(TitleState::Idle, Some(&self.title_label));
             }
             _ => {}
@@ -2212,6 +2234,29 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect();
         assert!(joined.contains("old answer"), "{joined}");
+    }
+
+    #[test]
+    fn session_loaded_name_sets_title_label_and_owned_path_matches() {
+        let mut app = app();
+        let before = app.title_label.clone();
+        // No name: label unchanged.
+        app.push_frame_owned(json!({"type": "session_loaded", "messages": [], "name": null}), Instant::now());
+        app.pump_events(Instant::now());
+        assert_eq!(app.title_label, before);
+        // Named: label follows the restored name; history moved, not lost.
+        app.push_frame_owned(
+            json!({"type": "session_loaded", "name": "Old title", "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "q"}]},
+            ]}),
+            Instant::now(),
+        );
+        app.pump_events(Instant::now());
+        assert_eq!(app.title_label, "Old title");
+        assert_eq!(app.messages.entries().len(), 1);
+        // Borrowed parse agrees with the owned parse.
+        let frame = json!({"type": "session_loaded", "name": "n", "messages": [{"role": "user"}]});
+        assert_eq!(parse_frame(&frame), parse_frame_owned(frame.clone()));
     }
 
     #[test]

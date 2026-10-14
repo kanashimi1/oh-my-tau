@@ -1849,6 +1849,11 @@ impl Runtime {
         Ok(())
     }
 
+    /// The current (restored or set) session name.
+    pub fn session_name(&self) -> Option<String> {
+        lock(&self.settings).session_name.clone()
+    }
+
     /// Sink applied session-name changes (the ext bridge's `set_session_name`).
     pub fn set_name_listener(&self, f: Option<NameListener>) {
         *lock(&self.on_session_name) = f;
