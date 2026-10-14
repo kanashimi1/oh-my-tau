@@ -126,6 +126,9 @@ pub(crate) async fn run_loop(
             let mut tool_results: Vec<ToolResultMessage> = Vec::new();
             has_more_tool_calls = false;
             if !tool_calls.is_empty() {
+                // Tool hooks/executions each snapshot the context: freeze first so
+                // they share the history instead of copying it.
+                current_context.messages.freeze();
                 let executed_tool_batch =
                     execute_tool_calls(current_context, &message, config, signal, emit).await?;
                 // A `beforeToolCall` revision is baked into the assistant message itself so
@@ -179,6 +182,7 @@ pub(crate) async fn run_loop(
                 .await?;
                 return Ok(());
             }
+            current_context.messages.freeze();
             last_turn = Some(ShouldStopAfterTurnContext {
                 message: message.clone(),
                 tool_results: tool_results.clone(),
@@ -307,10 +311,8 @@ pub(crate) async fn run_loop(
     Ok(())
 }
 
+/// Snapshot for hooks and tool executions: shares the frozen transcript segments
+/// (see [`crate::types::ContextMessages`]); only the unfrozen tail is copied.
 pub(crate) fn clone_context(context: &AgentContext) -> AgentContext {
-    AgentContext {
-        system_prompt: context.system_prompt.clone(),
-        messages: context.messages.clone(),
-        tools: context.tools.clone(),
-    }
+    context.clone()
 }

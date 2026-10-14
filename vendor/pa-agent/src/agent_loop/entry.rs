@@ -21,11 +21,8 @@ pub async fn run_agent_loop(
     stream_fn: Option<&StreamFn>,
 ) -> anyhow::Result<Vec<AgentMessage>> {
     let mut new_messages: Vec<AgentMessage> = prompts.clone();
-    let mut current_context = AgentContext {
-        system_prompt: context.system_prompt.clone(),
-        tools: context.tools.clone(),
-        messages: context.messages.clone(),
-    };
+    // The caller hands over its snapshot: extend it in place (no second copy).
+    let mut current_context = context;
     current_context.messages.extend(prompts.iter().cloned());
 
     emit(AgentEvent::AgentStart).await?;

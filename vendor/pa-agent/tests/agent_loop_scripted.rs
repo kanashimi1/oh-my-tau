@@ -451,7 +451,7 @@ async fn provider_stream_failure_mid_turn_ends_run_and_retry_continues() {
     let context = AgentContext {
         system_prompt: String::new(),
         tools: Vec::new(),
-        messages: vec![AgentMessage::user("hello")],
+        messages: vec![AgentMessage::user("hello")].into(),
     };
     let retry_events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
     let emit: AgentEventSink = {

@@ -71,8 +71,8 @@ pub async fn run(
         })));
     }
     let model = {
-        let s = rt.agent.state().await;
-        format!("{}/{}", s.model.provider, s.model.id)
+        let m = rt.agent.model().await;
+        format!("{}/{}", m.provider, m.id)
     };
     let port = Port { rt };
     omp_tui::run(

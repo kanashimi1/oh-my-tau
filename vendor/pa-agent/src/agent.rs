@@ -109,7 +109,8 @@ struct MutableAgentState {
     model: Model,
     thinking_level: ThinkingLevel,
     tools: Vec<Arc<dyn AgentTool>>,
-    messages: Vec<AgentMessage>,
+    /// Shares frozen segments with the running loop's snapshot (no per-run deep copy).
+    messages: crate::types::ContextMessages,
     is_streaming: bool,
     streaming_message: Option<Arc<AgentMessage>>,
     pending_tool_calls: HashSet<String>,
@@ -123,7 +124,7 @@ impl Default for MutableAgentState {
             model: Model::unknown(),
             thinking_level: ThinkingLevel::Off,
             tools: Vec::new(),
-            messages: Vec::new(),
+            messages: crate::types::ContextMessages::new(),
             is_streaming: false,
             streaming_message: None,
             pending_tool_calls: HashSet::new(),
@@ -501,7 +502,10 @@ impl AgentInner {
             .await;
     }
 
-    fn snapshot_locked(shared: &Shared) -> crate::types::AgentContext {
+    /// The run's context snapshot (TS `messages.slice()`): freezing makes the state
+    /// and the snapshot share the history, so only pointers are copied.
+    fn snapshot_locked(shared: &mut Shared) -> crate::types::AgentContext {
+        shared.state.messages.freeze();
         crate::types::AgentContext {
             system_prompt: shared.state.system_prompt.clone(),
             messages: shared.state.messages.clone(),
@@ -653,9 +657,9 @@ impl AgentInner {
                 let _ = started.send(());
             }
             let (context, config) = {
-                let shared = inner.shared.lock().await;
+                let mut shared = inner.shared.lock().await;
                 (
-                    Self::snapshot_locked(&shared),
+                    Self::snapshot_locked(&mut shared),
                     inner.loop_config(&shared, skip_initial_steering_poll, model_override.as_ref()),
                 )
             };
@@ -684,9 +688,9 @@ impl AgentInner {
         let inner = Arc::clone(self);
         self.run_with_lifecycle(|signal, model_override| async move {
             let (context, config) = {
-                let shared = inner.shared.lock().await;
+                let mut shared = inner.shared.lock().await;
                 (
-                    Self::snapshot_locked(&shared),
+                    Self::snapshot_locked(&mut shared),
                     inner.loop_config(&shared, false, model_override.as_ref()),
                 )
             };
@@ -766,7 +770,7 @@ impl Agent {
             model: initial.model.unwrap_or_else(Model::unknown),
             thinking_level: initial.thinking_level.unwrap_or(ThinkingLevel::Off),
             tools: initial.tools.unwrap_or_default(),
-            messages: initial.messages.unwrap_or_default(),
+            messages: initial.messages.unwrap_or_default().into(),
             ..MutableAgentState::default()
         };
         let inner = Arc::new(AgentInner {
@@ -859,6 +863,9 @@ impl Agent {
             .retain(|(listener_id, _)| *listener_id != id);
     }
 
+    /// Full state copy, including a deep copy of every message. Prefer the field
+    /// accessors below ([`Self::is_streaming`], [`Self::model`], …) or
+    /// [`Self::with_messages`] when the transcript itself is not needed as an owned value.
     pub async fn state(&self) -> AgentStateSnapshot {
         let shared = self.inner.shared.lock().await;
         AgentStateSnapshot {
@@ -866,12 +873,67 @@ impl Agent {
             model: shared.state.model.clone(),
             thinking_level: shared.state.thinking_level,
             tools: shared.state.tools.clone(),
-            messages: shared.state.messages.clone(),
+            messages: shared.state.messages.to_vec(),
             is_streaming: shared.state.is_streaming,
             streaming_message: shared.state.streaming_message.as_deref().cloned(),
             pending_tool_calls: shared.state.pending_tool_calls.clone(),
             error_message: shared.state.error_message.clone(),
         }
+    }
+
+    pub async fn is_streaming(&self) -> bool {
+        self.inner.shared.lock().await.state.is_streaming
+    }
+
+    pub async fn model(&self) -> Model {
+        self.inner.shared.lock().await.state.model.clone()
+    }
+
+    pub async fn thinking_level(&self) -> ThinkingLevel {
+        self.inner.shared.lock().await.state.thinking_level
+    }
+
+    pub async fn system_prompt(&self) -> String {
+        self.inner.shared.lock().await.state.system_prompt.clone()
+    }
+
+    pub async fn message_count(&self) -> usize {
+        self.inner.shared.lock().await.state.messages.len()
+    }
+
+    /// Everything [`Self::state`] returns except the messages (`messages` is empty);
+    /// `message_count` carries their number.
+    pub async fn status(&self) -> (AgentStateSnapshot, usize) {
+        let shared = self.inner.shared.lock().await;
+        (
+            AgentStateSnapshot {
+                system_prompt: shared.state.system_prompt.clone(),
+                model: shared.state.model.clone(),
+                thinking_level: shared.state.thinking_level,
+                tools: shared.state.tools.clone(),
+                messages: Vec::new(),
+                is_streaming: shared.state.is_streaming,
+                streaming_message: shared.state.streaming_message.as_deref().cloned(),
+                pending_tool_calls: shared.state.pending_tool_calls.clone(),
+                error_message: shared.state.error_message.clone(),
+            },
+            shared.state.messages.len(),
+        )
+    }
+
+    /// A shared snapshot of the transcript: freezes the state's tail and clones the
+    /// segment pointers (no message is copied), so the caller can walk or serialize it
+    /// without holding the state lock. Later appends do not show up in the snapshot.
+    pub async fn messages_snapshot(&self) -> crate::types::ContextMessages {
+        let mut shared = self.inner.shared.lock().await;
+        shared.state.messages.freeze();
+        shared.state.messages.clone()
+    }
+
+    /// Read the transcript in place under the state lock (no copy). Keep `read`
+    /// short and non-blocking: the agent loop's event reducer waits on this lock.
+    pub async fn with_messages<R>(&self, read: impl FnOnce(&crate::types::ContextMessages) -> R) -> R {
+        read(&self.inner.shared.lock().await.state.messages)
     }
 
     pub async fn set_system_prompt(&self, system_prompt: impl Into<String>) {
@@ -922,7 +984,7 @@ impl Agent {
     }
 
     pub async fn set_messages(&self, messages: Vec<AgentMessage>) {
-        self.inner.shared.lock().await.state.messages = messages;
+        self.inner.shared.lock().await.state.messages = messages.into();
     }
 
     /// Append rows to the transcript under ONE state lock (the atomic
@@ -940,7 +1002,7 @@ impl Agent {
     /// Mutate the transcript under ONE state lock (the atomic form of the
     /// `state()` + `set_messages` read-modify-write).
     pub async fn mutate_messages(&self, mutate: impl FnOnce(&mut Vec<AgentMessage>)) {
-        mutate(&mut self.inner.shared.lock().await.state.messages);
+        mutate(self.inner.shared.lock().await.state.messages.make_contiguous());
     }
 
     /// # Panics

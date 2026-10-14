@@ -574,11 +574,136 @@ pub trait AgentTool: Send + Sync {
     }
 }
 
+/// A transcript that clones in O(segments + tail) instead of deep-copying every message.
+///
+/// The TS agent snapshots its context with `messages.slice()` — a shallow copy of
+/// references. A `Vec<AgentMessage>` clone in Rust is a deep copy of the whole
+/// transcript, made at every run start, every turn (`should_stop_after_turn`) and every
+/// tool call (hook / execution contexts). Here frozen history lives in shared
+/// `Arc` segments and only the messages appended since the last [`Self::freeze`] are
+/// owned, so those snapshots copy pointers plus a short tail. Mutating a shared
+/// segment (rare: [`Self::last_mut`] on a frozen last message,
+/// [`Self::make_contiguous`]) copies on write.
+#[derive(Clone, Default)]
+pub struct ContextMessages {
+    segments: Vec<Arc<Vec<AgentMessage>>>,
+    tail: Vec<AgentMessage>,
+}
+
+impl ContextMessages {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.segments.iter().map(|s| s.len()).sum::<usize>() + self.tail.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tail.is_empty() && self.segments.iter().all(|s| s.is_empty())
+    }
+
+    /// Messages in order.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &AgentMessage> + '_ {
+        self.segments.iter().flat_map(|s| s.iter()).chain(self.tail.iter())
+    }
+
+    #[must_use]
+    pub fn last(&self) -> Option<&AgentMessage> {
+        self.iter().next_back()
+    }
+
+    /// The last message, mutable. A last message inside a shared frozen segment is
+    /// copied on write (that segment only).
+    pub fn last_mut(&mut self) -> Option<&mut AgentMessage> {
+        if !self.tail.is_empty() {
+            return self.tail.last_mut();
+        }
+        let seg = self.segments.iter_mut().rev().find(|s| !s.is_empty())?;
+        Arc::make_mut(seg).last_mut()
+    }
+
+    pub fn push(&mut self, message: AgentMessage) {
+        self.tail.push(message);
+    }
+
+    pub fn clear(&mut self) {
+        self.segments.clear();
+        self.tail.clear();
+    }
+
+    /// Move the owned tail into a new shared segment (no message is copied), so the
+    /// next [`Clone`] shares it.
+    pub fn freeze(&mut self) {
+        if !self.tail.is_empty() {
+            self.segments.push(Arc::new(std::mem::take(&mut self.tail)));
+        }
+    }
+
+    /// Deep copy into a plain vector.
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<AgentMessage> {
+        let mut out = Vec::with_capacity(self.len());
+        out.extend(self.iter().cloned());
+        out
+    }
+
+    /// Into a plain vector; segments nobody else holds are moved, not copied.
+    #[must_use]
+    pub fn into_vec(self) -> Vec<AgentMessage> {
+        let mut out = Vec::with_capacity(self.len());
+        for seg in self.segments {
+            match Arc::try_unwrap(seg) {
+                Ok(v) => out.extend(v),
+                Err(shared) => out.extend(shared.iter().cloned()),
+            }
+        }
+        out.extend(self.tail);
+        out
+    }
+
+    /// The whole transcript as one mutable vector. Collapses into a single owned run:
+    /// free when nothing else shares the segments, a copy of the shared ones otherwise.
+    pub fn make_contiguous(&mut self) -> &mut Vec<AgentMessage> {
+        if !(self.segments.is_empty()
+            || (self.segments.len() == 1 && self.tail.is_empty() && Arc::get_mut(&mut self.segments[0]).is_some()))
+        {
+            let all = std::mem::take(self).into_vec();
+            self.tail = all;
+        } else if self.segments.len() == 1 {
+            let only = self.segments.pop().expect("one segment");
+            self.tail = Arc::try_unwrap(only).unwrap_or_else(|shared| (*shared).clone());
+        }
+        &mut self.tail
+    }
+}
+
+impl From<Vec<AgentMessage>> for ContextMessages {
+    fn from(messages: Vec<AgentMessage>) -> Self {
+        Self { segments: Vec::new(), tail: messages }
+    }
+}
+
+impl Extend<AgentMessage> for ContextMessages {
+    fn extend<I: IntoIterator<Item = AgentMessage>>(&mut self, iter: I) {
+        self.tail.extend(iter);
+    }
+}
+
+impl std::fmt::Debug for ContextMessages {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 /// Context snapshot passed to the low-level agent loop and tool hooks.
 #[derive(Clone, Default)]
 pub struct AgentContext {
     pub system_prompt: String,
-    pub messages: Vec<AgentMessage>,
+    pub messages: ContextMessages,
     pub tools: Vec<Arc<dyn AgentTool>>,
 }
 
@@ -689,3 +814,60 @@ pub struct ShouldStopAfterTurnContext {
 }
 
 pub type GetContinuationMessagesContext = ShouldStopAfterTurnContext;
+
+#[cfg(test)]
+mod context_messages_tests {
+    use super::*;
+
+    fn texts(m: &ContextMessages) -> Vec<String> {
+        m.iter().map(|x| format!("{x:?}")).collect()
+    }
+
+    #[test]
+    fn snapshot_shares_history_and_stays_isolated() {
+        let mut state: ContextMessages = vec![AgentMessage::user("a"), AgentMessage::user("b")].into();
+        state.freeze();
+        let mut snap = state.clone();
+        // Shared, not copied: both point at the same frozen segment.
+        assert!(Arc::ptr_eq(&state.segments[0], &snap.segments[0]));
+        state.push(AgentMessage::user("state-only"));
+        snap.push(AgentMessage::user("loop-only"));
+        assert_eq!(state.len(), 3);
+        assert_eq!(snap.len(), 3);
+        assert_ne!(texts(&state), texts(&snap));
+        assert_eq!(format!("{:?}", snap.last().unwrap()), format!("{:?}", AgentMessage::user("loop-only")));
+    }
+
+    #[test]
+    fn last_mut_on_shared_segment_copies_on_write() {
+        let mut a: ContextMessages = vec![AgentMessage::user("x")].into();
+        a.freeze();
+        let b = a.clone();
+        *a.last_mut().unwrap() = AgentMessage::user("y");
+        assert_eq!(format!("{:?}", b.last().unwrap()), format!("{:?}", AgentMessage::user("x")));
+        assert_eq!(format!("{:?}", a.last().unwrap()), format!("{:?}", AgentMessage::user("y")));
+    }
+
+    #[test]
+    fn make_contiguous_preserves_order_and_isolation() {
+        let mut a: ContextMessages = vec![AgentMessage::user("1")].into();
+        a.freeze();
+        a.push(AgentMessage::user("2"));
+        a.freeze();
+        a.push(AgentMessage::user("3"));
+        let b = a.clone();
+        let before = texts(&a);
+        let v = a.make_contiguous();
+        assert_eq!(v.len(), 3);
+        v.push(AgentMessage::user("4"));
+        assert_eq!(texts(&b), before);
+        assert_eq!(a.len(), 4);
+        assert_eq!(a.to_vec().len(), 4);
+        assert!(a.segments.is_empty());
+        // Unshared single segment collapses without copying.
+        let mut c: ContextMessages = vec![AgentMessage::user("z")].into();
+        c.freeze();
+        assert_eq!(c.make_contiguous().len(), 1);
+        assert_eq!(c.into_vec().len(), 1);
+    }
+}

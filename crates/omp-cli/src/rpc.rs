@@ -507,7 +507,7 @@ async fn cycle_model(rt: &Runtime) -> CmdResult {
         .unwrap_or(0);
     let next = &models[(idx + 1) % models.len()];
     let model = rt.cycle_to(&next.provider, &next.id).await?;
-    let level = rt.agent.state().await.thinking_level;
+    let level = rt.agent.thinking_level().await;
     ok(json!({"model": model, "thinkingLevel": level_name(level), "isScoped": false}))
 }
 
@@ -733,7 +733,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             } else {
                 cmd.get("entryId").and_then(Value::as_str)
             };
-            if rt.agent.state().await.is_streaming {
+            if rt.agent.is_streaming().await {
                 return Err(CmdError::coded(
                     format!("Cannot {kind} the session while session maintenance or user work is still running"),
                     "session_busy",
@@ -907,7 +907,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             if levels.len() < 2 {
                 return ok(Value::Null);
             }
-            let current = level_name(rt.agent.state().await.thinking_level);
+            let current = level_name(rt.agent.thinking_level().await);
             let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
             let next = levels[(idx + 1) % levels.len()];
             if let Some(level) = parse_level(next) {
@@ -993,7 +993,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             none()
         }
         "handoff" => {
-            if rt.agent.state().await.is_streaming {
+            if rt.agent.is_streaming().await {
                 return Err(CmdError::new(
                     "Cannot hand off while a response is in progress",
                 ));
@@ -1002,7 +1002,7 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "get_messages" => ok(json!({"messages": rt.messages().await})),
         "get_messages_page" => {
-            if rt.agent.state().await.is_streaming {
+            if rt.agent.is_streaming().await {
                 return Err(CmdError::coded(
                     "Cannot page messages while the session is changing",
                     "session_busy",
@@ -1356,7 +1356,7 @@ pub async fn run_with(
     // The `ask` tool gets the RPC dialog transport (TS: rich `askDialog` once
     // the client sends `set_ask_dialog`, `select`/`editor` frames otherwise).
     {
-        let mut tools = rt.agent.state().await.tools.clone();
+        let mut tools = rt.agent.tools().await;
         if let Some(slot) = tools.iter_mut().find(|t| t.name() == "ask") {
             *slot = crate::tools::tool_with_ui(Arc::new(RpcAskUi));
             rt.agent.set_tools(tools).await;

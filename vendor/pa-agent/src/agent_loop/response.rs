@@ -93,7 +93,9 @@ async fn stream_assistant_response_inner(
 ) -> anyhow::Result<AssistantMessage> {
     crate::abort::throw_if_aborted_signal(signal)?;
 
-    let mut messages: Vec<AgentMessage> = context.messages.clone();
+    // The hooks own their input: one materialization per request, which
+    // `convert_to_llm` consumes into the provider messages.
+    let mut messages: Vec<AgentMessage> = context.messages.to_vec();
     if let Some(transform) = config.transform_context.as_ref() {
         messages = race_with_abort(
             transform(messages, signal.cloned().unwrap_or_default()),
