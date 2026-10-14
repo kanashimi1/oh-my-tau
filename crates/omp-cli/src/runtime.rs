@@ -3237,6 +3237,153 @@ mod resume_seed_tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// The compacted `load_session` path end to end (what `load_session` does
+    /// when the journal has a `compaction` entry): reduced-branch rebuild →
+    /// context messages, plus `seed_branch` copying the raw branch lines into
+    /// the fresh session file. A custom-role (`developer`) message in the kept
+    /// range must survive in both the context and the seeded file, byte-identical.
+    fn compacted_resume_once(path: &std::path::Path, dir: &std::path::Path) -> (Vec<AgentMessage>, std::path::PathBuf) {
+        let index = omp_session::index::SessionIndex::load(path).expect("index");
+        let branch = index.branch();
+        let brefs: Vec<&omp_session::index::EntryRef> =
+            branch.iter().map(|&i| &index.refs[i as usize]).collect();
+        let (full, notes_after, head_until) =
+            reduced_branch_flags(&index, path, &branch, &brefs).expect("flags");
+        let entries =
+            materialize_reduced_branch(&index, path, &branch, &full, notes_after, head_until)
+                .expect("materialize");
+        let ctx = omp_compact::build_session_context_owned(entries, omp_compact::Leaf::Last)
+            .expect("context");
+        let messages = crate::compact::context_messages(&ctx);
+        let persist = crate::persist::Persistence::for_test(dir).unwrap();
+        crate::compact::seed_branch(&persist, &index, path).expect("seed");
+        (messages, persist.file().unwrap())
+    }
+
+    /// `type` field counts over a session file.
+    fn entry_type_counts(path: &std::path::Path) -> std::collections::BTreeMap<String, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        for v in omp_session::read_values(path).expect("read_values") {
+            if let Some(t) = v.get("type").and_then(Value::as_str) {
+                *counts.entry(t.to_owned()).or_default() += 1;
+            }
+        }
+        counts
+    }
+
+    #[test]
+    fn developer_custom_message_survives_compacted_double_resume_verbatim() {
+        let base = std::env::temp_dir().join(format!(
+            "omp-rs-compacted-resume-seed-{}-{}",
+            std::process::id(),
+            crate::persist::uuid_v7()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let dir_a = base.join("a");
+        std::fs::create_dir_all(&dir_a).unwrap();
+
+        // Compacted journal: user turn, developer custom message (kept range),
+        // a compaction entry, then a post-compaction user turn.
+        let mut w = omp_session::SessionWriter::create(
+            &dir_a,
+            "/proj",
+            "sess-a",
+            "2026-10-10T00-00-00-000Z",
+        )
+        .unwrap();
+        let first_kept = w
+            .append_omp_message(
+                omp_session::OmpMessage::Agent(serde_json::from_value(json!({
+                    "role": "user",
+                    "content": [{"type": "text", "text": "before compaction"}],
+                    "timestamp": 1757890000000i64,
+                }))
+                .expect("user map")),
+                "2026-10-10T00:00:01.000Z",
+            )
+            .unwrap();
+        w.append_omp_message(
+            omp_session::OmpMessage::Agent(developer_map()),
+            "2026-10-10T00:00:02.000Z",
+        )
+        .unwrap();
+        let result = omp_compact::summary::CompactionResult {
+            summary: "summary text".to_owned(),
+            short_summary: "short".to_owned(),
+            first_kept_entry_id: first_kept,
+            tokens_before: 1000,
+            details: json!({"readFiles": [], "modifiedFiles": []}),
+            preserve_data: None,
+        };
+        omp_compact::apply::append_compaction(
+            &mut w,
+            &result,
+            "2026-10-10T00:00:03.000Z",
+            &omp_compact::apply::ApplyOptions::default(),
+        )
+        .unwrap();
+        w.append_omp_message(
+            omp_session::OmpMessage::Agent(serde_json::from_value(json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "after compaction"}],
+                "timestamp": 1757890001000i64,
+            }))
+            .expect("user map")),
+            "2026-10-10T00:00:04.000Z",
+        )
+        .unwrap();
+        let original = w.path().to_path_buf();
+        drop(w);
+        let original_payloads = message_payloads(&original);
+        assert_eq!(original_payloads.len(), 3);
+        let developer_payload = original_payloads[1].clone();
+        assert_eq!(developer_payload["role"], json!("developer"));
+
+        // Resume #1 through the compacted path: the developer message is a
+        // Custom context message...
+        let dir_b = base.join("b");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        let (messages_b, file_b) = compacted_resume_once(&original, &dir_b);
+        assert!(
+            messages_b.iter().any(|m| matches!(m, AgentMessage::Custom(_))),
+            "compacted context keeps the developer message (n={})",
+            messages_b.len()
+        );
+        // ...and the seeded file carries it byte-identically.
+        let counts_b = entry_type_counts(&file_b);
+        assert_eq!(counts_b.get("compaction").copied(), Some(1), "compaction entry is re-seeded");
+        let payloads_b = message_payloads(&file_b);
+        assert_eq!(payloads_b.len(), 3, "every branch message is re-seeded");
+        let seeded_developer = payloads_b
+            .iter()
+            .find(|p| p.get("role").and_then(Value::as_str) == Some("developer"))
+            .expect("developer message in seeded file");
+        assert_eq!(
+            seeded_developer.to_string(),
+            developer_payload.to_string(),
+            "developer message keeps its exact original shape and key order"
+        );
+
+        // Resume #2 from the seeded file: same context, same shape again.
+        let dir_c = base.join("c");
+        std::fs::create_dir_all(&dir_c).unwrap();
+        let (messages_c, file_c) = compacted_resume_once(&file_b, &dir_c);
+        assert_eq!(messages_c.len(), messages_b.len(), "double resume keeps the same context");
+        assert!(
+            messages_c.iter().any(|m| matches!(m, AgentMessage::Custom(_))),
+            "second compacted context keeps the developer message"
+        );
+        assert_eq!(
+            entry_type_counts(&file_c).get("compaction").copied(),
+            Some(1),
+            "compaction entry survives the second seed"
+        );
+        let payloads_c = message_payloads(&file_c);
+        assert_eq!(payloads_c, payloads_b, "double compacted resume is stable");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn standard_message_keeps_existing_conversion_path() {
         let dir = std::env::temp_dir().join(format!(
