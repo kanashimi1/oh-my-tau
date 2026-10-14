@@ -4,6 +4,7 @@ mod adapter;
 mod agent;
 mod cli;
 mod compact;
+mod dedup;
 mod events;
 mod ext;
 mod images;

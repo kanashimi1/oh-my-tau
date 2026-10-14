@@ -154,7 +154,15 @@ pub fn build_agent(
             tools: Some(tools),
             messages: None,
         },
-        convert_to_llm: Some(convert_to_llm()),
+        convert_to_llm: Some(if crate::dedup::dedup_enabled() {
+            let base = convert_to_llm();
+            Arc::new(move |messages: Vec<AgentMessage>| {
+                let base = Arc::clone(&base);
+                Box::pin(async move { base(crate::dedup::dedup_tool_results(messages)).await })
+            })
+        } else {
+            convert_to_llm()
+        }),
         stream_fn: Some(switchable_stream_fn(target.clone())),
         transform_context,
         before_tool_call,
