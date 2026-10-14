@@ -8,10 +8,15 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use pa_agent::abort::AbortSignal;
-use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
+use pa_agent::abort::{race_with_abort, AbortSignal};
+use pa_agent::agent_loop::{AfterToolCallFn, BeforeToolCallFn};
+use pa_agent::types::{
+    AfterToolCallContext, AgentContext, AgentTool, AgentToolResult, AgentToolUpdateCallback,
+    AssistantContent, AssistantMessage, AssistantMeta, BeforeToolCallContext, StopReason, ToolCall,
+    ToolResultContent, Usage,
+};
 use pa_agent::validation::validate_tool_arguments;
 use serde_json::{json, Value};
 
@@ -35,12 +40,14 @@ pub struct EvalBridge {
     env: Arc<Env>,
     ctx: OpCtx,
     rt: tokio::runtime::Handle,
+    policy: BridgePolicy,
 }
 
 /// Tools the bridge may dispatch to. Set once per process by the runtime
-/// (the session's real tool list, so cell-side `read`/`bash`/… behave exactly
-/// like model-side calls, including hidden tools); before that, the bridge
-/// falls back to [`super::builtin_tools`] plus [`super::hidden_tool_by_name].
+/// (the session's enabled tool list, so cell-side `read`/`bash`/… resolve
+/// exactly like model-side calls); before that (tests), the bridge falls back
+/// to [`super::builtin_tools`]. Hidden tools the session never enabled are not
+/// reachable (TS `getToolForEvalBridge` accepts enabled names only).
 static SESSION_TOOLS: OnceLock<RwLock<Vec<Arc<dyn AgentTool>>>> = OnceLock::new();
 
 /// Install the process-global session tool list (TS `ToolSession` the py
@@ -60,11 +67,83 @@ fn session_tools(env: &Env) -> Vec<Arc<dyn AgentTool>> {
     super::builtin_tools(&env.cwd, env.edit_mode)
 }
 
-fn find_tool(env: &Env, name: &str) -> Option<Arc<dyn AgentTool>> {
-    session_tools(env)
-        .into_iter()
-        .find(|t| t.name() == name)
-        .or_else(|| super::hidden_tool_by_name(name))
+/// The session's extension tool-call hooks (`tool_call` block/input rewrite,
+/// `tool_result` rewrite), installed by `agent::build_agent` next to the
+/// agent loop's own copy so bridged calls pass the same policy (TS
+/// `ExtensionToolWrapper` around every tool `getToolForEvalBridge` returns).
+type SessionHooks = (Option<BeforeToolCallFn>, Option<AfterToolCallFn>);
+static SESSION_HOOKS: RwLock<SessionHooks> = RwLock::new((None, None));
+
+/// Install the process-global tool-call hooks the bridge applies.
+pub fn set_session_hooks(before: Option<BeforeToolCallFn>, after: Option<AfterToolCallFn>) {
+    *SESSION_HOOKS.write().expect("session hooks lock") = (before, after);
+}
+
+/// Tools a cell may never call through the bridge. `checkpoint`/`rewind`
+/// only take effect as direct tool results (TS `callSessionTool` refusal);
+/// a nested `eval` would wait on the per-cwd kernel lock its own cell holds.
+fn refused_reason(name: &str) -> Option<String> {
+    match name {
+        "checkpoint" | "rewind" => Some(format!(
+            "`{name}` cannot run through the eval bridge; call the direct `{name}` tool."
+        )),
+        "eval" => Some(
+            "`eval` cannot run from inside an eval cell (the kernel is busy running this \
+             cell); run the code directly in this cell instead."
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+/// Tool-call policy one bridge instance enforces: the session's enabled
+/// tools plus the extension hooks the agent loop runs around model calls.
+#[derive(Clone)]
+pub(crate) struct BridgePolicy {
+    tools: Vec<Arc<dyn AgentTool>>,
+    before: Option<BeforeToolCallFn>,
+    after: Option<AfterToolCallFn>,
+}
+
+impl BridgePolicy {
+    /// The process session's policy (see [`set_session_tools`] /
+    /// [`set_session_hooks`]).
+    fn session(env: &Env) -> Self {
+        let (before, after) = SESSION_HOOKS.read().expect("session hooks lock").clone();
+        Self { tools: session_tools(env), before, after }
+    }
+
+    /// An enabled, bridge-callable tool by name.
+    fn find(&self, name: &str) -> Option<Arc<dyn AgentTool>> {
+        if refused_reason(name).is_some() {
+            return None;
+        }
+        self.tools.iter().find(|t| t.name() == name).cloned()
+    }
+
+    fn callable(&self) -> impl Iterator<Item = &Arc<dyn AgentTool>> {
+        self.tools.iter().filter(|t| refused_reason(t.name()).is_none())
+    }
+}
+
+/// Synthetic single-call assistant turn for the hook contexts (bridged calls
+/// have no model message; extension hooks read only the tool call).
+fn synthetic_turn(call: &ToolCall) -> AssistantMessage {
+    AssistantMessage {
+        content: vec![AssistantContent::ToolCall(call.clone())],
+        api: String::new(),
+        provider: String::new(),
+        model: String::new(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: Usage::zero(),
+        stop_reason: StopReason::ToolUse,
+        stop_reason_raw: None,
+        error_message: None,
+        timestamp: 0,
+        meta: AssistantMeta::default(),
+    }
 }
 
 /// Ops owned by [`super::eval_agents`] (`agent-bridge.ts`,
@@ -85,7 +164,14 @@ const AGENT_OPS: [&str; 9] = [
 impl EvalBridge {
     #[must_use]
     pub fn new(env: Arc<Env>, ctx: OpCtx, rt: tokio::runtime::Handle) -> Self {
-        Self { env, ctx, rt }
+        let policy = BridgePolicy::session(&env);
+        Self { env, ctx, rt, policy }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_policy(mut self, policy: BridgePolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// Publish one structured status event (TS `_emit_status` /
@@ -111,7 +197,7 @@ impl EvalBridge {
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            return find_tool(&self.env, name).map_or_else(
+            return self.policy.find(name).map_or_else(
                 || Err(format!("prelude capability not supported: {name}")),
                 |tool| Ok(tool_descriptor(&tool)),
             );
@@ -127,16 +213,14 @@ impl EvalBridge {
             "read" => self.read_helper(args).await,
             "write" => self.write_helper(args).await,
             "output" => self.output_helper(&args),
-            "env" => Ok(env_helper(&args)),
-            "tool.list" => Ok(Value::Array(
-                session_tools(&self.env).iter().map(tool_descriptor).collect(),
-            )),
+            "env" => env_helper(&args),
+            "tool.list" => Ok(Value::Array(self.policy.callable().map(tool_descriptor).collect())),
             "tool.describe" => {
                 let name = args
                     .get("name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| "tool.describe requires a string `name`".to_string())?;
-                find_tool(&self.env, name).map_or_else(
+                self.policy.find(name).map_or_else(
                     || Err(format!("no such tool: {name}")),
                     |tool| Ok(tool_descriptor(&tool)),
                 )
@@ -144,10 +228,10 @@ impl EvalBridge {
             _ if op.strip_prefix("tool.").is_some_and(|n| !n.is_empty()) => {
                 self.call_tool(op.trim_start_matches("tool."), args).await
             }
-            _ => match find_tool(&self.env, op) {
-                Some(_) => self.call_tool(op, args).await,
-                None => Err(format!("unknown eval host op: {op}")),
-            },
+            _ if self.policy.find(op).is_some() || refused_reason(op).is_some() => {
+                self.call_tool(op, args).await
+            }
+            _ => Err(format!("unknown eval host op: {op}")),
         }
     }
 
@@ -349,21 +433,65 @@ impl EvalBridge {
     }
 
     /// Dispatch one host-side tool call by name (TS `/v1/tool` →
-    /// `callSessionTool`): validate arguments, execute under the cell's
-    /// abort signal, forward partial updates, and convert the tool result to
-    /// the TS bridge value shape (`bridgeValueFromToolResult`).
+    /// `callSessionTool` through `getToolForEvalBridge`'s
+    /// `ExtensionToolWrapper`): only enabled tools, validate arguments, run the
+    /// session's `tool_call` hook (block / input rewrite, revalidated), execute
+    /// under the cell's abort signal, run the `tool_result` hook (result
+    /// rewrite), and convert to the TS bridge value shape
+    /// (`bridgeValueFromToolResult`).
     async fn call_tool(&self, name: &str, args: Value) -> Result<Value, String> {
-        let Some(tool) = find_tool(&self.env, name) else {
-            return Err(format!("unknown eval host op: {name}"));
+        if let Some(reason) = refused_reason(name) {
+            return Err(reason);
+        }
+        let Some(tool) = self.policy.find(name) else {
+            return Err(format!(
+                "unknown eval host op: {name} (not a tool enabled for this session)"
+            ));
         };
         let mut params = args;
         if let Some(obj) = params.as_object_mut() {
             // The model-facing intent field is not part of the tool schema.
             obj.remove("i");
         }
-        let params = validate_tool_arguments(tool.name(), tool.parameters(), &params)
+        let mut params = validate_tool_arguments(tool.name(), tool.parameters(), &params)
             .map_err(|e| e.to_string())?;
-        let child_id = format!("{}:{name}", self.ctx.tool_call_id);
+        let signal = &self.ctx.signal;
+        let mut call = ToolCall {
+            id: format!("{}:{name}", self.ctx.tool_call_id),
+            name: name.to_string(),
+            arguments: params.clone(),
+            thought_signature: None,
+        };
+        let context = || AgentContext { tools: self.policy.tools.clone(), ..AgentContext::default() };
+        if let Some(before) = self.policy.before.as_ref() {
+            let hook = before(
+                BeforeToolCallContext {
+                    assistant_message: synthetic_turn(&call),
+                    tool_call: call.clone(),
+                    args: params.clone(),
+                    context: context(),
+                },
+                signal.clone(),
+            );
+            // A failing hook fails closed, like the agent loop's error result.
+            let outcome = race_with_abort(hook, signal)
+                .await
+                .map_err(|e| format!("{e:#}"))?
+                .map_err(|e| format!("{e:#}"))?;
+            if let Some(outcome) = outcome {
+                if outcome.block {
+                    return Err(outcome
+                        .reason
+                        .unwrap_or_else(|| "Tool execution was blocked".to_string()));
+                }
+                if let Some(revised) = outcome.args {
+                    // Hook revisions are untrusted input to the tool schema.
+                    params = validate_tool_arguments(tool.name(), tool.parameters(), &revised)
+                        .map_err(|e| e.to_string())?;
+                    call.arguments = revised;
+                }
+            }
+        }
         let on_update: AgentToolUpdateCallback = match self.ctx.on_update.as_ref() {
             Some(cb) => {
                 let cb = Arc::clone(cb);
@@ -371,10 +499,57 @@ impl EvalBridge {
             }
             None => Arc::new(|_| {}),
         };
-        let result = tool
-            .execute(child_id, params, self.ctx.signal.clone(), on_update)
-            .await
-            .map_err(|e| e.to_string())?;
+        let executed = race_with_abort(
+            Arc::clone(&tool).execute(call.id.clone(), params.clone(), signal.clone(), on_update),
+            signal,
+        )
+        .await
+        .and_then(|r| r);
+        let (mut result, mut is_error, mut failure) = match executed {
+            Ok(result) => {
+                let is_error = result.is_error == Some(true);
+                (result, is_error, None)
+            }
+            Err(e) => {
+                let message = format!("{e:#}");
+                (AgentToolResult::error(message.clone()), true, Some(message))
+            }
+        };
+        if let Some(after) = self.policy.after.as_ref() {
+            let hook = after(
+                AfterToolCallContext {
+                    assistant_message: synthetic_turn(&call),
+                    tool_call: call.clone(),
+                    args: params,
+                    result: result.clone(),
+                    is_error,
+                    context: context(),
+                },
+                signal.clone(),
+            );
+            match race_with_abort(hook, signal).await.and_then(|r| r) {
+                Ok(Some(overrides)) => {
+                    // Field-by-field merge (TS semantics). Any override turns
+                    // an execution failure into the handler's result.
+                    failure = None;
+                    if let Some(content) = overrides.content {
+                        result.content = content;
+                    }
+                    if let Some(details) = overrides.details {
+                        result.details = details;
+                    }
+                    if let Some(error) = overrides.is_error {
+                        is_error = error;
+                    }
+                    result.is_error = is_error.then_some(true);
+                }
+                Ok(None) => {}
+                Err(e) => return Err(format!("{e:#}")),
+            }
+        }
+        if let Some(message) = failure {
+            return Err(message);
+        }
         self.emit_status(json!({"op": name}));
         Ok(bridge_value(&result))
     }
@@ -474,26 +649,48 @@ fn bridge_text(value: &Value) -> String {
     }
 }
 
-/// `env` host op: `{key?, value?}` → whole environment (no key), the set
-/// value (`value` given), or the current value / null (TS `env()`).
-fn env_helper(args: &Value) -> Value {
+/// Per-session environment overlay the `env` host op writes (TS JS runtime
+/// `ctx.env` map). The host process environment is never mutated after
+/// startup (`set_var` races concurrent `getenv`/`execve` on worker threads);
+/// later eval kernel spawns receive the overlay through `Command::envs`.
+static ENV_OVERLAY: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// The overlay entries, for kernel spawns (see `eval::kernel_env`).
+pub(crate) fn env_overlay() -> Vec<(String, String)> {
+    ENV_OVERLAY
+        .lock()
+        .expect("env overlay lock")
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// `env` host op: `{key?, value?}` → merged environment (no key), the set
+/// value (`value` given; recorded in the overlay only), or the overlay/host
+/// value / null (TS `env()`: `ctx.env.get(key) ?? Bun.env[key]`).
+fn env_helper(args: &Value) -> Result<Value, String> {
     let key = args.get("key").and_then(Value::as_str);
     let value = args.get("value").and_then(Value::as_str);
-    match (key, value) {
-        (None, _) => Value::Object(
-            std::env::vars()
-                .collect::<BTreeMap<_, _>>()
-                .into_iter()
-                .map(|(k, v)| (k, Value::String(v)))
-                .collect(),
-        ),
+    let mut overlay = ENV_OVERLAY.lock().expect("env overlay lock");
+    Ok(match (key, value) {
+        (None, _) => {
+            let mut merged: BTreeMap<String, String> = std::env::vars().collect();
+            merged.extend(overlay.iter().map(|(k, v)| (k.clone(), v.clone())));
+            Value::Object(merged.into_iter().map(|(k, v)| (k, Value::String(v))).collect())
+        }
         (Some(k), Some(v)) => {
-            // Cell-time set: children spawned by later host ops inherit it.
-            std::env::set_var(k, v);
+            if k.is_empty() || k.contains(['=', '\0']) || v.contains('\0') {
+                return Err(format!("env: invalid variable name or value for {k:?}"));
+            }
+            overlay.insert(k.to_string(), v.to_string());
             Value::String(v.to_string())
         }
-        (Some(k), None) => std::env::var(k).map_or(Value::Null, Value::String),
-    }
+        (Some(k), None) => overlay
+            .get(k)
+            .cloned()
+            .or_else(|| std::env::var(k).ok())
+            .map_or(Value::Null, Value::String),
+    })
 }
 
 /// This session's artifacts dir: `PI_ARTIFACTS_DIR`, else the global session
@@ -576,4 +773,148 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(input.trim())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pa_agent::types::{AfterToolCallResult, BeforeToolCallResult};
+
+    fn env(tag: &str) -> Arc<Env> {
+        let dir = std::env::temp_dir()
+            .join(format!("omp-rs-bridge-test-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Arc::new(Env::new(&dir, false))
+    }
+
+    fn bridge(env: &Arc<Env>, policy: BridgePolicy) -> EvalBridge {
+        let ctx = OpCtx {
+            cwd: env.cwd.clone(),
+            signal: AbortSignal::never(),
+            on_update: None,
+            tool_call_id: "cell".into(),
+        };
+        EvalBridge::new(Arc::clone(env), ctx, tokio::runtime::Handle::current()).with_policy(policy)
+    }
+
+    fn all_tools(env: &Env) -> Vec<Arc<dyn AgentTool>> {
+        super::super::builtin_tools(&env.cwd, env.edit_mode)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blocking_extension_hook_denies_bridged_bash() {
+        let env = env("block");
+        let marker = env.cwd.join("ran.txt");
+        let _ = std::fs::remove_file(&marker);
+        let before: BeforeToolCallFn = Arc::new(|ctx: BeforeToolCallContext, _| {
+            Box::pin(async move {
+                Ok((ctx.tool_call.name == "bash").then(|| BeforeToolCallResult {
+                    block: true,
+                    reason: Some("bash denied by policy".into()),
+                    ..BeforeToolCallResult::default()
+                }))
+            })
+        });
+        let b = bridge(&env, BridgePolicy { tools: all_tools(&env), before: Some(before), after: None });
+        for op in ["tool.bash", "bash"] {
+            let err = b.dispatch(op, json!({"command": "touch ran.txt"})).await.unwrap_err();
+            assert!(err.contains("bash denied by policy"), "{op}: {err}");
+        }
+        assert!(!marker.exists(), "blocked bash must not run");
+        // Unblocked tools still pass through the hook and run.
+        std::fs::write(env.cwd.join("ok.txt"), "fine\n").unwrap();
+        let v = b.dispatch("read", json!({"path": "ok.txt"})).await.unwrap();
+        assert!(v.as_str().unwrap().contains("fine"), "{v}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hook_input_and_result_rewrites_apply_to_bridged_calls() {
+        let env = env("rewrite");
+        std::fs::write(env.cwd.join("secret.txt"), "TOKEN=abc\n").unwrap();
+        std::fs::write(env.cwd.join("public.txt"), "hello\n").unwrap();
+        let before: BeforeToolCallFn = Arc::new(|ctx: BeforeToolCallContext, _| {
+            Box::pin(async move {
+                let wants_secret =
+                    ctx.args["path"].as_str().is_some_and(|p| p.starts_with("secret.txt"));
+                Ok(wants_secret.then(|| BeforeToolCallResult {
+                    args: Some(json!({"path": "public.txt"})),
+                    ..BeforeToolCallResult::default()
+                }))
+            })
+        });
+        let after: AfterToolCallFn = Arc::new(|ctx: AfterToolCallContext, _| {
+            Box::pin(async move {
+                Ok((ctx.tool_call.name == "write").then(|| AfterToolCallResult {
+                    content: Some(vec![ToolResultContent::text("[redacted]")]),
+                    ..AfterToolCallResult::default()
+                }))
+            })
+        });
+        let b = bridge(
+            &env,
+            BridgePolicy { tools: all_tools(&env), before: Some(before), after: Some(after) },
+        );
+        let v = b.dispatch("tool.read", json!({"path": "secret.txt"})).await.unwrap();
+        let text = bridge_text(&v);
+        assert!(text.contains("hello") && !text.contains("TOKEN"), "{text}");
+        let v = b
+            .dispatch("tool.write", json!({"path": "out.txt", "content": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(bridge_text(&v), "[redacted]");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tools_not_enabled_for_the_session_are_refused() {
+        let env = env("gate");
+        std::fs::write(env.cwd.join("a.txt"), "a\n").unwrap();
+        let tools: Vec<_> = all_tools(&env).into_iter().filter(|t| t.name() == "read").collect();
+        let b = bridge(&env, BridgePolicy { tools, before: None, after: None });
+        for op in ["tool.bash", "bash", "tool.think", "think", "tool.yield"] {
+            let err = b.dispatch(op, json!({"command": "true"})).await.unwrap_err();
+            assert!(err.contains("unknown eval host op"), "{op}: {err}");
+        }
+        assert!(b.dispatch("tool.describe", json!({"name": "bash"})).await.is_err());
+        let listed = b.dispatch("tool.list", json!({})).await.unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
+        assert!(b.dispatch("read", json!({"path": "a.txt"})).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn eval_checkpoint_and_rewind_are_refused_through_the_bridge() {
+        let env = env("refuse");
+        let b = bridge(&env, BridgePolicy { tools: all_tools(&env), before: None, after: None });
+        let started = std::time::Instant::now();
+        for op in ["eval", "tool.eval", "checkpoint", "tool.rewind"] {
+            let err = b.dispatch(op, json!({"language": "py", "code": "1"})).await.unwrap_err();
+            assert!(err.contains("cannot run"), "{op}: {err}");
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        let listed = b.dispatch("tool.list", json!({})).await.unwrap();
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| !matches!(t["name"].as_str(), Some("eval" | "checkpoint" | "rewind"))));
+    }
+
+    #[tokio::test]
+    async fn env_set_goes_to_the_session_overlay_not_the_host_environment() {
+        let env = env("envop");
+        let b = bridge(&env, BridgePolicy { tools: Vec::new(), before: None, after: None });
+        let key = format!("OMP_RS_BRIDGE_ENV_TEST_{}", std::process::id());
+        let set = b.dispatch("env", json!({"key": key, "value": "overlay"})).await.unwrap();
+        assert_eq!(set, json!("overlay"));
+        assert!(std::env::var(&key).is_err(), "host environment must not change");
+        assert_eq!(b.dispatch("env", json!({"key": key})).await.unwrap(), json!("overlay"));
+        let all = b.dispatch("env", json!({})).await.unwrap();
+        assert_eq!(all[&key], json!("overlay"));
+        assert!(env_overlay().contains(&(key.clone(), "overlay".to_string())));
+        // Unset overlay keys fall back to the host environment.
+        let path = b.dispatch("env", json!({"key": "PATH"})).await.unwrap();
+        assert_eq!(path.as_str(), std::env::var("PATH").ok().as_deref());
+        for bad in ["", "A=B", "A\0B"] {
+            assert!(b.dispatch("env", json!({"key": bad, "value": "v"})).await.is_err(), "{bad:?}");
+        }
+    }
 }

@@ -181,14 +181,17 @@ fn resolve_timeout(args: &Value) -> Option<Duration> {
 /// resolve `artifact://` and spill outputs through `PI_EVAL_LOCAL_ROOTS` /
 /// `PI_ARTIFACTS_DIR` / `PI_SESSION_FILE`. Empty when no session file is
 /// installed (tests, `--no-session`) — kernels then run without extra vars.
+/// The cell-set `env` overlay ([`super::eval_bridge::env_overlay`]) rides
+/// along; the session vars are applied last so a cell cannot repoint them.
 fn kernel_env() -> Vec<(String, String)> {
+    let mut vars = super::eval_bridge::env_overlay();
     let Some(session) = omp_urls::global_session_file() else {
-        return Vec::new();
+        return vars;
     };
-    let mut vars = vec![(
+    vars.push((
         "PI_SESSION_FILE".to_owned(),
         session.to_string_lossy().into_owned(),
-    )];
+    ));
     if let Some(dir) = omp_urls::artifacts_directory_for(&session) {
         vars.push((
             "PI_ARTIFACTS_DIR".to_owned(),
@@ -295,8 +298,13 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
 
     let cwd = env.cwd.clone();
     // Exclusive per-cwd section: reset/kill cannot interleave with a cell.
+    // The wait is raced against the call's abort so a queued cell can never
+    // hang past Esc (nested `eval` from a cell is refused by the bridge).
     let slot = slot(&cwd);
-    let mut state = slot.lock().await;
+    let mut state = tokio::select! {
+        state = slot.lock() => state,
+        () = ctx.signal.aborted() => bail!("eval aborted while waiting for the kernel"),
+    };
 
     if reset {
         // omp `reset?` wipes only the requested language's kernel.

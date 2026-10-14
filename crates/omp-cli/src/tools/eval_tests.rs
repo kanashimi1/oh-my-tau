@@ -173,3 +173,39 @@ async fn js_error_and_timeout_annotations_match_omp() {
     assert!(text(&r).contains("alive"), "got: {}", text(&r));
     shutdown_slot(&env.cwd);
 }
+
+#[tokio::test]
+async fn nested_eval_from_a_cell_is_refused_not_deadlocked() {
+    let env = test_env("nested");
+    let started = std::time::Instant::now();
+    let code = "try:\n    await tool.eval({'language': 'py', 'code': '1'})\nexcept Exception as e:\n    print('refused:', e)";
+    let r = tokio::time::timeout(
+        Duration::from_secs(30),
+        run(&env, json!({"language": "py", "code": code})),
+    )
+    .await
+    .expect("nested eval must not deadlock on the kernel lock");
+    assert!(text(&r).contains("cannot run from inside an eval cell"), "got: {}", text(&r));
+    assert!(started.elapsed() < Duration::from_secs(30));
+    shutdown_slot(&env.cwd);
+}
+
+#[tokio::test]
+async fn kernel_wait_is_raced_against_abort() {
+    let env = test_env("lock-abort");
+    let slot = slot(&env.cwd);
+    let held = slot.lock().await;
+    let controller = pa_agent::abort::AbortController::new();
+    let ctx = CallCtx { tool_call_id: "t2".into(), signal: controller.signal(), on_update: None };
+    let pending = tokio::spawn(eval(env.clone(), json!({"language": "py", "code": "1"}), ctx));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    controller.abort();
+    let err = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("an aborted eval must stop waiting for the kernel")
+        .unwrap()
+        .unwrap_err();
+    assert!(err.to_string().contains("aborted"), "got: {err}");
+    drop(held);
+    shutdown_slot(&env.cwd);
+}

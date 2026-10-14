@@ -146,6 +146,8 @@ pub fn build_agent(
         }
         None => (None, None, None),
     };
+    // Eval cells' `tool.<name>`/`read`/`write` pass the same tool-call policy.
+    crate::tools::eval_bridge::set_session_hooks(before_tool_call.clone(), after_tool_call.clone());
     let agent = Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some(prompt),
