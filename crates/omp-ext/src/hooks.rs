@@ -66,12 +66,39 @@ pub async fn context(
     messages: &[AgentMessage],
     ctx: Option<Value>,
 ) -> Result<Vec<AgentMessage>> {
+    if ctx.is_none() && !host.has_handlers("context") {
+        return Ok(messages.to_vec());
+    }
     let r = host
         .emit(json!({"type":"context","messages":messages}), ctx)
         .await?;
     match r.result.get("messages") {
         Some(m) if !m.is_null() => Ok(serde_json::from_value(m.clone())?),
         _ => Ok(messages.to_vec()),
+    }
+}
+
+/// [`context`] for an owned list: no copy of the messages is made. When no
+/// extension subscribes to `context` the list is returned as is without being
+/// serialized; otherwise it is serialized by reference and handed back
+/// untouched unless a handler replaced it.
+///
+/// # Errors
+/// Transport failure or messages that do not round-trip into [`AgentMessage`].
+pub async fn context_owned(
+    host: &ExtHost,
+    messages: Vec<AgentMessage>,
+    ctx: Option<Value>,
+) -> Result<Vec<AgentMessage>> {
+    if ctx.is_none() && !host.has_handlers("context") {
+        return Ok(messages);
+    }
+    let r = host
+        .emit(json!({"type":"context","messages":&messages}), ctx)
+        .await?;
+    match r.result.get("messages") {
+        Some(m) if !m.is_null() => Ok(serde_json::from_value(m.clone())?),
+        _ => Ok(messages),
     }
 }
 
@@ -98,7 +125,7 @@ impl ExtHooks {
                 if signal.is_aborted() {
                     return Ok(messages);
                 }
-                context(&host, &messages, None).await
+                context_owned(&host, messages, None).await
             })
         })
     }
@@ -155,6 +182,10 @@ impl ExtHooks {
             let host = host.clone();
             Box::pin(async move {
                 if signal.is_aborted() {
+                    return Ok(None);
+                }
+                // No `tool_result` subscriber: skip serializing the (possibly large) result.
+                if !host.has_handlers("tool_result") {
                     return Ok(None);
                 }
                 let event = json!({

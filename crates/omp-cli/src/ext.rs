@@ -24,7 +24,7 @@ use omp_ext::lifecycle::{self, HeadlessResponder, InputSource, LifecycleEvent};
 use omp_ext::{ExtHost, HostConfig, HostMessage, ToolInfo};
 
 use crate::adapter::json_round_trip;
-use crate::events::{assistant_event, message_value};
+use crate::events::{assistant_event_slim, message_value};
 use crate::runtime::Runtime;
 
 /// Default budget for one extension tool call (host default matches).
@@ -320,8 +320,7 @@ impl Extensions {
         agent: &Agent,
         prompt: &str,
     ) -> Result<PromptGate> {
-        let state = agent.state().await;
-        let system_prompts = vec![state.system_prompt.clone()];
+        let system_prompts = vec![agent.system_prompt().await];
         let outcome = self
             .host
             .emit_before_agent_start(prompt.to_string(), None, system_prompts, None)
@@ -555,7 +554,7 @@ impl Extensions {
                 let turn = turn.clone();
                 let stop = stop.clone();
                 Box::pin(async move {
-                    forward_event(&host, &turn, &stop, &event).await;
+                    forward_event(&host, &turn, &stop, &event);
                     Ok(())
                 })
             })
@@ -576,6 +575,13 @@ async fn session_stop_continuation(
     turn: &AtomicU64,
     new_messages: &[AgentMessage],
 ) -> Vec<AgentMessage> {
+    if !host.has_handlers("session_stop") {
+        // Same end state as an empty outcome below, without serializing the run's messages.
+        *stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
+        return Vec::new();
+    }
     let (hook_active, continuations) = {
         let s = stop
             .lock()
@@ -636,8 +642,26 @@ async fn session_stop_continuation(
     })]
 }
 
+/// Queue one notification-only lifecycle event (fire-and-forget, ordered).
+///
+/// Every event forwarded here is observe-only in the host (`ext-host/host.ts`
+/// `emit` falls through to its "everything else: observe" branch: no handler
+/// return value is read), so the turn loop need not wait for the handlers.
+/// The wire order is the call order and the host runs these emits strictly
+/// serially, and ahead of any later awaited `emit`/`call_tool`. `build` runs
+/// only when some extension subscribes to `ty`, so unsubscribed events cost no
+/// serialization at all.
+fn notify(host: &ExtHost, ty: &str, build: impl FnOnce() -> LifecycleEvent) {
+    if !host.has_handlers(ty) {
+        return;
+    }
+    if let Err(e) = host.emit_nowait(&build().to_value(), None, emit_silent) {
+        eprintln!("omp-rs: extension emit: {e:#}");
+    }
+}
+
 #[allow(clippy::too_many_lines)] // one arm per `AgentEvent` variant; splitting adds indirection.
-async fn forward_event(
+fn forward_event(
     host: &ExtHost,
     turn: &AtomicU64,
     stop: &Mutex<StopState>,
@@ -653,72 +677,72 @@ async fn forward_event(
             *stop
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
-            emit_silent(host.emit_agent_start(None).await);
+            notify(host, "agent_start", || LifecycleEvent::AgentStart);
         }
         AgentEvent::AgentEnd { messages } => {
-            let values: Vec<Value> = messages.iter().map(message_value).collect();
             // `session_stop` itself is emitted from the continuation hook
             // (see `subscribe_lifecycle`), where its block/continue outcome can
             // still keep the run alive.
-            emit_silent(host.emit_agent_end(values, None, None).await);
+            notify(host, "agent_end", || LifecycleEvent::AgentEnd {
+                messages: messages.iter().map(message_value).collect(),
+                will_continue: None,
+            });
         }
         AgentEvent::TurnStart => {
             let index = turn.fetch_add(1, Ordering::SeqCst) + 1;
-            emit_silent(host.emit_turn_start(index, now_ms, None).await);
+            notify(host, "turn_start", || LifecycleEvent::TurnStart {
+                turn_index: index,
+                timestamp: now_ms,
+            });
         }
         AgentEvent::TurnEnd {
             message,
             tool_results,
         } => {
-            let results = tool_results
-                .iter()
-                .map(serde_json::to_value)
-                .collect::<std::result::Result<Vec<Value>, _>>()
-                .unwrap_or_default();
-            emit_silent(
-                host.emit_turn_end(
-                    turn.load(Ordering::SeqCst),
-                    message_value(message),
-                    results,
-                    None,
-                )
-                .await,
-            );
+            notify(host, "turn_end", || LifecycleEvent::TurnEnd {
+                turn_index: turn.load(Ordering::SeqCst),
+                message: message_value(message),
+                tool_results: tool_results
+                    .iter()
+                    .map(serde_json::to_value)
+                    .collect::<std::result::Result<Vec<Value>, _>>()
+                    .unwrap_or_default(),
+            });
         }
         AgentEvent::MessageStart { message } => {
-            emit_silent(host.emit_message_start(message_value(message), None).await);
+            notify(host, "message_start", || LifecycleEvent::MessageStart {
+                message: message_value(message),
+            });
         }
         AgentEvent::MessageUpdate {
             message,
             assistant_message_event,
         } => {
-            emit_silent(
-                host.emit_message_update(
-                    message_value(message),
-                    assistant_event(assistant_message_event),
-                    None,
-                )
-                .await,
-            );
+            // The event's `partial` equals `message`; the host re-links it
+            // (`partialIsMessage`) instead of receiving a second full copy.
+            notify(host, "message_update", || LifecycleEvent::MessageUpdate {
+                message: message_value(message),
+                assistant_message_event: assistant_event_slim(assistant_message_event),
+            });
         }
         AgentEvent::MessageEnd { message } => {
-            emit_silent(host.emit_message_end(message_value(message), None).await);
+            notify(host, "message_end", || LifecycleEvent::MessageEnd {
+                message: message_value(message),
+            });
         }
         AgentEvent::ToolExecutionStart {
             tool_call_id,
             tool_name,
             args,
         } => {
-            emit_silent(
-                host.emit_tool_execution_start(
-                    tool_call_id.clone(),
-                    tool_name.clone(),
-                    args.clone(),
-                    None,
-                    None,
-                )
-                .await,
-            );
+            notify(host, "tool_execution_start", || {
+                LifecycleEvent::ToolExecutionStart {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    args: args.clone(),
+                    intent: None,
+                }
+            });
         }
         AgentEvent::ToolExecutionUpdate {
             tool_call_id,
@@ -726,16 +750,14 @@ async fn forward_event(
             args,
             partial_result,
         } => {
-            emit_silent(
-                host.emit_tool_execution_update(
-                    tool_call_id.clone(),
-                    tool_name.clone(),
-                    args.clone(),
-                    serde_json::to_value(partial_result).unwrap_or(Value::Null),
-                    None,
-                )
-                .await,
-            );
+            notify(host, "tool_execution_update", || {
+                LifecycleEvent::ToolExecutionUpdate {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    args: args.clone(),
+                    partial_result: serde_json::to_value(partial_result).unwrap_or(Value::Null),
+                }
+            });
         }
         AgentEvent::ToolExecutionEnd {
             tool_call_id,
@@ -743,16 +765,14 @@ async fn forward_event(
             result,
             is_error,
         } => {
-            emit_silent(
-                host.emit_tool_execution_end(
-                    tool_call_id.clone(),
-                    tool_name.clone(),
-                    serde_json::to_value(result).unwrap_or(Value::Null),
-                    *is_error,
-                    None,
-                )
-                .await,
-            );
+            notify(host, "tool_execution_end", || {
+                LifecycleEvent::ToolExecutionEnd {
+                    tool_call_id: tool_call_id.clone(),
+                    tool_name: tool_name.clone(),
+                    result: serde_json::to_value(result).unwrap_or(Value::Null),
+                    is_error: *is_error,
+                }
+            });
         }
     }
 }

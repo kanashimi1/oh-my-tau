@@ -10,6 +10,7 @@
 //
 // Env: OMP_EXT_TRACE=<path> appends one JSON line per emit (per-handler action/ms) to <path>;
 //      OMP_EXT_TIMEOUT_MS handler budget (default 30000); OMP_PKG_ROOT omp's pi-coding-agent package dir (for typebox/zod).
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, appendFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -51,12 +52,25 @@ console.debug = toStderr;
 
 let nextId = 1;
 const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+// Fire-and-forget emits (`emit` with `nowait`) run strictly serially, and every
+// later awaited `emit`/`call_tool` waits for them (wire order == execution
+// order, as when the core awaited each one). `inNowait` marks async contexts
+// running such a handler: while one of them is blocked on a core request
+// (e.g. a handler calling ctx.compact(), which makes the core emit
+// session_before_compact), awaited emits stop waiting so that request cannot
+// deadlock on the barrier it is itself holding open.
+const inNowait = new AsyncLocalStorage<true>();
+let nowaitBlocked = 0;
+let nowaitWake: (() => void) | undefined;
 function request(method: string, params: Json): Promise<unknown> {
   const id = nextId++;
   const { promise, resolve, reject } = Promise.withResolvers<unknown>();
   pending.set(id, { resolve, reject });
   out({ id, method, params });
-  return promise;
+  if (!inNowait.getStore()) return promise;
+  nowaitBlocked++;
+  nowaitWake?.();
+  return promise.finally(() => void nowaitBlocked--);
 }
 const notify = (method: string, params: Json) => out({ method, params });
 const log = (level: string, message: string, extra?: Json) => notify("log", { level, message, ...extra });
@@ -435,6 +449,12 @@ async function emit(p: Json) {
   // and the core's copy is independent — it came off the wire).
   const event = p.event as Json;
   const type = String(event.type);
+  const ame = type === "message_update" ? (event.assistantMessageEvent as Json | undefined) : undefined;
+  if (ame?.partialIsMessage === true) {
+    // The core did not send `partial` a second time: it equals `message` (same object, as in omp).
+    delete ame.partialIsMessage;
+    ame.partial = event.message;
+  }
   const timeoutMs = Number(p.timeoutMs) || TIMEOUT_MS;
   const rec: HandlerRecord[] = [];
   const handlersFor = (e: Ext) => e.handlers.get(type) ?? [];
@@ -484,12 +504,14 @@ async function emit(p: Json) {
     result = !modified ? (c === undefined ? undefined : { additionalContext: c }) : { content: cur.content, details: cur.details, isError: cur.isError, ...(c ? { additionalContext: c } : {}) };
   } else if (type === "context") {
     let messages = event.messages as unknown[];
+    // Only a handler replacement travels back: the core keeps its own list otherwise.
+    let modified = false;
     for (const e of exts)
       for (const h of handlersFor(e)) {
         const hr = (await runHandler(e, h, { type, messages }, timeoutMs, rec)).value as Json | undefined;
-        if (hr && Array.isArray(hr.messages)) messages = hr.messages;
+        if (hr && Array.isArray(hr.messages)) ((messages = hr.messages), (modified = true));
       }
-    result = { messages };
+    result = modified ? { messages } : undefined;
   } else if (type === "before_agent_start") {
     const messages: unknown[] = [];
     let sp = event.systemPrompt as string[];
@@ -658,14 +680,41 @@ const rpcError = (code: number, message: string) => new RpcError(code, message);
 
 let loading: Promise<unknown> = Promise.resolve();
 
+let nowaitTail: Promise<unknown> = Promise.resolve();
+
+/** Wait for `barrier`, unless a fire-and-forget handler is blocked on a core request (see `inNowait`). */
+async function awaitBarrier(barrier: Promise<unknown>): Promise<void> {
+  let done = false;
+  void barrier.then(() => void (done = true));
+  while (!done && nowaitBlocked === 0) await Promise.race([barrier, new Promise<void>((r) => (nowaitWake = r))]);
+  nowaitWake = undefined;
+}
+
 async function dispatch(method: string, p: Json): Promise<unknown> {
+  if (method === "emit" && p.nowait === true) {
+    // Reserved synchronously (before any await) so arrival order == execution order.
+    const prev = nowaitTail;
+    const run = (async () => {
+      await prev;
+      await loading;
+      return inNowait.run(true, () => emit(p));
+    })();
+    nowaitTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
   if (method === "load") {
     // Loads are serialized, and every other request waits for them (registration order is deterministic).
     const run = loading.then(() => load(p));
     loading = run.catch(() => undefined);
     return run;
   }
+  // Awaited emit / call_tool: run after every queued fire-and-forget emit.
+  const barrier = method === "emit" || method === "call_tool" ? nowaitTail : undefined;
   await loading;
+  if (barrier) await awaitBarrier(barrier);
   switch (method) {
     case "emit":
       return emit(p);

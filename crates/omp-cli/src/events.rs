@@ -1,7 +1,7 @@
 //! `AgentEvent` -> `omp` RPC event frames (field names match omp).
 
 use pa_agent::stream::AssistantMessageEvent as Ev;
-use pa_agent::types::{AgentEvent, AgentMessage};
+use pa_agent::types::{AgentEvent, AgentMessage, AssistantMessage};
 use serde_json::{json, Value};
 
 fn to_value<T: serde::Serialize>(v: &T) -> Value {
@@ -43,66 +43,85 @@ fn stop_reason(r: pa_agent::types::StopReason) -> Value {
 /// omp `assistantMessageEvent` payload.
 #[must_use]
 pub fn assistant_event(e: &Ev) -> Value {
+    assistant_event_with(e, &|p| to_value(p))
+}
+
+/// Extension-host form of [`assistant_event`]: the `partial` message (identical
+/// to the enclosing `message_update.message`) is not serialized a second time;
+/// `partialIsMessage: true` tells `ext-host/host.ts` to point `partial` at the
+/// event's `message` before any handler runs.
+#[must_use]
+pub fn assistant_event_slim(e: &Ev) -> Value {
+    let mut v = assistant_event_with(e, &|_| Value::Null);
+    if let Some(obj) = v.as_object_mut() {
+        if obj.remove("partial").is_some() {
+            obj.insert("partialIsMessage".into(), Value::Bool(true));
+        }
+    }
+    v
+}
+
+fn assistant_event_with(e: &Ev, pv: &dyn Fn(&AssistantMessage) -> Value) -> Value {
     match e {
-        Ev::Start { partial } => json!({"type":"start","partial":to_value(partial)}),
+        Ev::Start { partial } => json!({"type":"start","partial":pv(partial)}),
         Ev::TextStart {
             content_index,
             partial,
         } => {
-            json!({"type":"text_start","contentIndex":content_index,"partial":to_value(partial)})
+            json!({"type":"text_start","contentIndex":content_index,"partial":pv(partial)})
         }
         Ev::TextDelta {
             content_index,
             delta,
             partial,
         } => {
-            json!({"type":"text_delta","contentIndex":content_index,"delta":delta,"partial":to_value(partial)})
+            json!({"type":"text_delta","contentIndex":content_index,"delta":delta,"partial":pv(partial)})
         }
         Ev::TextEnd {
             content_index,
             content,
             partial,
         } => {
-            json!({"type":"text_end","contentIndex":content_index,"content":content,"partial":to_value(partial)})
+            json!({"type":"text_end","contentIndex":content_index,"content":content,"partial":pv(partial)})
         }
         Ev::ThinkingStart {
             content_index,
             partial,
         } => {
-            json!({"type":"thinking_start","contentIndex":content_index,"partial":to_value(partial)})
+            json!({"type":"thinking_start","contentIndex":content_index,"partial":pv(partial)})
         }
         Ev::ThinkingDelta {
             content_index,
             delta,
             partial,
         } => {
-            json!({"type":"thinking_delta","contentIndex":content_index,"delta":delta,"partial":to_value(partial)})
+            json!({"type":"thinking_delta","contentIndex":content_index,"delta":delta,"partial":pv(partial)})
         }
         Ev::ThinkingEnd {
             content_index,
             partial,
         } => {
-            json!({"type":"thinking_end","contentIndex":content_index,"partial":to_value(partial)})
+            json!({"type":"thinking_end","contentIndex":content_index,"partial":pv(partial)})
         }
         Ev::ToolCallStart {
             content_index,
             partial,
         } => {
-            json!({"type":"toolcall_start","contentIndex":content_index,"partial":to_value(partial)})
+            json!({"type":"toolcall_start","contentIndex":content_index,"partial":pv(partial)})
         }
         Ev::ToolCallDelta {
             content_index,
             delta,
             partial,
         } => {
-            json!({"type":"toolcall_delta","contentIndex":content_index,"delta":delta,"partial":to_value(partial)})
+            json!({"type":"toolcall_delta","contentIndex":content_index,"delta":delta,"partial":pv(partial)})
         }
         Ev::ToolCallEnd {
             content_index,
             tool_call,
             partial,
         } => {
-            json!({"type":"toolcall_end","contentIndex":content_index,"toolCall":to_value(tool_call),"partial":to_value(partial)})
+            json!({"type":"toolcall_end","contentIndex":content_index,"toolCall":to_value(tool_call),"partial":pv(partial)})
         }
         Ev::Done { reason, message } => {
             json!({"type":"done","reason":stop_reason(*reason),"message":to_value(message)})

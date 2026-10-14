@@ -154,8 +154,8 @@ pub struct ExtHost {
     /// learned from `load` (mirrors the TS runner's `hasHandlers` gate).
     /// `None` = not loaded yet / unknown: send everything.
     subscribed: Mutex<Option<HashSet<String>>>,
-    /// Newline-delimited JSON-RPC writer (child stdin or shared-daemon socket).
-    writer: tokio::sync::Mutex<BoxedWriter>,
+    /// Queue feeding the writer task (child stdin or shared-daemon socket).
+    out: Mutex<mpsc::UnboundedSender<Vec<u8>>>,
     /// The spawned child; `None` in shared mode (the daemon outlives this
     /// session and is shared with other sessions, so we never kill it).
     child: tokio::sync::Mutex<Option<Child>>,
@@ -173,6 +173,35 @@ pub struct ExtHost {
     /// connection was transparently replaced (shared daemon death → private
     /// fallback). `watch` so late subscribers still see the latest generation.
     generation: watch::Sender<usize>,
+}
+
+/// Writer task: coalesces every queued line into one buffered write and
+/// flushes only when the queue drains. A write failure fails everything
+/// still waiting for a response and closes the queue (later sends error).
+fn spawn_writer(mut w: BoxedWriter, pending: Pending) -> mpsc::UnboundedSender<Vec<u8>> {
+    const MAX_BATCH: usize = 256 * 1024;
+    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    tokio::spawn(async move {
+        while let Some(mut buf) = rx.recv().await {
+            while buf.len() < MAX_BATCH {
+                match rx.try_recv() {
+                    Ok(next) => buf.extend_from_slice(&next),
+                    Err(_) => break,
+                }
+            }
+            if w.write_all(&buf).await.is_err() || w.flush().await.is_err() {
+                for (_, p) in pending
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .drain()
+                {
+                    let _ = p.send(Err("extension host stdin closed".into()));
+                }
+                return;
+            }
+        }
+    });
+    tx
 }
 
 /// Object-safe writer half of `AsyncWriteExt` (child stdin or daemon socket).
@@ -232,7 +261,7 @@ impl ExtHost {
         let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
-            writer: tokio::sync::Mutex::new(Box::new(stdin)),
+            out: Mutex::new(spawn_writer(Box::new(stdin), pending.clone())),
             child: tokio::sync::Mutex::new(Some(child)),
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
@@ -303,16 +332,41 @@ impl ExtHost {
             Ok(v) => json!({"jsonrpc":"2.0","id":id,"result":v}),
             Err(m) => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":m}}),
         };
-        self.write(&msg).await
+        self.write(&msg)
     }
 
-    async fn write(&self, msg: &Value) -> Result<()> {
+    /// Enqueue one line for the writer task (synchronous: preserves call order).
+    fn write(&self, msg: &Value) -> Result<()> {
         let mut line = serde_json::to_vec(msg)?;
         line.push(b'\n');
-        let mut writer = self.writer.lock().await;
-        writer.write_all(&line).await?;
-        writer.flush().await?;
-        Ok(())
+        self.out
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .send(line)
+            .map_err(|_| anyhow!("extension host stdin closed"))
+    }
+
+    /// Register a pending response and enqueue the request; the receiver
+    /// resolves with the response.
+    fn send_request(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<oneshot::Receiver<Result<Value, String>>> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, tx);
+        if let Err(e) = self.write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})) {
+            self.pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
+            return Err(e);
+        }
+        Ok(rx)
     }
 
     /// Raw JSON-RPC request.
@@ -320,22 +374,7 @@ impl ExtHost {
     /// # Errors
     /// Transport failure, host exit, or a JSON-RPC error response.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, tx);
-        if let Err(e) = self
-            .write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-            .await
-        {
-            self.pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&id);
-            return Err(e);
-        }
+        let rx = self.send_request(method, params)?;
         match rx.await {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(m)) => Err(anyhow!("{method}: {m}")),
@@ -394,29 +433,72 @@ impl ExtHost {
     /// # Errors
     /// Transport failure. Handler failures are reported in [`EmitResult::handlers`]/`errors`.
     pub async fn emit(&self, event: Value, ctx: Option<Value>) -> Result<EmitResult> {
-        // `hasHandlers` gate (TS agent-session): when no loaded extension
-        // subscribes to this event type, the host would run zero handlers and
-        // return `{result: null, handlers: [], errors: []}` — the default
-        // below. Skip the round-trip. `session_shutdown` always goes through:
-        // the host clears extension timers even with no handlers, and a `ctx`
-        // merge is a side effect we must not drop.
-        if ctx.is_none() {
-            let subscribed = self
-                .subscribed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(subscribed) = subscribed.as_ref() {
-                let ty = event.get("type").and_then(Value::as_str).unwrap_or("");
-                if ty != "session_shutdown" && !subscribed.contains(ty) {
-                    return Ok(EmitResult::default());
-                }
-            }
+        if self.skip_emit(&event, ctx.is_some()) {
+            return Ok(EmitResult::default());
         }
         let mut p = json!({ "event": event });
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
         Ok(serde_json::from_value(self.request("emit", p).await?)?)
+    }
+
+    /// `true` unless the host is loaded and no extension subscribes to `event_type`
+    /// (the TS runner's `hasHandlers` gate). Callers use it to skip building
+    /// expensive payloads that `emit` would discard anyway.
+    #[must_use]
+    pub fn has_handlers(&self, event_type: &str) -> bool {
+        let subscribed = self
+            .subscribed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match subscribed.as_ref() {
+            Some(s) => event_type == "session_shutdown" || s.contains(event_type),
+            None => true,
+        }
+    }
+
+    /// `hasHandlers` gate (TS agent-session): when no loaded extension
+    /// subscribes to this event type, the host would run zero handlers and
+    /// return `{result: null, handlers: [], errors: []}` — the default. Skip
+    /// the round-trip. `session_shutdown` always goes through: the host clears
+    /// extension timers even with no handlers, and a `ctx` merge is a side
+    /// effect we must not drop.
+    fn skip_emit(&self, event: &Value, has_ctx: bool) -> bool {
+        !has_ctx && !self.has_handlers(event.get("type").and_then(Value::as_str).unwrap_or(""))
+    }
+
+    /// Fire-and-forget [`emit`](Self::emit) for notification-only events whose
+    /// handler results cannot change agent behavior. The request is enqueued
+    /// synchronously (wire order == call order) and the host runs these emits
+    /// strictly in order, ahead of any later awaited `emit`/`call_tool`.
+    /// `on_done` receives the outcome (handler errors, transport failure).
+    ///
+    /// # Errors
+    /// Fails only when the request cannot be enqueued (host stdin closed).
+    pub fn emit_nowait(
+        &self,
+        event: &Value,
+        ctx: Option<Value>,
+        on_done: impl FnOnce(Result<EmitResult>) + Send + 'static,
+    ) -> Result<()> {
+        if self.skip_emit(event, ctx.is_some()) {
+            return Ok(());
+        }
+        let mut p = json!({ "event": event, "nowait": true });
+        if let Some(ctx) = ctx {
+            p["ctx"] = ctx;
+        }
+        let rx = self.send_request("emit", p)?;
+        tokio::spawn(async move {
+            let r = match rx.await {
+                Ok(Ok(v)) => serde_json::from_value(v).map_err(Into::into),
+                Ok(Err(m)) => Err(anyhow!("emit: {m}")),
+                Err(_) => Err(anyhow!("emit: extension host dropped the request")),
+            };
+            on_done(r);
+        });
+        Ok(())
     }
 
     /// # Errors
@@ -526,7 +608,7 @@ impl ExtHost {
         let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
-            writer: tokio::sync::Mutex::new(Box::new(write_half)),
+            out: Mutex::new(spawn_writer(Box::new(write_half), pending.clone())),
             child: tokio::sync::Mutex::new(None),
             pending: pending.clone(),
             next_id: AtomicU64::new(1),
@@ -613,7 +695,8 @@ impl ExtHost {
         let stdout = child.stdout.take().context("reconnect: host stdout")?;
         let stderr = child.stderr.take().context("reconnect: host stderr")?;
 
-        *self.writer.lock().await = Box::new(stdin);
+        *self.out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            spawn_writer(Box::new(stdin), self.pending.clone());
         *self.child.lock().await = Some(child);
         *self
             .subscribed
