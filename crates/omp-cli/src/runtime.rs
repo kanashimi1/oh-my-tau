@@ -841,12 +841,9 @@ impl Runtime {
             // TS `agent.appendMessage` + `sessionManager.appendMessage`, before
             // the scheduled continue (`scheduleAgentContinue`).
             rt.agent.append_messages(vec![reminder.clone()]).await;
-            if let Some(m) =
-                json_round_trip::<AgentMessage, pa_types::session::AgentMessage>(&reminder)
-            {
-                let ts = i64::try_from(timestamp).unwrap_or(i64::MAX);
-                let _ = rt.persist.append_message(&m, ts);
-            }
+            // `json_round_trip` to pa_types returns None for custom roles like
+            // "developer"; `seed_resumed_message` persists the verbatim shape.
+            seed_resumed_message(&rt.persist, &reminder, None);
             if let Err(e) = rt.continue_after_retry().await {
                 eprintln!("omp-rs: todo reminder continuation failed: {e:#}");
                 rt.settle_terminal(frame, &messages, None);
@@ -1586,6 +1583,9 @@ impl Runtime {
         let brefs: Vec<&omp_session::index::EntryRef> =
             branch.iter().map(|&i| &index.refs[i as usize]).collect();
         let mut messages = Vec::new();
+        // Original `message` JSON of custom-role messages (parallel to
+        // `messages`); seeded verbatim when pa_types cannot model the shape.
+        let mut raw_messages: Vec<Option<Map<String, Value>>> = Vec::new();
         // Reduced branch for the context rebuild: entries outside the emitted
         // ranges become link-only shims, so the DOM the rebuild works on stays
         // the size of the context, not of the journal.
@@ -1615,7 +1615,20 @@ impl Runtime {
             index.for_each_line(path, &branch, |r, raw| {
                 if r.kind == omp_session::index::EntryKind::Message {
                     if let Ok(envelope) = serde_json::from_str::<MessageEnvelope>(raw) {
-                        messages.push(envelope.message);
+                        let m = envelope.message;
+                        // Custom roles pa_types cannot model (e.g. "developer")
+                        // keep their original JSON shape so resume can re-persist
+                        // them byte-identically instead of dropping them.
+                        if matches!(m, AgentMessage::Custom(_)) {
+                            let shape = serde_json::from_str::<Value>(raw)
+                                .ok()
+                                .and_then(|v| v.get("message").cloned())
+                                .and_then(|v| v.as_object().cloned());
+                            raw_messages.push(shape);
+                        } else {
+                            raw_messages.push(None);
+                        }
+                        messages.push(m);
                     }
                 }
                 Ok(())
@@ -1635,16 +1648,8 @@ impl Runtime {
         if compacted {
             crate::compact::seed_branch(&self.persist, &index, path)?;
         } else {
-            for m in &messages {
-                let converted = serde_json::to_value(m)
-                    .map_err(anyhow::Error::from)
-                    .and_then(|v| {
-                        serde_json::from_value::<pa_types::session::AgentMessage>(v)
-                            .map_err(anyhow::Error::from)
-                    });
-                if let Ok(c) = converted {
-                    let _ = self.persist.append_message(&c, m.timestamp());
-                }
+            for (m, raw) in messages.iter().zip(&raw_messages) {
+                seed_resumed_message(&self.persist, m, raw.as_ref());
             }
         }
         rss_trace!("seeded");
@@ -1677,6 +1682,35 @@ impl Runtime {
                 st.session_name_source.clone_from(&slot.source);
             }
         }
+    }
+}
+
+/// Re-persist one resumed context message into the fresh session file (TS
+/// `SessionManager` keeps the same file; the port resumes into a new file, so
+/// every message in the context is seeded). Messages pa_types cannot model
+/// (custom roles like `"developer"`) are written with their original JSON
+/// shape verbatim — the raw journal map when captured, otherwise the
+/// re-serialized message — so nothing in the context is silently dropped.
+fn seed_resumed_message(
+    persist: &crate::persist::Persistence,
+    m: &AgentMessage,
+    raw: Option<&Map<String, Value>>,
+) {
+    let converted = serde_json::to_value(m)
+        .and_then(|v| serde_json::from_value::<pa_types::session::AgentMessage>(v));
+    if let Ok(c) = converted {
+        let _ = persist.append_message(&c, m.timestamp());
+        return;
+    }
+    let map = raw
+        .cloned()
+        .or_else(|| serde_json::to_value(m).ok().and_then(|v| v.as_object().cloned()));
+    if let Some(map) = map {
+        let ts = map
+            .get("timestamp")
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| m.timestamp());
+        let _ = persist.append_raw_message(map, ts);
     }
 }
 
@@ -3058,5 +3092,165 @@ mod context_usage_tests {
                 assert_eq!(context_usage(msgs.iter(), window, 37), reference(msgs, window, 37), "case {k} window {window}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod resume_seed_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Shape of a real `developer` custom message (see ~/.omp journals): keys
+    /// beyond `role` are an arbitrary payload pa_types cannot model.
+    fn developer_map() -> Map<String, Value> {
+        serde_json::from_value(json!({
+            "role": "developer",
+            "customType": "todo-reminder",
+            "content": [{"type": "text", "text": "<system-reminder>keep going</system-reminder>"}],
+            "display": false,
+            "attribution": "agent",
+            "timestamp": 1757890000000i64,
+            "synthetic": true,
+        }))
+        .expect("developer map")
+    }
+
+    /// The non-compacted `load_session` path: context messages plus the raw
+    /// `message` JSON of custom-role messages, straight from the journal lines.
+    fn load_like_resume(path: &std::path::Path) -> (Vec<AgentMessage>, Vec<Option<Map<String, Value>>>) {
+        let index = omp_session::index::SessionIndex::load(path).expect("index");
+        let branch = index.branch();
+        let mut messages = Vec::new();
+        let mut raws = Vec::new();
+        index
+            .for_each_line(path, &branch, |r, raw| {
+                if r.kind == omp_session::index::EntryKind::Message {
+                    if let Ok(envelope) = serde_json::from_str::<MessageEnvelope>(raw) {
+                        let m = envelope.message;
+                        if matches!(m, AgentMessage::Custom(_)) {
+                            raws.push(
+                                serde_json::from_str::<Value>(raw)
+                                    .ok()
+                                    .and_then(|v| v.get("message").cloned())
+                                    .and_then(|v| v.as_object().cloned()),
+                            );
+                        } else {
+                            raws.push(None);
+                        }
+                        messages.push(m);
+                    }
+                }
+                Ok(())
+            })
+            .expect("for_each_line");
+        (messages, raws)
+    }
+
+    /// `message` payloads of every `message` entry in a session file, in order.
+    fn message_payloads(path: &std::path::Path) -> Vec<Value> {
+        omp_session::read_values(path)
+            .expect("read_values")
+            .into_iter()
+            .filter(|v| v.get("type").and_then(Value::as_str) == Some("message"))
+            .map(|v| v["message"].clone())
+            .collect()
+    }
+
+    #[test]
+    fn developer_custom_message_survives_double_resume_verbatim() {
+        let base = std::env::temp_dir().join(format!(
+            "omp-rs-resume-seed-{}-{}",
+            std::process::id(),
+            crate::persist::uuid_v7()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let dir_a = base.join("a");
+        std::fs::create_dir_all(&dir_a).unwrap();
+
+        // Original journal: a user turn and a developer custom message.
+        let mut w = omp_session::SessionWriter::create(
+            &dir_a,
+            "/proj",
+            "sess-a",
+            "2026-10-10T00-00-00-000Z",
+        )
+        .unwrap();
+        w.append_omp_message(
+            omp_session::OmpMessage::Agent(developer_map()),
+            "2026-10-10T00:00:01.000Z",
+        )
+        .unwrap();
+        let original = w.path().to_path_buf();
+        drop(w);
+        let original_payloads = message_payloads(&original);
+        assert_eq!(original_payloads.len(), 1);
+        // The developer entry must be a context message (Custom), confirming
+        // the resume-bug premise: it loads into memory...
+        let (messages, raws) = load_like_resume(&original);
+        assert_eq!(messages.len(), 1);
+        assert!(
+            matches!(messages[0], AgentMessage::Custom(_)),
+            "developer message must load as a Custom context message"
+        );
+        // ...but never converts to pa_types, so the old seeding loop dropped it.
+        assert!(
+            serde_json::from_value::<pa_types::session::AgentMessage>(
+                serde_json::to_value(&messages[0]).unwrap()
+            )
+            .is_err(),
+            "pa_types cannot model role=developer"
+        );
+
+        // Resume #1: seed into a new session file.
+        let dir_b = base.join("b");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        let persist_b = crate::persist::Persistence::for_test(&dir_b).unwrap();
+        for (m, raw) in messages.iter().zip(&raws) {
+            seed_resumed_message(&persist_b, m, raw.as_ref());
+        }
+        let file_b = persist_b.file().unwrap();
+        let payloads_b = message_payloads(&file_b);
+        assert_eq!(payloads_b.len(), 1, "every context message is re-persisted");
+        assert_eq!(
+            payloads_b[0], original_payloads[0],
+            "developer message keeps its exact original shape"
+        );
+        assert_eq!(
+            payloads_b[0].to_string(),
+            original_payloads[0].to_string(),
+            "developer message keeps its original key order (byte-identical)"
+        );
+
+        // Resume #2 from the new file: same context, same shape again.
+        let (messages2, raws2) = load_like_resume(&file_b);
+        assert_eq!(messages2.len(), 1);
+        assert!(matches!(messages2[0], AgentMessage::Custom(_)));
+        let dir_c = base.join("c");
+        std::fs::create_dir_all(&dir_c).unwrap();
+        let persist_c = crate::persist::Persistence::for_test(&dir_c).unwrap();
+        for (m, raw) in messages2.iter().zip(&raws2) {
+            seed_resumed_message(&persist_c, m, raw.as_ref());
+        }
+        let payloads_c = message_payloads(&persist_c.file().unwrap());
+        assert_eq!(payloads_c, payloads_b, "double resume is stable");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn standard_message_keeps_existing_conversion_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "omp-rs-resume-seed-std-{}-{}",
+            std::process::id(),
+            crate::persist::uuid_v7()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let persist = crate::persist::Persistence::for_test(&dir).unwrap();
+        let user = AgentMessage::user("hello there");
+        seed_resumed_message(&persist, &user, None);
+        let payloads = message_payloads(&persist.file().unwrap());
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0]["role"], json!("user"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -5,9 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use omp_session::SessionWriter;
+use omp_session::{OmpMessage, SessionWriter};
 use pa_agent::agent::Agent;
 use pa_agent::types::AgentEvent;
+use serde_json::{Map, Value};
 
 use crate::agent::civil;
 
@@ -341,9 +342,37 @@ impl Persistence {
             .map(|_| ())
     }
 
+    /// Append a `message` entry whose shape `pa_types` cannot model (e.g. a
+    /// custom message with role `"developer"`), preserving the original JSON
+    /// keys and order verbatim instead of dropping it.
+    ///
+    /// # Errors
+    /// Fails on serialization or I/O errors.
+    pub fn append_raw_message(&self, message: Map<String, Value>, timestamp_ms: i64) -> Result<()> {
+        self.writer
+            .lock()
+            .unwrap()
+            .append_omp_message(OmpMessage::Agent(message), &iso_from_ms(timestamp_ms))
+            .map(|_| ())
+    }
+
     /// Run `f` on the live session writer (compaction entries need the writer's id chain).
     pub fn with_writer<R>(&self, f: impl FnOnce(&mut SessionWriter) -> R) -> R {
         f(&mut self.writer.lock().unwrap())
+    }
+
+    /// Test-only persistence rooted at `dir` (no agent subscription).
+    #[cfg(test)]
+    pub(crate) fn for_test(dir: &Path) -> Result<Persistence> {
+        let writer = SessionWriter::create(dir, "/test", &uuid_v7(), &now_iso())?;
+        Ok(Persistence {
+            writer: Arc::new(Mutex::new(writer)),
+            session_id: Mutex::new(uuid_v7()),
+            ephemeral: false,
+            scratch: None,
+            defer_errors: Arc::new(AtomicBool::new(false)),
+            deferred: Arc::new(Mutex::new(None)),
+        })
     }
 
     /// Hold back (`true`) or write straight through (`false`) assistant error turns.
@@ -469,7 +498,25 @@ pub async fn attach_with(agent: &Agent, cwd: &Path, ephemeral: bool) -> Result<P
                                 }
                             }
                         }
-                        Err(e) => eprintln!("omp-rs: session message conversion failed: {e:#}"),
+                        Err(e) => {
+                            // Shapes pa_types cannot model (custom roles like
+                            // "developer") still belong in the journal: write
+                            // the message's JSON verbatim instead of dropping it.
+                            match serde_json::to_value(message) {
+                                Ok(serde_json::Value::Object(map)) => {
+                                    let omp = OmpMessage::Agent(map);
+                                    let ts = iso_from_ms(message.timestamp());
+                                    if let Err(e2) =
+                                        writer.lock().unwrap().append_omp_message(omp, &ts)
+                                    {
+                                        eprintln!("omp-rs: session write failed: {e2:#}");
+                                    }
+                                }
+                                _ => eprintln!(
+                                    "omp-rs: session message conversion failed: {e:#}"
+                                ),
+                            }
+                        }
                     }
                 }
                 Box::pin(async { Ok(()) })
