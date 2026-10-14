@@ -418,6 +418,11 @@ impl App {
                         .get("error")
                         .and_then(Value::as_str)
                         .map(str::to_owned);
+                    // Surface the failure in the transcript (e.g. an unknown
+                    // or unported slash command), not only as a notification.
+                    if let Some(e) = &error {
+                        self.push_system(format!("error: {e}"));
+                    }
                     self.title.set_state(TitleState::Idle, Some(&self.title_label));
                     self.notify_turn_settled(error);
                 }
@@ -481,6 +486,7 @@ impl App {
             }
             AppEvent::ExtensionUiRequest(frame) => self.extension_ui.push(frame),
             AppEvent::AvailableCommands(frame) => self.autocomplete.update_commands(frame),
+            AppEvent::CommandOutput(text) => self.push_system(text.clone()),
             _ => {}
         }
         self.messages.apply(event);
@@ -912,7 +918,15 @@ impl App {
         let name = parts.next().unwrap_or("");
         let args = parts.next().unwrap_or("").trim();
 
-        if !P0_BUILTINS.contains(&name) {
+        // Local P0 builtins plus anything the runtime announced in its
+        // catalog (builtins, extension and file commands, incl. aliases) go
+        // through dispatch; the runtime reports commands it cannot run.
+        let in_catalog = self
+            .autocomplete
+            .commands()
+            .iter()
+            .any(|c| c.name == name || c.aliases.iter().any(|a| a == name));
+        if !P0_BUILTINS.contains(&name) && !in_catalog {
             self.push_system(format!("unknown command: /{name}"));
             return true;
         }
@@ -1511,6 +1525,36 @@ mod tests {
         assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
         assert!(!app.autocomplete.open);
         assert_eq!(app.editor.text(), "/co");
+    }
+
+    #[test]
+    fn catalog_command_dispatches_to_runtime() {
+        // Regression: every command outside the 11 local builtins was
+        // rejected as "unknown command" although the popup offered it.
+        let mut app = app();
+        let port = port();
+        app.apply_event(&AppEvent::AvailableCommands(json!({
+            "commands": [{"name": "session", "aliases": ["info"], "source": "builtin"}]
+        })));
+        type_text(&mut app, &port, "/info");
+        app.autocomplete.close();
+        assert!(enter(&mut app, &port));
+        assert!(log(&port).iter().any(|l| l.contains("info")), "{:?}", log(&port));
+    }
+
+    #[test]
+    fn command_output_and_prompt_errors_reach_the_transcript() {
+        let mut app = app();
+        app.apply_event(&parse_frame(
+            &json!({"type": "command_output", "text": "Session: abc\nTitle: t\nCWD: /tmp"}),
+        ));
+        app.apply_event(&parse_frame(
+            &json!({"type": "prompt_result", "success": false, "error": "Unknown command: /zz"}),
+        ));
+        let s = screen(&mut app, 60, 14);
+        assert!(s.contains("Session: abc") && !s.contains("abcTitle"), "{s}");
+        assert!(s.lines().any(|l| l.trim_start().starts_with("CWD: /tmp")), "line breaks kept: {s}");
+        assert!(s.contains("Unknown command: /zz"), "{s}");
     }
 
     #[test]

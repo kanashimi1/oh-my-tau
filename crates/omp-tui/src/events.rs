@@ -66,6 +66,9 @@ pub enum AppEvent {
     Retry(Value),
     /// `{"type":"available_commands_update", "commands": [...]}`.
     AvailableCommands(Value),
+    /// `{"type":"command_output", "text": "..."}` — slash-command output
+    /// (omp-cli `slash::output`), shown as a system entry.
+    CommandOutput(String),
     /// `{"type":"extension_ui_request", "id", "method", ...}` — an extension
     /// `ask` dialog the UI must answer with `Action::ExtensionUiResponse`.
     ExtensionUiRequest(Value),
@@ -122,6 +125,13 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
         | "retry_fallback_applied"
         | "retry_fallback_succeeded" => AppEvent::Retry(frame.clone()),
         "available_commands_update" => AppEvent::AvailableCommands(frame.clone()),
+        "command_output" => AppEvent::CommandOutput(
+            frame
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ),
         "extension_ui_request" => AppEvent::ExtensionUiRequest(frame.clone()),
         "extension_ui_response" => AppEvent::ExtensionUiResponse(frame.clone()),
         "session_name_changed" => AppEvent::SessionNameChanged(

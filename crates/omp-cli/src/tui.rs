@@ -220,7 +220,13 @@ impl omp_tui::RuntimePort for Port {
                     rt.send(serde_json::json!({
                         "type": "prompt_result",
                         "success": false,
-                        "error": format!("Unknown command: /{name}"),
+                        "error": if rt.available_commands().iter().any(|c| {
+                            c.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
+                        }) {
+                            format!("/{name} is not ported to omp-rs yet")
+                        } else {
+                            format!("Unknown command: /{name}")
+                        },
                     }));
                 }
             }

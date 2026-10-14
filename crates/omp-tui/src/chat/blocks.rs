@@ -609,10 +609,20 @@ fn notice_lines(text: &str, expanded: bool, width: usize, theme: &Theme) -> Vec<
         let body = trimmed.split_once(':').map_or(trimmed, |(_, rest)| rest).trim();
         return format_error_block(body, width, expanded, theme);
     }
-    vec![Line::from(Span::styled(
-        trimmed.to_owned(),
-        Style::default().fg(theme.color("text_muted")),
-    ))]
+    // Multi-line command output (`/session`, `/tools`, …): keep its line
+    // breaks and wrap each line to the width.
+    let style = Style::default().fg(theme.color("text_muted"));
+    trimmed
+        .lines()
+        .flat_map(|l| {
+            if l.is_empty() {
+                vec![String::new()]
+            } else {
+                wrap_text(l, width)
+            }
+        })
+        .map(|l| Line::from(Span::styled(l, style)))
+        .collect()
 }
 
 #[cfg(test)]
