@@ -6,17 +6,23 @@
 //! `eval/budget-bridge.ts`, `eval/handle-bridge.ts`; payload shapes verbatim
 //! from `crates/omp-eval/src/prelude_agents.py`).
 //!
-//! omp-rs subagents are one-shot `omp-rs -p` subprocesses driven by
-//! [`omp_task`]'s [`TaskRunner`] (the same machinery the `task` tool uses), so
-//! agent handles are process-local registry entries whose jobs run in the
-//! background; there is no live input channel into a running child, which
-//! limits what `cancel` and agent messaging can do (explicit errors instead of
-//! silent success). Judgments reuse [`omp_providers::judge`]'s resolved chain;
+//! omp-rs subagents are `omp-rs --mode rpc` subprocesses driven by
+//! [`omp_task`]'s controllable runner ([`omp_task::TaskRunner::start`], the
+//! same machinery the `task` tool uses): agent handles are process-local
+//! registry entries whose runs proceed in the background; `cancel()` kills the
+//! child's process group, and `write agent://<id>` steers a running child
+//! through its RPC stdin. A subagent exits once its prompt settles, so unlike
+//! TS keep-alive agents a finished one cannot be revived by a message, and
+//! `workpool()` runs every pushed item as a fresh agent (TS
+//! `eval.workpool.freshAgents` behavior). Judgments reuse [`omp_providers::judge`]'s resolved chain;
 //! completions run one-shot against the session's live provider target
 //! ([`crate::agent::Target`], installed by [`set_runtime_hooks`]) or a resolved
 //! `@smol`/`@slow` role.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::future::Future;
+use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -46,6 +52,15 @@ static REQUEST_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(EVAL
 /// Synthetic tool the model is forced to call when a `schema` is supplied
 /// (TS `STRUCTURED_TOOL_NAME`).
 const STRUCTURED_TOOL_NAME: &str = "respond";
+
+/// Process-wide ceiling on eval subagent children running at once (omp
+/// `task.maxConcurrency` protocol default, as the `task` tool uses); also the
+/// worker limit `workpool()` reports.
+const SUBAGENT_CONCURRENCY: usize = 32;
+
+/// Error text of an agent handle cancelled through `cancel()` (TS
+/// `ToolAbortError("Cancelled by eval handle")`).
+const HANDLE_CANCEL_REASON: &str = "Cancelled by eval handle";
 
 /// Poll cadence while `wait` blocks on handle settlement (the registry is a
 /// snapshot store like `jobs::JobRegistry`, so `wait` observes it on a tick).
@@ -136,9 +151,10 @@ struct Handle {
     id: String,
     inner: Mutex<HandleInner>,
     notify: Notify,
-    /// Completion handles are abortable through the pa-ai cancellation token;
-    /// agent jobs are subprocesses with no kill channel (see `cancel_handle`).
+    /// Completion handles are abortable through the pa-ai cancellation token.
     cancel: CancellationToken,
+    /// Agent handles: kill/steer surface of the subagent run (set at launch).
+    run: Mutex<Option<Arc<dyn RunCtl>>>,
 }
 
 impl Handle {
@@ -155,12 +171,26 @@ impl Handle {
             }),
             notify: Notify::new(),
             cancel: CancellationToken::new(),
+            run: Mutex::new(None),
         })
     }
 
+    fn is_settled(&self) -> bool {
+        self.inner.lock().expect("eval handle lock").settled
+    }
+
+    fn run_ctl(&self) -> Option<Arc<dyn RunCtl>> {
+        self.run.lock().expect("eval handle lock").clone()
+    }
+
+    /// Settle once: the first terminal state wins (a `cancel()` settles the
+    /// handle immediately; the killed run's own settle is then ignored).
     fn settle(&self, status: HandleStatus, text: Option<String>, data: Option<Value>, error: Option<String>) {
         {
             let mut inner = self.inner.lock().expect("eval handle lock");
+            if inner.settled {
+                return;
+            }
             inner.status = status;
             inner.settled = true;
             inner.text = text;
@@ -252,9 +282,7 @@ pub async fn handle(
         "__completion__" => Some(run_completion(&args, ctx).await),
         "__judge__" => Some(run_judgment_op(&args, ctx).await),
         "__judge_batch__" => Some(run_judge_batch_op(&args, ctx).await),
-        "__workpool__" => Some(Err(
-            "workpool() is not supported in this runtime: it needs in-process keep-alive subagents; use agent() fan-out instead".to_string(),
-        )),
+        "__workpool__" => Some(run_workpool(&args, ctx)),
         "__budget__" => Some(Ok(budget_snapshot())),
         "__wait__" => Some(run_wait(&args, ctx).await),
         "__status__" => Some(run_status(&args)),
@@ -263,24 +291,230 @@ pub async fn handle(
     }
 }
 
-/// TS `AgentHandle.send` (`agent://<id>` write target): posts a steering
-/// message into a *running* eval subagent's input queue. omp-rs subagents are
-/// one-shot `omp-rs -p` subprocesses with no live input channel, so this is an
-/// explicit failure rather than a silent no-op.
-pub async fn send_to_agent(id: &str, _content: &str) -> Result<Value, String> {
-    let running = AGENT_HANDLES
+/// TS `AgentHandle.send` / `write agent://<id>` (`agent-protocol.ts` →
+/// `irc/messaging.ts` `executeSend`): a running eval subagent (`agent()` or a
+/// workpool worker) gets the message as a steer through its RPC stdin, injected
+/// at its next turn boundary ("Delivered to <id>."); `agent://all` broadcasts
+/// to every running one. Deviation: TS keep-alive agents are revived by a
+/// message after they finish; omp-rs subagents exit when their prompt
+/// settles, so a finished agent is a delivery failure.
+///
+/// # Errors
+/// TS delivery-failure texts (`Failed: <id> is not running. …`) and argument
+/// errors (empty content, JSON-path suffix, missing recipient).
+pub async fn send_to_agent(id: &str, content: &str) -> Result<Value, String> {
+    deliver_message(id, content).map(Value::String)
+}
+
+fn deliver_message(to: &str, content: &str) -> Result<String, String> {
+    if to.is_empty() {
+        return Err("agent:// URL requires a recipient: agent://<id>".to_string());
+    }
+    if to.contains('/') {
+        return Err("agent:// message target cannot have a JSON-path suffix.".to_string());
+    }
+    if content.trim().is_empty() {
+        return Err("agent:// messages require non-empty content.".to_string());
+    }
+    if to == "all" {
+        return broadcast_message(content);
+    }
+    let handle = AGENT_HANDLES.lock().expect("eval handles lock").get(to).cloned();
+    match steer_handle(handle.as_deref(), to, content) {
+        Ok(()) => Ok(format!("Delivered to {to}.")),
+        Err(error) => Err(format!("Failed: {to} is not running. {error}")),
+    }
+}
+
+/// TS broadcast receipt text over every running eval subagent.
+fn broadcast_message(content: &str) -> Result<String, String> {
+    let mut targets: Vec<(String, Arc<Handle>)> = AGENT_HANDLES
         .lock()
         .expect("eval handles lock")
-        .get(id)
-        .map(|handle| !handle.inner.lock().expect("eval handle lock").settled);
-    match running {
-        Some(true) => Err(format!(
-            "agent messaging (write agent://{id}) is not supported in this runtime: eval subagents are one-shot subprocesses without a live input channel"
-        )),
-        _ => Err(format!(
-            "unknown agent handle {id}; result expired — read agent://{id}"
-        )),
+        .iter()
+        .filter(|(_, handle)| !handle.is_settled())
+        .map(|(id, handle)| (id.clone(), handle.clone()))
+        .collect();
+    if targets.is_empty() {
+        return Ok("No live peers to broadcast to.".to_string());
     }
+    targets.sort_by(|a, b| a.0.cmp(&b.0));
+    let receipts: Vec<(String, Result<(), String>)> = targets
+        .iter()
+        .map(|(id, handle)| (id.clone(), steer_handle(Some(&**handle), id, content)))
+        .collect();
+    let delivered = receipts.iter().filter(|(_, r)| r.is_ok()).count();
+    let mut text = format!("Broadcast delivered to {delivered} of {} peer(s).", receipts.len());
+    for (id, receipt) in &receipts {
+        match receipt {
+            Ok(()) => text.push_str(&format!("\n- {id}: injected")),
+            Err(error) => text.push_str(&format!("\n- {id}: failed — {error}")),
+        }
+    }
+    if delivered == 0 {
+        Err(text)
+    } else {
+        Ok(text)
+    }
+}
+
+/// Steer one agent handle's live run (the TS bus receipt error on failure).
+fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Result<(), String> {
+    let Some(handle) = handle else {
+        return Err(format!(
+            "Unknown agent \"{to}\" — check the subagent roster or read history:// for known peers."
+        ));
+    };
+    let finished = || {
+        format!(
+            "Agent \"{to}\" already finished; omp-rs eval subagents exit when their prompt settles and cannot be revived (read its result with wait()/status())."
+        )
+    };
+    if handle.is_settled() {
+        return Err(finished());
+    }
+    let Some(run) = handle.run_ctl() else {
+        return Err(format!("Agent \"{to}\" has no live session."));
+    };
+    run.steer(content).map_err(|error| match error {
+        omp_task::SteerError::NotRunning => finished(),
+        omp_task::SteerError::Unsupported => format!("Agent \"{to}\" has no input channel."),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Subagent runs (omp-task controllable runner)
+// ---------------------------------------------------------------------------
+
+/// Kill/steer surface of one launched subagent run ([`omp_task::RunControl`]
+/// in production, a mock in tests).
+trait RunCtl: Send + Sync {
+    /// Queue a steering message for the running child.
+    fn steer(&self, message: &str) -> Result<(), omp_task::SteerError>;
+    /// Kill the run; `false` when it already settled or was cancelled.
+    fn cancel(&self) -> bool;
+    /// Output tokens the child session reported once settled.
+    fn output_tokens(&self) -> u64;
+}
+
+impl RunCtl for omp_task::RunControl {
+    fn steer(&self, message: &str) -> Result<(), omp_task::SteerError> {
+        omp_task::RunControl::steer(self, message)
+    }
+
+    fn cancel(&self) -> bool {
+        omp_task::RunControl::cancel(self)
+    }
+
+    fn output_tokens(&self) -> u64 {
+        omp_task::RunControl::output_tokens(self)
+    }
+}
+
+type RunFuture = Pin<Box<dyn Future<Output = omp_task::RunOutput> + Send>>;
+
+/// Starts subagent runs (the subprocess runner in production, a mock in tests).
+trait Launcher: Send + Sync {
+    fn launch(&self, spec: omp_task::TaskSpec) -> (Arc<dyn RunCtl>, RunFuture);
+}
+
+/// `omp-rs --mode rpc` children under one shared concurrency ceiling.
+struct SubprocessLauncher {
+    runner: omp_task::TaskRunner,
+}
+
+impl Launcher for SubprocessLauncher {
+    fn launch(&self, spec: omp_task::TaskSpec) -> (Arc<dyn RunCtl>, RunFuture) {
+        let (control, join) = self.runner.start(spec, omp_task::ChildMode::Rpc);
+        let control: Arc<dyn RunCtl> = Arc::new(control);
+        let join: RunFuture = Box::pin(join);
+        (control, join)
+    }
+}
+
+/// Process-wide launcher: `agent()` runs and workpool turns share one runner,
+/// so the [`SUBAGENT_CONCURRENCY`] ceiling holds across both.
+static LAUNCHER: LazyLock<Arc<dyn Launcher>> = LazyLock::new(|| {
+    let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omp-rs"));
+    Arc::new(SubprocessLauncher {
+        runner: omp_task::TaskRunner::new(binary, SUBAGENT_CONCURRENCY),
+    }) as Arc<dyn Launcher>
+});
+
+/// Output tokens spent by eval subagents (`agent()` + workpool workers) in
+/// this process (TS `recordEvalSubagentUsage`).
+static EVAL_SUBAGENT_OUTPUT: AtomicU64 = AtomicU64::new(0);
+
+/// Launch `spec` as the run behind agent `handle`; the returned future
+/// resolves to the run output once the child settled (usage recorded).
+fn launch_agent(handle: &Handle, spec: omp_task::TaskSpec, launcher: &dyn Launcher) -> RunFuture {
+    let (run, done) = launcher.launch(spec);
+    *handle.run.lock().expect("eval handle lock") = Some(run.clone());
+    Box::pin(async move {
+        let output = done.await;
+        EVAL_SUBAGENT_OUTPUT.fetch_add(run.output_tokens(), Ordering::Relaxed);
+        output
+    })
+}
+
+/// Settle an agent handle from its run (TS job settle + `agentSnapshot`); a
+/// run whose output violates the declared schema fails in strict mode.
+fn settle_agent(
+    handle: &Handle,
+    output: &omp_task::RunOutput,
+    schema_mode: omp_task::SchemaMode,
+    schema_wanted: bool,
+) {
+    let ok = output.status == omp_task::RunStatus::Completed && !output.schema_failed(schema_mode);
+    let status = match output.status {
+        _ if ok => HandleStatus::Completed,
+        omp_task::RunStatus::Cancelled => HandleStatus::Cancelled,
+        _ => HandleStatus::Failed,
+    };
+    let text = if output.output.trim().is_empty() {
+        output.stderr.trim().to_string()
+    } else {
+        output.output.clone()
+    };
+    if status == HandleStatus::Cancelled {
+        // Only `cancel()` kills runs; `cancel_handle` may already have settled
+        // the handle with the same text, whichever lands first.
+        handle.settle(status, None, None, Some(HANDLE_CANCEL_REASON.to_string()));
+    } else if status == HandleStatus::Completed {
+        let data = if schema_wanted {
+            serde_json::from_str::<Value>(output.output.trim()).ok()
+        } else {
+            None
+        };
+        handle.settle(status, Some(text), data, None);
+    } else {
+        let error = omp_task::envelope::format_task_result(output)
+            .error
+            .unwrap_or_else(|| format!("agent() subagent '{}' failed.", output.agent));
+        handle.settle(status, None, None, Some(error));
+    }
+}
+
+/// TS `cancelResolved`: kill a running agent (settling its handle
+/// `cancelled` right away) or abort a running completion.
+fn cancel_handle(handle: &Handle) -> bool {
+    if handle.is_settled() {
+        return false;
+    }
+    if handle.kind == "completion" {
+        handle.cancel.cancel();
+        return true;
+    }
+    let cancelled = handle.run_ctl().is_some_and(|run| run.cancel());
+    if cancelled {
+        handle.settle(
+            HandleStatus::Cancelled,
+            None,
+            None,
+            Some(HANDLE_CANCEL_REASON.to_string()),
+        );
+    }
+    cancelled
 }
 
 // ---------------------------------------------------------------------------
@@ -348,39 +582,10 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
         .expect("eval handles lock")
         .insert(id.clone(), handle.clone());
 
-    let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omp-rs"));
-    let runner = omp_task::runner::TaskRunner::new(binary, EVAL_HANDLE_CONCURRENCY);
-
+    let run = launch_agent(&handle, spec, &**LAUNCHER);
     tokio::spawn(async move {
-        let output = runner.spawn(spec).await;
-        // A run whose output violates the declared schema fails in strict
-        // mode (TS `structured-subagent` schema enforcement).
-        let ok = output.status == omp_task::runner::RunStatus::Completed
-            && !output.schema_failed(schema_mode);
-        let status = match output.status {
-            _ if ok => HandleStatus::Completed,
-            omp_task::runner::RunStatus::Cancelled => HandleStatus::Cancelled,
-            _ => HandleStatus::Failed,
-        };
-        let text = if output.output.trim().is_empty() {
-            output.stderr.trim().to_string()
-        } else {
-            output.output.clone()
-        };
-        let (text, data, error) = if status == HandleStatus::Completed {
-            let data = if schema_wanted {
-                serde_json::from_str::<Value>(output.output.trim()).ok()
-            } else {
-                None
-            };
-            (Some(text), data, None)
-        } else {
-            let error = omp_task::envelope::format_task_result(&output)
-                .error
-                .unwrap_or_else(|| format!("agent() subagent '{}' failed.", output.agent));
-            (None, None, Some(error))
-        };
-        handle.settle(status, text, data, error);
+        let output = run.await;
+        settle_agent(&handle, &output, schema_mode, schema_wanted);
     });
 
     Ok(json!({"id": id, "agent": agent}))
@@ -1338,6 +1543,495 @@ async fn judge_one_batch_item(
 }
 
 // ---------------------------------------------------------------------------
+// `__workpool__` (TS `workpool-bridge.ts` + `task/workpool.ts`)
+// ---------------------------------------------------------------------------
+//
+// TS pools keep subagents alive and feed them batches of queued items as
+// follow-up turns; omp-rs subagents exit when their prompt settles, so pools
+// run in the TS `eval.workpool.freshAgents` mode: every pushed item becomes
+// one fresh worker (`<pool>-<n>`, an `agent://` handle that `status`/`cancel`/
+// `write agent://` reach) running a one-item batch, at most `limit` at once,
+// the rest queued FIFO. The aggregate pool job TS registers with the async
+// job manager (final drained-pool delivery to the main agent) has no omp-rs
+// counterpart; `status()`/`peek()` expose the same bookkeeping.
+
+/// TS `WorkPoolItem.status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ItemStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl ItemStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+struct PoolItem {
+    id: String,
+    text: String,
+    status: ItemStatus,
+}
+
+/// A live worker (fresh mode: dies with its single turn).
+struct PoolWorker {
+    id: String,
+    /// Batch id of the running turn (TS `agent.jobId`).
+    current: String,
+}
+
+struct PoolBatch {
+    id: String,
+    agent_id: String,
+    items: Vec<usize>,
+    status: ItemStatus,
+    output: Option<String>,
+}
+
+/// One worker turn the pool wants launched.
+#[derive(Debug, PartialEq, Eq)]
+struct TurnStart {
+    /// Index into `PoolState::batches`.
+    batch: usize,
+    worker_id: String,
+    prompt: String,
+}
+
+/// Pure pool bookkeeping (TS `WorkPool` minus the job/session plumbing).
+struct PoolState {
+    name: String,
+    agent: String,
+    limit: usize,
+    closed: bool,
+    items: Vec<PoolItem>,
+    workers: Vec<PoolWorker>,
+    batches: Vec<PoolBatch>,
+    fresh_queue: VecDeque<usize>,
+    next_seq: u64,
+    next_worker: u64,
+}
+
+impl PoolState {
+    fn new(name: String, agent: String, limit: usize) -> Self {
+        Self {
+            name,
+            agent,
+            limit,
+            closed: false,
+            items: Vec::new(),
+            workers: Vec::new(),
+            batches: Vec::new(),
+            fresh_queue: VecDeque::new(),
+            next_seq: 1,
+            next_worker: 1,
+        }
+    }
+
+    /// TS `WorkPool.push`: queue items (ids `<pool>#<seq>`) and dispatch them.
+    /// `taken` reports agent ids already in use (worker ids must be unique
+    /// `agent://` handles).
+    fn push(
+        &mut self,
+        texts: &[String],
+        taken: &dyn Fn(&str) -> bool,
+    ) -> Result<(Vec<String>, Vec<TurnStart>), String> {
+        if self.closed {
+            return Err(format!("workpool {} is closed", self.name));
+        }
+        let first = self.items.len();
+        let mut ids = Vec::with_capacity(texts.len());
+        for text in texts {
+            let id = format!("{}#{}", self.name, self.next_seq);
+            self.next_seq += 1;
+            ids.push(id.clone());
+            self.items.push(PoolItem {
+                id,
+                text: text.clone(),
+                status: ItemStatus::Queued,
+            });
+        }
+        let mut starts = Vec::new();
+        for index in first..self.items.len() {
+            self.dispatch(index, &mut starts, taken);
+        }
+        Ok((ids, starts))
+    }
+
+    /// TS `#dispatch` (fresh mode): spawn a worker while under the limit,
+    /// otherwise wait in the FIFO queue.
+    fn dispatch(&mut self, index: usize, starts: &mut Vec<TurnStart>, taken: &dyn Fn(&str) -> bool) {
+        if self.closed || self.items[index].status != ItemStatus::Queued {
+            return;
+        }
+        if self.workers.len() < self.limit {
+            self.spawn_worker(index, starts, taken);
+        } else {
+            self.fresh_queue.push_back(index);
+        }
+    }
+
+    /// TS `#spawn` + `#drain`: a new worker takes the item as its first batch.
+    fn spawn_worker(&mut self, index: usize, starts: &mut Vec<TurnStart>, taken: &dyn Fn(&str) -> bool) {
+        let base = format!("{}-{}", self.name, self.next_worker);
+        self.next_worker += 1;
+        let mut worker_id = base.clone();
+        let mut suffix = 2;
+        while taken(&worker_id) || self.workers.iter().any(|w| w.id == worker_id) {
+            worker_id = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        let batch_id = format!("{worker_id}-b1");
+        self.items[index].status = ItemStatus::Running;
+        self.workers.push(PoolWorker {
+            id: worker_id.clone(),
+            current: batch_id.clone(),
+        });
+        self.batches.push(PoolBatch {
+            id: batch_id,
+            agent_id: worker_id.clone(),
+            items: vec![index],
+            status: ItemStatus::Running,
+            output: None,
+        });
+        let batch = self.batches.len() - 1;
+        starts.push(TurnStart {
+            batch,
+            worker_id,
+            prompt: self.batch_prompt(batch),
+        });
+    }
+
+    /// TS `workpool-batch.md`, minus the keyed incremental `yield` contract
+    /// (omp-rs children answer once, with their final text).
+    fn batch_prompt(&self, batch: usize) -> String {
+        let batch = &self.batches[batch];
+        let mut prompt = format!(
+            "<workpool pool=\"{}\" batch=\"{}\">\nYou are a worker in pool `{}`. Complete every item below in order. Your final answer is the outcome: for each item, its number and a self-contained outcome/evidence value.\n",
+            self.name, batch.id, self.name
+        );
+        for (n, &index) in batch.items.iter().enumerate() {
+            prompt.push_str(&format!("## Item {}\n{}\n", n + 1, self.items[index].text));
+        }
+        prompt.push_str("</workpool>");
+        prompt
+    }
+
+    /// TS `#finishTurn` (fresh mode): settle the batch and its items, retire
+    /// the worker, and hand the next queued item a new worker.
+    fn finish_turn(
+        &mut self,
+        batch: usize,
+        status: ItemStatus,
+        output: String,
+        taken: &dyn Fn(&str) -> bool,
+    ) -> Vec<TurnStart> {
+        let Some(entry) = self.batches.get_mut(batch) else {
+            return Vec::new();
+        };
+        if entry.status != ItemStatus::Running {
+            return Vec::new();
+        }
+        entry.status = status;
+        entry.output = Some(output);
+        let agent_id = entry.agent_id.clone();
+        for &index in &entry.items {
+            self.items[index].status = status;
+        }
+        self.workers.retain(|w| w.id != agent_id);
+        let mut starts = Vec::new();
+        while let Some(next) = self.fresh_queue.pop_front() {
+            if !self.closed && self.items[next].status == ItemStatus::Queued {
+                self.dispatch(next, &mut starts, taken);
+                break;
+            }
+        }
+        starts
+    }
+
+    /// TS `WorkPool.status()`.
+    fn status(&self) -> Value {
+        let mut counts = Map::new();
+        for status in [
+            ItemStatus::Queued,
+            ItemStatus::Running,
+            ItemStatus::Completed,
+            ItemStatus::Failed,
+            ItemStatus::Cancelled,
+        ] {
+            let n = self.items.iter().filter(|item| item.status == status).count();
+            counts.insert(status.as_str().to_string(), json!(n));
+        }
+        json!({
+            "name": self.name,
+            "agent": self.agent,
+            "limit": self.limit,
+            "closed": self.closed,
+            "freshAgents": true,
+            "agents": self.workers.iter().map(|w| json!({
+                "id": w.id,
+                "state": "running",
+                "queued": 0,
+                "turns": 0,
+                "current": w.current,
+            })).collect::<Vec<_>>(),
+            "items": counts,
+            "batches": self.batches.len(),
+        })
+    }
+
+    /// TS `WorkPool.peek()`: batch results without consuming anything.
+    fn peek(&self) -> Value {
+        let batches: Vec<Value> = self
+            .batches
+            .iter()
+            .map(|batch| {
+                let mut entry = json!({
+                    "id": batch.id,
+                    "agent": batch.agent_id,
+                    "items": batch.items.iter().map(|&i| self.items[i].id.as_str()).collect::<Vec<_>>(),
+                    "status": batch.status.as_str(),
+                });
+                if let Some(output) = &batch.output {
+                    entry["output"] = Value::String(output.clone());
+                }
+                entry
+            })
+            .collect();
+        json!({"batches": batches, "pending": self.pending()})
+    }
+
+    fn pending(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| matches!(item.status, ItemStatus::Queued | ItemStatus::Running))
+            .count()
+    }
+
+    /// TS `WorkPool.close()`: stop accepting work and cancel queued items;
+    /// running turns finish.
+    fn close(&mut self) -> Value {
+        self.closed = true;
+        let mut dropped = Vec::new();
+        for item in &mut self.items {
+            if item.status == ItemStatus::Queued {
+                item.status = ItemStatus::Cancelled;
+                dropped.push(item.id.clone());
+            }
+        }
+        self.fresh_queue.clear();
+        json!({"dropped": dropped})
+    }
+}
+
+/// A registered pool: bookkeeping plus what launching its turns needs.
+struct WorkPool {
+    state: Mutex<PoolState>,
+    context: Option<String>,
+    cwd: PathBuf,
+    launcher: Arc<dyn Launcher>,
+}
+
+/// Process-local pools by name (TS `WorkPoolRegistry`, main-agent owner).
+static WORKPOOLS: LazyLock<Mutex<HashMap<String, Arc<WorkPool>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn agent_id_taken(id: &str) -> bool {
+    AGENT_HANDLES.lock().expect("eval handles lock").contains_key(id)
+}
+
+/// Launch the given worker turns; each one, once settled, settles its batch
+/// and launches whatever the pool dispatches next.
+fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
+    if starts.is_empty() {
+        return;
+    }
+    let agent = pool.state.lock().expect("workpool lock").agent.clone();
+    for start in starts {
+        let prompt = match &pool.context {
+            Some(context) => format!("{context}\n\n{}", start.prompt),
+            None => start.prompt,
+        };
+        let spec = omp_task::TaskSpec {
+            id: Some(start.worker_id.clone()),
+            agent: agent.clone(),
+            prompt,
+            cwd: pool.cwd.clone(),
+            output_schema: None,
+            schema_mode: omp_task::SchemaMode::Permissive,
+            model: None,
+            tools: None,
+        };
+        let handle = Handle::new("agent", start.worker_id.clone());
+        AGENT_HANDLES
+            .lock()
+            .expect("eval handles lock")
+            .insert(start.worker_id, handle.clone());
+        let run = launch_agent(&handle, spec, &*pool.launcher);
+        let pool = pool.clone();
+        let batch = start.batch;
+        tokio::spawn(async move {
+            let output = run.await;
+            settle_agent(&handle, &output, omp_task::SchemaMode::Permissive, false);
+            let (status, text) = turn_outcome(&handle);
+            let next = pool
+                .state
+                .lock()
+                .expect("workpool lock")
+                .finish_turn(batch, status, text, &agent_id_taken);
+            start_turns(&pool, next);
+        });
+    }
+}
+
+/// Batch status + output from a settled worker handle (TS `#finishTurn`
+/// status rule; output falls back to the error text).
+fn turn_outcome(handle: &Handle) -> (ItemStatus, String) {
+    let inner = handle.inner.lock().expect("eval handle lock");
+    let status = match inner.status {
+        HandleStatus::Completed => ItemStatus::Completed,
+        HandleStatus::Cancelled => ItemStatus::Cancelled,
+        HandleStatus::Failed | HandleStatus::Running => ItemStatus::Failed,
+    };
+    let output = inner
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .or(inner.error.as_deref())
+        .unwrap_or("(no output)")
+        .to_string();
+    (status, output)
+}
+
+fn workpool_optional_string(record: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+    match record.get(key) {
+        None => Ok(None),
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.trim().to_string())),
+        Some(_) => Err(format!("workpool {key} must be a non-empty string")),
+    }
+}
+
+fn run_workpool(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
+    run_workpool_with(args, &ctx.cwd, &LAUNCHER)
+}
+
+fn run_workpool_with(
+    args: &Value,
+    cwd: &std::path::Path,
+    launcher: &Arc<dyn Launcher>,
+) -> Result<Value, String> {
+    let record = args
+        .as_object()
+        .ok_or_else(|| "workpool() arguments must be an object".to_string())?;
+    let op = record
+        .get("op")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "workpool() requires an op".to_string())?;
+    if op == "create" {
+        return create_workpool(record, cwd, launcher);
+    }
+    let name = record
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "workpool operation requires a non-empty name".to_string())?;
+    let pool = WORKPOOLS
+        .lock()
+        .expect("workpools lock")
+        .get(name)
+        .cloned()
+        .ok_or_else(|| format!("unknown workpool \"{name}\""))?;
+    match op {
+        "push" => {
+            let texts: Vec<String> = record
+                .get("items")
+                .and_then(Value::as_array)
+                .and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_string))
+                        .collect::<Option<Vec<_>>>()
+                })
+                .ok_or_else(|| "workpool push requires an items string array".to_string())?;
+            let (ids, starts) = pool
+                .state
+                .lock()
+                .expect("workpool lock")
+                .push(&texts, &agent_id_taken)?;
+            start_turns(&pool, starts);
+            Ok(json!({"ids": ids}))
+        }
+        "status" => Ok(pool.state.lock().expect("workpool lock").status()),
+        "peek" => Ok(pool.state.lock().expect("workpool lock").peek()),
+        "close" => Ok(pool.state.lock().expect("workpool lock").close()),
+        _ => Err(format!("unknown workpool operation \"{op}\"")),
+    }
+}
+
+/// TS `runEvalWorkpool` `create`: `{name, agent, limit}`.
+fn create_workpool(
+    record: &Map<String, Value>,
+    cwd: &std::path::Path,
+    launcher: &Arc<dyn Launcher>,
+) -> Result<Value, String> {
+    let agent = workpool_optional_string(record, "agent")?;
+    let requested = workpool_optional_string(record, "name")?;
+    let context = workpool_optional_string(record, "context")?;
+    match record.get("tools") {
+        None => {}
+        Some(Value::Array(tools))
+            if tools
+                .iter()
+                .all(|tool| tool.as_str().is_some_and(|name| !name.is_empty())) =>
+        {
+            if !tools.is_empty() {
+                return Err("Eval-defined tools are unavailable in this runtime.".to_string());
+            }
+        }
+        Some(_) => return Err("workpool tools must be an array of non-empty strings".to_string()),
+    }
+    let agent = agent.unwrap_or_else(|| "task".to_string());
+    if !omp_task::params::is_valid_agent_name(&agent) {
+        return Err(format!("workpool() received invalid arguments: `agent` must be a valid agent name, got {agent:?}"));
+    }
+    let mut pools = WORKPOOLS.lock().expect("workpools lock");
+    let name = if let Some(name) = requested {
+        if pools.contains_key(&name) {
+            return Err(format!("workpool \"{name}\" already exists"));
+        }
+        name
+    } else {
+        let base = format!("{agent}-pool");
+        let mut name = base.clone();
+        let mut suffix = 2;
+        while pools.contains_key(&name) || agent_id_taken(&name) {
+            name = format!("{base}-{suffix}");
+            suffix += 1;
+        }
+        name
+    };
+    let pool = WorkPool {
+        state: Mutex::new(PoolState::new(name.clone(), agent.clone(), SUBAGENT_CONCURRENCY)),
+        context,
+        cwd: cwd.to_path_buf(),
+        launcher: launcher.clone(),
+    };
+    pools.insert(name.clone(), Arc::new(pool));
+    Ok(json!({"name": name, "agent": agent, "limit": SUBAGENT_CONCURRENCY}))
+}
+
+// ---------------------------------------------------------------------------
 // `__wait__` / `__status__` / `__cancel__` (TS `handle-bridge.ts`)
 // ---------------------------------------------------------------------------
 
@@ -1363,10 +2057,14 @@ async fn run_wait(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
     let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_secs_f64(ms / 1000.0));
 
     loop {
-        throw_if_aborted(&ctx.signal)?;
-        let all_settled = handles
-            .iter()
-            .all(|handle| handle.inner.lock().expect("eval handle lock").settled);
+        // TS `runEvalWait`: an aborted cell cancels every handle it waited on.
+        if let Err(error) = throw_if_aborted(&ctx.signal) {
+            for handle in &handles {
+                cancel_handle(handle);
+            }
+            return Err(error);
+        }
+        let all_settled = handles.iter().all(|handle| handle.is_settled());
         if all_settled {
             break;
         }
@@ -1398,23 +2096,8 @@ fn run_cancel(args: &Value) -> Result<Value, String> {
         .get("item")
         .ok_or_else(|| "handle request requires an item".to_string())?;
     let (kind, id) = parse_handle_ref(item)?;
-    let handle = lookup_handle(&kind, &id)?;
-    let settled = handle.inner.lock().expect("eval handle lock").settled;
-    if kind == "completion" {
-        if settled {
-            return Ok(json!({"cancelled": false}));
-        }
-        handle.cancel.cancel();
-        return Ok(json!({"cancelled": true}));
-    }
-    // Agent jobs are one-shot subprocesses with no kill channel in this
-    // runtime; refusing beats reporting a cancellation that never happens.
-    if settled {
-        return Ok(json!({"cancelled": false}));
-    }
-    Err(format!(
-        "cancel() of running eval agent {id} is not supported in this runtime: subagents are one-shot subprocesses without a kill channel"
-    ))
+    let handle = lookup_handle(kind, &id)?;
+    Ok(json!({"cancelled": cancel_handle(&handle)}))
 }
 
 // ---------------------------------------------------------------------------
@@ -1422,9 +2105,377 @@ fn run_cancel(args: &Value) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 
 /// TS `runEvalBudget` fallback path when neither a per-turn directive nor Goal
-/// Mode exists: no ceiling (`total: null`), `spent` from output usage where
-/// available (none is wired here), advisory (`hard: false`). omp-rs has no
-/// turn-budget / Goal Mode ledger yet, so the snapshot is the fallback shape.
+/// Mode exists: no ceiling (`total: null`), advisory (`hard: false`), `spent`
+/// = output tokens. omp-rs has no `+Nk` turn budget / Goal Mode ledger, and
+/// the main session's usage is not reachable from the tool layer, so `spent`
+/// counts what TS adds via `recordEvalSubagentUsage`: output tokens reported
+/// by settled eval subagents (`agent()` + workpool workers), cumulative for
+/// the process rather than per turn.
 pub fn budget_snapshot() -> Value {
-    json!({"total": Value::Null, "spent": 0, "hard": false})
+    json!({
+        "total": Value::Null,
+        "spent": EVAL_SUBAGENT_OUTPUT.load(Ordering::Relaxed),
+        "hard": false,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn run_output(id: &str, status: omp_task::RunStatus, output: &str) -> omp_task::RunOutput {
+        omp_task::RunOutput {
+            id: id.to_string(),
+            agent: "task".to_string(),
+            status,
+            exit_code: Some(0),
+            output: output.to_string(),
+            stderr: String::new(),
+            schema: omp_task::SchemaValidation::NoSchema,
+            duration: Duration::ZERO,
+            truncated: false,
+        }
+    }
+
+    /// Runner stand-in: records steers, settles on `finish`/`cancel`.
+    struct MockRun {
+        id: String,
+        steered: Mutex<Vec<String>>,
+        cancelled: AtomicBool,
+        done: Mutex<Option<tokio::sync::oneshot::Sender<omp_task::RunOutput>>>,
+    }
+
+    impl MockRun {
+        fn finish(&self, status: omp_task::RunStatus, output: &str) {
+            if let Some(tx) = self.done.lock().unwrap().take() {
+                let _ = tx.send(run_output(&self.id, status, output));
+            }
+        }
+
+        fn live(&self) -> bool {
+            self.done.lock().unwrap().is_some()
+        }
+    }
+
+    impl RunCtl for MockRun {
+        fn steer(&self, message: &str) -> Result<(), omp_task::SteerError> {
+            if !self.live() || self.cancelled.load(Ordering::SeqCst) {
+                return Err(omp_task::SteerError::NotRunning);
+            }
+            self.steered.lock().unwrap().push(message.to_string());
+            Ok(())
+        }
+
+        fn cancel(&self) -> bool {
+            if !self.live() || self.cancelled.swap(true, Ordering::SeqCst) {
+                return false;
+            }
+            self.finish(omp_task::RunStatus::Cancelled, "");
+            true
+        }
+
+        fn output_tokens(&self) -> u64 {
+            0
+        }
+    }
+
+    #[derive(Default)]
+    struct MockLauncher {
+        runs: Mutex<Vec<(omp_task::TaskSpec, Arc<MockRun>)>>,
+    }
+
+    impl MockLauncher {
+        fn run(&self, index: usize) -> Arc<MockRun> {
+            self.runs.lock().unwrap()[index].1.clone()
+        }
+
+        fn launched(&self) -> usize {
+            self.runs.lock().unwrap().len()
+        }
+    }
+
+    impl Launcher for MockLauncher {
+        fn launch(&self, spec: omp_task::TaskSpec) -> (Arc<dyn RunCtl>, RunFuture) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let id = spec.id.clone().unwrap_or_default();
+            let run = Arc::new(MockRun {
+                id: id.clone(),
+                steered: Mutex::new(Vec::new()),
+                cancelled: AtomicBool::new(false),
+                done: Mutex::new(Some(tx)),
+            });
+            self.runs.lock().unwrap().push((spec, run.clone()));
+            let future: RunFuture = Box::pin(async move {
+                rx.await
+                    .unwrap_or_else(|_| run_output(&id, omp_task::RunStatus::Cancelled, ""))
+            });
+            let run: Arc<dyn RunCtl> = run;
+            (run, future)
+        }
+    }
+
+    fn spec(id: &str) -> omp_task::TaskSpec {
+        omp_task::TaskSpec {
+            id: Some(id.to_string()),
+            agent: "task".to_string(),
+            prompt: "p".to_string(),
+            cwd: PathBuf::from("."),
+            output_schema: None,
+            schema_mode: omp_task::SchemaMode::Permissive,
+            model: None,
+            tools: None,
+        }
+    }
+
+    /// Register an agent handle backed by a mock run, settled by a
+    /// background task exactly like `run_agent` does.
+    fn mock_agent(launcher: &MockLauncher, id: &str) -> (Arc<Handle>, Arc<MockRun>) {
+        let handle = Handle::new("agent", id.to_string());
+        AGENT_HANDLES
+            .lock()
+            .unwrap()
+            .insert(id.to_string(), handle.clone());
+        let run = launch_agent(&handle, spec(id), launcher);
+        let settle = handle.clone();
+        tokio::spawn(async move {
+            let output = run.await;
+            settle_agent(&settle, &output, omp_task::SchemaMode::Permissive, false);
+        });
+        let mock = launcher.run(launcher.launched() - 1);
+        (handle, mock)
+    }
+
+    async fn settled(handle: &Handle) {
+        for _ in 0..200 {
+            if handle.is_settled() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("handle {} never settled", handle.id);
+    }
+
+    fn no_ids(_: &str) -> bool {
+        false
+    }
+
+    #[test]
+    fn pool_dispatches_up_to_limit_then_queues_fifo() {
+        let mut pool = PoolState::new("p".to_string(), "task".to_string(), 2);
+        let texts: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect();
+        let (ids, starts) = pool.push(&texts, &no_ids).unwrap();
+        assert_eq!(ids, ["p#1", "p#2", "p#3"]);
+        let workers: Vec<&str> = starts.iter().map(|s| s.worker_id.as_str()).collect();
+        assert_eq!(workers, ["p-1", "p-2"]);
+        assert!(starts[0].prompt.contains("batch=\"p-1-b1\""));
+        assert!(starts[0].prompt.contains("## Item 1\na\n"));
+        let status = pool.status();
+        assert_eq!(status["items"]["running"], 2);
+        assert_eq!(status["items"]["queued"], 1);
+        assert_eq!(status["agents"].as_array().unwrap().len(), 2);
+        assert_eq!(status["agents"][0]["current"], "p-1-b1");
+        assert_eq!(status["limit"], 2);
+        assert_eq!(status["freshAgents"], true);
+
+        // A finished turn retires its worker and hands the queued item a new one.
+        let next = pool.finish_turn(starts[0].batch, ItemStatus::Completed, "done a".to_string(), &no_ids);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].worker_id, "p-3");
+        assert!(next[0].prompt.contains("## Item 1\nc\n"));
+        let peek = pool.peek();
+        assert_eq!(peek["pending"], 2);
+        assert_eq!(peek["batches"][0]["status"], "completed");
+        assert_eq!(peek["batches"][0]["output"], "done a");
+        assert_eq!(peek["batches"][0]["items"], json!(["p#1"]));
+        assert!(peek["batches"][1].get("output").is_none());
+
+        // Settling is idempotent.
+        assert!(pool
+            .finish_turn(starts[0].batch, ItemStatus::Failed, "x".to_string(), &no_ids)
+            .is_empty());
+        assert_eq!(pool.peek()["batches"][0]["status"], "completed");
+
+        pool.finish_turn(starts[1].batch, ItemStatus::Failed, "boom".to_string(), &no_ids);
+        pool.finish_turn(next[0].batch, ItemStatus::Cancelled, "stop".to_string(), &no_ids);
+        let status = pool.status();
+        assert_eq!(status["items"]["completed"], 1);
+        assert_eq!(status["items"]["failed"], 1);
+        assert_eq!(status["items"]["cancelled"], 1);
+        assert_eq!(status["batches"], 3);
+        assert_eq!(pool.peek()["pending"], 0);
+        assert!(status["agents"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn pool_close_drops_queued_and_rejects_pushes() {
+        let mut pool = PoolState::new("q".to_string(), "task".to_string(), 1);
+        let texts: Vec<String> = ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect();
+        let (_, starts) = pool.push(&texts, &no_ids).unwrap();
+        assert_eq!(starts.len(), 1);
+        assert_eq!(pool.close(), json!({"dropped": ["q#2", "q#3"]}));
+        assert_eq!(
+            pool.push(&["d".to_string()], &no_ids).unwrap_err(),
+            "workpool q is closed"
+        );
+        // The running turn still finishes; nothing new is dispatched.
+        let next = pool.finish_turn(starts[0].batch, ItemStatus::Completed, "ok".to_string(), &no_ids);
+        assert!(next.is_empty());
+        let status = pool.status();
+        assert_eq!(status["closed"], true);
+        assert_eq!(status["items"]["cancelled"], 2);
+        assert_eq!(status["items"]["completed"], 1);
+        assert_eq!(pool.close(), json!({"dropped": []}));
+    }
+
+    #[test]
+    fn pool_worker_ids_avoid_taken_agent_ids() {
+        let mut pool = PoolState::new("r".to_string(), "task".to_string(), 4);
+        let taken = |id: &str| id == "r-1";
+        let (_, starts) = pool.push(&["a".to_string(), "b".to_string()], &taken).unwrap();
+        let workers: Vec<&str> = starts.iter().map(|s| s.worker_id.as_str()).collect();
+        assert_eq!(workers, ["r-1-2", "r-2"]);
+        assert!(pool.push(&[], &taken).unwrap().0.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_running_agent_settles_cancelled_once() {
+        let launcher = MockLauncher::default();
+        let (handle, run) = mock_agent(&launcher, "test-cancel-1");
+        assert_eq!(handle.snapshot()["status"], "running");
+        assert!(cancel_handle(&handle));
+        assert!(run.cancelled.load(Ordering::SeqCst), "runner kill invoked");
+        let snap = handle.snapshot();
+        assert_eq!(snap["status"], "cancelled");
+        assert_eq!(snap["error"], HANDLE_CANCEL_REASON);
+        // The killed run's own settle does not overwrite the cancel.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(handle.snapshot()["error"], HANDLE_CANCEL_REASON);
+        assert!(!cancel_handle(&handle), "second cancel is a no-op");
+        let reply = run_cancel(&json!({"item": {"kind": "agent", "id": "test-cancel-1"}})).unwrap();
+        assert_eq!(reply, json!({"cancelled": false}));
+    }
+
+    #[tokio::test]
+    async fn cancel_after_completion_reports_false() {
+        let launcher = MockLauncher::default();
+        let (handle, run) = mock_agent(&launcher, "test-cancel-2");
+        run.finish(omp_task::RunStatus::Completed, "answer");
+        settled(&handle).await;
+        assert_eq!(handle.snapshot()["text"], "answer");
+        let reply = run_cancel(&json!({"item": {"kind": "agent", "id": "test-cancel-2"}})).unwrap();
+        assert_eq!(reply, json!({"cancelled": false}));
+        assert!(!run.cancelled.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn messages_steer_running_agents_only() {
+        let launcher = MockLauncher::default();
+        let (handle, run) = mock_agent(&launcher, "test-msg-1");
+        assert_eq!(
+            deliver_message("test-msg-1", "look at foo.rs").unwrap(),
+            "Delivered to test-msg-1."
+        );
+        assert_eq!(*run.steered.lock().unwrap(), ["look at foo.rs"]);
+        assert!(deliver_message("test-msg-1", "  ").is_err());
+        assert!(deliver_message("test-msg-1/data", "x")
+            .unwrap_err()
+            .contains("JSON-path suffix"));
+        let unknown = deliver_message("test-msg-nope", "x").unwrap_err();
+        assert!(unknown.starts_with("Failed: test-msg-nope is not running."), "{unknown}");
+        run.finish(omp_task::RunStatus::Completed, "done");
+        settled(&handle).await;
+        let late = deliver_message("test-msg-1", "x").unwrap_err();
+        assert!(late.contains("already finished"), "{late}");
+    }
+
+    #[tokio::test]
+    async fn workpool_ops_drive_worker_runs() {
+        let launcher = Arc::new(MockLauncher::default());
+        let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
+        let cwd = PathBuf::from(".");
+        let created = run_workpool_with(
+            &json!({"op": "create", "name": "test-pool-e2e", "context": "Shared ctx"}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap();
+        assert_eq!(
+            created,
+            json!({"name": "test-pool-e2e", "agent": "task", "limit": SUBAGENT_CONCURRENCY})
+        );
+        let dup = run_workpool_with(
+            &json!({"op": "create", "name": "test-pool-e2e"}),
+            &cwd,
+            &dyn_launcher,
+        );
+        assert_eq!(dup.unwrap_err(), "workpool \"test-pool-e2e\" already exists");
+
+        let pushed = run_workpool_with(
+            &json!({"op": "push", "name": "test-pool-e2e", "items": ["one", "two"]}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap();
+        assert_eq!(pushed, json!({"ids": ["test-pool-e2e#1", "test-pool-e2e#2"]}));
+        assert_eq!(launcher.launched(), 2);
+        {
+            let runs = launcher.runs.lock().unwrap();
+            assert!(runs[0].0.prompt.starts_with("Shared ctx\n\n<workpool"));
+            assert!(runs[0].0.prompt.contains("one"));
+            assert_eq!(runs[1].0.id.as_deref(), Some("test-pool-e2e-2"));
+        }
+        // Workers are agent handles: messageable and cancellable.
+        assert_eq!(
+            deliver_message("test-pool-e2e-1", "hint").unwrap(),
+            "Delivered to test-pool-e2e-1."
+        );
+        launcher.run(0).finish(omp_task::RunStatus::Completed, "first done");
+        let cancel = run_cancel(&json!({"item": {"kind": "agent", "id": "test-pool-e2e-2"}})).unwrap();
+        assert_eq!(cancel, json!({"cancelled": true}));
+
+        let peek_args = json!({"op": "peek", "name": "test-pool-e2e"});
+        let mut peek = Value::Null;
+        for _ in 0..200 {
+            peek = run_workpool_with(&peek_args, &cwd, &dyn_launcher).unwrap();
+            if peek["pending"] == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(peek["pending"], 0, "{peek}");
+        assert_eq!(peek["batches"][0]["status"], "completed");
+        assert_eq!(peek["batches"][0]["output"], "first done");
+        assert_eq!(peek["batches"][1]["status"], "cancelled");
+        assert_eq!(peek["batches"][1]["output"], HANDLE_CANCEL_REASON);
+
+        let closed = run_workpool_with(&json!({"op": "close", "name": "test-pool-e2e"}), &cwd, &dyn_launcher)
+            .unwrap();
+        assert_eq!(closed, json!({"dropped": []}));
+        let err = run_workpool_with(
+            &json!({"op": "push", "name": "test-pool-e2e", "items": ["x"]}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap_err();
+        assert_eq!(err, "workpool test-pool-e2e is closed");
+        assert_eq!(
+            run_workpool_with(&json!({"op": "status", "name": "nope-pool"}), &cwd, &dyn_launcher)
+                .unwrap_err(),
+            "unknown workpool \"nope-pool\""
+        );
+        assert_eq!(
+            run_workpool_with(&json!({"op": "create", "tools": ["bash"]}), &cwd, &dyn_launcher)
+                .unwrap_err(),
+            "Eval-defined tools are unavailable in this runtime."
+        );
+    }
+
+    #[test]
+    fn budget_is_the_ts_fallback_shape() {
+        let snap = budget_snapshot();
+        assert!(snap["total"].is_null());
+        assert_eq!(snap["hard"], false);
+        assert!(snap["spent"].is_u64());
+    }
 }

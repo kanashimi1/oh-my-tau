@@ -9,6 +9,8 @@
 //!   subprocesses of an `omp-rs -p`-style binary, bounded concurrency, result
 //!   envelopes with `agent://<id>` pointers, and outputSchema validation in
 //!   permissive/strict modes.
+//!   [`TaskRunner::start`] is the controllable variant (kill a running child's
+//!   process group; steer an `--mode rpc` child through its stdin).
 
 pub mod agent;
 pub mod discovery;
@@ -21,5 +23,5 @@ pub use agent::{parse_agent, AgentDefinition, AgentParseError, ParsedAgentFields
 pub use discovery::{discover_agents_in_dir, discover_project_agents, discover_user_agents, AgentLoadError, DiscoveryResult};
 pub use envelope::{format_task_result, TaskResultEnvelope};
 pub use params::{SchemaMode, TaskItem, TaskParams};
-pub use runner::{RunOutput, RunStatus, TaskRunner, TaskSpec};
+pub use runner::{ChildMode, RunControl, RunJoin, RunOutput, RunPhase, RunStatus, SteerError, TaskRunner, TaskSpec};
 pub use schema::SchemaValidation;

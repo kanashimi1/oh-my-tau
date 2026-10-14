@@ -6,19 +6,29 @@
 //! `task/parallel.ts` (concurrent dispatch): every spawn holds one permit of
 //! the runner's semaphore from launch until the child settles; results are
 //! collected per item and returned in input order.
+//!
+//! [`TaskRunner::start`] (module [`control`]) is the controllable variant:
+//! the run keeps its child handle (own process group) so it can be killed
+//! mid-flight, and in [`ChildMode::Rpc`] the child's stdin stays open so
+//! steering messages reach the running agent.
+
+mod control;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::envelope::{format_task_result, TaskResultEnvelope};
 use crate::params::{SchemaMode, TaskItem};
 use crate::schema::{validate_output, SchemaValidation};
+
+pub use control::{ChildMode, RunControl, RunJoin, RunPhase, SteerError};
 
 /// Maximum output bytes per agent (mirrors `MAX_OUTPUT_BYTES` in
 /// `task/types.ts`).
@@ -136,7 +146,7 @@ pub struct TaskRunner {
     binary: PathBuf,
     semaphore: Arc<Semaphore>,
     /// Monotonic counter backing generated agent ids.
-    next_id: Arc<Mutex<u64>>,
+    next_id: Arc<AtomicU64>,
 }
 
 impl TaskRunner {
@@ -152,7 +162,7 @@ impl TaskRunner {
         Self {
             binary: binary.into(),
             semaphore: Arc::new(semaphore),
-            next_id: Arc::new(Mutex::new(0)),
+            next_id: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -162,10 +172,9 @@ impl TaskRunner {
         &self.binary
     }
 
-    async fn alloc_id(&self) -> String {
-        let mut n = self.next_id.lock().await;
-        *n += 1;
-        format!("agent-{}", *n)
+    fn alloc_id(&self) -> String {
+        let n = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("agent-{n}")
     }
 
     /// Spawn one child, blocking until a permit is free
@@ -180,7 +189,7 @@ impl TaskRunner {
     pub async fn spawn(&self, spec: TaskSpec) -> RunOutput {
         let id = match &spec.id {
             Some(id) => id.clone(),
-            None => self.alloc_id().await,
+            None => self.alloc_id(),
         };
         let permit = self.semaphore.clone().acquire_owned().await.expect(
             "task runner semaphore is never closed by the runner itself",
@@ -282,53 +291,80 @@ impl TaskRunner {
         let result = self.spawn_child(&spec).await;
 
         match result {
-            Ok(out) => {
-                let exit_code = out.status.code();
-                let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
-                let mut truncated = false;
-                if output.len() > MAX_OUTPUT_BYTES {
-                    output.truncate(MAX_OUTPUT_BYTES);
-                    truncated = true;
-                }
-                let line_count = output.lines().count();
-                let output = if line_count > MAX_OUTPUT_LINES {
-                    truncated = true;
-                    output.lines().take(MAX_OUTPUT_LINES).collect::<Vec<_>>().join("\n")
-                } else {
-                    output
-                };
-                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-                let schema = validate_output(&output, spec.output_schema.as_ref());
-                let schema_failed = schema.is_failure(spec.schema_mode);
-                let status = if out.status.success() && !schema_failed {
-                    RunStatus::Completed
-                } else {
-                    RunStatus::Failed
-                };
-                RunOutput {
-                    id,
-                    agent: spec.agent,
-                    status,
-                    exit_code,
-                    output,
-                    stderr,
-                    schema,
-                    duration: start.elapsed(),
-                    truncated,
-                }
-            }
-            Err(e) => RunOutput {
+            Ok(out) => collect_output(
                 id,
-                agent: spec.agent,
-                status: RunStatus::Failed,
-                exit_code: None,
-                output: String::new(),
-                stderr: format!("failed to spawn {}: {e}", self.binary.display()),
-                schema: SchemaValidation::NoSchema,
-                duration: start.elapsed(),
-                truncated: false,
-            },
+                spec,
+                out.status.success(),
+                out.status.code(),
+                String::from_utf8_lossy(&out.stdout).into_owned(),
+                String::from_utf8_lossy(&out.stderr).into_owned(),
+                start,
+            ),
+            Err(e) => spawn_failure(id, spec, &self.binary, &e, start),
         }
+    }
+}
+
+/// Cap the child's answer, validate it against the declared schema and build
+/// the settled [`RunOutput`]; `success` is the child's own verdict (exit 0 /
+/// completed prompt), which a strict-mode schema violation overrides.
+fn collect_output(
+    id: String,
+    spec: TaskSpec,
+    success: bool,
+    exit_code: Option<i32>,
+    mut output: String,
+    stderr: String,
+    start: Instant,
+) -> RunOutput {
+    let mut truncated = false;
+    if output.len() > MAX_OUTPUT_BYTES {
+        let mut cut = MAX_OUTPUT_BYTES;
+        while !output.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        output.truncate(cut);
+        truncated = true;
+    }
+    let line_count = output.lines().count();
+    let output = if line_count > MAX_OUTPUT_LINES {
+        truncated = true;
+        output.lines().take(MAX_OUTPUT_LINES).collect::<Vec<_>>().join("\n")
+    } else {
+        output
+    };
+    let schema = validate_output(&output, spec.output_schema.as_ref());
+    let schema_failed = schema.is_failure(spec.schema_mode);
+    let status = if success && !schema_failed {
+        RunStatus::Completed
+    } else {
+        RunStatus::Failed
+    };
+    RunOutput {
+        id,
+        agent: spec.agent,
+        status,
+        exit_code,
+        output,
+        stderr,
+        schema,
+        duration: start.elapsed(),
+        truncated,
+    }
+}
+
+/// The settled output of a child that never started.
+fn spawn_failure(id: String, spec: TaskSpec, binary: &Path, e: &std::io::Error, start: Instant) -> RunOutput {
+    RunOutput {
+        id,
+        agent: spec.agent,
+        status: RunStatus::Failed,
+        exit_code: None,
+        output: String::new(),
+        stderr: format!("failed to spawn {}: {e}", binary.display()),
+        schema: SchemaValidation::NoSchema,
+        duration: start.elapsed(),
+        truncated: false,
     }
 }
 
