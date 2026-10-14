@@ -33,13 +33,7 @@ pub async fn run(
     // terminal (the response bytes would otherwise land in the crossterm
     // event stream). Drives theme.dark/theme.light selection in the app.
     let osc11_bg = omp_tui::chrome::probe_osc11_background(std::time::Duration::from_millis(200));
-    // The embedded `/resume` picker lists this folder's session dir (the
-    // live session file's parent; same slug rule as `persist::sessions_dir`).
-    let sessions_dir = persist
-        .path()
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_default();
+    let session_sources = session_sources(&cwd, &persist);
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     // Model catalogue for the `/model` picker: providers with credentials
     // (same source the RPC `get_available_models` and `/model` builtin use).
@@ -58,6 +52,7 @@ pub async fn run(
     if let Some(path) = resume {
         rt.load_session(&path, None).await?;
         rt.publish_session_file();
+        announce_loaded_session(&rt).await;
     }
     // Slash catalog for the editor's `/` popup: builtins + extension/file
     // commands, same start-up announce sequence as RPC mode.
@@ -86,12 +81,46 @@ pub async fn run(
             model,
             cwd,
             models,
-            sessions_dir,
+            session_sources,
             osc11_bg,
         },
         port,
     )
     .await
+}
+
+/// Session stores for the `/resume` picker: the live session file's dir
+/// (omp-rs store, or `--session-dir`), plus TS omp's dir for the same folder
+/// (tagged `ts`) when the live dir is the default omp-rs one. Resuming a TS
+/// session reads it; the continuation is written into the omp-rs store.
+fn session_sources(
+    cwd: &std::path::Path,
+    persist: &Persistence,
+) -> Vec<omp_tui::overlays::sessions::SessionSource> {
+    use omp_tui::overlays::sessions::SessionSource;
+    let Some(native) = persist.path().parent().map(std::path::Path::to_path_buf) else {
+        return Vec::new();
+    };
+    if native.as_os_str().is_empty() {
+        return Vec::new();
+    }
+    let is_default = crate::persist::sessions_dir(cwd).is_some_and(|d| d == native);
+    let mut sources = vec![SessionSource::new(native)];
+    if is_default {
+        if let Some(ts) = crate::persist::ts_sessions_dir(cwd) {
+            sources.push(SessionSource::labeled(ts, "ts"));
+        }
+    }
+    sources
+}
+
+/// Hand the resumed history to the TUI (`session_loaded`): the transcript is
+/// rebuilt from the loaded messages (TS `renderInitialMessages`).
+async fn announce_loaded_session(rt: &Runtime) {
+    rt.send(serde_json::json!({
+        "type": "session_loaded",
+        "messages": rt.messages().await,
+    }));
 }
 
 /// [`omp_tui::RuntimePort`] backed by the omp-cli [`Runtime`]; the async
@@ -261,12 +290,13 @@ impl omp_tui::RuntimePort for Port {
             } else {
                 rt.load_session(&path, None).await
             };
-            if let Err(e) = result {
-                rt.send(serde_json::json!({
+            match result {
+                Ok(()) => announce_loaded_session(&rt).await,
+                Err(e) => rt.send(serde_json::json!({
                     "type": "prompt_result",
                     "success": false,
                     "error": format!("resume failed: {e:#}"),
-                }));
+                })),
             }
             rt.publish_session_file();
         });

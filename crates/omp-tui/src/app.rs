@@ -56,6 +56,7 @@ use crate::extension_ui::ExtensionUi;
 use crate::keybindings::KeybindingsManager;
 use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
 use crate::overlays::models::{parse_model_string, ModelEntry};
+use crate::overlays::sessions::SessionSource;
 use crate::overlays::tree::TreeMode;
 use crate::overlays::{OpenOverlay, Overlays};
 use crate::port::RuntimePort;
@@ -84,6 +85,12 @@ const CONFIRM_BARE: &[&str] = &["exit", "clear", "compact", "export"];
 const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("settings", "Browse and edit settings"),
     ("hotkeys", "Show keybindings (alias of /help)"),
+    ("resume", "Resume a different session"),
+    ("tree", "Navigate session tree (switch branches)"),
+    ("theme", "Switch the color theme"),
+    ("clear", "Clear the conversation context in place, keeping the session"),
+    ("help", "Show keybindings and commands"),
+    ("exit", "Exit the application"),
 ];
 
 /// Maintenance the runtime advertised as esc-to-cancel (§6 step 4).
@@ -263,8 +270,8 @@ pub struct App {
     /// `{type:"message",id,parentId,message}`) feeding the rewind column /
     /// tree overlay; reset when a session is resumed.
     journal: Vec<Value>,
-    /// The current folder's session dir (`/resume` embedded picker source).
-    sessions_dir: PathBuf,
+    /// Session stores for the `/resume` embedded picker (native first).
+    session_sources: Vec<SessionSource>,
     /// Terminal appearance from the startup OSC 11 / COLORFGBG probe:
     /// decides whether a `theme.dark`/`theme.light` edit hot-swaps now.
     appearance: crate::theme::Appearance,
@@ -306,7 +313,7 @@ impl App {
             title_label: dir,
             notify: NotifySink::default(),
             journal: Vec::new(),
-            sessions_dir: PathBuf::new(),
+            session_sources: Vec::new(),
             appearance: crate::theme::Appearance::Dark,
             cwd: cwd.to_path_buf(),
         }
@@ -327,13 +334,13 @@ impl App {
     }
 
     /// Seed the `/model` picker catalogue + the embedded `/resume` session
-    /// dir from the run configuration (called once by the controller).
-    pub fn configure(&mut self, models: Vec<ModelEntry>, sessions_dir: PathBuf) {
+    /// stores from the run configuration (called once by the controller).
+    pub fn configure(&mut self, models: Vec<ModelEntry>, session_sources: Vec<SessionSource>) {
         let current = Some(self.status.model.clone());
         let picker = self.overlays.models_mut();
         picker.models = models;
         picker.current = current;
-        self.sessions_dir = sessions_dir;
+        self.session_sources = session_sources;
     }
 
     /// Load user key overrides from `~/.omp/agent/keybindings.yml`
@@ -526,6 +533,14 @@ impl App {
                 self.autocomplete.set_commands(commands);
             }
             AppEvent::CommandOutput(text) => self.push_system(text.clone()),
+            AppEvent::SessionLoaded(messages) => {
+                // The resumed history replaces the transcript; rows already
+                // in terminal scrollback stay, the history is appended below.
+                self.journal.clear();
+                self.status.streaming = false;
+                self.messages.rebuild(messages);
+                self.title.set_state(TitleState::Idle, Some(&self.title_label));
+            }
             _ => {}
         }
         self.messages.apply(event);
@@ -1086,11 +1101,11 @@ impl App {
     /// `/resume`: open the embedded session picker (overlays-b P0 #10); the
     /// pick resolves to `Action::ResumeSession` via the overlay drain.
     fn slash_resume(&mut self) {
-        if self.sessions_dir.as_os_str().is_empty() {
+        if self.session_sources.is_empty() {
             self.push_system("session storage is not available in this session".into());
             return;
         }
-        self.overlays.open_sessions(&self.sessions_dir);
+        self.overlays.open_sessions(&self.session_sources);
     }
 
     /// Live half of a persisted settings edit: apply what omp-rs can right
@@ -1504,7 +1519,7 @@ mod tests {
         let port = port();
         app.configure(
             vec![ModelEntry::new("zai", "glm", Some(128_000))],
-            PathBuf::new(),
+            Vec::new(),
         );
         type_text(&mut app, &port, "/model zai/glm");
         assert!(enter(&mut app, &port));
@@ -1523,7 +1538,7 @@ mod tests {
             let port = port();
             app.configure(
                 vec![ModelEntry::new("zai", "glm", Some(128_000))],
-                PathBuf::new(),
+                Vec::new(),
             );
             type_text(&mut app, &port, &format!("/model {args}"));
             assert!(enter(&mut app, &port), "args: {args:?}");
@@ -1542,7 +1557,7 @@ mod tests {
         let port = port();
         app.configure(
             vec![ModelEntry::new("zai", "glm", Some(128_000))],
-            PathBuf::new(),
+            Vec::new(),
         );
         type_text(&mut app, &port, "/model");
         assert!(enter(&mut app, &port));
@@ -2132,7 +2147,7 @@ mod tests {
             ),
         )
         .unwrap();
-        app.configure(Vec::new(), dir.clone());
+        app.configure(Vec::new(), vec![SessionSource::new(&dir)]);
         type_text(&mut app, &port, "/resume");
         assert!(enter(&mut app, &port));
         assert_eq!(app.overlays.open(), Some(OpenOverlay::Sessions));
@@ -2147,6 +2162,56 @@ mod tests {
         );
         assert_eq!(app.overlays.open(), None);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn slash_resume_beats_description_matches_in_the_popup() {
+        // Regression: `/resume` was not in the popup catalog, so Enter
+        // accepted `/pin` (its description mentions the resume list).
+        let mut app = app();
+        let port = port();
+        let dir = std::env::temp_dir().join(format!("omp-resume-popup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        app.configure(Vec::new(), vec![SessionSource::new(&dir)]);
+        app.apply_event(&parse_frame(&json!({
+            "type": "available_commands_update",
+            "commands": [{"name": "pin", "description": "Pin this session to the top of the resume list",
+                          "source": "builtin"}],
+        })));
+        type_text(&mut app, &port, "/resume");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Sessions));
+        assert!(
+            !log(&port).iter().any(|c| c.contains("pin")),
+            "calls: {:?}",
+            log(&port)
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn session_loaded_rebuilds_transcript_from_history() {
+        let mut app = app();
+        app.push_system("stale notice".into());
+        app.apply_event(&parse_frame(&json!({
+            "type": "session_loaded",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "old question"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "old answer"}],
+                 "stopReason": "stop"},
+            ],
+        })));
+        let texts: Vec<String> = app.messages.entries().iter().map(|e| e.text.clone()).collect();
+        assert_eq!(texts.len(), 2, "history replaces the transcript: {texts:?}");
+        assert!(texts[0].contains("old question"), "{texts:?}");
+        assert!(texts[1].contains("old answer"), "{texts:?}");
+        // The loaded history is settled and flows into scrollback.
+        let rows = app.take_scrollback_lines(80, false);
+        let joined: String = rows
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(joined.contains("old answer"), "{joined}");
     }
 
     #[test]

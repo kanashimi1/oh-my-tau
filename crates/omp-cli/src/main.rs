@@ -75,15 +75,12 @@ fn parse_args() -> Result<Args> {
     cli::parse_from(argv.into_iter())
 }
 
-/// Directory sessions are stored in/looked up from, honoring --session-dir
-/// (mirrors `persist::sessions_dir`, which is private to that module).
+/// Directory sessions are stored in/looked up from, honoring --session-dir.
 fn sessions_dir(cwd: &Path, session_dir: Option<&Path>) -> Result<PathBuf> {
     if let Some(d) = session_dir {
         return Ok(d.to_path_buf());
     }
-    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
-    let slug = cwd.display().to_string().replace('/', "-");
-    Ok(PathBuf::from(home).join(".omp-rs/sessions").join(slug))
+    persist::sessions_dir(cwd).ok_or_else(|| anyhow::anyhow!("HOME is not set"))
 }
 
 /// Resolve a `--resume ID`/`--fork ID` value to a session file: an existing
@@ -117,14 +114,22 @@ fn resolve_session(dir: &Path, value: &str) -> Option<PathBuf> {
 
 /// Resolve the session-source flags (--resume/--session/--continue/--fork) to
 /// a session file to load, or None to start fresh.
+///
+/// `ts_dir` is TS omp's session dir for the same folder (absent with
+/// `--session-dir`): ids/the picker also search it; `--continue` stays on the
+/// omp-rs store.
 fn resolve_resume_target(
     resume: Option<&Resume>,
     continue_prev: bool,
     fork: Option<&str>,
     dir: &Path,
+    ts_dir: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
+    let resolve = |value: &str| {
+        resolve_session(dir, value).or_else(|| ts_dir.and_then(|d| resolve_session(d, value)))
+    };
     if let Some(fork) = fork {
-        return match resolve_session(dir, fork) {
+        return match resolve(fork) {
             Some(p) => Ok(Some(p)),
             None => bail!(
                 "Session \"{fork}\" not found.\nRun `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."
@@ -132,7 +137,7 @@ fn resolve_resume_target(
         };
     }
     match resume {
-        Some(Resume::Id(value)) => match resolve_session(dir, value) {
+        Some(Resume::Id(value)) => match resolve(value) {
             Some(p) => Ok(Some(p)),
             None => bail!(
                 "Session \"{value}\" not found.\nRun `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."
@@ -144,8 +149,13 @@ fn resolve_resume_target(
                 if std::io::IsTerminal::is_terminal(&std::io::stdin())
                     && std::io::IsTerminal::is_terminal(&std::io::stdout())
                 {
+                    use omp_tui::overlays::sessions::SessionSource;
+                    let mut sources = vec![SessionSource::new(dir)];
+                    if let Some(ts) = ts_dir {
+                        sources.push(SessionSource::labeled(ts, "ts"));
+                    }
                     match omp_tui::overlays::sessions::select_session_standalone(
-                        dir,
+                        &sources,
                         "Resume session",
                     ) {
                         Some(p) => Ok(Some(p)),
@@ -390,11 +400,17 @@ async fn main() -> Result<()> {
     } else {
         let dir = sessions_dir(&cwd, args.session_dir.as_deref())?;
         std::fs::create_dir_all(&dir).ok();
+        let ts_dir = if args.session_dir.is_some() {
+            None
+        } else {
+            persist::ts_sessions_dir(&cwd)
+        };
         let target = resolve_resume_target(
             args.resume.as_ref(),
             args.continue_prev,
             args.fork.as_deref(),
             &dir,
+            ts_dir.as_deref(),
         )?;
         if args.session_dir.is_some() {
             if let Ok(p) = &session {

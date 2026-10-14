@@ -43,6 +43,40 @@ pub struct SessionSummary {
     pub modified: SystemTime,
     /// Pinned sessions sort first (reserved for the pinned-ids host hook).
     pub pinned: bool,
+    /// Origin tag of the store the file came from (`None` = the native
+    /// omp-rs store; e.g. `Some("ts")` for TS omp's `~/.omp/agent/sessions`).
+    pub source: Option<String>,
+}
+
+/// One session store the picker lists: a per-project session dir plus an
+/// optional origin tag shown on its rows. The all-projects scope scans every
+/// sibling dir under the same root with the same tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSource {
+    /// The current folder's session dir in this store.
+    pub dir: PathBuf,
+    /// Origin tag for rows from this store (`None` = native, untagged).
+    pub label: Option<String>,
+}
+
+impl SessionSource {
+    /// A native (untagged) store.
+    #[must_use]
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            label: None,
+        }
+    }
+
+    /// A store whose rows carry `label`.
+    #[must_use]
+    pub fn labeled(dir: impl Into<PathBuf>, label: &str) -> Self {
+        Self {
+            dir: dir.into(),
+            label: Some(label.to_owned()),
+        }
+    }
 }
 
 impl SessionSummary {
@@ -147,7 +181,19 @@ fn scan_session_file(path: &Path) -> Option<SessionSummary> {
         path: path.to_path_buf(),
         modified,
         pinned: false,
+        source: None,
     })
+}
+
+/// Scan one store's dir, tagging every row with the store's label.
+fn scan_source(src: &SessionSource) -> Vec<SessionSummary> {
+    let mut rows = scan_session_dir(&src.dir);
+    if src.label.is_some() {
+        for row in &mut rows {
+            row.source.clone_from(&src.label);
+        }
+    }
+    rows
 }
 
 /// Subsequence fuzzy score of `query` against `candidate` (both lowercased
@@ -223,8 +269,8 @@ fn civil_date(secs: u64) -> String {
 /// The session picker overlay (`SessionSelectorComponent`).
 #[derive(Clone)]
 pub struct SessionPicker {
-    folder_dir: PathBuf,
-    all_dirs: Vec<PathBuf>,
+    folders: Vec<SessionSource>,
+    all_dirs: Vec<SessionSource>,
     scope: SessionScope,
     sessions: Vec<SessionSummary>,
     /// Indices into `sessions`, filtered + ranked by the current query.
@@ -259,7 +305,7 @@ impl std::fmt::Debug for SessionPicker {
 impl Default for SessionPicker {
     fn default() -> Self {
         Self {
-            folder_dir: PathBuf::new(),
+            folders: Vec::new(),
             all_dirs: Vec::new(),
             scope: SessionScope::CurrentFolder,
             sessions: Vec::new(),
@@ -283,8 +329,19 @@ impl SessionPicker {
     /// session dir), newest first.
     #[must_use]
     pub fn load(dir: &Path) -> Self {
+        Self::load_sources(&[SessionSource::new(dir)])
+    }
+
+    /// Build a picker over several stores (the native omp-rs dir plus TS
+    /// omp's dir for the same folder), merged newest first.
+    #[must_use]
+    pub fn load_sources(sources: &[SessionSource]) -> Self {
         let mut picker = Self {
-            folder_dir: dir.to_path_buf(),
+            folders: sources
+                .iter()
+                .filter(|s| !s.dir.as_os_str().is_empty())
+                .cloned()
+                .collect(),
             ..Default::default()
         };
         picker.rescan();
@@ -327,36 +384,48 @@ impl SessionPicker {
 
     /// Rescan the session dir(s) for the current scope and re-apply the filter.
     pub fn rescan(&mut self) {
-        let dirs: &[PathBuf] = match self.scope {
-            SessionScope::CurrentFolder => std::slice::from_ref(&self.folder_dir),
+        let dirs: &[SessionSource] = match self.scope {
+            SessionScope::CurrentFolder => &self.folders,
             SessionScope::AllProjects => &self.all_dirs,
         };
-        self.sessions = dirs.iter().flat_map(|d| scan_session_dir(d)).collect();
+        self.sessions = dirs.iter().flat_map(scan_source).collect();
         self.sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
         self.refilter();
     }
 
-    /// Discover every project dir under the sessions root (lazy: only on the
-    /// first `tab`). `dir`'s parent is the per-project root (`…/sessions/`).
+    /// Discover every project dir under each store's sessions root (lazy:
+    /// only on the first `tab`). A folder dir's parent is its store's
+    /// per-project root (`…/sessions/`); rows keep the store's tag.
     fn ensure_all_dirs(&mut self) {
-        if !self.all_dirs.is_empty() || self.folder_dir.as_os_str().is_empty() {
+        if !self.all_dirs.is_empty() || self.folders.is_empty() {
             return;
         }
-        let mut dirs = Vec::new();
-        if let Some(root) = self.folder_dir.parent() {
-            if let Ok(read) = fs::read_dir(root) {
-                for entry in read.flatten() {
-                    let p = entry.path();
-                    if p.is_dir() {
-                        dirs.push(p);
+        let mut dirs: Vec<SessionSource> = Vec::new();
+        for folder in &self.folders {
+            let mut found = Vec::new();
+            if let Some(root) = folder.dir.parent() {
+                if let Ok(read) = fs::read_dir(root) {
+                    for entry in read.flatten() {
+                        let p = entry.path();
+                        if p.is_dir() {
+                            found.push(p);
+                        }
                     }
                 }
             }
+            if !found.contains(&folder.dir) {
+                found.push(folder.dir.clone());
+            }
+            found.sort();
+            for dir in found {
+                if !dirs.iter().any(|d| d.dir == dir) {
+                    dirs.push(SessionSource {
+                        dir,
+                        label: folder.label.clone(),
+                    });
+                }
+            }
         }
-        if !dirs.contains(&self.folder_dir) {
-            dirs.push(self.folder_dir.clone());
-        }
-        dirs.sort();
         self.all_dirs = dirs;
     }
 
@@ -443,16 +512,22 @@ impl SessionPicker {
 }
 
 impl SessionPicker {
-    /// One rendered row: `title  <relative time>  <cwd dim>` (TS row shape).
+    /// One rendered row: `title  <relative time>  <cwd dim>` (TS row shape),
+    /// plus a `[tag]` for sessions from a non-native store.
     fn row_spans<'a>(&self, s: &'a SessionSummary, theme: &Theme) -> Vec<Span<'a>> {
         let muted = Style::default().fg(theme.color("text_muted"));
-        vec![
+        let mut spans = vec![
             Span::styled(s.display_title().to_owned(), Style::default()),
             Span::raw("  "),
             Span::styled(relative_time(s.modified), muted),
             Span::raw("  "),
             Span::styled(s.cwd.clone(), muted),
-        ]
+        ];
+        if let Some(tag) = &s.source {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(format!("[{tag}]"), muted));
+        }
+        spans
     }
 
     /// The footer hint (TS: `[delete/backspace delete · enter select · tab <scope> · esc cancel]`).
@@ -674,7 +749,7 @@ impl Component for SessionPicker {
 /// Owns the terminal lifecycle the way TS `runStandaloneTui` does: raw mode +
 /// alternate screen for the picker's lifetime, restored on drop (including
 /// panics); Ctrl+C resolves `None` like the TS `process.exit(0)` path.
-pub fn select_session_standalone(dir: &Path, title: &str) -> Option<PathBuf> {
+pub fn select_session_standalone(sources: &[SessionSource], title: &str) -> Option<PathBuf> {
     use crossterm::event::{self, Event};
     use crossterm::terminal::{
         disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -702,7 +777,7 @@ pub fn select_session_standalone(dir: &Path, title: &str) -> Option<PathBuf> {
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = ratatui::Terminal::new(backend).ok()?;
 
-    let mut picker = SessionPicker::load(dir);
+    let mut picker = SessionPicker::load_sources(sources);
     picker.set_standalone(true);
     picker.set_title(title);
     let theme = Theme::default();
@@ -886,6 +961,70 @@ mod tests {
         picker.handle_key(key(KeyCode::Tab));
         assert_eq!(picker.scope, SessionScope::CurrentFolder);
         assert_eq!(picker.filtered.len(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn multiple_sources_merge_newest_first_with_tags() {
+        let root = fixture_root();
+        let native = root.join("rs/sessions/-home-u-proj");
+        let ts = root.join("ts/sessions/-proj");
+        write_session(&native, "rs1", "Native", "/home/u/proj");
+        let old_ts = write_session(&ts, "ts1", "FromTs", "/home/u/proj");
+        let new_ts = write_session(&ts, "ts2", "NewestTs", "/home/u/proj");
+        bump_mtime(&new_ts);
+        // Another project in each store: only visible in the all-projects scope.
+        write_session(&root.join("rs/sessions/-other"), "rs9", "RsOther", "/other");
+        write_session(&root.join("ts/sessions/-other"), "ts9", "TsOther", "/other");
+
+        let mut picker = SessionPicker::load_sources(&[
+            SessionSource::new(&native),
+            SessionSource::labeled(&ts, "ts"),
+        ]);
+        let ids: Vec<&str> = picker.sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(ids[0], "ts2", "newest across both stores first");
+        let tag = |id: &str| {
+            picker
+                .sessions
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.source.clone())
+        };
+        assert_eq!(tag("rs1"), None);
+        assert_eq!(tag("ts1").as_deref(), Some("ts"));
+
+        picker.handle_key(key(KeyCode::Tab));
+        assert_eq!(picker.filtered.len(), 5);
+        let ts_other = picker.sessions.iter().find(|s| s.id == "ts9").unwrap();
+        assert_eq!(ts_other.source.as_deref(), Some("ts"));
+
+        // Picking a TS session resolves to its file (resume reads it; the
+        // runtime writes the continuation into the native store).
+        picker.handle_key(key(KeyCode::Tab));
+        for c in "fromts".chars() {
+            picker.handle_key(char_key(c));
+        }
+        picker.handle_key(key(KeyCode::Enter));
+        assert_eq!(picker.take_pick(), Some(SessionPick::Resume(old_ts)));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tagged_rows_render_the_store_tag() {
+        let root = fixture_root();
+        let ts = root.join("ts/sessions/-proj");
+        write_session(&ts, "ts1", "FromTs", "/home/u/proj");
+        let picker = SessionPicker::load_sources(&[SessionSource::labeled(&ts, "ts")]);
+        let theme = Theme::default();
+        let backend = TestBackend::new(160, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| picker.render(f, f.area(), &theme))
+            .unwrap();
+        let text = text_to_string(terminal.backend().buffer());
+        assert!(text.contains("FromTs"), "{text}");
+        assert!(text.contains("[ts]"), "{text}");
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -81,6 +81,10 @@ pub enum AppEvent {
     /// pending extension dialog (echoed back through the runtime stream so
     /// the UI can retire its queue entry).
     ExtensionUiResponse(Value),
+    /// `{"type":"session_loaded", "messages": [...]}` — a session was
+    /// resumed (startup `--resume` or `/resume`): the transcript is replaced
+    /// by the loaded history. Emitted by the omp-cli TUI bridge.
+    SessionLoaded(Vec<Value>),
     /// Any frame without a dedicated variant; kept verbatim.
     Unknown(Value),
 }
@@ -140,6 +144,13 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+        ),
+        "session_loaded" => AppEvent::SessionLoaded(
+            frame
+                .get("messages")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
         ),
         _ => AppEvent::Unknown(frame.clone()),
     }

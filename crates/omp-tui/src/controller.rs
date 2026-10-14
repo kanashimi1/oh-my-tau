@@ -87,7 +87,7 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     if let Some(warning) = app.load_user_keybindings() {
         tracing::warn!("{warning}");
     }
-    app.configure(cfg.models, cfg.sessions_dir);
+    app.configure(cfg.models, cfg.session_sources);
 
     shell.draw_live(|f| app.render(f)).context("initial draw")?;
 

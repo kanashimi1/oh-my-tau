@@ -55,10 +55,51 @@ pub fn uuid_v7() -> String {
     )
 }
 
-fn sessions_dir(cwd: &Path) -> Option<PathBuf> {
+/// The default omp-rs session dir for `cwd` (`~/.omp-rs/sessions/<slug>`).
+pub(crate) fn sessions_dir(cwd: &Path) -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     let slug = cwd.display().to_string().replace('/', "-");
     Some(PathBuf::from(home).join(".omp-rs/sessions").join(slug))
+}
+
+/// TS omp's session dir for `cwd` (`<agent dir>/sessions/<name>`, TS
+/// `sessionDirForCwd`): read-only lookup, nothing is created or migrated.
+/// The `/resume` picker and `--resume <id>` list it next to the omp-rs store.
+#[must_use]
+pub fn ts_sessions_dir(cwd: &Path) -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let name = ts_session_dir_name(&canon(cwd), &canon(&home), &canon(&std::env::temp_dir()));
+    Some(omp_providers::AgentDir::default().0.join("sessions").join(name))
+}
+
+/// TS `getDefaultSessionDirName` (session-paths.ts) over canonical paths:
+/// temp root first (`-tmp[-rel]`), then home (`-[rel]`), else the legacy
+/// absolute form `--<abs>--`; `/`, `\` and `:` become `-`.
+fn ts_session_dir_name(cwd: &Path, home: &Path, tmp: &Path) -> String {
+    let encode = |rel: &Path| {
+        rel.to_string_lossy()
+            .replace(['/', '\\', ':'], "-")
+    };
+    let relative = |prefix: &str, rel: &Path| {
+        let encoded = encode(rel);
+        if encoded.is_empty() {
+            prefix.to_owned()
+        } else if prefix.ends_with('-') {
+            format!("{prefix}{encoded}")
+        } else {
+            format!("{prefix}-{encoded}")
+        }
+    };
+    if let Ok(rel) = cwd.strip_prefix(tmp) {
+        return relative("-tmp", rel);
+    }
+    if let Ok(rel) = cwd.strip_prefix(home) {
+        return relative("-", rel);
+    }
+    let abs = cwd.to_string_lossy();
+    let abs = abs.strip_prefix(['/', '\\']).unwrap_or(&abs);
+    format!("--{}--", abs.replace(['/', '\\', ':'], "-"))
 }
 
 /// Live session file: the agent's finished messages are appended to
@@ -328,4 +369,26 @@ pub async fn attach_with(agent: &Agent, cwd: &Path, ephemeral: bool) -> Result<P
         defer_errors,
         deferred,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ts_session_dir_name;
+    use std::path::Path;
+
+    #[test]
+    fn ts_session_dir_names_match_ts_rule() {
+        let home = Path::new("/home/u");
+        let tmp = Path::new("/tmp");
+        let name = |cwd: &str| ts_session_dir_name(Path::new(cwd), home, tmp);
+        assert_eq!(name("/home/u/fleet-split"), "-fleet-split");
+        assert_eq!(name("/home/u/a/b"), "-a-b");
+        assert_eq!(name("/home/u/.omp/agent"), "-.omp-agent");
+        assert_eq!(name("/home/u"), "-");
+        assert_eq!(name("/tmp"), "-tmp");
+        assert_eq!(name("/tmp/x/y"), "-tmp-x-y");
+        assert_eq!(name("/mnt/c/Temp"), "--mnt-c-Temp--");
+        // A sibling sharing a string prefix is not inside home.
+        assert_eq!(name("/home/user2"), "--home-user2--");
+    }
 }

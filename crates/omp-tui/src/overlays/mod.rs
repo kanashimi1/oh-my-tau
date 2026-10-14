@@ -135,10 +135,10 @@ impl Overlays {
         &mut self.models
     }
 
-    /// Open the embedded session picker (`/resume`): rescan `dir`, reset the
-    /// query/selection and push the overlay (replacing a stale picker).
-    pub fn open_sessions(&mut self, dir: &std::path::Path) {
-        let mut picker = sessions::SessionPicker::load(dir);
+    /// Open the embedded session picker (`/resume`): rescan `sources`, reset
+    /// the query/selection and push the overlay (replacing a stale picker).
+    pub fn open_sessions(&mut self, sources: &[sessions::SessionSource]) {
+        let mut picker = sessions::SessionPicker::load_sources(sources);
         picker.set_standalone(false);
         self.sessions = picker;
         if !self.stack.contains(&OpenOverlay::Sessions) {

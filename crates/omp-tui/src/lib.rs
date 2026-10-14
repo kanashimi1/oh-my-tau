@@ -67,9 +67,10 @@ pub struct RunConfig {
     /// Model catalogue for the `/model` picker (providers with credentials,
     /// omp-cli `runtime::available_models`).
     pub models: Vec<overlays::models::ModelEntry>,
-    /// The current folder's session dir backing the embedded `/resume`
-    /// picker.
-    pub sessions_dir: PathBuf,
+    /// Session stores backing the `/resume` picker: the native omp-rs
+    /// folder dir first, then TS omp's dir for the same folder (tagged).
+    /// Empty → session storage unavailable.
+    pub session_sources: Vec<overlays::sessions::SessionSource>,
     /// Terminal background from the startup OSC 11 probe (`None` →
     /// COLORFGBG / dark default inside [`theme::detect_appearance`]).
     pub osc11_bg: Option<theme::Rgb>,
