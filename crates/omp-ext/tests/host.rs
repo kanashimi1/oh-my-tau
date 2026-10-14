@@ -522,3 +522,48 @@ async fn message_update_deltas_are_isolated_from_handler_mutations() {
         assert_eq!(seen(&r), want);
     }
 }
+
+/// Two awaited emits parked behind a fire-and-forget emit whose handler then
+/// blocks on a core request: both must stop waiting. (`ReviewExtDelta`: the
+/// single wake slot woke only the last parked emit; the other waited for the
+/// core's answer, which only comes once both returned -- a deadlock.)
+#[tokio::test]
+async fn blocked_nowait_handler_wakes_every_parked_emit() {
+    let mut cfg = config();
+    cfg.handler_timeout_ms = Some(30_000);
+    let host = ExtHost::spawn(&cfg).await.unwrap();
+    let mut rx = host.take_incoming().unwrap();
+    let r = host
+        .load(Some(&[fixture("nowait_blocking.ts")]), None, "/tmp", None)
+        .await
+        .unwrap();
+    assert_eq!(r.loaded.len(), 1, "{r:?}");
+    host.emit_nowait(&json!({"type": "agent_start"}), None, |_| {})
+        .unwrap();
+    let parked = |n: u64| {
+        let host = host.clone();
+        tokio::spawn(async move {
+            host.emit(json!({"type": "turn_start", "turnIndex": n}), None)
+                .await
+        })
+    };
+    let (a, b) = (parked(1), parked(2));
+    let (a, b) = tokio::time::timeout(Duration::from_secs(5), async { (a.await, b.await) })
+        .await
+        .expect("a parked emit stayed blocked behind the blocked nowait handler");
+    assert!(a.unwrap().is_ok() && b.unwrap().is_ok());
+
+    // Answer the handler's compact request so the nowait emit can finish.
+    loop {
+        let m = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("compact request")
+            .expect("incoming open");
+        if let HostMessage::Request { id, method, .. } = m {
+            assert_eq!(method, "compact");
+            host.respond(id, Ok(Value::Null)).await.unwrap();
+            break;
+        }
+    }
+    host.shutdown().await.unwrap();
+}

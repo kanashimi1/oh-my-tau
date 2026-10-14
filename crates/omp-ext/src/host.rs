@@ -2,18 +2,60 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, watch};
 
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+/// Response waiters of one connection. `closed` is set when the connection
+/// failed (reader EOF or writer error): every waiter is failed at that moment
+/// and later registrations are refused, so no request can wait on a dead
+/// connection (`ReviewExtDelta`: a request registered while the failing writer
+/// drained used to hang forever).
+#[derive(Default)]
+struct PendingTable {
+    waiters: HashMap<u64, oneshot::Sender<Result<Value, String>>>,
+    closed: Option<&'static str>,
+}
+
+impl PendingTable {
+    fn fail_all(&mut self, why: &'static str) {
+        self.closed.get_or_insert(why);
+        for (_, w) in self.waiters.drain() {
+            let _ = w.send(Err(why.into()));
+        }
+    }
+}
+
+type Pending = Arc<Mutex<PendingTable>>;
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// One transport generation: the writer queue plus the waiters of requests
+/// sent on it. A reconnect replaces it wholesale, so a failing old
+/// connection can only fail its own requests, never ones sent to the new host.
+struct Conn {
+    out: mpsc::UnboundedSender<Vec<u8>>,
+    pending: Pending,
+}
+
+impl Conn {
+    fn new(w: BoxedWriter) -> Self {
+        let pending = Pending::default();
+        Self {
+            out: spawn_writer(w, pending.clone()),
+            pending,
+        }
+    }
+}
 
 /// How to start the host process.
 #[derive(Debug, Clone)]
@@ -154,12 +196,12 @@ pub struct ExtHost {
     /// learned from `load` (mirrors the TS runner's `hasHandlers` gate).
     /// `None` = not loaded yet / unknown: send everything.
     subscribed: Mutex<Option<HashSet<String>>>,
-    /// Queue feeding the writer task (child stdin or shared-daemon socket).
-    out: Mutex<mpsc::UnboundedSender<Vec<u8>>>,
+    /// Current connection: queue feeding the writer task (child stdin or
+    /// shared-daemon socket) and the waiters of requests sent on it.
+    conn: Mutex<Conn>,
     /// The spawned child; `None` in shared mode (the daemon outlives this
     /// session and is shared with other sessions, so we never kill it).
     child: tokio::sync::Mutex<Option<Child>>,
-    pending: Pending,
     next_id: AtomicU64,
     incoming: Mutex<Incoming>,
     /// Per-session trace file forwarded with the `load` RPC (shared mode).
@@ -176,8 +218,9 @@ pub struct ExtHost {
 }
 
 /// Writer task: coalesces every queued line into one buffered write and
-/// flushes only when the queue drains. A write failure fails everything
-/// still waiting for a response and closes the queue (later sends error).
+/// flushes only when the queue drains. A write failure closes the queue
+/// (later sends error), then fails every waiter of this connection and
+/// refuses new ones.
 fn spawn_writer(mut w: BoxedWriter, pending: Pending) -> mpsc::UnboundedSender<Vec<u8>> {
     const MAX_BATCH: usize = 256 * 1024;
     let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -190,13 +233,11 @@ fn spawn_writer(mut w: BoxedWriter, pending: Pending) -> mpsc::UnboundedSender<V
                 }
             }
             if w.write_all(&buf).await.is_err() || w.flush().await.is_err() {
-                for (_, p) in pending
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .drain()
-                {
-                    let _ = p.send(Err("extension host stdin closed".into()));
-                }
+                rx.close();
+                lock(&pending).fail_all("extension host stdin closed");
+                // Lines still queued are never written; their waiters were
+                // failed above (registration happens before the enqueue).
+                while rx.try_recv().is_ok() {}
                 return;
             }
         }
@@ -238,6 +279,34 @@ fn private_command(cfg: &HostConfig) -> Command {
     cmd
 }
 
+/// Reader task of one connection: routes every line, then fails the
+/// connection's remaining waiters at EOF.
+fn spawn_reader(
+    reader: impl AsyncRead + Send + Unpin + 'static,
+    pending: Pending,
+    host: Weak<ExtHost>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(reader).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            route(&msg, &pending, host.upgrade());
+        }
+        lock(&pending).fail_all("extension host exited");
+    })
+}
+
+fn spawn_stderr(stderr: tokio::process::ChildStderr) {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("[ext-host] {line}");
+        }
+    });
+}
+
 impl ExtHost {
     /// Spawn `bun <host_script>` (or connect to the shared daemon when
     /// [`HostConfig::shared_socket`] is set) and start the reader tasks.
@@ -256,14 +325,14 @@ impl ExtHost {
         let stdout = child.stdout.take().context("host stdout")?;
         let stderr = child.stderr.take().context("host stderr")?;
 
-        let pending: Pending = Arc::default();
+        let conn = Conn::new(Box::new(stdin));
+        let pending = conn.pending.clone();
         let (tx, rx) = mpsc::unbounded_channel();
         let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
-            out: Mutex::new(spawn_writer(Box::new(stdin), pending.clone())),
+            conn: Mutex::new(conn),
             child: tokio::sync::Mutex::new(Some(child)),
-            pending: pending.clone(),
             next_id: AtomicU64::new(1),
             incoming: Mutex::new(Incoming {
                 delivery: Delivery::Pending(VecDeque::new()),
@@ -276,30 +345,9 @@ impl ExtHost {
             generation,
         });
 
-        let weak = Arc::downgrade(&host);
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                route(&msg, &pending, weak.upgrade());
-            }
-            // Host gone: fail everything still waiting.
-            for (_, w) in pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .drain()
-            {
-                let _ = w.send(Err("extension host exited".into()));
-            }
-        });
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                eprintln!("[ext-host] {line}");
-            }
-        });
+        // Host gone: the reader fails everything still waiting.
+        spawn_reader(stdout, pending, Arc::downgrade(&host));
+        spawn_stderr(stderr);
         Ok(host)
     }
 
@@ -339,9 +387,8 @@ impl ExtHost {
     fn write(&self, msg: &Value) -> Result<()> {
         let mut line = serde_json::to_vec(msg)?;
         line.push(b'\n');
-        self.out
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        lock(&self.conn)
+            .out
             .send(line)
             .map_err(|_| anyhow!("extension host stdin closed"))
     }
@@ -354,17 +401,24 @@ impl ExtHost {
         params: Value,
     ) -> Result<oneshot::Receiver<Result<Value, String>>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let mut line =
+            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
+        line.push(b'\n');
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id, tx);
-        if let Err(e) = self.write(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})) {
-            self.pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&id);
-            return Err(e);
+        // Register and enqueue on the same connection (held across both, so a
+        // reconnect cannot split them): the waiter belongs to the connection
+        // that carries the request, and only that connection can fail it.
+        let conn = lock(&self.conn);
+        {
+            let mut table = lock(&conn.pending);
+            if let Some(why) = table.closed {
+                bail!("{why}");
+            }
+            table.waiters.insert(id, tx);
+        }
+        if conn.out.send(line).is_err() {
+            lock(&conn.pending).waiters.remove(&id);
+            bail!("extension host stdin closed");
         }
         Ok(rx)
     }
@@ -603,14 +657,14 @@ impl ExtHost {
         let stream = Self::connect_daemon(cfg, sock).await?;
 
         let (read_half, write_half) = stream.into_split();
-        let pending: Pending = Arc::default();
+        let conn = Conn::new(Box::new(write_half));
+        let pending = conn.pending.clone();
         let (tx, rx) = mpsc::unbounded_channel();
         let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
-            out: Mutex::new(spawn_writer(Box::new(write_half), pending.clone())),
+            conn: Mutex::new(conn),
             child: tokio::sync::Mutex::new(None),
-            pending: pending.clone(),
             next_id: AtomicU64::new(1),
             incoming: Mutex::new(Incoming {
                 delivery: Delivery::Pending(VecDeque::new()),
@@ -624,23 +678,11 @@ impl ExtHost {
         });
 
         let weak = Arc::downgrade(&host);
+        // Daemon died (e.g. kill -9): the reader fails everything still
+        // waiting so in-flight emits/tool calls get a clean error, not a hang.
+        let reader = spawn_reader(read_half, pending, weak.clone());
         tokio::spawn(async move {
-            let mut lines = BufReader::new(read_half).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                route(&msg, &pending, weak.upgrade());
-            }
-            // Daemon died (e.g. kill -9): fail everything still waiting so
-            // in-flight emits/tool calls get a clean error, not a hang.
-            for (_, w) in pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .drain()
-            {
-                let _ = w.send(Err("extension host exited".into()));
-            }
+            let _ = reader.await;
             // Transparent fallback: respawn a private stdio host on the same
             // `Arc<ExtHost>` so every consumer (hooks, tools, lifecycle
             // forwarding) keeps working; `reconnections()` subscribers (the
@@ -702,51 +744,35 @@ impl ExtHost {
         let stdin = child.stdin.take().context("reconnect: host stdin")?;
         let stdout = child.stdout.take().context("reconnect: host stdout")?;
         let stderr = child.stderr.take().context("reconnect: host stderr")?;
+        self.install(Box::new(stdin), stdout, Some(child)).await;
+        spawn_stderr(stderr);
+        // Publish last, after the new connection is fully usable.
+        self.generation.send_modify(|g| *g += 1);
+        Ok(())
+    }
 
-        *self.out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-            spawn_writer(Box::new(stdin), self.pending.clone());
-        *self.child.lock().await = Some(child);
-        *self
-            .subscribed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    /// Swap in a fresh connection: new writer and waiter table (the old
+    /// connection keeps its own, so its late failure cannot touch requests
+    /// sent here), child, reset `hasHandlers` gate and incoming channel (the
+    /// old consumer's receiver ends when its sender drops); start its reader.
+    async fn install(
+        self: &Arc<Self>,
+        writer: BoxedWriter,
+        reader: impl AsyncRead + Send + Unpin + 'static,
+        child: Option<Child>,
+    ) {
+        let conn = Conn::new(writer);
+        let pending = conn.pending.clone();
+        *lock(&self.conn) = conn;
+        *self.child.lock().await = child;
+        *lock(&self.subscribed) = None;
         let (tx, rx) = mpsc::unbounded_channel();
-        *self
-            .incoming
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Incoming {
+        *lock(&self.incoming) = Incoming {
             delivery: Delivery::Pending(VecDeque::new()),
             tx,
             rx: Some(rx),
         };
-
-        let pending: Pending = self.pending.clone();
-        let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Ok(msg) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                route(&msg, &pending, weak.upgrade());
-            }
-            for (_, w) in pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .drain()
-            {
-                let _ = w.send(Err("extension host exited".into()));
-            }
-        });
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                eprintln!("[ext-host] {line}");
-            }
-        });
-        // Publish last, after the new connection is fully usable.
-        self.generation.send_modify(|g| *g += 1);
-        Ok(())
+        spawn_reader(reader, pending, Arc::downgrade(self));
     }
 
     /// Connect to the daemon's socket, spawning it on the first attempt.
@@ -819,11 +845,7 @@ fn route(msg: &Value, pending: &Pending, host: Option<Arc<ExtHost>>) {
     match (method, msg.get("id")) {
         (None, Some(id)) => {
             let Some(id) = id.as_u64() else { return };
-            let Some(w) = pending
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(&id)
-            else {
+            let Some(w) = lock(pending).waiters.remove(&id) else {
                 return;
             };
             let _ = w.send(match msg.get("error") {
@@ -997,5 +1019,110 @@ mod tests {
             answered.is_ok(),
             "buffered request was never answered after attach"
         );
+    }
+
+    /// The host closes its stdin but stays alive (stdout open), so only the
+    /// writer can notice the dead connection. Every request -- including ones
+    /// registered while the failing writer drains -- must resolve, none hang.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn writer_failure_resolves_every_pending_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = fake_host(dir.path(), "exec 0<&-\nsleep 60\n");
+        for _ in 0..10 {
+            let host = ExtHost::spawn(&cfg).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut tasks = tokio::task::JoinSet::new();
+            for i in 0..200 {
+                let host = host.clone();
+                tasks.spawn(async move {
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        host.request("emit", json!({ "i": i })),
+                    )
+                    .await
+                });
+            }
+            while let Some(r) = tasks.join_next().await {
+                let r = r.unwrap().expect("request hung after the writer failed");
+                assert!(r.is_err(), "no host answered, yet: {r:?}");
+            }
+        }
+    }
+
+    type SentLines = tokio::io::Lines<BufReader<tokio::io::DuplexStream>>;
+
+    /// Line-oriented fake host on in-memory pipes: `(writer, reader)` for
+    /// [`ExtHost::install`] and the peer ends the test drives.
+    fn pipe_conn() -> (
+        (BoxedWriter, tokio::io::DuplexStream),
+        (SentLines, tokio::io::DuplexStream),
+    ) {
+        let (to_host, from_core) = tokio::io::duplex(1 << 16);
+        let (from_host, to_core) = tokio::io::duplex(1 << 16);
+        (
+            (Box::new(to_host), to_core),
+            (BufReader::new(from_core).lines(), from_host),
+        )
+    }
+
+    /// A connection that failed after it was replaced fails only its own
+    /// requests: a request already sent to the new connection still gets
+    /// the new host's answer (`ReviewExtDelta`: the old writer drained the
+    /// shared waiter table, failing it with "stdin closed").
+    #[tokio::test]
+    async fn late_failure_of_a_replaced_connection_spares_the_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = ExtHost::spawn(&fake_host(dir.path(), "sleep 60\n")).await.unwrap();
+
+        // Old connection: its writer blocks on a full 16-byte pipe until the
+        // peer goes away, then fails (a dead daemon socket / stdin).
+        let (old_w, old_peer) = tokio::io::duplex(16);
+        let (old_r, _old_r_peer) = tokio::io::duplex(16);
+        host.install(Box::new(old_w), old_r, None).await;
+        let old = host.send_request("emit", json!({"queued": "on the old connection"})).unwrap();
+
+        let ((new_w, new_r), (mut sent, mut answer)) = pipe_conn();
+        host.install(new_w, new_r, None).await;
+        let new = host.send_request("emit", json!({})).unwrap();
+        let line = tokio::time::timeout(Duration::from_secs(5), sent.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("request reached the new host");
+        let id = serde_json::from_str::<Value>(&line).unwrap()["id"].clone();
+
+        drop(old_peer);
+        let old = tokio::time::timeout(Duration::from_secs(5), old).await.unwrap().unwrap();
+        assert!(old.is_err(), "old request fails with its connection: {old:?}");
+
+        let mut reply = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"result":"ok"})).unwrap();
+        reply.push(b'\n');
+        answer.write_all(&reply).await.unwrap();
+        let new = tokio::time::timeout(Duration::from_secs(5), new).await.unwrap().unwrap();
+        assert_eq!(new, Ok(json!("ok")), "new request must get the new host's answer");
+    }
+
+    /// Writer failure: every queued request resolves, and a request issued
+    /// once the connection failed is refused at once instead of waiting on a
+    /// connection that will never answer.
+    #[tokio::test]
+    async fn failed_writer_resolves_queued_and_refuses_new_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = ExtHost::spawn(&fake_host(dir.path(), "sleep 60\n")).await.unwrap();
+        let (w, peer) = tokio::io::duplex(16);
+        let (r, _r_peer) = tokio::io::duplex(16);
+        host.install(Box::new(w), r, None).await;
+        let queued: Vec<_> = (0..8)
+            .map(|i| host.send_request("emit", json!({ "i": i })).unwrap())
+            .collect();
+        drop(peer);
+        for rx in queued {
+            let r = tokio::time::timeout(Duration::from_secs(5), rx).await.unwrap().unwrap();
+            assert_eq!(r, Err("extension host stdin closed".into()));
+        }
+        // The table is closed with the failure: no window where a new waiter
+        // can be registered on the dead connection.
+        assert!(lock(&lock(&host.conn).pending).closed.is_some());
+        assert!(host.send_request("emit", json!({})).is_err());
     }
 }

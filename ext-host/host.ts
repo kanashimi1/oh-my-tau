@@ -61,7 +61,9 @@ const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Err
 // deadlock on the barrier it is itself holding open.
 const inNowait = new AsyncLocalStorage<true>();
 let nowaitBlocked = 0;
-let nowaitWake: (() => void) | undefined;
+// Every awaited emit/call_tool parked on the barrier (parallel tool calls can
+// park several at once); a blocking fire-and-forget handler wakes them all.
+const nowaitWakers = new Set<() => void>();
 function request(method: string, params: Json): Promise<unknown> {
   const id = nextId++;
   const { promise, resolve, reject } = Promise.withResolvers<unknown>();
@@ -69,7 +71,8 @@ function request(method: string, params: Json): Promise<unknown> {
   out({ id, method, params });
   if (!inNowait.getStore()) return promise;
   nowaitBlocked++;
-  nowaitWake?.();
+  for (const wake of nowaitWakers) wake();
+  nowaitWakers.clear();
   return promise.finally(() => void nowaitBlocked--);
 }
 const notify = (method: string, params: Json) => out({ method, params });
@@ -445,8 +448,11 @@ const joinCtx = (xs: string[]) => {
 // ---------------------------------------------------------------- message_update deltas
 // The core (crates/omp-cli/src/events.rs `ExtUpdateEncoder`) sends the full
 // message once per assistant message and then only what moved:
-//   full:  {type, message, assistantMessageEvent, delta: {id, seq: 0}}
-//   delta: {type, assistantMessageEvent, delta: {id, seq, n, hdr?, b: [{i, blk?, v, x?}]}}
+//   full:  {type, message, assistantMessageEvent, delta: {s, id, seq: 0}}
+//   delta: {type, assistantMessageEvent, delta: {s, id, seq, n, hdr?, b: [{i, blk?, v, x?}]}}
+// `s` names the encoder (one per core-side subscription): several encoders
+// may feed one host, so each keeps its own chain, and chain ids are unique
+// across encoders, so a delta can never apply to another encoder's message.
 // `rebuildMessageUpdate` turns a delta back into the full event before any
 // handler runs, so handlers see exactly the shape of a full frame. The chain
 // keeps its own copy of the message and never hands it out: every update gets
@@ -454,7 +460,16 @@ const joinCtx = (xs: string[]) => {
 // would, so a handler that mutates `event.message` can neither corrupt the
 // next rebuild nor leak its edits into later updates. Frames without `delta`
 // (older cores, non-assistant messages) pass through untouched.
-let updateChain: { id: number; seq: number; message: Json } | null = null;
+type UpdateChain = { id: number; seq: number; message: Json };
+const updateChains = new Map<string, UpdateChain>();
+// Encoders that went away (dropped subscriptions) leave their last chain
+// behind; evicting the oldest only costs that encoder a resync.
+const MAX_UPDATE_CHAINS = 16;
+function setUpdateChain(stream: string, chain: UpdateChain): void {
+  updateChains.delete(stream);
+  updateChains.set(stream, chain);
+  if (updateChains.size > MAX_UPDATE_CHAINS) updateChains.delete(updateChains.keys().next().value as string);
+}
 
 class DeltaError extends Error {}
 const STREAM_KEY: Record<string, string> = { text: "text", thinking: "thinking", toolCall: "arguments" };
@@ -506,17 +521,18 @@ function rebuildMessageUpdate(event: Json): boolean {
   const d = event.delta as Json | undefined;
   if (d === undefined) return true;
   delete event.delta;
+  const stream = String(d.s);
   if (event.message !== undefined) {
     if (typeof d.id !== "number") {
-      updateChain = null;
+      updateChains.delete(stream);
       return true;
     }
-    updateChain = { id: d.id, seq: 0, message: event.message as Json };
+    setUpdateChain(stream, { id: d.id, seq: 0, message: event.message as Json });
     event.message = copyJson(event.message);
     return true;
   }
-  const chain = updateChain;
-  updateChain = null;
+  const chain = updateChains.get(stream);
+  updateChains.delete(stream);
   if (!chain || chain.id !== d.id || chain.seq + 1 !== d.seq) return false;
   try {
     const ame = event.assistantMessageEvent as Json | undefined;
@@ -566,7 +582,7 @@ function rebuildMessageUpdate(event: Json): boolean {
     delete event.assistantMessageEvent;
     event.message = copyJson(message);
     event.assistantMessageEvent = a;
-    updateChain = { id: chain.id, seq: d.seq as number, message };
+    setUpdateChain(stream, { id: chain.id, seq: d.seq as number, message });
     return true;
   } catch (e) {
     if (!(e instanceof DeltaError)) throw e;
@@ -588,8 +604,10 @@ async function emit(p: Json) {
     // corrupt one.
     return { result: { resync: true }, handlers: [], errors: [] };
   }
-  // A message boundary ends any delta chain (the core starts a new one).
-  if (type === "message_start" || type === "message_end" || type === "session_shutdown") updateChain = null;
+  // Message boundaries carry no encoder id, and the core starts every message
+  // with a full frame (which replaces that encoder's chain), so only the end
+  // of the session drops chains.
+  if (type === "session_shutdown") updateChains.clear();
   const ame = type === "message_update" ? (event.assistantMessageEvent as Json | undefined) : undefined;
   if (ame?.partialIsMessage === true) {
     // The core did not send `partial` a second time: it equals `message` (same object, as in omp).
@@ -827,8 +845,15 @@ let nowaitTail: Promise<unknown> = Promise.resolve();
 async function awaitBarrier(barrier: Promise<unknown>): Promise<void> {
   let done = false;
   void barrier.then(() => void (done = true));
-  while (!done && nowaitBlocked === 0) await Promise.race([barrier, new Promise<void>((r) => (nowaitWake = r))]);
-  nowaitWake = undefined;
+  while (!done && nowaitBlocked === 0) {
+    const { promise: woken, resolve: wake } = Promise.withResolvers<void>();
+    nowaitWakers.add(wake);
+    try {
+      await Promise.race([barrier, woken]);
+    } finally {
+      nowaitWakers.delete(wake);
+    }
+  }
 }
 
 async function dispatch(method: string, p: Json): Promise<unknown> {

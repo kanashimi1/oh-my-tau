@@ -684,17 +684,19 @@ fn notify_update(
     }
     enc.set_generation(host.generation());
     let frame = enc.encode(message, ame);
+    let chain = ExtUpdateEncoder::chain_id(&frame);
     let resync = enc.resync_flag();
     let sent = host.emit_nowait(&frame, None, move |r| {
         // `{resync: true}`: the host could not apply the frame (it skipped the
         // handlers); a failed emit leaves the host state unknown. Either way
-        // the next update goes out full.
+        // the next update of this chain goes out full; a late answer about an
+        // older chain leaves a newer one alone.
         let needs_full = match &r {
             Ok(out) => out.result.get("resync").and_then(Value::as_bool) == Some(true),
             Err(_) => true,
         };
-        if needs_full {
-            resync.store(true, Ordering::Release);
+        if let (true, Some(chain)) = (needs_full, chain) {
+            resync.fetch_max(chain, Ordering::AcqRel);
         }
         emit_silent(r);
     });

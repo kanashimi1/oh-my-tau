@@ -1,7 +1,7 @@
 //! `AgentEvent` -> `omp` RPC event frames (field names match omp).
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use pa_agent::stream::AssistantMessageEvent as Ev;
@@ -150,12 +150,13 @@ fn assistant_event_with(e: &Ev, pv: &dyn Fn(&AssistantMessage) -> Value) -> Valu
 // so extensions see exactly the shape a full frame gives them.
 //
 // Frame (the `event` param of a fire-and-forget `emit`):
-//   full:  {type:"message_update", message, assistantMessageEvent, delta:{id, seq:0}}
+//   full:  {type:"message_update", message, assistantMessageEvent, delta:{s, id, seq:0}}
 //   delta: {type:"message_update", assistantMessageEvent,
-//           delta:{id, seq, n, hdr?, b:[{i, blk?, v, x?}, ...]}}
+//           delta:{s, id, seq, n, hdr?, b:[{i, blk?, v, x?}, ...]}}
 // `assistantMessageEvent` never carries `partial` (`partialIsMessage: true`:
-// the host points it at the rebuilt message). `id` names the full frame the
-// deltas build on, `seq` counts frames since it (the host rejects a gap), `n`
+// the host points it at the rebuilt message). `s` names the encoder (the host
+// keeps one chain per encoder: several subscriptions may feed one host), `id`
+// names the full frame the deltas build on (unique across encoders), `seq` counts frames since it (the host rejects a gap), `n`
 // is the content length after applying `b`, `hdr` the message without its
 // content (`content: []` placeholder) when any non-content field changed.
 // Each `b` entry rebuilds content block `i` as `blk` (or the host's previous
@@ -460,20 +461,28 @@ fn header_eq(header: &AssistantMessage, m: &AssistantMessage) -> bool {
         && header.meta == *meta
 }
 
-/// Full `message_update` frame; `id` starts a delta chain the host tracks.
-fn update_frame_full(message: &AgentMessage, ame: &Ev, id: Option<u64>) -> Value {
+/// Full `message_update` frame; `chain` (`(encoder, chain id)`) starts a
+/// delta chain the host tracks.
+fn update_frame_full(message: &AgentMessage, ame: &Ev, chain: Option<(u64, u64)>) -> Value {
     let mut f = Map::new();
     f.insert("type".into(), Value::String("message_update".into()));
     f.insert("message".into(), message_value(message));
     f.insert("assistantMessageEvent".into(), assistant_event_slim(ame));
-    if let Some(id) = id {
-        f.insert("delta".into(), json!({ "id": id, "seq": 0 }));
+    if let Some((stream, id)) = chain {
+        f.insert("delta".into(), json!({ "s": stream, "id": id, "seq": 0 }));
     }
     Value::Object(f)
 }
 
+/// Process-wide id sources: one host may be fed by several encoders (one per
+/// subscription), so encoder ids and chain ids must not repeat across them --
+/// a delta must never match another encoder's chain.
+static NEXT_ENCODER_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_CHAIN_ID: AtomicU64 = AtomicU64::new(1);
+
 /// The message the host holds for the current delta chain.
 struct UpdateCursor {
+    stream: u64,
     id: u64,
     seq: u64,
     header: AssistantMessage,
@@ -526,6 +535,7 @@ impl UpdateCursor {
         }
         let mut d = Map::new();
         self.seq += 1;
+        d.insert("s".into(), json!(self.stream));
         d.insert("id".into(), json!(self.id));
         d.insert("seq".into(), json!(self.seq));
         d.insert("n".into(), json!(content.len()));
@@ -550,16 +560,30 @@ impl UpdateCursor {
 /// `message_update` the host receives must go through [`Self::encode`] in
 /// wire order; any update the host does not receive must be reported with
 /// [`Self::invalidate`] so the next one goes out full.
-#[derive(Default)]
 pub struct ExtUpdateEncoder {
-    next_id: u64,
+    /// This encoder's id (`delta.s`): the host keeps one chain per encoder.
+    stream: u64,
     cursor: Option<UpdateCursor>,
     /// Content indices started but not yet ended (TS `openBlocks`).
     open: BTreeSet<usize>,
     /// Host connection generation the cursor belongs to.
     generation: usize,
-    /// Set when the host answered `resync` or the emit failed.
-    resync: Arc<AtomicBool>,
+    /// Highest chain id the host rejected (answer `resync`) or whose emit
+    /// failed; 0 = none. Chain ids only grow, so a late answer about an
+    /// older chain leaves the current one alone.
+    resync: Arc<AtomicU64>,
+}
+
+impl Default for ExtUpdateEncoder {
+    fn default() -> Self {
+        Self {
+            stream: NEXT_ENCODER_ID.fetch_add(1, Ordering::Relaxed),
+            cursor: None,
+            open: BTreeSet::new(),
+            generation: 0,
+            resync: Arc::default(),
+        }
+    }
 }
 
 impl ExtUpdateEncoder {
@@ -575,11 +599,19 @@ impl ExtUpdateEncoder {
         self.cursor = None;
     }
 
-    /// Flag an emit-completion callback sets when the host could not apply a
-    /// frame (answer `{resync: true}`) or the emit failed.
+    /// Slot an emit-completion callback raises (`fetch_max` with the frame's
+    /// [`chain_id`](Self::chain_id)) when the host could not apply the frame
+    /// (answer `{resync: true}`) or the emit failed: that chain goes out full.
     #[must_use]
-    pub fn resync_flag(&self) -> Arc<AtomicBool> {
+    pub fn resync_flag(&self) -> Arc<AtomicU64> {
         self.resync.clone()
+    }
+
+    /// The delta chain a frame from [`Self::encode`] belongs to (`None`: a
+    /// non-assistant frame, which the host passes through untouched).
+    #[must_use]
+    pub fn chain_id(frame: &Value) -> Option<u64> {
+        frame.get("delta")?.get("id")?.as_u64()
     }
 
     /// A reconnected host (new generation) holds no state.
@@ -592,7 +624,8 @@ impl ExtUpdateEncoder {
 
     /// Frame for one `message_update` (`message` == the event's `partial`).
     pub fn encode(&mut self, message: &AgentMessage, ame: &Ev) -> Value {
-        if self.resync.swap(false, Ordering::AcqRel) {
+        let rejected = self.resync.load(Ordering::Acquire);
+        if self.cursor.as_ref().is_some_and(|c| c.id <= rejected) {
             self.cursor = None;
         }
         let index = content_index(ame);
@@ -619,14 +652,15 @@ impl ExtUpdateEncoder {
         {
             return frame;
         }
-        self.next_id += 1;
+        let id = NEXT_CHAIN_ID.fetch_add(1, Ordering::Relaxed);
         self.cursor = Some(UpdateCursor {
-            id: self.next_id,
+            stream: self.stream,
+            id,
             seq: 0,
             header: header_of(live),
             blocks: live.content.iter().map(BlockShadow::of).collect(),
         });
-        update_frame_full(message, ame, Some(self.next_id))
+        update_frame_full(message, ame, Some((self.stream, id)))
     }
 }
 
@@ -767,15 +801,19 @@ pub fn todo_auto_clear_frame() -> Value {
 mod tests {
     use super::*;
 
+    /// Host chains of the Rust mirror, keyed by encoder (`delta.s`).
+    type Chains = std::collections::HashMap<u64, (u64, u64, Value)>;
+
     /// Rust mirror of `ext-host/host.ts` `rebuildMessageUpdate`: applies one
     /// encoder frame to the host state and returns the rebuilt message.
-    fn rebuild(state: &mut Option<(u64, u64, Value)>, frame: &Value) -> Value {
+    fn rebuild(chains: &mut Chains, frame: &Value) -> Value {
         let d = &frame["delta"];
+        let stream = d["s"].as_u64().expect("encoder id");
         if let Some(msg) = frame.get("message") {
-            *state = Some((d["id"].as_u64().expect("full frame id"), 0, msg.clone()));
+            chains.insert(stream, (d["id"].as_u64().expect("full frame id"), 0, msg.clone()));
             return msg.clone();
         }
-        let (id, seq, prev) = state.as_mut().expect("delta without a base");
+        let (id, seq, prev) = chains.get_mut(&stream).expect("delta without a base");
         assert_eq!(d["id"].as_u64(), Some(*id), "chain id");
         assert_eq!(d["seq"].as_u64(), Some(*seq + 1), "no seq gap");
         let ame = &frame["assistantMessageEvent"];
@@ -791,13 +829,19 @@ mod tests {
                 "toolCall" => "arguments",
                 t => panic!("block type {t}"),
             };
-            let old_str = || old.unwrap()[key].as_str().unwrap().to_owned();
+            // Like host.ts: the previous value only counts for a block of the
+            // same type.
+            let old_val = || {
+                let old = old.filter(|o| o["type"] == nb["type"]).expect("previous block of this type");
+                old[key].clone()
+            };
+            let old_str = || old_val().as_str().unwrap().to_owned();
             let val = match e["v"].as_str().unwrap() {
-                "k" => old.unwrap()[key].clone(),
+                "k" => old_val(),
                 "a" => Value::String(old_str() + ame["delta"].as_str().unwrap()),
                 "+" => Value::String(old_str() + e["x"].as_str().unwrap()),
                 "=" => e["x"].clone(),
-                "p" => apply_patch(&old.unwrap()[key], &e["x"]),
+                "p" => apply_patch(&old_val(), &e["x"]),
                 v => panic!("op {v}"),
             };
             nb[key] = val;
@@ -856,7 +900,7 @@ mod tests {
     /// message is byte-identical (key order included) to a full serialization.
     struct Harness {
         enc: ExtUpdateEncoder,
-        host: Option<(u64, u64, Value)>,
+        host: Chains,
         live: AssistantMessage,
         frames: Vec<Value>,
     }
@@ -865,20 +909,34 @@ mod tests {
         fn new() -> Self {
             Self {
                 enc: ExtUpdateEncoder::default(),
-                host: None,
+                host: Chains::new(),
                 live: empty_message(),
                 frames: Vec::new(),
             }
         }
 
-        fn send(&mut self, make: impl FnOnce(AssistantMessage) -> Ev) -> Value {
+        /// Encode the next update; returns the frame and the message a full
+        /// frame would carry.
+        fn encode(&mut self, make: impl FnOnce(AssistantMessage) -> Ev) -> (Value, Value) {
             let ame = make(self.live.clone());
             let message = AgentMessage::from(self.live.clone());
-            let frame = self.enc.encode(&message, &ame);
-            let rebuilt = rebuild(&mut self.host, &frame);
+            (self.enc.encode(&message, &ame), message_value(&message))
+        }
+
+        fn send(&mut self, make: impl FnOnce(AssistantMessage) -> Ev) -> Value {
+            let mut host = std::mem::take(&mut self.host);
+            let frame = self.send_to(&mut host, make);
+            self.host = host;
+            frame
+        }
+
+        /// [`Self::send`] against a host shared with other encoders.
+        fn send_to(&mut self, host: &mut Chains, make: impl FnOnce(AssistantMessage) -> Ev) -> Value {
+            let (frame, message) = self.encode(make);
+            let rebuilt = rebuild(host, &frame);
             assert_eq!(
                 serde_json::to_string(&rebuilt).unwrap(),
-                serde_json::to_string(&message_value(&message)).unwrap(),
+                serde_json::to_string(&message).unwrap(),
                 "rebuilt message differs after frame {frame}"
             );
             assert!(
@@ -1034,14 +1092,15 @@ mod tests {
         });
         assert!(f["delta"]["b"][0]["x"].get("=").is_some());
         // Host answered resync: next frame is full with a new chain id.
-        h.enc.resync_flag().store(true, Ordering::SeqCst);
+        let chain = ExtUpdateEncoder::chain_id(&f).unwrap();
+        h.enc.resync_flag().fetch_max(chain, Ordering::SeqCst);
         let f = h.send(|partial| Ev::ToolCallDelta {
             content_index: 1,
             delta: String::new(),
             partial,
         });
         assert!(is_full(&f));
-        assert_eq!(f["delta"]["id"], 2);
+        assert!(ExtUpdateEncoder::chain_id(&f).unwrap() > chain);
         // invalidate() (host skipped an update) and a reconnect do the same.
         h.enc.invalidate();
         assert!(is_full(&h.send(|partial| Ev::ToolCallDelta {
@@ -1069,6 +1128,104 @@ mod tests {
             delta: String::new(),
             partial,
         })));
+    }
+
+    /// Every in-flight delta of a rejected chain answers `resync`; once the
+    /// replacement chain went out, those late answers must not force yet
+    /// another full frame (`ReviewExtDelta`: the bool flag did).
+    #[test]
+    fn late_resync_of_an_old_chain_keeps_the_new_one() {
+        let mut h = Harness::new();
+        h.live.content.push(AssistantContent::Text(TextContent {
+            text: String::new(),
+            text_signature: None,
+        }));
+        let old = h.send(|partial| Ev::TextStart { content_index: 0, partial });
+        let old = ExtUpdateEncoder::chain_id(&old).unwrap();
+        h.enc.resync_flag().fetch_max(old, Ordering::SeqCst);
+        h.text(0).push_str("a");
+        let f = h.send(|partial| Ev::TextDelta { content_index: 0, delta: "a".into(), partial });
+        assert!(is_full(&f), "rejected chain restarts full");
+        // A second rejection of the old chain arrives late.
+        h.enc.resync_flag().fetch_max(old, Ordering::SeqCst);
+        h.text(0).push_str("b");
+        let f = h.send(|partial| Ev::TextDelta { content_index: 0, delta: "b".into(), partial });
+        assert!(!is_full(&f), "late answer about an old chain: {f}");
+    }
+
+    fn text_message_harness() -> Harness {
+        let mut h = Harness::new();
+        h.live.content.push(AssistantContent::Text(TextContent {
+            text: String::new(),
+            text_signature: None,
+        }));
+        h
+    }
+
+    /// Two encoders (two subscriptions) feeding one host: chain ids never
+    /// collide, so neither encoder's delta lands on the other's message.
+    #[test]
+    fn interleaved_encoders_never_share_a_chain() {
+        let mut host = Chains::new();
+        let (mut a, mut b) = (text_message_harness(), text_message_harness());
+        let fa = a.send_to(&mut host, |partial| Ev::TextStart { content_index: 0, partial });
+        let fb = b.send_to(&mut host, |partial| Ev::TextStart { content_index: 0, partial });
+        assert_ne!(ExtUpdateEncoder::chain_id(&fa), ExtUpdateEncoder::chain_id(&fb));
+        assert_ne!(fa["delta"]["s"], fb["delta"]["s"]);
+        for (ca, cb) in [("A1", "b1"), ("A2", "b2"), ("A3", "b3")] {
+            a.text(0).push_str(ca);
+            assert!(!is_full(&a.send_to(&mut host, |partial| Ev::TextDelta {
+                content_index: 0,
+                delta: ca.into(),
+                partial,
+            })));
+            b.text(0).push_str(cb);
+            b.send_to(&mut host, |partial| Ev::TextDelta { content_index: 0, delta: cb.into(), partial });
+        }
+    }
+
+    /// The real `ext-host/host.ts` rebuild, driven by two interleaved
+    /// encoders on one host: every handler sees exactly the message a full
+    /// frame would carry (`ReviewExtDelta`: a single global chain let one
+    /// encoder's delta apply to the other's message).
+    #[tokio::test]
+    async fn interleaved_encoders_stay_exact_on_the_real_host() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut cfg = omp_ext::HostConfig::new(root.join("ext-host/host.ts"));
+        cfg.handler_timeout_ms = Some(5_000);
+        let host = omp_ext::ExtHost::spawn(&cfg).await.unwrap();
+        let fixture = root.join("crates/omp-ext/tests/fixtures/mutating.ts");
+        let r = host.load(Some(&[fixture]), None, "/tmp", None).await.unwrap();
+        assert_eq!(r.loaded.len(), 1, "{r:?}");
+        // JSON.stringify writes `0.0` as `0`: compare numbers by value.
+        fn norm(v: &Value) -> Value {
+            match v {
+                Value::Number(n) => json!(n.as_f64()),
+                Value::Array(a) => Value::Array(a.iter().map(norm).collect()),
+                Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), norm(v))).collect()),
+                v => v.clone(),
+            }
+        }
+        let check = |r: omp_ext::EmitResult, want: &Value, frame: &Value| {
+            assert_ne!(r.result, json!({"resync": true}), "frame rejected: {frame}");
+            let seen: Value = serde_json::from_str(r.errors[0]["error"].as_str().unwrap()).unwrap();
+            assert_eq!(norm(&seen), norm(want), "rebuilt message differs after frame {frame}");
+        };
+        let (mut a, mut b) = (text_message_harness(), text_message_harness());
+        let (fa, wa) = a.encode(|partial| Ev::TextStart { content_index: 0, partial });
+        let (fb, wb) = b.encode(|partial| Ev::TextStart { content_index: 0, partial });
+        check(host.emit(fa.clone(), None).await.unwrap(), &wa, &fa);
+        check(host.emit(fb.clone(), None).await.unwrap(), &wb, &fb);
+        for (ca, cb) in [("A1", "b1"), ("A2", "b2"), ("A3", "b3")] {
+            a.text(0).push_str(ca);
+            let (fa, wa) = a.encode(|partial| Ev::TextDelta { content_index: 0, delta: ca.into(), partial });
+            b.text(0).push_str(cb);
+            let (fb, wb) = b.encode(|partial| Ev::TextDelta { content_index: 0, delta: cb.into(), partial });
+            assert!(!is_full(&fa) && !is_full(&fb));
+            check(host.emit(fa.clone(), None).await.unwrap(), &wa, &fa);
+            check(host.emit(fb.clone(), None).await.unwrap(), &wb, &fb);
+        }
+        host.shutdown().await.unwrap();
     }
 
     #[test]
