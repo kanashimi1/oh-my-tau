@@ -307,7 +307,9 @@ async fn spawn_child(binary: &Path, spec: &TaskSpec, mode: ChildMode) -> std::io
                 command.arg("--mode").arg("rpc");
             }
         }
-        command.current_dir(&spec.cwd);
+        command
+            .current_dir(&spec.cwd)
+            .env(super::SUBAGENT_NO_TITLE.0, super::SUBAGENT_NO_TITLE.1);
         if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
             command.arg("--model").arg(model);
         }
@@ -743,6 +745,16 @@ mod tests {
         assert_eq!(out.output.trim(), "hello");
         assert_eq!(control.phase(), RunPhase::Settled);
         assert!(!control.cancel(), "cancel after settle is a no-op");
+    }
+
+    #[tokio::test]
+    async fn children_never_auto_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), r#"echo "title-off=$OMP_RS_NO_TITLE""#);
+        let runner = TaskRunner::new(&bin, 1);
+        let (_control, join) = runner.start(spec("hello", dir.path()), ChildMode::Print);
+        assert_eq!(join.await.output.trim(), "title-off=1");
+        assert_eq!(runner.spawn(spec("hello", dir.path())).await.output.trim(), "title-off=1");
     }
 
     #[tokio::test]

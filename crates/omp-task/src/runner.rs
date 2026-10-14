@@ -136,6 +136,11 @@ impl TaskSpec {
     }
 }
 
+/// Env set on every child: subagent sessions never auto-title (TS `sdk.ts`
+/// `autoTitle: options.autoTitle === true && !isSubagentSession`); without
+/// it each child spends one extra title-model request.
+pub(crate) const SUBAGENT_NO_TITLE: (&str, &str) = ("OMP_RS_NO_TITLE", "1");
+
 /// Spawns child agents as subprocesses of an `omp-rs -p`-style CLI binary.
 ///
 /// The binary path is injected at construction so tests can substitute a
@@ -258,7 +263,8 @@ impl TaskRunner {
             command
                 .arg("-p")
                 .arg(&spec.prompt)
-                .current_dir(&spec.cwd);
+                .current_dir(&spec.cwd)
+                .env(SUBAGENT_NO_TITLE.0, SUBAGENT_NO_TITLE.1);
             if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
                 command.arg("--model").arg(model);
             }

@@ -306,7 +306,7 @@ pub async fn send_to_agent(id: &str, content: &str) -> Result<Value, String> {
     deliver_message(id, content).map(Value::String)
 }
 
-fn deliver_message(to: &str, content: &str) -> Result<String, String> {
+pub(crate) fn deliver_message(to: &str, content: &str) -> Result<String, String> {
     if to.is_empty() {
         return Err("agent:// URL requires a recipient: agent://<id>".to_string());
     }
@@ -648,12 +648,14 @@ async fn resolve_completion_candidates(tier: &str) -> Result<Vec<CompletionCandi
                 headers: target.headers.map(|headers| headers.into_iter().collect()),
                 thinking: None,
             });
-            if let Ok(primary) = omp_providers::resolve_in_async(dir.clone(), "@default".to_string()).await {
+            if let Ok(primary) = omp_providers::resolve_in_async(dir.clone(), "default".to_string()).await {
                 candidates.extend(walk_fallbacks(dir, primary).await);
             }
         }
         "smol" | "slow" => {
-            let primary = omp_providers::resolve_in_async(dir.clone(), format!("@{tier}"))
+            // `resolve_in` takes a bare role name (TS `@smol` alias form is
+            // not a selector it parses).
+            let primary = omp_providers::resolve_in_async(dir.clone(), tier.to_string())
                 .await
                 .map_err(|e| {
                     format!(
@@ -885,7 +887,10 @@ async fn completion_job(
 /// TS `parseState`: a non-empty string or any JSON value (object/array).
 fn parse_state(value: &Value) -> Result<Value, String> {
     match value {
-        Value::String(text) if !text.is_empty() => Ok(value.clone()),
+        Value::String(text) if text.is_empty() => {
+            Err("judge() received invalid arguments: state must not be empty".to_string())
+        }
+        Value::String(_) => Ok(value.clone()),
         Value::Array(_) | Value::Object(_) => Ok(value.clone()),
         _ => Err("judge() received invalid arguments: state must be a string, a JSON object, or a JSON array".to_string()),
     }
@@ -938,12 +943,16 @@ fn parse_questions(value: Option<&Value>) -> Result<Map<String, Value>, String> 
                 json!({"type": "choice", "instructions": instructions, "criteria": question.get("criteria").cloned().unwrap_or(Value::Null)})
             }
             Some("bool") => {
+                // TS `parseBool`: no `criteria` key when absent (the System One
+                // endpoint rejects `criteria: null`), else only the string sides.
+                let mut wire = json!({"type": "noul", "instructions": instructions});
                 if let Some(criteria) = question.get("criteria") {
                     let Some(criteria) = criteria.as_object() else {
                         return Err(invalid(&format!(
                             "bool question \"{id}\" criteria must be {{ true?: string, false?: string }}"
                         )));
                     };
+                    let mut sides = Map::new();
                     for side in ["true", "false"] {
                         if let Some(description) = criteria.get(side) {
                             if !description.is_string() {
@@ -951,10 +960,12 @@ fn parse_questions(value: Option<&Value>) -> Result<Map<String, Value>, String> 
                                     "bool question \"{id}\" criteria.{side} must be a string"
                                 )));
                             }
+                            sides.insert(side.to_string(), description.clone());
                         }
                     }
+                    wire["criteria"] = Value::Object(sides);
                 }
-                json!({"type": "noul", "instructions": instructions, "criteria": question.get("criteria").cloned().unwrap_or(Value::Null)})
+                wire
             }
             Some("score") => {
                 let Some(levels) = question.get("criteria").and_then(Value::as_array) else {
@@ -1198,8 +1209,9 @@ fn parse_batch_items(value: Option<&Value>) -> Result<Vec<BatchInput>, String> {
         seen.push(key_id);
         parsed.push(BatchInput {
             key,
-            state: parse_state(entry.get("state").unwrap_or(&Value::Null))
-                .map_err(|_| batch_invalid(&format!("item {index} state must be a string, a JSON object, or a JSON array")))?,
+            // TS reuses `judgment-bridge.ts` `parseState`/`parseQuestions`
+            // verbatim, so their `judge()`-prefixed messages surface as-is.
+            state: parse_state(entry.get("state").unwrap_or(&Value::Null))?,
         });
     }
     Ok(parsed)
@@ -1234,8 +1246,7 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
     match op {
         "create" => {
             let items = parse_batch_items(record.get("items"))?;
-            let questions = parse_questions(record.get("questions"))
-                .map_err(|error| error.replace("judge()", "judge_batch()"))?;
+            let questions = parse_questions(record.get("questions"))?;
             let total = items.len();
             // TS `parseBatchOptions`: an explicit 0 falls back to the default
             // ceiling (`concurrency > 0 ? concurrency : EVAL_HANDLE_CONCURRENCY`).

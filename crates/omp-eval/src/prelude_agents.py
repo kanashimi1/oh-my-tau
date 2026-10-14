@@ -33,7 +33,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
 
         @property
         def status(self):
-            snapshot = __omp_host_call(
+            snapshot = _bridge_call(
                 "__status__",
                 {"item": {"kind": self.kind, "id": self.id}},
             )
@@ -48,7 +48,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
             return wait([self], timeout=timeout)[0]
 
         def cancel(self):
-            result = __omp_host_call(
+            result = _bridge_call(
                 "__cancel__",
                 {"item": {"kind": self.kind, "id": self.id}},
             )
@@ -74,7 +74,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
             return f"<agent {self.id} ({self.agent})>"
 
         def send(self, message):
-            return __omp_host_call(
+            return _bridge_call(
                 "write",
                 {
                     "path": self.handle,
@@ -136,7 +136,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
             args = {"items": pending}
             if timeout is not None:
                 args["timeoutMs"] = max(0, float(timeout) * 1000)
-            response = __omp_host_call("__wait__", args)
+            response = _bridge_call("__wait__", args)
             snapshots = response.get("items", []) if isinstance(response, dict) else []
             for index, handle, snapshot in zip(
                 pending_indexes,
@@ -162,7 +162,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
             args["system"] = system
         if schema is not None:
             args["schema"] = schema
-        result = __omp_host_call("__completion__", args)
+        result = _bridge_call("__completion__", args)
         if not isinstance(result, dict) or not isinstance(result.get("id"), str):
             raise RuntimeError("completion() did not return a handle")
         return CompletionHandle(result["id"], schema)
@@ -175,7 +175,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
         """Answer typed questions over one ``state``; returns ``{id: answer}`` (choice/bool/score)."""
         _check_questions(questions)
         result = await asyncio.to_thread(
-            __omp_host_call, "__judge__", {"state": state, "questions": questions}
+            _bridge_call, "__judge__", {"state": state, "questions": questions}
         )
         if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
             raise RuntimeError("judge() did not return answers")
@@ -212,7 +212,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
             self.intent = intent
 
         def _call(self, op, **args):
-            return __omp_host_call("__judge_batch__", {"op": op, "id": self.id, **args})
+            return _bridge_call("__judge_batch__", {"op": op, "id": self.id, **args})
 
         def status(self):
             """Snapshot: ``intent``, ``done``, ``total``, ``failed``, ``running``, ``model``, ``elapsedS``."""
@@ -304,11 +304,11 @@ if "__omp_agents_prelude_loaded__" not in globals():
             args["minOk"] = int(min_ok)
         if intent is not None:
             args["intent"] = intent
-        return _judge_batch_from(__omp_host_call("__judge_batch__", args))
+        return _judge_batch_from(_bridge_call("__judge_batch__", args))
 
     def _attach_judge_batch(id):
         """Re-create a ``JudgmentBatch`` ref by id (after a kernel reset or from another runtime)."""
-        return _judge_batch_from(__omp_host_call("__judge_batch__", {"op": "attach", "id": str(id)}))
+        return _judge_batch_from(_bridge_call("__judge_batch__", {"op": "attach", "id": str(id)}))
 
     judge_batch.attach = _attach_judge_batch
 
@@ -342,7 +342,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
             args["merge"] = bool(merge)
         if tools is not None:
             args["tools"] = list(tools)
-        result = __omp_host_call("__agent__", args)
+        result = _bridge_call("__agent__", args)
         if not isinstance(result, dict) or not isinstance(result.get("id"), str):
             raise RuntimeError("agent() did not return a handle")
         return AgentHandle(result["id"], result.get("agent"), schema)
@@ -360,26 +360,26 @@ if "__omp_agents_prelude_loaded__" not in globals():
         def push(self, *items):
             if not all(isinstance(item, str) for item in items):
                 raise TypeError("WorkPool.push() expects string items")
-            result = __omp_host_call(
+            result = _bridge_call(
                 "__workpool__",
                 {"op": "push", "name": self.name, "items": list(items)},
             )
             return result.get("ids", []) if isinstance(result, dict) else []
 
         def status(self):
-            return __omp_host_call(
+            return _bridge_call(
                 "__workpool__",
                 {"op": "status", "name": self.name},
             )
 
         def peek(self):
-            return __omp_host_call(
+            return _bridge_call(
                 "__workpool__",
                 {"op": "peek", "name": self.name},
             )
 
         def close(self):
-            return __omp_host_call(
+            return _bridge_call(
                 "__workpool__",
                 {"op": "close", "name": self.name},
             )
@@ -398,7 +398,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
             args["context"] = context
         if tools is not None:
             args["tools"] = list(tools)
-        result = __omp_host_call("__workpool__", args)
+        result = _bridge_call("__workpool__", args)
         if not isinstance(result, dict) or not isinstance(result.get("name"), str):
             raise RuntimeError("workpool() did not return a pool")
         return WorkPool(result["name"], result.get("agent"), result.get("limit"))
@@ -408,20 +408,20 @@ if "__omp_agents_prelude_loaded__" not in globals():
 
         @property
         def total(self):
-            snap = __omp_host_call("__budget__", {})
+            snap = _bridge_call("__budget__", {})
             return (snap or {}).get("total")
 
         @property
         def hard(self):
-            snap = __omp_host_call("__budget__", {})
+            snap = _bridge_call("__budget__", {})
             return bool((snap or {}).get("hard"))
 
         def spent(self):
-            snap = __omp_host_call("__budget__", {})
+            snap = _bridge_call("__budget__", {})
             return int((snap or {}).get("spent") or 0)
 
         def remaining(self):
-            snap = __omp_host_call("__budget__", {}) or {}
+            snap = _bridge_call("__budget__", {}) or {}
             total = snap.get("total")
             if total is None:
                 return math.inf
@@ -429,7 +429,7 @@ if "__omp_agents_prelude_loaded__" not in globals():
 
         def __repr__(self):
             try:
-                snap = __omp_host_call("__budget__", {}) or {}
+                snap = _bridge_call("__budget__", {}) or {}
                 return f"<budget total={snap.get('total')} spent={snap.get('spent')}>"
             except Exception:
                 return "<budget unavailable>"

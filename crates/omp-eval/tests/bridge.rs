@@ -28,6 +28,8 @@ impl HostBridge for Recorder {
                 std::thread::sleep(self.slow);
                 Ok(json!("late"))
             }
+            "write" => Ok(json!("Delivered.")),
+            op if op.starts_with("__") => Ok(json!({"status": "running", "cancelled": true, "spent": 5, "ids": ["wp#1"]})),
             other => Err(format!("unknown op {other}")),
         }
     }
@@ -143,6 +145,26 @@ fn py_preludes_install_helpers() {
         )
         .expect("cell");
     assert_eq!(r.output.trim(), "True", "{}", r.output);
+}
+
+/// Agent helpers are classes; a bare `__omp_host_call` in a method body is
+/// name-mangled to `_Class__omp_host_call` and raised NameError.
+#[test]
+fn py_agent_helper_methods_reach_the_host() {
+    let k = py("methods");
+    let b = Recorder::default();
+    let code = "h = AgentHandle('agt-1', 'task')\n\
+print(h.status, h.cancel(), h.send('hi'))\n\
+p = WorkPool('wp', 'task', 32)\n\
+print(p.push('x'), p.status()['status'], p.peek()['status'], p.close()['status'])\n\
+print(budget.spent(), budget.hard)";
+    let r = k.execute_with(code, run(&b)).expect("cell");
+    assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
+    assert!(r.output.contains("running True Delivered."), "{}", r.output);
+    assert!(r.output.contains("['wp#1'] running running running"), "{}", r.output);
+    assert!(r.output.contains("5 False"), "{}", r.output);
+    let ops: Vec<String> = b.calls.lock().unwrap().iter().map(|(op, _)| op.clone()).collect();
+    assert_eq!(ops.iter().filter(|op| *op == "__workpool__").count(), 4, "{ops:?}");
 }
 
 #[test]

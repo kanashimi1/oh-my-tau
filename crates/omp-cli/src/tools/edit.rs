@@ -146,6 +146,14 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let registry = super::read::url_registry();
     let normalized = registry.normalize(raw);
     if registry.can_handle(&normalized) {
+        // `agent://<id>` / `agent://all` writes are peer messages (TS
+        // `AgentProtocolHandler.write` → `executeSend`): steer a running eval
+        // subagent instead of hitting the read-only output store.
+        if let Some(to) = normalized.strip_prefix("agent://") {
+            return super::eval_agents::deliver_message(to, content)
+                .map(AgentToolResult::text)
+                .map_err(|error| anyhow!(error));
+        }
         let (url_path, sel) = registry.split(&normalized);
         if let Some(sel) = sel {
             if !sel.eq_ignore_ascii_case("raw") && !sel.eq_ignore_ascii_case("conflicts") {
@@ -332,5 +340,16 @@ mod tests {
             std::fs::read_to_string(dir.path().join("a/b/c.txt")).unwrap(),
             "héllo"
         );
+    }
+
+    #[test]
+    fn write_agent_url_is_a_message_not_a_read_only_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::new(dir.path(), true);
+        let err = write(&env, &json!({"path": "agent://nobody-here", "content": "hi"}))
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("Failed: nobody-here is not running."), "{err}");
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 }
