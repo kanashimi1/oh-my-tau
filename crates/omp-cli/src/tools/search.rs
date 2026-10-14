@@ -2,8 +2,10 @@
 //! (`pi-walker`, mtime-ranked), with omp's result formats and notices.
 
 use std::collections::{BTreeSet, HashMap};
+use std::convert::Infallible;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{bail, Result};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
@@ -34,6 +36,10 @@ const MAX_COLUMN: usize = 512;
 const CONTEXT_BEFORE: usize = 1;
 const CONTEXT_AFTER: usize = 3;
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Files searched per parallel batch: bounds wasted work past
+/// `INTERNAL_TOTAL_CAP` while staying above the walker pool's parallel
+/// threshold (256 files).
+const SEARCH_CHUNK_FILES: usize = 512;
 const GLOB_DEFAULT_LIMIT: usize = 200;
 const GLOB_MAX_LIMIT: usize = 200;
 
@@ -505,13 +511,16 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         );
     }
     let matcher = build_matcher(pattern, ignore_case, multiline)?;
-    let mut searcher = SearcherBuilder::new()
-        .binary_detection(BinaryDetection::quit(0))
-        .line_number(true)
-        .multi_line(multiline)
-        .before_context(CONTEXT_BEFORE)
-        .after_context(CONTEXT_AFTER)
-        .build();
+    // One `Searcher` per walker-pool worker (a `Searcher` is not `Sync`).
+    let new_searcher = move || {
+        SearcherBuilder::new()
+            .binary_detection(BinaryDetection::quit(0))
+            .line_number(true)
+            .multi_line(multiline)
+            .before_context(CONTEXT_BEFORE)
+            .after_context(CONTEXT_AFTER)
+            .build()
+    };
 
     let single_file = targets.len() == 1 && targets[0].glob.is_none() && targets[0].base.is_file();
     let is_multi_scope = !single_file;
@@ -550,29 +559,51 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
                 }
             }
         }
-        for file in files {
-            if !seen_files.insert(file.clone()) {
-                continue;
+        let files: Vec<PathBuf> = files
+            .into_iter()
+            .filter(|f| seen_files.insert(f.clone()))
+            .collect();
+        // Search each chunk on the walker pool (cold page cache makes this
+        // per-file I/O latency bound), then fold results in path order so
+        // output and the total-match cap stay identical to a serial scan.
+        for chunk in files.chunks(SEARCH_CHUNK_FILES) {
+            let slots: Vec<OnceLock<Option<(Vec<Match>, usize, bool)>>> =
+                std::iter::repeat_with(OnceLock::new).take(chunk.len()).collect();
+            let indices: Vec<usize> = (0..chunk.len()).collect();
+            let searched = pi_walker::parallel_for_each_init(
+                &indices,
+                new_searcher,
+                |searcher, &i| -> std::result::Result<(), Infallible> {
+                    let found = search_file(
+                        searcher,
+                        &matcher,
+                        &chunk[i],
+                        per_file_cap,
+                        target.ranges.as_deref(),
+                    );
+                    let _ = slots[i].set(found);
+                    Ok(())
+                },
+            );
+            let Ok(()) = searched;
+            for (file, slot) in chunk.iter().zip(slots) {
+                let Some((rows, count, truncated)) = slot.into_inner().flatten() else {
+                    continue;
+                };
+                lines_truncated |= truncated;
+                total_matches += count;
+                hits.push(FileHits {
+                    shown: format_path_relative_to_cwd(file, &env.cwd, false),
+                    absolute: file.clone(),
+                    matches: rows,
+                    match_count: count,
+                });
+                if total_matches >= INTERNAL_TOTAL_CAP {
+                    limit_reached = true;
+                    break;
+                }
             }
-            let Some((rows, count, truncated)) = search_file(
-                &mut searcher,
-                &matcher,
-                &file,
-                per_file_cap,
-                target.ranges.as_deref(),
-            ) else {
-                continue;
-            };
-            lines_truncated |= truncated;
-            total_matches += count;
-            hits.push(FileHits {
-                shown: format_path_relative_to_cwd(&file, &env.cwd, false),
-                absolute: file,
-                matches: rows,
-                match_count: count,
-            });
-            if total_matches >= INTERNAL_TOTAL_CAP {
-                limit_reached = true;
+            if limit_reached {
                 break;
             }
         }

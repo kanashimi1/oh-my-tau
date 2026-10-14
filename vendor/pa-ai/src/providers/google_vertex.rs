@@ -97,15 +97,20 @@ fn resolve_location(options: &GoogleVertexOptions) -> Result<String, String> {
 /// Divergence from the TS google-auth-library ADC: the token comes from an explicit
 /// `GOOGLE_OAUTH_ACCESS_TOKEN` env var or the gcloud CLI's credential source; failures surface as
 /// provider errors.
-fn resolve_adc_access_token() -> Result<String, String> {
+///
+/// Async: the gcloud CLI takes ~1 s; a blocking `std::process::Command` here would stall a tokio
+/// worker thread (and every task scheduled on it) for the whole call.
+async fn resolve_adc_access_token() -> Result<String, String> {
     if let Ok(token) = std::env::var("GOOGLE_OAUTH_ACCESS_TOKEN") {
         if !token.trim().is_empty() {
             return Ok(token.trim().to_string());
         }
     }
-    let output = std::process::Command::new("gcloud")
+    let output = tokio::process::Command::new("gcloud")
         .args(["auth", "print-access-token"])
+        .kill_on_drop(true)
         .output()
+        .await
         .map_err(|error| format!("Failed to run gcloud for ADC access token: {error}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -332,7 +337,7 @@ async fn run_stream(
     if let Some(api_key) = api_key {
         headers.push(("x-goog-api-key".into(), api_key));
     } else {
-        let token = resolve_adc_access_token().map_err(ProviderError::Message)?;
+        let token = resolve_adc_access_token().await.map_err(ProviderError::Message)?;
         headers.push(("Authorization".into(), format!("Bearer {token}")));
     }
 

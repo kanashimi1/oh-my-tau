@@ -191,16 +191,21 @@ pub fn stream_once(
     api_key: Option<String>,
     service_tier: Option<pa_types::ai::ServiceTier>,
     headers: Option<std::collections::BTreeMap<String, String>>,
-    context: LlmContext,
+    mut context: LlmContext,
     options: StreamRequestOptions,
 ) -> anyhow::Result<Box<dyn ModelStream>> {
-    // One round-trip for the whole message/tool vectors instead of one per
-    // item: the same wire shape, but a single Value tree per turn (fewer,
-    // larger transients for the allocator to retain) instead of a deep
-    // clone per message.
-    let messages: Vec<pa_types::ai::Message> = json_round_trip(&context.messages).unwrap_or_else(|| {
-        context.messages.iter().filter_map(json_round_trip).collect()
-    });
+    // Messages cross the crate boundary one at a time, consuming the owned
+    // context as they go: only one message's `Value` tree is alive at once
+    // and each source message is freed once converted, so a large resumed
+    // context never holds the whole-vector `Value` DOM next to both typed
+    // copies. Same result as a whole-vector round trip with a per-item
+    // fallback: an item that cannot cross is skipped either way.
+    let mut messages: Vec<pa_types::ai::Message> = Vec::with_capacity(context.messages.len());
+    messages.extend(
+        std::mem::take(&mut context.messages)
+            .into_iter()
+            .filter_map(|m| json_round_trip(&m)),
+    );
     let tools: Vec<pa_types::ai::Tool> = json_round_trip(&context.tools).unwrap_or_else(|| {
         context.tools.iter().filter_map(json_round_trip).collect()
     });

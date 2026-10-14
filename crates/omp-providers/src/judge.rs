@@ -287,7 +287,10 @@ async fn judge_candidate(
         });
     }
     let model_key = label(candidate);
-    let cached = cache.map(|c| c.lookup(&model_key, request));
+    let cached = match cache {
+        Some(c) => Some(c.lookup_async(&model_key, request).await),
+        None => None,
+    };
     let known = cached.as_ref().map(|c| &c.answers);
     let mut pending = Map::new();
     for (id, q) in &request.questions {
@@ -306,7 +309,7 @@ async fn judge_candidate(
             r.usage.cost = cost;
         }
         if let (Some(cache), Some(cached)) = (cache, &cached) {
-            cache.record(&model_key, cached, &pending, &r);
+            cache.record_async(&model_key, cached, &pending, &r).await;
         }
         fresh = Some(r);
     }
@@ -414,8 +417,13 @@ pub struct CachedAnswers {
 /// Local answer cache for native judgments (`judgment/cache.ts`; same sqlite schema, so it shares
 /// the database with omp). Best-effort: failures read as "no cached answers" / are ignored. An
 /// answer is keyed by (state hash, model, question id, type, instructions, criteria); no TTL.
+///
+/// The connection is synchronous: async callers go through [`JudgmentCache::lookup_async`] /
+/// [`JudgmentCache::record_async`], which run the queries on the blocking pool instead of a
+/// tokio worker.
+#[derive(Clone)]
 pub struct JudgmentCache {
-    db: std::sync::Mutex<rusqlite::Connection>,
+    db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
 }
 
 /// `$OMP_JUDGMENT_CACHE_DB`, else `<agent dir>/../cache/judgment-cache.db` (`~/.omp/cache/judgment-cache.db`).
@@ -508,7 +516,7 @@ impl JudgmentCache {
         db.pragma_update(None, "synchronous", "NORMAL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         db.execute_batch(CACHE_SCHEMA)?;
-        Ok(Self { db: std::sync::Mutex::new(db) })
+        Ok(Self { db: std::sync::Arc::new(std::sync::Mutex::new(db)) })
     }
 
     /// Answers already recorded for `request`'s questions under `model` (`provider/id`).
@@ -537,6 +545,23 @@ impl JudgmentCache {
             answers.clear();
         }
         CachedAnswers { state_id, state, answers }
+    }
+
+    /// [`Self::lookup`] on the blocking pool (sqlite I/O must not stall a tokio worker).
+    pub async fn lookup_async(&self, model: &str, request: &JudgeRequest) -> CachedAnswers {
+        let (this, model, request) = (self.clone(), model.to_owned(), request.clone());
+        match tokio::task::spawn_blocking(move || this.lookup(&model, &request)).await {
+            Ok(c) => c,
+            // Best-effort cache: a panicked/cancelled lookup reads as "nothing cached".
+            Err(_) => CachedAnswers { state_id: String::new(), state: String::new(), answers: Map::new() },
+        }
+    }
+
+    /// [`Self::record`] on the blocking pool.
+    pub async fn record_async(&self, model: &str, cached: &CachedAnswers, questions: &Map<String, Value>, result: &JudgeResult) {
+        let (this, model, cached, questions, result) =
+            (self.clone(), model.to_owned(), cached.clone(), questions.clone(), result.clone());
+        let _ = tokio::task::spawn_blocking(move || this.record(&model, &cached, &questions, &result)).await;
     }
 
     /// Record one billed request: its state, one oracle row per answered question, and a usage row.

@@ -235,11 +235,11 @@ impl SessionIndex {
     /// # Errors
     /// I/O or JSON failure on a requested line.
     pub fn load_branch(&self, path: &Path, indices: &[u32], parse_values: bool) -> Result<Vec<BranchLine>> {
-        let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut file = LineReader::open(path)?;
         let mut out = Vec::with_capacity(indices.len());
         for &i in indices {
             let r = &self.refs[i as usize];
-            let Some(raw) = read_line_at(&mut file, r.offset, r.len)? else {
+            let Some(raw) = file.read_at(r.offset, r.len)? else {
                 anyhow::bail!("{}:{}: entry vanished", path.display(), r.line_no);
             };
             let value = if parse_values {
@@ -267,13 +267,29 @@ impl SessionIndex {
         indices: &[u32],
         mut f: impl FnMut(&EntryRef, &str) -> Result<()>,
     ) -> Result<()> {
-        let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        self.scan_lines(path, indices, |r, raw| f(r, raw).map(|()| std::ops::ControlFlow::Continue(())))
+    }
+
+    /// Like [`Self::for_each_line`], but the callback can stop the scan early
+    /// (`ControlFlow::Break`): lines after the break are never read.
+    ///
+    /// # Errors
+    /// I/O failure, a vanished line, or the callback's error.
+    pub fn scan_lines(
+        &self,
+        path: &Path,
+        indices: &[u32],
+        mut f: impl FnMut(&EntryRef, &str) -> Result<std::ops::ControlFlow<()>>,
+    ) -> Result<()> {
+        let mut file = LineReader::open(path)?;
         for &i in indices {
             let r = &self.refs[i as usize];
-            let Some(raw) = read_line_at(&mut file, r.offset, r.len)? else {
+            let Some(raw) = file.read_at(r.offset, r.len)? else {
                 anyhow::bail!("{}:{}: entry vanished", path.display(), r.line_no);
             };
-            f(r, &raw)?;
+            if f(r, &raw)?.is_break() {
+                break;
+            }
         }
         Ok(())
     }
@@ -297,24 +313,56 @@ fn head_of(bytes: &[u8]) -> Option<Head> {
     })
 }
 
-/// Read the `len` bytes at `offset` and decode like the streaming loader
-/// (lossy UTF-8, trailing `\r` stripped).
-fn read_line_at(file: &mut File, offset: u64, len: u32) -> Result<Option<String>> {
-    let mut buf = vec![0u8; len as usize];
-    file.seek(SeekFrom::Start(offset))?;
-    match file.read_exact(&mut buf) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
+/// Buffered positional reader over a session journal. Branch passes walk
+/// entries mostly in file order, so a forward jump inside the buffer is a
+/// `seek_relative` (no syscall) and a sequential run is one `read` per buffer
+/// fill instead of a `seek`+`read` per line.
+struct LineReader {
+    inner: BufReader<File>,
+    pos: u64,
+}
+
+impl LineReader {
+    fn open(path: &Path) -> Result<Self> {
+        let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        Ok(Self { inner: BufReader::with_capacity(256 * 1024, file), pos: 0 })
     }
-    let text = String::from_utf8_lossy(&buf);
-    Ok(Some(text.strip_suffix('\r').unwrap_or(&text).to_owned()))
+
+    /// Read the `len` bytes at `offset` and decode like the streaming loader
+    /// (lossy UTF-8, trailing `\r` stripped).
+    fn read_at(&mut self, offset: u64, len: u32) -> Result<Option<String>> {
+        if offset >= self.pos {
+            let delta = i64::try_from(offset - self.pos).unwrap_or(i64::MAX);
+            self.inner.seek_relative(delta)?;
+        } else {
+            self.inner.seek(SeekFrom::Start(offset))?;
+        }
+        self.pos = offset;
+        let mut buf = vec![0u8; len as usize];
+        match self.inner.read_exact(&mut buf) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // Position is unknown after a short read: resync on the next call.
+                self.inner.seek(SeekFrom::Start(offset))?;
+                return Ok(None);
+            }
+            Err(e) => return Err(e.into()),
+        }
+        self.pos = offset + u64::from(len);
+        let mut text = match String::from_utf8(buf) {
+            Ok(t) => t,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
+        if text.ends_with('\r') {
+            text.pop();
+        }
+        Ok(Some(text))
+    }
 }
 
 /// Convenience: read one line of `path` at `offset`/`len` (opens the file).
 fn read_line(path: &Path, offset: u64, len: u32) -> Result<Option<String>> {
-    let mut file = File::open(path)?;
-    read_line_at(&mut file, offset, len)
+    LineReader::open(path)?.read_at(offset, len)
 }
 
 #[cfg(test)]

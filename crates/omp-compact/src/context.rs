@@ -791,81 +791,194 @@ fn strip_dangling_tool_calls(messages: &mut Vec<Value>) {
         str_field(block, "type") == Some("toolCall")
             && !str_field(block, "id").is_some_and(|id| paired.contains(id))
     };
-    for i in (0..messages.len()).rev() {
-        if message_role(&messages[i]) != "assistant" {
-            continue;
+    messages.retain_mut(|m| {
+        if message_role(m) != "assistant" {
+            return true;
         }
-        if !messages[i]
-            .get("content")
-            .and_then(Value::as_array)
-            .is_some_and(|blocks| blocks.iter().any(is_dangling))
-        {
-            continue;
+        let Some(blocks) = m.get_mut("content").and_then(Value::as_array_mut) else {
+            return true;
+        };
+        if !blocks.iter().any(is_dangling) {
+            return true;
         }
-        let blocks = messages[i]
-            .get("content")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let normalized: Vec<Value> = blocks
-            .into_iter()
-            .filter(|b| !is_dangling(b) && str_field(b, "type") != Some("redactedThinking"))
-            .map(|mut b| {
-                if str_field(&b, "type") == Some("thinking") && truthy(b.get("thinkingSignature")) {
-                    if let Some(o) = b.as_object_mut() {
-                        o.remove("thinkingSignature");
-                    }
+        blocks.retain(|b| !is_dangling(b) && str_field(b, "type") != Some("redactedThinking"));
+        for b in blocks.iter_mut() {
+            if str_field(b, "type") == Some("thinking") && truthy(b.get("thinkingSignature")) {
+                if let Some(o) = b.as_object_mut() {
+                    o.remove("thinkingSignature");
                 }
-                b
-            })
-            .collect();
-        if normalized.is_empty() {
-            messages.remove(i);
-        } else if let Some(o) = messages[i].as_object_mut() {
-            o.insert("content".into(), Value::Array(normalized));
+            }
         }
-    }
+        !blocks.is_empty()
+    });
 }
 
 /// Aborted / errored assistant turns are transcript events, not replayable context; their paired
 /// tool results go with them (except the interrupted-thinking continuity pair).
+///
+/// One pass, O(n·α): walks from the end like the reference (each turn sees the first message
+/// still alive after it), with a path-compressed "next alive index" and a toolCallId → result
+/// index map instead of `Vec::remove` per dropped turn/result.
 fn drop_failed_assistant_turns(messages: &mut Vec<Value>) {
-    for i in (0..messages.len()).rev() {
-        if i >= messages.len() || message_role(&messages[i]) != "assistant" {
+    let n = messages.len();
+    let is_failed = |m: &Value| {
+        message_role(m) == "assistant"
+            && matches!(str_field(m, "stopReason"), Some("aborted" | "error"))
+    };
+    if !messages.iter().any(is_failed) {
+        return;
+    }
+    let mut results_by_call: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (j, m) in messages.iter().enumerate() {
+        if message_role(m) == "toolResult" {
+            if let Some(id) = str_field(m, "toolCallId") {
+                results_by_call.entry(id).or_default().push(j);
+            }
+        }
+    }
+    let mut alive = vec![true; n];
+    // next[x] -> smallest alive index >= x (n = none); path-compressed on lookup.
+    let mut next: Vec<usize> = (0..=n).collect();
+    fn find(next: &mut [usize], mut x: usize) -> usize {
+        let mut root = x;
+        while next[root] != root {
+            root = next[root];
+        }
+        while next[x] != root {
+            let up = next[x];
+            next[x] = root;
+            x = up;
+        }
+        root
+    }
+    fn kill(alive: &mut [bool], next: &mut [usize], j: usize) {
+        alive[j] = false;
+        next[j] = j + 1;
+    }
+    for i in (0..n).rev() {
+        if !alive[i] || !is_failed(&messages[i]) {
             continue;
         }
-        if !matches!(
-            str_field(&messages[i], "stopReason"),
-            Some("aborted" | "error")
-        ) {
-            continue;
-        }
-        if let Some(next) = messages.get(i + 1) {
-            if message_role(next) == "custom"
-                && str_field(next, "customType") == Some(INTERRUPTED_THINKING_MESSAGE_TYPE)
+        let nx = find(&mut next, i + 1);
+        if nx < n {
+            let m = &messages[nx];
+            if message_role(m) == "custom"
+                && str_field(m, "customType") == Some(INTERRUPTED_THINKING_MESSAGE_TYPE)
             {
                 continue;
             }
         }
-        let dropped: BTreeSet<String> = messages[i]
-            .get("content")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|b| str_field(b, "type") == Some("toolCall"))
-            .filter_map(|b| str_field(b, "id").map(str::to_owned))
-            .collect();
-        messages.remove(i);
-        if !dropped.is_empty() {
-            let mut j = messages.len();
-            while j > i {
-                j -= 1;
-                if message_role(&messages[j]) == "toolResult"
-                    && str_field(&messages[j], "toolCallId").is_some_and(|id| dropped.contains(id))
-                {
-                    messages.remove(j);
+        kill(&mut alive, &mut next, i);
+        for block in messages[i].get("content").and_then(Value::as_array).into_iter().flatten() {
+            if str_field(block, "type") != Some("toolCall") {
+                continue;
+            }
+            let Some(js) = str_field(block, "id").and_then(|id| results_by_call.get(id)) else {
+                continue;
+            };
+            for &j in js.iter().rev() {
+                if j <= i {
+                    break;
+                }
+                if alive[j] {
+                    kill(&mut alive, &mut next, j);
                 }
             }
+        }
+    }
+    let mut k = 0;
+    messages.retain(|_| {
+        k += 1;
+        alive[k - 1]
+    });
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The previous O(k·n) implementation, kept verbatim as the equivalence oracle.
+    fn reference(messages: &mut Vec<Value>) {
+        for i in (0..messages.len()).rev() {
+            if i >= messages.len() || message_role(&messages[i]) != "assistant" {
+                continue;
+            }
+            if !matches!(str_field(&messages[i], "stopReason"), Some("aborted" | "error")) {
+                continue;
+            }
+            if let Some(next) = messages.get(i + 1) {
+                if message_role(next) == "custom"
+                    && str_field(next, "customType") == Some(INTERRUPTED_THINKING_MESSAGE_TYPE)
+                {
+                    continue;
+                }
+            }
+            let dropped: BTreeSet<String> = messages[i]
+                .get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|b| str_field(b, "type") == Some("toolCall"))
+                .filter_map(|b| str_field(b, "id").map(str::to_owned))
+                .collect();
+            messages.remove(i);
+            if !dropped.is_empty() {
+                let mut j = messages.len();
+                while j > i {
+                    j -= 1;
+                    if message_role(&messages[j]) == "toolResult"
+                        && str_field(&messages[j], "toolCallId").is_some_and(|id| dropped.contains(id))
+                    {
+                        messages.remove(j);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Deterministic xorshift so the test needs no extra dev-dependency.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    fn random_transcript(r: &mut Rng, n: usize) -> Vec<Value> {
+        let ids = ["a", "b", "c", "d"];
+        (0..n)
+            .map(|k| match r.below(6) {
+                0 | 1 => {
+                    let stop = ["stop", "toolUse", "aborted", "error"][r.below(4) as usize];
+                    let calls: Vec<Value> = (0..r.below(3))
+                        .map(|_| json!({"type": "toolCall", "id": ids[r.below(4) as usize]}))
+                        .collect();
+                    json!({"role": "assistant", "stopReason": stop, "content": calls, "k": k})
+                }
+                2 | 3 => json!({"role": "toolResult", "toolCallId": ids[r.below(4) as usize], "k": k}),
+                4 => json!({"role": "custom", "customType": INTERRUPTED_THINKING_MESSAGE_TYPE, "k": k}),
+                _ => json!({"role": "user", "k": k}),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn single_pass_matches_reference() {
+        let mut r = Rng(0x9E37_79B9_7F4A_7C15);
+        for case in 0..20_000 {
+            let n = (case % 40) as usize;
+            let msgs = random_transcript(&mut r, n);
+            let (mut a, mut b) = (msgs.clone(), msgs);
+            drop_failed_assistant_turns(&mut a);
+            reference(&mut b);
+            assert_eq!(a, b, "case {case}");
         }
     }
 }

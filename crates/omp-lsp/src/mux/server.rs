@@ -628,7 +628,7 @@ async fn read_server(server: &Arc<ServerInstance>, mut stdout: tokio::process::C
 
 async fn from_server(server: &Arc<ServerInstance>, message: &Value) {
     if !has_method(message) {
-        handle_server_response(server, message);
+        handle_server_response(server, message).await;
         return;
     }
     if has_request_id(message) {
@@ -679,7 +679,9 @@ async fn send_diagnostics(session: &Arc<Session>, params: &Value) {
         .await;
 }
 
-fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
+/// Replies go out inline, in server order, like diagnostics/progress on this same read loop: a
+/// task per reply cost a spawn each and could reorder a reply against those inline sends.
+async fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
     let Some(id) = message.get("id").and_then(Value::as_i64) else { return };
     let pending = lock(&server.pending).remove(&id);
     let Some(pending) = pending else { return };
@@ -695,10 +697,7 @@ fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
                     if let Some(session) = find_session(server, session_id) {
                         let mut reply = message.clone();
                         reply["id"] = client_id;
-                        // `send` needs an async context; deliver on a task.
-                        tokio::spawn(async move {
-                            session.send(&reply).await;
-                        });
+                        session.send(&reply).await;
                     }
                 }
                 if let Some(state) = server.state.upgrade() {
@@ -713,10 +712,7 @@ fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
             let waiters = std::mem::take(&mut *lock(&server.initialize_waiters));
             for (session_id, client_id) in waiters {
                 if let Some(session) = find_session(server, session_id) {
-                    let reply = rpc_result(&client_id, &result);
-                    tokio::spawn(async move {
-                        session.send(&reply).await;
-                    });
+                    session.send(&rpc_result(&client_id, &result)).await;
                 }
             }
         }
@@ -731,9 +727,7 @@ fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
             lock(&session.forwarded_ids).remove(&id_key(&original_id));
             let mut reply = message.clone();
             reply["id"] = original_id;
-            tokio::spawn(async move {
-                session.send(&reply).await;
-            });
+            session.send(&reply).await;
         }
     }
 }

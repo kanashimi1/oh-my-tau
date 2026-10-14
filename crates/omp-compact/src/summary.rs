@@ -17,9 +17,9 @@ use pa_types::ai::{
 };
 use serde_json::{json, Value};
 
-use crate::convert::convert_to_llm;
+use crate::convert::{convert_message_cow, convert_to_llm};
 use crate::cut::CompactionPreparation;
-use crate::dialect::{serialize_conversation_for_summary, Dialect};
+use crate::dialect::{serialize_conversation_for_summary, serialize_conversation_for_summary_refs, Dialect};
 use crate::files::{compute_file_lists, upsert_file_operations};
 use crate::prompts;
 use crate::serialize::{escape_summary_boundary_tags, utf16_len, utf16_prefix};
@@ -312,26 +312,26 @@ fn clamp_conversation_to_budget(text: &str, budget: u64, tokens: u64) -> String 
 }
 
 /// `planSummaryWindows`: partition `messages` into windows that each fit `budget`.
-fn plan_summary_windows(
-    messages: &[Value],
+fn plan_summary_windows<'a>(
+    messages: &[&'a Value],
     params: &SummaryParams<'_>,
     budget: u64,
-) -> Vec<Vec<Value>> {
-    let mut windows: Vec<Vec<Value>> = Vec::new();
-    let mut current: Vec<Value> = Vec::new();
+) -> Vec<Vec<&'a Value>> {
+    let mut windows: Vec<Vec<&Value>> = Vec::new();
+    let mut current: Vec<&Value> = Vec::new();
     let mut current_tokens = 0u64;
-    for message in messages {
+    for &message in messages {
         let tokens = params
             .tokenizer
-            .count_text(&serialize_conversation_for_summary(
-                std::slice::from_ref(message),
+            .count_text(&serialize_conversation_for_summary_refs(
+                std::slice::from_ref(&message),
                 params.dialect,
             ));
         if current_tokens > 0 && current_tokens + tokens > budget {
             windows.push(std::mem::take(&mut current));
             current_tokens = 0;
         }
-        current.push(message.clone());
+        current.push(message);
         current_tokens += tokens;
     }
     if !current.is_empty() {
@@ -352,17 +352,30 @@ pub async fn generate_summary(
     params: &SummaryParams<'_>,
 ) -> Result<String> {
     let max_tokens = summary_max_tokens(params.reserve_tokens);
-    let llm = convert_to_llm(messages);
-    let whole = serialize_conversation_for_summary(&llm, params.dialect);
+    // Borrowed conversion: messages the converter passes through verbatim are
+    // not copied (the history being summarized can be most of the session).
+    let llm: Vec<std::borrow::Cow<'_, Value>> =
+        messages.iter().filter_map(convert_message_cow).collect();
+    let llm: Vec<&Value> = llm.iter().map(AsRef::as_ref).collect();
+    let whole = serialize_conversation_for_summary_refs(&llm, params.dialect);
     let budget = summary_input_budget_tokens(params.context_window, max_tokens);
-    let windows: Vec<Vec<Value>> = if fits_budget(params.tokenizer, &whole, budget).0 {
-        vec![llm]
+    // When the whole conversation fits, it is the single window and its
+    // serialization is that window's text: reuse it instead of rendering the
+    // transcript a second time.
+    let whole_fits = fits_budget(params.tokenizer, &whole, budget).0;
+    let whole = whole_fits.then_some(whole);
+    let windows: Vec<Vec<&Value>> = if whole_fits {
+        Vec::new()
     } else {
         plan_summary_windows(&llm, params, budget)
     };
+    let texts = whole.into_iter().chain(
+        windows
+            .iter()
+            .map(|window| serialize_conversation_for_summary_refs(window, params.dialect)),
+    );
     let mut carried: Option<String> = previous_summary.map(str::to_owned);
-    for window in &windows {
-        let text = serialize_conversation_for_summary(window, params.dialect);
+    for text in texts {
         let (fits, tokens) = fits_budget(params.tokenizer, &text, budget);
         let text = if fits {
             text

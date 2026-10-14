@@ -341,11 +341,11 @@ fn content_text(content: Option<&Value>) -> String {
     }
 }
 
-fn collect_tool_result_run(messages: &[Value], start: usize) -> (Vec<ToolResult>, usize) {
+fn collect_tool_result_run(messages: &[&Value], start: usize) -> (Vec<ToolResult>, usize) {
     let mut results = Vec::new();
     let mut next = start;
-    while next < messages.len() && message_role(&messages[next]) == "toolResult" {
-        let m = &messages[next];
+    while next < messages.len() && message_role(messages[next]) == "toolResult" {
+        let m = messages[next];
         results.push(ToolResult {
             id: str_field(m, "toolCallId").unwrap_or("").to_owned(),
             name: str_field(m, "toolName").unwrap_or("undefined").to_owned(),
@@ -639,39 +639,41 @@ fn legacy_results(flavour: Legacy, results: &[ToolResult]) -> String {
     format!("<function_results>\n{body}\n</function_results>")
 }
 
-fn render_legacy(messages: &[Value], flavour: Legacy) -> String {
+fn render_legacy(messages: &[&Value], flavour: Legacy) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
                 let thinking = render_delimited_thinking("<thinking>", "</thinking>", &p.thinking);
-                out = format!(
-                    "{out}\n\nAssistant: {thinking}{}{}",
-                    p.text,
-                    legacy_calls(flavour, &p.tool_calls)
-                );
+                // Append in place: `out = format!("{out}…")` re-copied the whole
+                // transcript per message (quadratic on long sessions).
+                out.push_str("\n\nAssistant: ");
+                out.push_str(&thinking);
+                out.push_str(&p.text);
+                out.push_str(&legacy_calls(flavour, &p.tool_calls));
                 i += 1;
             }
             "toolResult" => {
                 let (results, next) = collect_tool_result_run(messages, i);
-                out = format!("{out}\n\nHuman: {}", legacy_results(flavour, &results));
+                out.push_str("\n\nHuman: ");
+                out.push_str(&legacy_results(flavour, &results));
                 i = next;
             }
             role => {
                 let text = content_text(message.get("content"));
                 if role == "developer" {
                     if !text.is_empty() {
-                        out = if out.is_empty() {
-                            text
-                        } else {
-                            format!("{out}\n\n{text}")
-                        };
+                        if !out.is_empty() {
+                            out.push_str("\n\n");
+                        }
+                        out.push_str(&text);
                     }
                 } else {
-                    out = format!("{out}\n\nHuman: {text}");
+                    out.push_str("\n\nHuman: ");
+                    out.push_str(&text);
                 }
                 i += 1;
             }
@@ -697,14 +699,14 @@ fn glm_calls(calls: &[&Value]) -> String {
         .join("\n")
 }
 
-fn render_glm(messages: &[Value]) -> String {
+fn render_glm(messages: &[&Value]) -> String {
     if messages.is_empty() {
         return String::new();
     }
     let mut out = "[gMASK]<sop>".to_owned();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
@@ -753,7 +755,7 @@ fn gemini_call(call: &Value) -> String {
     format!("default_api.{}({kwargs})", call_name(call))
 }
 
-fn render_gemini(messages: &[Value]) -> String {
+fn render_gemini(messages: &[&Value]) -> String {
     if messages.is_empty() {
         return String::new();
     }
@@ -761,7 +763,7 @@ fn render_gemini(messages: &[Value]) -> String {
     let mut pending = String::new();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "developer" => {
                 pending = join_user_bodies(&pending, &content_text(message.get("content")));
@@ -851,14 +853,14 @@ fn gemma_turn(role: &str, body: &str) -> String {
     format!("<|turn>{role}\n{body}<turn|>")
 }
 
-fn render_gemma(messages: &[Value]) -> String {
+fn render_gemma(messages: &[&Value]) -> String {
     if messages.is_empty() {
         return String::new();
     }
     let mut out = "<bos>".to_owned();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
@@ -876,7 +878,7 @@ fn render_gemma(messages: &[Value]) -> String {
                         .collect::<String>()
                 );
                 let mut next = i + 1;
-                if next < messages.len() && message_role(&messages[next]) == "toolResult" {
+                if next < messages.len() && message_role(messages[next]) == "toolResult" {
                     let (results, n) = collect_tool_result_run(messages, next);
                     body.push_str(&gemma_results(&results));
                     next = n;
@@ -903,11 +905,11 @@ fn kimi_turn(role: &str, name: &str, body: &str) -> String {
     format!("<|im_{role}|>{name}<|im_middle|>{body}<|im_end|>")
 }
 
-fn render_kimi(messages: &[Value]) -> String {
+fn render_kimi(messages: &[&Value]) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
@@ -969,14 +971,14 @@ fn render_kimi(messages: &[Value]) -> String {
     out
 }
 
-fn render_qwen3(messages: &[Value]) -> String {
+fn render_qwen3(messages: &[&Value]) -> String {
     if messages.is_empty() {
         return String::new();
     }
     let mut out = String::new();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
@@ -1026,14 +1028,14 @@ fn render_qwen3(messages: &[Value]) -> String {
     out
 }
 
-fn render_deepseek(messages: &[Value]) -> String {
+fn render_deepseek(messages: &[&Value]) -> String {
     if messages.is_empty() {
         return String::new();
     }
     let mut out = "<｜begin▁of▁sentence｜>".to_owned();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
@@ -1091,11 +1093,11 @@ fn render_deepseek(messages: &[Value]) -> String {
     out
 }
 
-fn render_harmony(messages: &[Value]) -> String {
+fn render_harmony(messages: &[&Value]) -> String {
     let mut out = String::new();
     let mut i = 0;
     while i < messages.len() {
-        let message = &messages[i];
+        let message = messages[i];
         match message_role(message) {
             "assistant" => {
                 let p = assistant_parts(message);
@@ -1153,6 +1155,10 @@ fn render_harmony(messages: &[Value]) -> String {
 /// `getDialectDefinition(dialect).renderTranscript(messages)` (no tool schemas).
 #[must_use]
 pub fn render_transcript(dialect: Dialect, messages: &[Value]) -> String {
+    render_transcript_refs(dialect, &messages.iter().collect::<Vec<_>>())
+}
+
+fn render_transcript_refs(dialect: Dialect, messages: &[&Value]) -> String {
     match dialect {
         Dialect::Xml => render_legacy(messages, Legacy::Xml),
         Dialect::Anthropic => render_legacy(messages, Legacy::Anthropic),
@@ -1201,6 +1207,14 @@ fn escape_harmony_control_tokens(text: &str) -> String {
 /// drops reasoning for Anthropic targets, truncates tool results, then renders the transcript.
 #[must_use]
 pub fn serialize_conversation(messages: &[Value], dialect: Dialect) -> String {
+    serialize_conversation_refs(&messages.iter().collect::<Vec<_>>(), dialect)
+}
+
+/// [`serialize_conversation`] over borrowed messages. Messages that pass
+/// through unchanged are rendered in place; only the rewritten ones
+/// (filtered assistant blocks, truncated tool results) are new values, so a
+/// long transcript is never deep-copied as a whole.
+fn serialize_conversation_refs(messages: &[&Value], dialect: Dialect) -> String {
     let useless: Vec<&str> = messages
         .iter()
         .filter(|m| {
@@ -1211,31 +1225,34 @@ pub fn serialize_conversation(messages: &[Value], dialect: Dialect) -> String {
         .filter_map(|m| str_field(m, "toolCallId"))
         .collect();
     let drop_thinking = dialect == Dialect::Anthropic;
-    let mut processed: Vec<Value> = Vec::new();
-    for msg in messages {
+    let mut processed: Vec<std::borrow::Cow<'_, Value>> = Vec::with_capacity(messages.len());
+    for &msg in messages {
         match message_role(msg) {
             "assistant" => {
-                let blocks = msg
+                let blocks: &[Value] = msg
                     .get("content")
                     .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                let kept: Vec<Value> = blocks
-                    .iter()
-                    .filter(|b| {
-                        let t = str_field(b, "type");
-                        !(t == Some("toolCall")
-                            && str_field(b, "id").is_some_and(|id| useless.contains(&id)))
-                            && !(drop_thinking && t == Some("thinking"))
-                    })
-                    .cloned()
-                    .collect();
-                if !kept.is_empty() {
+                    .map_or(&[], Vec::as_slice);
+                let keep = |b: &Value| {
+                    let t = str_field(b, "type");
+                    !(t == Some("toolCall")
+                        && str_field(b, "id").is_some_and(|id| useless.contains(&id)))
+                        && !(drop_thinking && t == Some("thinking"))
+                };
+                let kept = blocks.iter().filter(|b| keep(b)).count();
+                if kept == 0 {
+                    continue;
+                }
+                if kept == blocks.len() {
+                    // Every block survives: the rewrite would equal the original.
+                    processed.push(std::borrow::Cow::Borrowed(msg));
+                } else {
                     let mut m = msg.clone();
                     if let Some(o) = m.as_object_mut() {
+                        let kept: Vec<Value> = blocks.iter().filter(|b| keep(b)).cloned().collect();
                         o.insert("content".into(), Value::Array(kept));
                     }
-                    processed.push(m);
+                    processed.push(std::borrow::Cow::Owned(m));
                 }
             }
             "toolResult" => {
@@ -1257,18 +1274,25 @@ pub fn serialize_conversation(messages: &[Value], dialect: Dialect) -> String {
                 if let Some(o) = m.as_object_mut() {
                     o.insert("content".into(), serde_json::json!([{ "type": "text", "text": truncate_tool_result_for_summary(&text) }]));
                 }
-                processed.push(m);
+                processed.push(std::borrow::Cow::Owned(m));
             }
-            _ => processed.push(msg.clone()),
+            _ => processed.push(std::borrow::Cow::Borrowed(msg)),
         }
     }
-    render_transcript(dialect, &processed)
+    let refs: Vec<&Value> = processed.iter().map(AsRef::as_ref).collect();
+    render_transcript_refs(dialect, &refs)
 }
 
 /// `serializeConversationForSummary(messages, dialect)`.
 #[must_use]
 pub fn serialize_conversation_for_summary(messages: &[Value], dialect: Dialect) -> String {
-    let conversation = serialize_conversation(messages, dialect);
+    serialize_conversation_for_summary_refs(&messages.iter().collect::<Vec<_>>(), dialect)
+}
+
+/// [`serialize_conversation_for_summary`] over borrowed messages.
+#[must_use]
+pub(crate) fn serialize_conversation_for_summary_refs(messages: &[&Value], dialect: Dialect) -> String {
+    let conversation = serialize_conversation_refs(messages, dialect);
     let escaped = if dialect == Dialect::Harmony {
         escape_harmony_control_tokens(&conversation)
     } else {

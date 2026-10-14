@@ -240,6 +240,24 @@ pub fn convert_message(message: &Value) -> Option<Value> {
     }
 }
 
+/// [`convert_message`] that borrows the messages it would copy verbatim
+/// (assistant turns, user/developer turns that already carry an attribution),
+/// so converting a long history does not deep-copy it.
+pub(crate) fn convert_message_cow(message: &Value) -> Option<std::borrow::Cow<'_, Value>> {
+    let verbatim = match message_role(message) {
+        "assistant" => true,
+        "user" | "developer" => {
+            message.is_object() && !message.get("attribution").is_none_or(Value::is_null)
+        }
+        _ => false,
+    };
+    if verbatim {
+        Some(std::borrow::Cow::Borrowed(message))
+    } else {
+        convert_message(message).map(std::borrow::Cow::Owned)
+    }
+}
+
 /// `convertToLlm`: the messages sent to the provider for these agent messages.
 #[must_use]
 pub fn convert_to_llm(messages: &[Value]) -> Vec<Value> {
