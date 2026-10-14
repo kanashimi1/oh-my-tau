@@ -70,13 +70,21 @@ const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(500);
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 /// P0 builtin slash commands dispatched through `Action::Slash`
 /// (§4.2 MVP cut: `exit help model effort compact clear context export`
-/// plus the overlay-backed `resume`/`tree`/`theme`).
+/// plus the overlay-backed `resume`/`tree`/`theme`/`settings`/`hotkeys`).
 const P0_BUILTINS: &[&str] = &[
-    "exit", "help", "model", "effort", "compact", "clear", "context", "export", "resume", "tree",
-    "theme",
+    "exit", "help", "hotkeys", "model", "effort", "compact", "clear", "context", "export",
+    "resume", "tree", "theme", "settings",
 ];
 /// Bare-slash commands that require a confirming second Enter (§4.1 step 7).
 const CONFIRM_BARE: &[&str] = &["exit", "clear", "compact", "export"];
+
+/// TUI-local slash entries merged into the autocomplete catalog: commands
+/// the app handles itself and the runtime catalog does not announce (TS
+/// `/settings` is registered by the interactive host, not the agent).
+const LOCAL_COMMANDS: &[(&str, &str)] = &[
+    ("settings", "Browse and edit settings"),
+    ("hotkeys", "Show keybindings (alias of /help)"),
+];
 
 /// Maintenance the runtime advertised as esc-to-cancel (§6 step 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +265,11 @@ pub struct App {
     journal: Vec<Value>,
     /// The current folder's session dir (`/resume` embedded picker source).
     sessions_dir: PathBuf,
+    /// Terminal appearance from the startup OSC 11 / COLORFGBG probe:
+    /// decides whether a `theme.dark`/`theme.light` edit hot-swaps now.
+    appearance: crate::theme::Appearance,
+    /// Working directory the session runs in (settings re-reads on edits).
+    cwd: PathBuf,
 }
 
 impl App {
@@ -294,7 +307,15 @@ impl App {
             notify: NotifySink::default(),
             journal: Vec::new(),
             sessions_dir: PathBuf::new(),
+            appearance: crate::theme::Appearance::Dark,
+            cwd: cwd.to_path_buf(),
         }
+    }
+
+    /// Record the terminal appearance resolved at startup (OSC 11 /
+    /// COLORFGBG); `/settings` theme edits hot-swap the matching variant.
+    pub fn set_appearance(&mut self, appearance: crate::theme::Appearance) {
+        self.appearance = appearance;
     }
 
     /// Replace the app-wide theme (ThemeLoader startup + hot-swap). The
@@ -485,7 +506,25 @@ impl App {
                 self.messages.apply(event);
             }
             AppEvent::ExtensionUiRequest(frame) => self.extension_ui.push(frame),
-            AppEvent::AvailableCommands(frame) => self.autocomplete.update_commands(frame),
+            AppEvent::AvailableCommands(frame) => {
+                self.autocomplete.update_commands(frame);
+                // Merge the TUI-local entries (`/settings`, `/hotkeys`) into
+                // the announced catalog so the `/` popup offers them even
+                // though the runtime does not register them (TS registers
+                // both host-side).
+                let mut commands = self.autocomplete.commands().to_vec();
+                for (name, description) in LOCAL_COMMANDS {
+                    if !commands.iter().any(|cmd| cmd.name == *name) {
+                        commands.push(crate::autocomplete::SlashCommand {
+                            name: (*name).to_string(),
+                            description: Some((*description).to_string()),
+                            source: Some(crate::autocomplete::CommandSource::Builtin),
+                            ..crate::autocomplete::SlashCommand::default()
+                        });
+                    }
+                }
+                self.autocomplete.set_commands(commands);
+            }
             AppEvent::CommandOutput(text) => self.push_system(text.clone()),
             _ => {}
         }
@@ -533,6 +572,19 @@ impl App {
             Action::SetModel { provider, id } => port.set_model(provider, id),
             Action::SetThinkingLevel(level) => port.set_thinking_level(level),
             Action::Slash { name, args } => port.run_slash(name, args),
+            Action::SettingChanged { id, value } => {
+                if let Err(e) = port.settings_set(id.clone(), value.clone()) {
+                    self.push_system(format!("settings: failed to save {id}: {e}"));
+                } else {
+                    self.apply_setting_live(&id, &value, port);
+                    // Re-seed the overlay so layered values (env/project)
+                    // reflect what actually won after the write.
+                    let overlay = self.overlays.settings_mut();
+                    let ids = overlay.ids();
+                    let values = port.settings_get(&ids);
+                    overlay.seed(&values);
+                }
+            }
             Action::ExtensionUiResponse { id, value } => port.extension_ui_response(id, value),
             Action::Scroll(dir) => self.apply_scroll(dir),
             Action::Quit => {}
@@ -807,7 +859,14 @@ impl App {
         if actions.is_empty() {
             return;
         }
-        if self.overlays.open() == Some(OpenOverlay::Models) {
+        if self.overlays.open() == Some(OpenOverlay::Models)
+            && actions.iter().any(|a| {
+                matches!(
+                    a,
+                    Action::SetModel { .. } | Action::SetThinkingLevel(_)
+                )
+            })
+        {
             self.overlays.pop();
         }
         for action in actions {
@@ -954,7 +1013,8 @@ impl App {
         self.armed_bare_command = None;
         match name {
             "exit" => self.quit_requested = true,
-            "help" => self.overlays.toggle(OpenOverlay::Help),
+            "help" | "hotkeys" => self.overlays.toggle(OpenOverlay::Help),
+            "settings" => self.slash_settings(port),
             "model" => self.slash_model(args, port),
             "resume" => self.slash_resume(),
             "tree" => {
@@ -1011,6 +1071,18 @@ impl App {
         }
     }
 
+    /// `/settings`: open the tabbed settings overlay, seeded with the
+    /// effective values from the port (TS opens the settings selector with a
+    /// `cfg://` snapshot). The overlay stays open; edits drain as
+    /// `Action::SettingChanged`.
+    fn slash_settings(&mut self, port: &impl RuntimePort) {
+        self.overlays.open_settings();
+        let overlay = self.overlays.settings_mut();
+        let ids = overlay.ids();
+        let values = port.settings_get(&ids);
+        overlay.seed(&values);
+    }
+
     /// `/resume`: open the embedded session picker (overlays-b P0 #10); the
     /// pick resolves to `Action::ResumeSession` via the overlay drain.
     fn slash_resume(&mut self) {
@@ -1019,6 +1091,39 @@ impl App {
             return;
         }
         self.overlays.open_sessions(&self.sessions_dir);
+    }
+
+    /// Live half of a persisted settings edit: apply what omp-rs can right
+    /// now (TS applies everything through the cfg:// host; here only theme
+    /// and thinking level have live consumers, everything else is saved for
+    /// the next runtime read and flagged "no live effect" in the overlay).
+    fn apply_setting_live(&mut self, id: &str, value: &Value, port: &impl RuntimePort) {
+        match id {
+            "theme.dark" | "theme.light" => {
+                // Re-read the layered settings and hot-swap the theme for
+                // the terminal's current appearance.
+                let settings = omp_settings::Settings::load(&self.cwd);
+                let dark = settings.get_string("theme.dark");
+                let light = settings.get_string("theme.light");
+                match crate::theme::load_configured(
+                    dark.as_deref(),
+                    light.as_deref(),
+                    self.appearance,
+                ) {
+                    Ok(theme) => {
+                        self.set_theme(theme);
+                        self.push_system(format!("{id} applied"));
+                    }
+                    Err(e) => self.push_system(format!("{id} saved, but theme reload failed: {e}")),
+                }
+            }
+            "defaultThinkingLevel" => {
+                if let Some(level) = value.as_str().filter(|level| *level != "auto") {
+                    port.set_thinking_level(level.to_string());
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `/theme`: bare lists the loadable themes; with a name it hot-swaps
@@ -1271,6 +1376,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use serde_json::json;
+    use std::sync::LazyLock;
 
     fn app() -> App {
         App::new("zai/glm-5.3-flash".into(), Path::new("/repo"))
@@ -1465,6 +1571,149 @@ mod tests {
         type_text(&mut app, &port, "/help");
         assert!(enter(&mut app, &port));
         assert_eq!(app.overlays.open(), Some(OpenOverlay::Help));
+    }
+
+    #[test]
+    fn slash_hotkeys_opens_help_overlay() {
+        // TS alias: `/hotkeys` is `/help`.
+        let mut app = app();
+        let port = port();
+        type_text(&mut app, &port, "/hotkeys");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Help));
+    }
+
+    #[test]
+    fn slash_settings_opens_overlay_listing_sections() {
+        let mut app = app();
+        let port = port();
+        type_text(&mut app, &port, "/settings");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Settings));
+        let s = screen(&mut app, 150, 30);
+        // Tab strip and the first tab's section headings.
+        assert!(s.contains("appearance"), "{s}");
+        assert!(s.contains("model") && s.contains("providers"), "{s}");
+        assert!(s.contains("─ Theme "), "{s}");
+        // Current values render next to labels.
+        assert!(s.contains("dark"), "{s}");
+    }
+
+    #[test]
+    fn settings_popup_lists_local_commands() {
+        let mut app = app();
+        let port = port();
+        with_catalog(&mut app);
+        type_text(&mut app, &port, "/se");
+        let s = screen(&mut app, 60, 14);
+        assert!(s.contains("settings"), "{s}");
+        // New query: drop the old draft and type the other local command.
+        for _ in 0..3 {
+            assert!(press(&mut app, &port, key(CtKeyCode::Backspace)));
+        }
+        type_text(&mut app, &port, "/hot");
+        let s = screen(&mut app, 60, 14);
+        assert!(s.contains("hotkeys"), "{s}");
+    }
+
+    /// Serialize the HOME-mutating settings tests (env is process-global).
+    static HOME_LOCK: LazyLock<parking_lot::Mutex<()>> = LazyLock::new(|| parking_lot::Mutex::new(()));
+
+    fn with_temp_home(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omp-tui-settings-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+        std::env::remove_var("OMP_PROFILE");
+        dir
+    }
+
+    fn restore_home(old: Option<std::ffi::OsString>) {
+        match old {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    #[test]
+    fn settings_bool_toggle_writes_config_and_rereads() {
+        let _guard = HOME_LOCK.lock();
+        let old_home = std::env::var_os("HOME");
+        let home = with_temp_home("bool");
+        {
+            let mut app = app();
+            let port = port();
+            type_text(&mut app, &port, "/settings");
+            assert!(enter(&mut app, &port));
+            // Defaults before the edit.
+            assert_eq!(
+                app.overlays.settings_mut().value_of("colorBlindMode"),
+                Some(json!(false))
+            );
+            // Cycle the bool row with → (same as Enter in the overlay).
+            assert!(app.overlays.settings_mut().select("colorBlindMode"));
+            assert!(press(&mut app, &port, key(CtKeyCode::Right)));
+            // The overlay shows the new value and stays open.
+            assert_eq!(app.overlays.open(), Some(OpenOverlay::Settings));
+            assert_eq!(
+                app.overlays.settings_mut().value_of("colorBlindMode"),
+                Some(json!(true))
+            );
+            // The write landed in ~/.omp/agent/config.yml…
+            let config = home.join(".omp/agent/config.yml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            assert!(text.contains("colorBlindMode: true"), "{text}");
+            // …and a fresh layered read sees it (port round trip).
+            assert_eq!(
+                port.settings_get(&["colorBlindMode".to_string()])[0].1,
+                json!(true)
+            );
+            let logged = log(&port);
+            assert!(
+                logged.iter().any(|entry| entry.starts_with("settings_set(colorBlindMode")),
+                "{logged:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        restore_home(old_home);
+    }
+
+    #[test]
+    fn settings_theme_change_applies_live() {
+        let _guard = HOME_LOCK.lock();
+        let old_home = std::env::var_os("HOME");
+        let home = with_temp_home("theme");
+        {
+            let mut app = app();
+            let port = port();
+            app.set_appearance(crate::theme::Appearance::Dark);
+            type_text(&mut app, &port, "/settings");
+            assert!(enter(&mut app, &port));
+            assert!(app.overlays.settings_mut().select("theme.dark"));
+            // Text row: Enter opens the inline editor pre-filled with the
+            // current value ("titanium"); clear it, then type + save.
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+            for _ in 0.."titanium".len() {
+                assert!(press(&mut app, &port, key(CtKeyCode::Backspace)));
+            }
+            type_text(&mut app, &port, "light");
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+            // Saved…
+            assert_eq!(
+                app.overlays.settings_mut().value_of("theme.dark"),
+                Some(json!("light"))
+            );
+            let config = home.join(".omp/agent/config.yml");
+            assert!(std::fs::read_to_string(&config).unwrap().contains("light"));
+            // …and applied: the app theme is now the light theme.
+            let expected = crate::theme::load("light").unwrap();
+            assert_eq!(app.theme.color("text"), expected.color("text"));
+            assert_eq!(app.theme.color("accent"), expected.color("accent"));
+            // A notice confirms the live apply.
+            let s = screen(&mut app, 150, 30);
+            assert!(s.contains("theme.dark applied"), "{s}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        restore_home(old_home);
     }
 
     fn with_catalog(app: &mut App) {

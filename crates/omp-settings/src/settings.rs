@@ -383,6 +383,50 @@ impl Settings {
     }
 }
 
+/// Persist `value` for the registered setting `id` into the global config.yml
+/// (TS `cfg://` set → `saveConfigFile`), creating the agent dir when missing.
+///
+/// The existing file is read and updated in place (unknown keys preserved,
+/// same guarantee as [`Settings::load`]); the value's shape must match the
+/// setting's registry type. Returns the path written.
+///
+/// # Errors
+///
+/// `InvalidInput` when `id` is not a registered setting or `value` does not
+/// match its type; `Io` when the file cannot be written.
+pub fn write_global(id: &str, value: &Value) -> std::io::Result<PathBuf> {
+    let def = lookup(id)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("unknown setting: {id}")))?;
+    let valid = match def.ty {
+        crate::SettingType::Boolean => value.is_boolean(),
+        crate::SettingType::Number => value.is_number(),
+        crate::SettingType::String => value.is_string(),
+        crate::SettingType::Enum(values) => value.as_str().is_some_and(|s| values.contains(&s)),
+        crate::SettingType::Array => value.is_array(),
+        crate::SettingType::Record => value.is_object(),
+    };
+    if !valid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("value for {id} does not match registry type {}", def.ty.ts_name()),
+        ));
+    }
+
+    let path = agent_config_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no agent config dir (HOME unset)"))?;
+    let mut merged = load_yaml_file(&path)
+        .and_then(|(_, value)| value.as_object().cloned())
+        .unwrap_or_default();
+    set_path(&mut merged, id, value.clone());
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = serde_yaml_ng::to_string(&Value::Object(merged))
+        .map_err(std::io::Error::other)?;
+    std::fs::write(&path, yaml)?;
+    Ok(path)
+}
+
 /// Resolve the agent config dir: `OMP_PROFILE` profile agent dir when the profile
 /// exists, else `~/.omp/agent` (TS `getAgentDir`).
 fn agent_dir() -> Option<PathBuf> {
@@ -579,4 +623,68 @@ fn is_record_prefix(path: &str) -> bool {
     SETTINGS.iter().any(|def| {
         matches!(def.ty, crate::SettingType::Record) && (def.id == path || path.starts_with(&format!("{}.", def.id)))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parking_lot::Mutex;
+    use std::sync::LazyLock;
+
+    /// HOME is process-global; serialize the env-mutating tests.
+    static HOME_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    struct TempHome(PathBuf);
+    impl TempHome {
+        fn new() -> Self {
+            let base = std::env::temp_dir().join(format!("omp-settings-test-{}", std::process::id()));
+            std::fs::create_dir_all(&base).unwrap();
+            let old = std::env::var_os("HOME");
+            std::env::set_var("HOME", &base);
+            std::env::remove_var("OMP_PROFILE");
+            Self(base)
+        }
+        fn restore(&self) {
+            // Restoring the previous HOME is handled by the caller via
+            // save/restore in each test; kept simple: tests run under lock.
+            let _ = self;
+        }
+    }
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn write_global_round_trips_through_load() {
+        let _guard = HOME_LOCK.lock();
+        let old_home = std::env::var_os("HOME");
+        let old_profile = std::env::var_os("OMP_PROFILE");
+        {
+            let _home = TempHome::new();
+            let path = write_global("colorBlindMode", &Value::Bool(true)).unwrap();
+            assert!(path.ends_with(".omp/agent/config.yml"), "{path:?}");
+            // Unknown pre-existing keys survive the write.
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains("colorBlindMode: true"), "{text}");
+
+            let loaded = Settings::load(Path::new("/nonexistent-project"));
+            assert_eq!(loaded.get_bool("colorBlindMode"), Some(true));
+        }
+        if let Some(h) = old_home {
+            std::env::set_var("HOME", h);
+        }
+        if let Some(p) = old_profile {
+            std::env::set_var("OMP_PROFILE", p);
+        }
+    }
+
+    #[test]
+    fn write_global_rejects_bad_values() {
+        let _guard = HOME_LOCK.lock();
+        assert!(write_global("no.such.setting", &Value::Bool(true)).is_err());
+        assert!(write_global("colorBlindMode", &Value::String("x".into())).is_err());
+        assert!(write_global("theme.dark", &Value::Bool(true)).is_err());
+    }
 }

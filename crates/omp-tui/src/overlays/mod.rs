@@ -24,6 +24,7 @@ pub mod diff;
 pub mod help;
 pub mod models;
 pub mod sessions;
+pub mod settings;
 pub mod tree;
 
 use crate::component::{Component, EventOutcome};
@@ -69,6 +70,8 @@ pub enum OpenOverlay {
     Diff,
     /// Session tree / rewind navigator (`/tree`, double-Esc rewind column).
     Tree,
+    /// Settings editor (`/settings`).
+    Settings,
 }
 
 impl OpenOverlay {
@@ -90,6 +93,7 @@ pub struct Overlays {
     palette: command_palette::CommandPalette,
     diff: diff::DiffView,
     tree: tree::TreeNavigator,
+    settings: settings::SettingsOverlay,
     stack: Vec<OpenOverlay>,
 }
 
@@ -155,6 +159,19 @@ impl Overlays {
         }
     }
 
+    /// Open the `/settings` overlay (rows are seeded by the host through
+    /// [`Self::settings_mut`] before or after opening).
+    pub fn open_settings(&mut self) {
+        if !self.stack.contains(&OpenOverlay::Settings) {
+            self.stack.push(OpenOverlay::Settings);
+        }
+    }
+
+    /// Mutable access to the settings overlay (seed values, drain edits).
+    pub fn settings_mut(&mut self) -> &mut settings::SettingsOverlay {
+        &mut self.settings
+    }
+
     /// Close the top overlay (esc routing).
     pub fn pop(&mut self) {
         self.stack.pop();
@@ -193,6 +210,7 @@ impl Overlays {
             OpenOverlay::CommandPalette => &self.palette,
             OpenOverlay::Diff => &self.diff,
             OpenOverlay::Tree => &self.tree,
+            OpenOverlay::Settings => &self.settings,
         }
     }
 
@@ -204,6 +222,7 @@ impl Overlays {
             OpenOverlay::CommandPalette => &mut self.palette,
             OpenOverlay::Diff => &mut self.diff,
             OpenOverlay::Tree => &mut self.tree,
+            OpenOverlay::Settings => &mut self.settings,
         }
     }
 
@@ -255,6 +274,11 @@ impl Overlays {
                 out.push(Action::ResumeSession { path, fork: false });
             }
             self.close(OpenOverlay::Sessions);
+        }
+        // Settings edits persist through the port and apply live where the
+        // app can; the overlay stays open like the model picker.
+        for (id, value) in self.settings.take_changes() {
+            out.push(Action::SettingChanged { id, value });
         }
         out
     }

@@ -67,6 +67,14 @@ pub enum Action {
         /// Target journal entry id.
         entry_id: String,
     },
+    /// A `/settings` overlay edit (TS `cfg://` set): persist via the port
+    /// and apply live where the TUI can (theme, thinking level).
+    SettingChanged {
+        /// Registered setting id (e.g. `theme.dark`).
+        id: String,
+        /// New value, already type-checked against the registry.
+        value: serde_json::Value,
+    },
     /// Scroll the chat backlog.
     Scroll(ScrollDir),
     /// Leave the TUI (Ctrl+C on the idle editor / `:q` future).

@@ -76,6 +76,15 @@ pub trait RuntimePort: Send + Sync + 'static {
     /// grows a compaction-abort RPC; the method exists so app wiring is
     /// stable.
     fn abort_compaction(&self);
+
+    /// Effective values for `ids` (TS `cfg://` batch get: defaults < global
+    /// config.yml < project config < env). Used by the `/settings` overlay
+    /// to seed its rows; ids not found come back as `Null`.
+    fn settings_get(&self, ids: &[String]) -> Vec<(String, Value)>;
+
+    /// Persist `value` for `id` to the global config.yml (TS `cfg://` set →
+    /// `saveConfigFile`). An error string is surfaced as a system notice.
+    fn settings_set(&self, id: String, value: Value) -> Result<(), String>;
 }
 
 /// A recording fake for tests. Every call appends to [`Self::log`].
@@ -137,5 +146,16 @@ impl RuntimePort for FakePort {
     }
     fn rewind_entry(&self, entry_id: String) {
         self.record(format!("rewind_entry({entry_id})"));
+    }
+    fn settings_get(&self, ids: &[String]) -> Vec<(String, Value)> {
+        self.record(format!("settings_get({ids:?})"));
+        // Resolve the global config.yml from HOME like the real port (the
+        // temp-HOME tests rely on this path).
+        let settings = omp_settings::Settings::load(std::path::Path::new("/nonexistent"));
+        ids.iter().map(|id| (id.clone(), settings.get(id))).collect()
+    }
+    fn settings_set(&self, id: String, value: Value) -> Result<(), String> {
+        self.record(format!("settings_set({id}, {value})"));
+        omp_settings::write_global(&id, &value).map(|_| ()).map_err(|e| e.to_string())
     }
 }

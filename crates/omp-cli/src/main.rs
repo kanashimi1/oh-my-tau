@@ -12,6 +12,7 @@ mod paging;
 mod persist;
 mod rpc;
 mod runtime;
+mod slash_extra;
 pub mod subcmd;
 mod sysprompt;
 mod title;

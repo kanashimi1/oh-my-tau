@@ -16,7 +16,7 @@ mod schema;
 mod settings;
 
 pub use schema::{SettingDef, SETTINGS};
-pub use settings::{ModelPreset, ModelTagDef, Provenance, ServiceTier, Settings};
+pub use settings::{write_global, ModelPreset, ModelTagDef, Provenance, ServiceTier, Settings};
 
 /// Value type of a setting, mirroring the TS registry `type:` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

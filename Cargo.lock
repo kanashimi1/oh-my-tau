@@ -1624,6 +1624,7 @@ dependencies = [
 name = "omp-settings"
 version = "0.10.0"
 dependencies = [
+ "parking_lot",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -1651,6 +1652,7 @@ dependencies = [
  "crossterm",
  "futures",
  "omp-session",
+ "omp-settings",
  "parking_lot",
  "pi-ast",
  "pi-edit",

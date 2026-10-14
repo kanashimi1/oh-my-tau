@@ -79,6 +79,7 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     // - model catalogue + session dir for the `/model` and `/resume`
     //   overlays.
     let appearance = crate::theme::detect_appearance(cfg.osc11_bg);
+    app.set_appearance(appearance);
     match crate::theme::load_configured(None, None, appearance) {
         Ok(theme) => app.set_theme(theme),
         Err(e) => tracing::warn!("theme load failed, keeping default: {e}"),

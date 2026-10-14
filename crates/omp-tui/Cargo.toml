@@ -7,6 +7,7 @@ description = "Interactive terminal UI for omp-rs (Rust port of omp's pi-tui)"
 
 [dependencies]
 omp-session = { path = "../omp-session" }
+omp-settings = { path = "../omp-settings" }
 crossterm = { version = "0.28", features = ["event-stream"] }
 ratatui = "0.29"
 tokio = { workspace = true }

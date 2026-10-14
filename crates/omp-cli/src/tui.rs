@@ -288,6 +288,19 @@ impl omp_tui::RuntimePort for Port {
         });
     }
 
+    fn settings_get(&self, ids: &[String]) -> Vec<(String, Value)> {
+        // Synchronous read: the layered merge is pure fs + env work (TS
+        // `cfg://` get runs inline in the UI host too).
+        let settings = omp_settings::Settings::load(&self.rt.cwd);
+        ids.iter().map(|id| (id.clone(), settings.get(id))).collect()
+    }
+
+    fn settings_set(&self, id: String, value: Value) -> Result<(), String> {
+        omp_settings::write_global(&id, &value)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     fn abort_retry(&self) {
         self.rt.abort_retry();
     }

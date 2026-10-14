@@ -2221,6 +2221,30 @@ impl Runtime {
         self.apply_thinking(level).await;
     }
 
+    /// Current service-tier override on the live provider target
+    /// (TS `session.serviceTier`, driven by `/fast` and `/slow`).
+    #[must_use]
+    pub fn service_tier(&self) -> Option<pa_types::ai::ServiceTier> {
+        self.target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|t| t.service_tier)
+    }
+
+    /// Set the service-tier override for subsequent requests (TS
+    /// `session.setFastMode`/`setSlowMode`: `None` restores the default tier).
+    pub fn set_service_tier(&self, tier: Option<pa_types::ai::ServiceTier>) {
+        if let Some(t) = self
+            .target
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_mut()
+        {
+            t.service_tier = tier;
+        }
+    }
+
     /// Resolve once every admitted prompt reported and no retry saga is pending (print mode:
     /// `prompt`, then wait here, then read the transcript).
     pub async fn wait_settled(&self) {
@@ -2272,6 +2296,7 @@ impl Runtime {
     #[must_use]
     pub fn available_commands(&self) -> Vec<Value> {
         let mut all = builtin_commands();
+        all.extend(crate::slash_extra::extra_catalog());
         all.extend(lock(&self.commands).iter().cloned());
         all
     }
