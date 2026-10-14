@@ -448,11 +448,12 @@ const joinCtx = (xs: string[]) => {
 //   full:  {type, message, assistantMessageEvent, delta: {id, seq: 0}}
 //   delta: {type, assistantMessageEvent, delta: {id, seq, n, hdr?, b: [{i, blk?, v, x?}]}}
 // `rebuildMessageUpdate` turns a delta back into the full event before any
-// handler runs, so handlers see exactly the shape of a full frame. Like omp's
-// incremental snapshots, every update gets a fresh message object, content
-// array and usage object; blocks the frame does not touch are shared with the
-// previous update (read-only, as in omp). Frames without `delta` (older cores,
-// non-assistant messages) pass through untouched.
+// handler runs, so handlers see exactly the shape of a full frame. The chain
+// keeps its own copy of the message and never hands it out: every update gets
+// a fresh deep copy (strings shared), as a full frame fresh off the wire
+// would, so a handler that mutates `event.message` can neither corrupt the
+// next rebuild nor leak its edits into later updates. Frames without `delta`
+// (older cores, non-assistant messages) pass through untouched.
 let updateChain: { id: number; seq: number; message: Json } | null = null;
 
 class DeltaError extends Error {}
@@ -462,6 +463,15 @@ const STREAM_KEY: Record<string, string> = { text: "text", thinking: "thinking",
 function setOwn(o: Json, key: string, v: unknown): void {
   if (key === "__proto__") Object.defineProperty(o, key, { value: v, writable: true, enumerable: true, configurable: true });
   else o[key] = v;
+}
+
+/** Deep copy of a JSON value: fresh objects and arrays, strings shared. */
+function copyJson(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(copyJson);
+  if (v === null || typeof v !== "object") return v;
+  const out: Json = {};
+  for (const [k, x] of Object.entries(v)) setOwn(out, k, copyJson(x));
+  return out;
 }
 
 /** Inverse of events.rs `value_patch`. */
@@ -497,7 +507,12 @@ function rebuildMessageUpdate(event: Json): boolean {
   if (d === undefined) return true;
   delete event.delta;
   if (event.message !== undefined) {
-    updateChain = typeof d.id === "number" ? { id: d.id, seq: 0, message: event.message as Json } : null;
+    if (typeof d.id !== "number") {
+      updateChain = null;
+      return true;
+    }
+    updateChain = { id: d.id, seq: 0, message: event.message as Json };
+    event.message = copyJson(event.message);
     return true;
   }
   const chain = updateChain;
@@ -545,17 +560,11 @@ function rebuildMessageUpdate(event: Json): boolean {
       content[i] = block;
     }
     if (content.length !== d.n) throw new DeltaError(`content length ${content.length} != ${String(d.n)}`);
-    let message: Json;
-    if (d.hdr !== undefined) message = { ...(d.hdr as Json), content };
-    else {
-      message = { ...chain.message, content };
-      const usage = message.usage as Json | undefined;
-      if (usage && typeof usage === "object") message.usage = { ...usage, ...(usage.cost && typeof usage.cost === "object" ? { cost: { ...(usage.cost as Json) } } : {}) };
-    }
+    const message: Json = d.hdr !== undefined ? { ...(d.hdr as Json), content } : { ...chain.message, content };
     // Key order of a full frame / omp's event: type, message, assistantMessageEvent.
     const a = event.assistantMessageEvent;
     delete event.assistantMessageEvent;
-    event.message = message;
+    event.message = copyJson(message);
     event.assistantMessageEvent = a;
     updateChain = { id: chain.id, seq: d.seq as number, message };
     return true;

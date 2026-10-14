@@ -471,3 +471,54 @@ async fn ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop
     assert!(rewritten, "assistant tool call must carry the revised arguments");
     host.shutdown().await.unwrap();
 }
+
+/// A `message_update` handler that mutates `event.message` must not leak its
+/// edits into the next update or break the delta chain: every rebuilt update
+/// equals the message a full frame would carry.
+#[tokio::test]
+async fn message_update_deltas_are_isolated_from_handler_mutations() {
+    let host = ExtHost::spawn(&config()).await.unwrap();
+    let r = host
+        .load(Some(&[fixture("mutating.ts")]), None, "/tmp", None)
+        .await
+        .unwrap();
+    assert_eq!(r.loaded.len(), 1, "{r:?}");
+    let header = json!({"role": "assistant", "api": "a", "usage": {"input": 1, "cost": {"total": 0}}});
+    let message = |text: &str, x: &str| {
+        let mut m = header.clone();
+        m["content"] = json!([
+            {"type": "text", "text": text},
+            {"type": "toolCall", "id": "t", "name": "n", "arguments": {"x": x}}
+        ]);
+        m
+    };
+    let seen = |r: &omp_ext::EmitResult| -> Value {
+        assert_ne!(r.result, json!({"resync": true}), "delta rejected: {r:?}");
+        serde_json::from_str(r.errors[0]["error"].as_str().unwrap()).unwrap()
+    };
+    let frames = [
+        (
+            json!({"type": "message_update", "message": message("a", "1"),
+                   "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "a"},
+                   "delta": {"id": 7, "seq": 0}}),
+            message("a", "1"),
+        ),
+        (
+            json!({"type": "message_update",
+                   "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "b"},
+                   "delta": {"id": 7, "seq": 1, "n": 2, "b": [
+                       {"i": 0, "v": "a"}, {"i": 1, "v": "p", "x": {"o": {"x": {"+": "2"}}}}]}}),
+            message("ab", "12"),
+        ),
+        (
+            json!({"type": "message_update",
+                   "assistantMessageEvent": {"type": "toolcall_delta", "contentIndex": 1, "delta": ""},
+                   "delta": {"id": 7, "seq": 2, "n": 2, "b": [{"i": 1, "v": "k"}]}}),
+            message("ab", "12"),
+        ),
+    ];
+    for (frame, want) in frames {
+        let r = host.emit(frame, None).await.unwrap();
+        assert_eq!(seen(&r), want);
+    }
+}
