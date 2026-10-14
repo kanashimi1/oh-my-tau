@@ -1,82 +1,62 @@
 //! Anthropic Messages request params assembly.
 
-use serde_json::{json, Map, Value};
+use serde_json::json;
 
 use crate::providers::anthropic::convert::{convert_messages, convert_tools};
 use crate::providers::anthropic::{
     get_anthropic_compat, is_always_on_adaptive_thinking_model, supports_adaptive_thinking,
     AnthropicOptions, AnthropicThinkingDisplay, CacheControl,
 };
-use crate::types::{Context, Model};
-use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
+use crate::types::{Context, Message, Model};
+use crate::utils_inner::wire_json::{Wire, WireObject};
 
+/// The request params for `context`, whose history was transformed into `transformed`
+/// ([`transform_for_request`](crate::providers::anthropic::convert::transform_for_request)). The
+/// system prompt, messages and tools borrow from them instead of being copied into a `Value` tree:
+/// the body is serialized straight from the result.
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn build_params(
+pub(crate) fn build_params<'a>(
     model: &Model,
-    context: &Context,
+    context: &'a Context,
+    transformed: &'a [Message],
     is_oauth_token: bool,
     options: Option<&AnthropicOptions>,
     cache_control: Option<&CacheControl>,
-) -> Value {
+) -> Wire<'a> {
     let base = options
         .map(|options| options.base.clone())
         .unwrap_or_default();
-    let mut params = Map::new();
-    params.insert("model".into(), json!(model.id));
+    let mut params = WireObject::new();
+    params.insert("model", json!(model.id));
     params.insert(
-        "messages".into(),
-        json!(convert_messages(
-            context,
-            model,
-            is_oauth_token,
-            cache_control
-        )),
+        "messages",
+        Wire::Array(convert_messages(transformed, is_oauth_token, cache_control)),
     );
     params.insert(
-        "max_tokens".into(),
+        "max_tokens",
         json!(base.max_tokens.unwrap_or(model.max_tokens / 3)),
     );
-    params.insert("stream".into(), json!(true));
+    params.insert("stream", json!(true));
 
+    let system_entry = |text: &'a str| {
+        let mut entry =
+            WireObject::from_entries([("type", Wire::str("text")), ("text", Wire::str(text))]);
+        if let Some(cache_control) = cache_control {
+            entry.insert("cache_control", cache_control.to_json());
+        }
+        Wire::Object(entry)
+    };
     // For OAuth tokens, we MUST include Claude Code identity.
     if is_oauth_token {
-        let mut system = vec![json!({
-            "type": "text",
-            "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-        })];
-        if let Some(cache_control) = cache_control {
-            system[0]
-                .as_object_mut()
-                .expect("system entry is an object")
-                .insert("cache_control".into(), cache_control.to_json());
-        }
+        let mut system =
+            vec![system_entry("You are Claude Code, Anthropic's official CLI for Claude.")];
         if let Some(system_prompt) = &context.system_prompt {
-            let mut entry = json!({
-                "type": "text",
-                "text": sanitize_surrogates(system_prompt),
-            });
-            if let Some(cache_control) = cache_control {
-                entry
-                    .as_object_mut()
-                    .expect("system entry is an object")
-                    .insert("cache_control".into(), cache_control.to_json());
-            }
-            system.push(entry);
+            system.push(system_entry(system_prompt.as_str()));
         }
-        params.insert("system".into(), json!(system));
+        params.insert("system", Wire::Array(system));
     } else if let Some(system_prompt) = &context.system_prompt {
-        let mut entry = json!({
-            "type": "text",
-            "text": sanitize_surrogates(system_prompt),
-        });
-        if let Some(cache_control) = cache_control {
-            entry
-                .as_object_mut()
-                .expect("system entry is an object")
-                .insert("cache_control".into(), cache_control.to_json());
-        }
-        params.insert("system".into(), json!([entry]));
+        params.insert("system", Wire::Array(vec![system_entry(system_prompt.as_str())]));
     }
 
     // Temperature is incompatible with extended thinking (adaptive or budget-based), and always-on
@@ -85,15 +65,15 @@ pub(crate) fn build_params(
         if options.map(|options| options.thinking_enabled) != Some(Some(true))
             && !is_always_on_adaptive_thinking_model(&model.id)
         {
-            params.insert("temperature".into(), json!(temperature));
+            params.insert("temperature", json!(temperature));
         }
     }
 
     if let Some(tools) = &context.tools {
         if !tools.is_empty() {
             params.insert(
-                "tools".into(),
-                json!(convert_tools(
+                "tools",
+                Wire::Array(convert_tools(
                     tools,
                     is_oauth_token,
                     get_anthropic_compat(model).supports_eager_tool_input_streaming,
@@ -111,15 +91,15 @@ pub(crate) fn build_params(
                 .unwrap_or(AnthropicThinkingDisplay::Summarized);
             if supports_adaptive_thinking(&model.id) {
                 params.insert(
-                    "thinking".into(),
+                    "thinking",
                     json!({ "type": "adaptive", "display": display.as_str() }),
                 );
                 if let Some(effort) = options.and_then(|options| options.effort) {
-                    params.insert("output_config".into(), json!({ "effort": effort.as_str() }));
+                    params.insert("output_config", json!({ "effort": effort.as_str() }));
                 }
             } else {
                 params.insert(
-                    "thinking".into(),
+                    "thinking",
                     json!({
                         "type": "enabled",
                         "budget_tokens": options.and_then(|options| options.thinking_budget_tokens).unwrap_or(1024),
@@ -130,19 +110,19 @@ pub(crate) fn build_params(
         } else if options.map(|options| options.thinking_enabled) == Some(Some(false))
             && !is_always_on_adaptive_thinking_model(&model.id)
         {
-            params.insert("thinking".into(), json!({ "type": "disabled" }));
+            params.insert("thinking", json!({ "type": "disabled" }));
         }
     }
 
     if let Some(metadata) = &base.metadata {
         if let Some(user_id) = metadata.get("user_id").and_then(|value| value.as_str()) {
-            params.insert("metadata".into(), json!({ "user_id": user_id }));
+            params.insert("metadata", json!({ "user_id": user_id }));
         }
     }
 
     if let Some(tool_choice) = options.and_then(|options| options.tool_choice.as_ref()) {
-        params.insert("tool_choice".into(), tool_choice.to_json());
+        params.insert("tool_choice", tool_choice.to_json());
     }
 
-    Value::Object(params)
+    Wire::Object(params)
 }

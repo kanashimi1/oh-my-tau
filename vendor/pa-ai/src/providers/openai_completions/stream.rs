@@ -11,7 +11,9 @@ use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
     AssistantMessageEventWriter,
 };
-use crate::providers::openai_completions::convert::{map_stop_reason, parse_chunk_usage};
+use crate::providers::openai_completions::convert::{
+    map_stop_reason, parse_chunk_usage, transform_for_request,
+};
 use crate::providers::openai_completions::errors::{openai_http_error, openrouter_raw_metadata};
 use crate::providers::openai_completions::get_compat_cache_control;
 use crate::providers::openai_completions::params::{build_headers, build_params};
@@ -25,6 +27,7 @@ use crate::types::{
     StopReason, TextContent, ThinkingContent, ToolCall, Usage,
 };
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::wire_json::request_body;
 use crate::utils_inner::json_parse::{
     parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
 };
@@ -600,19 +603,21 @@ async fn run_stream(
         base_options.session_id.clone()
     };
 
-    let mut params = build_params(
-        model,
-        context,
-        options,
-        &compat,
-        cache_retention,
-        cache_control.as_ref(),
-    );
-    if let Some(on_payload) = &base_options.on_payload {
-        if let Some(next) = on_payload(params.clone(), model) {
-            params = next;
-        }
-    }
+    // The body is serialized straight from the transformed history; neither the history copy nor
+    // the params tree outlives this block (the response stream never needs them).
+    let body = {
+        let transformed = transform_for_request(model, context);
+        let params = build_params(
+            model,
+            context,
+            &transformed,
+            options,
+            &compat,
+            cache_retention,
+            cache_control.as_ref(),
+        );
+        request_body(&params, base_options.on_payload.as_ref(), model)
+    };
 
     let url = format!("{}/chat/completions", model.base_url.trim_end_matches('/'));
     let headers = build_headers(
@@ -628,7 +633,7 @@ async fn run_stream(
         method: reqwest::Method::POST,
         url,
         headers,
-        body: Some(params.to_string()),
+        body: Some(body),
         signal: base_options.signal.clone(),
         timeout_ms: base_options.timeout_ms,
         connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::Sdk,

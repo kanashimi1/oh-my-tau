@@ -10,27 +10,30 @@ use crate::providers::openai_completions::has_tool_history;
 use crate::providers::openai_completions::{
     OpenAICompatCacheControl, OpenAICompletionsOptions, ResolvedCompat,
 };
-use crate::types::{CacheRetention, Context, Model, ModelExt, ModelThinkingLevel};
+use crate::types::{CacheRetention, Context, Message, Model, ModelExt, ModelThinkingLevel};
+use crate::utils_inner::wire_json::{obj, Wire, WireObject};
 
+/// The request params for `context`, whose history was transformed into `transformed`
+/// ([`transform_for_request`](crate::providers::openai_completions::convert::transform_for_request)).
+/// Messages and tools borrow from the context and the transformed history instead of being copied
+/// into a `Value` tree: the body is serialized straight from them.
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn build_params(
+pub(crate) fn build_params<'a>(
     model: &Model,
-    context: &Context,
+    context: &'a Context,
+    transformed: &'a [Message],
     options: Option<&OpenAICompletionsOptions>,
     compat: &ResolvedCompat,
     cache_retention: CacheRetention,
     cache_control: Option<&OpenAICompatCacheControl>,
-) -> Value {
+) -> Wire<'a> {
     let options = options.cloned().unwrap_or_default();
-    let messages = convert_messages(model, context, compat);
-    let mut params = Map::new();
-    params.insert("model".into(), json!(model.id));
-    // Move the converted messages into the params tree: `json!(messages)`
-    // would deep-clone the whole per-turn context (the largest transient
-    // allocation of the turn), which mimalloc then retains committed.
-    params.insert("messages".into(), Value::Array(messages));
-    params.insert("stream".into(), json!(true));
+    let messages = convert_messages(model, context.system_prompt.as_deref(), transformed, compat);
+    let mut params = WireObject::new();
+    params.insert("model", json!(model.id));
+    params.insert("messages", Wire::Array(messages));
+    params.insert("stream", json!(true));
 
     let prompt_cache_key = if (model.base_url.contains("api.openai.com")
         && cache_retention != CacheRetention::None)
@@ -41,38 +44,38 @@ pub(crate) fn build_params(
         None
     };
     if let Some(key) = prompt_cache_key {
-        params.insert("prompt_cache_key".into(), key);
+        params.insert("prompt_cache_key", key);
     }
     if cache_retention == CacheRetention::Long && compat.supports_long_cache_retention {
-        params.insert("prompt_cache_retention".into(), json!("24h"));
+        params.insert("prompt_cache_retention", json!("24h"));
     }
 
     if compat.supports_usage_in_streaming {
-        params.insert("stream_options".into(), json!({ "include_usage": true }));
+        params.insert("stream_options", json!({ "include_usage": true }));
     }
 
     if compat.supports_store {
-        params.insert("store".into(), json!(false));
+        params.insert("store", json!(false));
     }
 
     if let Some(max_tokens) = options.base.max_tokens {
         if compat.max_tokens_field == crate::types::MaxTokensField::MaxTokens {
-            params.insert("max_tokens".into(), json!(max_tokens));
+            params.insert("max_tokens", json!(max_tokens));
         } else {
-            params.insert("max_completion_tokens".into(), json!(max_tokens));
+            params.insert("max_completion_tokens", json!(max_tokens));
         }
     }
 
     if let Some(temperature) = options.base.temperature {
-        params.insert("temperature".into(), json!(temperature));
+        params.insert("temperature", json!(temperature));
     }
 
-    let mut tools: Option<Vec<Value>> = None;
+    let mut tools: Option<Vec<Wire<'a>>> = None;
     if let Some(context_tools) = &context.tools {
         if !context_tools.is_empty() {
             tools = Some(convert_tools(context_tools, compat));
             if compat.zai_tool_stream {
-                params.insert("tool_stream".into(), json!(true));
+                params.insert("tool_stream", json!(true));
             }
         }
     }
@@ -82,7 +85,7 @@ pub(crate) fn build_params(
         tools = Some(Vec::new());
     }
     if let Some(tools) = tools {
-        params.insert("tools".into(), Value::Array(tools));
+        params.insert("tools", Wire::Array(tools));
     }
 
     if let Some(cache_control) = cache_control {
@@ -90,20 +93,20 @@ pub(crate) fn build_params(
     }
 
     if let Some(tool_choice) = &options.tool_choice {
-        params.insert("tool_choice".into(), tool_choice.to_json());
+        params.insert("tool_choice", tool_choice.to_json());
     }
 
     if supports_thinking(model) {
         match compat.thinking_format {
             crate::types::ThinkingFormat::Zai | crate::types::ThinkingFormat::Qwen => {
                 params.insert(
-                    "enable_thinking".into(),
+                    "enable_thinking",
                     json!(options.reasoning_effort.is_some()),
                 );
             }
             crate::types::ThinkingFormat::QwenChatTemplate => {
                 params.insert(
-                    "chat_template_kwargs".into(),
+                    "chat_template_kwargs",
                     json!({
                         "enable_thinking": options.reasoning_effort.is_some(),
                         "preserve_thinking": true,
@@ -112,7 +115,7 @@ pub(crate) fn build_params(
             }
             crate::types::ThinkingFormat::Deepseek => {
                 params.insert(
-                    "thinking".into(),
+                    "thinking",
                     json!({
                         "type": if options.reasoning_effort.is_some() { "enabled" } else { "disabled" },
                     }),
@@ -123,7 +126,7 @@ pub(crate) fn build_params(
                         .flatten()
                         .cloned()
                         .unwrap_or_else(|| effort.wire_name().to_string());
-                    params.insert("reasoning_effort".into(), json!(mapped));
+                    params.insert("reasoning_effort", json!(mapped));
                 }
             }
             crate::types::ThinkingFormat::Openrouter => {
@@ -138,9 +141,9 @@ pub(crate) fn build_params(
                         .flatten()
                         .cloned()
                         .unwrap_or_else(|| effort.wire_name().to_string());
-                    params.insert("reasoning".into(), json!({ "effort": mapped }));
+                    params.insert("reasoning", json!({ "effort": mapped }));
                 } else if options.reasoning_enabled == Some(true) {
-                    params.insert("reasoning".into(), json!({ "enabled": true }));
+                    params.insert("reasoning", json!({ "enabled": true }));
                 } else if options.reasoning_enabled == Some(false) {
                     let off = model
                         .thinking_level_map
@@ -154,9 +157,9 @@ pub(crate) fn build_params(
                                 .and_then(|value| value.as_deref())
                                 .unwrap_or("none")
                                 .to_string();
-                            params.insert("reasoning".into(), json!({ "effort": off_value }));
+                            params.insert("reasoning", json!({ "effort": off_value }));
                         } else {
-                            params.insert("reasoning".into(), json!({ "enabled": false }));
+                            params.insert("reasoning", json!({ "enabled": false }));
                         }
                     }
                 }
@@ -169,7 +172,7 @@ pub(crate) fn build_params(
                             .flatten()
                             .cloned()
                             .unwrap_or_else(|| effort.wire_name().to_string());
-                        params.insert("reasoning_effort".into(), json!(mapped));
+                        params.insert("reasoning_effort", json!(mapped));
                     }
                 } else if options.reasoning_enabled == Some(false)
                     && compat.supports_reasoning_effort
@@ -185,7 +188,7 @@ pub(crate) fn build_params(
                             .and_then(|value| value.as_deref())
                             .unwrap_or("none")
                             .to_string();
-                        params.insert("reasoning_effort".into(), json!(off_value));
+                        params.insert("reasoning_effort", json!(off_value));
                     }
                 }
             }
@@ -199,7 +202,7 @@ pub(crate) fn build_params(
     if let Some(service_tier) = options.base.service_tier {
         if model.provider == "openai" || model.provider == "openrouter" {
             params.insert(
-                "service_tier".into(),
+                "service_tier",
                 serde_json::to_value(service_tier).unwrap_or(Value::Null),
             );
         }
@@ -209,7 +212,7 @@ pub(crate) fn build_params(
         if let Some(crate::types::CompatKind::OpenAiCompletions(compat)) = model.compat_kind() {
             if let Some(routing) = &compat.as_ref().open_router_routing {
                 params.insert(
-                    "provider".into(),
+                    "provider",
                     serde_json::to_value(routing).unwrap_or(Value::Null),
                 );
             }
@@ -228,7 +231,7 @@ pub(crate) fn build_params(
                 }
                 if !gateway_options.is_empty() {
                     params.insert(
-                        "providerOptions".into(),
+                        "providerOptions",
                         json!({ "gateway": Value::Object(gateway_options) }),
                     );
                 }
@@ -236,34 +239,28 @@ pub(crate) fn build_params(
         }
     }
 
-    Value::Object(params)
+    Wire::Object(params)
 }
 
 fn apply_anthropic_cache_control(
-    params: &mut Map<String, Value>,
+    params: &mut WireObject<'_>,
     cache_control: &OpenAICompatCacheControl,
 ) {
     // Last tool.
-    if let Some(tools) = params
-        .get_mut("tools")
-        .and_then(|value| value.as_array_mut())
-    {
+    if let Some(tools) = params.get_mut("tools").and_then(Wire::as_array_mut) {
         if let Some(last_tool) = tools.last_mut() {
             last_tool
                 .as_object_mut()
                 .expect("tools entries are objects")
-                .insert("cache_control".into(), cache_control.to_json());
+                .insert("cache_control", cache_control.to_json());
         }
     }
-    let Some(messages) = params
-        .get_mut("messages")
-        .and_then(|value| value.as_array_mut())
-    else {
+    let Some(messages) = params.get_mut("messages").and_then(Wire::as_array_mut) else {
         return;
     };
     // System prompt.
     for message in messages.iter_mut() {
-        let role = message.get("role").and_then(|value| value.as_str());
+        let role = message.get("role").and_then(Wire::as_str);
         if role == Some("system") || role == Some("developer") {
             add_cache_control_to_message(message, cache_control);
             break;
@@ -271,55 +268,73 @@ fn apply_anthropic_cache_control(
     }
     // Last conversation message (user/assistant/tool), from the end.
     for message in messages.iter_mut().rev() {
-        let role = message
-            .get("role")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        if (role == "user" || role == "assistant" || role == "tool")
-            && add_cache_control_to_message(message, cache_control)
-        {
+        let role = message.get("role").and_then(Wire::as_str).unwrap_or("");
+        let is_conversation = role == "user" || role == "assistant" || role == "tool";
+        if is_conversation && add_cache_control_to_message(message, cache_control) {
             break;
         }
     }
 }
 
 fn add_cache_control_to_message(
-    message: &mut Value,
+    message: &mut Wire<'_>,
     cache_control: &OpenAICompatCacheControl,
 ) -> bool {
     let cache_json = cache_control.to_json();
-    match message.get_mut("content") {
-        Some(Value::String(content)) => {
-            if content.is_empty() {
-                return false;
-            }
-            let text = content.clone();
-            message
-                .as_object_mut()
-                .expect("messages are objects")
-                .insert(
-                    "content".into(),
-                    json!([{
-                        "type": "text",
-                        "text": text,
-                        "cache_control": cache_json,
-                    }]),
-                );
-            true
+    let Some(content) = message
+        .as_object_mut()
+        .and_then(|message| message.get_mut("content"))
+    else {
+        return false;
+    };
+    if let Some(is_empty) = content.string_is_empty() {
+        if is_empty {
+            return false;
         }
-        Some(Value::Array(content)) => {
-            for part in content.iter_mut().rev() {
-                if part.get("type").and_then(|value| value.as_str()) == Some("text") {
-                    part.as_object_mut()
-                        .expect("text parts are objects")
-                        .insert("cache_control".into(), cache_json);
-                    return true;
-                }
-            }
-            false
-        }
-        _ => false,
+        // The string content becomes a single text part carrying the marker (moved, not copied).
+        let text = std::mem::replace(content, Wire::Null);
+        *content = Wire::Array(vec![obj([
+            ("type", Wire::str("text")),
+            ("text", text),
+            ("cache_control", Wire::Owned(cache_json)),
+        ])]);
+        return true;
     }
+    if let Some(parts) = content.as_array_mut() {
+        for part in parts.iter_mut().rev() {
+            if part.get("type").and_then(Wire::as_str) == Some("text") {
+                part.as_object_mut()
+                    .expect("text parts are objects")
+                    .insert("cache_control", cache_json);
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// [`build_params`] as the `Value` tree a payload hook sees.
+#[cfg(test)]
+pub(crate) fn build_params_value(
+    model: &Model,
+    context: &Context,
+    options: Option<&OpenAICompletionsOptions>,
+    compat: &ResolvedCompat,
+    cache_retention: CacheRetention,
+    cache_control: Option<&OpenAICompatCacheControl>,
+) -> Value {
+    let transformed =
+        crate::providers::openai_completions::convert::transform_for_request(model, context);
+    build_params(
+        model,
+        context,
+        &transformed,
+        options,
+        compat,
+        cache_retention,
+        cache_control,
+    )
+    .to_value()
 }
 
 pub(crate) fn build_headers(
@@ -414,7 +429,7 @@ mod tests {
         });
         options.reasoning_effort = (clamped != ModelThinkingLevel::Off).then_some(clamped);
         options.reasoning_enabled = Some(clamped != ModelThinkingLevel::Off);
-        let params = build_params(
+        let params = build_params_value(
             model,
             &context,
             Some(&options),
@@ -451,7 +466,7 @@ mod tests {
             service_tier: tier,
             ..Default::default()
         });
-        let params = build_params(
+        let params = build_params_value(
             model,
             &context,
             Some(&options),

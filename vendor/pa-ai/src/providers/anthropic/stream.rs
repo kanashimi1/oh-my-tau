@@ -13,7 +13,7 @@ use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventWriter,
 };
 use crate::models::{calculate_cost, CostOverrides};
-use crate::providers::anthropic::convert::map_stop_reason;
+use crate::providers::anthropic::convert::{map_stop_reason, transform_for_request};
 use crate::providers::anthropic::params::build_params;
 use crate::providers::anthropic::{
     build_request_headers, from_claude_code_name, get_cache_control,
@@ -25,6 +25,7 @@ use crate::types::{
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::wire_json::request_body;
 use crate::utils_inner::json_parse::{
     parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
 };
@@ -224,19 +225,27 @@ async fn run_stream(
         _ => None,
     };
 
-    let mut params = build_params(model, context, is_oauth, options, cache_control.as_ref());
-    if let Some(on_payload) = &base_options.on_payload {
-        if let Some(next) = on_payload(params.clone(), model) {
-            params = next;
-        }
-    }
+    // The body is serialized straight from the transformed history; neither the history copy nor
+    // the params tree outlives this block (the response stream never needs them).
+    let body = {
+        let transformed = transform_for_request(context, model);
+        let params = build_params(
+            model,
+            context,
+            &transformed,
+            is_oauth,
+            options,
+            cache_control.as_ref(),
+        );
+        request_body(&params, base_options.on_payload.as_ref(), model)
+    };
 
     let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
     let mut response: HttpResponse = send(RequestOptions {
         method: reqwest::Method::POST,
         url,
         headers,
-        body: Some(params.to_string()),
+        body: Some(body),
         signal: base_options.signal.clone(),
         timeout_ms: base_options.timeout_ms,
         connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::Sdk,

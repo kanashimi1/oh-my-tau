@@ -1,105 +1,138 @@
 //! `OpenAI` Completions conversion: reasoning-details signatures, messages, and tools.
 
-use serde_json::{json, Map, Value};
+use std::borrow::Cow;
+
+use serde_json::Value;
 
 use crate::models::{calculate_cost, CostOverrides};
 use crate::providers::openai_completions::{decode_reasoning_details, ResolvedCompat};
 use crate::providers::transform_messages::transform_messages_with_normalizer;
 use crate::types::{
-    AssistantContent, Context, MessageExt, Model, ModelInput, StopReason, TextContent,
-    ThinkingContent, Tool, ToolCall, Usage, UsageCost, UserMessageContent, UserOrToolContent,
+    user_block_payload, AssistantContent, Context, Message, MessageExt, Model, ModelInput,
+    StopReason, TextContent, ThinkingContent, Tool, ToolCall, Usage, UsageCost, UserBlockPayload,
+    UserMessageContent, UserOrToolContent,
 };
-use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
+use crate::utils_inner::wire_json::{obj, Wire, WireObject};
+
+/// The transformed history a request borrows from: tool-call IDs normalized for the provider,
+/// unanswered calls answered, errored turns dropped (TS `transformMessages`).
+pub(crate) fn transform_for_request(model: &Model, context: &Context) -> Vec<Message> {
+    transform_messages_with_normalizer(&context.messages, model, &|id, model, _| {
+        Some(normalize_tool_call_id(id, model))
+    })
+}
+
+/// The `assistant` filler some providers need between tool results and a user turn.
+fn processed_tool_results() -> Wire<'static> {
+    obj([
+        ("role", Wire::str("assistant")),
+        ("content", Wire::str("I have processed the tool results.")),
+    ])
+}
+
+/// An `image_url` part carrying `data:{mime_type};base64,{data}`, written without copying the
+/// image data into a fresh URL string.
+fn image_url_part<'a>(mime_type: &'a str, data: &'a str) -> Wire<'a> {
+    obj([
+        ("type", Wire::str("image_url")),
+        (
+            "image_url",
+            obj([(
+                "url",
+                Wire::Concat(vec![
+                    Cow::Borrowed("data:"),
+                    Cow::Borrowed(mime_type),
+                    Cow::Borrowed(";base64,"),
+                    Cow::Borrowed(data),
+                ]),
+            )]),
+        ),
+    ])
+}
+
+fn text_part(text: Wire<'_>) -> Wire<'_> {
+    obj([("type", Wire::str("text")), ("text", text)])
+}
 
 /// Convert a conversation into Chat Completions `messages` params, including tool-result bridging
-/// and image replay.
+/// and image replay. `transformed` is [`transform_for_request`] of the context; the entries borrow
+/// its strings (`sanitize_surrogates` is the identity on Rust strings, so text is borrowed as-is).
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
-pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompat) -> Vec<Value> {
-    use crate::types::Message;
-    let mut params: Vec<Value> = Vec::new();
+pub(crate) fn convert_messages<'a>(
+    model: &Model,
+    system_prompt: Option<&'a str>,
+    transformed: &'a [Message],
+    compat: &ResolvedCompat,
+) -> Vec<Wire<'a>> {
+    let mut params: Vec<Wire<'a>> = Vec::new();
 
-    let transformed =
-        transform_messages_with_normalizer(&context.messages, model, &|id, model, _| {
-            Some(normalize_tool_call_id(id, model))
-        });
-
-    if let Some(system_prompt) = &context.system_prompt {
+    if let Some(system_prompt) = system_prompt {
         let use_developer_role = model.reasoning && compat.supports_developer_role;
         let role = if use_developer_role {
             "developer"
         } else {
             "system"
         };
-        params.push(json!({
-            "role": role,
-            "content": sanitize_surrogates(system_prompt),
-        }));
+        params.push(obj([
+            ("role", Wire::str(role)),
+            ("content", Wire::str(system_prompt)),
+        ]));
     }
 
     let mut last_role: Option<&'static str> = None;
     let mut index = 0usize;
     while index < transformed.len() {
-        let msg = &transformed[index];
+        let msg: &'a Message = &transformed[index];
         // Some providers don't allow user messages directly after tool results.
         if compat.requires_assistant_after_tool_result
             && last_role == Some("toolResult")
             && matches!(msg, Message::User(_))
         {
-            params.push(json!({
-                "role": "assistant",
-                "content": "I have processed the tool results.",
-            }));
+            params.push(processed_tool_results());
         }
 
         match msg {
             Message::User(user) => match &user.content {
-                UserMessageContent::Text(text) => params.push(json!({
-                    "role": "user",
-                    "content": sanitize_surrogates(text),
-                })),
+                UserMessageContent::Text(text) => params.push(obj([
+                    ("role", Wire::str("user")),
+                    ("content", Wire::str(text)),
+                ])),
                 UserMessageContent::Blocks(blocks) => {
-                    let content_blocks: Vec<Value> = blocks
+                    let content_blocks: Vec<Wire<'a>> = blocks
                         .iter()
-                        .map(|item| match crate::types::user_block_payload(item) {
-                            crate::types::UserBlockPayload::Text(text) => json!({
-                                "type": "text",
-                                "text": sanitize_surrogates(text),
-                            }),
-                            crate::types::UserBlockPayload::Image { data, mime_type } => json!({
-                                "type": "image_url",
-                                "image_url": { "url": format!("data:{mime_type};base64,{data}") },
-                            }),
-                            crate::types::UserBlockPayload::Opaque(json) => json!({
-                                "type": "text",
-                                "text": sanitize_surrogates(&json),
-                            }),
+                        .map(|item| match user_block_payload(item) {
+                            UserBlockPayload::Text(text) => text_part(Wire::str(text)),
+                            UserBlockPayload::Image { data, mime_type } => {
+                                image_url_part(mime_type, data)
+                            }
+                            UserBlockPayload::Opaque(json) => text_part(Wire::from(json)),
                         })
                         .collect();
                     if content_blocks.is_empty() {
                         index += 1;
                         continue;
                     }
-                    params.push(json!({
-                        "role": "user",
-                        "content": content_blocks,
-                    }));
+                    params.push(obj([
+                        ("role", Wire::str("user")),
+                        ("content", Wire::Array(content_blocks)),
+                    ]));
                 }
             },
             Message::Assistant(assistant) => {
-                let mut assistant_msg = Map::new();
-                assistant_msg.insert("role".into(), json!("assistant"));
+                let mut assistant_msg = WireObject::new();
+                assistant_msg.insert("role", Wire::str("assistant"));
                 // Some providers don't accept null content; use empty string instead.
                 assistant_msg.insert(
-                    "content".into(),
+                    "content",
                     if compat.requires_assistant_after_tool_result {
-                        json!("")
+                        Wire::str("")
                     } else {
-                        Value::Null
+                        Wire::Null
                     },
                 );
 
-                let text_blocks: Vec<&TextContent> = assistant
+                let text_blocks: Vec<&'a TextContent> = assistant
                     .content
                     .iter()
                     .filter_map(|block| match block {
@@ -107,10 +140,13 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
                         _ => None,
                     })
                     .collect();
-                let assistant_text = text_blocks
-                    .iter()
-                    .map(|block| sanitize_surrogates(&block.text))
-                    .collect::<String>();
+                // The concatenated assistant text, as one JSON string written from its pieces.
+                let assistant_text_pieces = || {
+                    text_blocks
+                        .iter()
+                        .map(|&block| Cow::Borrowed(block.text.as_str()))
+                };
+                let assistant_text_is_empty = text_blocks.iter().all(|block| block.text.is_empty());
 
                 let replay_reasoning_details: Vec<Value> = assistant
                     .content
@@ -123,12 +159,12 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
                     })
                     .flatten()
                     .collect();
-                if !replay_reasoning_details.is_empty() {
-                    assistant_msg
-                        .insert("reasoning_details".into(), json!(replay_reasoning_details));
+                let has_replay_reasoning_details = !replay_reasoning_details.is_empty();
+                if has_replay_reasoning_details {
+                    assistant_msg.insert("reasoning_details", Value::Array(replay_reasoning_details));
                 }
 
-                let non_empty_thinking_blocks: Vec<&ThinkingContent> = assistant
+                let non_empty_thinking_blocks: Vec<&'a ThinkingContent> = assistant
                     .content
                     .iter()
                     .filter_map(|block| match block {
@@ -142,68 +178,59 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
                         _ => None,
                     })
                     .collect();
+                let thinking_pieces = || {
+                    non_empty_thinking_blocks
+                        .iter()
+                        .map(|&block| Cow::Borrowed(block.thinking.as_str()))
+                };
 
-                if !non_empty_thinking_blocks.is_empty() {
+                if let Some(&first_thinking) = non_empty_thinking_blocks.first() {
                     if compat.requires_thinking_as_text {
-                        let thinking_text = non_empty_thinking_blocks
-                            .iter()
-                            .map(|block| sanitize_surrogates(&block.thinking))
-                            .collect::<Vec<_>>()
-                            .join("\n\n");
-                        assistant_msg.insert(
-                            "content".into(),
-                            json!([{
-                                "type": "text",
-                                "text": thinking_text,
-                            }]),
-                        );
-                        for block in &text_blocks {
-                            assistant_msg["content"]
-                                .as_array_mut()
-                                .expect("content is an array")
-                                .push(json!({
-                                    "type": "text",
-                                    "text": sanitize_surrogates(&block.text),
-                                }));
+                        let mut content = vec![text_part(Wire::join(thinking_pieces(), "\n\n"))];
+                        for &block in &text_blocks {
+                            content.push(text_part(Wire::str(&block.text)));
                         }
+                        assistant_msg.insert("content", Wire::Array(content));
                     } else {
                         // Always send assistant text as a plain string.
-                        if !assistant_text.is_empty() {
-                            assistant_msg.insert("content".into(), json!(assistant_text));
+                        if !assistant_text_is_empty {
+                            assistant_msg
+                                .insert("content", Wire::Concat(assistant_text_pieces().collect()));
                         }
 
-                        let reasoning_text = non_empty_thinking_blocks
-                            .iter()
-                            .map(|block| sanitize_surrogates(&block.thinking))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        let reasoning_field =
+                        let reasoning_field: Option<&'a str> =
                             if compat.requires_reasoning_content_on_assistant_messages {
                                 Some("reasoning_content")
                             } else {
-                                non_empty_thinking_blocks[0].thinking_signature.as_deref()
+                                first_thinking.thinking_signature.as_deref()
                             };
                         match reasoning_field {
                             Some(field) => {
-                                assistant_msg.insert(field.to_string(), json!(reasoning_text));
+                                assistant_msg.insert(field, Wire::join(thinking_pieces(), "\n"));
                             }
                             None => {
-                                assistant_msg.insert(
-                                    "content".into(),
-                                    if assistant_text.is_empty() {
-                                        json!(reasoning_text)
-                                    } else {
-                                        json!(format!("{reasoning_text}\n\n{assistant_text}"))
-                                    },
-                                );
+                                let content = if assistant_text_is_empty {
+                                    Wire::join(thinking_pieces(), "\n")
+                                } else {
+                                    // `{reasoning_text}\n\n{assistant_text}`
+                                    let Wire::Concat(mut pieces) =
+                                        Wire::join(thinking_pieces(), "\n")
+                                    else {
+                                        unreachable!("Wire::join builds a Concat")
+                                    };
+                                    pieces.push(Cow::Borrowed("\n\n"));
+                                    pieces.extend(assistant_text_pieces());
+                                    Wire::Concat(pieces)
+                                };
+                                assistant_msg.insert("content", content);
                             }
                         }
                     }
-                } else if !assistant_text.is_empty() {
-                    assistant_msg.insert("content".into(), json!(assistant_text));
+                } else if !assistant_text_is_empty {
+                    assistant_msg.insert("content", Wire::Concat(assistant_text_pieces().collect()));
                 }
 
-                let tool_calls: Vec<&ToolCall> = assistant
+                let tool_calls: Vec<&'a ToolCall> = assistant
                     .content
                     .iter()
                     .filter_map(|block| match block {
@@ -213,18 +240,28 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
                     .collect();
                 if !tool_calls.is_empty() {
                     assistant_msg.insert(
-                        "tool_calls".into(),
-                        json!(tool_calls
-                            .iter()
-                            .map(|tool_call| json!({
-                                "id": tool_call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_call.name,
-                                    "arguments": serde_json::Value::Object(tool_call.arguments.clone()).to_string(),
-                                },
-                            }))
-                            .collect::<Vec<_>>()),
+                        "tool_calls",
+                        Wire::Array(
+                            tool_calls
+                                .iter()
+                                .map(|&tool_call| {
+                                    obj([
+                                        ("id", Wire::str(&tool_call.id)),
+                                        ("type", Wire::str("function")),
+                                        (
+                                            "function",
+                                            obj([
+                                                ("name", Wire::str(&tool_call.name)),
+                                                (
+                                                    "arguments",
+                                                    Wire::JsonText(&tool_call.arguments),
+                                                ),
+                                            ]),
+                                        ),
+                                    ])
+                                })
+                                .collect(),
+                        ),
                     );
                     let reasoning_details: Vec<Value> = tool_calls
                         .iter()
@@ -235,79 +272,78 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
                                 .and_then(|signature| serde_json::from_str(signature).ok())
                         })
                         .collect();
-                    if !reasoning_details.is_empty() && replay_reasoning_details.is_empty() {
-                        assistant_msg.insert("reasoning_details".into(), json!(reasoning_details));
+                    if !reasoning_details.is_empty() && !has_replay_reasoning_details {
+                        assistant_msg.insert("reasoning_details", Value::Array(reasoning_details));
                     }
                 }
                 if compat.requires_reasoning_content_on_assistant_messages
                     && model.reasoning
                     && !assistant_msg.contains_key("reasoning_content")
                 {
-                    assistant_msg.insert("reasoning_content".into(), json!(""));
+                    assistant_msg.insert("reasoning_content", Wire::str(""));
                 }
-                if !replay_reasoning_details.is_empty()
-                    && assistant_msg.get("content") == Some(&Value::Null)
+                if has_replay_reasoning_details
+                    && assistant_msg.get("content").is_some_and(Wire::is_null)
                     && !assistant_msg.contains_key("tool_calls")
                 {
-                    assistant_msg.insert("content".into(), json!(""));
+                    assistant_msg.insert("content", Wire::str(""));
                 }
                 // Skip assistant messages that have no content and no tool calls.
-                let content_value = assistant_msg.get("content");
-                let has_content = match content_value {
-                    Some(Value::Null) | None => false,
-                    Some(Value::String(text)) => !text.is_empty(),
-                    Some(Value::Array(array)) => !array.is_empty(),
-                    Some(_) => true,
-                };
+                let has_content = assistant_msg.get("content").is_some_and(|content| {
+                    !content.is_null()
+                        && match (content.string_is_empty(), content.array_len()) {
+                            (Some(is_empty), _) => !is_empty,
+                            (None, Some(len)) => len > 0,
+                            (None, None) => true,
+                        }
+                });
                 if !has_content
                     && !assistant_msg.contains_key("tool_calls")
-                    && replay_reasoning_details.is_empty()
+                    && !has_replay_reasoning_details
                 {
                     index += 1;
                     continue;
                 }
-                params.push(Value::Object(assistant_msg));
+                params.push(Wire::Object(assistant_msg));
             }
             Message::ToolResult(_) => {
-                let mut image_blocks: Vec<Value> = Vec::new();
+                let mut image_blocks: Vec<Wire<'a>> = Vec::new();
                 let mut j = index;
                 while j < transformed.len() {
                     let Message::ToolResult(tool_msg) = &transformed[j] else {
                         break;
                     };
 
-                    let text_result = tool_msg
-                        .content
-                        .iter()
-                        .filter_map(|block| match block {
-                            UserOrToolContent::Text(text) => Some(text.text.clone()),
+                    let text_result = Wire::join(
+                        tool_msg.content.iter().filter_map(|block| match block {
+                            UserOrToolContent::Text(text) => Some(Cow::Borrowed(text.text.as_str())),
                             _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+                        }),
+                        "\n",
+                    );
                     let has_images = tool_msg
                         .content
                         .iter()
                         .any(|block| matches!(block, UserOrToolContent::Image(_)));
 
-                    let has_text = !text_result.is_empty();
-                    let mut tool_result_msg = Map::new();
-                    tool_result_msg.insert("role".into(), json!("tool"));
+                    let has_text = text_result.string_is_empty() == Some(false);
+                    let mut tool_result_msg = WireObject::new();
+                    tool_result_msg.insert("role", Wire::str("tool"));
                     tool_result_msg.insert(
-                        "content".into(),
-                        json!(sanitize_surrogates(if has_text {
-                            text_result.as_str()
+                        "content",
+                        if has_text {
+                            text_result
                         } else if has_images {
-                            "(see attached image)"
+                            Wire::str("(see attached image)")
                         } else {
-                            ""
-                        })),
+                            Wire::str("")
+                        },
                     );
-                    tool_result_msg.insert("tool_call_id".into(), json!(tool_msg.tool_call_id));
+                    tool_result_msg.insert("tool_call_id", Wire::str(&tool_msg.tool_call_id));
                     if compat.requires_tool_result_name && !tool_msg.tool_name.is_empty() {
-                        tool_result_msg.insert("name".into(), json!(tool_msg.tool_name));
+                        tool_result_msg.insert("name", Wire::str(&tool_msg.tool_name));
                     }
-                    params.push(Value::Object(tool_result_msg));
+                    params.push(Wire::Object(tool_result_msg));
 
                     if has_images
                         && model
@@ -317,10 +353,7 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
                     {
                         for block in &tool_msg.content {
                             if let UserOrToolContent::Image(image) = block {
-                                image_blocks.push(json!({
-                                    "type": "image_url",
-                                    "image_url": { "url": format!("data:{};base64,{}", image.mime_type, image.data) },
-                                }));
+                                image_blocks.push(image_url_part(&image.mime_type, &image.data));
                             }
                         }
                     }
@@ -332,20 +365,15 @@ pub fn convert_messages(model: &Model, context: &Context, compat: &ResolvedCompa
                     last_role = Some("toolResult");
                 } else {
                     if compat.requires_assistant_after_tool_result {
-                        params.push(json!({
-                            "role": "assistant",
-                            "content": "I have processed the tool results.",
-                        }));
+                        params.push(processed_tool_results());
                     }
-                    let mut content_items = vec![json!({
-                        "type": "text",
-                        "text": "Attached image(s) from tool result:",
-                    })];
+                    let mut content_items =
+                        vec![text_part(Wire::str("Attached image(s) from tool result:"))];
                     content_items.extend(image_blocks);
-                    params.push(json!({
-                        "role": "user",
-                        "content": content_items,
-                    }));
+                    params.push(obj([
+                        ("role", Wire::str("user")),
+                        ("content", Wire::Array(content_items)),
+                    ]));
                     last_role = Some("user");
                 }
                 continue;
@@ -381,22 +409,22 @@ pub fn normalize_tool_call_id(id: &str, model: &Model) -> String {
     }
 }
 
-pub fn convert_tools(tools: &[Tool], compat: &ResolvedCompat) -> Vec<Value> {
+pub(crate) fn convert_tools<'a>(tools: &'a [Tool], compat: &ResolvedCompat) -> Vec<Wire<'a>> {
     tools
         .iter()
         .map(|tool| {
-            let mut function = Map::new();
-            function.insert("name".into(), json!(tool.name));
-            function.insert("description".into(), json!(tool.description));
-            function.insert("parameters".into(), tool.parameters.clone());
+            let mut function = WireObject::new();
+            function.insert("name", Wire::str(&tool.name));
+            function.insert("description", Wire::str(&tool.description));
+            function.insert("parameters", Wire::Ref(&tool.parameters));
             // Only include strict if provider supports it. Some reject unknown fields.
             if compat.supports_strict_mode {
-                function.insert("strict".into(), json!(false));
+                function.insert("strict", false);
             }
-            json!({
-                "type": "function",
-                "function": Value::Object(function),
-            })
+            obj([
+                ("type", Wire::str("function")),
+                ("function", Wire::Object(function)),
+            ])
         })
         .collect()
 }
@@ -536,6 +564,7 @@ pub(crate) fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
 mod tests {
     use super::*;
     use crate::types::{ModelCost, ModelInput};
+    use serde_json::json;
     use pa_types::JsNumber;
 
     fn model(provider: &str, input: f64, output: f64) -> Model {

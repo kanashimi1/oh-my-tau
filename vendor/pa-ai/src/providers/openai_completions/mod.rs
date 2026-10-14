@@ -16,6 +16,8 @@ use crate::types::{
     ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage, UsageCost,
 };
 
+#[cfg(test)]
+mod body_equivalence_tests;
 mod convert;
 mod errors;
 mod params;

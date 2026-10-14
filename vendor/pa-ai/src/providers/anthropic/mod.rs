@@ -18,6 +18,8 @@ use crate::types::{
 };
 use crate::utils_inner::diagnostics::now_ms;
 
+#[cfg(test)]
+mod body_equivalence_tests;
 mod convert;
 mod params;
 mod stream;
