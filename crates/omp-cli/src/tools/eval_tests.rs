@@ -71,6 +71,17 @@ async fn python_state_persists_and_errors_are_flagged() {
 }
 
 #[tokio::test]
+async fn python_failed_cell_rolls_back_new_names() {
+    let env = test_env("txn");
+    let r = run(&env, json!({"language": "py", "code": "leaked = 1\nraise ValueError('boom')"})).await;
+    assert_eq!(r.is_error, Some(true));
+    assert!(text(&r).contains("[omp-txn] rolled back: leaked"), "got: {}", text(&r));
+    let r = run(&env, json!({"language": "py", "code": "'leaked' in globals()"})).await;
+    assert!(text(&r).contains("False"), "name must be rolled back, got: {}", text(&r));
+    shutdown_slot(&env.cwd);
+}
+
+#[tokio::test]
 async fn reset_wipes_only_the_requested_language() {
     let env = test_env("reset");
     run(&env, json!({"language": "py", "code": "p = 1"})).await;

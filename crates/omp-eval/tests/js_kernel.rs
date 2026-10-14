@@ -136,9 +136,10 @@ fn error_formatting_matches_omp_js() {
     assert!(r.output.starts_with("Error: nope\n"), "{:?}", r.output);
     assert!(r.output.contains("boom"), "{:?}", r.output);
 
-    // state persists after errors; execution count advances
+    // Transactional cells (prelude_txn.js, default on): names the failed cell
+    // created are rolled back; the kernel itself survives the error.
     let r2 = k.execute("typeof boom", None).expect("post-error cell");
-    assert_eq!(r2.output, "\"function\"\n");
+    assert_eq!(r2.output, "\"undefined\"\n");
     k.shutdown();
 }
 

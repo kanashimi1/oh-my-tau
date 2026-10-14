@@ -48,7 +48,7 @@ pub const DESCRIPTION: &str = r"One cell per call; top-level state persists, inc
 For 2+ independent items, use a named `workpool()`; results auto-deliver. If blocked, leave `eval` and call `wait`.
 Python: top-level `await` works; `asyncio.run(…)` fails.
 JS: Bun (`Bun.file`, `Bun.write`, `Bun.$`); top-level `await`/`return` work.
-On error, retry only the failed step; earlier steps may have taken effect.
+On error, new/rebound names of the failed cell are rolled back (side effects and in-place mutations stay) — re-run the whole fixed cell.
 
 <prelude>
 Python helpers: sync, kwargs; JS helpers: async, ONE trailing options object.

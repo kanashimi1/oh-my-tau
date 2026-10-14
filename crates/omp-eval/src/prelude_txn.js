@@ -28,8 +28,8 @@
   }
 
   globalThis.__ompTxnBegin = () => {
-    // Opt-in (OMP_EVAL_TXN=1): default keeps TS "earlier steps may have taken effect".
-    if (process.env.OMP_EVAL_TXN !== "1") return;
+    // Default-on; OMP_EVAL_TXN=0 opts out to old TS semantics (failed cell keeps its bindings).
+    if (process.env.OMP_EVAL_TXN === "0") return;
     try {
       const keys = ownKeys();
       if (keys.length > LIMIT) {
@@ -55,7 +55,7 @@
       state.huge = false;
       if (ok || (snap === null && !huge)) return;
       if (huge) {
-        process.stderr.write(
+        (globalThis.__ompWriteStderr ?? (d => process.stderr.write(d)))(
           `[omp-txn] rollback skipped: globalThis exceeded ${LIMIT} keys at cell start\n`,
         );
         return;
@@ -76,7 +76,7 @@
         }
       }
       if (rolled.length > 0) {
-        process.stderr.write(
+        (globalThis.__ompWriteStderr ?? (d => process.stderr.write(d)))(
           "[omp-txn] rolled back: " + rolled.sort().join(", ") +
             " (in-place mutations of shared objects were not undone)\n",
         );

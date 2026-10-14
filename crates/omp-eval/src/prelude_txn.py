@@ -29,10 +29,9 @@ def _txn_names():
 
 
 def __omp_txn_begin() -> None:
-    # Opt-in (OMP_EVAL_TXN=1): the default keeps TS semantics — the tool
-    # description tells the model "earlier steps may have taken effect" and to
-    # retry only the failed step, which a rollback would break.
-    if __import__("os").environ.get("OMP_EVAL_TXN") != "1":
+    # Default-on; OMP_EVAL_TXN=0 opts out to the old TS semantics (a failed
+    # cell keeps every binding it made).
+    if __import__("os").environ.get("OMP_EVAL_TXN") == "0":
         return
     try:
         names = _txn_names()

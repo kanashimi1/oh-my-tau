@@ -146,12 +146,40 @@ fn py_preludes_install_helpers() {
 }
 
 #[test]
-fn py_failed_cell_keeps_earlier_bindings_by_default() {
-    // TS semantics ("earlier steps may have taken effect"); rollback is opt-in.
+fn py_failed_cell_rolls_back_new_and_rebound_names() {
+    // Default (no OMP_EVAL_TXN): a failed cell's new name is deleted, a
+    // rebound name is restored to its previous object, untouched earlier
+    // bindings survive.
     let k = py("txn");
+    let r = k.execute("keep = 'original'\nkeep", None).expect("cell");
+    assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
+    let r = k.execute("keep = 'clobbered'\nnew_name = 1\nraise ValueError('x')", None).expect("cell");
+    assert_eq!(r.status, CellStatus::Error);
+    assert!(r.output.contains("[omp-txn] rolled back: keep, new_name"), "{}", r.output);
+    // New name is gone ...
+    let r = k.execute("'new_name' in globals()", None).expect("cell");
+    assert_eq!(r.output.trim(), "False", "{}", r.output);
+    // ... rebound name is restored to the earlier object ...
+    let r = k.execute("keep", None).expect("cell");
+    assert_eq!(r.output.trim(), "'original'", "{}", r.output);
+    // ... and untouched earlier bindings survive.
+    let r = k.execute("'keep' in globals()", None).expect("cell");
+    assert_eq!(r.output.trim(), "True", "{}", r.output);
+}
+
+#[test]
+fn py_omp_eval_txn_zero_keeps_ts_behavior() {
+    // Opt-out: OMP_EVAL_TXN=0 keeps the TS semantics (a failed cell keeps
+    // every binding it made).
+    let dir = std::env::temp_dir().join(format!("omp-eval-bridge-txn0-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("cwd");
+    let k = PythonKernel::start_with_env("python3", &dir, &[("OMP_EVAL_TXN".into(), "0".into())])
+        .expect("kernel starts");
     let r = k.execute("a = 1\nraise ValueError('x')", None).expect("cell");
     assert_eq!(r.status, CellStatus::Error);
-    assert_eq!(k.execute("a", None).expect("cell").output.trim(), "1");
+    assert!(!r.output.contains("[omp-txn]"), "{}", r.output);
+    let r = k.execute("a", None).expect("cell");
+    assert_eq!(r.output.trim(), "1", "{}", r.output);
 }
 
 #[test]
@@ -186,6 +214,28 @@ fn js_host_call_round_trip_and_cancel() {
         .expect("cell");
     assert!(r.cancelled);
     assert_eq!(r.status, CellStatus::KernelKilled);
+}
+
+#[test]
+fn js_failed_cell_rolls_back_new_global_names() {
+    let Some(k) = js("txn") else {
+        eprintln!("skipping: JS runtime unavailable");
+        return;
+    };
+    let r = k.execute("globalThis.keep = 'original'\nkeep", None).expect("cell");
+    assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
+    let r = k
+        .execute(
+            "globalThis.keep = 'clobbered'\nglobalThis.newName = 1\nthrow new Error('x')",
+            None,
+        )
+        .expect("cell");
+    assert_eq!(r.status, CellStatus::Error);
+    assert!(r.output.contains("[omp-txn] rolled back: keep, newName"), "{}", r.output);
+    let r = k.execute("'newName' in globalThis", None).expect("cell");
+    assert_eq!(r.output.trim(), "false", "{}", r.output);
+    let r = k.execute("keep", None).expect("cell");
+    assert_eq!(r.output.trim(), "\"original\"", "{}", r.output);
 }
 
 #[test]

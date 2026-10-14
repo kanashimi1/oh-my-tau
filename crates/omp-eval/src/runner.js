@@ -83,6 +83,8 @@ function writeFrame(type, data) {
   if (currentId === null) return;
   emit({ type, id: currentId, data });
 }
+// Preludes (prelude_txn.js) report through the cell's stderr frame.
+globalThis.__ompWriteStderr = data => writeFrame("stderr", String(data));
 
 function inspect(value) {
   try {
@@ -423,6 +425,17 @@ async function runCell(id, code, timeoutMs, idleTimeout) {
     // non-fatal
   }
   let ok = false;
+  // The rollback notice must land inside the cell output, i.e. before `done`.
+  let txnSettled = false;
+  const txnEnd = success => {
+    if (txnSettled) return;
+    txnSettled = true;
+    try {
+      if (typeof globalThis.__ompTxnEnd === "function") globalThis.__ompTxnEnd(success);
+    } catch {
+      // non-fatal
+    }
+  };
 
   try {
     // Indirect eval runs in the global scope; the async wrapper keeps cells
@@ -432,6 +445,7 @@ async function runCell(id, code, timeoutMs, idleTimeout) {
     );
     if (hasTopLevelAwait) await evaluated;
     ok = true;
+    txnEnd(true);
     if (finalExprSet && finalExprValue !== undefined) {
       emit({ type: "result", id, bundle: { "text/plain": inspect(finalExprValue) } });
     }
@@ -451,13 +465,10 @@ async function runCell(id, code, timeoutMs, idleTimeout) {
       evalue: err.message || String(err),
       traceback: traceback.length > 0 ? traceback : [String(err.message || err)],
     });
+    txnEnd(false); // after the traceback: the error reads first, the rollback note follows
     emit({ type: "done", id, status: "error", executionCount: executionCount, cancelled: false });
   } finally {
-    try {
-      if (typeof globalThis.__ompTxnEnd === "function") globalThis.__ompTxnEnd(ok);
-    } catch {
-      // non-fatal
-    }
+    txnEnd(ok); // no-op when already settled above
     currentId = null;
     cellDeadline = null;
     // A cell cannot finish while it still awaits a host reply, but reject
