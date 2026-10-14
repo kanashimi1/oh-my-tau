@@ -608,6 +608,16 @@ impl Messages {
         for message in messages {
             self.append_message(message, true);
         }
+        // Calls whose result never arrived (aborted session) are settled.
+        for entry in &mut self.entries {
+            if let ChatKind::Bash(e) | ChatKind::Python(e) = &mut entry.kind {
+                if e.status == ExecStatus::Running {
+                    e.status = ExecStatus::Cancelled;
+                    entry.text = exec_summary(e);
+                    entry.finished = true;
+                }
+            }
+        }
         self.seal_turn();
     }
 
@@ -713,6 +723,54 @@ impl Messages {
         }
     }
 
+    /// Append a persisted assistant message: text/thinking chunks become
+    /// settled assistant entries, each `toolCall` block a pending tool entry
+    /// (completed by the following `toolResult`), in content order.
+    fn append_assistant(&mut self, message: &Value) {
+        let parts: &[Value] = message
+            .get("content")
+            .and_then(Value::as_array)
+            .map_or(&[], Vec::as_slice);
+        let mut chunk: Vec<Value> = Vec::new();
+        let mut last_assistant: Option<usize> = None;
+        let mut had_tool = false;
+        for part in parts {
+            if part.get("type").and_then(Value::as_str) == Some("toolCall") {
+                last_assistant = self.flush_assistant_chunk(&mut chunk).or(last_assistant);
+                had_tool = true;
+                let call_id = str_field(part, "id").unwrap_or("").to_owned();
+                let name = str_field(part, "name").unwrap_or("tool").to_owned();
+                let args = part.get("arguments").cloned().unwrap_or(Value::Null);
+                self.start_tool_entry(call_id, name, args);
+            } else {
+                chunk.push(part.clone());
+            }
+        }
+        last_assistant = self.flush_assistant_chunk(&mut chunk).or(last_assistant);
+        let error_message = str_field(message, "errorMessage").map(String::from);
+        if last_assistant.is_none() && (!had_tool || error_message.is_some()) {
+            // No visible content (e.g. an aborted/errored turn): keep the
+            // entry so the stop reason / error still shows.
+            last_assistant = Some(self.push(assistant_entry(Vec::new(), false)));
+        }
+        if let Some(idx) = last_assistant {
+            if let ChatKind::Assistant(a) = &mut self.entries[idx].kind {
+                a.stop_reason = str_field(message, "stopReason").map(String::from);
+                a.error_message = error_message;
+                a.usage = parse_usage(message.get("usage"));
+            }
+        }
+    }
+
+    fn flush_assistant_chunk(&mut self, chunk: &mut Vec<Value>) -> Option<usize> {
+        let content = Value::Array(std::mem::take(chunk));
+        let (segments, _) = assistant_segments(&serde_json::json!({ "content": content }), 0);
+        if segments.is_empty() {
+            return None;
+        }
+        Some(self.push(assistant_entry(segments, false)))
+    }
+
     /// Append a full (persisted-shaped) message by role (§1 dispatch table).
     #[allow(clippy::too_many_lines)] // one arm per wire role; splitting buys nothing
     fn append_message(&mut self, message: &Value, finished: bool) {
@@ -758,8 +816,14 @@ impl Messages {
                     ToolStatus::Ok
                 };
                 let text = flatten_content(message.get("content"));
-                self.apply_tool_result(call_id, status, text);
+                if self.pending.contains_key(call_id) {
+                    self.apply_tool_result(call_id, status, text);
+                } else {
+                    let name = str_field(message, "toolName").unwrap_or("tool");
+                    self.push_orphan_result(call_id, name, status, text);
+                }
             }
+            "assistant" => self.append_assistant(message),
             "bashExecution" | "pythonExecution" | "jsExecution" => {
                 let role = role_of(message);
                 let command = str_field(message, "command")
@@ -879,6 +943,12 @@ impl Messages {
         let call_id = str_field(frame, "toolCallId").unwrap_or("").to_owned();
         let name = str_field(frame, "toolName").unwrap_or("tool").to_owned();
         let args = frame.get("args").cloned().unwrap_or(Value::Null);
+        self.start_tool_entry(call_id, name, args);
+    }
+
+    /// Create the pending entry for a tool call (shared by the live
+    /// `tool_execution_start` path and the persisted-history rebuild).
+    fn start_tool_entry(&mut self, call_id: String, name: String, args: Value) {
         if name == "read" {
             let path = arg_str(&args, "path")
                 .or_else(|| arg_str(&args, "file_path"))
@@ -1004,23 +1074,33 @@ impl Messages {
             ToolStatus::Ok
         };
         if !self.pending.contains_key(call_id) {
-            // Result without a card: create one (builder `#appendToolResult`).
-            self.push(ChatEntry::new(
-                ChatRole::Tool,
-                format!("tool result: {}", first_line(&text)),
-                ChatKind::Tool(ToolCard {
-                    call_id: call_id.to_owned(),
-                    name: str_field(frame, "toolName").unwrap_or("tool").to_owned(),
-                    args: Value::Null,
-                    status,
-                    result_text: Some(text),
-                    partial: false,
-                }),
-                true,
-            ));
+            let name = str_field(frame, "toolName").unwrap_or("tool");
+            self.push_orphan_result(call_id, name, status, text);
             return;
         }
         self.apply_tool_result(call_id, status, text);
+    }
+
+    /// Result without a card: create a finished one (builder
+    /// `#appendToolResult`). Registered in `pending` so a later duplicate
+    /// result for the same call attaches instead of creating a second row.
+    fn push_orphan_result(&mut self, call_id: &str, name: &str, status: ToolStatus, text: String) {
+        let idx = self.push(ChatEntry::new(
+            ChatRole::Tool,
+            format!("tool result: {}", first_line(&text)),
+            ChatKind::Tool(ToolCard {
+                call_id: call_id.to_owned(),
+                name: name.to_owned(),
+                args: Value::Null,
+                status,
+                result_text: Some(text),
+                partial: false,
+            }),
+            true,
+        ));
+        if !call_id.is_empty() {
+            self.pending.insert(call_id.to_owned(), idx);
+        }
     }
 
     /// Route a settled result into the card / read item / execution.
@@ -1592,6 +1672,86 @@ mod tests {
         assert_eq!(c.custom_type, "advisor");
         assert!(c.display);
         assert_eq!(m.finished_len(), 6); // everything finished after rebuild
+    }
+
+    fn resume_history(result_error: bool) -> Vec<Value> {
+        vec![
+            json!({"role": "user", "content": [{"type": "text", "text": "run it"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hmm"},
+                {"type": "toolCall", "id": "c1", "name": "bash",
+                 "arguments": {"command": "echo hi"}}
+            ], "stopReason": "toolUse"}),
+            json!({"role": "toolResult", "toolCallId": "c1", "toolName": "bash",
+                   "content": [{"type": "text", "text": "hi-output"}], "isError": result_error}),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "done"}],
+                   "stopReason": "stop"}),
+        ]
+    }
+
+    #[test]
+    fn rebuild_attaches_tool_result_to_call() {
+        let mut m = Messages::new();
+        m.rebuild(&resume_history(false));
+        let kinds: Vec<_> = m.entries().iter().map(|e| e.role).collect();
+        assert_eq!(
+            kinds,
+            [ChatRole::User, ChatRole::Assistant, ChatRole::Tool, ChatRole::Assistant]
+        );
+        // thinking renders as the settled assistant segment, no bare row
+        let ChatKind::Assistant(a) = &m.entries()[1].kind else {
+            panic!("expected assistant");
+        };
+        assert!(matches!(a.segments[0], AssistantSegment::Thinking { .. }));
+        let ChatKind::Bash(e) = &m.entries()[2].kind else {
+            panic!("expected bash");
+        };
+        assert_eq!(e.command, "echo hi");
+        assert_eq!(e.status, ExecStatus::Complete);
+        assert!(e.output.contains("hi-output"));
+        assert!(m.entries()[2].is_finished());
+        assert_eq!(m.entries()[3].text, "done");
+        assert!(m.entries().iter().all(|e| e.text != "[assistant]"));
+        assert_eq!(m.finished_len(), 4);
+    }
+
+    #[test]
+    fn rebuild_error_result_marks_error_and_generic_tool_card() {
+        let mut m = Messages::new();
+        m.rebuild(&resume_history(true));
+        let ChatKind::Bash(e) = &m.entries()[2].kind else {
+            panic!("expected bash");
+        };
+        assert_eq!(e.status, ExecStatus::Error);
+
+        let mut m = Messages::new();
+        m.rebuild(&[
+            json!({"role": "assistant", "content": [
+                {"type": "toolCall", "id": "w1", "name": "web_search", "arguments": {"query": "x"}}
+            ]}),
+            json!({"role": "toolResult", "toolCallId": "w1", "toolName": "web_search",
+                   "content": [{"type": "text", "text": "boom"}], "isError": true}),
+        ]);
+        assert_eq!(m.entries().len(), 1); // toolCall-only assistant: no bare row
+        let ChatKind::Tool(card) = &m.entries()[0].kind else {
+            panic!("expected tool card");
+        };
+        assert_eq!(card.status, ToolStatus::Error);
+        assert_eq!(card.result_text.as_deref(), Some("boom"));
+        assert!(m.entries()[0].is_finished());
+    }
+
+    #[test]
+    fn rebuild_orphan_tool_result_stays_visible() {
+        let mut m = Messages::new();
+        m.rebuild(&[json!({"role": "toolResult", "toolCallId": "zz", "toolName": "grep",
+                           "content": [{"type": "text", "text": "lonely"}]})]);
+        assert_eq!(m.entries().len(), 1);
+        let ChatKind::Tool(card) = &m.entries()[0].kind else {
+            panic!("expected tool card");
+        };
+        assert_eq!(card.status, ToolStatus::Ok);
+        assert_eq!(card.result_text.as_deref(), Some("lonely"));
     }
 
     #[test]
