@@ -666,6 +666,14 @@ impl ExtHost {
         self.generation.subscribe()
     }
 
+    /// Current connection generation (0 until the first transparent
+    /// reconnect). Host-side session state does not survive a generation
+    /// change.
+    #[must_use]
+    pub fn generation(&self) -> usize {
+        *self.generation.borrow()
+    }
+
     /// `true` when this host may transparently reconnect (shared mode).
     /// Private hosts die with their session and never reconnect.
     #[must_use]

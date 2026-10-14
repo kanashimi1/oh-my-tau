@@ -1,9 +1,15 @@
 // Vendored copy of pi-coding-agent's `src/extensibility/legacy-typebox.ts` (keep
-// behavior in sync with omp) with ONE change: the original imports
-// `@oh-my-pi/pi-ai/utils/schema`, whose barrel re-exports ~14 schema modules and
-// costs ~40 MB of RSS in the extension host. We only need two leaf functions
-// (`upgradeJsonSchemaTo202012`, `validateJsonSchemaValue`), imported here directly
-// from their source files. Everything below the imports is verbatim omp code.
+// behavior in sync with omp) with TWO changes, both import-cost only:
+// - the original imports `@oh-my-pi/pi-ai/utils/schema`, whose barrel re-exports
+//   ~14 schema modules and costs ~40 MB of RSS in the extension host. We only
+//   need two leaf functions (`upgradeJsonSchemaTo202012`,
+//   `validateJsonSchemaValue`), imported here directly from their source files.
+// - `json-schema-validator.ts` alone is ~18 MB RSS / ~55 ms to compile and only
+//   runs when a value is validated against a `Type.Unsafe` / raw-JSON-schema
+//   property, which most sessions never do: its path is resolved eagerly (a
+//   missing file still fails at `api.typebox` access, as before) but the module
+//   is required on the first validation.
+// Everything below the imports is verbatim omp code.
 //
 // `createRequire` anchored at the omp package keeps node_modules resolution
 // identical to the original (omptype, pi-utils resolve from omp's install tree).
@@ -19,9 +25,15 @@ const { type } = piRequire("@oh-my-pi/omptype");
 const { IR_BRAND } = piRequire("@oh-my-pi/omptype/ir");
 const { Type: OmpType } = piRequire("@oh-my-pi/omptype/typebox");
 const { upgradeJsonSchemaTo202012 } = piRequire(join(PKG_ROOT, "..", "pi-ai", "src", "utils", "schema", "draft.ts"));
-const { validateJsonSchemaValue } = piRequire(
-  join(PKG_ROOT, "..", "pi-ai", "src", "utils", "schema", "json-schema-validator.ts"),
-);
+// Resolved now (fails fast like the eager import did), loaded on first use.
+const VALIDATOR_PATH = piRequire.resolve(join(PKG_ROOT, "..", "pi-ai", "src", "utils", "schema", "json-schema-validator.ts"));
+type ValidateFn = (
+  schema: unknown,
+  data: unknown,
+) => { success: boolean; issues: { path: (string | number)[]; message: string }[] };
+let validatorFn: ValidateFn | undefined;
+const validateJsonSchemaValue: ValidateFn = (schema, data) =>
+  (validatorFn ??= piRequire(VALIDATOR_PATH).validateJsonSchemaValue as ValidateFn)(schema, data);
 
 type AnySchema = unknown;
 type ObjectOpts = { additionalProperties?: unknown; [k: string]: unknown };

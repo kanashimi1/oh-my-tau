@@ -568,6 +568,10 @@ async function scenario5(): Promise<void> {
 async function scenario6(): Promise<void> {
   await startMock("s6");
   const title = "6. ext-host emit cost per event (all extensions loaded vs --no-extensions)";
+  // Cold columns (unchanged method, kept for history): every sample is the
+  // FIRST turn of a fresh process, so the delta is dominated by extension
+  // loading and process-start noise. The warm table below is the per-event
+  // measurement (s6w-* records).
   console.log(`\n== ${title}`);
   mdLines.push(`\n## ${title}\n`);
   mdLines.push("| bin | extensions | turn wall median ms | delta vs no-ext ms | per-event delta ms (est.) |");
@@ -616,6 +620,277 @@ async function scenario6(): Promise<void> {
       });
       mdLines.push(`| ${bin.name} | delta | ${deltas.withExt.toFixed(0)} | ${delta.toFixed(0)} | ${perEvent.toFixed(2)} |`);
     }
+  }
+  await scenario6Warm();
+}
+
+/** Minimal stdio RPC client that also counts the event frames of each request. */
+class CountingRpc {
+  #proc: Subprocess;
+  #reader: ReadableStreamDefaultReader<Uint8Array>;
+  #decoder = new TextDecoder();
+  #buf = "";
+  #nextId = 1;
+
+  private constructor(proc: Subprocess) {
+    this.#proc = proc;
+    this.#reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
+  }
+
+  static async start(cmd: string[], cwd: string, env: BenchEnv, timeoutMs: number): Promise<CountingRpc> {
+    const proc = spawn(cmd, {
+      cwd,
+      env: { ...process.env, ...env } as Record<string, string>,
+      stdout: "pipe",
+      // Never "pipe" unread: a full stderr pipe would stall the process mid-turn.
+      stderr: process.env.BENCH_STDERR_INHERIT ? "inherit" : "ignore",
+      stdin: "pipe",
+    });
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* dead */
+      }
+    }, timeoutMs).unref();
+    const c = new CountingRpc(proc);
+    for (;;) if ((await c.#frame())["type"] === "ready") return c;
+  }
+
+  async #frame(): Promise<Record<string, unknown>> {
+    for (;;) {
+      const nl = this.#buf.indexOf("\n");
+      if (nl >= 0) {
+        const line = this.#buf.slice(0, nl);
+        this.#buf = this.#buf.slice(nl + 1);
+        if (line.trim().length > 0) return JSON.parse(line) as Record<string, unknown>;
+        continue;
+      }
+      const { done, value } = await this.#reader.read();
+      if (done) throw new Error("rpc process closed stdout");
+      this.#buf += this.#decoder.decode(value, { stream: true });
+    }
+  }
+
+  /**
+   * Send `type` and wait for its final frame (`prompt_result` for prompts,
+   * the response otherwise), like lib.ts RpcClient. Returns the wall time from
+   * write to final frame and the event frames seen meanwhile, by type.
+   */
+  async request(
+    type: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+  ): Promise<{ ms: number; frame: Record<string, unknown>; events: Record<string, number> }> {
+    const id = this.#nextId++;
+    const stdin = this.#proc.stdin as unknown as { write: (s: string) => void; flush?: () => void };
+    const events: Record<string, number> = {};
+    const t0 = performance.now();
+    stdin.write(`${JSON.stringify({ id, method: type, type, ...params })}\n`);
+    stdin.flush?.();
+    const wait = (async () => {
+      for (;;) {
+        const f = await this.#frame();
+        if (f["id"] === id) {
+          const final =
+            type === "prompt"
+              ? f["type"] === "prompt_result" || (f["type"] === "response" && f["status"] !== undefined)
+              : f["type"] === "response" || f["method"] === undefined;
+          if (final) return { ms: performance.now() - t0, frame: f, events };
+          continue;
+        }
+        const t = String(f["type"] ?? f["method"] ?? "?");
+        events[t] = (events[t] ?? 0) + 1;
+      }
+    })();
+    const timeout = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`${type} timed out after ${timeoutMs}ms`)), timeoutMs).unref();
+    });
+    return Promise.race([wait, timeout]);
+  }
+
+  /** Fresh empty session in the same warm process (keeps every turn's context identical). */
+  async reset(): Promise<boolean> {
+    const r = await this.request("new_session", {}, 30_000);
+    return r.frame["success"] !== false && r.frame["error"] === undefined;
+  }
+
+  async stop(): Promise<void> {
+    try {
+      this.#proc.kill("SIGKILL");
+    } catch {
+      /* dead */
+    }
+    await this.#proc.exited.catch(() => -1);
+  }
+}
+
+function quantile(values: number[], q: number): number {
+  const s = [...values].sort((a, b) => a - b);
+  if (s.length === 0) return NaN;
+  const pos = (s.length - 1) * q;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  return s[lo] + (s[hi] - s[lo]) * (pos - lo);
+}
+
+/** Lines in `path` (0 when absent). */
+function lineCount(path: string): number {
+  if (!existsSync(path)) return 0;
+  const t = readFileSync(path, "utf8");
+  return t.length === 0 ? 0 : t.split("\n").filter((l) => l.length > 0).length;
+}
+
+/**
+ * s6 warm: per-event extension cost from warm processes. One process with all
+ * extensions and one with --no-extensions stay alive side by side; after
+ * warm-up turns both run the same toolturn N times, interleaved (turn i on
+ * both before turn i+1, alternating which goes first), each turn in a fresh
+ * empty session (`new_session`, outside the timed window) so context size is
+ * identical every turn. Reported: median per-turn wall of each, the median
+ * (and IQR) of the PAIRED per-turn deltas, the event frames the core actually
+ * emitted per turn (RPC stream), and — for omp-rs — the emits that actually
+ * crossed to the ext host per turn (OMP_EXT_TRACE, counted in a separate
+ * traced process so the trace writes stay out of the timed runs).
+ */
+async function scenario6Warm(): Promise<void> {
+  const WARM = QUICK ? 2 : 5;
+  const TURNS = QUICK ? 8 : Math.max(30, REPEATS * 3);
+  mdLines.push("");
+  mdLines.push(
+    `warm, paired (s6w): ${WARM} warm-up + ${TURNS} measured turns per process, interleaved, fresh session per turn; delta = median of per-turn (ext − no-ext)`,
+  );
+  mdLines.push("");
+  mdLines.push(
+    "| bin | no-ext turn median ms | ext turn median ms | paired delta median ms (IQR) | rpc events/turn (message_update) | ext-host emits/turn | per-event delta ms |",
+  );
+  mdLines.push("|---|---|---|---|---|---|---|");
+  for (const bin of BINS) {
+    const err = checkBin(bin);
+    if (err) {
+      record("s6w", bin.name, { ok: false, error: err });
+      mdLines.push(`| ${bin.name} | ERROR | | | | | |`);
+      continue;
+    }
+    const home = makeAgentHome(`s6w-${bin.name}`);
+    home.enableExtensions(true);
+    const cmd = (withExt: boolean): string[] => [
+      bin.path,
+      "--mode",
+      "rpc",
+      "--model",
+      "mock/toolturn",
+      ...(withExt ? [] : ["--no-extensions"]),
+    ];
+    const clients: CountingRpc[] = [];
+    try {
+      const [noExt, ext] = await Promise.all([
+        CountingRpc.start(cmd(false), home.root, home.env, 900_000),
+        CountingRpc.start(cmd(true), home.root, home.env, 900_000),
+      ]);
+      clients.push(noExt, ext);
+      let resetOk = true;
+      const turn = async (c: CountingRpc): Promise<{ ms: number; events: Record<string, number> }> => {
+        resetOk = (await c.reset()) && resetOk;
+        const r = await c.request("prompt", { message: "run the turn" }, 60_000);
+        const status = String(r.frame["status"] ?? "completed");
+        if (status !== "completed" && status !== "ok") throw new Error(`turn status ${status}`);
+        return { ms: r.ms, events: r.events };
+      };
+      for (let i = 0; i < WARM; i++) {
+        await turn(noExt);
+        await turn(ext);
+      }
+      const walls = { noExt: [] as number[], ext: [] as number[] };
+      const paired: number[] = [];
+      let eventsExt: Record<string, number> = {};
+      for (let i = 0; i < TURNS; i++) {
+        const order: ["noExt" | "ext", CountingRpc][] =
+          i % 2 === 0
+            ? [
+                ["noExt", noExt],
+                ["ext", ext],
+              ]
+            : [
+                ["ext", ext],
+                ["noExt", noExt],
+              ];
+        const got: Record<string, number> = {};
+        for (const [k, c] of order) {
+          const r = await turn(c);
+          got[k] = r.ms;
+          walls[k].push(r.ms);
+          if (k === "ext") eventsExt = r.events;
+        }
+        paired.push(got.ext - got.noExt);
+      }
+      await Promise.all(clients.map((c) => c.stop()));
+      clients.length = 0;
+
+      // ext-host emits per turn: a separate traced process (omp-rs; the TS
+      // binary ignores OMP_EXT_TRACE, reported as "-").
+      let extEmitsPerTurn: number | null = null;
+      if (bin.name === "omp-rs") {
+        const trace = join(home.root, "ext-trace.jsonl");
+        const traced = await CountingRpc.start(cmd(true), home.root, { ...home.env, OMP_EXT_TRACE: trace }, 300_000);
+        try {
+          await turn(traced);
+          const counts: number[] = [];
+          for (let i = 0; i < 3; i++) {
+            await traced.reset();
+            await Bun.sleep(300); // session-switch emits land before the baseline
+            const before = lineCount(trace);
+            await traced.request("prompt", { message: "run the turn" }, 60_000);
+            await Bun.sleep(300); // trailing fire-and-forget emits
+            counts.push(lineCount(trace) - before);
+          }
+          extEmitsPerTurn = quantile(counts, 0.5);
+        } finally {
+          await traced.stop();
+        }
+      }
+
+      // Agent lifecycle frames only (UI/extension side-channel frames are not agent events).
+      const rpcEvents = Object.entries(eventsExt)
+        .filter(([t]) => /^(agent|turn|message|tool_execution)_/.test(t))
+        .reduce((a, [, n]) => a + n, 0);
+      const msgUpdates = eventsExt["message_update"] ?? 0;
+      const deltaMed = quantile(paired, 0.5);
+      const denom = extEmitsPerTurn ?? rpcEvents;
+      const perEvent = denom > 0 ? deltaMed / denom : NaN;
+      const sNo = stats(walls.noExt);
+      const sExt = stats(walls.ext);
+      record("s6w-false", bin.name, { ok: true, runs: sNo });
+      record("s6w-true", bin.name, { ok: true, runs: sExt });
+      record("s6w-delta", bin.name, {
+        ok: true,
+        runs: stats(paired),
+        extra: {
+          method: "warm-paired",
+          warmTurns: WARM,
+          turns: TURNS,
+          resetOk,
+          deltaP25Ms: quantile(paired, 0.25),
+          deltaMedianMs: deltaMed,
+          deltaP75Ms: quantile(paired, 0.75),
+          rpcEventsPerTurn: rpcEvents,
+          rpcEventsByType: eventsExt,
+          extEmitsPerTurn,
+          perEventMs: perEvent,
+          perEventDenominator: extEmitsPerTurn !== null ? "extEmitsPerTurn" : "rpcEventsPerTurn",
+        },
+      });
+      mdLines.push(
+        `| ${bin.name} | ${sNo.median.toFixed(1)} | ${sExt.median.toFixed(1)} | ${deltaMed.toFixed(1)} (${quantile(paired, 0.25).toFixed(1)}–${quantile(paired, 0.75).toFixed(1)}) | ${rpcEvents} (${msgUpdates}) | ${extEmitsPerTurn ?? "-"} | ${Number.isFinite(perEvent) ? perEvent.toFixed(3) : "-"} |`,
+      );
+      if (!resetOk) mdLines.push(`| ${bin.name} | note: new_session failed; turns did not start from an empty session | | | | | |`);
+    } catch (e) {
+      record("s6w-delta", bin.name, { ok: false, error: String(e) });
+      mdLines.push(`| ${bin.name} | ERROR | | | | | |`);
+    } finally {
+      await Promise.all(clients.map((c) => c.stop()));
+    }
+    rmSync(home.root, { recursive: true, force: true });
   }
 }
 

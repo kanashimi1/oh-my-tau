@@ -442,6 +442,130 @@ const joinCtx = (xs: string[]) => {
   return u.length ? u.join("\n\n") : undefined;
 };
 
+// ---------------------------------------------------------------- message_update deltas
+// The core (crates/omp-cli/src/events.rs `ExtUpdateEncoder`) sends the full
+// message once per assistant message and then only what moved:
+//   full:  {type, message, assistantMessageEvent, delta: {id, seq: 0}}
+//   delta: {type, assistantMessageEvent, delta: {id, seq, n, hdr?, b: [{i, blk?, v, x?}]}}
+// `rebuildMessageUpdate` turns a delta back into the full event before any
+// handler runs, so handlers see exactly the shape of a full frame. Like omp's
+// incremental snapshots, every update gets a fresh message object, content
+// array and usage object; blocks the frame does not touch are shared with the
+// previous update (read-only, as in omp). Frames without `delta` (older cores,
+// non-assistant messages) pass through untouched.
+let updateChain: { id: number; seq: number; message: Json } | null = null;
+
+class DeltaError extends Error {}
+const STREAM_KEY: Record<string, string> = { text: "text", thinking: "thinking", toolCall: "arguments" };
+
+/** Set `key` on `o` as an own data property (also for `__proto__`, as JSON.parse does). */
+function setOwn(o: Json, key: string, v: unknown): void {
+  if (key === "__proto__") Object.defineProperty(o, key, { value: v, writable: true, enumerable: true, configurable: true });
+  else o[key] = v;
+}
+
+/** Inverse of events.rs `value_patch`. */
+function applyValuePatch(prev: unknown, p: Json): unknown {
+  if ("=" in p) return p["="];
+  if ("+" in p) {
+    if (typeof prev !== "string" || typeof p["+"] !== "string") throw new DeltaError("string append on a non-string");
+    return prev + p["+"];
+  }
+  if ("o" in p) {
+    if (!prev || typeof prev !== "object" || Array.isArray(prev)) throw new DeltaError("object patch on a non-object");
+    const out: Json = { ...(prev as Json) };
+    for (const [k, sp] of Object.entries(p.o as Json)) setOwn(out, k, applyValuePatch((prev as Json)[k], sp as Json));
+    return out;
+  }
+  if ("a" in p) {
+    if (!Array.isArray(prev) || typeof p.n !== "number") throw new DeltaError("array patch on a non-array");
+    const out = prev.slice();
+    out.length = p.n;
+    for (const [i, sp] of p.a as [number, Json][]) out[i] = applyValuePatch(prev[i], sp);
+    return out;
+  }
+  throw new DeltaError("unknown patch");
+}
+
+/**
+ * Restore `event.message` from a delta frame (and drop the `delta` field).
+ * `false` when the frame does not apply to the chain this host holds (gap,
+ * unknown id, malformed entry): the chain is dropped and the core resends full.
+ */
+function rebuildMessageUpdate(event: Json): boolean {
+  const d = event.delta as Json | undefined;
+  if (d === undefined) return true;
+  delete event.delta;
+  if (event.message !== undefined) {
+    updateChain = typeof d.id === "number" ? { id: d.id, seq: 0, message: event.message as Json } : null;
+    return true;
+  }
+  const chain = updateChain;
+  updateChain = null;
+  if (!chain || chain.id !== d.id || chain.seq + 1 !== d.seq) return false;
+  try {
+    const ame = event.assistantMessageEvent as Json | undefined;
+    const prev = (chain.message.content ?? []) as Json[];
+    const content = prev.slice();
+    for (const e of (d.b ?? []) as Json[]) {
+      const i = e.i as number;
+      if (!Number.isInteger(i) || i < 0 || i > content.length) throw new DeltaError(`block index ${i}`);
+      const old = prev[i] as Json | undefined;
+      const base = (e.blk as Json | undefined) ?? old;
+      const key = base ? STREAM_KEY[String(base.type)] : undefined;
+      if (!base || !key) throw new DeltaError(`block ${i}: unknown base`);
+      const oldValue = old && old.type === base.type ? old[key] : undefined;
+      let v: unknown;
+      switch (e.v) {
+        case "k":
+          if (oldValue === undefined) throw new DeltaError(`block ${i}: keep without a previous value`);
+          v = oldValue;
+          break;
+        case "a":
+          if (typeof oldValue !== "string" || typeof ame?.delta !== "string") throw new DeltaError(`block ${i}: bad append`);
+          v = oldValue + ame.delta;
+          break;
+        case "+":
+          if (typeof oldValue !== "string" || typeof e.x !== "string") throw new DeltaError(`block ${i}: bad append`);
+          v = oldValue + e.x;
+          break;
+        case "=":
+          v = e.x;
+          break;
+        case "p":
+          v = applyValuePatch(oldValue, e.x as Json);
+          break;
+        default:
+          throw new DeltaError(`block ${i}: unknown op ${String(e.v)}`);
+      }
+      // `base` carries the streamed key (skeleton or previous block), so the
+      // assignment keeps a full frame's key order.
+      const block: Json = { ...base };
+      block[key] = v;
+      content[i] = block;
+    }
+    if (content.length !== d.n) throw new DeltaError(`content length ${content.length} != ${String(d.n)}`);
+    let message: Json;
+    if (d.hdr !== undefined) message = { ...(d.hdr as Json), content };
+    else {
+      message = { ...chain.message, content };
+      const usage = message.usage as Json | undefined;
+      if (usage && typeof usage === "object") message.usage = { ...usage, ...(usage.cost && typeof usage.cost === "object" ? { cost: { ...(usage.cost as Json) } } : {}) };
+    }
+    // Key order of a full frame / omp's event: type, message, assistantMessageEvent.
+    const a = event.assistantMessageEvent;
+    delete event.assistantMessageEvent;
+    event.message = message;
+    event.assistantMessageEvent = a;
+    updateChain = { id: chain.id, seq: d.seq as number, message };
+    return true;
+  } catch (e) {
+    if (!(e instanceof DeltaError)) throw e;
+    log("warn", `message_update delta rejected (${e.message}); core will resend the full message`);
+    return false;
+  }
+}
+
 async function emit(p: Json) {
   if (p.ctx) state = { ...state, ...(p.ctx as Json) };
   // No structuredClone: like the TS runner, every handler for this emit sees
@@ -449,6 +573,14 @@ async function emit(p: Json) {
   // and the core's copy is independent — it came off the wire).
   const event = p.event as Json;
   const type = String(event.type);
+  if (type === "message_update" && !rebuildMessageUpdate(event)) {
+    // Unappliable delta: no handler can see a correct message. Ask the core
+    // for a full frame (the next update) instead of running handlers on a
+    // corrupt one.
+    return { result: { resync: true }, handlers: [], errors: [] };
+  }
+  // A message boundary ends any delta chain (the core starts a new one).
+  if (type === "message_start" || type === "message_end" || type === "session_shutdown") updateChain = null;
   const ame = type === "message_update" ? (event.assistantMessageEvent as Json | undefined) : undefined;
   if (ame?.partialIsMessage === true) {
     // The core did not send `partial` a second time: it equals `message` (same object, as in omp).

@@ -24,7 +24,7 @@ use omp_ext::lifecycle::{self, HeadlessResponder, InputSource, LifecycleEvent};
 use omp_ext::{ExtHost, HostConfig, HostMessage, ToolInfo};
 
 use crate::adapter::json_round_trip;
-use crate::events::{assistant_event_slim, message_value};
+use crate::events::{message_value, ExtUpdateEncoder};
 use crate::runtime::Runtime;
 
 /// Default budget for one extension tool call (host default matches).
@@ -548,13 +548,18 @@ impl Extensions {
         let host = self.host.clone();
         let turn = self.turn.clone();
         let stop = self.stop.clone();
+        // One encoder per subscription: the agent delivers events to this
+        // listener in order, and `forward_event` enqueues each emit while
+        // holding the encoder, so encode order == wire order.
+        let updates = Arc::new(Mutex::new(ExtUpdateEncoder::default()));
         rt.agent
             .subscribe(move |event, _| {
                 let host = host.clone();
                 let turn = turn.clone();
                 let stop = stop.clone();
+                let updates = updates.clone();
                 Box::pin(async move {
-                    forward_event(&host, &turn, &stop, &event);
+                    forward_event(&host, &turn, &stop, &updates, &event);
                     Ok(())
                 })
             })
@@ -660,11 +665,51 @@ fn notify(host: &ExtHost, ty: &str, build: impl FnOnce() -> LifecycleEvent) {
     }
 }
 
+/// Queue one `message_update` as a delta frame against the message the host
+/// rebuilt from the previous frame (`ExtUpdateEncoder`; `ext-host/host.ts`
+/// `rebuildMessageUpdate` restores the full event before any handler runs).
+fn notify_update(
+    host: &ExtHost,
+    updates: &Mutex<ExtUpdateEncoder>,
+    message: &AgentMessage,
+    ame: &pa_agent::stream::AssistantMessageEvent,
+) {
+    let mut enc = updates
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !host.has_handlers("message_update") {
+        // Nothing reaches the host: its chain (if any) is stale from here on.
+        enc.invalidate();
+        return;
+    }
+    enc.set_generation(host.generation());
+    let frame = enc.encode(message, ame);
+    let resync = enc.resync_flag();
+    let sent = host.emit_nowait(&frame, None, move |r| {
+        // `{resync: true}`: the host could not apply the frame (it skipped the
+        // handlers); a failed emit leaves the host state unknown. Either way
+        // the next update goes out full.
+        let needs_full = match &r {
+            Ok(out) => out.result.get("resync").and_then(Value::as_bool) == Some(true),
+            Err(_) => true,
+        };
+        if needs_full {
+            resync.store(true, Ordering::Release);
+        }
+        emit_silent(r);
+    });
+    if let Err(e) = sent {
+        enc.invalidate();
+        eprintln!("omp-rs: extension emit: {e:#}");
+    }
+}
+
 #[allow(clippy::too_many_lines)] // one arm per `AgentEvent` variant; splitting adds indirection.
 fn forward_event(
     host: &ExtHost,
     turn: &AtomicU64,
     stop: &Mutex<StopState>,
+    updates: &Mutex<ExtUpdateEncoder>,
     event: &AgentEvent,
 ) {
     let now_ms = std::time::SystemTime::now()
@@ -710,6 +755,11 @@ fn forward_event(
             });
         }
         AgentEvent::MessageStart { message } => {
+            // Sync point: a new message always starts a fresh delta chain.
+            updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_boundary();
             notify(host, "message_start", || LifecycleEvent::MessageStart {
                 message: message_value(message),
             });
@@ -717,15 +767,12 @@ fn forward_event(
         AgentEvent::MessageUpdate {
             message,
             assistant_message_event,
-        } => {
-            // The event's `partial` equals `message`; the host re-links it
-            // (`partialIsMessage`) instead of receiving a second full copy.
-            notify(host, "message_update", || LifecycleEvent::MessageUpdate {
-                message: message_value(message),
-                assistant_message_event: assistant_event_slim(assistant_message_event),
-            });
-        }
+        } => notify_update(host, updates, message, assistant_message_event),
         AgentEvent::MessageEnd { message } => {
+            updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .message_boundary();
             notify(host, "message_end", || LifecycleEvent::MessageEnd {
                 message: message_value(message),
             });
