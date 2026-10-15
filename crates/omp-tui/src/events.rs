@@ -37,13 +37,16 @@ pub enum AppEvent {
     ToolExecutionUpdate(Value),
     /// `{"type":"tool_execution_end", ...}`.
     ToolExecutionEnd(Value),
-    /// `{"type":"prompt_result", "success": bool, ...}` — outcome of a
-    /// submitted prompt ticket.
+    /// `{"type":"prompt_result", "status": "completed"|"aborted"|"error",
+    /// "error"?: {"message", ...}, ...}` (TS `RpcPromptResultFrame`) — outcome
+    /// of a submitted prompt ticket.
     PromptResult {
         /// Echoed submit id, if any.
         id: Option<String>,
-        /// Whether the turn succeeded.
+        /// `status != "error"` (an abort is not a failure).
         success: bool,
+        /// `error.message` when the prompt failed.
+        error: Option<String>,
         /// Raw frame payload.
         frame: Value,
     },
@@ -114,9 +117,12 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
                 .get("id")
                 .and_then(Value::as_str)
                 .map(std::string::ToString::to_string),
-            success: frame
-                .get("success")
-                .is_some_and(|v| v == &Value::from(true)),
+            success: frame.get("status").and_then(Value::as_str) != Some("error"),
+            error: frame
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             frame: frame.clone(),
         },
         "session_settled" => AppEvent::SessionSettled,
@@ -215,11 +221,26 @@ mod tests {
             parse_frame(&json!({"type":"session_settled"})),
             AppEvent::SessionSettled
         );
-        match parse_frame(&json!({"type":"prompt_result","id":"t1","success":true})) {
-            AppEvent::PromptResult { id, success, .. } => {
+        match parse_frame(&json!({"type":"prompt_result","id":"t1","status":"completed","agentInvoked":true,"sessionSettled":true})) {
+            AppEvent::PromptResult { id, success, error, .. } => {
                 assert_eq!(id.as_deref(), Some("t1"));
                 assert!(success);
+                assert!(error.is_none());
             }
+            other => panic!("unexpected: {other:?}"),
+        }
+        // TS wire shape: failure is `status: "error"` + `error.message`.
+        match parse_frame(&json!({"type":"prompt_result","status":"error","agentInvoked":true,
+                                  "error":{"message":"429 rate limited","retryable":true}})) {
+            AppEvent::PromptResult { success, error, .. } => {
+                assert!(!success);
+                assert_eq!(error.as_deref(), Some("429 rate limited"));
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+        // An abort is not a failure.
+        match parse_frame(&json!({"type":"prompt_result","status":"aborted","agentInvoked":true})) {
+            AppEvent::PromptResult { success, .. } => assert!(success),
             other => panic!("unexpected: {other:?}"),
         }
         match parse_frame(&json!({"type":"queue_update","steering":["a"],"followUp":["b","c"]})) {

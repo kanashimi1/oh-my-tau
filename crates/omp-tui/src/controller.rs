@@ -250,7 +250,7 @@ mod tests {
         app.push_frame(&json!({"type":"agent_start"}), t0);
         app.pump_events(t0);
         app.push_frame(
-            &json!({"type":"prompt_result","success":false,"error":"boom"}),
+            &json!({"type":"prompt_result","status":"error","error":{"message":"boom"}}),
             t0,
         );
         app.pump_events(t0);

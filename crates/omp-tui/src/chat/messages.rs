@@ -560,12 +560,9 @@ impl Messages {
             AppEvent::ToolExecutionStart(frame) => self.tool_start(frame),
             AppEvent::ToolExecutionUpdate(frame) => self.tool_update(frame),
             AppEvent::ToolExecutionEnd(frame) => self.tool_end(frame),
-            AppEvent::PromptResult { success, frame, .. } => {
+            AppEvent::PromptResult { success, error, .. } => {
                 if !success {
-                    let msg = frame
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("prompt failed");
+                    let msg = error.as_deref().unwrap_or("prompt failed");
                     self.push(ChatEntry::new(
                         ChatRole::System,
                         format!("error: {msg}"),
@@ -711,7 +708,9 @@ impl Messages {
                             a.live = false;
                             a.stop_reason = str_field(message, "stopReason").map(String::from);
                             a.error_message = str_field(message, "errorMessage").map(String::from);
-                            a.usage = parse_usage(message.get("usage"));
+                            // Usage is NOT kept on the live block: the deferred
+                            // row flushed at turn end shows it once (§2
+                            // `#flushPendingUsage`); keeping both printed `⏱` twice.
                         }
                         entry.finished = true;
                     }
@@ -1614,6 +1613,45 @@ mod tests {
         let last = m.entries().last().unwrap();
         assert!(matches!(last.kind, ChatKind::Usage(_)));
         assert_eq!(m.finished_len(), m.entries().len());
+    }
+
+    /// Regression: a successful turn printed `⏱ … this turn` twice and then
+    /// `✗ Error: prompt failed` (the TUI read a `success` field the runtime
+    /// never sends; the TS frame carries `status`).
+    #[test]
+    fn successful_turn_shows_one_usage_row_and_no_error() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&AppEvent::MessageEnd(json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Привет!"}],
+                "usage": {"input": 2, "output": 15, "cacheRead": 0, "cacheWrite": 16_541},
+                "stopReason": "stop"
+            }
+        })));
+        m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
+        m.apply(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
+        m.apply(&crate::events::parse_frame(&json!({
+            "type": "prompt_result", "agentInvoked": true,
+            "status": "completed", "sessionSettled": true
+        })));
+        m.apply(&AppEvent::SessionSettled);
+        let text: String = (0..m.entries().len())
+            .flat_map(|i| m.entry_lines_at(i, 100))
+            .map(|l| l.to_string() + "\n")
+            .collect();
+        assert_eq!(text.matches("this turn").count(), 1, "{text}");
+        assert!(!text.contains("Error"), "{text}");
+
+        m.apply(&crate::events::parse_frame(&json!({
+            "type": "prompt_result", "agentInvoked": true, "status": "error",
+            "error": {"message": "429 rate limited", "retryable": true}, "sessionSettled": true
+        })));
+        let last = m.entries().len() - 1;
+        let row: String = m.entry_lines_at(last, 100).iter().map(ToString::to_string).collect();
+        assert!(row.contains("429 rate limited"), "{row}");
     }
 
     #[test]

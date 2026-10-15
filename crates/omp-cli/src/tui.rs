@@ -131,6 +131,28 @@ struct Port {
     rt: Arc<Runtime>,
 }
 
+/// TS `RpcPromptResultFrame` for a prompt that failed before or outside the
+/// agent run (the TUI-local paths below; the runtime emits its own).
+fn prompt_failed(message: impl Into<String>) -> Value {
+    serde_json::json!({
+        "type": "prompt_result",
+        "agentInvoked": false,
+        "status": "error",
+        "error": {"message": message.into(), "retryable": false},
+        "sessionSettled": true,
+    })
+}
+
+/// TS `RpcPromptResultFrame` for a prompt completed locally (slash command).
+fn prompt_completed(agent_invoked: bool) -> Value {
+    serde_json::json!({
+        "type": "prompt_result",
+        "agentInvoked": agent_invoked,
+        "status": "completed",
+        "sessionSettled": true,
+    })
+}
+
 impl omp_tui::RuntimePort for Port {
     fn submit(&self, id: Option<String>, text: String, behavior: Option<omp_tui::SubmitBehavior>) {
         let rt = self.rt.clone();
@@ -144,11 +166,7 @@ impl omp_tui::RuntimePort for Port {
                 .prompt(id.map(Value::from), &text, behavior, Vec::new())
                 .await
             {
-                rt.send(serde_json::json!({
-                    "type": "prompt_result",
-                    "success": false,
-                    "error": e.message,
-                }));
+                rt.send(prompt_failed(e.message));
             }
         });
     }
@@ -182,11 +200,7 @@ impl omp_tui::RuntimePort for Port {
         let rt = self.rt.clone();
         tokio::spawn(async move {
             if let Err(e) = rt.set_model(&provider, &id).await {
-                rt.send(serde_json::json!({
-                    "type": "prompt_result",
-                    "success": false,
-                    "error": e.message,
-                }));
+                rt.send(prompt_failed(e.message));
             }
         });
     }
@@ -218,47 +232,27 @@ impl omp_tui::RuntimePort for Port {
                     // completed `prompt_result` the ExtensionHandled RPC path
                     // emits (TS interactive controller settles the session the
                     // same way).
-                    rt.send(serde_json::json!({
-                        "type": "prompt_result",
-                        "success": true,
-                        "agentInvoked": agent_invoked,
-                        "status": "completed",
-                        "sessionSettled": true,
-                    }));
+                    rt.send(prompt_completed(agent_invoked));
                 }
                 crate::rpc::slash::Outcome::ExtensionHandled => {
-                    rt.send(serde_json::json!({
-                        "type": "prompt_result",
-                        "success": true,
-                        "agentInvoked": false,
-                        "status": "completed",
-                        "sessionSettled": true,
-                    }));
+                    rt.send(prompt_completed(false));
                 }
                 crate::rpc::slash::Outcome::Prompt(rewritten) => {
                     if let Err(e) = rt.prompt(None, &rewritten, None, Vec::new()).await {
-                        rt.send(serde_json::json!({
-                            "type": "prompt_result",
-                            "success": false,
-                            "error": e.message,
-                        }));
+                        rt.send(prompt_failed(e.message));
                     }
                 }
                 crate::rpc::slash::Outcome::NotSlash => {
                     // No builtin/extension/file command matched: the palette
                     // offered an unknown name — report it instead of sending
                     // the literal text to the model.
-                    rt.send(serde_json::json!({
-                        "type": "prompt_result",
-                        "success": false,
-                        "error": if rt.available_commands().iter().any(|c| {
+                    rt.send(prompt_failed(if rt.available_commands().iter().any(|c| {
                             c.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
                         }) {
                             format!("/{name} is not ported to omp-rs yet")
                         } else {
                             format!("Unknown command: /{name}")
-                        },
-                    }));
+                        }));
                 }
             }
         });
@@ -297,11 +291,7 @@ impl omp_tui::RuntimePort for Port {
                 Ok(()) if fork => {}
                 Ok(()) => announce_loaded_session(&rt).await,
                 Err(e) => {
-                    rt.send(serde_json::json!({
-                        "type": "prompt_result",
-                        "success": false,
-                        "error": format!("resume failed: {e:#}"),
-                    }));
+                    rt.send(prompt_failed(format!("resume failed: {e:#}")));
                     // A load that failed after the agent reset leaves it with
                     // no history: clear the transcript to match. An early
                     // failure (unreadable file) keeps the current session, so
@@ -322,11 +312,7 @@ impl omp_tui::RuntimePort for Port {
                 .prompt(None, omp_tui::MANUAL_CONTINUE_PROMPT, None, Vec::new())
                 .await
             {
-                rt.send(serde_json::json!({
-                    "type": "prompt_result",
-                    "success": false,
-                    "error": e.message,
-                }));
+                rt.send(prompt_failed(e.message));
             }
         });
     }
@@ -354,11 +340,7 @@ impl omp_tui::RuntimePort for Port {
             if let Err(e) =
                 crate::tree::navigate_tree(&rt, &entry_id, &serde_json::json!({}), None).await
             {
-                rt.send(serde_json::json!({
-                    "type": "prompt_result",
-                    "success": false,
-                    "error": format!("rewind failed: {e:?}"),
-                }));
+                rt.send(prompt_failed(format!("rewind failed: {e:?}")));
             }
         });
     }
@@ -504,7 +486,7 @@ mod tests {
         h.port.run_slash("model".into(), String::new());
         let frames = until_result(&mut h.rx).await;
         let result = frames.last().unwrap();
-        assert_eq!(result["success"], true);
+        assert_eq!(result["status"], "completed");
         assert_eq!(result["status"], "completed");
         assert!(
             outputs(&frames).iter().any(|t| t.contains("Current model: p/a")),
@@ -517,7 +499,7 @@ mod tests {
         let mut h = harness().await;
         h.port.run_slash("model".into(), "q/b".into());
         let frames = until_result(&mut h.rx).await;
-        assert_eq!(frames.last().unwrap()["success"], true);
+        assert_eq!(frames.last().unwrap()["status"], "completed");
         assert!(
             frames.iter().any(|f| f["type"] == "model_changed"),
             "frames: {frames:?}"
@@ -535,7 +517,7 @@ mod tests {
         let mut h = harness().await;
         h.port.run_slash("effort".into(), String::new());
         let frames = until_result(&mut h.rx).await;
-        assert_eq!(frames.last().unwrap()["success"], true);
+        assert_eq!(frames.last().unwrap()["status"], "completed");
         assert!(
             outputs(&frames).iter().any(|t| t.contains("Thinking:")),
             "frames: {frames:?}"
@@ -544,7 +526,7 @@ mod tests {
         let mut h = harness().await;
         h.port.run_slash("effort".into(), "high".into());
         let frames = until_result(&mut h.rx).await;
-        assert_eq!(frames.last().unwrap()["success"], true);
+        assert_eq!(frames.last().unwrap()["status"], "completed");
         assert!(
             outputs(&frames)
                 .iter()
@@ -558,7 +540,7 @@ mod tests {
         let mut h = harness().await;
         h.port.run_slash("compact".into(), String::new());
         let frames = until_result(&mut h.rx).await;
-        assert_eq!(frames.last().unwrap()["success"], true);
+        assert_eq!(frames.last().unwrap()["status"], "completed");
         assert!(
             outputs(&frames).iter().any(|t| t.contains("Compaction")),
             "frames: {frames:?}"
@@ -571,7 +553,7 @@ mod tests {
         let before = h.port.rt.session_id();
         h.port.run_slash("clear".into(), String::new());
         let frames = until_result(&mut h.rx).await;
-        assert_eq!(frames.last().unwrap()["success"], true);
+        assert_eq!(frames.last().unwrap()["status"], "completed");
         assert!(
             outputs(&frames).iter().any(|t| t.contains("New session started.")),
             "frames: {frames:?}"
@@ -587,7 +569,7 @@ mod tests {
         h.port
             .run_slash("export".into(), target.display().to_string());
         let frames = until_result(&mut h.rx).await;
-        assert_eq!(frames.last().unwrap()["success"], true);
+        assert_eq!(frames.last().unwrap()["status"], "completed");
         let text = std::fs::read_to_string(&target).expect("export file");
         assert_eq!(text, "(empty session)");
         assert!(
@@ -605,7 +587,7 @@ mod tests {
         h.port.run_slash("nosuchcmd".into(), String::new());
         let frames = until_result(&mut h.rx).await;
         let result = frames.last().unwrap();
-        assert_eq!(result["success"], false);
-        assert_eq!(result["error"], "Unknown command: /nosuchcmd");
+        assert_eq!(result["status"], "error");
+        assert_eq!(result["error"]["message"], "Unknown command: /nosuchcmd");
     }
 }

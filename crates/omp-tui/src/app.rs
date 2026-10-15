@@ -457,19 +457,11 @@ impl App {
                 self.title.set_state(TitleState::Idle, Some(&self.title_label));
                 self.notify_turn_settled(None);
             }
-            AppEvent::PromptResult {
-                success, frame, ..
-            } => {
+            AppEvent::PromptResult { success, error, .. } => {
                 if !success {
-                    let error = frame
-                        .get("error")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned);
-                    // Surface the failure in the transcript (e.g. an unknown
-                    // or unported slash command), not only as a notification.
-                    if let Some(e) = &error {
-                        self.push_system(format!("error: {e}"));
-                    }
+                    // The transcript row is drawn by `messages.apply` below;
+                    // here only the title and the settle notification.
+                    let error = error.clone();
                     self.title.set_state(TitleState::Idle, Some(&self.title_label));
                     self.notify_turn_settled(error);
                 }
@@ -1835,7 +1827,7 @@ mod tests {
             &json!({"type": "command_output", "text": "Session: abc\nTitle: t\nCWD: /tmp"}),
         ));
         app.apply_event(&parse_frame(
-            &json!({"type": "prompt_result", "success": false, "error": "Unknown command: /zz"}),
+            &json!({"type": "prompt_result", "status": "error", "error": {"message": "Unknown command: /zz"}}),
         ));
         let s = screen(&mut app, 60, 14);
         assert!(s.contains("Session: abc") && !s.contains("abcTitle"), "{s}");
@@ -2383,7 +2375,8 @@ mod tests {
         app.apply_event(&AppEvent::PromptResult {
             id: None,
             success: false,
-            frame: json!({"type":"prompt_result","success":false,"error":"kaboom"}),
+            error: Some("kaboom".into()),
+            frame: json!({"type":"prompt_result","status":"error","error":{"message":"kaboom"}}),
         });
         assert_eq!(
             app.notify_sink().record(),
