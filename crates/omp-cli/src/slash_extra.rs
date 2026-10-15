@@ -23,7 +23,9 @@ fn output(rt: &Runtime, text: &str) {
     }));
 }
 
-/// Check whether `name` is one of the extra builtin commands or their aliases.
+/// Check whether `name` is one of the extra builtin commands or their aliases
+/// (only the catalog⊆handlers test needs it; dispatch matches directly).
+#[cfg(test)]
 #[must_use]
 pub fn is_extra_command(name: &str) -> bool {
     matches!(
