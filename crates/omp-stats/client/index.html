@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>omp stats</title>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("omp-stats-theme");
+          var system = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          var theme = stored === "light" || stored === "dark" ? stored : system;
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="index.css">
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+</head>
+<body>
+    <div id="root"></div>
+    <script src="index.js" type="module"></script>
+</body>
+</html>
