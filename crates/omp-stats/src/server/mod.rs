@@ -9,12 +9,18 @@
 //!   reuse/reclaim and the in-process active-server registry.
 
 mod api;
+mod conn;
+mod guard;
 mod http;
 mod query;
 mod session;
 mod start;
 mod statics;
 
+#[cfg(test)]
+mod conn_tests;
+#[cfg(test)]
+mod roots_tests;
 #[cfg(test)]
 mod tests;
 

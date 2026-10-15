@@ -7,7 +7,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use super::{sessions_dir, ts_tmpdir};
+use super::{sessions_dir, ts_session_dir_name, ts_tmpdir};
 
 /// `~/.omp-rs/sessions` (where omp-rs writes its transcripts).
 #[must_use]
@@ -99,7 +99,23 @@ pub fn session_project_dir(session_path: &str) -> String {
     }
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     let tmp = ts_tmpdir(|k| std::env::var(k).ok());
+    // Exact: the session header's cwd, when it is the one the slug encodes.
+    if let Some(cwd) = header_cwd(path).filter(|cwd| slugify(cwd) == project) {
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        return ts_session_dir_name(&canon(&cwd), &canon(&home), &canon(Path::new(&tmp)));
+    }
     omp_rs_slug_to_ts_name(&project, &home, Path::new(&tmp))
+}
+
+/// `cwd` of the `{"type":"session"}` header within the first few lines of a
+/// transcript (a `title` line may precede it).
+fn header_cwd(path: &Path) -> Option<PathBuf> {
+    use std::io::{BufRead, BufReader, Read};
+    let reader = BufReader::new(std::fs::File::open(path).ok()?.take(256 * 1024));
+    reader.lines().take(8).map_while(Result::ok).find_map(|line| {
+        let header: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+        (header.get("type")?.as_str()? == "session").then(|| header.get("cwd")?.as_str().map(PathBuf::from)).flatten()
+    })
 }
 
 #[cfg(test)]
@@ -117,5 +133,19 @@ mod tests {
         assert_eq!(map("-mnt-c-Temp"), "--mnt-c-Temp--");
         // A sibling sharing a string prefix is not inside home.
         assert_eq!(map("-home-user2"), "--home-user2--");
+    }
+
+    #[test]
+    fn header_cwd_is_read_only_from_a_session_header() {
+        let dir = std::env::temp_dir().join(format!("omp-roots-hdr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("a.jsonl");
+        std::fs::write(&ok, "{\"type\":\"title\"}\n{\"type\":\"session\",\"cwd\":\"/w/x\"}\n").unwrap();
+        let other = dir.join("b.jsonl");
+        std::fs::write(&other, "{\"type\":\"message\",\"cwd\":\"/w/x\"}\n").unwrap();
+        assert_eq!(header_cwd(&ok), Some(PathBuf::from("/w/x")));
+        assert_eq!(header_cwd(&other), None);
+        assert_eq!(header_cwd(&dir.join("missing.jsonl")), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

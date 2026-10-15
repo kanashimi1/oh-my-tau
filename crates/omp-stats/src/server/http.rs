@@ -12,6 +12,7 @@ use hyper::header::{HeaderName, HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{HeaderMap, Method, Request, Response};
 use tokio::sync::{broadcast, mpsc};
 
+use super::guard;
 use super::api::{handle_api, ApiResponse};
 use super::statics::handle_static;
 use crate::live;
@@ -56,14 +57,26 @@ fn to_response(api: ApiResponse, hostname: &str) -> Response<Body> {
     response
 }
 
+/// Per-server request context.
+pub(super) struct Ctx {
+    pub hostname: String,
+    pub port: u16,
+}
+
 /// Serve one request.
-pub(super) async fn serve(req: Request<Incoming>, hostname: Arc<str>) -> Result<Response<Body>, Infallible> {
+pub(super) async fn serve(req: Request<Incoming>, ctx: Arc<Ctx>) -> Result<Response<Body>, Infallible> {
+    let hostname = ctx.hostname.as_str();
+    if guard::enforced(hostname) {
+        if let Err(reason) = guard::check(req.headers(), hostname, ctx.port) {
+            return Ok(to_response(ApiResponse::text(403, reason), hostname));
+        }
+    }
     if req.method() == Method::OPTIONS {
-        return Ok(to_response(ApiResponse::empty(200), &hostname));
+        return Ok(to_response(ApiResponse::empty(200), hostname));
     }
     let path = req.uri().path().to_string();
     if path == "/api/events" {
-        return Ok(event_stream(&hostname));
+        return Ok(event_stream(hostname));
     }
     let method = req.method().as_str().to_string();
     let target = req.uri().path_and_query().map_or_else(|| path.clone(), |pq| pq.as_str().to_string());
@@ -81,7 +94,7 @@ pub(super) async fn serve(req: Request<Incoming>, hostname: Arc<str>) -> Result<
         Ok(Err(error)) => failure(&error.to_string()),
         Err(join) => failure(&format!("handler panicked: {join}")),
     };
-    Ok(to_response(api, &hostname))
+    Ok(to_response(api, hostname))
 }
 
 fn failure(message: &str) -> ApiResponse {

@@ -1502,15 +1502,22 @@ async fn trace_command(rt: &Runtime) -> Outcome {
         output(rt, "No session file yet — send a message first.");
         return Handled { agent_invoked: false };
     }
+    // TS `/trace`: bare `startServer()` (default port + hostname); not the
+    // `/stats` launcher, so no browser open and no cached handle.
     let started = tokio::task::spawn_blocking(|| {
-        crate::subcmd::stats::launch_dashboard(omp_stats::server::DEFAULT_PORT, omp_stats::port_conflict::STATS_DASHBOARD_HOSTNAME)
+        omp_stats::server::start_server(
+            omp_stats::server::DEFAULT_PORT,
+            omp_stats::port_conflict::STATS_DASHBOARD_HOSTNAME,
+            omp_stats::server::StartServerOptions::default(),
+        )
     })
     .await;
     match started {
-        Ok(Ok((url, _))) => output(
+        Ok(Ok(handle)) => output(
             rt,
             &format!(
-                "{url}/#/traces?s={}",
+                "{}/#/traces?s={}",
+                omp_stats::server::format_stats_dashboard_url(&handle.hostname, handle.port),
                 crate::subcmd::stats::encode_uri_component(&session_file.to_string_lossy())
             ),
         ),

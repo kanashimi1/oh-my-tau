@@ -15,7 +15,7 @@ use anyhow::{bail, Context as _, Result};
 use omp_stats::server::{format_stats_dashboard_url, start_server, StartServerOptions, StatsServerHandle, DEFAULT_PORT};
 use omp_stats::types::DashboardStats;
 
-const USAGE: &str = "Usage: omp-rs stats [-p, --port <port>] [--host <host>] [-j, --json] [-s, --summary]";
+const USAGE: &str = "Usage: omp-rs stats [-p, --port <port>] [--host <host>] [-j, --json] [-s, --summary|--sync]";
 
 /// Parsed `omp stats` flags.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,7 +33,9 @@ fn parse_port(value: &str) -> Result<u16> {
     value.parse::<u16>().map_err(|_| anyhow::anyhow!("Invalid port: {value}"))
 }
 
-/// Parse `omp stats` flags (TS flags: `-p/--port`, `--host`, `-j/--json`, `-s/--summary`).
+/// Parse `omp stats` flags like TS `parseStandaloneStatsArgs`: `-p/--port`
+/// (also attached `-p3000`), `--host`, `-j/--json`, `-s/--summary` with the TS
+/// spelling `--sync` as an alias; positional arguments are accepted and ignored.
 ///
 /// # Errors
 /// Unknown flag, missing value, or an invalid port.
@@ -43,11 +45,13 @@ pub fn parse_args(args: &[String]) -> Result<StatsArgs> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-j" | "--json" => parsed.json = true,
-            "-s" | "--summary" => parsed.summary = true,
+            "-s" | "--summary" | "--sync" => parsed.summary = true,
             "-p" | "--port" => parsed.port = parse_port(it.next().context("--port needs a value")?)?,
             "--host" => it.next().context("--host needs a value")?.clone_into(&mut parsed.host),
             other if other.starts_with("--port=") => parsed.port = parse_port(&other["--port=".len()..])?,
             other if other.starts_with("--host=") => parsed.host = other["--host=".len()..].to_string(),
+            other if other.len() > 2 && other.starts_with("-p") && !other.starts_with("--") => parsed.port = parse_port(&other[2..])?,
+            other if !other.starts_with('-') || other == "-" => {}
             other => bail!("Unknown option: {other}. {USAGE}"),
         }
     }
@@ -76,7 +80,16 @@ pub fn run(args: &[String]) -> Result<i32> {
         open_in_browser(&url);
     }
     println!("Press Ctrl+C to stop\n");
-    // The server runs on its own threads; Ctrl+C ends the process.
+    // The server runs on its own threads. Ctrl+C closes the db and exits like TS
+    // (own thread + runtime: `run` is called from inside the CLI's runtime).
+    std::thread::spawn(|| {
+        let waited = tokio::runtime::Builder::new_current_thread().enable_all().build().map(|rt| rt.block_on(tokio::signal::ctrl_c()));
+        if matches!(waited, Ok(Ok(()))) {
+            println!("\nShutting down...");
+            omp_stats::db::close_db();
+            std::process::exit(0);
+        }
+    });
     loop {
         std::thread::park();
     }
@@ -329,9 +342,13 @@ pub fn launch_dashboard(port: u16, host: &str) -> Result<(String, String)> {
         handle.clone()
     } else {
         let handle = start_server(port, host, StartServerOptions::default())?;
-        *active = Some(handle.clone());
+        // A reused (foreign) dashboard can die any time: probe again next launch.
+        if !handle.is_reused() {
+            *active = Some(handle.clone());
+        }
         handle
     };
+    open_in_browser(&format_stats_dashboard_url(&handle.hostname, handle.port));
     let url = format_stats_dashboard_url(&handle.hostname, handle.port);
     let line = if ignored {
         format!("Dashboard already running at: {url} (requested {host}:{port} ignored)")
@@ -370,6 +387,10 @@ mod tests {
         assert_eq!(parse_args(&[]).expect("defaults").port, 3847);
         assert!(parse_args(&args(&["--port", "x"])).is_err());
         assert!(parse_args(&args(&["--bogus"])).is_err());
+        // TS spelling and attached short value; positionals are ignored.
+        let p = parse_args(&args(&["--sync", "-p3000", "extra", "-j"])).expect("ts flags");
+        assert_eq!((p.port, p.summary, p.json), (3000, true, true));
+        assert!(parse_args(&args(&["-pabc"])).is_err());
     }
 
     #[test]

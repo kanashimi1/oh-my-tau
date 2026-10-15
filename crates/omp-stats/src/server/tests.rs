@@ -91,7 +91,7 @@ fn router_rejections() {
 
 fn http_get(port: u16, path: &str) -> (u16, String, Vec<u8>) {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n").expect("send");
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost:{port}\r\nConnection: close\r\n\r\n").expect("send");
     let mut raw = Vec::new();
     stream.read_to_end(&mut raw).expect("read");
     let split = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("header end");
@@ -124,7 +124,7 @@ fn serves_api_and_client_over_tcp() {
 
     // SSE: the first frame is the current status.
     let mut stream = TcpStream::connect(("127.0.0.1", handle.port)).expect("connect");
-    write!(stream, "GET /api/events HTTP/1.1\r\nHost: localhost\r\n\r\n").expect("send");
+    write!(stream, "GET /api/events HTTP/1.1\r\nHost: localhost:{}\r\n\r\n", handle.port).expect("send");
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).expect("timeout");
     let mut seen = String::new();
     let mut buf = [0u8; 2048];
