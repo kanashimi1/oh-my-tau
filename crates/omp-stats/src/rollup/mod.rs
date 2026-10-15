@@ -138,6 +138,28 @@ impl RangeWindow {
     }
 }
 
+/// TS aggregator `getTimeRangeConfig`: resolve a `?range=` value (default
+/// `24h`, unknown values too) to its cutoff and series bucket size. Lives here
+/// beside [`RangeWindow`] so gain/frustration need not depend on `aggregator`.
+#[must_use]
+pub fn get_time_range_config(range: Option<&str>) -> RangeWindow {
+    let (span_ms, bucket_ms) = match range.map(|r| r.trim().to_lowercase()).as_deref() {
+        Some("1h") => (Some(HOUR_MS), 5 * 60 * 1000),
+        Some("7d") => (Some(7 * DAY_MS), DAY_MS),
+        Some("30d") => (Some(30 * DAY_MS), DAY_MS),
+        Some("90d") => (Some(90 * DAY_MS), DAY_MS),
+        Some("all") => (None, DAY_MS),
+        _ => (Some(DAY_MS), HOUR_MS),
+    };
+    RangeWindow::series(span_ms.map(|span| now_ms() - span), bucket_ms)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
 /// Backlog of hours and transcripts whose rollups are stale.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

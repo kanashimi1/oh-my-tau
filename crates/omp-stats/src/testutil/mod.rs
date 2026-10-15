@@ -2,6 +2,9 @@
 //! `cargo test` runs all lib tests in one process; the db handle and `HOME`
 //! are process-global, so db tests must hold [`TestHome`] for their duration.
 
+#[cfg(feature = "db_ingest")]
+pub(crate) mod golden;
+
 use std::sync::{Mutex, MutexGuard};
 
 static DB_TEST_LOCK: Mutex<()> = Mutex::new(());
