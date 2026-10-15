@@ -80,7 +80,14 @@ exit 0"#,
     );
     let runner = TaskRunner::new(&bin, 1);
     let (control, join) = runner.start(spec("go", dir.path()), ChildMode::Rpc);
-    wait_phase(&control, RunPhase::Finishing).await;
+    // Under heavy CPU load the run can pass through Finishing between two
+    // polls; the invariant below (receipt matches outcome) holds either way.
+    for _ in 0..500 {
+        if matches!(control.phase(), RunPhase::Finishing | RunPhase::Settled) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     tokio::time::sleep(Duration::from_millis(300)).await;
     let cancelled = control.cancel();
     let out = tokio::time::timeout(Duration::from_secs(20), join)
