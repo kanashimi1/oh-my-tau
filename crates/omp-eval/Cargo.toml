@@ -9,6 +9,7 @@ description = "Persistent Python eval kernel for omp-rs (NDJSON subprocess proto
 serde = { workspace = true }
 serde_json = { workspace = true }
 libc = "0.2"
+tracing = { workspace = true }
 nix = { version = "0.29", default-features = false, features = ["signal"] }
 
 [dev-dependencies]

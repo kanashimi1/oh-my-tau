@@ -28,8 +28,14 @@ spent outside host bridge calls: the runner pauses its SIGALRM (and the
 escalation watchdog) for the duration of each `__omp_host_call` and re-arms a
 fresh full window when the call returns (TS idle-timeout.ts).
 
-The protocol channel owns fd 1; user stdout/stderr are redirected into typed
-frames by line-buffered proxies so interleaving is preserved.
+Frames travel on a private, non-inheritable dup of the original stdout and
+host requests/replies arrive on a private dup of the original stdin (TS
+py/runner.py fd isolation). fd 1 itself is a capture pipe whose bytes (from
+`os.write(1, …)`, `sys.__stdout__` or any subprocess that inherits fd 1) are
+forwarded as plain `stdout` frames, and fd 0 is /dev/null: nothing a cell
+spawns can write frames or read host replies. User stdout/stderr are
+redirected into typed frames by line-buffered proxies; every frame written
+from the runner first drains the capture pipe, so interleaving is preserved.
 
 Timeouts are enforced inside the runner (the Rust workspace forbids unsafe,
 so no kill(2) from the host): a SIGALRM raises `KeyboardInterrupt` into the
@@ -53,7 +59,40 @@ import threading
 import time
 import traceback
 
-_PROTO = sys.__stdout__
+# --- protocol channel isolation (TS py/runner.py) ---------------------------
+# Frames go to a private dup of the original stdout (os.dup: non-inheritable,
+# PEP 446); fd 1 is repointed at a capture pipe drained into stdout frames, so
+# children spawned by cells cannot write raw bytes into the NDJSON channel.
+_RAW_STDERR = sys.__stderr__
+try:
+    _FRAME_FD = os.dup(1)
+    try:
+        _CAPTURE_READ_FD, _capture_write_fd = os.pipe()
+        os.dup2(_capture_write_fd, 1)
+        os.close(_capture_write_fd)
+        os.set_blocking(_CAPTURE_READ_FD, False)
+    except OSError:
+        _CAPTURE_READ_FD = None
+except OSError:
+    _FRAME_FD = 1
+    _CAPTURE_READ_FD = None
+# Host requests and host_reply lines likewise come from a private dup of the
+# original stdin; fd 0 becomes /dev/null so cells and their children read EOF
+# instead of blocking on (or stealing replies from) the control channel.
+try:
+    _CONTROL_IN = os.fdopen(os.dup(0), "r", encoding="utf-8", errors="replace")
+    _devnull_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(_devnull_fd, 0)
+    os.close(_devnull_fd)
+except OSError:
+    _CONTROL_IN = sys.stdin
+_OUT_LOCK = threading.Lock()
+_CAPTURE_LOCK = threading.Lock()
+_CAPTURE_DECODER = None
+# Set when a frame write was interrupted half-way: the next frame starts with
+# a newline so the host skips only the torn line.
+_FRAME_TORN = False
+
 # With `python -c SCRIPT` (the host spawn mode) there is no __file__; the
 # runner's own frames then report filename "<string>".
 _RUNNER_FILE = globals().get("__file__", "<string>")
@@ -100,10 +139,95 @@ def _start_parent_watchdog() -> None:
     ).start()
 
 
+def _write_frame(frame: dict) -> None:
+    """Write one NDJSON frame to the private frame fd (thread-safe)."""
+    global _FRAME_TORN
+    data = (json.dumps(frame, ensure_ascii=False, default=str) + "\n").encode("utf-8", "replace")
+    with _OUT_LOCK:
+        if _FRAME_TORN:
+            data = b"\n" + data
+        view = memoryview(data)
+        try:
+            while view:
+                view = view[os.write(_FRAME_FD, view):]
+        except BaseException:
+            if len(view) != len(data):
+                _FRAME_TORN = True
+            raise
+        _FRAME_TORN = False
+
+
+def _drain_capture_locked() -> bool:
+    """Forward bytes pending in the fd-1 capture pipe; caller holds _CAPTURE_LOCK.
+
+    Returns False once the pipe reached EOF or broke.
+    """
+    global _CAPTURE_DECODER
+    if _CAPTURE_DECODER is None:
+        import codecs
+
+        _CAPTURE_DECODER = codecs.getincrementaldecoder("utf-8")("replace")
+    while True:
+        try:
+            chunk = os.read(_CAPTURE_READ_FD, 65536)
+        except BlockingIOError:
+            return True
+        except OSError:
+            return False
+        if not chunk:
+            return False
+        text = _CAPTURE_DECODER.decode(chunk)
+        if not text:
+            continue
+        rid = _CURRENT_RID
+        if rid is None:
+            # Output from a child outliving its cell: no frame to attach to (TS).
+            _RAW_STDERR.write(text)
+            _RAW_STDERR.flush()
+        else:
+            _write_frame({"type": "stdout", "id": rid, "data": text})
+
+
+def _sync_capture() -> None:
+    """Flush captured fd-1 output ahead of the next runner frame (ordering)."""
+    if _CAPTURE_READ_FD is None:
+        return
+    if _CAPTURE_LOCK.acquire(timeout=1.0):
+        try:
+            _drain_capture_locked()
+        finally:
+            _CAPTURE_LOCK.release()
+
+
+def _capture_drain_loop() -> None:
+    """Background drain so children writing to fd 1 never block on a full pipe."""
+    import select
+
+    poller = select.poll()
+    poller.register(_CAPTURE_READ_FD, select.POLLIN)
+    while True:
+        try:
+            poller.poll()
+        except OSError:
+            return
+        with _CAPTURE_LOCK:
+            if not _drain_capture_locked():
+                return
+
+
+def _start_capture_drain() -> None:
+    if _CAPTURE_READ_FD is None:
+        return
+    threading.Thread(
+        target=_capture_drain_loop, name="omp-fd1-capture", daemon=True
+    ).start()
+
+
 def _emit(frame: dict) -> None:
-    """Serialize one frame as a single NDJSON line on the protocol channel."""
-    _PROTO.write(json.dumps(frame, ensure_ascii=False, default=str) + "\n")
-    _PROTO.flush()
+    """Serialize one frame as a single NDJSON line on the protocol channel,
+    after any fd-1 output captured before it."""
+    _sync_capture()
+    _write_frame(frame)
 
 
 class _StreamProxy:
@@ -213,8 +337,8 @@ def __omp_host_call(op: str, args: dict) -> object:
     try:
         _emit({"type": "host", "id": hid, "op": op, "args": args, "wait": True})
         # The host never sends a new cell while one runs, so the reply line on
-        # stdin is unambiguously ours.
-        line = sys.stdin.readline()
+        # the private control channel is unambiguously ours.
+        line = _CONTROL_IN.readline()
         try:
             reply = json.loads(line)
         except ValueError as exc:
@@ -422,13 +546,17 @@ def _run_cell(
         sys.stdout.flush()
         sys.stderr.flush()
         sys.stdout, sys.stderr = old_out, old_err
+        # Children of this cell wrote their fd-1 bytes before exiting; attach
+        # them to this cell while its id is still current.
+        _sync_capture()
         _CURRENT_RID = None
         _emit_done(rid, status, cancelled)
 
 
 def main() -> None:
     _start_parent_watchdog()
-    for line in sys.stdin:
+    _start_capture_drain()
+    for line in _CONTROL_IN:
         line = line.strip()
         if not line:
             continue

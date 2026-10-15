@@ -133,12 +133,14 @@ impl JsKernel {
         // JS workers are routinely killed on timeout; recreate transparently
         // (omp's session registry does the same on worker death).
         self.ensure_running()?;
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst).to_string();
+        let seq = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id;
         {
             let mut guard = self.process.lock().expect("kernel lock");
             let p = guard
                 .as_mut()
                 .ok_or_else(|| io::Error::other("JS kernel is not running"))?;
+            id = p.cell_id(seq);
             let mut req = serde_json::json!({
                 "id": id,
                 "code": code,

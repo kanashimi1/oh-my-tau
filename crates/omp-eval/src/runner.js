@@ -69,14 +69,234 @@ try {
   // worker_threads unavailable: rely on host-side cleanup and stdin EOF.
 }
 
-function emit(frame) {
-  // The protocol channel owns fd 1 exclusively (user code that grabs
-  // process.stdout is forwarded to fd 2 below), so write raw.
+// --- protocol channel isolation ---------------------------------------------
+// Port of the TS py runner's fd isolation (Linux + Bun FFI): frames go to a
+// private close-on-exec dup of the original stdout and host messages come from
+// a private dup of the original stdin. fd 1 becomes a capture pipe drained by
+// a worker thread into plain `stdout` frames, fd 0 becomes /dev/null, so
+// children spawned by cells (Bun.$, child_process with inherited stdio) can
+// neither write protocol frames nor read host replies. Without FFI the runner
+// falls back to the raw fds 1/0.
+let frameFd = 1;
+let controlFd = 0;
+// Capture state (port, shared ctl, sentinel marker/seq, helpers) while fd 1
+// is captured; null otherwise.
+let capture = null;
+
+// Capture drain: blocking reads (keeps up while the main thread sits in
+// spawnSync), text forwarded over a MessagePort. A `<marker><seq>\0` sentinel
+// written by the main thread acknowledges via ctl[0] once every byte written
+// to fd 1 before it has been posted (pipe FIFO = ordering barrier); ctl[1] is
+// non-zero while a read chunk is still being posted.
+const CAPTURE_WORKER = `
+const { workerData } = require("node:worker_threads");
+const fs = require("node:fs");
+const { fd, port, ctl, marker } = workerData;
+const buf = Buffer.alloc(65536);
+const decoder = new TextDecoder("utf-8");
+let pending = "";
+for (;;) {
+  let n;
   try {
-    fs.writeSync(1, JSON.stringify(frame) + "\n");
-  } catch {
-    // fd closed; the host is gone
+    n = fs.readSync(fd, buf, 0, buf.length, null);
+  } catch (e) {
+    if (e && (e.code === "EAGAIN" || e.code === "EINTR")) continue;
+    break;
   }
+  if (n <= 0) break;
+  Atomics.store(ctl, 1, 1);
+  pending += decoder.decode(buf.subarray(0, n), { stream: true });
+  let i;
+  while ((i = pending.indexOf(marker)) >= 0) {
+    const end = pending.indexOf("\\u0000", i + marker.length);
+    if (end < 0) break;
+    const digits = pending.slice(i + marker.length, end);
+    if (!/^[0-9]{1,15}$/.test(digits)) {
+      port.postMessage(pending.slice(0, i + 1));
+      pending = pending.slice(i + 1);
+      continue;
+    }
+    if (i > 0) port.postMessage(pending.slice(0, i));
+    pending = pending.slice(end + 1);
+    Atomics.store(ctl, 0, Number(digits));
+    Atomics.notify(ctl, 0);
+  }
+  // Hold back an incomplete sentinel (or a trailing NUL that may start one).
+  let hold = pending.indexOf(marker);
+  if (hold < 0) {
+    const z = pending.lastIndexOf("\\u0000");
+    hold = z >= 0 && marker.startsWith(pending.slice(z)) ? z : pending.length;
+  }
+  if (hold > 0) {
+    port.postMessage(pending.slice(0, hold));
+    pending = pending.slice(hold);
+  }
+  Atomics.store(ctl, 1, 0);
+}
+`;
+
+function isolateProtocolFds() {
+  if (typeof Bun === "undefined" || process.platform !== "linux") return;
+  let libc = null;
+  try {
+    const { dlopen, FFIType, ptr } = require("bun:ffi");
+    const symbols = {
+      fcntl: { args: [FFIType.i32, FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      dup2: { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 },
+      pipe2: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+      close: { args: [FFIType.i32], returns: FFIType.i32 },
+      ioctl: { args: [FFIType.i32, FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    };
+    for (const name of ["libc.so.6", "libc.so"]) {
+      try {
+        libc = dlopen(name, symbols).symbols;
+        break;
+      } catch {
+        // try the next soname
+      }
+    }
+    if (libc === null) return;
+    const F_DUPFD_CLOEXEC = 1030;
+    const F_GETFL = 3;
+    const F_SETFL = 4;
+    const O_NONBLOCK = 0o4000;
+    const O_CLOEXEC = 0o2000000;
+    // Bun flips its stdout description to O_NONBLOCK when process.stdout is
+    // first touched; do that now, on the original fd 1, so the capture pipe
+    // installed below stays blocking for children (a non-blocking fd 1 makes
+    // `tr`, `cat`… fail with EAGAIN once the pipe fills).
+    void process.stdout;
+    void process.stderr;
+    const makeBlocking = fd => {
+      const flags = libc.fcntl(fd, F_GETFL, 0);
+      if (flags >= 0 && flags & O_NONBLOCK) libc.fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+    };
+    const out = libc.fcntl(1, F_DUPFD_CLOEXEC, 3);
+    const ctl = libc.fcntl(0, F_DUPFD_CLOEXEC, 3);
+    if (out < 0 || ctl < 0) {
+      if (out >= 0) libc.close(out);
+      if (ctl >= 0) libc.close(ctl);
+      return;
+    }
+    frameFd = out;
+    controlFd = ctl;
+    // Only the runner writes this description now: blocking writes, no spin.
+    makeBlocking(frameFd);
+
+    const fds = new Int32Array(2);
+    if (libc.pipe2(ptr(fds), O_CLOEXEC) === 0) {
+      const { Worker, MessageChannel } = require("node:worker_threads");
+      const { port1, port2 } = new MessageChannel();
+      const shared = new Int32Array(new SharedArrayBuffer(8));
+      const marker = "\u0000omp-sync-" + crypto.randomUUID() + ":";
+      const worker = new Worker(CAPTURE_WORKER, {
+        eval: true,
+        workerData: { fd: fds[0], port: port2, ctl: shared, marker },
+        transferList: [port2],
+      });
+      worker.unref();
+      if (libc.dup2(fds[1], 1) === 1) {
+        const readFd = fds[0];
+        const count = new Int32Array(1);
+        const FIONREAD = 0x541b;
+        // Bytes written to fd 1 that the worker has not read yet.
+        const unread = () => (libc.ioctl(readFd, FIONREAD, ptr(count)) === 0 ? count[0] : 1);
+        capture = {
+          port: port1,
+          ctl: shared,
+          marker,
+          seq: 0,
+          broken: false,
+          unread,
+          // Re-asserted per cell in case user code flipped fd 1 non-blocking.
+          makeStdoutBlocking: () => makeBlocking(1),
+        };
+        port1.on("message", handleCaptured);
+        port1.unref();
+      }
+      libc.close(fds[1]);
+    }
+
+    const nullFd = fs.openSync("/dev/null", "r");
+    libc.dup2(nullFd, 0);
+    fs.closeSync(nullFd);
+  } catch {
+    // FFI unavailable: keep whatever isolation was set up so far
+  }
+}
+
+// Bun marks its stdio pipes O_NONBLOCK, so a full host pipe yields EAGAIN or a
+// short write: retry until the whole line is out (the host reader always
+// drains), give up only when the fd is gone.
+const writeBackoff = new Int32Array(new SharedArrayBuffer(4));
+function writeFrameLine(frame) {
+  const bytes = Buffer.from(JSON.stringify(frame) + "\n", "utf8");
+  let off = 0;
+  while (off < bytes.length) {
+    try {
+      off += fs.writeSync(frameFd, bytes, off, bytes.length - off);
+    } catch (e) {
+      if (e && e.code === "EAGAIN") {
+        Atomics.wait(writeBackoff, 0, 0, 1);
+        continue;
+      }
+      return; // fd closed; the host is gone
+    }
+  }
+}
+
+// fd-1 bytes become plain stdout of the running cell; between cells (a child
+// outliving its cell) they go to fd 2 like the TS py runner.
+function handleCaptured(text) {
+  if (typeof text !== "string" || text === "") return;
+  if (currentId !== null) writeFrameLine({ type: "stdout", id: currentId, data: text });
+  else forwardToFd2(text);
+}
+
+function drainCapturePort() {
+  if (capture === null) return;
+  const { receiveMessageOnPort } = require("node:worker_threads");
+  let m;
+  while ((m = receiveMessageOnPort(capture.port)) !== undefined) handleCaptured(m.message);
+}
+
+// Ordering barrier: everything written to fd 1 so far is forwarded before
+// the caller's next frame (used ahead of result/error/done).
+function syncCapture() {
+  if (capture === null) return;
+  if (!capture.broken) {
+    const seq = ++capture.seq;
+    try {
+      fs.writeSync(1, capture.marker + seq + "\u0000");
+      const deadline = Date.now() + 2000;
+      for (;;) {
+        const seen = Atomics.load(capture.ctl, 0);
+        if (seen >= seq) break;
+        const left = deadline - Date.now();
+        if (left <= 0) {
+          capture.broken = true; // drain worker gone: stop writing sentinels
+          break;
+        }
+        Atomics.wait(capture.ctl, 0, seen, left);
+      }
+    } catch {
+      capture.broken = true;
+    }
+  }
+  drainCapturePort();
+}
+
+isolateProtocolFds();
+
+function emit(frame) {
+  // fd-1 output written before this frame goes first: a full barrier only
+  // when bytes are still in the pipe or in the worker's hands.
+  if (capture !== null && !capture.broken && (Atomics.load(capture.ctl, 1) !== 0 || capture.unread() > 0)) {
+    syncCapture();
+  } else {
+    drainCapturePort();
+  }
+  writeFrameLine(frame);
 }
 
 function writeFrame(type, data) {
@@ -402,6 +622,7 @@ function transformCell(code) {
 // --- cell execution ---------------------------------------------------------
 async function runCell(id, code, timeoutMs, idleTimeout) {
   currentId = id;
+  if (capture !== null) capture.makeStdoutBlocking();
   executionCount += 1;
   armDeadline(timeoutMs, idleTimeout);
   emit({ type: "started", id });
@@ -445,12 +666,15 @@ async function runCell(id, code, timeoutMs, idleTimeout) {
     );
     if (hasTopLevelAwait) await evaluated;
     ok = true;
+    // Children's fd-1 output belongs before the cell's result/done frames.
+    syncCapture();
     txnEnd(true);
     if (finalExprSet && finalExprValue !== undefined) {
       emit({ type: "result", id, bundle: { "text/plain": inspect(finalExprValue) } });
     }
     emit({ type: "done", id, status: "ok", executionCount: executionCount, cancelled: false });
   } catch (error) {
+    syncCapture();
     const err = error instanceof Error ? error : new Error(typeof error === "string" ? error : inspect(error));
     const stack = (err.stack || String(err.message || err)).split("\n");
     // Filter runner-internal frames (omp filters runner.py frames likewise):
@@ -487,7 +711,13 @@ let buffer = "";
 // (exit message or stdin close) waits for all in-flight cells, like the py
 // runner's request loop.
 let drain = Promise.resolve();
-process.stdin.on("data", chunk => {
+// Host messages arrive on the private control fd (process.stdin when the fd
+// isolation above is unavailable).
+const controlIn =
+  controlFd === 0
+    ? process.stdin
+    : fs.createReadStream(null, { fd: controlFd, encoding: "utf8", highWaterMark: 65536 });
+controlIn.on("data", chunk => {
   buffer += chunk;
   let idx;
   while ((idx = buffer.indexOf("\n")) >= 0) {
@@ -519,9 +749,11 @@ process.stdin.on("data", chunk => {
     }
   }
 });
-process.stdin.on("end", () => {
+const shutdownAfterDrain = () => {
   void drain.then(() => process.exit(0));
-});
+};
+controlIn.on("end", shutdownAfterDrain);
+controlIn.on("error", shutdownAfterDrain);
 
 // --- prelude loading ----------------------------------------------------------
 // The host (js.rs) embeds the prelude sources via include_str! and injects

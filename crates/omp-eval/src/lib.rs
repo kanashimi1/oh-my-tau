@@ -280,11 +280,133 @@ impl Frame {
     }
 }
 
+/// Upper bound for one NDJSON protocol line from a runner. Longer lines are
+/// consumed to their newline and dropped, so a runaway writer can neither
+/// exhaust host memory nor desynchronise the frames that follow.
+pub(crate) const MAX_FRAME_LINE: usize = 64 * 1024 * 1024;
+
+/// Outcome of [`read_frame_line`].
+#[derive(Debug, PartialEq, Eq)]
+enum LineRead {
+    /// A complete (or EOF-terminated) line of at most the cap is in the buffer.
+    Line,
+    /// The line exceeded the cap (total length given); the buffer is empty.
+    Oversize(usize),
+    Eof,
+}
+
+/// Read one `\n`-terminated line into `buf` (cleared first), storing at most
+/// `cap` bytes; an over-long line is consumed through its newline and
+/// reported as [`LineRead::Oversize`].
+fn read_frame_line(
+    reader: &mut impl BufRead,
+    buf: &mut Vec<u8>,
+    cap: usize,
+) -> io::Result<LineRead> {
+    buf.clear();
+    let mut total = 0usize;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if available.is_empty() {
+            return Ok(match total {
+                0 => LineRead::Eof,
+                t if t > cap => LineRead::Oversize(t),
+                _ => LineRead::Line,
+            });
+        }
+        let (len, complete) = match available.iter().position(|&b| b == b'\n') {
+            Some(i) => (i + 1, true),
+            None => (available.len(), false),
+        };
+        if total + len <= cap {
+            buf.extend_from_slice(&available[..len]);
+        } else {
+            buf.clear();
+        }
+        total += len;
+        reader.consume(len);
+        if complete {
+            return Ok(if total > cap {
+                LineRead::Oversize(total)
+            } else {
+                LineRead::Line
+            });
+        }
+    }
+}
+
+/// Forward every protocol frame on `reader` to `tx` until EOF, a read error
+/// or a dropped receiver. Blank, non-JSON, non-frame and oversized lines are
+/// logged and skipped (omp host behaviour); the line buffer is reset per line
+/// so one bad line never affects the next.
+fn pump_frames(mut reader: impl BufRead, cap: usize, tx: &mpsc::Sender<Frame>) {
+    let mut line = Vec::new();
+    loop {
+        match read_frame_line(&mut reader, &mut line, cap) {
+            Ok(LineRead::Eof) | Err(_) => return,
+            Ok(LineRead::Oversize(len)) => {
+                tracing::warn!(len, cap, "eval kernel: dropping oversized protocol line");
+            }
+            Ok(LineRead::Line) => {
+                if line.iter().all(u8::is_ascii_whitespace) {
+                    continue;
+                }
+                match serde_json::from_slice::<Frame>(&line) {
+                    Ok(frame) => {
+                        if tx.send(frame).is_err() {
+                            return;
+                        }
+                    }
+                    Err(err) => tracing::warn!(
+                        len = line.len(),
+                        %err,
+                        "eval kernel: skipping non-protocol line"
+                    ),
+                }
+            }
+        }
+    }
+}
+
+/// 128-bit random hex nonce prefixed to the cell ids of one runner process:
+/// host frames are matched by cell-id prefix, so ids must not be guessable
+/// even by code that reaches the frame channel.
+fn cell_id_nonce() -> String {
+    use std::io::Read as _;
+    let mut bytes = [0u8; 16];
+    let urandom = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
+    if urandom.is_err() {
+        // RandomState keys come from the OS RNG; hash fresh instances.
+        use std::hash::{BuildHasher as _, Hasher as _};
+        for half in bytes.chunks_mut(8) {
+            let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+            h.write_u32(std::process::id());
+            h.write_u128(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos()),
+            );
+            half.copy_from_slice(&h.finish().to_le_bytes());
+        }
+    }
+    bytes.iter().fold(String::with_capacity(32), |mut hex, b| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+        hex
+    })
+}
+
 pub(crate) struct KernelProcess {
     pub(crate) child: Child,
     pub(crate) stdin: ChildStdin,
     pub(crate) rx: Receiver<Frame>,
     pub(crate) dead: Arc<AtomicBool>,
+    /// Per-process random prefix of every cell id (see [`cell_id_nonce`]).
+    id_nonce: String,
 }
 
 impl KernelProcess {
@@ -313,19 +435,7 @@ impl KernelProcess {
         let dead = Arc::new(AtomicBool::new(false));
         let thread_dead = Arc::clone(&dead);
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            while reader.read_line(&mut line).unwrap_or(0) > 0 {
-                match serde_json::from_str::<Frame>(&line) {
-                    Ok(frame) => {
-                        if tx.send(frame).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => continue, // invalid line: omp host logs and skips
-                }
-                line.clear();
-            }
+            pump_frames(BufReader::new(stdout), MAX_FRAME_LINE, &tx);
             thread_dead.store(true, Ordering::SeqCst);
         });
         Ok(Self {
@@ -333,7 +443,13 @@ impl KernelProcess {
             stdin,
             rx,
             dead,
+            id_nonce: cell_id_nonce(),
         })
+    }
+
+    /// Wire id of the `seq`-th cell: `<nonce>-<seq>`.
+    pub(crate) fn cell_id(&self, seq: u64) -> String {
+        format!("{}-{seq}", self.id_nonce)
     }
 
     pub(crate) fn settle_exit(&mut self) {
@@ -529,12 +645,14 @@ impl PythonKernel {
         opts: &ExecOptions<'_>,
         startup: bool,
     ) -> io::Result<CellResult> {
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst).to_string();
+        let seq = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let id;
         {
             let mut guard = self.process.lock().expect("kernel lock");
             let p = guard
                 .as_mut()
                 .ok_or_else(|| io::Error::other("Python kernel is not running"))?;
+            id = p.cell_id(seq);
             // omp host sends storeHistory:false for silent startup/control cells
             let mut req = serde_json::json!({ "id": id, "code": code, "storeHistory": !startup });
             if let Some(t) = opts.timeout {
@@ -888,5 +1006,46 @@ impl KernelRegistry {
         )?);
         kernels.insert(key, Arc::clone(&kernel));
         Ok(kernel)
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::{cell_id_nonce, pump_frames, read_frame_line, Frame, LineRead};
+    use std::io::Cursor;
+    use std::sync::mpsc;
+
+    fn frames(input: &[u8], cap: usize) -> Vec<String> {
+        let (tx, rx) = mpsc::channel();
+        pump_frames(Cursor::new(input.to_vec()), cap, &tx);
+        drop(tx);
+        rx.iter().map(|f: Frame| f.id().to_owned()).collect()
+    }
+
+    #[test]
+    fn junk_lines_never_swallow_later_frames() {
+        let input = b"not json\n\xff\xfe\n{\"type\":\"bogus\",\"id\":\"x\"}\n\n   \n{\"type\":\"started\",\"id\":\"a\"}\n{\"truncated\": \n{\"type\":\"done\",\"id\":\"b\",\"status\":\"ok\"}\n";
+        assert_eq!(frames(input, 1024), ["a", "b"]);
+    }
+
+    #[test]
+    fn oversized_lines_are_dropped_and_the_stream_resyncs() {
+        let big = format!("{{\"type\":\"stdout\",\"id\":\"big\",\"data\":\"{}\"}}\n", "x".repeat(500));
+        let input = format!("{big}{{\"type\":\"started\",\"id\":\"a\"}}\n{big}{{\"type\":\"started\",\"id\":\"b\"}}");
+        assert_eq!(frames(input.as_bytes(), 64), ["a", "b"]);
+
+        let mut reader = Cursor::new(big.into_bytes());
+        let mut buf = Vec::new();
+        assert!(matches!(read_frame_line(&mut reader, &mut buf, 64), Ok(LineRead::Oversize(n)) if n > 500));
+        assert!(buf.is_empty());
+        assert_eq!(read_frame_line(&mut reader, &mut buf, 64).unwrap(), LineRead::Eof);
+    }
+
+    #[test]
+    fn nonces_are_random_hex() {
+        let (a, b) = (cell_id_nonce(), cell_id_nonce());
+        assert_eq!(a.len(), 32);
+        assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 }
