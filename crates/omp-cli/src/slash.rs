@@ -717,7 +717,7 @@ async fn dispatch_ported(
         "slow" => Some(slow_command(rt, args)),
         "todo" => Some(todo_command(rt, args).await),
         "usage" => Some(usage_command(rt, args).await),
-        "stats" => Some(stats_command(rt).await),
+        "stats" => Some(stats_command(rt, args).await),
         "changelog" => Some(changelog_command(rt, args)),
         "trace" => Some(trace_command(rt).await),
         "mcp" => Some(mcp_command(rt, args).await),
@@ -1479,41 +1479,44 @@ async fn usage_command(rt: &Runtime, args: &str) -> Outcome {
     }
 }
 
-/// `/stats` — TS launches a local dashboard server (sqlite rollups). omp-rs
-/// has no dashboard server; the live session's usage summary is reported and
-/// the gap is stated.
-async fn stats_command(rt: &Runtime) -> Outcome {
-    let stats = rt.session_stats().await;
-    let tokens = &stats["tokens"];
-    output(
-        rt,
-        &format!(
-            "Session {}: {} user / {} assistant messages, {} tool calls.\nTokens: {} in / {} out / {} cached / {} cache-write ({} total), cost {:.4}.\n\nThe local stats dashboard (`omp-rs stats`) is the offline counterpart of TS's dashboard; a live dashboard server is not ported.",
-            stats["sessionId"].as_str().unwrap_or(""),
-            stats["userMessages"].as_u64().unwrap_or(0),
-            stats["assistantMessages"].as_u64().unwrap_or(0),
-            stats["toolCalls"].as_u64().unwrap_or(0),
-            tokens["input"].as_u64().unwrap_or(0),
-            tokens["output"].as_u64().unwrap_or(0),
-            tokens["cacheRead"].as_u64().unwrap_or(0),
-            tokens["cacheWrite"].as_u64().unwrap_or(0),
-            tokens["total"].as_u64().unwrap_or(0),
-            stats["cost"].as_f64().unwrap_or(0.0),
-        ),
-    );
+/// `/stats [--port <port>] [--host <host>]` — start (or reuse) the in-process
+/// dashboard; sessions sync in the background (TS `launchStatsDashboard`).
+async fn stats_command(rt: &Runtime, args: &str) -> Outcome {
+    let (port, host) = match crate::subcmd::stats::parse_dashboard_args(args) {
+        Ok(parsed) => parsed,
+        Err(message) => return usage(rt, &message),
+    };
+    output(rt, "Syncing session files...");
+    match tokio::task::spawn_blocking(move || crate::subcmd::stats::launch_dashboard(port, &host)).await {
+        Ok(Ok((_url, message))) => output(rt, &message),
+        Ok(Err(error)) => output(rt, &format!("Stats dashboard failed: {error:#}")),
+        Err(error) => output(rt, &format!("Stats dashboard failed: {error}")),
+    }
     Handled { agent_invoked: false }
 }
 
-/// `/trace` — TS starts the stats server and prints a trace URL. omp-rs has
-/// no dashboard server; the session file (the trace source) is reported.
+/// `/trace` — open this session's trace in the stats dashboard (prints the URL).
 async fn trace_command(rt: &Runtime) -> Outcome {
-    output(
-        rt,
-        &format!(
-            "Trace source (session file): {}\nThe stats dashboard server (trace viewer UI) is not ported to omp-rs.",
-            rt.session_file().display()
+    let session_file = rt.session_file();
+    if !session_file.is_file() {
+        output(rt, "No session file yet — send a message first.");
+        return Handled { agent_invoked: false };
+    }
+    let started = tokio::task::spawn_blocking(|| {
+        crate::subcmd::stats::launch_dashboard(omp_stats::server::DEFAULT_PORT, omp_stats::port_conflict::STATS_DASHBOARD_HOSTNAME)
+    })
+    .await;
+    match started {
+        Ok(Ok((url, _))) => output(
+            rt,
+            &format!(
+                "{url}/#/traces?s={}",
+                crate::subcmd::stats::encode_uri_component(&session_file.to_string_lossy())
+            ),
         ),
-    );
+        Ok(Err(error)) => output(rt, &format!("Failed to open trace: {error:#}")),
+        Err(error) => output(rt, &format!("Failed to open trace: {error}")),
+    }
     Handled { agent_invoked: false }
 }
 

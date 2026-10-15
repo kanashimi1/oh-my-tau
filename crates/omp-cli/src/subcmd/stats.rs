@@ -1,211 +1,396 @@
-//! `omp-rs stats` — one-shot usage summary computed from omp session files,
-//! the offline counterpart of TS `omp stats --summary` (the TS dashboard and
-//! its sqlite rollups are not ported; the numbers below come straight from
-//! the `model_usage` / assistant `custom_message` entries in each JSONL).
+//! `omp-rs stats` — TS `omp stats` (cli/stats-cli.ts + stats `index.ts`):
+//! by default sync in the background and serve the dashboard; `--json` /
+//! `--summary` sync fully and print a one-shot report.
+//!
+//! Also home of the in-process dashboard launcher shared by the `/stats` and
+//! `/trace` slash commands (slash-commands/helpers/stats-dashboard.ts).
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+#![allow(clippy::cast_precision_loss)]
 
-use anyhow::{Context as _, Result};
-use serde_json::{json, Value};
+use std::fmt::Write as _;
+use std::io::{IsTerminal, Write as _};
+use std::sync::Mutex;
 
-/// Aggregate token usage for one model selector.
-#[derive(Default)]
-struct ModelTotals {
-    calls: u64,
-    input: u64,
-    output: u64,
-    cache_read: u64,
-    cache_write: u64,
-    cost: f64,
+use anyhow::{bail, Context as _, Result};
+use omp_stats::server::{format_stats_dashboard_url, start_server, StartServerOptions, StatsServerHandle, DEFAULT_PORT};
+use omp_stats::types::DashboardStats;
+
+const USAGE: &str = "Usage: omp-rs stats [-p, --port <port>] [--host <host>] [-j, --json] [-s, --summary]";
+
+/// Parsed `omp stats` flags.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatsArgs {
+    pub port: u16,
+    pub host: String,
+    pub json: bool,
+    pub summary: bool,
 }
 
-/// Entry point: `omp-rs stats [--json] [--dir <sessions-root>]`.
+fn parse_port(value: &str) -> Result<u16> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        bail!("Invalid port: {value}");
+    }
+    value.parse::<u16>().map_err(|_| anyhow::anyhow!("Invalid port: {value}"))
+}
+
+/// Parse `omp stats` flags (TS flags: `-p/--port`, `--host`, `-j/--json`, `-s/--summary`).
 ///
 /// # Errors
-/// I/O failure walking the sessions directory.
-pub fn run(args: &[String]) -> Result<i32> {
-    let mut json = false;
-    let mut dir: Option<PathBuf> = None;
-    let mut it = args.iter().peekable();
+/// Unknown flag, missing value, or an invalid port.
+pub fn parse_args(args: &[String]) -> Result<StatsArgs> {
+    let mut parsed = StatsArgs { port: DEFAULT_PORT, host: "127.0.0.1".to_string(), json: false, summary: false };
+    let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--json" => json = true,
-            "--dir" => {
-                let value = it.next().context("--dir needs a value")?;
-                dir = Some(PathBuf::from(value));
-            }
-            other if other.starts_with("--dir=") => dir = Some(PathBuf::from(&other[6..])),
-            other if other.starts_with('-') => anyhow::bail!("unknown flag: {other}"),
-            _ => anyhow::bail!("stats takes no positional arguments"),
+            "-j" | "--json" => parsed.json = true,
+            "-s" | "--summary" => parsed.summary = true,
+            "-p" | "--port" => parsed.port = parse_port(it.next().context("--port needs a value")?)?,
+            "--host" => it.next().context("--host needs a value")?.clone_into(&mut parsed.host),
+            other if other.starts_with("--port=") => parsed.port = parse_port(&other["--port=".len()..])?,
+            other if other.starts_with("--host=") => parsed.host = other["--host=".len()..].to_string(),
+            other => bail!("Unknown option: {other}. {USAGE}"),
         }
     }
-    let root = dir.unwrap_or_else(default_sessions_dir);
-    let summary = collect(&root);
+    Ok(parsed)
+}
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    } else {
-        print_text(&root, &summary);
+/// Entry point: `omp-rs stats [options]`.
+///
+/// # Errors
+/// Sync, db, or server start failure.
+pub fn run(args: &[String]) -> Result<i32> {
+    if args.iter().any(|a| a == "-h" || a == "--help") {
+        println!("{USAGE}");
+        return Ok(0);
     }
+    let parsed = parse_args(args)?;
+    if parsed.json || parsed.summary {
+        return one_shot(&parsed);
+    }
+    // The dashboard starts immediately and ingests sessions in the background,
+    // streaming progress to the page.
+    let handle = start_server(parsed.port, &parsed.host, StartServerOptions::default())?;
+    let url = format_stats_dashboard_url(&handle.hostname, handle.port);
+    println!("Dashboard available at: {url}");
+    if std::io::stdout().is_terminal() {
+        open_in_browser(&url);
+    }
+    println!("Press Ctrl+C to stop\n");
+    // The server runs on its own threads; Ctrl+C ends the process.
+    loop {
+        std::thread::park();
+    }
+}
+
+/// Best-effort browser open (TS `openPath`); failures are silent.
+fn open_in_browser(url: &str) {
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let _ = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// One-shot reports need fully ingested, fully rolled-up data before printing.
+fn one_shot(args: &StatsArgs) -> Result<i32> {
+    let tty = std::io::stderr().is_terminal();
+    eprintln!("Syncing session files...");
+    let last_width = std::cell::Cell::new(0usize);
+    let last_render = std::cell::Cell::new(std::time::Instant::now().checked_sub(std::time::Duration::from_secs(1)).unwrap_or_else(std::time::Instant::now));
+    let progress = |event: &omp_stats::aggregator::SyncProgress| {
+        if !tty {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if event.current < event.total && now.duration_since(last_render.get()).as_millis() < 33 {
+            return;
+        }
+        last_render.set(now);
+        let file = event.session_file.as_str();
+        let short = file.find("/sessions/").map_or(file, |i| &file[i + "/sessions/".len()..]);
+        let pct = (event.current as f64 / event.total.max(1) as f64 * 100.0).round();
+        let line = format!("[{}/{}] {pct:>3}%  {short}", event.current, event.total);
+        let clipped: String = line.chars().take(119).collect();
+        eprint!("\r{clipped:<width$}", width = last_width.get());
+        last_width.set(clipped.chars().count());
+    };
+    let options = omp_stats::aggregator::SyncOptions { on_progress: Some(&progress), ..Default::default() };
+    let synced = omp_stats::aggregator::sync_all_sessions(&options)?;
+    if tty {
+        eprint!("\r{}\r", " ".repeat(120));
+    }
+    omp_stats::rollup::refresh_rollups()?;
+    let total = omp_stats::aggregator::get_total_message_count()?;
+    eprintln!("Synced {} new entries from {} files ({total} total)\n", synced.processed, synced.files);
+    let stats = omp_stats::aggregator::get_dashboard_stats(None)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&stats)?);
+    } else {
+        print_stats_summary(&stats);
+    }
+    omp_stats::db::close_db();
     Ok(0)
 }
 
-/// TS keeps sessions under `<agentDir>/sessions/<project-slug>/`; omp-rs reads
-/// the same tree (its own live sessions live under `~/.omp-rs/sessions`, also
-/// scanned when present via `--dir`).
-fn default_sessions_dir() -> PathBuf {
-    let dir = omp_providers::AgentDir::default();
-    dir.0.join("sessions")
+// ---------------------------------------------------------------------------
+// printStatsSummary + formatters (pi-utils format.ts, client formatters)
+// ---------------------------------------------------------------------------
+
+fn trim1(n: f64) -> String {
+    let s = format!("{n:.1}");
+    s.strip_suffix(".0").map_or(s.clone(), str::to_string)
 }
 
-fn collect(root: &Path) -> Value {
-    let mut files = 0u64;
-    let mut entries_total = 0u64;
-    let mut messages = 0u64;
-    let mut by_model: BTreeMap<String, ModelTotals> = BTreeMap::new();
-    let mut projects = 0u64;
-
-    if root.is_dir() {
-        projects = std::fs::read_dir(root)
-            .map_or(0, |rd| rd.filter_map(std::result::Result::ok).filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).count() as u64);
-        let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in rd.filter_map(std::result::Result::ok) {
-                let path = entry.path();
-                let Ok(file_type) = entry.file_type() else { continue };
-                if file_type.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "jsonl") {
-                    files += 1;
-                    scan_file(&path, &mut entries_total, &mut messages, &mut by_model);
-                }
-            }
-        }
-    }
-
-    let totals = ModelTotals {
-        calls: by_model.values().map(|m| m.calls).sum(),
-        input: by_model.values().map(|m| m.input).sum(),
-        output: by_model.values().map(|m| m.output).sum(),
-        cache_read: by_model.values().map(|m| m.cache_read).sum(),
-        cache_write: by_model.values().map(|m| m.cache_write).sum(),
-        cost: by_model.values().map(|m| m.cost).sum(),
-    };
-
-    let models: Vec<Value> = by_model
-        .iter()
-        .map(|(model, t)| {
-            json!({
-                "model": model,
-                "calls": t.calls,
-                "input": t.input,
-                "output": t.output,
-                "cacheRead": t.cache_read,
-                "cacheWrite": t.cache_write,
-                "cost": round2(t.cost),
-            })
-        })
-        .collect();
-
-    json!({
-        "sessionsDir": root,
-        "projects": projects,
-        "sessionFiles": files,
-        "entries": entries_total,
-        "messages": messages,
-        "totals": {
-            "calls": totals.calls,
-            "input": totals.input,
-            "output": totals.output,
-            "cacheRead": totals.cache_read,
-            "cacheWrite": totals.cache_write,
-            "cost": round2(totals.cost),
-        },
-        "models": models,
-    })
-}
-
-fn round2(n: f64) -> f64 {
-    (n * 100.0).round() / 100.0
-}
-
-fn scan_file(path: &Path, entries: &mut u64, messages: &mut u64, by_model: &mut BTreeMap<String, ModelTotals>) {
-    let Ok(text) = std::fs::read_to_string(path) else { return };
-    for line in text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(line) else { continue };
-        *entries += 1;
-        // Work on the raw values (not `OmpEntry`) so foreign session files with
-        // unmodeled shapes still contribute their usage.
-        let kind = obj.get("type").and_then(Value::as_str);
-        if kind == Some("model_usage") {
-            if let Some(usage) = obj.get("usage") {
-                let model = obj.get("model").and_then(Value::as_str).unwrap_or("unknown");
-                add_usage(by_model, model, usage);
-            }
-            continue;
-        }
-        if kind == Some("custom_message") && obj.get("customType").and_then(Value::as_str) == Some("message") {
-            *messages += 1;
-            let content = obj.get("content").cloned().unwrap_or(Value::Null);
-            if let Some(usage) = find_usage(&content) {
-                let model = obj
-                    .get("model")
-                    .and_then(Value::as_str)
-                    .or_else(|| content.get("model").and_then(Value::as_str))
-                    .unwrap_or("unknown");
-                add_usage(by_model, model, usage);
-            }
-        }
+/// pi-utils `formatNumber`.
+fn format_number(n: f64) -> String {
+    if n < 1_000.0 {
+        format!("{n}")
+    } else if n < 10_000.0 {
+        format!("{}K", trim1(n / 1e3))
+    } else if n < 1e6 {
+        format!("{}K", (n / 1e3).round())
+    } else if n < 1e7 {
+        format!("{}M", trim1(n / 1e6))
+    } else if n < 1e9 {
+        format!("{}M", (n / 1e6).round())
+    } else if n < 1e10 {
+        format!("{}B", trim1(n / 1e9))
+    } else {
+        format!("{}B", (n / 1e9).round())
     }
 }
 
-/// Pull a `usage` object out of a custom message content value (any nesting).
-fn find_usage(content: &Value) -> Option<&Value> {
-    content.get("usage").or_else(|| content.pointer("/message/usage"))
+fn format_percent(ratio: f64, digits: usize) -> String {
+    format!("{:.digits$}%", ratio * 100.0)
 }
 
-fn add_usage(by_model: &mut BTreeMap<String, ModelTotals>, model: &str, usage: &Value) {
-    let num = |key: &str, alt: &str| usage.get(key).or_else(|| usage.get(alt)).and_then(Value::as_u64).unwrap_or(0);
-    let cost = usage
-        .get("cost")
-        .and_then(|c| c.get("total").and_then(Value::as_f64))
-        .unwrap_or(0.0);
-    let totals = by_model.entry(model.to_string()).or_default();
-    totals.calls += 1;
-    totals.input += num("input", "inputTokens");
-    totals.output += num("output", "outputTokens");
-    totals.cache_read += num("cacheRead", "cacheReadTokens");
-    totals.cache_write += num("cacheWrite", "cacheWriteTokens");
-    totals.cost += cost;
+/// Client `formatErrorRate`: small nonzero rates must not round to zero.
+fn format_error_rate(value: f64) -> String {
+    let percent = value * 100.0;
+    if percent > 0.0 && percent < 0.005 {
+        return "<0.01%".to_string();
+    }
+    format_percent(value, if percent > 0.0 && percent < 0.1 { 2 } else { 1 })
 }
 
-fn print_text(root: &Path, summary: &Value) {
-    println!("Sessions:  {}", root.display());
-    println!("Projects:  {}", summary["projects"]);
-    println!("Files:     {}", summary["sessionFiles"]);
-    println!("Entries:   {}", summary["entries"]);
-    println!("Messages:  {}", summary["messages"]);
-    let totals = &summary["totals"];
-    println!(
-        "Tokens:    {} in / {} out / {} cache-read / {} cache-write",
-        totals["input"], totals["output"], totals["cacheRead"], totals["cacheWrite"]
+/// pi-utils `formatDuration`.
+fn format_duration(ms: f64) -> String {
+    const SEC: f64 = 1000.0;
+    const MIN: f64 = 60.0 * SEC;
+    const HOUR: f64 = 60.0 * MIN;
+    const DAY: f64 = 24.0 * HOUR;
+    if !ms.is_finite() || ms <= 0.0 {
+        return "0ms".to_string();
+    }
+    if ms < SEC {
+        return format!("{}ms", ms.floor());
+    }
+    if ms < MIN {
+        let tenths = (ms / 100.0).round();
+        return if tenths < 600.0 { format!("{:.1}s", tenths / 10.0) } else { "1m".to_string() };
+    }
+    if ms < HOUR {
+        let (mins, secs) = ((ms / MIN).floor(), ((ms % MIN) / SEC).floor());
+        return if secs > 0.0 { format!("{mins}m{secs}s") } else { format!("{mins}m") };
+    }
+    if ms < DAY {
+        let (hours, mins) = ((ms / HOUR).floor(), ((ms % HOUR) / MIN).floor());
+        return if mins > 0.0 { format!("{hours}h{mins}m") } else { format!("{hours}h") };
+    }
+    let (days, hours) = ((ms / DAY).floor(), ((ms % DAY) / HOUR).floor());
+    if hours > 0.0 { format!("{days}d{hours}h") } else { format!("{days}d") }
+}
+
+/// Format an API-equivalent estimate in dollars, or N/A for unpriced usage.
+fn format_cost(n: f64, unpriced_requests: i64) -> String {
+    if n == 0.0 && unpriced_requests > 0 {
+        "N/A".to_string()
+    } else if n < 0.01 {
+        format!("${n:.4}")
+    } else if n < 1.0 {
+        format!("${n:.3}")
+    } else {
+        format!("${n:.2}")
+    }
+}
+
+fn bold(text: &str) -> String {
+    if std::io::stdout().is_terminal() { format!("\x1b[1m{text}\x1b[22m") } else { text.to_string() }
+}
+
+/// Print the dashboard summary (TS `printStatsSummary`).
+fn print_stats_summary(stats: &DashboardStats) {
+    let overall = &stats.overall;
+    let out = &mut std::io::stdout().lock();
+    let _ = writeln!(out, "{}", bold("\n=== AI Usage Statistics ===\n"));
+    let _ = writeln!(out, "{}", bold("Overall:"));
+    let _ = writeln!(
+        out,
+        "  Requests: {} ({} errors)",
+        format_number(overall.total_requests as f64),
+        format_number(overall.failed_requests as f64)
     );
-    println!("Cost:      ${}", totals["cost"]);
-    let models = summary["models"].as_array().cloned().unwrap_or_default();
-    if !models.is_empty() {
-        println!("\nPer model:");
-        for m in models {
-            println!(
-                "  {:<44} {:>6} calls  {:>12} in  {:>12} out  ${}",
-                m["model"], m["calls"], m["input"], m["output"], m["cost"]
+    let _ = writeln!(out, "  Error Rate: {}", format_error_rate(overall.error_rate));
+    let _ = writeln!(out, "  Total Tokens: {}", format_number((overall.total_input_tokens + overall.total_output_tokens) as f64));
+    let _ = writeln!(out, "  Input Tokens: {}", format_number(overall.total_input_tokens as f64));
+    let _ = writeln!(out, "  Output Tokens: {}", format_number(overall.total_output_tokens as f64));
+    let _ = writeln!(out, "  Cache Rate: {}", format_percent(overall.cache_rate, 1));
+    let _ = writeln!(out, "  Cache Savings: {}", format_percent(overall.cache_savings, 1));
+    let _ = writeln!(out, "  API-equivalent estimate: {}", format_cost(overall.total_cost, overall.unpriced_requests));
+    let premium = ((overall.total_premium_requests + f64::EPSILON) * 100.0).round() / 100.0;
+    let _ = writeln!(out, "  Premium Requests: {}", format_number(premium));
+    let _ = writeln!(out, "  Avg Duration: {}", overall.avg_duration.map_or("-".to_string(), format_duration));
+    let _ = writeln!(out, "  Avg TTFT: {}", overall.avg_ttft.map_or("-".to_string(), format_duration));
+    if let Some(tps) = overall.avg_tokens_per_second {
+        let _ = writeln!(out, "  Avg Tokens/s: {tps:.1}");
+    }
+    if !stats.by_model.is_empty() {
+        let _ = writeln!(out, "{}", bold("\nBy Model (API-equivalent estimates):"));
+        for m in stats.by_model.iter().take(10) {
+            let b = &m.base;
+            let _ = writeln!(
+                out,
+                "  {}: {} reqs, {}, {} cache rate, {} cache savings",
+                m.model,
+                format_number(b.total_requests as f64),
+                format_cost(b.total_cost, b.unpriced_requests),
+                format_percent(b.cache_rate, 1),
+                format_percent(b.cache_savings, 1)
             );
         }
+    }
+    if !stats.by_folder.is_empty() {
+        let _ = writeln!(out, "{}", bold("\nBy Folder (API-equivalent estimates):"));
+        for f in stats.by_folder.iter().take(10) {
+            let b = &f.base;
+            let _ = writeln!(
+                out,
+                "  {}: {} reqs, {}",
+                f.folder,
+                format_number(b.total_requests as f64),
+                format_cost(b.total_cost, b.unpriced_requests)
+            );
+        }
+    }
+    let _ = writeln!(out);
+}
+
+// ---------------------------------------------------------------------------
+// In-process launcher for `/stats` and `/trace`
+// ---------------------------------------------------------------------------
+
+const DASHBOARD_USAGE: &str = "Usage: /stats [--port <port>] [--host <host>]";
+
+/// Parse `/stats` arguments (TS `parseStatsDashboardArgs`).
+///
+/// # Errors
+/// The TS error text (shown to the user).
+pub fn parse_dashboard_args(args: &str) -> std::result::Result<(u16, String), String> {
+    let mut port = DEFAULT_PORT;
+    let mut host = "127.0.0.1".to_string();
+    let port_of = |v: Option<&str>| -> std::result::Result<u16, String> {
+        let v = v.filter(|s| !s.is_empty()).ok_or_else(|| format!("Missing port. {DASHBOARD_USAGE}"))?;
+        parse_port(v).map_err(|_| format!("Invalid port: {v}"))
+    };
+    let mut tokens = args.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "--port" || token == "-p" {
+            port = port_of(tokens.next())?;
+        } else if let Some(v) = token.strip_prefix("--port=") {
+            port = port_of(Some(v))?;
+        } else if token == "--host" {
+            host = tokens.next().ok_or_else(|| format!("Missing host. {DASHBOARD_USAGE}"))?.to_string();
+        } else if let Some(v) = token.strip_prefix("--host=") {
+            if v.is_empty() {
+                return Err(format!("Missing host. {DASHBOARD_USAGE}"));
+            }
+            host = v.to_string();
+        } else {
+            return Err(format!("Unknown option: {token}. {DASHBOARD_USAGE}"));
+        }
+    }
+    Ok((port, host))
+}
+
+static ACTIVE_SERVER: Mutex<Option<StatsServerHandle>> = Mutex::new(None);
+
+/// Start (or reuse) the in-process dashboard. Blocking (port probe): call via
+/// `spawn_blocking` from async code. Returns `(url, message)`.
+///
+/// # Errors
+/// Server start failure.
+pub fn launch_dashboard(port: u16, host: &str) -> Result<(String, String)> {
+    let mut active = ACTIVE_SERVER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ignored = false;
+    let handle = if let Some(handle) = active.as_ref() {
+        ignored = port != handle.port || host != handle.hostname;
+        handle.clone()
+    } else {
+        let handle = start_server(port, host, StartServerOptions::default())?;
+        *active = Some(handle.clone());
+        handle
+    };
+    let url = format_stats_dashboard_url(&handle.hostname, handle.port);
+    let line = if ignored {
+        format!("Dashboard already running at: {url} (requested {host}:{port} ignored)")
+    } else {
+        format!("Dashboard available at: {url}")
+    };
+    Ok((url, format!("{line} (sessions sync in the background)")))
+}
+
+/// JS `encodeURIComponent`.
+#[must_use]
+pub fn encode_uri_component(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+            out.push(char::from(b));
+        } else {
+            let _ = write!(out, "%{b:02X}");
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(s: &[&str]) -> Vec<String> {
+        s.iter().map(|a| (*a).to_string()).collect()
+    }
+
+    #[test]
+    fn flags_parse_like_ts() {
+        let p = parse_args(&args(&["-p", "0", "--host=::1", "-j"])).expect("parse");
+        assert_eq!((p.port, p.host.as_str(), p.json, p.summary), (0, "::1", true, false));
+        assert_eq!(parse_args(&[]).expect("defaults").port, 3847);
+        assert!(parse_args(&args(&["--port", "x"])).is_err());
+        assert!(parse_args(&args(&["--bogus"])).is_err());
+    }
+
+    #[test]
+    fn dashboard_args_and_uri_encoding() {
+        assert_eq!(parse_dashboard_args("--port 99 --host=h"), Ok((99, "h".to_string())));
+        assert_eq!(parse_dashboard_args("--port"), Err(format!("Missing port. {DASHBOARD_USAGE}")));
+        assert_eq!(parse_dashboard_args("--port 70000"), Err("Invalid port: 70000".to_string()));
+        assert!(parse_dashboard_args("zzz").is_err());
+        assert_eq!(encode_uri_component("/a b/c.jsonl"), "%2Fa%20b%2Fc.jsonl");
+    }
+
+    #[test]
+    fn number_formatting_matches_pi_utils() {
+        assert_eq!(format_number(999.0), "999");
+        assert_eq!(format_number(1500.0), "1.5K");
+        assert_eq!(format_number(12_345.0), "12K");
+        assert_eq!(format_number(2_000_000.0), "2M");
+        assert_eq!(format_duration(61_000.0), "1m1s");
+        assert_eq!(format_duration(59_960.0), "1m");
+        assert_eq!(format_error_rate(0.00001), "<0.01%");
+        assert_eq!(format_cost(0.0, 3), "N/A");
+        assert_eq!(format_cost(0.005, 0), "$0.0050");
     }
 }

@@ -24,7 +24,9 @@ use super::with_db;
 #[serde(rename_all = "camelCase")]
 pub struct FileOffset {
     pub offset: i64,
-    pub last_modified: i64,
+    /// Node `stat.mtimeMs` (fractional): TS stores the float in the INTEGER-affinity
+    /// column, so fractional values come back as REAL; whole ones as INTEGER.
+    pub last_modified: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parser_state: Option<SessionParserState>,
 }
@@ -32,7 +34,7 @@ pub struct FileOffset {
 /// TS `decodeFileOffset`: a stored cursor is only trusted when it parses and
 /// its embedded offset matches the row (a missing cursor is reconstructed
 /// from the transcript).
-fn decode_file_offset(offset: i64, last_modified: i64, parser_state: Option<String>) -> FileOffset {
+fn decode_file_offset(offset: i64, last_modified: f64, parser_state: Option<String>) -> FileOffset {
     let parser_state = parser_state.and_then(|json| {
         let state: SessionParserState = serde_json::from_str(&json).ok()?;
         (state.version == 1 && state.offset == offset).then_some(state)
@@ -90,7 +92,7 @@ pub fn get_file_offsets(session_files: &[String]) -> Result<HashMap<String, File
 pub fn set_file_offset(
     session_file: &str,
     offset: i64,
-    last_modified: i64,
+    last_modified: f64,
     parser_state: Option<&SessionParserState>,
 ) -> Result<()> {
     with_db(|conn| {
@@ -261,7 +263,7 @@ fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession])
 
     for session in sessions {
         if let Some(state) = &session.result.parser_state {
-            write::set_file_offset(conn, &session.session_file, session.result.new_offset, state.mtime_ms as i64, Some(state))?;
+            write::set_file_offset(conn, &session.session_file, session.result.new_offset, state.mtime_ms, Some(state))?;
         }
     }
     if reconcile {
@@ -466,7 +468,7 @@ mod tests {
         // Cursor bookkeeping landed outside `changes`.
         let offset = get_file_offset("proj/session.jsonl")?.expect("offset persisted");
         assert_eq!(offset.offset, 4096);
-        assert_eq!(offset.last_modified, 1_700_000_000_000);
+        assert_eq!(offset.last_modified, 1_700_000_000_000.0);
         assert_eq!(offset.parser_state.as_ref().map(|s| s.offset), Some(4096));
 
         // Identical batch via the reconciliation-replay path: stored rows

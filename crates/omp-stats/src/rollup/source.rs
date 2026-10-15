@@ -119,7 +119,7 @@ fn tool_source(conn: &Connection, cutoff: Option<i64>, fine: bool) -> Result<Sou
         if let Some(hi) = hi {
             if cutoff < hi {
                 parts.push(format!(
-                    "SELECT {facts} FROM tool_calls t {TOOL_JOIN} WHERE t.timestamp >= ? AND timestamp < ? {group_raw}",
+                    "SELECT {facts} FROM tool_calls t {TOOL_JOIN} WHERE t.timestamp >= ? AND t.timestamp < ? {group_raw}",
                     facts = tool_facts(&hour_of("t.timestamp"))
                 ));
                 params.push(Value::Integer(cutoff));

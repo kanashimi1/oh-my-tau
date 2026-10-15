@@ -38,7 +38,7 @@ pub(super) fn set_file_offset(
     conn: &Connection,
     session_file: &str,
     offset: i64,
-    last_modified: i64,
+    last_modified: f64,
     parser_state: Option<&SessionParserState>,
 ) -> Result<()> {
     let json = parser_state.map(serde_json::to_string).transpose()?;

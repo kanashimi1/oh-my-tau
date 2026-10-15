@@ -4,13 +4,11 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
 
 use anyhow::Result;
 use serde_json::Value;
 use walkdir::WalkDir;
 
-use crate::paths::sessions_dir;
 use crate::types::{AgentType, ServiceTierByFamily, SessionEntry};
 
 use super::entries::{
@@ -45,12 +43,9 @@ pub fn classify_agent_type(session_path: &str) -> AgentType {
 /// separator, so `--work--pi--` becomes `/work/pi`.
 #[must_use]
 pub fn extract_folder_from_path(session_path: &str) -> String {
-    let rel = crate::paths::path_relative(&sessions_dir(), Path::new(session_path));
-    let project_dir = rel
-        .components()
-        .next()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned())
-        .unwrap_or_default();
+    // Relative to the containing root; omp-rs slugs are mapped to the TS
+    // project dir name of the same cwd so a project merges across agents.
+    let project_dir = crate::paths::session_project_dir(session_path);
     project_dir.replacen("--", "/", 1).replace("--", "/")
 }
 
@@ -122,12 +117,13 @@ fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
     (meta.mtime() as f64) * 1000.0 + (meta.mtime_nsec() as f64) / 1_000_000.0
 }
 
+/// Node/Bun `stat.birthtimeMs`: `sec * 1e3 + nsec / 1e6` (fractional, so a
+/// TS-written parser state compares equal).
 fn metadata_birthtime_ms(meta: &std::fs::Metadata) -> f64 {
     meta.created()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as f64)
-        .unwrap_or(0.0)
+        .map_or(0.0, |d| (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0)
 }
 
 /// Same file identity check as TS `matchesSessionFile`: dev, ino and
@@ -295,14 +291,15 @@ pub fn parse_session_file(
 /// List all session directories (folders).
 #[must_use]
 pub fn list_session_folders() -> Vec<String> {
-    let sessions_dir = sessions_dir();
     let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&sessions_dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            out.push(entry.path().to_string_lossy().into_owned());
+    for root in crate::paths::session_roots() {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                out.push(entry.path().to_string_lossy().into_owned());
+            }
         }
     }
     out

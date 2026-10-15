@@ -2,7 +2,15 @@
 //! stats package uses). `HOME` and `PI_CONFIG_DIR` are honoured like TS, so
 //! tests point everything at a fixture home.
 
+mod ts_dirs;
+mod roots;
+
 use std::path::PathBuf;
+
+pub use roots::{
+    omp_rs_sessions_dir, relative_to_session_root, session_project_dir, session_root_of, session_roots,
+};
+pub use ts_dirs::{ts_session_dir_name, ts_sessions_root, ts_tmpdir, TsDirsEnv};
 
 /// `~/.omp` (or `~/$PI_CONFIG_DIR`).
 #[must_use]
@@ -18,10 +26,25 @@ pub fn agent_dir() -> PathBuf {
     config_root_dir().join("agent")
 }
 
-/// `~/.omp/agent/sessions`.
+/// TS `getSessionsDir()`: the sessions dir of the omp TS agent, honouring
+/// `PI_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, `OMP_PROFILE`/`PI_PROFILE` and
+/// `XDG_DATA_HOME` (see [`ts_sessions_root`]). Default `~/.omp/agent/sessions`.
 #[must_use]
 pub fn sessions_dir() -> PathBuf {
-    agent_dir().join("sessions")
+    let env = |k: &str| std::env::var(k).ok();
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    ts_sessions_root(
+        &TsDirsEnv {
+            home,
+            cwd: std::env::current_dir().unwrap_or_default(),
+            config_dir: env("PI_CONFIG_DIR"),
+            agent_dir: env("PI_CODING_AGENT_DIR"),
+            omp_profile: env("OMP_PROFILE"),
+            pi_profile: env("PI_PROFILE"),
+            xdg_data_home: env("XDG_DATA_HOME"),
+        },
+        std::path::Path::exists,
+    )
 }
 
 /// `~/.omp/stats.db`.
@@ -56,7 +79,8 @@ pub fn classify_agent_type_str(session_path: &str) -> &'static str {
     if base == ADVISOR_BASENAME || (base.starts_with("__advisor.") && base.ends_with(".jsonl")) {
         return "advisor";
     }
-    let rel = path_relative(&sessions_dir(), std::path::Path::new(session_path));
+    let rel = relative_to_session_root(std::path::Path::new(session_path))
+        .unwrap_or_else(|| path_relative(&sessions_dir(), std::path::Path::new(session_path)));
     if rel.components().count() <= 2 {
         "main"
     } else {

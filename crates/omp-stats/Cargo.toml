@@ -19,6 +19,14 @@ pa-models = { path = "../../vendor/pa-models" }
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+# aggregator: pi-natives FileLock name (abstract-socket stats sync lock)
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+# live: warn on background sync/refresh failures (TS logger.warn)
+tracing.workspace = true
+# live: recursive sessions-dir watcher (TS fs.watch)
+notify = "8"
+# trace: transparent gunzip of gc-compressed session transcripts
+flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"

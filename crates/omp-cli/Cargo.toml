@@ -46,6 +46,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 omp-settings = { path = "../omp-settings" }
 omp-tui = { path = "../omp-tui" }
+omp-stats = { path = "../omp-stats" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 flate2 = "1"
