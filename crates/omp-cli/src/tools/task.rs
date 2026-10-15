@@ -315,6 +315,18 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         }
     }
 
+    // TS `canSpawnAtDepth` (`task.maxRecursionDepth`, default 2): the task
+    // tool spawns subagents too, so it carries the same recursion gate as
+    // agent()/workpool().
+    if let Err(error) = omp_task::recursion_gate() {
+        bail!("{error}");
+    }
+    for spec in &mut specs {
+        // Children inherit the parent's extension/no-extensions flags and
+        // tool restriction (EVAL-CHILD-POLICY-NOT-PROPAGATED).
+        super::eval_agents::apply_child_policy(spec);
+    }
+
     let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omp-rs"));
     let runner = TaskRunner::new(binary, MAX_CONCURRENCY);
     let outputs = runner.spawn_all(specs).await;

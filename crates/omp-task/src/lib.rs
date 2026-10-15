@@ -23,5 +23,9 @@ pub use agent::{parse_agent, AgentDefinition, AgentParseError, ParsedAgentFields
 pub use discovery::{discover_agents_in_dir, discover_project_agents, discover_user_agents, AgentLoadError, DiscoveryResult};
 pub use envelope::{format_task_result, TaskResultEnvelope};
 pub use params::{SchemaMode, TaskItem, TaskParams};
-pub use runner::{ChildMode, RunControl, RunJoin, RunOutput, RunPhase, RunStatus, SteerError, TaskRunner, TaskSpec};
+pub use runner::{
+    current_task_depth, max_recursion_depth, recursion_gate, recursion_gate_at, ChildMode, RunControl,
+    RunJoin, RunOutput, RunPhase, RunStatus, SteerError, TaskRunner, TaskSpec, DEFAULT_MAX_RECURSION_DEPTH,
+    MAX_RECURSION_ENV, TASK_DEPTH_ENV,
+};
 pub use schema::SchemaValidation;

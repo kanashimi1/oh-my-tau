@@ -58,9 +58,11 @@ const STRUCTURED_TOOL_NAME: &str = "respond";
 /// worker limit `workpool()` reports.
 const SUBAGENT_CONCURRENCY: usize = 32;
 
-/// Error text of an agent handle cancelled through `cancel()` (TS
-/// `ToolAbortError("Cancelled by eval handle")`).
-const HANDLE_CANCEL_REASON: &str = "Cancelled by eval handle";
+/// Error text of an *agent* handle cancelled through `cancel()`. TS agent
+/// jobs go through `manager.cancel(job.id)` with no reason, so the snapshot
+/// carries the killed run's own abort text ("run cancelled…"), never the
+/// completion-only "Cancelled by eval handle" (TS `ToolAbortError`).
+const AGENT_CANCELLED_TEXT: &str = "run cancelled";
 
 /// Poll cadence while `wait` blocks on handle settlement (the registry is a
 /// snapshot store like `jobs::JobRegistry`, so `wait` observes it on a tick).
@@ -151,6 +153,12 @@ struct Handle {
     id: String,
     inner: Mutex<HandleInner>,
     notify: Notify,
+    /// Settled exactly once the run/completion future backing this handle
+    /// fully resolved (independently of `settled`, which `cancel()` flips
+    /// immediately): the abort path of `wait()` joins these before erroring,
+    /// like TS `Promise.allSettled(handle.job.promise)`.
+    run_finished: std::sync::atomic::AtomicBool,
+    run_done: Notify,
     /// Completion handles are abortable through the pa-ai cancellation token.
     cancel: CancellationToken,
     /// Agent handles: kill/steer surface of the subagent run (set at launch).
@@ -170,9 +178,32 @@ impl Handle {
                 error: None,
             }),
             notify: Notify::new(),
+            run_finished: std::sync::atomic::AtomicBool::new(false),
+            run_done: Notify::new(),
             cancel: CancellationToken::new(),
             run: Mutex::new(None),
         })
+    }
+
+    /// Mark the backing run/completion future resolved (once).
+    fn mark_run_finished(&self) {
+        self.run_finished
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.run_done.notify_waiters();
+    }
+
+    /// Wait until the backing run/completion future resolved.
+    async fn wait_run_finished(&self) {
+        loop {
+            if self.run_finished.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let notified = self.run_done.notified();
+            if self.run_finished.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     fn is_settled(&self) -> bool {
@@ -303,10 +334,10 @@ pub async fn handle(
 /// TS delivery-failure texts (`Failed: <id> is not running. …`) and argument
 /// errors (empty content, JSON-path suffix, missing recipient).
 pub async fn send_to_agent(id: &str, content: &str) -> Result<Value, String> {
-    deliver_message(id, content).map(Value::String)
+    deliver_message(id, content).await.map(Value::String)
 }
 
-pub(crate) fn deliver_message(to: &str, content: &str) -> Result<String, String> {
+pub(crate) async fn deliver_message(to: &str, content: &str) -> Result<String, String> {
     if to.is_empty() {
         return Err("agent:// URL requires a recipient: agent://<id>".to_string());
     }
@@ -317,17 +348,17 @@ pub(crate) fn deliver_message(to: &str, content: &str) -> Result<String, String>
         return Err("agent:// messages require non-empty content.".to_string());
     }
     if to == "all" {
-        return broadcast_message(content);
+        return broadcast_message(content).await;
     }
     let handle = AGENT_HANDLES.lock().expect("eval handles lock").get(to).cloned();
-    match steer_handle(handle.as_deref(), to, content) {
+    match steer_handle(handle.as_deref(), to, content).await {
         Ok(()) => Ok(format!("Delivered to {to}.")),
         Err(error) => Err(format!("Failed: {to} is not running. {error}")),
     }
 }
 
 /// TS broadcast receipt text over every running eval subagent.
-fn broadcast_message(content: &str) -> Result<String, String> {
+async fn broadcast_message(content: &str) -> Result<String, String> {
     let mut targets: Vec<(String, Arc<Handle>)> = AGENT_HANDLES
         .lock()
         .expect("eval handles lock")
@@ -339,18 +370,18 @@ fn broadcast_message(content: &str) -> Result<String, String> {
         return Ok("No live peers to broadcast to.".to_string());
     }
     targets.sort_by(|a, b| a.0.cmp(&b.0));
-    let receipts: Vec<(String, Result<(), String>)> = targets
-        .iter()
-        .map(|(id, handle)| (id.clone(), steer_handle(Some(&**handle), id, content)))
-        .collect();
-    let delivered = receipts.iter().filter(|(_, r)| r.is_ok()).count();
-    let mut text = format!("Broadcast delivered to {delivered} of {} peer(s).", receipts.len());
-    for (id, receipt) in &receipts {
-        match receipt {
-            Ok(()) => text.push_str(&format!("\n- {id}: injected")),
+    let mut text = String::new();
+    let mut delivered = 0usize;
+    for (id, handle) in &targets {
+        match steer_handle(Some(&**handle), id, content).await {
+            Ok(()) => {
+                delivered += 1;
+                text.push_str(&format!("\n- {id}: injected"));
+            }
             Err(error) => text.push_str(&format!("\n- {id}: failed — {error}")),
         }
     }
+    text = format!("Broadcast delivered to {delivered} of {} peer(s).{}", targets.len(), text);
     if delivered == 0 {
         Err(text)
     } else {
@@ -359,7 +390,7 @@ fn broadcast_message(content: &str) -> Result<String, String> {
 }
 
 /// Steer one agent handle's live run (the TS bus receipt error on failure).
-fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Result<(), String> {
+async fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Result<(), String> {
     let Some(handle) = handle else {
         return Err(format!(
             "Unknown agent \"{to}\" — check the subagent roster or read history:// for known peers."
@@ -376,7 +407,7 @@ fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Result<(), 
     let Some(run) = handle.run_ctl() else {
         return Err(format!("Agent \"{to}\" has no live session."));
     };
-    run.steer(content).map_err(|error| match error {
+    run.steer(content).await.map_err(|error| match error {
         omp_task::SteerError::NotRunning => finished(),
         omp_task::SteerError::Unsupported => format!("Agent \"{to}\" has no input channel."),
     })
@@ -389,8 +420,13 @@ fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Result<(), 
 /// Kill/steer surface of one launched subagent run ([`omp_task::RunControl`]
 /// in production, a mock in tests).
 trait RunCtl: Send + Sync {
-    /// Queue a steering message for the running child.
-    fn steer(&self, message: &str) -> Result<(), omp_task::SteerError>;
+    /// Queue a steering message for the running child; the future is a
+    /// delivery receipt (resolves once the drive loop wrote the frame, or
+    /// fails explicitly when the run is finishing/already settled).
+    fn steer<'a>(
+        &'a self,
+        message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), omp_task::SteerError>> + Send + 'a>>;
     /// Kill the run; `false` when it already settled or was cancelled.
     fn cancel(&self) -> bool;
     /// Output tokens the child session reported once settled.
@@ -398,8 +434,11 @@ trait RunCtl: Send + Sync {
 }
 
 impl RunCtl for omp_task::RunControl {
-    fn steer(&self, message: &str) -> Result<(), omp_task::SteerError> {
-        omp_task::RunControl::steer(self, message)
+    fn steer<'a>(
+        &'a self,
+        message: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), omp_task::SteerError>> + Send + 'a>> {
+        Box::pin(omp_task::RunControl::steer(self, message))
     }
 
     fn cancel(&self) -> bool {
@@ -477,9 +516,17 @@ fn settle_agent(
         output.output.clone()
     };
     if status == HandleStatus::Cancelled {
-        // Only `cancel()` kills runs; `cancel_handle` may already have settled
-        // the handle with the same text, whichever lands first.
-        handle.settle(status, None, None, Some(HANDLE_CANCEL_REASON.to_string()));
+        // TS agent jobs are cancelled through `manager.cancel(job.id)` with
+        // no reason: the snapshot carries the killed run's own abort text,
+        // not the completion-only "Cancelled by eval handle". `cancel_handle`
+        // may already have settled the handle with the same text, whichever
+        // lands first.
+        let error = if output.stderr.trim().is_empty() {
+            AGENT_CANCELLED_TEXT.to_string()
+        } else {
+            output.stderr.trim().to_string()
+        };
+        handle.settle(status, None, None, Some(error));
     } else if status == HandleStatus::Completed {
         let data = if schema_wanted {
             serde_json::from_str::<Value>(output.output.trim()).ok()
@@ -496,7 +543,9 @@ fn settle_agent(
 }
 
 /// TS `cancelResolved`: kill a running agent (settling its handle
-/// `cancelled` right away) or abort a running completion.
+/// `cancelled` right away) or abort a running completion. Agent jobs match
+/// TS `manager.cancel(job.id)` — no "Cancelled by eval handle" reason (that
+/// text is completion-only).
 fn cancel_handle(handle: &Handle) -> bool {
     if handle.is_settled() {
         return false;
@@ -511,7 +560,7 @@ fn cancel_handle(handle: &Handle) -> bool {
             HandleStatus::Cancelled,
             None,
             None,
-            Some(HANDLE_CANCEL_REASON.to_string()),
+            Some(AGENT_CANCELLED_TEXT.to_string()),
         );
     }
     cancelled
@@ -556,6 +605,9 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
     {
         return Err("Eval-defined tools are unavailable in this runtime.".to_string());
     }
+    // TS `assertDepthAndSpawnAllowed` / `canSpawnAtDepth`
+    // (`task.maxRecursionDepth`, default 2): refuse unbounded recursion.
+    omp_task::recursion_gate().map_err(|error| format!("agent() cannot spawn a subagent: {error}"))?;
 
     let id = mint_id("agt");
     // Validate exactly like the `task` tool does (`TaskItem::validate`:
@@ -574,7 +626,8 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
     item.validate()
         .map_err(|error| format!("agent() received invalid arguments: {error}"))?;
     let schema_wanted = item.output_schema.is_some();
-    let spec = omp_task::runner::TaskSpec::from_item(&item, None, ctx.cwd.clone());
+    let mut spec = omp_task::runner::TaskSpec::from_item(&item, None, ctx.cwd.clone());
+    apply_child_policy(&mut spec);
 
     let handle = Handle::new("agent", id.clone());
     AGENT_HANDLES
@@ -586,6 +639,7 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
     tokio::spawn(async move {
         let output = run.await;
         settle_agent(&handle, &output, schema_mode, schema_wanted);
+        handle.mark_run_finished();
     });
 
     Ok(json!({"id": id, "agent": agent}))
@@ -846,6 +900,7 @@ async fn run_completion(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
                 handle.settle(status, None, None, Some(error));
             }
         }
+        handle.mark_run_finished();
     });
 
     Ok(json!({"id": id}))
@@ -1860,6 +1915,103 @@ fn agent_id_taken(id: &str) -> bool {
     AGENT_HANDLES.lock().expect("eval handles lock").contains_key(id)
 }
 
+/// Parent spawn policy captured from this process's own argv
+/// (EVAL-CHILD-POLICY-NOT-PROPAGATED): children re-launched from
+/// `current_exe()` must inherit the parent's extension loading and tool
+/// restriction rather than silently running the full default toolset.
+pub(crate) struct ChildSpawnPolicy {
+    /// Verbatim argv fragments appended to the child command
+    /// (`--no-extensions`, `--extension/-e/--hook/--trusted-extension <p>`).
+    pub extra_args: Vec<String>,
+    /// The parent's `--tools` restriction; `None` = unrestricted. `__none__`
+    /// is the omp convention for "no tools" (`main.rs` `--no-tools`).
+    pub allowed_tools: Option<Vec<String>>,
+}
+
+pub(crate) fn child_spawn_policy() -> &'static ChildSpawnPolicy {
+    static POLICY: LazyLock<ChildSpawnPolicy> = LazyLock::new(|| {
+        let mut extra_args = Vec::new();
+        let mut allowed_tools = None;
+        let mut args = std::env::args_os().skip(1);
+        while let Some(arg) = args.next() {
+            let Some(flag) = arg.to_str() else { continue };
+            match flag {
+                "--no-extensions" => extra_args.push(flag.to_string()),
+                "--extension" | "-e" | "--hook" | "--trusted-extension" => {
+                    extra_args.push(flag.to_string());
+                    if let Some(value) = args.next() {
+                        extra_args.push(value.to_string_lossy().into_owned());
+                    }
+                }
+                "--no-tools" => allowed_tools = Some(vec!["__none__".to_string()]),
+                "--tools" => {
+                    if let Some(value) = args.next() {
+                        allowed_tools = Some(
+                            value
+                                .to_string_lossy()
+                                .split(',')
+                                .map(str::trim)
+                                .filter(|name| !name.is_empty())
+                                .map(str::to_string)
+                                .collect(),
+                        );
+                    }
+                }
+                _ if flag.starts_with("--tools=") => {
+                    allowed_tools = Some(
+                        flag["--tools=".len()..]
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(str::to_string)
+                            .collect(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        ChildSpawnPolicy { extra_args, allowed_tools }
+    });
+    &POLICY
+}
+
+/// Clamp a requested child tool allow-list to the parent's enabled set
+/// (EVAL-CHILD-POLICY-NOT-PROPAGATED, TS "clamp child tools to a subset of
+/// the parent's enabled tools"): an unrestricted child of a restricted
+/// parent would bypass the restriction entirely.
+pub(crate) fn clamp_child_tools(requested: Option<Vec<String>>) -> Option<Vec<String>> {
+    clamp_tools(&child_spawn_policy().allowed_tools, requested)
+}
+
+/// Pure clamp against an explicit parent restriction (testable without argv).
+fn clamp_tools(
+    allowed: &Option<Vec<String>>,
+    requested: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match allowed {
+        None => requested,
+        Some(allowed) => match requested {
+            None => Some(allowed.clone()),
+            Some(requested) => {
+                let kept: Vec<String> = requested.into_iter().filter(|tool| allowed.contains(tool)).collect();
+                Some(if kept.is_empty() {
+                    vec!["__none__".to_string()]
+                } else {
+                    kept
+                })
+            }
+        },
+    }
+}
+
+/// Apply the parent policy to a spec about to be launched: child depth stamp
+/// plus extension/no-extensions passthrough and tool clamping.
+pub(crate) fn apply_child_policy(spec: &mut omp_task::TaskSpec) {
+    spec.depth = omp_task::current_task_depth() + 1;
+    spec.extra_args = child_spawn_policy().extra_args.clone();
+    spec.tools = clamp_child_tools(spec.tools.take());
+}
+
 /// Launch the given worker turns; each one, once settled, settles its batch
 /// and launches whatever the pool dispatches next.
 fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
@@ -1872,7 +2024,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             Some(context) => format!("{context}\n\n{}", start.prompt),
             None => start.prompt,
         };
-        let spec = omp_task::TaskSpec {
+        let mut spec = omp_task::TaskSpec {
             id: Some(start.worker_id.clone()),
             agent: agent.clone(),
             prompt,
@@ -1881,18 +2033,47 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             schema_mode: omp_task::SchemaMode::Permissive,
             model: None,
             tools: None,
+            depth: 0,
+            extra_args: Vec::new(),
         };
+        apply_child_policy(&mut spec);
         let handle = Handle::new("agent", start.worker_id.clone());
-        AGENT_HANDLES
-            .lock()
-            .expect("eval handles lock")
-            .insert(start.worker_id, handle.clone());
+        // Reserve the worker id atomically: a concurrent registration of the
+        // same id (another pool, an agent() call) must not have its handle
+        // overwritten and orphaned from status/cancel.
+        let worker_id = start.worker_id.clone();
+        let inserted = {
+            let mut registry = AGENT_HANDLES.lock().expect("eval handles lock");
+            if registry.contains_key(&worker_id) {
+                false
+            } else {
+                registry.insert(worker_id.clone(), handle.clone());
+                true
+            }
+        };
+        if !inserted {
+            handle.settle(
+                HandleStatus::Failed,
+                None,
+                None,
+                Some(format!("worker id {worker_id} is already registered; refusing to overwrite its agent handle")),
+            );
+            let (status, text) = turn_outcome(&handle);
+            let next = pool
+                .state
+                .lock()
+                .expect("workpool lock")
+                .finish_turn(start.batch, status, text, &agent_id_taken);
+            start_turns(&pool, next);
+            continue;
+        }
         let run = launch_agent(&handle, spec, &*pool.launcher);
         let pool = pool.clone();
         let batch = start.batch;
         tokio::spawn(async move {
             let output = run.await;
             settle_agent(&handle, &output, omp_task::SchemaMode::Permissive, false);
+            handle.mark_run_finished();
             let (status, text) = turn_outcome(&handle);
             let next = pool
                 .state
@@ -2016,6 +2197,10 @@ fn create_workpool(
     if !omp_task::params::is_valid_agent_name(&agent) {
         return Err(format!("workpool() received invalid arguments: `agent` must be a valid agent name, got {agent:?}"));
     }
+    // Every pushed item spawns a fresh worker subagent: same recursion gate
+    // as agent() (TS `canSpawnAtDepth`).
+    omp_task::recursion_gate()
+        .map_err(|error| format!("workpool() cannot spawn workers: {error}"))?;
     let mut pools = WORKPOOLS.lock().expect("workpools lock");
     let name = if let Some(name) = requested {
         if pools.contains_key(&name) {
@@ -2068,10 +2253,16 @@ async fn run_wait(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
     let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_secs_f64(ms / 1000.0));
 
     loop {
-        // TS `runEvalWait`: an aborted cell cancels every handle it waited on.
+        // TS `runEvalWait`: an aborted cell cancels every handle it waited on
+        // and then awaits their settlement (`Promise.allSettled`) before
+        // throwing, so an aborted caller never returns while the underlying
+        // runs are still tearing down.
         if let Err(error) = throw_if_aborted(&ctx.signal) {
             for handle in &handles {
                 cancel_handle(handle);
+            }
+            for handle in &handles {
+                handle.wait_run_finished().await;
             }
             return Err(error);
         }
@@ -2170,12 +2361,17 @@ mod tests {
     }
 
     impl RunCtl for MockRun {
-        fn steer(&self, message: &str) -> Result<(), omp_task::SteerError> {
-            if !self.live() || self.cancelled.load(Ordering::SeqCst) {
-                return Err(omp_task::SteerError::NotRunning);
-            }
-            self.steered.lock().unwrap().push(message.to_string());
-            Ok(())
+        fn steer<'a>(
+            &'a self,
+            message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), omp_task::SteerError>> + Send + 'a>> {
+            Box::pin(async move {
+                if !self.live() || self.cancelled.load(Ordering::SeqCst) {
+                    return Err(omp_task::SteerError::NotRunning);
+                }
+                self.steered.lock().unwrap().push(message.to_string());
+                Ok(())
+            })
         }
 
         fn cancel(&self) -> bool {
@@ -2236,6 +2432,8 @@ mod tests {
             schema_mode: omp_task::SchemaMode::Permissive,
             model: None,
             tools: None,
+            depth: 0,
+            extra_args: Vec::new(),
         }
     }
 
@@ -2252,6 +2450,7 @@ mod tests {
         tokio::spawn(async move {
             let output = run.await;
             settle_agent(&settle, &output, omp_task::SchemaMode::Permissive, false);
+            settle.mark_run_finished();
         });
         let mock = launcher.run(launcher.launched() - 1);
         (handle, mock)
@@ -2358,10 +2557,10 @@ mod tests {
         assert!(run.cancelled.load(Ordering::SeqCst), "runner kill invoked");
         let snap = handle.snapshot();
         assert_eq!(snap["status"], "cancelled");
-        assert_eq!(snap["error"], HANDLE_CANCEL_REASON);
+        assert_eq!(snap["error"], AGENT_CANCELLED_TEXT);
         // The killed run's own settle does not overwrite the cancel.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert_eq!(handle.snapshot()["error"], HANDLE_CANCEL_REASON);
+        assert_eq!(handle.snapshot()["error"], AGENT_CANCELLED_TEXT);
         assert!(!cancel_handle(&handle), "second cancel is a no-op");
         let reply = run_cancel(&json!({"item": {"kind": "agent", "id": "test-cancel-1"}})).unwrap();
         assert_eq!(reply, json!({"cancelled": false}));
@@ -2384,24 +2583,28 @@ mod tests {
         let launcher = MockLauncher::default();
         let (handle, run) = mock_agent(&launcher, "test-msg-1");
         assert_eq!(
-            deliver_message("test-msg-1", "look at foo.rs").unwrap(),
+            deliver_message("test-msg-1", "look at foo.rs").await.unwrap(),
             "Delivered to test-msg-1."
         );
         assert_eq!(*run.steered.lock().unwrap(), ["look at foo.rs"]);
-        assert!(deliver_message("test-msg-1", "  ").is_err());
+        assert!(deliver_message("test-msg-1", "  ").await.is_err());
         assert!(deliver_message("test-msg-1/data", "x")
+            .await
             .unwrap_err()
             .contains("JSON-path suffix"));
-        let unknown = deliver_message("test-msg-nope", "x").unwrap_err();
+        let unknown = deliver_message("test-msg-nope", "x").await.unwrap_err();
         assert!(unknown.starts_with("Failed: test-msg-nope is not running."), "{unknown}");
         run.finish(omp_task::RunStatus::Completed, "done");
         settled(&handle).await;
-        let late = deliver_message("test-msg-1", "x").unwrap_err();
+        let late = deliver_message("test-msg-1", "x").await.unwrap_err();
         assert!(late.contains("already finished"), "{late}");
     }
 
     #[tokio::test]
     async fn workpool_ops_drive_worker_runs() {
+        // Reads the recursion-depth env through `create_workpool`: serialize
+        // with the depth-env tests.
+        let _depth_env = DEPTH_ENV_LOCK.lock();
         let launcher = Arc::new(MockLauncher::default());
         let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
         let cwd = PathBuf::from(".");
@@ -2438,7 +2641,7 @@ mod tests {
         }
         // Workers are agent handles: messageable and cancellable.
         assert_eq!(
-            deliver_message("test-pool-e2e-1", "hint").unwrap(),
+            deliver_message("test-pool-e2e-1", "hint").await.unwrap(),
             "Delivered to test-pool-e2e-1."
         );
         launcher.run(0).finish(omp_task::RunStatus::Completed, "first done");
@@ -2458,7 +2661,7 @@ mod tests {
         assert_eq!(peek["batches"][0]["status"], "completed");
         assert_eq!(peek["batches"][0]["output"], "first done");
         assert_eq!(peek["batches"][1]["status"], "cancelled");
-        assert_eq!(peek["batches"][1]["output"], HANDLE_CANCEL_REASON);
+        assert_eq!(peek["batches"][1]["output"], AGENT_CANCELLED_TEXT);
 
         let closed = run_workpool_with(&json!({"op": "close", "name": "test-pool-e2e"}), &cwd, &dyn_launcher)
             .unwrap();
@@ -2488,5 +2691,238 @@ mod tests {
         assert!(snap["total"].is_null());
         assert_eq!(snap["hard"], false);
         assert!(snap["spent"].is_u64());
+    }
+
+    /// Finding 5: registering a worker whose id is already taken (the race
+    /// between the pool's taken-check and the handle insert, or any direct
+    /// `start_turns` dispatch) must not overwrite the existing handle — the
+    /// turn fails explicitly and the original handle keeps owning its run.
+    #[tokio::test]
+    async fn pool_worker_id_collision_fails_without_overwriting() {
+        let _depth_env = DEPTH_ENV_LOCK.lock();
+        let launcher = Arc::new(MockLauncher::default());
+        let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
+        let cwd = PathBuf::from(".");
+        run_workpool_with(
+            &json!({"op": "create", "name": "test-pool-collision"}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap();
+        let pool = WORKPOOLS.lock().unwrap().get("test-pool-collision").cloned().unwrap();
+
+        // Occupy the id a turn will try to register.
+        let existing = Handle::new("agent", "occupied-worker".to_string());
+        AGENT_HANDLES
+            .lock()
+            .unwrap()
+            .insert("occupied-worker".to_string(), existing.clone());
+
+        start_turns(
+            &pool,
+            vec![TurnStart {
+                batch: usize::MAX,
+                worker_id: "occupied-worker".to_string(),
+                prompt: "do work".to_string(),
+            }],
+        );
+        assert_eq!(launcher.launched(), 0, "no run launches on a collision");
+
+        // The existing handle still owns the id, untouched by the failed turn.
+        let registered = AGENT_HANDLES.lock().unwrap().get("occupied-worker").cloned();
+        assert!(Arc::ptr_eq(&registered.unwrap(), &existing));
+        assert_eq!(existing.snapshot()["status"], "running");
+        AGENT_HANDLES.lock().unwrap().remove("occupied-worker");
+        WORKPOOLS.lock().unwrap().remove("test-pool-collision");
+    }
+
+    /// A mock run whose cancel does *not* settle the run: the run resolves
+    /// only when `release()` sends its output (like a real child that still
+    /// has to be reaped after the kill).
+    struct SlowMockRun {
+        inner: MockRun,
+        release: Mutex<Option<tokio::sync::oneshot::Sender<omp_task::RunOutput>>>,
+    }
+
+    impl RunCtl for SlowMockRun {
+        fn steer<'a>(
+            &'a self,
+            message: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), omp_task::SteerError>> + Send + 'a>> {
+            self.inner.steer(message)
+        }
+
+        fn cancel(&self) -> bool {
+            // The kill is requested but the run stays unresolved until
+            // `release()` (a real child still has to be reaped).
+            if self.inner.cancelled.swap(true, Ordering::SeqCst) {
+                return false;
+            }
+            true
+        }
+
+        fn output_tokens(&self) -> u64 {
+            0
+        }
+    }
+
+    struct SlowMockLauncher {
+        runs: Mutex<Vec<Arc<SlowMockRun>>>,
+    }
+
+    impl Launcher for SlowMockLauncher {
+        fn launch(&self, spec: omp_task::TaskSpec) -> (Arc<dyn RunCtl>, RunFuture) {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let id = spec.id.clone().unwrap_or_default();
+            let run = Arc::new(SlowMockRun {
+                inner: MockRun {
+                    id: id.clone(),
+                    steered: Mutex::new(Vec::new()),
+                    cancelled: AtomicBool::new(false),
+                    done: Mutex::new(None),
+                },
+                release: Mutex::new(Some(tx)),
+            });
+            self.runs.lock().unwrap().push(run.clone());
+            let future: RunFuture = Box::pin(async move {
+                rx.await
+                    .unwrap_or_else(|_| run_output(&id, omp_task::RunStatus::Cancelled, ""))
+            });
+            (run, future)
+        }
+    }
+
+    /// Finding 6: an aborted wait() cancels every handle and waits for them
+    /// to settle before erroring (TS `handle-bridge.ts` `Promise.allSettled`).
+    #[tokio::test]
+    async fn aborted_wait_cancels_then_waits_for_settlement() {
+        let _depth_env = DEPTH_ENV_LOCK.lock();
+        let launcher = Arc::new(SlowMockLauncher { runs: Mutex::new(Vec::new()) });
+        let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
+        let cwd = PathBuf::from(".");
+        run_workpool_with(
+            &json!({"op": "create", "name": "test-pool-abort"}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap();
+        run_workpool_with(
+            &json!({"op": "push", "name": "test-pool-abort", "items": ["one", "two"]}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap();
+        assert_eq!(launcher.runs.lock().unwrap().len(), 2);
+
+        let controller = pa_agent::abort::AbortController::new();
+        let signal = controller.signal();
+        controller.abort();
+        let ctx = OpCtx {
+            cwd: cwd.clone(),
+            signal,
+            on_update: None,
+            tool_call_id: "test-abort".to_string(),
+        };
+        let wait_args = json!({"items": [
+            {"kind": "agent", "id": "test-pool-abort-1"},
+            {"kind": "agent", "id": "test-pool-abort-2"},
+        ]});
+        let wait = run_wait(&wait_args, &ctx);
+        tokio::pin!(wait);
+        tokio::select! {
+            _ = &mut wait => panic!("wait() must not return before the cancelled runs finish"),
+            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+        }
+        // The runs were asked to cancel but are not finished yet; the handles
+        // already report cancelled (TS `manager.cancel` flips job status at once).
+        assert!(launcher.runs.lock().unwrap().iter().all(|run| run.inner.cancelled.load(Ordering::SeqCst)));
+        let handle = lookup_handle("agent", "test-pool-abort-1").unwrap();
+        assert_eq!(handle.snapshot()["status"], "cancelled");
+        assert!(!handle
+            .run_finished
+            .load(std::sync::atomic::Ordering::SeqCst));
+
+        for run in launcher.runs.lock().unwrap().iter() {
+            let tx = run.release.lock().unwrap().take().unwrap();
+            let _ = tx.send(run_output(&run.inner.id, omp_task::RunStatus::Cancelled, ""));
+        }
+        let err = tokio::time::timeout(Duration::from_secs(5), &mut wait)
+            .await
+            .expect("wait() returns once the cancelled runs finish")
+            .unwrap_err();
+        assert_eq!(err, "aborted");
+        for id in ["test-pool-abort-1", "test-pool-abort-2"] {
+            let handle = lookup_handle("agent", id).unwrap();
+            assert!(handle.run_finished.load(std::sync::atomic::Ordering::SeqCst), "{id} run finished before the abort error");
+        }
+        WORKPOOLS.lock().unwrap().remove("test-pool-abort");
+        for id in ["test-pool-abort-1", "test-pool-abort-2"] {
+            AGENT_HANDLES.lock().unwrap().remove(id);
+        }
+    }
+
+    /// Serialize the tests that mutate the recursion-depth env: the env is
+    /// process-global and `create_workpool` reads it through the gate.
+    static DEPTH_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    /// Finding 8: at `OMP_TASK_MAX_RECURSION_DEPTH` (TS `task.maxRecursionDepth`,
+    /// default 2) agent/workpool/task spawns are refused with the TS message.
+    #[test]
+    fn recursion_gate_matches_ts_depth_rule() {
+        let _env = DEPTH_ENV_LOCK.lock();
+        std::env::set_var(omp_task::MAX_RECURSION_ENV, "2");
+        assert!(omp_task::recursion_gate_at(0).is_ok());
+        assert!(omp_task::recursion_gate_at(1).is_ok());
+        let err = omp_task::recursion_gate_at(2).unwrap_err();
+        assert_eq!(err, "Cannot spawn another agent at task depth 2; maximum depth is 2.");
+        std::env::remove_var(omp_task::MAX_RECURSION_ENV);
+    }
+
+    #[tokio::test]
+    async fn workpool_refuses_to_spawn_at_max_depth() {
+        let _env = DEPTH_ENV_LOCK.lock();
+        // Simulate a depth-2 session (the TS default ceiling): spawns from
+        // here are refused with the TS message.
+        std::env::set_var(omp_task::TASK_DEPTH_ENV, "2");
+        let launcher = Arc::new(MockLauncher::default());
+        let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
+        let cwd = PathBuf::from(".");
+        let err = run_workpool_with(
+            &json!({"op": "create", "name": "test-pool-depth"}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "workpool() cannot spawn workers: Cannot spawn another agent at task depth 2; maximum depth is 2."
+        );
+        assert_eq!(launcher.launched(), 0);
+        std::env::remove_var(omp_task::TASK_DEPTH_ENV);
+        WORKPOOLS.lock().unwrap().remove("test-pool-depth");
+    }
+
+    /// Finding 9: child tool allow-lists clamp to the parent's enabled set.
+    #[test]
+    fn child_tools_clamp_to_the_parent_allow_list() {
+        let parent = Some(vec!["read".to_string(), "bash".to_string()]);
+        // Unrestricted request inherits the parent's restriction.
+        assert_eq!(
+            clamp_tools(&parent, None),
+            Some(vec!["read".to_string(), "bash".to_string()])
+        );
+        // Requests keep only tools the parent has.
+        assert_eq!(
+            clamp_tools(&parent, Some(vec!["read".to_string(), "eval".to_string()])),
+            Some(vec!["read".to_string()])
+        );
+        // Nothing in common: the child gets no tools (omp `__none__`), never
+        // the full default toolset.
+        assert_eq!(
+            clamp_tools(&parent, Some(vec!["eval".to_string()])),
+            Some(vec!["__none__".to_string()])
+        );
+        // Unrestricted parent: the request passes through untouched.
+        assert_eq!(clamp_tools(&None, Some(vec!["eval".to_string()])), Some(vec!["eval".to_string()]));
     }
 }

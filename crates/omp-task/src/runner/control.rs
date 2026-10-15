@@ -6,12 +6,28 @@
 //!   cancel SIGKILLs the agent and every tool subprocess it spawned, then
 //!   settles the run [`RunStatus::Cancelled`]. A cancel that lands while the
 //!   run still waits for a concurrency permit settles it without spawning.
+//!   Killability is a phase transition: `cancel()` CAS-claims it, and exactly
+//!   one of {`cancel()`, the run's own completion} wins — a run that finished
+//!   first settles [`RunStatus::Completed`] and a late `cancel()` returns
+//!   `false`.
+//! - Process groups: because each child is its own group, a terminal Ctrl-C
+//!   or SIGHUP aimed at the parent's group does *not* reach the children
+//!   (intentional: background agents outlive interactive interrupts; steer or
+//!   `cancel()` them instead). The group is SIGKILLed on every exit path —
+//!   cancel, timeout, spawn failure, the run's `RunJoin`/guard dropping
+//!   (parent runtime shutdown) — and after a *normal* exit too, so surviving
+//!   group members (background jobs, servers) are reaped and cannot hold the
+//!   stdout/stderr pipes open; pipe joins are additionally time-bounded.
 //! - Steer ([`ChildMode::Rpc`] only): the child is `<binary> --mode rpc`; the
 //!   prompt goes in as an RPC `prompt` command and stdin stays open while the
 //!   agent runs, so [`RunControl::steer`] writes a `steer` command the child
 //!   injects at its next turn boundary (TS IRC delivery to a running agent).
-//!   Once the prompt settles the run asks for the final assistant text and the
-//!   session's token usage, then closes stdin so the child exits.
+//!   The receipt is a delivery receipt: it resolves once the drive loop
+//!   actually wrote the frame, and reports failure when the run is already
+//!   finishing. Once the prompt settles the run asks for the final assistant
+//!   text and the session's token usage under a hard Finishing deadline (a
+//!   child that never answers or ignores stdin EOF is killed and settles
+//!   failed), then closes stdin so the child exits.
 
 use std::future::Future;
 use std::path::Path;
@@ -25,7 +41,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::{collect_output, is_transient_spawn_error, spawn_failure, RunOutput, RunStatus, TaskRunner, TaskSpec};
@@ -34,8 +50,27 @@ use crate::schema::SchemaValidation;
 /// How long pipe readers may linger after a kill (a grandchild that left the
 /// process group could otherwise hold the pipe open forever).
 const KILL_DRAIN: Duration = Duration::from_secs(2);
+/// Bound for pipe readers after a *normal* exit: surviving group members are
+/// killed first, but a grandchild that escaped the group could still hold a
+/// pipe; never block the settle on it.
+const PIPES_DRAIN: Duration = Duration::from_secs(5);
 /// Grace for an RPC child to exit after its stdin closed / stdout ended.
 const RPC_EXIT_GRACE: Duration = Duration::from_secs(10);
+/// Hard deadline for the Finishing phase: once the prompt settled, the
+/// final-answer/session-stats requests must complete within this window even
+/// if the child keeps stdout open (a missing `get_session_stats` reply or a
+/// child ignoring stdin EOF must not hang the run or hold its permit).
+const RPC_FINISHING_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Test knob for [`RPC_FINISHING_DEADLINE`] (`OMP_TASK_TEST_FINISHING_DEADLINE_MS`);
+/// unset in production.
+fn rpc_finishing_deadline() -> Duration {
+    std::env::var("OMP_TASK_TEST_FINISHING_DEADLINE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(RPC_FINISHING_DEADLINE)
+}
 
 /// RPC command ids the run uses for its own requests.
 const PROMPT_ID: &str = "omp-task-prompt";
@@ -98,20 +133,41 @@ pub enum SteerError {
 }
 
 enum Control {
-    Steer(String),
+    Steer(String, oneshot::Sender<Result<(), SteerError>>),
     Kill,
 }
 
-#[derive(Default)]
+/// A steer receipt the drive loop resolves once the frame was actually
+/// written (or failed explicitly).
+type SteerAck = oneshot::Sender<Result<(), SteerError>>;
+
 struct Shared {
     phase: AtomicU8,
     output_tokens: AtomicU64,
-    cancel_requested: AtomicBool,
+    /// Killability transition: starts `true`; exactly one of `cancel()` and
+    /// the run's own completion takes it (the loser observes `false`).
+    killable: AtomicBool,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self {
+            phase: AtomicU8::default(),
+            output_tokens: AtomicU64::default(),
+            killable: AtomicBool::new(true),
+        }
+    }
 }
 
 impl Shared {
     fn set_phase(&self, phase: RunPhase) {
         self.phase.store(phase.as_u8(), Ordering::SeqCst);
+    }
+
+    /// Claim the killable transition; `false` when already claimed (a cancel
+    /// was requested or the run completed).
+    fn take_killable(&self) -> bool {
+        self.killable.swap(false, Ordering::SeqCst)
     }
 }
 
@@ -156,37 +212,48 @@ impl RunControl {
     /// Queue a steering message for the running agent. Messages sent while
     /// the run is still queued are delivered right after the prompt.
     ///
+    /// The returned future is a *delivery* receipt: it resolves once the
+    /// drive loop actually wrote the steer frame (or failed it explicitly,
+    /// e.g. the prompt settled before the frame went out). A send failure
+    /// (the run ended before the control was queued) resolves to
+    /// [`SteerError::NotRunning`].
+    ///
     /// # Errors
     /// [`SteerError::Unsupported`] for print-mode children,
-    /// [`SteerError::NotRunning`] once the prompt settled or the run ended.
-    pub fn steer(&self, message: impl Into<String>) -> Result<(), SteerError> {
+    /// [`SteerError::NotRunning`] once the prompt settled, the run was
+    /// cancelled, or the run ended.
+    pub async fn steer(&self, message: impl Into<String>) -> Result<(), SteerError> {
         if self.mode == ChildMode::Print {
             return Err(SteerError::Unsupported);
         }
-        if self.shared.cancel_requested.load(Ordering::SeqCst) {
+        if !self.shared.killable.load(Ordering::SeqCst)
+            || !matches!(self.phase(), RunPhase::Queued | RunPhase::Running)
+        {
             return Err(SteerError::NotRunning);
         }
-        match self.phase() {
-            RunPhase::Queued | RunPhase::Running => self
-                .tx
-                .send(Control::Steer(message.into()))
-                .map_err(|_| SteerError::NotRunning),
-            RunPhase::Finishing | RunPhase::Settled => Err(SteerError::NotRunning),
-        }
+        let (ack, receipt) = oneshot::channel();
+        self.tx
+            .send(Control::Steer(message.into(), ack))
+            .map_err(|_| SteerError::NotRunning)?;
+        receipt.await.unwrap_or(Err(SteerError::NotRunning))
     }
 
     /// Kill the run: SIGKILL the child's process group (or drop the queued
-    /// spawn) and settle it [`RunStatus::Cancelled`]. Returns `false` when
-    /// the run already settled or a cancel was already requested.
+    /// spawn) and settle it [`RunStatus::Cancelled`]. Killability is a phase
+    /// transition — returns `true` only if this call won it; a run that
+    /// already finished settles [`RunStatus::Completed`] and a late
+    /// `cancel()` returns `false`.
     #[must_use = "false means nothing was cancelled"]
     pub fn cancel(&self) -> bool {
-        if self.phase() == RunPhase::Settled {
+        if !self.shared.take_killable() {
             return false;
         }
-        if self.shared.cancel_requested.swap(true, Ordering::SeqCst) {
-            return false;
-        }
-        self.tx.send(Control::Kill).is_ok()
+        // The drive loop (or the queued-phase select in `run_controlled`)
+        // still holds `rx` whenever the killable transition was unclaimed, so
+        // the send cannot fail; ignore the result regardless — the run owns
+        // the outcome and observes the transition via `take_killable`.
+        let _ = self.tx.send(Control::Kill);
+        true
     }
 
     /// Output tokens the child session reported (RPC mode, after the prompt
@@ -259,7 +326,7 @@ async fn run_controlled(
     shared: Arc<Shared>,
 ) -> RunOutput {
     let start = Instant::now();
-    let mut steers = Vec::new();
+    let mut steers: Vec<(String, SteerAck)> = Vec::new();
     let mut controls_open = true;
     let acquire = runner.semaphore.clone().acquire_owned();
     tokio::pin!(acquire);
@@ -271,9 +338,9 @@ async fn run_controlled(
             ctl = rx.recv(), if controls_open => match ctl {
                 Some(Control::Kill) => {
                     shared.set_phase(RunPhase::Settled);
-                    return cancelled_output(id, spec, None, String::new(), start);
+                    return cancelled_output(id, spec.agent, None, String::new(), start);
                 }
-                Some(Control::Steer(message)) => steers.push(message),
+                Some(Control::Steer(message, ack)) => steers.push((message, ack)),
                 None => controls_open = false,
             },
         }
@@ -281,16 +348,81 @@ async fn run_controlled(
     shared.set_phase(RunPhase::Running);
     let out = match spawn_child(&runner.binary, &spec, mode).await {
         Err(e) => spawn_failure(id, spec, &runner.binary, &e, start),
-        Ok(child) => match mode {
-            ChildMode::Print => drive_print(child, &mut rx, controls_open, id, spec, start).await,
-            ChildMode::Rpc => {
-                drive_rpc(child, &mut rx, controls_open, &steers, id, spec, start, &shared).await
+        Ok(child) => {
+            // Kill the whole process group when the run ends for any reason —
+            // cancel/timeout paths call `kill_tree` themselves; the guard
+            // covers normal exits (reaping surviving group members) and the
+            // run task being dropped (parent runtime shutdown).
+            let _group = GroupGuard::new(&child);
+            match mode {
+                ChildMode::Print => drive_print(child, &mut rx, controls_open, id, spec, start).await,
+                ChildMode::Rpc => {
+                    drive_rpc(child, &mut rx, controls_open, steers, id, spec, start, &shared).await
+                }
             }
-        },
+        }
     };
     drop(permit);
+    let out = if !shared.take_killable() && out.status != RunStatus::Cancelled {
+        // `cancel()` won the killable transition after the drive loop already
+        // produced its output: the run settles Cancelled, consistently with
+        // `cancel()` having returned `true`.
+        cancelled_output(out.id, out.agent, out.exit_code, out.stderr, start)
+    } else {
+        out
+    };
     shared.set_phase(RunPhase::Settled);
     out
+}
+
+/// SIGKILLs the child's process group when the run's control state drops —
+/// the drop-path counterpart of `kill_tree` (`kill_on_drop` only signals the
+/// leader pid, not `-pgid`).
+struct GroupGuard(Option<i32>);
+
+impl GroupGuard {
+    fn new(child: &Child) -> Self {
+        Self(child.id().and_then(|pid| i32::try_from(pid).ok()))
+    }
+
+    fn kill(&mut self) {
+        if let Some(pgid) = self.0.take() {
+            kill_group(pgid);
+        }
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// SIGKILL every process in the group led by `pgid`.
+fn kill_group(pgid: i32) {
+    #[cfg(unix)]
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(-pgid),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+    #[cfg(not(unix))]
+    let _ = pgid;
+}
+
+/// After a normal child exit, SIGKILL any surviving member of the child's
+/// process group (pgid == child pid under `process_group(0)`): background
+/// jobs and servers must not outlive the run or hold its pipes open. Takes
+/// the pgid captured *before* `child.wait()`: tokio's `Child::id` returns
+/// `None` once the child is reaped.
+fn reap_group(pgid: Option<i32>) {
+    if let Some(pgid) = pgid {
+        kill_group(pgid);
+    }
+}
+
+/// The child's process group id (valid only before the child is reaped).
+fn child_pgid(child: &Child) -> Option<i32> {
+    child.id().and_then(|pid| i32::try_from(pid).ok())
 }
 
 /// Spawn the child (own process group, killed on drop), retrying transient
@@ -308,8 +440,8 @@ async fn spawn_child(binary: &Path, spec: &TaskSpec, mode: ChildMode) -> std::io
             }
         }
         command
-            .current_dir(&spec.cwd)
-            .env(super::SUBAGENT_NO_TITLE.0, super::SUBAGENT_NO_TITLE.1);
+            .current_dir(&spec.cwd);
+        super::apply_child_policy(&mut command, spec);
         if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
             command.arg("--model").arg(model);
         }
@@ -336,14 +468,30 @@ async fn spawn_child(binary: &Path, spec: &TaskSpec, mode: ChildMode) -> std::io
 /// SIGKILL the child's whole process group (pgid == child pid under
 /// `process_group(0)`), then the child itself as a fallback.
 fn kill_tree(child: &mut Child) {
-    #[cfg(unix)]
     if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
-        let _ = nix::sys::signal::kill(
-            nix::unistd::Pid::from_raw(-pid),
-            nix::sys::signal::Signal::SIGKILL,
-        );
+        kill_group(pid);
     }
     let _ = child.start_kill();
+}
+
+/// Sleep until `at` when given; the `None` case only exists so the branch can
+/// sit in `select!` with a precondition (a disabled branch's future is never
+/// awaited, so the `unwrap` inside is unreachable then).
+async fn sleep_until_opt(at: Option<Instant>) {
+    if let Some(at) = at {
+        tokio::time::sleep_until(at.into()).await;
+    }
+}
+
+/// Resolve every control still queued after the drive loop ended: pending
+/// steers fail explicitly with [`SteerError::NotRunning`] (the run ended
+/// before delivery), so callers never hold a stale delivery receipt.
+fn drain_controls(rx: &mut mpsc::UnboundedReceiver<Control>) {
+    while let Ok(ctl) = rx.try_recv() {
+        if let Control::Steer(_, ack) = ctl {
+            let _ = ack.send(Err(SteerError::NotRunning));
+        }
+    }
 }
 
 fn read_all<R: AsyncRead + Unpin + Send + 'static>(reader: Option<R>) -> JoinHandle<Vec<u8>> {
@@ -356,22 +504,22 @@ fn read_all<R: AsyncRead + Unpin + Send + 'static>(reader: Option<R>) -> JoinHan
     })
 }
 
-/// Join a pipe reader; after a kill, only for [`KILL_DRAIN`].
+/// Join a pipe reader; time-bounded on every path (after a kill only
+/// [`KILL_DRAIN`] — a grandchild that left the process group could otherwise
+/// hold the pipe open forever — and [`PIPES_DRAIN`] after a normal exit, so a
+/// group escapee can never block the settle).
 async fn join_text(reader: JoinHandle<Vec<u8>>, killed: bool) -> String {
-    let bytes = if killed {
-        match tokio::time::timeout(KILL_DRAIN, reader).await {
-            Ok(Ok(bytes)) => bytes,
-            _ => Vec::new(),
-        }
-    } else {
-        reader.await.unwrap_or_default()
+    let bound = if killed { KILL_DRAIN } else { PIPES_DRAIN };
+    let bytes = match tokio::time::timeout(bound, reader).await {
+        Ok(Ok(bytes)) => bytes,
+        _ => Vec::new(),
     };
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
 fn cancelled_output(
     id: String,
-    spec: TaskSpec,
+    agent: String,
     exit_code: Option<i32>,
     stderr: String,
     start: Instant,
@@ -383,7 +531,7 @@ fn cancelled_output(
     };
     RunOutput {
         id,
-        agent: spec.agent,
+        agent,
         status: RunStatus::Cancelled,
         exit_code,
         output: String::new(),
@@ -404,16 +552,20 @@ async fn drive_print(
 ) -> RunOutput {
     let stdout = read_all(child.stdout.take());
     let stderr = read_all(child.stderr.take());
+    let pgid = child_pgid(&child);
     let waited = loop {
         tokio::select! {
             status = child.wait() => break Some(status),
             ctl = rx.recv(), if controls_open => match ctl {
                 Some(Control::Kill) => break None,
-                Some(Control::Steer(_)) => {}
+                Some(Control::Steer(_, ack)) => {
+                    let _ = ack.send(Err(SteerError::Unsupported));
+                }
                 None => controls_open = false,
             },
         }
     };
+    drain_controls(rx);
     let killed = waited.is_none();
     let status = match waited {
         Some(status) => status,
@@ -422,11 +574,15 @@ async fn drive_print(
             child.wait().await
         }
     };
-    let stdout = join_text(stdout, killed).await;
-    let stderr = join_text(stderr, killed).await;
+    if !killed {
+        // Normal exit: reap surviving group members (background jobs,
+        // servers) before joining the pipes, so they cannot hold them open.
+        reap_group(pgid);
+    }
+    let (stdout, stderr) = tokio::join!(join_text(stdout, killed), join_text(stderr, killed));
     let exit_code = status.as_ref().ok().and_then(std::process::ExitStatus::code);
     if killed {
-        return cancelled_output(id, spec, exit_code, stderr, start);
+        return cancelled_output(id, spec.agent, exit_code, stderr, start);
     }
     match status {
         Ok(status) => collect_output(id, spec, status.success(), exit_code, stdout, stderr, start),
@@ -455,13 +611,14 @@ async fn drive_rpc(
     mut child: Child,
     rx: &mut mpsc::UnboundedReceiver<Control>,
     mut controls_open: bool,
-    steers: &[String],
+    steers: Vec<(String, SteerAck)>,
     id: String,
     spec: TaskSpec,
     start: Instant,
     shared: &Shared,
 ) -> RunOutput {
     let stderr = read_all(child.stderr.take());
+    let pgid = child_pgid(&child);
     let mut stdin = child.stdin.take();
     let Some(stdout) = child.stdout.take() else {
         kill_tree(&mut child);
@@ -472,11 +629,14 @@ async fn drive_rpc(
     let mut lines = BufReader::new(stdout).lines();
     let mut rpc = RpcRun::default();
     let mut killed = false;
+    let mut finishing_at: Option<Instant> = None;
     send(&mut stdin, &json!({"id": PROMPT_ID, "type": "prompt", "message": spec.prompt})).await;
-    for message in steers {
-        send(&mut stdin, &steer_frame(message)).await;
+    for (message, ack) in steers {
+        send(&mut stdin, &steer_frame(&message)).await;
+        let _ = ack.send(Ok(()));
     }
     loop {
+        let finishing_deadline = finishing_at.map(|at| at + rpc_finishing_deadline());
         tokio::select! {
             line = lines.next_line() => match line {
                 Ok(Some(line)) => {
@@ -485,6 +645,7 @@ async fn drive_rpc(
                     }
                     if rpc.finishing {
                         shared.set_phase(RunPhase::Finishing);
+                        finishing_at.get_or_insert_with(Instant::now);
                     }
                     if rpc.close_stdin {
                         stdin = None;
@@ -492,20 +653,45 @@ async fn drive_rpc(
                 }
                 Ok(None) | Err(_) => break,
             },
+            _ = sleep_until_opt(finishing_deadline), if finishing_deadline.is_some() => {
+                // Finishing-phase deadline: the child never answered the
+                // final-text/stats requests (or kept stdout open). Kill it and
+                // settle failed — never hang the run or hold its permit.
+                kill_tree(&mut child);
+                let _ = child.wait().await;
+                let stderr = join_text(stderr, true).await;
+                let error = format!(
+                    "timed out in the Finishing phase: no final answer/session stats within {:?}",
+                    rpc_finishing_deadline()
+                );
+                let stderr = if stderr.trim().is_empty() {
+                    error
+                } else {
+                    format!("{error}\n{stderr}")
+                };
+                drain_controls(rx);
+                return collect_output(id, spec, false, None, String::new(), stderr, start);
+            }
             ctl = rx.recv(), if controls_open => match ctl {
                 Some(Control::Kill) => {
                     killed = true;
                     break;
                 }
-                Some(Control::Steer(message)) => {
-                    if !rpc.finishing {
+                Some(Control::Steer(message, ack)) => {
+                    if rpc.finishing {
+                        // The prompt settled before the steer went out: fail
+                        // the delivery explicitly instead of acknowledging it.
+                        let _ = ack.send(Err(SteerError::NotRunning));
+                    } else {
                         send(&mut stdin, &steer_frame(&message)).await;
+                        let _ = ack.send(Ok(()));
                     }
                 }
                 None => controls_open = false,
             },
         }
     }
+    drain_controls(rx);
     drop(stdin);
     if killed {
         kill_tree(&mut child);
@@ -514,14 +700,21 @@ async fn drive_rpc(
     let status = match waited {
         Ok(status) => status,
         Err(_) => {
+            // The child ignored stdin EOF / its own settled session: kill the
+            // whole group rather than waiting forever.
             kill_tree(&mut child);
             child.wait().await
         }
     };
+    if !killed {
+        // Normal exit: reap surviving group members (background jobs,
+        // servers) before joining the pipes, so they cannot hold them open.
+        reap_group(pgid);
+    }
     let stderr = join_text(stderr, killed).await;
     let exit_code = status.as_ref().ok().and_then(std::process::ExitStatus::code);
     if killed {
-        return cancelled_output(id, spec, exit_code, stderr, start);
+        return cancelled_output(id, spec.agent, exit_code, stderr, start);
     }
     if let Some(tokens) = rpc.output_tokens {
         shared.output_tokens.store(tokens, Ordering::SeqCst);
@@ -730,6 +923,8 @@ mod tests {
             schema_mode: SchemaMode::Permissive,
             model: None,
             tools: None,
+            depth: 0,
+            extra_args: Vec::new(),
         }
     }
 
@@ -739,7 +934,7 @@ mod tests {
         let bin = fake_binary(dir.path(), r#"echo "$2""#);
         let runner = TaskRunner::new(&bin, 1);
         let (control, join) = runner.start(spec("hello", dir.path()), ChildMode::Print);
-        assert_eq!(control.steer("x"), Err(SteerError::Unsupported));
+        assert_eq!(control.steer("x").await, Err(SteerError::Unsupported));
         let out = join.await;
         assert_eq!(out.status, RunStatus::Completed);
         assert_eq!(out.output.trim(), "hello");
@@ -836,12 +1031,12 @@ read -r eof || exit 0
         while control.phase() == RunPhase::Queued {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        control.steer("redirect please").unwrap();
+        control.steer("redirect please").await.unwrap();
         let out = join.await;
         assert_eq!(out.status, RunStatus::Completed, "stderr: {}", out.stderr);
         assert_eq!(out.output, "steered");
         assert_eq!(control.output_tokens(), 42);
-        assert_eq!(control.steer("late"), Err(SteerError::NotRunning));
+        assert_eq!(control.steer("late").await, Err(SteerError::NotRunning));
     }
 
     #[test]

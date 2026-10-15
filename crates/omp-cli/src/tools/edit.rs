@@ -150,7 +150,19 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         // `AgentProtocolHandler.write` → `executeSend`): steer a running eval
         // subagent instead of hitting the read-only output store.
         if let Some(to) = normalized.strip_prefix("agent://") {
-            return super::eval_agents::deliver_message(to, content)
+            // Delivery receipts are async; `write` itself is a sync tool on a
+            // `spawn_blocking` thread (see `tools.rs`), so drive the future to
+            // completion on the current runtime (or a throwaway one, e.g. in
+            // unit tests without a reactor).
+            let delivered = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => handle.block_on(super::eval_agents::deliver_message(to, content)),
+                Err(_) => tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("write agent:// delivery runtime")
+                    .block_on(super::eval_agents::deliver_message(to, content)),
+            };
+            return delivered
                 .map(AgentToolResult::text)
                 .map_err(|error| anyhow!(error));
         }

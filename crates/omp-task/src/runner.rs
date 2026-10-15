@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 
@@ -100,6 +101,13 @@ pub struct TaskSpec {
     pub model: Option<String>,
     /// Per-spawn tool allow-list override, passed to the child as `--tools`.
     pub tools: Option<Vec<String>>,
+    /// Task depth stamped on the child as [`TASK_DEPTH_ENV`] (a child of a
+    /// depth-N run is depth N+1); 0 for a root session. Set automatically by
+    /// [`TaskSpec::from_item`].
+    pub depth: usize,
+    /// Extra verbatim argv fragments appended to the child command, e.g.
+    /// parent-policy passthrough (`--no-extensions`, `--extension <p>`).
+    pub extra_args: Vec<String>,
 }
 
 impl TaskSpec {
@@ -132,6 +140,8 @@ impl TaskSpec {
                 _ => String::new(),
             }),
             tools: item.tools.clone(),
+            depth: current_task_depth() + 1,
+            extra_args: Vec::new(),
         }
     }
 }
@@ -140,6 +150,61 @@ impl TaskSpec {
 /// `autoTitle: options.autoTitle === true && !isSubagentSession`); without
 /// it each child spends one extra title-model request.
 pub(crate) const SUBAGENT_NO_TITLE: (&str, &str) = ("OMP_RS_NO_TITLE", "1");
+
+/// Env var carrying a process's task depth (TS `session.taskDepth`): the
+/// root session has depth 0, its children depth 1, and so on. Stamped on
+/// every child by the spawners in this module.
+pub const TASK_DEPTH_ENV: &str = "PI_TASK_DEPTH";
+/// Env var overriding [`DEFAULT_MAX_RECURSION_DEPTH`].
+pub const MAX_RECURSION_ENV: &str = "OMP_TASK_MAX_RECURSION_DEPTH";
+/// TS `task.maxRecursionDepth` (`task/settings.ts`) protocol default.
+pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 2;
+
+/// This process's task depth (`0` when the env var is absent or unparsable).
+#[must_use]
+pub fn current_task_depth() -> usize {
+    std::env::var(TASK_DEPTH_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
+
+/// The configured recursion ceiling ([`MAX_RECURSION_ENV`], else the TS
+/// default).
+#[must_use]
+pub fn max_recursion_depth() -> usize {
+    std::env::var(MAX_RECURSION_ENV)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_MAX_RECURSION_DEPTH)
+}
+
+/// TS `canSpawnAtDepth` gate (`task/structured-subagent.ts`): refuse to spawn
+/// a subagent from a session already at (or beyond) the maximum depth. On
+/// success returns the child's depth.
+pub fn recursion_gate_at(depth: usize) -> Result<usize, String> {
+    let max = max_recursion_depth();
+    if depth >= max {
+        return Err(format!(
+            "Cannot spawn another agent at task depth {depth}; maximum depth is {max}."
+        ));
+    }
+    Ok(depth + 1)
+}
+
+/// The gate for this process: the depth a child spawned here would run at.
+pub fn recursion_gate() -> Result<usize, String> {
+    recursion_gate_at(current_task_depth())
+}
+
+/// Apply the child env/argv shared by every spawner: the no-title marker,
+/// the recursion-depth stamp and the caller's policy passthrough args.
+fn apply_child_policy(command: &mut Command, spec: &TaskSpec) {
+    command
+        .env(SUBAGENT_NO_TITLE.0, SUBAGENT_NO_TITLE.1)
+        .env(TASK_DEPTH_ENV, spec.depth.to_string());
+    command.args(&spec.extra_args);
+}
 
 /// Spawns child agents as subprocesses of an `omp-rs -p`-style CLI binary.
 ///
@@ -259,12 +324,9 @@ impl TaskRunner {
     async fn spawn_child(&self, spec: &TaskSpec) -> std::io::Result<std::process::Output> {
         let mut attempt = 0;
         loop {
-            let mut command = tokio::process::Command::new(&self.binary);
-            command
-                .arg("-p")
-                .arg(&spec.prompt)
-                .current_dir(&spec.cwd)
-                .env(SUBAGENT_NO_TITLE.0, SUBAGENT_NO_TITLE.1);
+            let mut command = Command::new(&self.binary);
+            command.arg("-p").arg(&spec.prompt).current_dir(&spec.cwd);
+            apply_child_policy(&mut command, spec);
             if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
                 command.arg("--model").arg(model);
             }
@@ -427,6 +489,8 @@ mod tests {
             schema_mode: SchemaMode::Permissive,
             model: None,
             tools: None,
+            depth: 0,
+            extra_args: Vec::new(),
         }
     }
 
