@@ -13,6 +13,7 @@
 //!   the still-live tail — only leading finished entries may retire;
 //! - ctrl+O transcript-wide expansion ([`Messages::toggle_expanded`], §9).
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 use ratatui::text::Line;
@@ -434,6 +435,9 @@ pub struct Messages {
     /// Last revealed snapshot (live tail renders this instead of the raw
     /// segments while smooth reveal is catching up).
     reveal_display: Option<Vec<RevealBlock>>,
+    /// Incremental layout of the live assistant entry (drawn every frame
+    /// while it streams).
+    live_cache: RefCell<blocks::LiveCache>,
 }
 
 impl Default for Messages {
@@ -456,6 +460,7 @@ impl Default for Messages {
             theme: Theme::default(),
             reveal: StreamingRevealController::new(true),
             reveal_display: None,
+            live_cache: RefCell::default(),
         }
     }
 }
@@ -559,6 +564,7 @@ impl Messages {
     /// Replace the renderer theme (user theme load, tests).
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
+        *self.live_cache.get_mut() = blocks::LiveCache::default();
     }
 
     /// Display settings in effect.
@@ -609,15 +615,53 @@ impl Messages {
     /// other entry renders through [`blocks::entry_lines`].
     #[must_use]
     pub fn entry_lines_at(&self, idx: usize, width: usize) -> Vec<Line<'static>> {
+        self.entry_rows_at(idx, width, usize::MAX)
+    }
+
+    /// The last `max_rows` rows of the uncommitted tail (entries at/after
+    /// the commit watermark) — what the live region can show. The streaming
+    /// assistant entry is laid out incrementally and only its visible rows
+    /// are copied, so a frame costs O(new text + screen), not O(answer).
+    #[must_use]
+    pub fn tail_rows(&self, width: usize, max_rows: usize) -> Vec<Line<'static>> {
+        let mut picked: Vec<Vec<Line<'static>>> = Vec::new();
+        let mut left = max_rows;
+        for idx in (self.committed..self.entries.len()).rev() {
+            if left == 0 {
+                break;
+            }
+            let rows = self.entry_rows_at(idx, width, left);
+            left -= rows.len();
+            picked.push(rows);
+        }
+        picked.into_iter().rev().flatten().collect()
+    }
+
+    /// [`Self::entry_lines_at`], keeping only the last `max_rows` rows.
+    fn entry_rows_at(&self, idx: usize, width: usize, max_rows: usize) -> Vec<Line<'static>> {
         let entry = &self.entries[idx];
+        let width = width.max(8);
         if let ChatKind::Assistant(a) = &entry.kind {
             if a.live {
-                if let Some(snapshot) = &self.reveal_display {
-                    return blocks::revealed_lines(snapshot, width.max(8), &self.theme);
-                }
+                let mut cache = self.live_cache.borrow_mut();
+                return match &self.reveal_display {
+                    Some(snapshot) => {
+                        blocks::revealed_rows(snapshot, width, &self.theme, Some(&mut *cache), max_rows)
+                    }
+                    None => blocks::assistant_rows(
+                        a,
+                        self.expanded,
+                        width,
+                        &self.theme,
+                        Some(&mut *cache),
+                        max_rows,
+                    ),
+                };
             }
         }
-        blocks::entry_lines(entry, self.expanded, width.max(8), &self.theme)
+        let mut rows = blocks::entry_lines(entry, self.expanded, width, &self.theme);
+        rows.drain(..rows.len().saturating_sub(max_rows));
+        rows
     }
 
     /// Apply one runtime event (live path).

@@ -8,9 +8,9 @@
 //! unicode-aware cell widths. Output is a ratatui [`Text`] of styled
 //! [`Line`]s ready for the inline renderer's `insert_before` path.
 //!
-//! Streaming: [`MarkdownStream`] keeps a commit boundary — the offset after
-//! the last blank line outside a code fence — and only re-renders the tail,
-//! so appending a chunk costs one tail render, not a full re-layout.
+//! Streaming: [`MarkdownStream`] commits every top-level block whose parse
+//! can no longer change and re-renders only the open tail, so appending a
+//! chunk costs a tail re-layout, not a full one.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -421,12 +421,25 @@ fn fence_marker(line: &str) -> Option<(&str, String)> {
 
 /// Parse markdown into blocks. Streaming-safe: an unterminated fence,
 /// comment, or math block simply becomes a still-open block.
-#[allow(clippy::too_many_lines)] // block-kind dispatch table
 fn parse_blocks(src: &str) -> Vec<Block> {
     let lines: Vec<&str> = src.lines().collect();
+    parse_block_spans(&lines).into_iter().map(|(block, _)| block).collect()
+}
+
+/// [`parse_blocks`] over pre-split lines, pairing every block with its end:
+/// the index of the first line it did not consume. Deciding where a block
+/// ends looks at most one line past that end (see [`block_is_final`]).
+#[allow(clippy::too_many_lines)] // block-kind dispatch table
+fn parse_block_spans(lines: &[&str]) -> Vec<(Block, usize)> {
     let mut blocks = Vec::new();
+    let mut ends = Vec::new();
     let mut i = 0;
     while i < lines.len() {
+        // Every iteration pushes at most one block and then moves `i` past
+        // it, so the cursor here is the previous block's end.
+        if ends.len() < blocks.len() {
+            ends.push(i);
+        }
         let line = lines[i];
         let trimmed = line.trim();
         // Blank / space token.
@@ -536,7 +549,7 @@ fn parse_blocks(src: &str) -> Vec<Block> {
         }
         // List.
         if list_marker(line).is_some() {
-            let (items, next) = parse_list(&lines, i);
+            let (items, next) = parse_list(lines, i);
             blocks.push(Block::List(items));
             i = next;
             continue;
@@ -601,7 +614,10 @@ fn parse_blocks(src: &str) -> Vec<Block> {
         }
         blocks.push(Block::Paragraph(para));
     }
-    blocks
+    if ends.len() < blocks.len() {
+        ends.push(i);
+    }
+    blocks.into_iter().zip(ends).collect()
 }
 
 /// Whether a trimmed line is a thematic break; returns the source char.
@@ -1086,15 +1102,26 @@ fn wrap_plain(text: &str, width: usize) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// Incremental renderer for one growing markdown document (a streaming
-/// assistant message). Text before the last blank-line boundary outside a
-/// code fence is committed and never re-rendered; only the tail re-lays out
-/// on each push.
-#[derive(Debug, Default)]
+/// assistant message): `render(src)` output always equals
+/// [`render`]`(src)`, but a block whose parse can no longer change is laid
+/// out once and kept, so a frame only re-parses and re-renders the open
+/// tail (normally the last block or two).
+///
+/// Every call validates its cache: the source must extend the committed
+/// prefix and the width must match, otherwise the stream starts over. The
+/// theme is not tracked — drop the stream when it changes.
+#[derive(Debug, Clone, Default)]
 pub struct MarkdownStream {
-    raw: String,
-    /// Byte offset of the committed prefix; `head` holds its render.
-    stable: usize,
-    head: Text<'static>,
+    width: usize,
+    /// Source of the committed blocks (ends on a line boundary).
+    committed_src: String,
+    /// Rendered rows: the committed blocks' first, then the open tail's.
+    lines: Vec<Line<'static>>,
+    /// Rows of `lines` owned by committed blocks.
+    committed_rows: usize,
+    /// Uncommitted source the tail rows were rendered from (`None` until
+    /// the first render or after a reset).
+    tail_src: Option<String>,
 }
 
 impl MarkdownStream {
@@ -1104,55 +1131,69 @@ impl MarkdownStream {
         Self::default()
     }
 
-    /// Append a chunk of source text.
-    pub fn push_str(&mut self, chunk: &str) {
-        self.raw.push_str(chunk);
+    /// Rows of `src` laid out to `width` columns — identical to
+    /// [`render`]`(src, width, theme).lines` — re-rendering only what the
+    /// text appended since the previous call can still affect.
+    pub fn render(&mut self, src: &str, width: u16, theme: &Theme) -> &[Line<'static>] {
+        let width = usize::from(width).max(1);
+        if width != self.width || !src.starts_with(self.committed_src.as_str()) {
+            *self = Self {
+                width,
+                ..Self::default()
+            };
+        }
+        let rest = &src[self.committed_src.len()..];
+        if self.tail_src.as_deref() == Some(rest) {
+            return &self.lines;
+        }
+        let st = Styles::new(theme);
+        let lines: Vec<&str> = rest.lines().collect();
+        let complete = rest.bytes().filter(|&b| b == b'\n').count();
+        let blocks = parse_block_spans(&lines);
+        let settled = blocks
+            .iter()
+            .take_while(|(block, end)| block_is_final(block, *end, complete))
+            .count();
+        self.lines.truncate(self.committed_rows);
+        if settled > 0 {
+            let end_line = blocks[settled - 1].1;
+            let end_byte: usize = rest
+                .split_inclusive('\n')
+                .take(end_line)
+                .map(str::len)
+                .sum();
+            for (block, _) in &blocks[..settled] {
+                render_block(block, width, theme, &st, &mut self.lines);
+            }
+            self.committed_rows = self.lines.len();
+            self.committed_src.push_str(&rest[..end_byte]);
+        }
+        for (block, _) in &blocks[settled..] {
+            render_block(block, width, theme, &st, &mut self.lines);
+        }
+        self.tail_src = Some(src[self.committed_src.len()..].to_owned());
+        &self.lines
     }
 
-    /// Current rendered text at `width`. Re-renders only the uncommitted tail.
+    /// Rows of the last [`Self::render`].
     #[must_use]
-    pub fn text(&mut self, width: u16, theme: &Theme) -> Text<'static> {
-        let w = usize::from(width).max(1);
-        let st = Styles::new(theme);
-        let boundary = stable_boundary(&self.raw);
-        if boundary > self.stable {
-            let tail_src = &self.raw[self.stable..boundary];
-            self.head.extend(render_st(tail_src, w, theme, &st).lines);
-            self.stable = boundary;
-        }
-        if self.stable == self.raw.len() {
-            return self.head.clone();
-        }
-        let mut out = self.head.clone();
-        out.extend(render_st(&self.raw[self.stable..], w, theme, &st).lines);
-        out
+    pub fn lines(&self) -> &[Line<'static>] {
+        &self.lines
     }
 }
 
-/// Offset after the last blank line outside a code fence — a safe commit
-/// point, since top-level blocks are separated by blank lines.
-fn stable_boundary(raw: &str) -> usize {
-    let mut offset = 0;
-    let mut last_good = 0;
-    let mut in_fence = false;
-    let mut pending_blank = false;
-    for line in raw.split_inclusive('\n') {
-        let t = line.trim_end();
-        let tt = t.trim_start();
-        if tt.starts_with("```") || tt.starts_with("~~~") {
-            in_fence = !in_fence;
-        }
-        if t.trim().is_empty() {
-            pending_blank = true;
-        } else {
-            if pending_blank && !in_fence {
-                last_good = offset;
-            }
-            pending_blank = false;
-        }
-        offset += line.len();
+/// Whether a block parsed from a growing document can still change: its
+/// parse read lines up to its `end` (one past for the blocks that end on
+/// lookahead), and only the first `complete` lines (`\n`-terminated) are
+/// immutable — the last line may still grow, and new lines may follow.
+fn block_is_final(block: &Block, end: usize, complete: usize) -> bool {
+    match block {
+        // Decided by their own lines alone: the closing fence / the line.
+        Block::Code { closed: true, .. } | Block::Heading(..) | Block::Hr(_) => end <= complete,
+        // Paragraphs, lists, quotes, and tables end on (and may peek past)
+        // the following line; open fences and math run to the end of input.
+        _ => end + 1 < complete,
     }
-    last_good
 }
 
 // ---------------------------------------------------------------------------
@@ -1410,27 +1451,120 @@ mod tests {
         assert!(buf.contains('•'), "{buf}");
     }
 
-    #[test]
-    fn stream_final_text_matches_render() {
-        let full = "# T\n\npara one two three\n\n```rs\nfn f() {}\n```\n\n- a\n\n$$x^2$$";
-        let mut stream = MarkdownStream::new();
-        let mut out = Text::default();
-        for chunk in full.split_inclusive([' ', '\n']) {
-            stream.push_str(chunk);
-            out = stream.text(30, &theme());
+    /// Deterministic xorshift PRNG for the randomized stream tests.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
         }
-        assert_eq!(plain(&out), plain(&render(full, 30, &theme())));
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Fragments exercising every block kind and their boundaries.
+    const FRAGMENTS: &[&str] = &[
+        "# Title\n",
+        "### Deep *heading* `x`\n",
+        "Plain paragraph with **bold**, _it_, ~~gone~~ and a [link](https://e.x/a).\n",
+        "Wide 日本語テキスト and emoji 😀👍🏽 naïve café that wraps around the edge.\n",
+        "continued lazily on the next line\n",
+        "\n",
+        "\n\n",
+        "```rust\nfn main() {\n    let x = 1;\n}\n```\n",
+        "~~~\nraw ~~~ text\n~~~\n",
+        "```py\nprint('unterminated')\n",
+        "- one\n- two **b**\n  - nested a\n  - nested b\n- three\n",
+        "1. first\n2. second\n   lazy continuation\n",
+        "- [ ] todo\n- [x] done\n",
+        "\n- after blank item\n",
+        "| a | b |\n|---|:-:|\n| 1 | 22 |\n| 日本 | 😀 |\n",
+        "| not | a table\n",
+        "> quoted *text*\n> more\n>\n> after gap\n",
+        "---\n",
+        "***\n",
+        "<hr>\n",
+        "$$x^2 + y_1$$\n",
+        "$$\n\\frac{a}{b}\n$$\n",
+        "<!-- a comment\nspanning -->\n",
+        "Inline $\\alpha$ and \\(\\beta\\) math.<br>\n",
+        "Trailing text without newline",
+        "CRLF line one\r\nCRLF line two\r\n\r\n",
+        "    indented line\n",
+    ];
+
+    fn random_doc(rng: &mut Rng) -> String {
+        let n = 1 + rng.below(14);
+        (0..n).map(|_| FRAGMENTS[rng.below(FRAGMENTS.len())]).collect()
+    }
+
+    /// Random chunk boundaries on char boundaries (1..=12 chars per chunk).
+    fn random_cuts(rng: &mut Rng, doc: &str) -> Vec<usize> {
+        let bounds: Vec<usize> = doc.char_indices().map(|(i, _)| i).skip(1).collect();
+        let mut cuts = Vec::new();
+        let mut k = 0;
+        loop {
+            k += 1 + rng.below(12);
+            match bounds.get(k) {
+                Some(&b) => cuts.push(b),
+                None => break,
+            }
+        }
+        cuts.push(doc.len());
+        cuts
     }
 
     #[test]
-    fn stream_commits_stable_prefix() {
+    fn stream_matches_full_render_at_every_chunk() {
+        let theme = theme();
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..400 {
+            let doc = random_doc(&mut rng);
+            let mut width = [12u16, 30, 41, 80][rng.below(4)];
+            let mut stream = MarkdownStream::new();
+            for end in random_cuts(&mut rng, &doc) {
+                if rng.below(16) == 0 {
+                    // Resize mid-stream: the cache must not leak old widths.
+                    width = [9u16, 25, 60, 100][rng.below(4)];
+                }
+                let prefix = &doc[..end];
+                assert_eq!(
+                    stream.render(prefix, width, &theme),
+                    render(prefix, width, &theme).lines.as_slice(),
+                    "doc {doc:?} prefix {end} width {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stream_rewritten_source_restarts() {
+        let theme = theme();
         let mut stream = MarkdownStream::new();
-        stream.push_str("# A\n\nsome paragraph\n\n");
-        let _ = stream.text(40, &theme());
-        assert!(stream.stable > 0, "expected a committed prefix");
-        stream.push_str("tail **text**");
-        let joined = plain(&stream.text(40, &theme())).join("\n");
-        assert!(joined.contains('A'), "{joined}");
-        assert!(joined.contains("tail text"), "{joined}");
+        let _ = stream.render("# A\n\npara\n\n- x\n\nmore\n", 40, &theme);
+        let other = "# B\n\nother text\n";
+        assert_eq!(stream.render(other, 40, &theme), render(other, 40, &theme).lines.as_slice());
+    }
+
+    #[test]
+    fn stream_commits_settled_blocks() {
+        let theme = theme();
+        let mut stream = MarkdownStream::new();
+        let mut doc = String::new();
+        for n in 0..50 {
+            doc.push_str(&format!("## S{n}\n\nText {n}.\n\n```rs\nlet v = {n};\n```\n\n"));
+            let _ = stream.render(&doc, 60, &theme);
+        }
+        doc.push_str("tail");
+        let _ = stream.render(&doc, 60, &theme);
+        // Everything but the open paragraph is committed: a frame re-parses
+        // only `tail`.
+        assert_eq!(&doc[stream.committed_src.len()..], "\ntail");
+        assert_eq!(stream.render(&doc, 60, &theme), render(&doc, 60, &theme).lines.as_slice());
     }
 }

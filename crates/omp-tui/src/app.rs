@@ -1531,15 +1531,10 @@ impl App {
         // (startup load + `/theme` hot-swap), not per frame.
         self.messages.tick_reveal();
         let height = area.height as usize;
-        let base = self.messages.committed_len();
-        let tail_len = self.messages.entries().len() - base;
         let width = usize::from(area.width).max(8);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for idx in base..base + tail_len {
-            lines.extend(self.messages.entry_lines_at(idx, width));
-        }
-        let skip = lines.len().saturating_sub(height + self.scroll as usize);
-        frame.render_widget(Paragraph::new(lines[skip..].to_vec()), area);
+        // Bottom-anchored: the last `height + scroll` rows of the tail.
+        let lines = self.messages.tail_rows(width, height + self.scroll as usize);
+        frame.render_widget(Paragraph::new(lines), area);
     }
 }
 

@@ -755,7 +755,10 @@ fn to_text(code: &str, spans: &[(usize, usize, Cat)], styles: Styles) -> Text<'s
                 si += 1;
                 p = e;
             } else {
+                // The span continues on the next line: finish this row
+                // without consuming it (looping on it would never advance).
                 p = line_end;
+                break;
             }
         }
         if p < line_end {
@@ -855,5 +858,12 @@ mod tests {
         assert!(text
             .iter()
             .all(|l| l.spans.iter().all(|s| s.style == Style::default())));
+    }
+
+    #[test]
+    fn multiline_span_does_not_loop() {
+        // An unparsable multi-line region comes back as one ERROR node.
+        let text = highlight("$$\n$$", Some("py"), &theme());
+        assert_eq!(text.lines.len(), 2);
     }
 }

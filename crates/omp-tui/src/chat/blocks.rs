@@ -74,11 +74,87 @@ pub fn entry_lines(
 /// Render a reveal-snapshot of assistant blocks (live tail, smooth reveal).
 #[must_use]
 pub fn revealed_lines(blocks: &[RevealBlock], width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    revealed_rows(blocks, width, theme, None, usize::MAX)
+}
+
+/// Incremental render state of the live (streaming) assistant entry: one
+/// [`markdown::MarkdownStream`] per content block, by block index. Each
+/// stream validates itself against the text it is given, so the cache is
+/// never stale across messages or widths; drop it on a theme change.
+#[derive(Debug, Clone, Default)]
+pub struct LiveCache {
+    streams: Vec<markdown::MarkdownStream>,
+}
+
+impl LiveCache {
+    fn stream(&mut self, idx: usize) -> &mut markdown::MarkdownStream {
+        if self.streams.len() <= idx {
+            self.streams.resize_with(idx + 1, Default::default);
+        }
+        &mut self.streams[idx]
+    }
+}
+
+/// Rows of one part of an entry: rendered on the spot, or a cached markdown
+/// layout still missing the prose indent.
+enum Rows<'a> {
+    Owned(Vec<Line<'static>>),
+    Prose(&'a [Line<'static>]),
+}
+
+/// The last `max_rows` rows of `parts` laid end to end; only the rows kept
+/// are copied out of cached layouts.
+fn last_rows(parts: Vec<Rows<'_>>, max_rows: usize) -> Vec<Line<'static>> {
+    let mut picked: Vec<Vec<Line<'static>>> = Vec::new();
+    let mut left = max_rows;
+    for part in parts.into_iter().rev() {
+        if left == 0 {
+            break;
+        }
+        let rows = match part {
+            Rows::Owned(mut rows) => {
+                rows.drain(..rows.len().saturating_sub(left));
+                rows
+            }
+            Rows::Prose(rows) => rows[rows.len().saturating_sub(left)..]
+                .iter()
+                .map(|line| indent_prose(line.clone()))
+                .collect(),
+        };
+        left -= rows.len();
+        picked.push(rows);
+    }
+    picked.into_iter().rev().flatten().collect()
+}
+
+/// [`revealed_lines`], laying text blocks out through `cache` when given and
+/// returning only the last `max_rows` rows.
+#[must_use]
+pub fn revealed_rows(
+    blocks: &[RevealBlock],
+    width: usize,
+    theme: &Theme,
+    mut cache: Option<&mut LiveCache>,
+    max_rows: usize,
+) -> Vec<Line<'static>> {
+    let inner = prose_width(width);
+    if let Some(cache) = cache.as_deref_mut() {
+        for (idx, block) in blocks.iter().enumerate() {
+            if let RevealBlock::Text(text) = block {
+                cache.stream(idx).render(text, inner, theme);
+            }
+        }
+    }
+    let cache = cache.as_deref();
     let settings = ThinkingDisplay::default();
-    let mut lines = Vec::new();
-    for block in blocks {
-        match block {
-            RevealBlock::Text(text) => lines.extend(prose_lines(text, width, theme)),
+    let parts = blocks
+        .iter()
+        .enumerate()
+        .map(|(idx, block)| match block {
+            RevealBlock::Text(text) => match cache {
+                Some(cache) => Rows::Prose(cache.streams[idx].lines()),
+                None => Rows::Owned(prose_lines(text, width, theme)),
+            },
             RevealBlock::Thinking { display, .. } => {
                 let view = ThinkingBlockView {
                     text: display.clone(),
@@ -86,11 +162,11 @@ pub fn revealed_lines(blocks: &[RevealBlock], width: usize, theme: &Theme) -> Ve
                     preformatted: true,
                     ..ThinkingBlockView::default()
                 };
-                lines.extend(view.render(&settings, theme).lines);
+                Rows::Owned(view.render(&settings, theme).lines)
             }
-        }
-    }
-    lines
+        })
+        .collect();
+    last_rows(parts, max_rows)
 }
 
 // ─── User bubble (chat.md §4) ──────────────────────────────────────────────
@@ -184,17 +260,24 @@ fn pad_row(mut line: Line<'static>, width: usize, fill: Style) -> Line<'static> 
 /// Assistant prose: Markdown at paddingX 1 (`AssistantMessageComponent`
 /// builds `new Markdown(text, 1, 0, ...)`) — a one-cell left indent.
 fn prose_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let inner = width.saturating_sub(2).max(1);
-    markdown::render(text, inner as u16, theme)
+    markdown::render(text, prose_width(width), theme)
         .lines
         .into_iter()
-        .map(|mut line| {
-            if !line.spans.is_empty() {
-                line.spans.insert(0, Span::raw(" "));
-            }
-            line
-        })
+        .map(indent_prose)
         .collect()
+}
+
+/// Markdown layout width inside the prose padding.
+fn prose_width(width: usize) -> u16 {
+    width.saturating_sub(2).max(1) as u16
+}
+
+/// Apply the prose paddingX to one markdown row (blank rows stay empty).
+fn indent_prose(mut line: Line<'static>) -> Line<'static> {
+    if !line.spans.is_empty() {
+        line.spans.insert(0, Span::raw(" "));
+    }
+    line
 }
 
 fn assistant_lines(
@@ -203,13 +286,38 @@ fn assistant_lines(
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let settings = ThinkingDisplay::default();
-    let mut lines = Vec::new();
-    for segment in &a.segments {
-        match segment {
-            crate::chat::AssistantSegment::Text { text } => {
-                lines.extend(prose_lines(text, width, theme));
+    assistant_rows(a, expanded, width, theme, None, usize::MAX)
+}
+
+/// [`assistant_lines`], laying text segments out through `cache` when given
+/// and returning only the last `max_rows` rows.
+#[must_use]
+pub fn assistant_rows(
+    a: &AssistantMsg,
+    expanded: bool,
+    width: usize,
+    theme: &Theme,
+    mut cache: Option<&mut LiveCache>,
+    max_rows: usize,
+) -> Vec<Line<'static>> {
+    let width = width.max(8);
+    let inner = prose_width(width);
+    if let Some(cache) = cache.as_deref_mut() {
+        for (idx, segment) in a.segments.iter().enumerate() {
+            if let crate::chat::AssistantSegment::Text { text } = segment {
+                cache.stream(idx).render(text, inner, theme);
             }
+        }
+    }
+    let cache = cache.as_deref();
+    let settings = ThinkingDisplay::default();
+    let mut parts: Vec<Rows<'_>> = Vec::with_capacity(a.segments.len() + 1);
+    for (idx, segment) in a.segments.iter().enumerate() {
+        match segment {
+            crate::chat::AssistantSegment::Text { text } => parts.push(match cache {
+                Some(cache) => Rows::Prose(cache.streams[idx].lines()),
+                None => Rows::Owned(prose_lines(text, width, theme)),
+            }),
             crate::chat::AssistantSegment::Thinking { text } => {
                 let view = ThinkingBlockView {
                     text: text.clone(),
@@ -218,7 +326,7 @@ fn assistant_lines(
                     streamed: true,
                     ..ThinkingBlockView::default()
                 };
-                lines.extend(view.render(&settings, theme).lines);
+                parts.push(Rows::Owned(view.render(&settings, theme).lines));
             }
         }
     }
@@ -226,10 +334,11 @@ fn assistant_lines(
     // suppressed unless expanded (TS `#errorPinned`); the caller-owned
     // Spacer precedes it.
     if let Some(error) = a.error_message.as_ref().filter(|_| !a.error_pinned || expanded) {
-        lines.push(Line::default());
-        lines.extend(format_error_block(error, width, expanded, theme));
+        let mut rows = vec![Line::default()];
+        rows.extend(format_error_block(error, width, expanded, theme));
+        parts.push(Rows::Owned(rows));
     }
-    lines
+    last_rows(parts, max_rows)
 }
 
 /// Inline turn-ending error (TS `AssistantMessageComponent#appendErrorBlock`):

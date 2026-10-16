@@ -173,15 +173,65 @@ pub fn streaming_string_keys(tool: &str) -> &'static [&'static str] {
 
 /// Smooth streaming reveal of assistant blocks
 /// (TS `StreamingRevealController`).
+///
+/// Snapshots grow by appending, so grapheme bookkeeping is incremental: a
+/// new snapshot segments only the text after each block's last stable
+/// boundary, and a tick resumes cutting from the previous cut. A grapheme
+/// boundary between two characters depends only on what precedes it (UAX
+/// #29), so boundaries inside the old text survive an append; only the old
+/// end may merge with what follows.
 #[derive(Debug, Clone)]
 pub struct StreamingRevealController {
     target: Vec<RevealBlock>,
+    /// Grapheme bookkeeping per `target` block.
+    units: Vec<BlockUnits>,
     total: usize,
     revealed: usize,
     smooth: bool,
     /// Set when the target changed while caught up; the next tick coalesces
     /// delta bursts (TS `#targetDirty`).
     target_dirty: bool,
+    /// The last cut: a grapheme boundary inside one `target` block.
+    cursor: RevealCursor,
+}
+
+/// Grapheme count of one target block.
+#[derive(Debug, Clone, Copy, Default)]
+struct BlockUnits {
+    /// Graphemes in the block.
+    total: usize,
+    /// Byte offset where the last grapheme starts (0 when empty): every
+    /// boundary up to here survives appends; the block's end may not.
+    last_start: usize,
+}
+
+/// `units` graphemes of `target[block]` end at byte `byte`.
+#[derive(Debug, Clone, Copy, Default)]
+struct RevealCursor {
+    block: usize,
+    units: usize,
+    byte: usize,
+}
+
+/// The text a block reveals (thinking reveals its display form).
+fn unit_text(block: &RevealBlock) -> &str {
+    match block {
+        RevealBlock::Text(t) | RevealBlock::Thinking { display: t, .. } => t,
+    }
+}
+
+/// Count `text`'s graphemes given that `base_units` of them end at the
+/// boundary `base_byte`.
+fn units_from(text: &str, base_units: usize, base_byte: usize) -> BlockUnits {
+    let mut out = BlockUnits {
+        total: base_units,
+        last_start: base_byte,
+    };
+    for (i, _) in text[base_byte..].grapheme_indices(true) {
+        out.total += 1;
+        out.last_start = base_byte + i;
+    }
+    out
 }
 
 impl StreamingRevealController {
@@ -191,21 +241,48 @@ impl StreamingRevealController {
     pub fn new(smooth: bool) -> Self {
         Self {
             target: Vec::new(),
+            units: Vec::new(),
             total: 0,
             revealed: 0,
             smooth,
             target_dirty: false,
+            cursor: RevealCursor::default(),
         }
     }
 
     /// Replace the cumulative stream snapshot (chat.md §2.3: snapshots, not
     /// raw deltas).
     pub fn set_target(&mut self, blocks: Vec<RevealBlock>) {
-        self.total = visible_units(&blocks);
+        let mut units = Vec::with_capacity(blocks.len());
+        for (idx, block) in blocks.iter().enumerate() {
+            let text = unit_text(block);
+            // The old count carries over when the block only grew.
+            let grown = self
+                .target
+                .get(idx)
+                .filter(|old| {
+                    std::mem::discriminant(*old) == std::mem::discriminant(block)
+                        && text.starts_with(unit_text(old))
+                })
+                .and(self.units.get(idx).copied());
+            units.push(match grown {
+                Some(old) if old.total > 0 => units_from(text, old.total - 1, old.last_start),
+                _ => units_from(text, 0, 0),
+            });
+            if self.cursor.block == idx && !grown.is_some_and(|old| self.cursor.byte <= old.last_start)
+            {
+                self.cursor = RevealCursor {
+                    block: idx,
+                    ..RevealCursor::default()
+                };
+            }
+        }
+        self.total = units.iter().map(|u| u.total).sum();
         if !self.smooth {
             self.revealed = self.total;
         }
         self.target = blocks;
+        self.units = units;
         self.target_dirty = true;
     }
 
@@ -228,7 +305,58 @@ impl StreamingRevealController {
         }
         self.revealed += next_step(backlog);
         self.target_dirty = false;
-        Some(reveal_prefix(&self.target, self.revealed))
+        Some(self.prefix(self.revealed))
+    }
+
+    /// [`reveal_prefix`]`(target, revealed)`, cutting from the last cut.
+    fn prefix(&mut self, revealed: usize) -> Vec<RevealBlock> {
+        let mut out = Vec::with_capacity(self.target.len());
+        let mut left = revealed;
+        for (idx, block) in self.target.iter().enumerate() {
+            if left == 0 {
+                out.push(match block {
+                    RevealBlock::Text(_) => RevealBlock::Text(String::new()),
+                    RevealBlock::Thinking { raw, .. } => RevealBlock::Thinking {
+                        display: String::new(),
+                        raw: raw.clone(),
+                    },
+                });
+                continue;
+            }
+            let total = self.units[idx].total;
+            if left >= total {
+                out.push(block.clone());
+                left -= total;
+                continue;
+            }
+            let text = unit_text(block);
+            let mut from = self.cursor;
+            if from.block != idx || from.units > left {
+                from = RevealCursor {
+                    block: idx,
+                    ..RevealCursor::default()
+                };
+            }
+            let byte = text[from.byte..]
+                .grapheme_indices(true)
+                .nth(left - from.units)
+                .map_or(text.len(), |(i, _)| from.byte + i);
+            self.cursor = RevealCursor {
+                block: idx,
+                units: left,
+                byte,
+            };
+            let cut = text[..byte].to_owned();
+            out.push(match block {
+                RevealBlock::Text(_) => RevealBlock::Text(cut),
+                RevealBlock::Thinking { raw, .. } => RevealBlock::Thinking {
+                    display: cut,
+                    raw: raw.clone(),
+                },
+            });
+            left = 0;
+        }
+        out
     }
 
     /// Fully revealed snapshot (used at `message_end`).
@@ -389,6 +517,65 @@ mod tests {
         assert_eq!(last, 30);
         assert_eq!(c.finish().len(), 1);
         assert_eq!(c.revealed(), 30);
+    }
+
+    #[test]
+    fn incremental_counts_and_cuts_match_full_recount() {
+        // Appends that split grapheme clusters: combining marks, ZWJ emoji,
+        // skin tones, flags (regional-indicator pairs), CRLF, Hangul jamo.
+        const PIECES: &[&str] = &[
+            "a", "e\u{301}", "\u{301}", "\u{200d}", "👩", "\u{200d}💻", "🏽", "🇯", "🇵", "\r", "\n",
+            "\r\n", "日本", "ᄀ", "ᅡ", "ᆨ", " ", "naïve ", "x\u{20e3}",
+        ];
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut rand = |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n as u64) as usize
+        };
+        for _ in 0..300 {
+            let mut c = StreamingRevealController::new(true);
+            let mut texts = vec![String::new(); 1 + rand(3)];
+            let kinds: Vec<bool> = texts.iter().map(|_| rand(3) == 0).collect();
+            for _ in 0..40 {
+                // Grow a random block (earlier ones too, as thinking can).
+                let k = rand(texts.len());
+                for _ in 0..1 + rand(4) {
+                    texts[k].push_str(PIECES[rand(PIECES.len())]);
+                }
+                let blocks: Vec<RevealBlock> = texts
+                    .iter()
+                    .zip(&kinds)
+                    .map(|(t, &thinking)| {
+                        if thinking {
+                            RevealBlock::Thinking {
+                                display: t.clone(),
+                                raw: t.clone(),
+                            }
+                        } else {
+                            RevealBlock::Text(t.clone())
+                        }
+                    })
+                    .collect();
+                c.set_target(blocks.clone());
+                assert_eq!(c.total, visible_units(&blocks), "{texts:?}");
+                for _ in 0..rand(3) {
+                    if let Some(snapshot) = c.tick() {
+                        let expected = if c.revealed >= c.total {
+                            blocks.clone()
+                        } else {
+                            reveal_prefix(&blocks, c.revealed)
+                        };
+                        assert_eq!(snapshot, expected, "{texts:?} at {}", c.revealed);
+                    }
+                }
+                if rand(8) == 0 {
+                    // A rewritten snapshot (not an append) recounts.
+                    texts[k] = texts[k].chars().rev().collect();
+                }
+            }
+        }
     }
 
     #[test]
