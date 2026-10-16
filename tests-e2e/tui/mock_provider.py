@@ -17,7 +17,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-READ_FILE = os.environ.get("E2E_READ_FILE", __file__)
+# Relative: the read tool resolves it against the client cwd (the e2e work dir).
+READ_FILE = os.environ.get("E2E_READ_FILE", "e2e-read-me.txt")
 LOG = os.environ.get("E2E_MOCK_LOG", "")
 _lock = threading.Lock()
 

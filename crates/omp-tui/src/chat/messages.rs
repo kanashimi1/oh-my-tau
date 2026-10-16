@@ -560,8 +560,13 @@ impl Messages {
             AppEvent::ToolExecutionStart(frame) => self.tool_start(frame),
             AppEvent::ToolExecutionUpdate(frame) => self.tool_update(frame),
             AppEvent::ToolExecutionEnd(frame) => self.tool_end(frame),
-            AppEvent::PromptResult { success, error, .. } => {
-                if !success {
+            AppEvent::PromptResult { success, error, frame, .. } => {
+                // A failed agent run already shows its error on the assistant
+                // block (TS event-controller: errorMessage on message_end); a
+                // second row would repeat it. Only failures that never reached
+                // the agent (unknown command, resume/rewind failure) need one.
+                let agent_invoked = frame.get("agentInvoked").and_then(Value::as_bool).unwrap_or(false);
+                if !success && !agent_invoked {
                     let msg = error.as_deref().unwrap_or("prompt failed");
                     self.push(ChatEntry::new(
                         ChatRole::System,
@@ -1645,13 +1650,21 @@ mod tests {
         assert_eq!(text.matches("this turn").count(), 1, "{text}");
         assert!(!text.contains("Error"), "{text}");
 
+        // An agent-run failure is already on the assistant block: no extra row.
+        let before = m.entries().len();
         m.apply(&crate::events::parse_frame(&json!({
             "type": "prompt_result", "agentInvoked": true, "status": "error",
             "error": {"message": "429 rate limited", "retryable": true}, "sessionSettled": true
         })));
+        assert_eq!(m.entries().len(), before);
+        // A failure that never reached the agent gets one row with its text.
+        m.apply(&crate::events::parse_frame(&json!({
+            "type": "prompt_result", "agentInvoked": false, "status": "error",
+            "error": {"message": "Unknown command: /zz", "retryable": false}, "sessionSettled": true
+        })));
         let last = m.entries().len() - 1;
         let row: String = m.entry_lines_at(last, 100).iter().map(ToString::to_string).collect();
-        assert!(row.contains("429 rate limited"), "{row}");
+        assert!(row.contains("Unknown command: /zz"), "{row}");
     }
 
     #[test]

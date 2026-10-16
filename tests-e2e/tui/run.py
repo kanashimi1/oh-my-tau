@@ -17,6 +17,7 @@ import difflib
 import os
 import re
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -46,7 +47,11 @@ def make_home(root: Path, port: int) -> dict[str, str]:
         + "".join(f"      - id: {m}\n        name: e2e {m}\n        contextWindow: 128000\n        maxTokens: 4096\n"
                   for m in ("text", "tool", "fail"))
     )
-    (agent / "config.yml").write_text("# e2e: minimal\n")
+    # No onboarding wizard / update probe / changelog: they would cover the
+    # chat screen on a fresh HOME (TS omp; omp-rs ignores unknown keys).
+    (agent / "config.yml").write_text(
+        "startup:\n  setupWizard: false\n  checkUpdate: false\n  changelogMode: hidden\n"
+    )
     work = root / "work"
     work.mkdir()
     (work / "e2e-read-me.txt").write_text("E2E-FILE-CONTENT\n")
@@ -85,20 +90,36 @@ def submit(t: Term, text: str) -> None:
 
 USAGE_RE = r"⏱|tok/s|\d+(\.\d+)?[kKM]? tok"
 ERROR_RE = r"(?i)\berror\b|prompt failed"
+# Status line both clients draw once the chat is interactive: `π > ⬢ <model> > …`.
+READY_RE = r"π > ⬢"
+
+
+def ready(t: Term, timeout: float = 60) -> bool:
+    """Wait until the chat is interactive (TS shows a splash first)."""
+    ok = t.wait_for(READY_RE, timeout, in_transcript=False)
+    t.settle(1.0, 15)
+    return ok
+
+
+def error_headers(text: str, needle: str) -> int:
+    """Lines that present `needle` as an error (✗/✘ glyph or `Error:`),
+    ignoring detail lines that merely repeat the provider text."""
+    return sum(1 for line in text.splitlines()
+               if needle in line and re.search(r"[✗✘]|(?i:error:)", line))
 
 
 def sc_startup(t: Term, r: Result) -> None:
-    t.settle(1.5, 30)
+    r.check("startup: chat ready", ready(t))
     r.screens["startup"] = t.text()
-    r.check("startup: editor visible", re.search(r"(?i)ask|❯|>", t.text()) is not None)
     r.check("startup: model shown", "mock/text" in t.text() or "e2e text" in t.text())
     r.check("startup: no error", re.search(ERROR_RE, t.text()) is None)
 
 
 def sc_two_prompts(t: Term, r: Result) -> None:
-    t.settle(1.5, 30)
+    ready(t)
     submit(t, "first e2e prompt")
-    r.check("prompt1: reply shown", t.wait_for(r"E2E-REPLY-1", 60))
+    r.check("prompt1: reply shown", t.wait_for(r"E2E-REPLY-1", 90))
+    t.wait_for(READY_RE, 30, in_transcript=False)
     t.settle(1.0, 30)
     r.screens["after-prompt-1"] = t.transcript()
     r.check("prompt1: no error", re.search(ERROR_RE, t.transcript()) is None)
@@ -113,7 +134,7 @@ def sc_two_prompts(t: Term, r: Result) -> None:
 
 
 def sc_tool(t: Term, r: Result) -> None:
-    t.settle(1.5, 30)
+    ready(t)
     submit(t, "read the file")
     r.check("tool: final reply", t.wait_for(r"E2E-TOOL-DONE", 60))
     t.settle(1.0, 30)
@@ -124,18 +145,19 @@ def sc_tool(t: Term, r: Result) -> None:
 
 
 def sc_fail(t: Term, r: Result) -> None:
-    t.settle(1.5, 30)
+    ready(t)
     submit(t, "this will fail")
     r.check("fail: provider message shown", t.wait_for(r"E2E-PROVIDER-FAILURE", 60))
     t.settle(1.5, 30)
     tr = t.transcript()
     r.screens["provider-error"] = tr
-    r.check("fail: shown once", tr.count("E2E-PROVIDER-FAILURE") == 1)
-    r.check("fail: editor usable again", re.search(r"(?i)ask|❯", t.text()) is not None)
+    r.check("fail: shown once", error_headers(tr, "E2E-PROVIDER-FAILURE") == 1)
+    submit(t, "after failure")
+    r.check("fail: next prompt accepted", t.wait_for(r"after failure", 20))
 
 
 def sc_slash(t: Term, r: Result) -> None:
-    t.settle(1.5, 30)
+    ready(t)
     before = t.transcript()
     submit(t, "/session")
     t.settle(1.0, 15)
@@ -147,11 +169,11 @@ def sc_slash(t: Term, r: Result) -> None:
 
 
 def sc_exit(t: Term, r: Result) -> None:
-    t.settle(1.5, 30)
+    ready(t)
     t.key("ctrl-c")
     t.pump(0.2)
     t.key("ctrl-c")
-    deadline = time.time() + 8
+    deadline = time.time() + 15
     while time.time() < deadline and t.proc.poll() is None:
         t.pump(0.1)
     r.screens["exit"] = t.text()
@@ -168,6 +190,28 @@ SCENARIOS = {
 }
 
 
+def reap_home_processes(root: Path) -> list[str]:
+    """Stop daemons the client detached under this throwaway HOME (TS omp
+    spawns e.g. text-predict). Only processes whose environment has exactly
+    this HOME are touched."""
+    killed = []
+    needle = f"HOME={root}".encode() + b"\0"
+    for pid_dir in Path("/proc").iterdir():
+        if not pid_dir.name.isdigit() or int(pid_dir.name) == os.getpid():
+            continue
+        try:
+            environ = (pid_dir / "environ").read_bytes() + b"\0"
+        except OSError:
+            continue
+        if needle in environ:
+            try:
+                os.kill(int(pid_dir.name), signal.SIGTERM)
+                killed.append(pid_dir.name)
+            except OSError:
+                pass
+    return [f"reaped daemons {','.join(killed)}"] if killed else []
+
+
 def run_client(binary: str, model: str, fn, port: int, keep: Path) -> Result:
     root = Path(tempfile.mkdtemp(prefix="e2e-home-"))
     env = make_home(root, port)
@@ -181,15 +225,29 @@ def run_client(binary: str, model: str, fn, port: int, keep: Path) -> Result:
     finally:
         code = t.close()
         r.notes.append(f"exit code {code}")
-        shutil.copytree(root / ".omp", keep / "home-omp", dirs_exist_ok=True, ignore_dangling_symlinks=True)
+        sessions = root / ".omp" / "agent" / "sessions"
+        if sessions.is_dir():
+            shutil.copytree(sessions, keep / "sessions", dirs_exist_ok=True)
+        r.notes.extend(reap_home_processes(root))
         shutil.rmtree(root, ignore_errors=True)
     return r
 
 
 def normalize(text: str) -> list[str]:
+    """Screen lines with run-specific noise masked: temp HOME names, session
+    ids, numbers, the rotating startup tip, trailing blanks. Leading
+    indentation is kept (layout is part of the look)."""
     out = []
+    skip_tip = False
     for line in text.splitlines():
-        line = re.sub(r"/tmp/e2e-home-[^/\s]+", "<HOME>", line)
+        if re.match(r"\s*Tip:", line):
+            skip_tip = True
+            continue
+        if skip_tip and line.strip() and line.startswith(" " * 20):
+            continue  # wrapped continuation of the tip
+        skip_tip = False
+        line = re.sub(r"e2e-home-[A-Za-z0-9_]+", "<HOME>", line)
+        line = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f-]{14,}", "<ID>", line)
         line = re.sub(r"\d+", "#", line).rstrip()
         if line.strip():
             out.append(line)
@@ -206,7 +264,7 @@ def main() -> int:
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    os.environ["E2E_MOCK_LOG"] = str(out / "mock.jsonl")
+    mock_provider.LOG = str(out / "mock.jsonl")
     srv = mock_provider.serve(0)
     port = srv.server_address[1]
 
@@ -237,7 +295,9 @@ def main() -> int:
         for c in checks:
             ts_ok = per.get("ts", Result()).checks.get(c)
             rs_ok = per.get("rs", Result()).checks.get(c)
-            if rs_ok:
+            if rs_ok is None:
+                verdict = "baseline only" if ts_ok else "baseline (omp fails)"
+            elif rs_ok:
                 verdict = "ok"
             elif ts_ok is False:
                 verdict = "baseline (omp fails too)"
