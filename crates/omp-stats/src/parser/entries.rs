@@ -263,6 +263,15 @@ pub(crate) fn extract_stats(
         && finite_count(raw_usage.get("totalTokens")).is_some();
 
     let cost = usage_cost(raw_usage.get("cost"));
+    // TS keeps the raw usage object, so orchestration/cttl reach pricing.
+    let orchestration = raw_usage
+        .get("orchestration")
+        .filter(|v| v.is_object())
+        .and_then(|v| serde_json::from_value::<crate::types::UsageOrchestration>(lenient_counts(v)).ok());
+    let cttl = raw_usage
+        .get("cttl")
+        .filter(|v| v.is_object())
+        .and_then(|v| serde_json::from_value::<crate::types::UsageCttl>(lenient_counts(v)).ok());
     // An omitted `cost` must stay omitted: absence reads as "no recorded
     // price" (estimated), a zero reads as an explicitly free request.
     let usage = if well_formed && derived == recorded {
@@ -274,6 +283,8 @@ pub(crate) fn extract_stats(
             total_tokens: tok("totalTokens"),
             premium_requests: finite_count(raw_usage.get("premiumRequests")),
             cost,
+            orchestration,
+            cttl,
         }
     } else {
         UsageInput {
@@ -286,6 +297,8 @@ pub(crate) fn extract_stats(
             total_tokens: resolve_usage_total(Some(raw_usage)) as i64,
             premium_requests: Some(derived),
             cost,
+            orchestration,
+            cttl,
         }
     };
 
@@ -472,4 +485,19 @@ pub(crate) fn extract_tool_result_link(session_file: &str, entry: &Value) -> Opt
 #[allow(dead_code)]
 pub(crate) fn parse_line(line: &str) -> Result<Value> {
     Ok(serde_json::from_str(line)?)
+}
+
+/// Keep only finite numeric members (as integers) of a usage sub-object, so a
+/// malformed member counts as absent instead of failing the whole object
+/// (TS `finiteTokenCount` semantics).
+fn lenient_counts(v: &Value) -> Value {
+    let map = v
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, val)| val.as_f64().map(|n| (k.clone(), Value::from(n as i64))))
+                .collect::<serde_json::Map<_, _>>()
+        })
+        .unwrap_or_default();
+    Value::Object(map)
 }

@@ -105,6 +105,34 @@ pub struct UsageInput {
     pub premium_requests: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<UsageInputCost>,
+    /// Provider-side orchestration tokens (pi-ai `Usage.orchestration`):
+    /// billed on top of the conversation buckets (e.g. multi-agent models).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orchestration: Option<UsageOrchestration>,
+    /// Cache-write TTL split (pi-ai `Usage.cttl`): prices 5m vs 1h writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cttl: Option<UsageCttl>,
+}
+
+/// pi-ai `Usage.orchestration`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageOrchestration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<i64>,
+}
+
+/// pi-ai `Usage.cttl`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct UsageCttl {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral5m: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral1h: Option<i64>,
 }
 
 /// Minimal pi-ai `AssistantMessage` (fields stats reads).

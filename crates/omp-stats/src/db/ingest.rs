@@ -414,6 +414,7 @@ mod tests {
                 total_tokens: 165,
                 premium_requests: Some(1.0),
                 cost: None,
+                ..UsageInput::default()
             },
             agent_type: crate::types::AgentType::Main,
             service_tier: None,

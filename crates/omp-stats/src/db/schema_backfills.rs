@@ -319,6 +319,38 @@ pub(crate) fn usage_from_input(input: &crate::types::UsageInput) -> Usage {
         output: input.output,
         cache_read: input.cache_read,
         cache_write: input.cache_write,
+        orchestration: input.orchestration.map(|o| crate::catalog::OrchestrationUsage {
+            input: o.input,
+            cache_read: o.cache_read,
+            output: o.output,
+        }),
+        cttl: input.cttl.map(|c| crate::catalog::CttlUsage { ephemeral5m: c.ephemeral5m, ephemeral1h: c.ephemeral1h }),
         ..Usage::default()
+    }
+}
+
+#[cfg(all(test, feature = "db_ingest"))]
+mod orchestration_tests {
+    use super::{calculate_catalog_cost, usage_from_input};
+
+    /// Review regression (RevCatalog #1): orchestration and cttl from the
+    /// wire usage must reach pricing. Expected values from TS
+    /// `calculateUsageCost(getBundledModel("anthropic","claude-sonnet-5-5").cost, …)`.
+    #[test]
+    fn orchestration_and_cttl_are_priced_like_ts() {
+        let input: crate::types::UsageInput = serde_json::from_value(serde_json::json!({
+            "input": 1000, "output": 500, "cacheRead": 2000, "cacheWrite": 3000, "totalTokens": 0,
+            "orchestration": {"input": 400, "output": 100, "cacheRead": 50},
+            "cttl": {"ephemeral5m": 1000, "ephemeral1h": 2000}
+        }))
+        .expect("wire usage");
+        let cost = calculate_catalog_cost("anthropic", "claude-sonnet-5-5", &usage_from_input(&input), 1_792_000_000_000)
+            .expect("priced");
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-12;
+        assert!(close(cost.input, 0.0028), "{cost:?}");
+        assert!(close(cost.output, 0.006), "{cost:?}");
+        assert!(close(cost.cache_read, 0.000_205), "{cost:?}");
+        assert!(close(cost.cache_write, 0.0105), "{cost:?}");
+        assert!(close(cost.total, 0.019_505), "{cost:?}");
     }
 }
