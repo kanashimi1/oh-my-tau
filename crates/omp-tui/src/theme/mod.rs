@@ -67,6 +67,22 @@ impl Theme {
     pub fn set_token(&mut self, token: &'static str, value: ThemeValue) {
         self.tokens.insert(token, value);
     }
+
+    /// Look up a TS symbol-table glyph by key (`"status.enabled"`,
+    /// `"icon.input"`, `"tree.last"`, …; `theme/symbols.ts`) in the preset
+    /// matching [`Self::glyph_set`]. Unknown keys return `""`.
+    #[must_use]
+    pub fn symbol(&self, key: &str) -> &'static str {
+        let preset = match self.glyph_set.as_str() {
+            "ascii" => "ascii",
+            "nerd" | "nerdfont" => "nerd",
+            _ => "unicode",
+        };
+        loader::symbol_preset(preset)
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map_or("", |(_, v)| *v)
+    }
 }
 
 impl Default for Theme {

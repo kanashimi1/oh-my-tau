@@ -6,7 +6,6 @@ use ratatui::text::Span;
 
 use super::metrics as fmt;
 use super::presets::ContextLineMode;
-use super::stats::{context_level, ContextLevel};
 use super::style;
 
 /// Gauge input for one frame.
@@ -29,158 +28,204 @@ pub struct GaugeInput {
     pub accent: Option<Color>,
     /// Compaction boundaries unknown → no ticks.
     pub boundaries_known: bool,
+    /// The standalone context segments were absorbed into the gauge
+    /// (`embedContext`): it carries the percent + window labels.
+    pub embed: bool,
+}
+
+/// `formatEmbeddedContextPercent`: one decimal below 1%, else whole.
+fn percent_label(percent: f64) -> String {
+    if percent > 0.0 && percent < 1.0 {
+        format!("{percent:.1}%")
+    } else {
+        format!("{}%", percent.round())
+    }
 }
 
 /// How wide the gauge must be for its embedded labels to stay visible
-/// (§5.3 step 5); falls back to 1 cell when only one group fits.
+/// (`embeddedContextGaugeMinWidth`); falls back to 1 cell when the gauge
+/// does not embed the context labels.
 #[must_use]
 pub fn embedded_min_width(input: &GaugeInput) -> usize {
-    if input.mode != ContextLineMode::Embedded {
+    if !input.embed {
         return 1;
     }
-    // `<pct>%` + `<window>` labels plus breathing room.
-    let pct_w = input.percent.map_or(0, |p| format!("{p:.0}%").len());
-    let win_w = input.window.map_or(0, |w| fmt::format_number(w).len());
-    pct_w + win_w + 3
+    let pct_w = input.percent.map_or(0, |p| percent_label(p).chars().count() + 2);
+    let win_w = fmt::format_number(input.window.unwrap_or(0)).chars().count();
+    pct_w + win_w + 2
 }
 
-/// Percent → cell count (gauge geometry; widths are small, pct ≥ 0).
+/// Percent → cell index on a `scale`-cell gauge (`Math.round` semantics).
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
-fn pct_cells(pct: f64, width: usize) -> usize {
-    (pct / 100.0 * width as f64).round() as usize
+fn cell_for(percent: f64, scale: usize) -> usize {
+    ((percent / 100.0 * scale as f64).round().max(0.0) as usize).min(scale.saturating_sub(1))
 }
 
-/// Render the gauge as styled spans totalling exactly `width` cells.
+/// `adjustHsv(hex, {s: 0.7, v: 0.75})` for the threshold marker color.
+#[allow(clippy::many_single_char_names, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn dimmed(color: Color) -> Color {
+    let Color::Rgb(r, g, b) = color else {
+        return color;
+    };
+    let (r, g, b) = (f64::from(r) / 255.0, f64::from(g) / 255.0, f64::from(b) / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    let s = if max == 0.0 { 0.0 } else { d / max } * 0.7;
+    let v = max * 0.75;
+    let c = v * s;
+    let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
+    let m = v - c;
+    let (r1, g1, b1) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let ch = |v: f64| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color::Rgb(ch(r1), ch(g1), ch(b1))
+}
+
+/// Render the gauge as styled spans totalling exactly `width` cells —
+/// a port of `#buildContextGaugeFill` (`component.ts`).
 #[must_use]
+#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>> {
+    use ratatui::style::Style;
     if width == 0 {
         return Vec::new();
     }
-    let glyph = style::icon(theme, "boxRound.horizontal", "─");
+    let horizontal = style::icon(theme, "boxRound.horizontal", "─");
     let used_color = input
         .accent
-        .unwrap_or_else(|| style::color(theme, "accent"));
-    let border = style::color(theme, "border");
-    let level = context_level(input.percent, input.tokens);
-    let level_color = match level {
-        ContextLevel::Normal => style::color(theme, "statusLineContext"),
-        ContextLevel::Warning => style::color(theme, "warning"),
-        ContextLevel::Purple => style::color(theme, "thinkingHigh"),
-        ContextLevel::Error => style::color(theme, "error"),
-    };
-    let used_color = if input.mode == ContextLineMode::Off {
+        .unwrap_or_else(|| style::color(theme, "borderAccent"));
+    let used_color = if used_color == Color::Reset {
+        style::color(theme, "accent")
+    } else {
         used_color
-    } else {
-        level_color
     };
+    let unused_color = style::color(theme, "border");
+    let window = input.window.unwrap_or(0);
+    if input.mode == ContextLineMode::Off || (input.percent.is_none() && window == 0) {
+        return (0..width)
+            .map(|_| Span::styled(horizontal.to_string(), Style::default().fg(used_color)))
+            .collect();
+    }
 
-    let used_count = match input.percent {
-        Some(p) => pct_cells(p, width),
-        // Fresh session: exactly one lit cell at the left (§5.4).
-        None => 1,
-    };
+    let pct = input.percent;
+    let clamped = pct.map_or(0.0, |p| p.clamp(0.0, 100.0));
+    let overflow = pct.is_some_and(|p| p > 100.0);
+    let mut percent_label_text = String::new();
+    let mut window_label = String::new();
+    let mut percent_start: Option<usize> = None;
+    let mut window_start: Option<usize> = None;
+    let mut scale = width;
+    if input.embed {
+        let cand_pct = pct.map_or(String::new(), |p| percent_label(if overflow { p } else { clamped }));
+        let cand_win = fmt::format_number(window);
+        if width >= embedded_min_width(input) {
+            percent_label_text = cand_pct;
+            window_label = cand_win;
+            let plen = percent_label_text.chars().count();
+            let wlen = window_label.chars().count();
+            if overflow {
+                let ps = width.saturating_sub(plen);
+                percent_start = Some(ps);
+                window_start = Some(ps.saturating_sub(1 + wlen));
+            } else {
+                window_start = Some(width.saturating_sub(wlen + 1));
+            }
+            scale = window_start.unwrap_or(width);
+        }
+    }
 
-    // Boundary ticks for annotated/embedded when auto-compact is on and the
-    // gap is at least 8 cells. Threshold tick wins a contested cell.
-    let ticks = if input.boundaries_known
-        && matches!(
-            input.mode,
-            ContextLineMode::Annotated | ContextLineMode::Embedded
-        )
+    let used_count = scale.min(((clamped / 100.0 * scale as f64).round() as usize).max(1));
+
+    let mut spec_idx: Option<usize> = None;
+    let mut thr_idx: Option<usize> = None;
+    if matches!(input.mode, ContextLineMode::Annotated | ContextLineMode::Embedded)
+        && input.boundaries_known
         && width >= 8
+        && scale > 0
     {
-        let mut v: Vec<(usize, &'static str)> = Vec::new();
-        if let Some(c) = input.compaction_pct {
-            v.push((pct_cells(c, width), "context.compaction"));
+        thr_idx = input.compaction_pct.map(|c| cell_for(c, scale));
+        spec_idx = input.speculation_pct.map(|c| cell_for(c, scale));
+        if spec_idx == thr_idx {
+            spec_idx = None;
         }
-        if let Some(s) = input.speculation_pct {
-            if input.compaction_pct != Some(s) {
-                v.push((pct_cells(s, width), "context.speculation"));
-            }
-        }
-        v
-    } else {
-        Vec::new()
-    };
+    }
 
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
-    for i in 0..width {
-        let is_used = i < used_count;
-        let tick = ticks
-            .iter()
-            .find(|(pos, _)| *pos == i)
-            .map(|(_, name)| style::icon(theme, name, "┃"));
-        // Compaction threshold wins a contested cell: prefer the last tick
-        // (threshold sorts after speculation here via ordering above).
-        let text = tick.map_or(glyph, |t| t).to_string();
-        let color = match (is_used, tick) {
-            (_, Some(_)) if input.boundaries_known => style::color(theme, "warning"),
-            (true, _) => used_color,
-            (false, _) => border,
+    let plen = percent_label_text.chars().count();
+    if !percent_label_text.is_empty() && percent_start.is_none() && scale >= plen + 2 {
+        let max_start = scale - plen - 1;
+        let preferred = max_start.min(used_count.max(1));
+        let overlaps = |start: usize| {
+            let end = start + plen;
+            spec_idx.is_some_and(|i| i >= start && i < end)
+                || thr_idx.is_some_and(|i| i >= start && i < end)
         };
-        spans.push(Span::styled(
-            text,
-            ratatui::style::Style::default().fg(color),
-        ));
-    }
-
-    // Embedded labels (`embedded`, default): `<pct>%` and `<window>` at the
-    // right end; pct label nudged to avoid boundary ticks.
-    if input.mode == ContextLineMode::Embedded {
-        embed_labels(&mut spans, input, used_count, theme);
-    }
-    spans
-}
-
-fn embed_labels(
-    spans: &mut [Span<'static>],
-    input: &GaugeInput,
-    used_count: usize,
-    theme: &crate::theme::Theme,
-) {
-    let width = spans.len();
-    let level = context_level(input.percent, input.tokens);
-    let level_color = match level {
-        ContextLevel::Normal => style::color(theme, "statusLineContext"),
-        ContextLevel::Warning => style::color(theme, "warning"),
-        ContextLevel::Purple => style::color(theme, "thinkingHigh"),
-        ContextLevel::Error => style::color(theme, "error"),
-    };
-    let error = style::color(theme, "error");
-
-    // Window label anchored right.
-    if let Some(w) = input.window {
-        let win = fmt::format_number(w);
-        if width >= win.len() {
-            let start = width - win.len();
-            for (i, c) in win.chars().enumerate() {
-                spans[start + i] = Span::styled(
-                    c.to_string(),
-                    ratatui::style::Style::default().fg(level_color),
-                );
-            }
-        }
-    }
-    // Percent label placed at the used boundary, nudged off boundary ticks.
-    if let Some(p) = input.percent {
-        let label = format!("{p:.0}%");
-        if label.len() <= width {
-            let mut start = used_count.min(width - label.len());
-            // Nudge left while we'd cover a boundary tick or exceed the row.
-            while start > 0 && start + label.len() > width {
-                start -= 1;
-            }
-            // Pct > 100 renders the percent in error anchored past the window
-            // label (§5.4).
-            let color = if p > 100.0 { error } else { level_color };
-            for (i, c) in label.chars().enumerate() {
-                if start + i < width {
-                    spans[start + i] =
-                        Span::styled(c.to_string(), ratatui::style::Style::default().fg(color));
+        for distance in 0..=max_start {
+            if preferred >= distance {
+                let left = preferred - distance;
+                if left >= 1 && !overlaps(left) {
+                    percent_start = Some(left);
+                    break;
                 }
             }
+            if distance == 0 {
+                continue;
+            }
+            let right = preferred + distance;
+            if right <= max_start && !overlaps(right) {
+                percent_start = Some(right);
+                break;
+            }
         }
     }
+
+    let spec_glyph = style::icon(theme, "context.speculation", "╎");
+    let thr_glyph = style::icon(theme, "context.compaction", "┃");
+    let spec_color = style::color(theme, "muted");
+    let overflow_color = style::color(theme, "error");
+    let thr_color = dimmed(used_color);
+
+    let percent_chars: Vec<char> = percent_label_text.chars().collect();
+    let window_chars: Vec<char> = window_label.chars().collect();
+    let percent_end = percent_start.map(|s| s + percent_chars.len());
+    let window_end = window_start.map(|s| s + window_chars.len());
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
+    for i in 0..width {
+        let (text, color) = if let Some((ps, _)) = percent_start.zip(percent_end).filter(|(s, e)| i >= *s && i < *e) {
+            (
+                percent_chars[i - ps].to_string(),
+                if overflow { overflow_color } else { used_color },
+            )
+        } else if thr_idx == Some(i) {
+            (thr_glyph.to_string(), thr_color)
+        } else if spec_idx == Some(i) {
+            (spec_glyph.to_string(), spec_color)
+        } else if let Some((ws, _)) = window_start.zip(window_end).filter(|(s, e)| i >= *s && i < *e) {
+            (window_chars[i - ws].to_string(), thr_color)
+        } else {
+            (
+                horizontal.to_string(),
+                if i < used_count { used_color } else { unused_color },
+            )
+        };
+        spans.push(Span::styled(text, Style::default().fg(color)));
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -197,6 +242,7 @@ mod tests {
             speculation_pct: None,
             accent: None,
             boundaries_known: false,
+            embed: true,
         }
     }
 
@@ -222,7 +268,7 @@ mod tests {
     fn embedded_min_width_tracks_labels() {
         let mut i = input(Some(23.0), Some(200_000));
         assert!(embedded_min_width(&i) > 1);
-        i.mode = ContextLineMode::Percentage;
+        i.embed = false;
         assert_eq!(embedded_min_width(&i), 1);
     }
 }

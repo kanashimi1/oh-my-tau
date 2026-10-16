@@ -8,12 +8,13 @@
 
 pub mod blocks;
 pub mod code;
+pub mod local_time;
 pub mod markdown;
 pub mod messages;
 pub mod reveal;
 pub mod thinking;
 
 pub use messages::{
-    AssistantMsg, AssistantSegment, ChatEntry, ChatKind, ChatRole, Compaction, Custom, ExecStatus,
-    Execution, Messages, ReadGroup, ReadItem, ToolCard, ToolStatus, Usage,
+    AssistantMsg, AssistantSegment, ChatEntry, ChatKind, ChatRole, Compaction, Custom, DisplayPrefs,
+    ExecStatus, Execution, Messages, ReadGroup, ReadItem, ToolCard, ToolStatus, Usage,
 };

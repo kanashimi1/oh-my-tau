@@ -85,6 +85,10 @@ pub trait RuntimePort: Send + Sync + 'static {
     /// Persist `value` for `id` to the global config.yml (TS `cfg://` set →
     /// `saveConfigFile`). An error string is surfaced as a system notice.
     fn settings_set(&self, id: String, value: Value) -> Result<(), String>;
+
+    /// Gather the `/session` info report; the runtime answers with a
+    /// `{"type":"session_info","lines":[…]}` frame that opens the overlay.
+    fn request_session_info(&self) {}
 }
 
 /// A recording fake for tests. Every call appends to [`Self::log`].
@@ -157,5 +161,8 @@ impl RuntimePort for FakePort {
     fn settings_set(&self, id: String, value: Value) -> Result<(), String> {
         self.record(format!("settings_set({id}, {value})"));
         omp_settings::write_global(&id, &value).map(|_| ()).map_err(|e| e.to_string())
+    }
+    fn request_session_info(&self) {
+        self.record("request_session_info()".into());
     }
 }

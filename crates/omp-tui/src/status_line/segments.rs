@@ -132,7 +132,13 @@ fn status(ctx: &Ctx<'_>) -> Option<Vec<Piece>> {
 
 /// `model` — name, thinking level, fast mode (`segments.ts:274-392`).
 fn model(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Vec<Piece> {
-    let name = ctx.st.model.trim_start_matches("Claude ").to_string();
+    let name = ctx
+        .st
+        .model_name
+        .as_deref()
+        .unwrap_or(&ctx.st.model)
+        .trim_start_matches("Claude ")
+        .to_string();
     let mut text = if ctx.st.compact_thinking && ctx.st.thinking.is_some() {
         // Compact form: the level glyph replaces the model icon.
         format!(
@@ -218,34 +224,27 @@ fn mode(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Option<Vec<Piece>> {
     Some(vec![piece])
 }
 
-/// `path` — project dir, abbreviations, clamps (`segments.ts:564-625`).
+/// `path` — project dir display, `~` shortening, clamp (`segments.ts:566-599`).
 fn path(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Vec<Piece> {
+    if ctx.st.worktree {
+        let shown = fmt::clamp_path_length(&ctx.st.cwd, ctx.path_max);
+        let icon = style::icon(theme, "icon.worktree", "🌳");
+        return vec![Piece::new("statusLinePath", format!("{icon} {shown}"))];
+    }
     let raw = ctx.st.cwd.as_str();
-    let scratch = raw.starts_with("/tmp") || raw.starts_with("/var/tmp") || raw.contains("/tmp/");
-    let (icon_name, default_icon) = if ctx.st.worktree {
-        ("icon.worktree", "🌳")
-    } else if scratch {
-        ("icon.scratchFolder", "🗑")
-    } else {
-        ("", "")
-    };
-    let icon = if icon_name.is_empty() {
-        ""
-    } else {
-        style::icon(theme, icon_name, default_icon)
-    };
+    let (scratch, display) = fmt::project_dir_display(raw);
     let mut shown = if ctx.st.path_abbreviate {
-        fmt::shorten_path(raw)
+        fmt::shorten_path(&display)
     } else {
-        raw.to_string()
+        display
     };
     shown = fmt::clamp_path_length(&shown, ctx.path_max);
-    let text = if icon.is_empty() {
-        shown
+    let icon = if scratch {
+        style::icon(theme, "icon.scratchFolder", "🗑")
     } else {
-        format!("{icon} {shown}")
+        style::icon(theme, "icon.folder", "📁")
     };
-    vec![Piece::new("statusLinePath", text)]
+    vec![Piece::new("statusLinePath", format!("{icon} {shown}"))]
 }
 
 /// `git` — branch + dirty counters (`segments.ts:627-695`).

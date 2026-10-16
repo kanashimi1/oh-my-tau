@@ -9,36 +9,11 @@ pub fn str_width(s: &str) -> usize {
     s.chars().map(char_width).sum()
 }
 
-/// Width of one char (a small `wcwidth`: good enough for status text).
+/// Width of one char in terminal cells (`unicode-width`: emoji with text
+/// presentation such as `🗑` are one cell, as `Bun.stringWidth` counts them).
 #[must_use]
 pub fn char_width(c: char) -> usize {
-    let cp = u32::from(c);
-    if cp == 0 {
-        return 0;
-    }
-    // Zero-width joiners / combining marks / variation selectors.
-    if (0x0300..=0x036F).contains(&cp)
-        || (0xFE00..=0xFE0F).contains(&cp)
-        || (0x200B..=0x200F).contains(&cp)
-    {
-        return 0;
-    }
-    // Wide: CJK, fullwidth forms, most emoji blocks.
-    if (0x1100..=0x115F).contains(&cp)
-        || (0x2E80..=0xA4CF).contains(&cp)
-        || (0xAC00..=0xD7A3).contains(&cp)
-        || (0xF900..=0xFAFF).contains(&cp)
-        || (0xFE30..=0xFE4F).contains(&cp)
-        || (0xFF00..=0xFF60).contains(&cp)
-        || (0xFFE0..=0xFFE6).contains(&cp)
-        || (0x1F300..=0x1F64F).contains(&cp)
-        || (0x1F900..=0x1F9FF).contains(&cp)
-        || (0x20000..=0x2FFFD).contains(&cp)
-        || (0x30000..=0x3FFFD).contains(&cp)
-    {
-        return 2;
-    }
-    1
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
 /// `formatNumber`: compact `K`/`M` with one decimal (`12.3K`, `4.5M`);
@@ -131,41 +106,50 @@ pub fn clamp_path_length(path: &str, max: usize) -> String {
     out
 }
 
-/// `shortenPath`: parent dirs become initials, `~/` kept (`path.ts`).
+/// `shortenPath` (`render-utils.ts`): a leading home directory becomes `~`.
 #[must_use]
 pub fn shorten_path(path: &str) -> String {
-    let home_prefix = path
-        .strip_prefix(home_dir().as_str())
-        .map(|rest| format!("~/{}", rest.trim_start_matches('/')));
-    let p = home_prefix.as_deref().unwrap_or(path);
-    let parts: Vec<&str> = p.split('/').filter(|s| !s.is_empty()).collect();
-    if parts.len() <= 2 {
-        return p.to_string();
+    let home = home_dir();
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return path.to_string();
     }
-    let mut out = String::new();
-    if p.starts_with('/') {
-        out.push('/');
+    match path.strip_prefix(home) {
+        Some("") => "~".to_string(),
+        Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+        _ => path.to_string(),
     }
-    // Keep the final two components whole; initial the parents
-    // (`/very/long/project/path` → `/v/l/project/path`).
-    let keep_from = parts.len().saturating_sub(2);
-    for (i, part) in parts.iter().enumerate() {
-        if i >= keep_from {
-            out.push_str(part);
-            if i == parts.len() - 1 {
-                break;
-            }
-            out.push('/');
-        } else if *part == "~" {
-            out.push_str(part);
-            out.push('/');
-        } else {
-            let initial = part.chars().next().unwrap_or('?');
-            out.push(initial);
-            out.push('/');
+}
+
+/// `getProjectDirDisplay` (`segments.ts`): `(scratch, displayPath)` — scratch
+/// roots (tmp dirs) and the project roots (`~/Projects`, `~/repos`, `/work`)
+/// are stripped from the shown path.
+#[must_use]
+pub fn project_dir_display(project_dir: &str) -> (bool, String) {
+    let home = home_dir();
+    let within = |root: &str, p: &str| -> Option<String> {
+        let root = root.trim_end_matches('/');
+        let rest = p.strip_prefix(root)?;
+        let rest = rest.strip_prefix('/').or(if rest.is_empty() { Some("") } else { None })?;
+        Some(rest.to_string())
+    };
+    let tmp = std::env::temp_dir().display().to_string();
+    let mut scratch_roots = vec![tmp, format!("{home}/tmp"), "/tmp".to_string(), "/var/tmp".to_string()];
+    scratch_roots.dedup();
+    for root in &scratch_roots {
+        if let Some(rel) = within(root, project_dir) {
+            let shown = if rel.is_empty() { project_dir.to_string() } else { rel };
+            return (true, shown);
         }
     }
-    out
+    for root in [format!("{home}/Projects"), format!("{home}/repos"), "/work".to_string()] {
+        if let Some(rel) = within(&root, project_dir) {
+            if !rel.is_empty() {
+                return (false, rel);
+            }
+        }
+    }
+    (false, project_dir.to_string())
 }
 
 fn home_dir() -> String {
@@ -260,9 +244,17 @@ use super::*;
     }
 
     #[test]
-    fn shorten_path_uses_initials() {
-        assert_eq!(shorten_path("/work/repo/src/main"), "/w/r/src/main");
+    fn shorten_path_replaces_home_with_tilde() {
+        let home = home_dir();
+        assert_eq!(shorten_path(&format!("{home}/repo/src")), "~/repo/src");
         assert_eq!(shorten_path("/repo"), "/repo");
+    }
+
+    #[test]
+    fn project_dir_display_strips_scratch_and_project_roots() {
+        assert_eq!(project_dir_display("/tmp/e2e-home-x/work"), (true, "e2e-home-x/work".into()));
+        assert_eq!(project_dir_display("/work/repo"), (false, "repo".into()));
+        assert_eq!(project_dir_display("/srv/app"), (false, "/srv/app".into()));
     }
 
     #[test]

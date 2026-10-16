@@ -73,6 +73,121 @@ fn resolve_args<'a>(first: Option<&'a str>, second: Option<&'a str>) -> (Action,
 /// a provider is available when it is declared in `models.yml` or has a
 /// credential (env API key, or an enabled `agent.db` `auth_credentials` row).
 fn collect_catalog(dir: &omp_providers::AgentDir) -> BTreeMap<(String, String), ListedModel> {
+    let (mut out, available) = collect_all(dir);
+    out.retain(|(provider, _), _| available.contains(provider));
+    out
+}
+
+/// One model row for the interactive `/model` browser.
+pub struct BrowserModel {
+    pub model: Model,
+    /// Provider is declared in `models.yml`, has credentials, or is keyless.
+    pub available: bool,
+    /// Catalogue kind (`""` = chat).
+    pub kind: String,
+    pub priority: Option<i64>,
+}
+
+/// TS bundled catalog (`catalog/src/models.json`), slimmed to the fields the
+/// browser shows: provider → rows of
+/// `[id, name, reasoning, vision, ctx, maxTokens, $in, $out, $cache, kind, priority]`.
+const TUI_CATALOG: &str = include_str!("../../assets/tui-model-catalog.json");
+
+/// Providers TS marks keyless (`#addImplicitDiscoverableProviders`).
+const KEYLESS_PROVIDERS: [&str; 3] = ["local", "web", "ollama"];
+
+fn bundled_catalog() -> Vec<(String, Value)> {
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(TUI_CATALOG) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (provider, rows) in map {
+        let Value::Array(rows) = rows else { continue };
+        for r in rows {
+            let Value::Array(r) = r else { continue };
+            let num = |i: usize| r.get(i).cloned().unwrap_or(Value::Null);
+            let flag = |i: usize| r.get(i).and_then(Value::as_i64) == Some(1);
+            let entry = json!({
+                "id": num(0),
+                "name": num(1),
+                "api": "openai-completions",
+                "reasoning": flag(2),
+                "input": if flag(3) { json!(["text", "image"]) } else { json!(["text"]) },
+                "contextWindow": num(4),
+                "maxTokens": num(5),
+                "cost": {"input": num(6), "output": num(7), "cacheRead": num(8), "cacheWrite": 0},
+                "kind": num(9),
+                "priority": num(10),
+            });
+            out.push((provider.clone(), entry));
+        }
+    }
+    out
+}
+
+/// Every catalog model (TS bundled catalog, `models.db` cache, `models.yml`)
+/// tagged with provider availability — the TS `ModelRegistry.getAll`/`getAvailable` pair.
+#[must_use]
+pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
+    let yml_path = dir.0.join("models.yml");
+    let mut available = available_providers(&yml_path, &dir.0.join("agent.db"));
+    available.extend(KEYLESS_PROVIDERS.iter().map(|p| (*p).to_owned()));
+    let mut map: BTreeMap<(String, String), ListedModel> = BTreeMap::new();
+    let mut meta: BTreeMap<(String, String), (String, Option<i64>)> = BTreeMap::new();
+    type Meta = BTreeMap<(String, String), (String, Option<i64>)>;
+    fn put(
+        provider: &str,
+        entry: &Value,
+        map: &mut BTreeMap<(String, String), ListedModel>,
+        meta: &mut Meta,
+    ) {
+        let Some(mut model) = lenient_model(entry, provider) else { return };
+        if model.provider.is_empty() {
+            model.provider = provider.to_owned();
+        }
+        let key = (model.provider.clone(), model.id.clone());
+        let kind = entry.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned();
+        meta.insert(key.clone(), (kind, entry.get("priority").and_then(Value::as_i64)));
+        map.insert(key, ListedModel { model, efforts: None });
+    }
+    for (provider, entry) in bundled_catalog() {
+        put(&provider, &entry, &mut map, &mut meta);
+    }
+    for (provider_id, entries) in db_cache_models(&dir.0.join("models.db")) {
+        let provider = provider_id.split(':').next().unwrap_or(&provider_id).to_string();
+        for entry in entries {
+            put(&provider, &entry, &mut map, &mut meta);
+        }
+    }
+    for (provider, entry) in yml_custom_models(&yml_path) {
+        if let Some(model) = custom_model(&provider, &entry) {
+            let key = (model.provider.clone(), model.id.clone());
+            meta.insert(key.clone(), (String::new(), None));
+            map.insert(key, ListedModel { model, efforts: None });
+        }
+    }
+    apply_overrides(&mut map, &model_overrides(&yml_path));
+    let mut out: Vec<BrowserModel> = map
+        .into_iter()
+        .map(|(key, l)| {
+            let (kind, priority) = meta.remove(&key).unwrap_or_default();
+            BrowserModel { available: available.contains(&l.model.provider), model: l.model, kind, priority }
+        })
+        .collect();
+    for provider in KEYLESS_PROVIDERS {
+        if !out.iter().any(|b| b.model.provider == provider) {
+            if let Some(mut m) = lenient_model(&json!({"id": "-", "name": "-"}), provider) {
+                m.id = String::new();
+                out.push(BrowserModel { model: m, available: true, kind: String::new(), priority: None });
+            }
+        }
+    }
+    out
+}
+
+fn collect_all(
+    dir: &omp_providers::AgentDir,
+) -> (BTreeMap<(String, String), ListedModel>, std::collections::BTreeSet<String>) {
     let mut out: BTreeMap<(String, String), ListedModel> = BTreeMap::new();
     let yml_path = dir.0.join("models.yml");
     let available = available_providers(&yml_path, &dir.0.join("agent.db"));
@@ -116,8 +231,7 @@ fn collect_catalog(dir: &omp_providers::AgentDir) -> BTreeMap<(String, String), 
         }
     }
     apply_overrides(&mut out, &model_overrides(&yml_path));
-    out.retain(|(provider, _), _| available.contains(provider));
-    out
+    (out, available)
 }
 
 /// TS `KIND_API_KINDS`: non-chat catalog kinds excluded from the chat listing.

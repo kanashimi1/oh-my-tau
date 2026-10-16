@@ -62,6 +62,10 @@ pub struct RunConfig {
     /// `model_changed` frame arrives (`provider/id`); also preselects the
     /// `/model` picker's current row.
     pub model: String,
+    /// Display name of `model` (models.yml `name`), when the catalogue has one.
+    pub model_name: Option<String>,
+    /// Version shown under the startup logo.
+    pub version: String,
     /// Working directory the session runs in (status line / chrome).
     pub cwd: PathBuf,
     /// Model catalogue for the `/model` picker (providers with credentials,

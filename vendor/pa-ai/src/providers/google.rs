@@ -23,6 +23,7 @@ use crate::types::{
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
 use crate::utils_inner::json_parse::parse_json_with_repair;
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 use crate::utils_inner::sse::SseDecoder;
@@ -279,11 +280,22 @@ async fn run_stream(
     }
     headers.push(("x-goog-api-key".into(), api_key));
 
+    let body = params.to_string();
+    // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
+    let request_dump = RawHttpRequestDump {
+        provider: model.provider.to_string(),
+        api: model.api.to_string(),
+        model: model.id.clone(),
+        method: "POST".to_owned(),
+        url: url.clone(),
+        headers: headers.clone(),
+        body: body.clone(),
+    };
     let mut response: HttpResponse = send(RequestOptions {
         method: reqwest::Method::POST,
         url,
         headers,
-        body: Some(params.to_string()),
+        body: Some(body),
         signal: options.base.signal.clone(),
         timeout_ms: options.base.timeout_ms,
         connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::RawFetch,
@@ -313,7 +325,7 @@ async fn run_stream(
             http.body = None;
             http.request_id = None;
         }
-        return Err(error);
+        return Err(finalize_http_error(error, false, Some(&request_dump)));
     }
 
     writer.push(AssistantMessageEvent::Start {

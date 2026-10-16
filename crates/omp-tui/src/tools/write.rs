@@ -6,23 +6,24 @@
 //! (`proc://`, `cfg://`, `xd://` device writes) is out of scope for this
 //! module until the URL host registry lands.
 
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use serde_json::Value;
 
 use crate::theme::Theme;
 
-use super::edit::{
-    arg_str, args_of, frame_card, phase_of, result_text, streaming_preview_lines,
-    truncate_width, Phase,
-};
+use super::edit::{arg_str, args_of, phase_of, result_text, Phase};
+use super::frame::{framed_card, lang_icon, status_header, token, CardSection};
+use super::bash::replace_tabs;
 use super::{error_detail_lines, ToolRenderer};
 
 /// Rows shown in the collapsed settled preview (TS `WRITE_PREVIEW_LINES`).
 pub const WRITE_PREVIEW_LINES: usize = 6;
-/// Rows shown in the expanded settled preview.
+/// Rows of the streaming tail window (TS `PREVIEW_LIMITS.EXPANDED_LINES`).
 pub const WRITE_PREVIEW_LINES_EXPANDED: usize = 12;
+/// Minimum gutter width (TS `WRITE_GUTTER_MIN_WIDTH`).
+const GUTTER_MIN_WIDTH: usize = 3;
 
 /// Renderer for the `write` tool.
 pub struct Write;
@@ -57,98 +58,101 @@ fn write_content(call: &Value) -> Option<&str> {
     arg_str(args_of(call), &["content"])
 }
 
-/// Header row. Pending carries NO status icon (liveness rides the trailing
-/// streaming content); settled success gets the success glyph and the
-/// line-count suffix; errors get the failure glyph.
-fn header_line(
-    path: &str,
-    phase: Phase,
-    line_count: Option<usize>,
-    made_executable: bool,
-    width: usize,
-    theme: &Theme,
-) -> Line<'static> {
-    let inner = width.saturating_sub(4).max(1);
-    let (icon, icon_color) = match phase {
-        Phase::Pending => ("", theme.color("text")),
-        Phase::Partial => ("◐", theme.color("accent")),
-        Phase::Success => (theme.glyph("success"), theme.color("success")),
-        Phase::Error => (theme.glyph("failure"), theme.color("error")),
+/// `formatLineCountSuffix`: dim ` · N lines`.
+fn line_count_suffix(n: usize, theme: &Theme) -> Option<Span<'static>> {
+    (n > 0).then(|| {
+        Span::styled(
+            format!(" · {n} line{}", if n == 1 { "" } else { "s" }),
+            Style::default().fg(token(theme, "dim", "text_muted")),
+        )
+    })
+}
+
+/// Gutter + content row (`  1 alpha`; gutter width ≥ 3).
+fn gutter_row(num: usize, width: usize, row: &str, theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            format!("{num:>width$} "),
+            Style::default().fg(token(theme, "dim", "text_muted")),
+        ),
+        Span::styled(
+            replace_tabs(row),
+            Style::default().fg(token(theme, "toolOutput", "text")),
+        ),
+    ])
+}
+
+fn dim_row(text: String, theme: &Theme) -> Line<'static> {
+    Line::from(Span::styled(
+        text,
+        Style::default().fg(token(theme, "dim", "text_muted")),
+    ))
+}
+
+/// Streaming preview (TS `formatStreamingContent`): tail window of the last
+/// [`WRITE_PREVIEW_LINES_EXPANDED`] rows (all when expanded), a dim
+/// `… (N earlier lines)` row, and the trailing `… (streaming)` row.
+fn streaming_lines(content: &str, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
+    let rows: Vec<&str> = content.split('\n').collect();
+    let total = rows.len();
+    if total == 1 && rows[0].is_empty() {
+        return Vec::new();
+    }
+    let start = if expanded {
+        0
+    } else {
+        total.saturating_sub(WRITE_PREVIEW_LINES_EXPANDED)
     };
-    let suffix = match (line_count, made_executable) {
-        (Some(n), true) => format!(" ({n} lines) · made executable!"),
-        (Some(n), false) => format!(" ({n} lines)"),
-        (None, true) => " · made executable!".to_owned(),
-        (None, false) => String::new(),
-    };
-    let prefix_width =
-        icon.chars().count() + usize::from(!icon.is_empty()) + 1 + suffix.chars().count();
-    let path_width = inner.saturating_sub(prefix_width + 6);
-    let mut spans = Vec::new();
-    if !icon.is_empty() {
-        spans.push(Span::styled(
-            format!("{icon} "),
-            Style::default().fg(icon_color),
+    let width = GUTTER_MIN_WIDTH.max(total.to_string().len());
+    let mut out = Vec::new();
+    if start > 0 {
+        out.push(dim_row(
+            format!("… ({start} earlier line{})", if start == 1 { "" } else { "s" }),
+            theme,
         ));
     }
-    spans.push(Span::styled(
-        "Write ",
-        Style::default().fg(theme.color("text")),
-    ));
-    spans.push(Span::styled(
-        truncate_width(path, path_width),
-        Style::default().fg(theme.color("accent")),
-    ));
-    spans.push(Span::styled(
-        suffix,
-        Style::default()
-            .fg(theme.color("success"))
-            .add_modifier(Modifier::BOLD),
-    ));
-    Line::from(spans)
+    for (i, row) in rows.iter().enumerate().skip(start) {
+        out.push(gutter_row(i + 1, width, row, theme));
+    }
+    out.push(dim_row("… (streaming)".to_owned(), theme));
+    out
 }
 
-/// Settled preview: the FIRST rows of the file (TS `renderContentPreview`),
-/// collapsed to [`WRITE_PREVIEW_LINES`] with a `… N more lines` hint.
-fn content_preview_lines(
-    content: &str,
-    expanded: bool,
-    width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let inner = width.saturating_sub(4).max(1);
-    let rows: Vec<&str> = content.lines().collect();
-    let budget = if expanded {
-        WRITE_PREVIEW_LINES_EXPANDED
+/// Settled preview (TS `renderContentPreview`): the FIRST rows of the file,
+/// collapsed to [`WRITE_PREVIEW_LINES`] with a `… N more lines ⟦ctrl+o: Expand⟧` row.
+fn content_preview_lines(content: &str, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
+    let rows: Vec<&str> = content.split('\n').collect();
+    let total = rows.len();
+    let shown = if expanded {
+        total
     } else {
-        WRITE_PREVIEW_LINES
+        total.min(WRITE_PREVIEW_LINES)
     };
-    let mut lines = Vec::new();
-    let gutter = rows.len().to_string().len().max(2);
-    for (i, row) in rows.iter().enumerate().take(budget) {
-        let gutter_text = format!("{:>gutter$} ", i + 1);
-        lines.push(Line::from(vec![
-            Span::styled(gutter_text, Style::default().fg(theme.color("text_muted"))),
-            Span::raw(truncate_width(row, inner.saturating_sub(gutter + 1))),
-        ]));
+    let width = GUTTER_MIN_WIDTH.max(total.to_string().len());
+    let mut out: Vec<Line<'static>> = rows
+        .iter()
+        .take(shown)
+        .enumerate()
+        .map(|(i, row)| gutter_row(i + 1, width, row, theme))
+        .collect();
+    let hidden = total - shown;
+    if !expanded && hidden > 0 {
+        out.push(dim_row(
+            format!(
+                "… {hidden} more line{} {}ctrl+o: Expand{}",
+                if hidden == 1 { "" } else { "s" },
+                theme.symbol("format.bracketLeft"),
+                theme.symbol("format.bracketRight"),
+            ),
+            theme,
+        ));
     }
-    let remaining = rows.len().saturating_sub(budget);
-    if remaining > 0 {
-        let hint = if expanded {
-            format!("… {remaining} more lines")
-        } else {
-            format!("… {remaining} more lines [ctrl+o: Expand]")
-        };
-        lines.push(Line::from(Span::styled(
-            truncate_width(&hint, inner),
-            Style::default().fg(theme.color("text_muted")),
-        )));
-    }
-    lines
+    out
 }
 
-/// Build the full write card. `result` is the settled `toolResult` message
-/// when present.
+/// Build the full framed write card. `result` is the settled `toolResult`
+/// message when present. The previewed content is always the call's
+/// `content` argument (TS `normalizeDisplayText(args.content)`).
 #[must_use]
 pub fn build_card_lines(
     call: &Value,
@@ -157,106 +161,109 @@ pub fn build_card_lines(
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let width = width.max(8);
     let phase = phase_of(call, result);
-    let path = write_path(call).unwrap_or_else(|| "…".into());
+    let path = write_path(call).unwrap_or_default();
     let made_executable = result
         .and_then(|r| r.get("details"))
         .and_then(|d| d.get("madeExecutable").or_else(|| d.get("made_executable")))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let content = write_content(call).unwrap_or("");
 
-    // Content: args.content while streaming; settled result content wins
-    // (the file as actually written, notices stripped by the host).
-    let content = match phase {
-        Phase::Pending | Phase::Partial => write_content(call).map(str::to_owned),
-        Phase::Success | Phase::Error => result
-            .map(result_text)
-            .filter(|t| !t.is_empty())
-            .or_else(|| write_content(call).map(str::to_owned)),
+    let accent = |text: String| Span::styled(text, Style::default().fg(theme.color("accent")));
+    let muted = |text: String| {
+        Span::styled(text, Style::default().fg(token(theme, "muted", "text_muted")))
     };
-    let line_count = content.as_ref().map(|c| c.lines().count());
+    let path_span = if path.is_empty() {
+        Span::styled("…".to_owned(), Style::default().fg(token(theme, "toolOutput", "text")))
+    } else {
+        accent(path.clone())
+    };
+    let mut description = vec![muted(format!("{} ", lang_icon(theme, &path))), path_span];
 
-    let mut body = vec![header_line(
-        &path,
-        phase,
-        line_count,
-        made_executable,
-        width,
-        theme,
-    )];
-    let mut border_token = "border";
-    match phase {
-        Phase::Pending => match &content {
-            Some(content) => body.extend(streaming_preview_lines(
-                content,
-                super::edit::PREVIEW_TAIL_LINES,
-                width,
-                theme,
-                true,
+    let (icon, border) = match phase {
+        Phase::Pending => (None, token(theme, "borderMuted", "text_muted")),
+        Phase::Partial => (
+            Some(Span::styled(
+                theme.symbol("status.running").to_owned(),
+                Style::default().fg(theme.color("accent")),
             )),
-            None => body.push(Line::from(Span::styled(
-                "…",
-                Style::default().fg(theme.color("text_muted")),
-            ))),
-        },
-        Phase::Partial => {
-            if let Some(content) = &content {
-                body.extend(streaming_preview_lines(
-                    content,
-                    super::edit::PREVIEW_TAIL_LINES,
-                    width,
-                    theme,
-                    true,
-                ));
+            token(theme, "borderMuted", "text_muted"),
+        ),
+        Phase::Success => (
+            Some(Span::styled(
+                theme.symbol("tool.write").to_owned(),
+                Style::default().fg(theme.color("accent")),
+            )),
+            token(theme, "borderMuted", "text_muted"),
+        ),
+        Phase::Error => (
+            Some(Span::styled(
+                theme.symbol("status.error").to_owned(),
+                Style::default().fg(theme.color("error")),
+            )),
+            theme.color("error"),
+        ),
+    };
+    if matches!(phase, Phase::Success | Phase::Partial) {
+        let lines = if content.is_empty() {
+            0
+        } else {
+            content.split('\n').count()
+        };
+        description.extend(line_count_suffix(lines, theme));
+        if phase == Phase::Success && made_executable {
+            description.push(dim_row(" · ".to_owned(), theme).spans.remove(0));
+            description.push(Span::styled(
+                "made executable!".to_owned(),
+                Style::default().fg(theme.color("success")),
+            ));
+        }
+    }
+    let header = status_header(theme, icon, "Write", "accent", description, Vec::new());
+
+    let mut body: Vec<Line<'static>> = match phase {
+        Phase::Pending | Phase::Partial => streaming_lines(content, expanded, theme),
+        Phase::Success => {
+            if content.is_empty() {
+                Vec::new()
+            } else {
+                content_preview_lines(content, expanded, theme)
             }
         }
         Phase::Error => {
-            border_token = "error";
             let text = result.map(result_text).unwrap_or_default();
             if text.is_empty() {
-                body.push(Line::from(Span::styled(
+                vec![Line::from(Span::styled(
                     "  Unknown error",
                     Style::default().fg(theme.color("error")),
-                )));
+                ))]
             } else {
-                body.extend(error_detail_lines(&text, width, theme));
+                error_detail_lines(&text, width, theme)
             }
         }
-        Phase::Success => {
-            if let Some(content) = &content {
-                body.extend(content_preview_lines(content, expanded, width, theme));
-            }
-        }
+    };
+    if phase == Phase::Pending && content.is_empty() {
+        body.clear();
     }
-    frame_card(body, width, theme, border_token)
+    let sections = if body.is_empty() {
+        Vec::new()
+    } else {
+        vec![CardSection::plain(body)]
+    };
+    framed_card(Some(header), sections, width.max(8), border)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
     use serde_json::json;
 
-    fn render_to_string(lines: Vec<Line<'static>>, width: u16, height: u16) -> String {
-        let backend = TestBackend::new(width, height);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| {
-                let area = ratatui::layout::Rect::new(0, 0, width, height);
-                f.render_widget(Paragraph::new(lines), area);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let mut out = String::new();
-        for y in 0..height {
-            for x in 0..width {
-                out.push_str(buffer[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        out
+    fn rows(lines: Vec<Line<'static>>) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
     }
 
     #[test]
@@ -269,61 +276,57 @@ mod tests {
     fn pending_card_streams_tail_with_gutter() {
         let mut content = String::new();
         for i in 1..=20 {
-            content.push_str("line ");
-            content.push_str(&i.to_string());
-            content.push('\n');
+            content.push_str(&format!("line {i}\n"));
         }
         let call = json!({"name":"write","arguments":{"path":"out.txt","content":content}});
         let theme = Theme::default();
-        let lines = build_card_lines(&call, None, false, 40, &theme);
-        let text = render_to_string(lines, 40, 20);
-        assert!(text.contains("Write out.txt"), "got:\n{text}");
+        let text = rows(build_card_lines(&call, None, false, 40, &theme)).join("\n");
+        assert!(text.starts_with("╭─── Write: "), "no status icon while pending:\n{text}");
         assert!(text.contains("earlier lines"), "got:\n{text}");
-        assert!(text.contains("20 line"), "got:\n{text}");
-        assert!(text.contains("(streaming)"), "got:\n{text}");
-        assert!(
-            !text.contains("line 1\n"),
-            "head should not render while streaming:\n{text}"
-        );
+        assert!(text.contains(" 20 line 20"), "got:\n{text}");
+        assert!(text.contains("… (streaming)"), "got:\n{text}");
+        assert!(!text.contains("line 1\n"), "head hidden while streaming:\n{text}");
     }
 
     #[test]
-    fn success_card_shows_first_lines_and_count() {
+    fn success_card_title_row_and_preview() {
+        let call = json!({"name":"write","arguments":{"path":"e2e-new.txt","content":"alpha\nbeta\n"}});
+        let result = json!({"isError": false, "content":[{"type":"text","text":"Successfully wrote 11 bytes"}]});
+        let theme = Theme::default();
+        let t = rows(build_card_lines(&call, Some(&result), false, 60, &theme));
+        assert!(
+            t[0].starts_with("╭─── ✎ Write: 🗒 e2e-new.txt · 3 lines "),
+            "{:?}",
+            t[0]
+        );
+        assert_eq!(t[1], format!("│   1 alpha{} │", " ".repeat(60 - 4 - 9)));
+        assert!(t[2].starts_with("│   2 beta"), "{:?}", t[2]);
+        assert!(t[3].starts_with("│   3 "), "{:?}", t[3]);
+        assert!(t[4].starts_with("╰───") && t[4].ends_with('╯'));
+        assert!(t.iter().all(|r| r.chars().count() == 60), "{t:?}");
+    }
+
+    #[test]
+    fn long_file_collapses_with_more_lines_hint() {
         let content = "a\nb\nc\nd\ne\nf\ng\nh\n";
         let call = json!({"name":"write","arguments":{"path":"out.txt","content":content}});
-        let result = json!({"isError": false, "content":[{"type":"text","text":content}]});
+        let result = json!({"isError": false, "content":[{"type":"text","text":"ok"}]});
         let theme = Theme::default();
-        let lines = build_card_lines(&call, Some(&result), false, 40, &theme);
-        let text = render_to_string(lines, 40, 16);
-        assert!(text.contains("Write out.txt (8 lines)"), "got:\n{text}");
-        assert!(text.contains("a "), "got:\n{text}");
-        assert!(text.contains("more lines [ctrl+o: Expand]"), "got:\n{text}");
-    }
-    #[test]
-    fn expanded_success_shows_twelve_and_count_hint() {
-        let mut content = String::new();
-        for i in 1..=30 {
-            content.push('l');
-            content.push_str(&i.to_string());
-            content.push('\n');
-        }
-        let call = json!({"name":"write","arguments":{"path":"o.txt","content":content}});
-        let result = json!({"isError": false, "content":[{"type":"text","text":content}]});
-        let theme = Theme::default();
-        let lines = build_card_lines(&call, Some(&result), true, 40, &theme);
-        let text = render_to_string(lines, 40, 20);
-        assert!(text.contains("l12"), "got:\n{text}");
-        assert!(text.contains("18 more lines"), "got:\n{text}");
+        let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
+        assert!(text.contains("· 9 lines"), "got:\n{text}");
+        assert!(text.contains("… 3 more lines ⟦ctrl+o: Expand⟧"), "got:\n{text}");
+        let expanded = rows(build_card_lines(&call, Some(&result), true, 60, &theme)).join("\n");
+        assert!(!expanded.contains("more line"), "got:\n{expanded}");
+        assert!(expanded.contains("  9 "), "got:\n{expanded}");
     }
 
     #[test]
     fn made_executable_suffix() {
         let call = json!({"name":"write","arguments":{"path":"run.sh","content":"#!/bin/sh\n"}});
         let result = json!({"isError": false, "details": {"madeExecutable": true},
-                            "content":[{"type":"text","text":"#!/bin/sh\n"}]});
+                            "content":[{"type":"text","text":"ok"}]});
         let theme = Theme::default();
-        let lines = build_card_lines(&call, Some(&result), false, 40, &theme);
-        let text = render_to_string(lines, 40, 8);
+        let text = rows(build_card_lines(&call, Some(&result), false, 70, &theme)).join("\n");
         assert!(text.contains("made executable!"), "got:\n{text}");
     }
 
@@ -333,12 +336,9 @@ mod tests {
         let result = json!({"isError": true,
             "content":[{"type":"text","text":"Error: permission denied"}]});
         let theme = Theme::default();
-        let lines = build_card_lines(&call, Some(&result), false, 40, &theme);
-        let text = render_to_string(lines, 40, 8);
+        let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
         assert!(text.contains("permission denied"), "got:\n{text}");
-        assert!(
-            !text.contains("Error: permission denied"),
-            "prefix stripped:\n{text}"
-        );
+        assert!(!text.contains("Error: permission denied"), "prefix stripped:\n{text}");
+        assert!(text.starts_with("╭─── ✘ Write: "), "got:\n{text}");
     }
 }

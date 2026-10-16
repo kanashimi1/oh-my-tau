@@ -37,15 +37,26 @@ pub async fn run(
     let (tx, rx) = mpsc::unbounded_channel::<Value>();
     // Model catalogue for the `/model` picker: providers with credentials
     // (same source the RPC `get_available_models` and `/model` builtin use).
-    let models = crate::runtime::available_models(None)
-        .await
+    let models = crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
         .into_iter()
-        .map(|m| {
-            omp_tui::overlays::models::ModelEntry::new(
+        .map(|b| {
+            let m = b.model;
+            let mut e = omp_tui::overlays::models::ModelEntry::new(
                 &m.provider,
                 &m.id,
                 Some(m.context_window),
-            )
+            );
+            e.name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
+            e.max_tokens = Some(m.max_tokens);
+            e.cost_input = m.cost.input.as_f64();
+            e.cost_output = m.cost.output.as_f64();
+            e.cost_cache_read = m.cost.cache_read.as_f64();
+            e.reasoning = m.reasoning;
+            e.vision = m.input.contains(&pa_types::ai::ModelInput::Image);
+            e.available = b.available;
+            e.kind = b.kind;
+            e.priority = b.priority;
+            e
         })
         .collect();
     let rt = Runtime::start(Arc::new(agent), target, cwd.clone(), persist, tx).await;
@@ -70,15 +81,19 @@ pub async fn run(
             }));
         })));
     }
-    let model = {
+    let (model, model_name) = {
         let m = rt.agent.model().await;
-        format!("{}/{}", m.provider, m.id)
+        (format!("{}/{}", m.provider, m.id), m.name.clone())
     };
+    rt.enable_context_usage_frames();
+    rt.publish_context_usage();
     let port = Port { rt };
     omp_tui::run(
         omp_tui::RunConfig {
             frames: rx,
             model,
+            model_name: Some(model_name).filter(|n| !n.is_empty()),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
             cwd,
             models,
             session_sources,
@@ -151,6 +166,192 @@ fn prompt_completed(agent_invoked: bool) -> Value {
         "status": "completed",
         "sessionSettled": true,
     })
+}
+
+/// en-US integer grouping (TS `Number.prototype.toLocaleString()`).
+fn group_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// TS `formatEndpoint` (provider-details.ts): origin + path without a
+/// trailing slash (`/` for an empty path); unparseable urls verbatim.
+fn format_endpoint(base_url: &str) -> String {
+    match reqwest::Url::parse(base_url) {
+        Ok(url) => {
+            let path = url.path().strip_suffix('/').unwrap_or(url.path());
+            let path = if path.is_empty() { "/" } else { path };
+            format!("{}{path}", url.origin().ascii_serialization())
+        }
+        Err(_) => base_url.to_string(),
+    }
+}
+
+/// TS `hasLocalLoopbackBaseUrl` (append-only-context-mode.ts).
+fn has_local_loopback_base_url(base_url: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+    else {
+        return false;
+    };
+    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]") {
+        return true;
+    }
+    if host.starts_with("10.") || host.starts_with("192.168.") || host.ends_with(".local") {
+        return true;
+    }
+    host.strip_prefix("172.")
+        .and_then(|rest| rest.split('.').next())
+        .and_then(|octet| octet.parse::<u8>().ok())
+        .is_some_and(|octet| (16..=31).contains(&octet))
+}
+
+/// TS `shouldEnableAppendOnlyContext(setting, model)`.
+fn append_only_context_enabled(setting: &str, model: &Value) -> bool {
+    match setting {
+        "on" => true,
+        "off" => false,
+        _ => {
+            let provider = model["provider"].as_str().unwrap_or("");
+            let base_url = model["baseUrl"].as_str().unwrap_or("");
+            !model.is_null()
+                && (provider == "deepseek"
+                    || matches!(provider, "ollama" | "ollama-cloud" | "lm-studio" | "llama.cpp")
+                    || base_url.to_ascii_lowercase().contains("xiaomimimo.com")
+                    || has_local_loopback_base_url(base_url)
+                    || model["compat"]["supportsStore"].as_bool() == Some(true))
+        }
+    }
+}
+
+/// The `/session` info report (TS `CommandController.handleSessionCommand`)
+/// as a `session_info` frame: one entry per report line — `{"k","v"}`
+/// (dim key + value; `vs` = styled value spans), `{"head"}` (bold heading),
+/// `{"text","dim"?}` (free line; `""` = blank).
+async fn session_info_frame(rt: &Runtime) -> Value {
+    use serde_json::json;
+    let kv = |k: &str, v: String| json!({"k": k, "v": v});
+    let blank = || json!({"text": ""});
+    let head = |h: &str| json!({"head": h});
+    let stats = rt.session_stats().await;
+    let count = |key: &str| stats[key].as_u64().unwrap_or(0).to_string();
+    let session_id = stats["sessionId"].as_str().unwrap_or_default().to_string();
+    let mut lines = vec![
+        kv("File", stats["sessionFile"].as_str().unwrap_or("In-memory").to_string()),
+        kv("ID", session_id),
+        blank(),
+        head("Provider"),
+    ];
+    let model = rt.model_info();
+    let provider = model["provider"].as_str().map(str::to_string);
+    match &provider {
+        None => lines.push(json!({"text": "No model selected", "dim": true})),
+        Some(provider) => {
+            let auth = {
+                let provider = provider.clone();
+                tokio::task::spawn_blocking(move || {
+                    omp_providers::auth_details(&omp_providers::AgentDir::default(), &provider)
+                })
+                .await
+                .ok()
+            };
+            let field = |key: &str| model[key].as_str().unwrap_or_default().to_string();
+            lines.push(kv("Name", provider.clone()));
+            lines.push(kv("Model", field("id")));
+            lines.push(kv("API", field("api")));
+            lines.push(kv("Auth", auth.as_ref().map_or("auto", |a| a.mode).to_string()));
+            lines.push(kv("Endpoint", format_endpoint(&field("baseUrl"))));
+            if let Some(source) = auth.and_then(|a| a.source) {
+                lines.push(kv("Source", source));
+            }
+        }
+    }
+    lines.push(blank());
+    lines.push(head("Messages"));
+    lines.push(kv("User", count("userMessages")));
+    lines.push(kv("Assistant", count("assistantMessages")));
+    lines.push(kv("Tool Calls", count("toolCalls")));
+    lines.push(kv("Tool Results", count("toolResults")));
+    lines.push(kv("Total", count("totalMessages")));
+    lines.push(blank());
+    let setting = omp_settings::Settings::load(&rt.cwd)
+        .get("provider.appendOnlyContext")
+        .as_str()
+        .unwrap_or("auto")
+        .to_string();
+    let active = append_only_context_enabled(&setting, &model);
+    let setting_label = if setting == "auto" {
+        format!("auto ({})", provider.as_deref().unwrap_or("?"))
+    } else {
+        setting
+    };
+    lines.push(json!({"k": "Append-Only", "vs": [
+        if active { json!({"t": "active", "c": "success"}) } else { json!({"t": "inactive", "c": "dim"}) },
+        {"t": format!(" (setting: {setting_label})")},
+    ]}));
+    lines.push(head("Tokens"));
+    let tokens = &stats["tokens"];
+    let token = |key: &str| tokens[key].as_u64().unwrap_or(0);
+    lines.push(kv("Input", group_thousands(token("input"))));
+    lines.push(kv("Output", group_thousands(token("output"))));
+    if token("cacheRead") > 0 {
+        lines.push(kv("Cache Read", group_thousands(token("cacheRead"))));
+    }
+    if token("cacheWrite") > 0 {
+        lines.push(kv("Cache Write", group_thousands(token("cacheWrite"))));
+    }
+    lines.push(kv("Total", group_thousands(token("total"))));
+    let cost = stats["cost"].as_f64().unwrap_or(0.0);
+    if cost > 0.0 {
+        lines.push(blank());
+        lines.push(head("Cost"));
+        lines.push(kv("Total", format!("{cost:.4}")));
+    }
+    let lsp = omp_lsp::servers::get_lsp_status();
+    if !lsp.is_empty() {
+        lines.push(blank());
+        lines.push(head("LSP Servers"));
+        for server in lsp {
+            let (status, color) = match server.status {
+                omp_lsp::client::ClientStatus::Ready => ("ready", "success"),
+                omp_lsp::client::ClientStatus::Connecting => ("connecting", "warning"),
+                omp_lsp::client::ClientStatus::Error => ("error", "error"),
+            };
+            let status = match &server.error {
+                Some(e) if status == "error" => format!("{status}: {e}"),
+                _ => status.to_string(),
+            };
+            lines.push(json!({"k": server.name, "vs": [
+                {"t": status, "c": color},
+                {"t": " "},
+                {"t": format!("({})", server.file_types.join(", ")), "c": "dim"},
+            ]}));
+        }
+    }
+    lines.push(blank());
+    lines.push(head("MCP Servers"));
+    let mcp = crate::tools::mcp::connected_servers();
+    if mcp.is_empty() {
+        lines.push(json!({"text": "None connected", "dim": true}));
+    }
+    for (name, tools) in mcp {
+        lines.push(json!({"k": name, "vs": [
+            {"t": "connected", "c": "success"},
+            {"t": " "},
+            {"t": format!("({tools} tools)"), "c": "dim"},
+        ]}));
+    }
+    // The TS report ends with a newline, which renders one trailing blank row.
+    lines.push(blank());
+    json!({"type": "session_info", "lines": lines})
 }
 
 impl omp_tui::RuntimePort for Port {
@@ -348,6 +549,14 @@ impl omp_tui::RuntimePort for Port {
     fn abort_compaction(&self) {
         // No compaction-abort RPC in the omp-rs runtime yet; kept as a
         // stable no-op so the app wiring does not change when it lands.
+    }
+
+    fn request_session_info(&self) {
+        let rt = self.rt.clone();
+        tokio::spawn(async move {
+            let frame = session_info_frame(&rt).await;
+            rt.send(frame);
+        });
     }
 }
 

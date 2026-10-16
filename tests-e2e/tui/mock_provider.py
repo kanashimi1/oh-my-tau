@@ -5,7 +5,9 @@ Models (request `model`, `mock/` prefix optional):
                gets a different, checkable reply)
   tool      -> first call: one `read` tool call on E2E_READ_FILE; after the
                tool result: "E2E-TOOL-DONE"
+  tools     -> bash, write, grep, glob calls (one per request), then "E2E-TOOLS-DONE"
   fail      -> HTTP 400 with an OpenAI-style error body "E2E-PROVIDER-FAILURE"
+               when the last user message contains FAIL_MARKER, else like `text`
 Every request is appended to E2E_MOCK_LOG (JSON lines) when set.
 """
 from __future__ import annotations
@@ -30,6 +32,29 @@ def log(event: dict) -> None:
         f.write(json.dumps({"t": time.time(), **event}) + "\n")
 
 
+# `tools`: one call per request through the core tool families, then a reply.
+TOOLS_SCRIPT = [
+    ("bash", {"command": "echo E2E-BASH-OUT"}),
+    ("write", {"path": "e2e-new.txt", "content": "alpha\nbeta\n"}),
+    ("grep", {"pattern": "beta", "path": "."}),
+    ("glob", {"path": "*.txt"}),
+]
+
+# The `fail` model rejects only prompts carrying this marker, so a follow-up
+# prompt succeeds and the pinned error banner's dismissal is observable.
+FAIL_MARKER = "will fail"
+
+
+def last_user_text(messages: list[dict]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            c = m.get("content")
+            if isinstance(c, list):
+                return " ".join(str(p.get("text", "")) for p in c if isinstance(p, dict))
+            return str(c or "")
+    return ""
+
+
 def script(model: str, messages: list[dict]) -> tuple[list[dict], str]:
     model = model.removeprefix("mock/")
     users = sum(1 for m in messages if m.get("role") == "user")
@@ -44,6 +69,14 @@ def script(model: str, messages: list[dict]) -> tuple[list[dict], str]:
             }
             return [{"role": "assistant", "content": "", "tool_calls": [call]}], "tool_calls"
         return [{"role": "assistant", "content": "E2E-TOOL-DONE"}], "stop"
+    if model == "tools":
+        done = sum(1 for m in messages if m.get("role") == "tool")
+        if done < len(TOOLS_SCRIPT):
+            name, args = TOOLS_SCRIPT[done]
+            call = {"index": 0, "id": f"call_{name}_{done}", "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)}}
+            return [{"role": "assistant", "content": "", "tool_calls": [call]}], "tool_calls"
+        return [{"role": "assistant", "content": "E2E-TOOLS-DONE"}], "stop"
     reply = f"E2E-REPLY-{users}"
     return [{"role": "assistant", "content": reply[:6]}, {"content": reply[6:]}], "stop"
 
@@ -64,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.rstrip("/").endswith("/models"):
-            ids = ["text", "tool", "fail"]
+            ids = ["text", "tool", "tools", "fail"]
             self._json(200, {"object": "list", "data": [
                 {"id": f"mock/{i}", "object": "model", "created": 0, "owned_by": "mock"} for i in ids]})
         else:
@@ -74,11 +107,13 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         body = json.loads(self.rfile.read(length) or b"{}")
         model = str(body.get("model", "text"))
-        log({"kind": "req", "path": self.path, "model": model, "n_messages": len(body.get("messages", []))})
+        log({"kind": "req", "path": self.path, "model": model, "n_messages": len(body.get("messages", [])),
+             "tools": {t.get("function", {}).get("name"): sorted((t.get("function", {}).get("parameters") or {}).get("properties", {}))
+                       for t in body.get("tools", []) or []}})
         if not self.path.endswith("/chat/completions"):
             self._json(404, {"error": "not found"})
             return
-        if model.removeprefix("mock/") == "fail":
+        if model.removeprefix("mock/") == "fail" and FAIL_MARKER in last_user_text(body.get("messages", [])):
             self._json(400, {"error": {"message": "E2E-PROVIDER-FAILURE", "type": "invalid_request_error",
                                        "code": "e2e_failure"}})
             return

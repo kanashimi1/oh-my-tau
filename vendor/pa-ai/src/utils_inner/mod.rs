@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod h2_classify;
 pub mod hash;
 pub mod headers;
+pub mod http_inspector;
 pub mod http;
 pub mod json_parse;
 pub mod log;

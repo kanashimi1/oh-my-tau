@@ -203,7 +203,9 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.rel.cmp(&b.rel)));
     hits.truncate(FILES_SHOWN);
 
-    let where_ = scope_path.map_or_else(String::new, |p| format!(" in {p}"));
+    let where_ = scope_path
+        .as_deref()
+        .map_or_else(String::new, |p| format!(" in {p}"));
     let mut out = String::new();
     if hits.is_empty() {
         let _ = writeln!(out, "no hits for \"{query}\"{where_} (τ {THRESHOLD:.2})");
@@ -237,7 +239,44 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         format_bytes(file_bytes),
         super::jobs::format_duration(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
     );
-    Ok(AgentToolResult::text(out.trim_end().to_string()))
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let hit_values: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "rel": h.rel,
+                "contentScore": h.score,
+                "linesSeen": h.lines_seen,
+                "ranges": h.ranges.iter().map(|(start, end, snippet)| serde_json::json!({
+                    "start": start,
+                    "end": end,
+                    "p": h.score,
+                    "snippet": snippet,
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let mut details = serde_json::json!({
+        "query": query,
+        "keywords": keywords,
+        "threshold": THRESHOLD,
+        "cwd": env.cwd.display().to_string(),
+        "elapsedMs": elapsed_ms,
+        "hits": hit_values,
+        "stats": {
+            "filesRead": files_read,
+            "inputTokens": 0,
+            "cost": 0.0,
+            "errors": 0,
+            "failures": [],
+        },
+    });
+    if let Some(p) = scope_path {
+        details["scopePath"] = serde_json::json!(p);
+    }
+    let mut result = AgentToolResult::text(out.trim_end().to_string());
+    result.details = details;
+    Ok(result)
 }
 
 #[cfg(test)]

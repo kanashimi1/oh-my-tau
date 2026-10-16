@@ -11,7 +11,7 @@
 //! - [`paste`] — bracketed-paste sanitize + large-paste markers
 //! - [`attachments`] — `[Image #N]`/`[Video #N]`/`[Text #N]` chips
 //! - [`layout`] — wide-char widths, soft wrap, atomic-marker scanning
-//! - [`render`] — boxed layout, gutter, placeholder, bash `!` border
+//! - [`render`] — band layout, `╰─ ` gutter, right hint, bash `!` gutter color
 //! - [`submit`] — submit classification (follow-up, queue, slash, continue)
 //! - [`vim`] — modal editing behind the same API (separate implementer)
 //!
@@ -82,7 +82,8 @@ pub struct Editor {
     pub(crate) scroll_offset: ScrollOffset,
     pub(crate) page_scroll_step: std::cell::Cell<usize>,
     pub(crate) max_height: u16,
-    pub(crate) placeholder: String,
+    /// Right-aligned composer hint `(key, label)` shown while the draft is empty.
+    pub(crate) hint: Option<(String, String)>,
     pub(crate) disable_submit: bool,
     submit_kind: submit::SubmitKind,
     last_action: LastAction,
@@ -111,7 +112,7 @@ impl Editor {
             scroll_offset: ScrollOffset::new(0),
             page_scroll_step: std::cell::Cell::new(1),
             max_height: 10,
-            placeholder: render::PLACEHOLDER.to_owned(),
+            hint: None,
             disable_submit: false,
             submit_kind: submit::SubmitKind::Normal,
             last_action: LastAction::Other,
@@ -241,9 +242,10 @@ impl Editor {
 
     // -- configuration ------------------------------------------------------
 
-    /// Set the placeholder hint shown on an empty buffer.
-    pub fn set_placeholder(&mut self, text: &str) {
-        text.clone_into(&mut self.placeholder);
+    /// Set (or clear) the right-aligned composer hint shown on an empty
+    /// buffer (TS `editor.placeholder`, `composer-hints.ts`).
+    pub fn set_hint(&mut self, hint: Option<(String, String)>) {
+        self.hint = hint;
     }
 
     /// Cap the editor height (TS `setMaxHeight`).
@@ -982,20 +984,19 @@ mod render_tests {
     }
 
     #[test]
-    fn boxed_editor_renders_border_gutter_placeholder() {
-        let e = Editor::new();
-        let top = render_row(&e, 0, 40, 5);
-        assert!(top.starts_with('╭'), "top border: {top:?}");
-        assert!(top.ends_with('╮'));
-        let content = render_row(&e, 1, 40, 5);
-        assert!(content.contains('❯'), "gutter: {content:?}");
-        assert!(content.contains("Ask omp"), "placeholder: {content:?}");
-        let bottom = render_row(&e, 4, 40, 5);
-        assert!(bottom.starts_with('╰'), "bottom border: {bottom:?}");
+    fn band_editor_renders_gutter_and_right_hint() {
+        let mut e = Editor::new();
+        e.set_hint(Some(("⇧⇥".into(), "to change thinking effort".into())));
+        let row = render_row(&e, 0, 60, 1);
+        assert!(row.starts_with("╰─ "), "gutter: {row:?}");
+        assert!(row.ends_with("⇧⇥ to change thinking effort"), "hint flush right: {row:?}");
+        assert!(!row.contains('│') && !row.contains('╭'), "no box: {row:?}");
+        e.set_hint(None);
+        assert_eq!(render_row(&e, 0, 60, 1).trim_end(), "╰─");
     }
 
     #[test]
-    fn typed_text_renders_inside_box() {
+    fn typed_text_renders_after_gutter() {
         let mut e = Editor::new();
         for c in "hello".chars() {
             e.handle_key(crate::keys::KeyEvent::new(
@@ -1003,8 +1004,8 @@ mod render_tests {
                 KeyModifiers::NONE,
             ));
         }
-        let content = render_row(&e, 1, 40, 5);
-        assert!(content.contains("❯ hello"), "content: {content:?}");
+        let content = render_row(&e, 0, 40, 1);
+        assert!(content.starts_with("╰─ hello"), "content: {content:?}");
     }
 
     fn type_str(e: &mut Editor, s: &str) {
@@ -1036,42 +1037,40 @@ mod render_tests {
         // two cells left (on the last-but-one char).
         let mut e = Editor::new();
         type_str(&mut e, "hello world");
-        // border(1) + gutter(2) + 11 chars => column 14.
-        assert_eq!(cursor_col(&e, 1, 40, 5), Some(14));
+        // gutter(3) + 11 chars => column 14.
+        assert_eq!(cursor_col(&e, 0, 40, 1), Some(14));
     }
 
     #[test]
     fn wrapped_rows_keep_gutter_indent_and_cursor() {
         // Regression: continuation rows were indented by their byte offset,
-        // pushing text off-screen. Width 20 => 16 text cells per row.
+        // pushing text off-screen. Width 20 => 17 text cells per row.
         let mut e = Editor::new();
         type_str(&mut e, "abcdefghijklmnopqrstu");
         let height = e.desired_height(20);
-        assert_eq!(height, 4, "two wrapped rows + borders");
+        assert_eq!(height, 2, "two wrapped rows, no chrome");
+        let r0 = render_row(&e, 0, 20, height);
         let r1 = render_row(&e, 1, 20, height);
-        let r2 = render_row(&e, 2, 20, height);
-        assert_eq!(r1, "│❯ abcdefghijklmnop│");
-        assert_eq!(r2, "│  qrstu           │");
-        assert_eq!(cursor_col(&e, 2, 20, height), Some(8));
+        assert_eq!(r0, "╰─ abcdefghijklmnopq");
+        assert_eq!(r1.trim_end(), "   rstu");
+        assert_eq!(cursor_col(&e, 1, 20, height), Some(7));
     }
 
     #[test]
-    fn bash_mode_uses_accent_border_and_title() {
+    fn bash_mode_uses_accent_gutter() {
         let mut e = Editor::new();
-        for c in "!ls".chars() {
-            e.handle_key(crate::keys::KeyEvent::new(
-                crate::keys::KeyCode::Char(c),
-                KeyModifiers::NONE,
-            ));
-        }
-        let top = render_row(&e, 0, 40, 5);
-        assert!(top.contains("bash"), "title: {top:?}");
+        type_str(&mut e, "!ls");
+        assert!(e.is_bash_mode());
+        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        let theme = crate::theme::Theme::default();
+        terminal.draw(|f| e.render(f, f.area(), &theme)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, 0)].fg, theme.color("accent"));
     }
 
     #[test]
     fn desired_height_grows_with_content_and_caps() {
         let mut e = Editor::new();
-        assert_eq!(e.desired_height(80), 3);
+        assert_eq!(e.desired_height(80), 1);
         for i in 0..20 {
             e.handle_key(crate::keys::KeyEvent::new(
                 crate::keys::KeyCode::Char(char::from(b'a' + i as u8 % 26)),
@@ -1080,7 +1079,7 @@ mod render_tests {
             e.insert_newline();
         }
         let h = e.desired_height(80);
-        assert!(h > 3, "grows: {h}");
+        assert!(h > 1, "grows: {h}");
         assert!(h <= 10, "capped: {h}");
     }
 }

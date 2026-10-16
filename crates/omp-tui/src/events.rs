@@ -93,6 +93,14 @@ pub enum AppEvent {
         messages: Vec<Value>,
         name: Option<String>,
     },
+    /// `{"type":"context_usage", "model", "modelName", "tokens", "percent",
+    /// "contextWindow", "thresholdPercent"?, "speculationPercent"?}` — the
+    /// status line's model identity and context gauge inputs (omp-cli
+    /// `Runtime::context_usage_frame`).
+    ContextUsage(Value),
+    /// `{"type":"session_info", "lines": [...]}` — the `/session` report
+    /// (omp-cli `session_info_frame`), shown in the session info overlay.
+    SessionInfo(Vec<crate::overlays::session_info::SessionInfoLine>),
     /// Any frame without a dedicated variant; kept verbatim.
     Unknown(Value),
 }
@@ -131,6 +139,7 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
             follow_up: string_list(frame, "followUp"),
         },
         "model_changed" | "model_change" => AppEvent::ModelChanged(frame.clone()),
+        "context_usage" => AppEvent::ContextUsage(frame.clone()),
         "thinking_level_changed" | "thinking_level_change" => {
             AppEvent::ThinkingLevelChanged(frame.clone())
         }
@@ -164,6 +173,9 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
                 .unwrap_or_default(),
             name: session_loaded_name(frame),
         },
+        "session_info" => AppEvent::SessionInfo(
+            crate::overlays::session_info::SessionInfoLine::parse_frame(frame),
+        ),
         _ => AppEvent::Unknown(frame.clone()),
     }
 }

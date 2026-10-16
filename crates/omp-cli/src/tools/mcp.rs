@@ -30,17 +30,36 @@ pub fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
     block_on_discover(cwd).unwrap_or_default()
 }
 
+/// Servers connected by the latest discovery, with their tool counts (TS
+/// `MCPManager.getConnectedServers` + `getConnection(name).tools.length`).
+static CONNECTED_SERVERS: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
+
+/// `(server, tool count)` for every MCP server connected by the latest discovery.
+#[must_use]
+pub fn connected_servers() -> Vec<(String, usize)> {
+    CONNECTED_SERVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
 #[allow(clippy::unnecessary_wraps)]
 fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
     let cwd = cwd.to_path_buf();
     let discover = move || async move {
         let manager = Arc::new(McpManager::from_default_configs(&cwd));
         let discovered = manager.tools().await;
+        let mut connected = Vec::new();
         for (name, status) in manager.statuses().await {
-            if let omp_mcp::ServerStatus::Failed(message) = status {
-                eprintln!("omp-rs: MCP server \"{name}\" unavailable: {message}");
+            match status {
+                omp_mcp::ServerStatus::Failed(message) => {
+                    eprintln!("omp-rs: MCP server \"{name}\" unavailable: {message}");
+                }
+                omp_mcp::ServerStatus::Connected => {
+                    let tools = discovered.iter().filter(|t| t.server == name).count();
+                    connected.push((name, tools));
+                }
+                omp_mcp::ServerStatus::Pending => {}
             }
         }
+        *CONNECTED_SERVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = connected;
         discovered
             .into_iter()
             .map(|tool| {

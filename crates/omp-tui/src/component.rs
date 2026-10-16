@@ -52,6 +52,17 @@ pub trait Component {
         EventOutcome::Ignored
     }
 
+    /// Handle a decoded SGR mouse event (click, wheel, hover/drag). Mouse
+    /// reporting is only enabled while a fullscreen overlay owns the
+    /// alternate screen (or inline `tui.mouse` capture is on), and the event
+    /// is routed to the topmost overlay only. `event.row`/`event.col` are
+    /// 0-based screen cells; fullscreen overlays render into
+    /// `Rect { x: 0, y: 0, .. }`, so they map 1:1 onto the last render.
+    /// The default ignores everything.
+    fn handle_mouse(&mut self, _event: &crate::mouse::SgrMouseEvent) -> EventOutcome {
+        EventOutcome::Ignored
+    }
+
     /// Whether this component wants keyboard focus right now (overlays that
     /// are open return `true`; the editor returns `true` unless an overlay
     /// owns focus).

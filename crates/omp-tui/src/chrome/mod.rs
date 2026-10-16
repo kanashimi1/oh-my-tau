@@ -10,6 +10,7 @@ pub mod notify;
 pub mod osc11;
 pub mod startup;
 pub mod title;
+pub mod welcome;
 
 pub use banner::Banner;
 pub use hud::{HudEntry, HudProgress};

@@ -24,6 +24,7 @@ pub mod diff;
 pub mod help;
 pub mod models;
 pub mod sessions;
+pub mod session_info;
 pub mod settings;
 pub mod tree;
 
@@ -72,14 +73,35 @@ pub enum OpenOverlay {
     Tree,
     /// Settings editor (`/settings`).
     Settings,
+    /// `/session` info panel (bottom-anchored, full width).
+    SessionInfo,
 }
 
 impl OpenOverlay {
-    /// Whether this overlay renders full-screen (alternate screen) rather
-    /// than as a centered popup in the live region.
+    /// Whether this overlay renders full-screen on the alternate screen
+    /// rather than as a centered popup in the live region.
+    ///
+    /// TS mounts with `fullscreen: true`: the model hub (`/model`), the
+    /// settings selector (`/settings`), the session selector (`/resume`),
+    /// the esc-esc rewind selector and the annotation/diff overlay
+    /// (`selector-controller.ts` `#showFullscreenMenu` + the explicit
+    /// mounts). `/tree` (TS: editor-container replacement sized from the
+    /// terminal rows) and `/session` (TS: bottom-anchored `maxHeight: 100%`
+    /// overlay) are not alt-screen in TS but need the whole terminal height,
+    /// which omp-rs's fixed inline viewport cannot provide, so they borrow
+    /// the alternate screen too — without mouse tracking (see
+    /// [`Overlays::wants_mouse`]).
     #[must_use]
     pub fn is_fullscreen(self) -> bool {
-        matches!(self, Self::Diff | Self::Tree)
+        matches!(
+            self,
+            Self::Models
+                | Self::Settings
+                | Self::Sessions
+                | Self::Diff
+                | Self::Tree
+                | Self::SessionInfo
+        )
     }
 }
 
@@ -94,6 +116,7 @@ pub struct Overlays {
     diff: diff::DiffView,
     tree: tree::TreeNavigator,
     settings: settings::SettingsOverlay,
+    session_info: session_info::SessionInfoOverlay,
     stack: Vec<OpenOverlay>,
 }
 
@@ -139,7 +162,7 @@ impl Overlays {
     /// the query/selection and push the overlay (replacing a stale picker).
     pub fn open_sessions(&mut self, sources: &[sessions::SessionSource]) {
         let mut picker = sessions::SessionPicker::load_sources(sources);
-        picker.set_standalone(false);
+        picker.set_standalone(true); // TS mounts /resume fullscreen (selector-controller.ts)
         self.sessions = picker;
         if !self.stack.contains(&OpenOverlay::Sessions) {
             self.stack.push(OpenOverlay::Sessions);
@@ -170,6 +193,14 @@ impl Overlays {
     /// Mutable access to the settings overlay (seed values, drain edits).
     pub fn settings_mut(&mut self) -> &mut settings::SettingsOverlay {
         &mut self.settings
+    }
+
+    /// Open the `/session` info panel with a fresh report (replacing an
+    /// open one, which moves back to the top of the stack).
+    pub fn open_session_info(&mut self, lines: Vec<session_info::SessionInfoLine>) {
+        self.session_info.set_lines(lines);
+        self.close(OpenOverlay::SessionInfo);
+        self.stack.push(OpenOverlay::SessionInfo);
     }
 
     /// Close the top overlay (esc routing).
@@ -211,6 +242,7 @@ impl Overlays {
             OpenOverlay::Diff => &self.diff,
             OpenOverlay::Tree => &self.tree,
             OpenOverlay::Settings => &self.settings,
+            OpenOverlay::SessionInfo => &self.session_info,
         }
     }
 
@@ -223,6 +255,7 @@ impl Overlays {
             OpenOverlay::Diff => &mut self.diff,
             OpenOverlay::Tree => &mut self.tree,
             OpenOverlay::Settings => &mut self.settings,
+            OpenOverlay::SessionInfo => &mut self.session_info,
         }
     }
 
@@ -306,6 +339,61 @@ impl Overlays {
             self.component(which).render(frame, area, theme);
         }
     }
+
+    /// Index of the topmost full-screen overlay in the stack, if any.
+    fn fullscreen_base(&self) -> Option<usize> {
+        self.stack.iter().rposition(|o| o.is_fullscreen())
+    }
+
+    /// Whether any open overlay needs the alternate screen. A popup stacked
+    /// over a full-screen overlay (help over `/model`) keeps the alt screen
+    /// and paints over the full-screen frame.
+    #[must_use]
+    pub fn needs_alt_screen(&self) -> bool {
+        self.fullscreen_base().is_some()
+    }
+
+    /// Whether terminal mouse reporting should be on for the overlay layer:
+    /// the top overlay is a TS `fullscreen: true` mount (TS `tui.ts`
+    /// `wantMouse = "full"`). Popups and the non-TS-fullscreen alt-screen
+    /// borrowers (`/tree`, `/session`) leave tracking off so native text
+    /// selection keeps working there.
+    #[must_use]
+    pub fn wants_mouse(&self) -> bool {
+        match self.open() {
+            Some(OpenOverlay::Models | OpenOverlay::Settings | OpenOverlay::Sessions | OpenOverlay::Diff) => true,
+            Some(OpenOverlay::Tree) => self.tree.mode == tree::TreeMode::Rewind,
+            _ => false,
+        }
+    }
+
+    /// Route a mouse event to the top overlay only (TS: the focused
+    /// fullscreen component receives SGR reports through its input
+    /// handler). Mouse events never bubble to covered overlays.
+    pub fn handle_mouse(&mut self, event: &crate::mouse::SgrMouseEvent) -> EventOutcome {
+        match self.open() {
+            Some(which) => self.component_mut(which).handle_mouse(event),
+            None => EventOutcome::Ignored,
+        }
+    }
+
+    /// Render the alternate-screen frame: the topmost full-screen overlay
+    /// over the whole `area` (the full terminal, origin 0,0) plus any popups
+    /// stacked above it. Overlays below the full-screen one are covered and
+    /// not painted. No-op when no full-screen overlay is open.
+    pub fn render_fullscreen(
+        &self,
+        frame: &mut ratatui::Frame<'_>,
+        area: ratatui::layout::Rect,
+        theme: &Theme,
+    ) {
+        let Some(base) = self.fullscreen_base() else {
+            return;
+        };
+        for &which in &self.stack[base..] {
+            self.component(which).render(frame, area, theme);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -357,5 +445,31 @@ mod tests {
         assert!(!o.top_is_fullscreen());
         o.toggle(OpenOverlay::Diff);
         assert!(o.top_is_fullscreen());
+    }
+
+    #[test]
+    fn ts_fullscreen_set_and_mouse_scope() {
+        for o in [OpenOverlay::Models, OpenOverlay::Settings, OpenOverlay::Sessions] {
+            assert!(o.is_fullscreen(), "{o:?} is a TS fullscreen:true mount");
+        }
+        for o in [OpenOverlay::Help, OpenOverlay::CommandPalette] {
+            assert!(!o.is_fullscreen(), "{o:?} is a TS popup");
+        }
+        let mut o = Overlays::default();
+        o.open_settings();
+        assert!(o.needs_alt_screen() && o.wants_mouse());
+        // Help popped over the fullscreen menu keeps the alt screen but, as
+        // a non-fullscreen top overlay, turns reporting off (TS wantMouse).
+        o.toggle(OpenOverlay::Help);
+        assert!(o.needs_alt_screen());
+        assert!(!o.wants_mouse());
+        o.pop();
+        // /session borrows the alt screen without TS fullscreen mouse.
+        o.open_session_info(Vec::new());
+        assert!(o.needs_alt_screen());
+        assert!(!o.wants_mouse());
+        o.pop();
+        o.pop();
+        assert!(!o.needs_alt_screen() && !o.wants_mouse());
     }
 }

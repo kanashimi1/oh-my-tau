@@ -49,6 +49,7 @@ use crate::autocomplete::Autocomplete;
 use crate::chat::Messages;
 use crate::chrome::notify::{send_notification, NotifyProtocol, TerminalNotification};
 use crate::chrome::title::{TerminalTitle, TitleState};
+use crate::chrome::welcome;
 use crate::component::Component;
 use crate::editor::{Editor, EditorOutcome};
 use crate::events::{parse_frame, parse_frame_owned, AppEvent};
@@ -92,6 +93,16 @@ const LOCAL_COMMANDS: &[(&str, &str)] = &[
     ("help", "Show keybindings and commands"),
     ("exit", "Exit the application"),
 ];
+
+/// Startup welcome banner (`WelcomeComponent`): the first transcript block.
+#[derive(Debug, Clone)]
+struct Welcome {
+    version: String,
+    /// Tip latched once per session.
+    tip: String,
+    /// Rows already committed to scrollback.
+    emitted: bool,
+}
 
 /// Maintenance the runtime advertised as esc-to-cancel (§6 step 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,6 +246,9 @@ impl EventPump {
 /// Root state; single owner, lives on the controller loop.
 #[derive(Debug)]
 pub struct App {
+    /// Startup welcome banner state (first transcript block); `None` once
+    /// disabled. Rows are committed to scrollback on the first drain.
+    welcome: Option<Welcome>,
     messages: Messages,
     editor: Editor,
     /// Slash / `@file` / path completion popup above the editor.
@@ -268,6 +282,10 @@ pub struct App {
     last_ctrl_c: Option<Instant>,
     /// `/exit` requested a quit; surfaced by the next submit return.
     quit_requested: bool,
+    /// Mirror of `tui.mouse` ("Mouse Click-to-Focus"): inline SGR mouse
+    /// capture on the normal buffer while no overlay is open (TS
+    /// `InteractiveMode#mouseCapture` → `setInlineMouseTrackingProvider`).
+    mouse_capture: bool,
     /// Resolved keybindings (defaults + `~/.omp/agent/keybindings.yml`);
     /// the app input path matches against these instead of hard-coded
     /// chords (interactive P0 #15 / review2 §11 #15).
@@ -303,10 +321,11 @@ impl App {
         let title = TerminalTitle::new();
         title.init(TitleState::Idle, Some(&dir));
         Self {
+            welcome: None,
             messages: Messages::new(),
             editor: Editor::new(),
             autocomplete: Autocomplete::new(cwd.to_path_buf()),
-            status: StatusLine::new(model, dir.clone()),
+            status: StatusLine::new(model, cwd.display().to_string()),
             overlays: Overlays::default(),
             extension_ui: ExtensionUi::new(),
             theme: Theme::default(),
@@ -321,6 +340,7 @@ impl App {
             last_esc: None,
             last_ctrl_c: None,
             quit_requested: false,
+            mouse_capture: false,
             keys: KeybindingsManager::defaults(),
             title,
             title_label: dir,
@@ -330,6 +350,57 @@ impl App {
             appearance: crate::theme::Appearance::Dark,
             cwd: cwd.to_path_buf(),
         }
+    }
+
+    /// Enable the startup welcome banner (logo + version + a rotating tip)
+    /// as the first transcript block.
+    pub fn set_welcome(&mut self, version: &str) {
+        self.welcome = Some(Welcome {
+            version: version.to_owned(),
+            tip: welcome::random_tip(),
+            emitted: false,
+        });
+    }
+
+    /// Set the model display name shown by the status line (models.yml `name`).
+    pub fn set_model_name(&mut self, name: Option<String>) {
+        self.status.model_name = name;
+    }
+
+    /// Apply a `context_usage` frame: model identity plus the context gauge
+    /// inputs (percent, window, compaction boundaries).
+    fn apply_context_usage(&mut self, frame: &Value) {
+        if let Some(m) = frame.get("model").and_then(Value::as_str) {
+            if self.status.model != m {
+                self.status.model = m.to_owned();
+                self.overlays.models_mut().current = Some(m.to_owned());
+            }
+        }
+        if let Some(name) = frame.get("modelName") {
+            self.status.model_name = name.as_str().filter(|n| !n.is_empty()).map(str::to_owned);
+        }
+        self.status.context_percent = frame.get("percent").and_then(Value::as_f64);
+        self.status.context_tokens = frame.get("tokens").and_then(Value::as_u64);
+        self.status.context_window = frame
+            .get("contextWindow")
+            .and_then(Value::as_u64)
+            .filter(|w| *w > 0);
+        self.status.compaction_pct = frame.get("thresholdPercent").and_then(Value::as_f64);
+        self.status.speculation_pct = frame.get("speculationPercent").and_then(Value::as_f64);
+        self.status.boundaries_known = self.status.compaction_pct.is_some();
+    }
+
+    /// The right-aligned composer hint (`resolveComposerHint`): the
+    /// thinking-effort gesture until the conversation starts.
+    fn composer_hint(&self) -> Option<(String, String)> {
+        if !self.messages.entries().is_empty() {
+            return None;
+        }
+        let key = self.keys.first_key("app.thinking.cycle")?;
+        Some((
+            welcome::format_key_hint(&key),
+            "to change thinking effort".to_owned(),
+        ))
     }
 
     /// Record the terminal appearance resolved at startup (OSC 11 /
@@ -354,6 +425,21 @@ impl App {
         picker.models = models;
         picker.current = current;
         self.session_sources = session_sources;
+        self.reload_display_prefs();
+    }
+
+    /// Re-read the transcript display settings the chat model honours
+    /// (`display.showTokenUsage`, `display.showTurnTime`,
+    /// `read.toolResultPreview`; TS reads them per event from settings).
+    fn reload_display_prefs(&mut self) {
+        let settings = omp_settings::Settings::load(&self.cwd);
+        let flag = |id: &str| settings.get_bool(id).unwrap_or(false);
+        self.messages.set_display_prefs(crate::chat::DisplayPrefs {
+            show_token_usage: flag("display.showTokenUsage"),
+            show_turn_time: flag("display.showTurnTime"),
+            read_preview: flag("read.toolResultPreview"),
+        });
+        self.mouse_capture = flag("tui.mouse");
     }
 
     /// Load user key overrides from `~/.omp/agent/keybindings.yml`
@@ -497,6 +583,7 @@ impl App {
                     self.overlays.models_mut().current = Some(m);
                 }
             }
+            AppEvent::ContextUsage(frame) => self.apply_context_usage(frame),
             AppEvent::QueueUpdate {
                 steering,
                 follow_up,
@@ -555,6 +642,7 @@ impl App {
                 }
                 self.title.set_state(TitleState::Idle, Some(&self.title_label));
             }
+            AppEvent::SessionInfo(lines) => self.overlays.open_session_info(lines.clone()),
             _ => {}
         }
         self.messages.apply(event);
@@ -575,10 +663,39 @@ impl App {
 
     /// Handle one terminal event. Returns `false` when the app should quit.
     pub fn handle_terminal_event(&mut self, event: &Event, port: &impl RuntimePort) -> bool {
+        if let Some(mouse) = crate::mouse::sgr_mouse_of(event) {
+            self.handle_mouse(&mouse, port);
+            return true;
+        }
         let Event::Key(key) = event else {
-            return true; // resize/paste/mouse: redraw-only for now
+            return true; // resize/paste: redraw-only for now
         };
         self.handle_key(*key, port, Instant::now()).unwrap_or(false)
+    }
+
+    /// Route one SGR mouse report. Reporting is only on while a full-screen
+    /// overlay is on top (routed to it, then its intents drain like after a
+    /// key) or while inline `tui.mouse` capture is on with no overlay open
+    /// — TS consumes every report there so button/wheel bytes never reach
+    /// the editor; omp-rs has no inline click targets (live subagent cards)
+    /// yet, so inline reports are swallowed.
+    pub fn handle_mouse(&mut self, event: &crate::mouse::SgrMouseEvent, port: &impl RuntimePort) {
+        if self.overlays.wants_focus() && self.overlays.handle_mouse(event).consumed() {
+            self.drain_overlay_actions(port);
+        }
+    }
+
+    /// Whether terminal mouse reporting should be on right now (TS
+    /// `tui.ts` `wantMouse`): the overlay layer decides while any overlay is
+    /// open (on only for a TS `fullscreen: true` top overlay); otherwise the
+    /// `tui.mouse` inline capture setting.
+    #[must_use]
+    pub fn wants_mouse(&self) -> bool {
+        if self.overlays.wants_focus() {
+            self.overlays.wants_mouse()
+        } else {
+            self.mouse_capture
+        }
     }
 
     /// Dispatch one [`Action`] to the port (the single emit point).
@@ -881,22 +998,12 @@ impl App {
     }
 
     /// Forward queued overlay intents (model picks, palette commands,
-    /// session picks) to the port. A drained pick is terminal: the picker
-    /// overlay closes (OverlayModels contract).
+    /// session picks) to the port. The model browser stays open after an
+    /// assignment (TS model hub); Esc closes it.
     fn drain_overlay_actions(&mut self, port: &impl RuntimePort) {
         let actions = self.overlays.take_actions();
         if actions.is_empty() {
             return;
-        }
-        if self.overlays.open() == Some(OpenOverlay::Models)
-            && actions.iter().any(|a| {
-                matches!(
-                    a,
-                    Action::SetModel { .. } | Action::SetThinkingLevel(_)
-                )
-            })
-        {
-            self.overlays.pop();
         }
         for action in actions {
             self.dispatch(action, port);
@@ -1054,6 +1161,9 @@ impl App {
                 }
             }
             "theme" => self.slash_theme(args),
+            // TS `/session` (bare or `info`) opens the session info panel;
+            // other verbs (delete, pin, …) stay with the runtime.
+            "session" if matches!(args.trim(), "" | "info") => port.request_session_info(),
             _ => self.dispatch(
                 Action::Slash {
                     name: name.to_owned(),
@@ -1151,6 +1261,9 @@ impl App {
                     port.set_thinking_level(level.to_string());
                 }
             }
+            "display.showTokenUsage" | "display.showTurnTime" | "read.toolResultPreview" | "tui.mouse" => {
+                self.reload_display_prefs();
+            }
             _ => {}
         }
     }
@@ -1197,19 +1310,50 @@ impl App {
         self.status.streaming || self.maintenance.is_some()
     }
 
-    /// Height of the whole live region below the committed chat: band +
-    /// loader + editor (3) + status line (1). `ShellRender` sizes the
-    /// inline viewport with this.
+    /// Minimum height of the live region below the committed chat: band +
+    /// loader + status line (1) + one editor row (the band composer has no
+    /// frame). `ShellRender` sizes the inline viewport with this.
     #[must_use]
     pub fn live_height(&self) -> u16 {
-        self.band_height() + u16::from(self.show_loader()) + 3 + 1
+        let width = crossterm::terminal::size().map_or(80, |(w, _)| w);
+        self.band_height() + self.error_banner_height(width) + u16::from(self.show_loader()) + 1 + 1
     }
 
-    /// Whether the top overlay is full-screen and the shell renderer must
-    /// borrow the alternate screen (ShellRender contract).
+    /// Rows of the pinned provider-error banner (TS `ErrorBannerComponent`,
+    /// between the queued-messages band and the loader); 0 when none.
+    fn error_banner_height(&self, width: u16) -> u16 {
+        self.messages.pinned_error().map_or(0, |message| {
+            let lines = crate::chat::blocks::error_banner_lines(message, usize::from(width), &self.theme);
+            u16::try_from(lines.len()).unwrap_or(u16::MAX)
+        })
+    }
+
+    fn render_error_banner(&self, frame: &mut Frame<'_>, area: Rect) {
+        if area.height == 0 {
+            return;
+        }
+        if let Some(message) = self.messages.pinned_error() {
+            let lines = crate::chat::blocks::error_banner_lines(message, usize::from(area.width), &self.theme);
+            frame.render_widget(ratatui::widgets::Paragraph::new(lines), area);
+        }
+    }
+
+    /// Whether an open overlay is full-screen and the shell renderer must
+    /// hold the alternate screen (ShellRender contract); while true the
+    /// controller paints [`Self::render_fullscreen`] instead of the live
+    /// region.
     #[must_use]
     pub fn has_fullscreen_overlay(&self) -> bool {
-        self.overlays.is_fullscreen()
+        self.overlays.needs_alt_screen()
+    }
+
+    /// Paint the alternate-screen frame: the topmost full-screen overlay
+    /// (plus popups stacked over it) into the whole terminal area at origin
+    /// (0,0), then any pending extension dialog on top.
+    pub fn render_fullscreen(&mut self, frame: &mut Frame<'_>) {
+        let area = frame.area();
+        self.overlays.render_fullscreen(frame, area, &self.theme);
+        self.extension_ui.render(frame, area, &self.theme);
     }
 
     /// Rows that settled since the last call and must enter terminal
@@ -1219,11 +1363,20 @@ impl App {
     /// /// true` (width-change resize) returns the FULL transcript re-rendered
     /// at `width` and resets the watermark.
     pub fn take_scrollback_lines(&mut self, width: u16, rebuild: bool) -> Vec<Line<'static>> {
-        if rebuild {
-            self.messages.all_rows(width)
-        } else {
-            self.messages.take_committed_rows(width)
+        let mut rows = Vec::new();
+        if let Some(w) = self.welcome.as_mut().filter(|w| rebuild || !w.emitted) {
+            rows = welcome::welcome_lines(&w.version, &w.tip, usize::from(width), &self.theme);
+            if !rows.is_empty() {
+                rows.push(Line::default());
+            }
+            w.emitted = true;
         }
+        if rebuild {
+            rows.extend(self.messages.all_rows(width));
+        } else {
+            rows.extend(self.messages.take_committed_rows(width));
+        }
+        rows
     }
 
     /// Render the live region (band + loader + editor + status) into
@@ -1231,20 +1384,29 @@ impl App {
     /// viewport, below the committed scrollback rows.
     pub fn render_live(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.status.tick(now_millis());
+        self.editor.set_hint(self.composer_hint());
+        let editor_h = self
+            .editor
+            .desired_height(area.width)
+            .min(area.height.saturating_sub(1))
+            .max(1);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(self.band_height()),
+                Constraint::Length(self.error_banner_height(area.width)),
                 Constraint::Length(u16::from(self.show_loader())),
-                Constraint::Length(3),
-                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(editor_h),
+                Constraint::Min(0),
             ])
             .split(area);
         self.render_band(frame, chunks[0]);
-        self.render_loader(frame, chunks[1]);
-        self.editor.render(frame, chunks[2], &self.theme);
+        self.render_error_banner(frame, chunks[1]);
+        self.render_loader(frame, chunks[2]);
         self.status.render(frame, chunks[3], &self.theme);
-        self.render_autocomplete(frame, area, chunks[2]);
+        self.editor.render(frame, chunks[4], &self.theme);
+        self.render_autocomplete(frame, area, chunks[3]);
         self.overlays.render(frame, area, &self.theme);
         self.extension_ui.render(frame, area, &self.theme);
     }
@@ -1254,24 +1416,33 @@ impl App {
     /// the watermark stays 0 and the whole transcript renders).
     pub fn render(&mut self, frame: &mut Frame<'_>) {
         self.status.tick(now_millis());
+        self.editor.set_hint(self.composer_hint());
+        let area = frame.area();
+        let editor_h = self
+            .editor
+            .desired_height(area.width)
+            .min(area.height.saturating_sub(1))
+            .max(1);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(1),
+                Constraint::Min(0),
                 Constraint::Length(self.band_height()),
+                Constraint::Length(self.error_banner_height(area.width)),
                 Constraint::Length(u16::from(self.show_loader())),
-                Constraint::Length(3),
                 Constraint::Length(1),
+                Constraint::Length(editor_h),
             ])
-            .split(frame.area());
+            .split(area);
         self.render_chat(frame, chunks[0]);
         self.render_band(frame, chunks[1]);
-        self.render_loader(frame, chunks[2]);
-        self.editor.render(frame, chunks[3], &self.theme);
+        self.render_error_banner(frame, chunks[2]);
+        self.render_loader(frame, chunks[3]);
         self.status.render(frame, chunks[4], &self.theme);
-        self.render_autocomplete(frame, frame.area(), chunks[3]);
-        self.overlays.render(frame, frame.area(), &self.theme);
-        self.extension_ui.render(frame, frame.area(), &self.theme);
+        self.editor.render(frame, chunks[5], &self.theme);
+        self.render_autocomplete(frame, area, chunks[4]);
+        self.overlays.render(frame, area, &self.theme);
+        self.extension_ui.render(frame, area, &self.theme);
     }
 
     /// Draw the completion popup bottom-anchored just above the editor box.
@@ -1566,20 +1737,38 @@ mod tests {
     }
 
     #[test]
-    fn model_picker_pick_dispatches_set_model_and_closes() {
-        let mut app = app();
-        let port = port();
-        app.configure(
-            vec![ModelEntry::new("zai", "glm", Some(128_000))],
-            Vec::new(),
-        );
-        type_text(&mut app, &port, "/model");
-        assert!(enter(&mut app, &port));
-        assert_eq!(app.overlays.open(), Some(OpenOverlay::Models));
-        // Enter on the highlighted row drains SetModel → port.set_model.
-        assert!(enter(&mut app, &port));
-        assert_eq!(log(&port), vec!["set_model(zai, glm)".to_string()]);
-        assert_eq!(app.overlays.open(), None);
+    fn model_picker_default_chip_dispatches_set_model_and_stays_open() {
+        let _guard = HOME_LOCK.lock();
+        let old_home = std::env::var_os("HOME");
+        let home = with_temp_home("model-pick");
+        {
+            let mut app = app();
+            let port = port();
+            app.configure(
+                vec![ModelEntry::new("zai", "glm", Some(128_000))],
+                Vec::new(),
+            );
+            type_text(&mut app, &port, "/model");
+            assert!(enter(&mut app, &port));
+            assert_eq!(app.overlays.open(), Some(OpenOverlay::Models));
+            // Enter focuses the model rows, Enter opens the role strip,
+            // Enter on the first chip (default) switches the live model.
+            assert!(enter(&mut app, &port));
+            assert!(enter(&mut app, &port));
+            assert!(enter(&mut app, &port));
+            let calls = log(&port);
+            assert_eq!(calls[0], "set_model(zai, glm)", "{calls:?}");
+            assert!(
+                calls.iter().any(|c| c.starts_with("settings_set(modelRoles")),
+                "{calls:?}"
+            );
+            // The browser stays open (TS model hub); Esc closes it.
+            assert_eq!(app.overlays.open(), Some(OpenOverlay::Models));
+            assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+            assert_eq!(app.overlays.open(), None);
+        }
+        restore_home(old_home);
+        let _ = std::fs::remove_dir_all(home);
     }
 
     #[test]
@@ -1613,6 +1802,34 @@ mod tests {
     }
 
     #[test]
+    fn slash_session_info_requests_report_and_opens_overlay() {
+        let mut app = app();
+        let port = port();
+        app.apply_event(&AppEvent::AvailableCommands(json!({
+            "commands": [{"name": "session", "source": "builtin"}]
+        })));
+        type_text(&mut app, &port, "/session");
+        assert!(enter(&mut app, &port));
+        assert!(log(&port).contains(&"request_session_info()".to_owned()), "{:?}", log(&port));
+        assert!(!log(&port).iter().any(|c| c.starts_with("run_slash")), "{:?}", log(&port));
+        // Other verbs still reach the runtime.
+        type_text(&mut app, &port, "/session delete");
+        assert!(enter(&mut app, &port));
+        assert!(log(&port).iter().any(|c| c.starts_with("run_slash(session")), "{:?}", log(&port));
+        // The runtime's report frame opens the full-screen panel; Esc closes it.
+        app.apply_event(&crate::events::parse_frame(&json!({
+            "type": "session_info",
+            "lines": [{"k": "ID", "v": "abc"}, {"head": "Provider"}, {"text": ""}]
+        })));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::SessionInfo));
+        assert!(app.has_fullscreen_overlay());
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("Session Info") && s.contains("ID: abc"), "{s}");
+        assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+        assert_eq!(app.overlays.open(), None);
+    }
+
+    #[test]
     fn slash_settings_opens_overlay_listing_sections() {
         let mut app = app();
         let port = port();
@@ -1620,12 +1837,14 @@ mod tests {
         assert!(enter(&mut app, &port));
         assert_eq!(app.overlays.open(), Some(OpenOverlay::Settings));
         let s = screen(&mut app, 150, 30);
-        // Tab strip and the first tab's section headings.
-        assert!(s.contains("appearance"), "{s}");
-        assert!(s.contains("model") && s.contains("providers"), "{s}");
-        assert!(s.contains("─ Theme "), "{s}");
-        // Current values render next to labels.
-        assert!(s.contains("dark"), "{s}");
+        // Fullscreen tab strip (TS labels) and the first tab's section
+        // headings (sidebar + pane).
+        assert!(s.contains("Appearance"), "{s}");
+        assert!(s.contains("Model") && s.contains("Providers"), "{s}");
+        assert!(s.contains("Theme"), "{s}");
+        // Row labels render with their values (values are seeded from the
+        // layered config, so assert the stable label half).
+        assert!(s.contains("Dark Theme") && s.contains("Light Theme"), "{s}");
     }
 
     #[test]
@@ -1678,9 +1897,9 @@ mod tests {
                 app.overlays.settings_mut().value_of("colorBlindMode"),
                 Some(json!(false))
             );
-            // Cycle the bool row with → (same as Enter in the overlay).
+            // Cycle the bool row with ⏎ (TS confirm; → switches tabs).
             assert!(app.overlays.settings_mut().select("colorBlindMode"));
-            assert!(press(&mut app, &port, key(CtKeyCode::Right)));
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
             // The overlay shows the new value and stays open.
             assert_eq!(app.overlays.open(), Some(OpenOverlay::Settings));
             assert_eq!(
@@ -1737,7 +1956,10 @@ mod tests {
             let expected = crate::theme::load("light").unwrap();
             assert_eq!(app.theme.color("text"), expected.color("text"));
             assert_eq!(app.theme.color("accent"), expected.color("accent"));
-            // A notice confirms the live apply.
+            // A notice confirms the live apply; it renders in the chat once
+            // the fullscreen overlay closes.
+            assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+            assert_eq!(app.overlays.open(), None);
             let s = screen(&mut app, 150, 30);
             assert!(s.contains("theme.dark applied"), "{s}");
         }
@@ -1764,6 +1986,45 @@ mod tests {
             .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn fullscreen_overlays_want_alt_screen_and_mouse_then_restore_on_esc() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let mut app = app();
+        let port = port();
+        assert!(!app.has_fullscreen_overlay());
+        assert!(!app.wants_mouse(), "tui.mouse defaults off");
+        type_text(&mut app, &port, "/settings");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Settings));
+        assert!(app.has_fullscreen_overlay());
+        assert!(app.wants_mouse(), "TS fullscreen overlays enable 1000/1003/1006");
+        // The alt-screen frame paints the overlay over the whole terminal.
+        let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| app.render_fullscreen(f)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let used = (0..20u16)
+            .filter(|&y| (0..60u16).any(|x| buf[(x, y)].symbol() != " "))
+            .count();
+        assert!(used >= 18, "fullscreen overlay should fill the screen, used {used}/20");
+        // Mouse reports go to the overlay, never to the editor as input.
+        let wheel = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 3,
+            row: 3,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+        assert!(app.handle_terminal_event(&wheel, &port));
+        assert_eq!(app.editor.text(), "");
+        assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+        assert_eq!(app.overlays.open(), None);
+        assert!(!app.has_fullscreen_overlay());
+        assert!(!app.wants_mouse());
+        // Popups (help) stay inline without mouse tracking.
+        app.overlays.toggle(OpenOverlay::Help);
+        assert!(!app.has_fullscreen_overlay());
+        assert!(!app.wants_mouse());
     }
 
     #[test]
@@ -2042,10 +2303,11 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.render(f)).unwrap();
         let buf = terminal.backend().buffer();
-        let bottom: String = (0..80).map(|x| buf[(x, 23)].symbol()).collect();
-        assert!(bottom.contains("zai/glm-5.3-flash"));
-        let row: String = (0..80).map(|x| buf[(x, 21)].symbol()).collect();
-        assert!(row.contains('❯'));
+        // Band composer: status line on top, then the `╰─ ` prompt row.
+        let status: String = (0..80).map(|x| buf[(x, 22)].symbol()).collect();
+        assert!(status.contains("zai/glm-5.3-flash"), "status: {status:?}");
+        let editor: String = (0..80).map(|x| buf[(x, 23)].symbol()).collect();
+        assert!(editor.starts_with("╰─"), "editor: {editor:?}");
     }
 
     #[test]
@@ -2057,8 +2319,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.render(f)).unwrap();
         let buf = terminal.backend().buffer();
-        // rows: 10 - 3 editor - 1 status - 1 loader = 5 chat
-        let row: String = (0..80).map(|x| buf[(x, 5)].symbol()).collect();
+        // rows: 10 - 1 editor - 1 status - 1 loader = 7 chat
+        let row: String = (0..80).map(|x| buf[(x, 7)].symbol()).collect();
         assert!(row.contains("Working…"), "row: {row:?}");
     }
 
@@ -2094,8 +2356,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.render(f)).unwrap();
         let buf = terminal.backend().buffer();
-        // 6 - 3 editor - 1 status - 1 loader = 1 chat row; loader at row 1
-        let row: String = (0..80).map(|x| buf[(x, 1)].symbol()).collect();
+        // 6 - 1 editor - 1 status - 1 loader = 3 chat rows; loader at row 3
+        let row: String = (0..80).map(|x| buf[(x, 3)].symbol()).collect();
         assert!(row.contains("esc to cancel"), "row: {row:?}");
     }
 
@@ -2132,11 +2394,10 @@ mod tests {
             .draw(|f| app.render_live(f, Rect::new(0, 0, 80, 5)))
             .unwrap();
         let buf = terminal.backend().buffer();
-        // The editor renders as a boxed component: border row, then the
-        // prompt glyph on the first inner row.
+        // Band composer: the status line row, then the `╰─ ` prompt row.
         let editor_row: String = (0..80).map(|x| buf[(x, 1)].symbol()).collect();
-        assert!(editor_row.contains('❯'), "row: {editor_row:?}");
-        let status_row: String = (0..80).map(|x| buf[(x, 3)].symbol()).collect();
+        assert!(editor_row.starts_with("╰─"), "row: {editor_row:?}");
+        let status_row: String = (0..80).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(
             status_row.contains("zai/glm-5.3-flash"),
             "row: {status_row:?}"

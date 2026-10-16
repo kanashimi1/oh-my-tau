@@ -1,12 +1,11 @@
 //! Rendering for the editor — the port of `Editor.render`
 //! (`components/editor.ts:1337`) and the composer chrome around it.
 //!
-//! - Boxed multi-line editor: border colored by `theme.border` (accent
-//!   when the draft is a bash `!` command), content width = area − 2.
-//! - Prompt gutter glyph (`❯`) on the first content row
-//!   (`setPromptGutter`, `:860`).
-//! - Placeholder dim text on an empty buffer (`"Ask omp — / commands ·
-//!   @ files · ! bash"`, `custom-editor.ts:53`).
+//! - Band composer (`components/composer/band.ts`, the default style): no
+//!   frame — the status line sits above as the "top band" and the rows carry
+//!   the `╰─ ` prompt gutter (accent when the draft is a bash `!` command).
+//! - Right-aligned composer hint on an empty composer (`composer-hints.ts`:
+//!   `⇧⇥ to change thinking effort`), flush right with a 2-cell minimum gap.
 //! - Soft wrap to the content width (`layout::layout`), internal scroll
 //!   (`#scrollOffset`) with the cursor kept visible, page step scrolling
 //!   (`#getPageScroll`).
@@ -18,7 +17,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::component::Component;
@@ -27,8 +26,12 @@ use crate::editor::{Editor, EditorOutcome};
 use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
 use crate::theme::Theme;
 
-/// Default placeholder (TS `custom-editor.ts:53`).
-pub const PLACEHOLDER: &str = "Ask omp — / commands · @ files · ! bash";
+/// Prompt gutter of the band composer (`bandComposerStyle.defaultPromptGutter`).
+pub const PROMPT_GUTTER: &str = "╰─ ";
+
+/// Minimum free cells between the end-of-line cursor and the right hint
+/// (`PLACEHOLDER_MIN_GAP`).
+const HINT_MIN_GAP: usize = 2;
 
 /// First visual row shown in the viewport (`#scrollOffset`).
 pub(crate) type ScrollOffset = Cell<usize>;
@@ -58,18 +61,20 @@ impl Editor {
         self.scroll_offset.set(cur + step);
     }
 
-    /// The height the editor wants for `width` columns: wrapped content +
-    /// 2 border rows, capped at [`Editor::max_height`] (TS `setMaxHeight`).
+    /// The height the editor wants for `width` columns: wrapped content
+    /// rows (the band composer has no vertical chrome), capped at
+    /// [`Editor::max_height`] minus the band row (TS `setMaxHeight`).
     #[must_use]
     pub fn desired_height(&self, width: u16) -> u16 {
-        // Border (2) + prompt gutter (`❯ `, 2 cells) — must match `render`.
-        let content_width = width.saturating_sub(4).max(1) as usize;
+        let content_width = width
+            .saturating_sub(display_width(PROMPT_GUTTER) as u16)
+            .max(1) as usize;
         let rows = if self.buffer.is_empty() {
             1
         } else {
             layout(self.buffer.lines(), content_width).len().max(1)
         };
-        u16::try_from((rows + 2).min(self.max_height.max(3) as usize)).unwrap_or(u16::MAX)
+        u16::try_from(rows.min(self.max_height.saturating_sub(1).max(2) as usize)).unwrap_or(u16::MAX)
     }
 
     /// Keep the scroll offset showing the cursor (called from render).
@@ -97,52 +102,55 @@ impl Editor {
 
 impl Component for Editor {
     fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
-        if area.height < 2 || area.width < 4 {
+        if area.height < 1 || area.width < 4 {
             return;
         }
-        let content_width = (area.width - 2) as usize;
-        let content_height = (area.height - 2) as usize;
-
-        let border_color = if self.is_bash_mode() {
+        let inner = area;
+        let content_height = area.height as usize;
+        let gutter_color = if self.is_bash_mode() {
             theme.color("accent")
         } else {
             theme.color("border")
         };
-        let title = if self.is_bash_mode() { " bash " } else { "" };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(border_color))
-            .title(Span::styled(
-                title,
-                Style::default().fg(theme.color("accent")),
-            ));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let gutter_style = Style::default().fg(gutter_color);
+        let gutter_w = display_width(PROMPT_GUTTER);
 
-        // Placeholder on an empty buffer (dim hint text).
+        // Empty composer: gutter, cursor, and the right-aligned hint.
         if self.buffer.is_empty() {
-            let hint = Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("{} ", theme.glyph("prompt")),
-                    Style::default().fg(theme.color("accent")),
-                ),
-                Span::styled(
-                    self.placeholder.as_str(),
-                    Style::default().fg(theme.color("text_muted")),
-                ),
-            ]));
-            frame.render_widget(hint, inner);
-            Self::draw_cursor(frame.buffer_mut(), inner, "", 0, 0, theme);
+            let mut spans = vec![Span::styled(PROMPT_GUTTER, gutter_style)];
+            if let Some((key, label)) = &self.hint {
+                let hint_w = display_width(key) + 1 + display_width(label);
+                let avail = (inner.width as usize).saturating_sub(gutter_w);
+                // The cursor cell sits at the start of the free area.
+                if avail >= hint_w + HINT_MIN_GAP {
+                    spans.push(Span::raw(" ".repeat(avail - hint_w)));
+                    spans.push(Span::styled(key.clone(), Style::default().fg(theme.color("accent"))));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        label.clone(),
+                        Style::default()
+                            .fg(theme.color("text_muted"))
+                            .add_modifier(Modifier::ITALIC),
+                    ));
+                }
+            }
+            frame.render_widget(Paragraph::new(Line::from(spans)), inner);
+            let cursor_area = Rect {
+                x: inner.x + u16::try_from(gutter_w).unwrap_or(0),
+                width: inner.width.saturating_sub(u16::try_from(gutter_w).unwrap_or(0)),
+                ..inner
+            };
+            Self::draw_cursor(frame.buffer_mut(), cursor_area, "", 0, 0, theme);
             return;
         }
 
-        // Every content row reserves the prompt-gutter width: the glyph on
-        // the very first row, blank indent on the rest — so wrap width and
+        // Every content row reserves the prompt-gutter width: the `╰─ ` cue
+        // on the first row, blank indent on the rest — wrap width and
         // cursor column both account for it.
-        let gutter = format!("{} ", theme.glyph("prompt"));
-        let gutter_w = display_width(&gutter);
-        let rows = layout(self.buffer.lines(), content_width.saturating_sub(gutter_w).max(1));
+        let rows = layout(
+            self.buffer.lines(),
+            (inner.width as usize).saturating_sub(gutter_w).max(1),
+        );
         self.sync_scroll(&rows, content_height);
         let offset = self.scroll_offset.get();
         let visible: Vec<Line<'_>> = rows
@@ -150,9 +158,10 @@ impl Component for Editor {
             .enumerate()
             .skip(offset)
             .take(content_height)
-            .map(|(i, r)| {
-                let lead: Span<'_> = if i == 0 {
-                    Span::styled(gutter.clone(), Style::default().fg(theme.color("accent")))
+            .enumerate()
+            .map(|(vis, (_, r))| {
+                let lead: Span<'_> = if vis == 0 {
+                    Span::styled(PROMPT_GUTTER, gutter_style)
                 } else {
                     Span::raw(" ".repeat(gutter_w))
                 };

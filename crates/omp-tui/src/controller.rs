@@ -88,9 +88,13 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
         tracing::warn!("{warning}");
     }
     app.configure(cfg.models, cfg.session_sources);
+    app.set_model_name(cfg.model_name);
+    app.set_welcome(&cfg.version);
+    commit_retired(&mut app, shell).context("commit welcome")?;
 
     shell.draw_live(|f| app.render(f)).context("initial draw")?;
 
+    let mut signals = TermSignals::new();
     loop {
         let now = Instant::now();
         app.poll_deadlines(now, &port);
@@ -99,17 +103,24 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
 
         tokio::select! {
             biased;
+            () = signals.recv() => {
+                // SIGTERM/SIGHUP/SIGINT: leave through the normal teardown so
+                // the alt screen, mouse tracking and keyboard modes are
+                // restored (TS postmortem `terminal-restore`).
+                break;
+            }
             maybe_key = keys.next() => {
                 let Some(Ok(event)) = maybe_key else { continue };
                 match event {
                     Event::Resize(_, _) => {
+                        // While a full-screen overlay covers the normal buffer
+                        // the shell defers this to the alt exit.
                         if shell.on_resize().context("resize")? == ResizeAction::RebuildScrollback {
                             // "Rebuild" scrollback mode (mux owns the grid):
                             // re-commit the transcript at the new width.
                             let lines = take_scrollback(&mut app, shell.width(), Rebuild::Yes);
                             shell.commit(&lines).context("rebuild scrollback")?;
                         }
-                        shell.draw_live(|f| app.render(f)).context("draw")?;
                     }
                     _ => {
                         if !app.handle_terminal_event(&event, &port) {
@@ -132,24 +143,90 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
             }
         }
 
-        // Key/resize paths also retire rows (e.g. the echoed user prompt on
-        // submit is a settle point) — the drain is watermark-based and cheap.
-        commit_retired(&mut app, shell).context("commit scrollback")?;
-
-        if app.has_fullscreen_overlay() {
-            // Full-screen overlays borrow the alternate screen for the
-            // duration of the draw (kitty flags re-pushed there by Shell).
-            shell
-                .with_fullscreen(|f| app.render(f))
-                .context("fullscreen paint")?;
-        } else {
-            shell.draw_live(|f| app.render(f)).context("draw")?;
-        }
+        paint(&mut app, shell)?;
     }
     // Teardown the terminal title (stops the spinner thread) before the
     // shell restores the screen; the app's `Drop` is the panic-path backup.
     app.dispose_title();
     Ok(())
+}
+
+/// One paint after a state change — the TS `tui.ts` render-pass
+/// short-circuit: while an open overlay is full-screen, hold the alternate
+/// screen and paint only the modal there (normal screen and scrollback
+/// accounting untouched); when the last one closes, leave the alt screen
+/// (the terminal restores the inline transcript + live region), apply any
+/// deferred resize, commit rows that retired meanwhile and repaint the live
+/// region. Mouse reporting follows [`App::wants_mouse`] either way.
+fn paint(app: &mut App, shell: &mut StdShell) -> Result<()> {
+    if app.has_fullscreen_overlay() {
+        let entering = !shell.is_alt();
+        shell
+            .draw_fullscreen(|f| app.render_fullscreen(f))
+            .context("fullscreen paint")?;
+        if entering {
+            tracing::debug!("fullscreen overlay: entered alternate screen");
+        }
+        shell
+            .set_mouse_tracking(app.wants_mouse())
+            .context("mouse tracking")?;
+        return Ok(());
+    }
+    // Mouse off (or inline capture) first, then leave alt: TS fused exit
+    // order `mouseExit + enhancementExit + ?1049l`.
+    shell
+        .set_mouse_tracking(app.wants_mouse())
+        .context("mouse tracking")?;
+    if shell.is_alt() && shell.leave_alt().context("leave alternate screen")? == ResizeAction::RebuildScrollback {
+        let lines = take_scrollback(app, shell.width(), Rebuild::Yes);
+        shell.commit(&lines).context("rebuild scrollback")?;
+    }
+    // Key/resize paths also retire rows (e.g. the echoed user prompt on
+    // submit is a settle point) — the drain is watermark-based and cheap.
+    commit_retired(app, shell).context("commit scrollback")?;
+    shell.draw_live(|f| app.render(f)).context("draw")?;
+    Ok(())
+}
+
+/// Termination signals that must unwind through the terminal restore
+/// (raw mode turns Ctrl+C into a key, so SIGINT only arrives via `kill`).
+struct TermSignals {
+    #[cfg(unix)]
+    streams: Vec<tokio::signal::unix::Signal>,
+}
+
+impl TermSignals {
+    fn new() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let streams = [SignalKind::terminate(), SignalKind::hangup(), SignalKind::interrupt()]
+                .into_iter()
+                .filter_map(|kind| signal(kind).ok())
+                .collect();
+            Self { streams }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {}
+        }
+    }
+
+    /// Resolves when any watched signal arrives; pending forever otherwise.
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            if self.streams.is_empty() {
+                return std::future::pending().await;
+            }
+            let futs = self.streams.iter_mut().map(|s| Box::pin(s.recv()));
+            let _ = futures::future::select_all(futs).await;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
 }
 
 /// Rebuild vs incremental scrollback commit.
@@ -169,25 +246,26 @@ fn take_scrollback(app: &mut App, width: u16, rebuild: Rebuild) -> Vec<Line<'sta
 }
 
 /// Drain retired rows and commit them above the live region. No-op when
-/// nothing retired since the last call.
+/// nothing retired since the last call, and deferred while a full-screen
+/// overlay holds the alternate screen (inserting there would scroll the
+/// rows into the alt buffer and lose them; the watermark keeps them until
+/// the overlay closes).
 fn commit_retired(app: &mut App, shell: &mut StdShell) -> Result<()> {
+    if shell.is_alt() {
+        return Ok(());
+    }
     let lines = take_scrollback(app, shell.width(), Rebuild::No);
     shell.commit(&lines)?;
     Ok(())
 }
 
-/// Restore the terminal on panic so the shell is usable again.
+/// Restore the terminal on panic so the shell is usable again (TS
+/// `emergencyTerminalRestore`: mouse tracking off, leave the alt screen only
+/// when a full-screen overlay holds it, keyboard modes popped).
 fn install_panic_hook() {
-    use std::io::Write as _;
-
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = crossterm::terminal::disable_raw_mode();
-        let mut out = io::stdout();
-        // Best-effort unwind of everything `Shell::enter` enabled:
-        // kitty pop, bracketed paste off, DECCKM normal, cursor visible.
-        let _ = out.write_all(b"\x1b[<u\x1b[?2004l\x1b[?1l\x1b>\x1b[?25h");
-        let _ = out.flush();
+        crate::render::emergency_restore();
         default(info);
     }));
 }
@@ -293,8 +371,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| app.render(f)).unwrap();
         let buf = terminal.backend().buffer();
-        let row: String = (0..80).map(|x| buf[(x, 7)].symbol()).collect();
-        assert!(row.contains('❯'), "editor row: {row:?}");
+        let row: String = (0..80).map(|x| buf[(x, 9)].symbol()).collect();
+        assert!(row.starts_with("╰─"), "editor row: {row:?}");
     }
 
     #[test]

@@ -27,6 +27,7 @@ use crate::types::{
     StopReason, TextContent, ThinkingContent, ToolCall, Usage,
 };
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
 use crate::utils_inner::wire_json::request_body;
 use crate::utils_inner::json_parse::{
     parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
@@ -629,6 +630,17 @@ async fn run_stream(
         base_options.session_id.as_deref(),
     );
 
+    // TS `rawRequestDump`: kept so a 400/413 rejection can be dumped and
+    // referenced from the error message (`finalizeErrorMessage`).
+    let request_dump = RawHttpRequestDump {
+        provider: model.provider.to_string(),
+        api: model.api.to_string(),
+        model: model.id.clone(),
+        method: "POST".to_owned(),
+        url: url.clone(),
+        headers: headers.clone(),
+        body: body.clone(),
+    };
     let mut response: HttpResponse = send(RequestOptions {
         method: reqwest::Method::POST,
         url,
@@ -656,11 +668,8 @@ async fn run_stream(
     // message.
     if !(200..300).contains(&response.status) {
         let body = response.read_all_text().await.unwrap_or_default();
-        return Err(openai_http_error(
-            response.status,
-            &body,
-            response.headers.clone(),
-        ));
+        let error = openai_http_error(response.status, &body, response.headers.clone());
+        return Err(finalize_http_error(error, true, Some(&request_dump)));
     }
 
     writer.push(AssistantMessageEvent::Start {

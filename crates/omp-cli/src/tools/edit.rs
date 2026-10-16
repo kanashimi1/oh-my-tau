@@ -129,7 +129,43 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
         .apply(ApplyRequest::default(), &FsWriter)
         .await
         .map_err(|e| anyhow!("{e}"))?;
-    Ok(AgentToolResult::text(outcome.text))
+    let mut result = AgentToolResult::text(outcome.text.clone());
+    result.details = edit_details(&outcome);
+    Ok(result)
+}
+
+/// omp `EditToolDetails`: the numbered `diff` (+ `firstChangedLine`, `op`,
+/// `path`) the transcript card renders; several files add `perFileResults`.
+fn edit_details(outcome: &pi_edit::session::ApplyOutcome) -> Value {
+    let one = |f: &pi_edit::session::FileOutcome| {
+        let mut d = serde_json::Map::new();
+        d.insert("path".into(), Value::from(f.display.clone()));
+        d.insert("diff".into(), Value::from(f.diff.clone()));
+        d.insert(
+            "op".into(),
+            Value::from(match f.op {
+                FileOp::Create => "create",
+                FileOp::Delete => "delete",
+                FileOp::Update | FileOp::Noop => "update",
+            }),
+        );
+        if let Some(line) = f.first_changed_line {
+            d.insert("firstChangedLine".into(), Value::from(line));
+        }
+        if let Some(to) = &f.move_to {
+            d.insert("move".into(), Value::from(to.display().to_string()));
+        }
+        Value::Object(d)
+    };
+    match outcome.files.as_slice() {
+        [] => Value::Null,
+        [only] => one(only),
+        files => {
+            let mut d = one(&files[0]);
+            d["perFileResults"] = Value::Array(files.iter().map(one).collect());
+            d
+        }
+    }
 }
 
 /// `write`: create or overwrite a file.

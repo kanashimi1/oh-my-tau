@@ -122,6 +122,8 @@ pub enum Speculation {
 pub struct StatusLine {
     /// `provider/id` of the active model.
     pub model: String,
+    /// Model display name (models.yml `name`); falls back to `model`.
+    pub model_name: Option<String>,
     /// Working directory (display form, e.g. project root path).
     pub cwd: String,
     /// Whether the agent is streaming.
@@ -251,6 +253,7 @@ impl StatusLine {
     pub fn new(model: String, cwd: impl Into<String>) -> Self {
         Self {
             model,
+            model_name: None,
             cwd: cwd.into(),
             streaming: false,
             queued: 0,
@@ -457,6 +460,7 @@ impl Component for StatusLine {
             speculation_pct: self.speculation_pct,
             accent,
             boundaries_known: self.boundaries_known,
+            embed: false,
         };
         let line = layout(&ctx, theme, width, &gauge_input);
         frame.render_widget(Paragraph::new(line), Rect { height: 1, ..area });
@@ -499,7 +503,7 @@ fn layout(
     width: usize,
     gauge_input: &gauge::GaugeInput,
 ) -> Line<'static> {
-    let (mut left_ids, right_ids) = match ctx.st.config.preset {
+    let (mut left_ids, mut right_ids) = match ctx.st.config.preset {
         presets::Preset::Custom => (
             ctx.st
                 .config
@@ -514,6 +518,21 @@ fn layout(
         ),
         p => p.segments(),
     };
+    // `embedContext`: with a known window and at least one non-context
+    // segment, the gauge absorbs the context segments (percent + window
+    // labels ride inside it).
+    let is_context = |id: &SegmentId| matches!(id, SegmentId::ContextPct | SegmentId::ContextTotal);
+    let embed = ctx.st.config.context_line == presets::ContextLineMode::Embedded
+        && ctx.st.context_window.unwrap_or(0) > 0
+        && left_ids.iter().chain(right_ids.iter()).any(is_context)
+        && left_ids.iter().chain(right_ids.iter()).any(|id| !is_context(id));
+    if embed {
+        left_ids.retain(|id| !is_context(id));
+        right_ids.retain(|id| !is_context(id));
+    }
+    let mut gauge_input = *gauge_input;
+    gauge_input.embed = embed;
+    let gauge_input = &gauge_input;
     let sep_style = ctx
         .st
         .config
@@ -711,7 +730,9 @@ mod tests {
         assert!(row.contains("omp-rs"));
         assert!(row.contains("master"));
         assert!(row.contains("*3"));
-        assert!(row.contains("23.0%/200K"));
+        // Embedded gauge: percent and window labels ride inside the line.
+        assert!(row.contains("23%"), "{row:?}");
+        assert!(row.contains("200K"), "{row:?}");
     }
 
     #[test]
@@ -743,8 +764,10 @@ mod tests {
         let row = draw(&status, 60);
         // The path survives (clamped to its 8-cell floor) while looser
         // segments are dropped.
-        assert!(row.contains("path"), "row: {row:?}");
-        assert_eq!(str_width(row.trim_end()), 60);
+        assert!(row.contains("ath"), "row: {row:?}");
+        // `draw` joins buffer cells, so a wide emoji adds its blank trailing
+        // cell: the bar fills exactly 60 cells.
+        assert_eq!(row.chars().count(), 60);
     }
 
     #[test]

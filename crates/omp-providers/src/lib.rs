@@ -698,6 +698,74 @@ fn db_credential(db: &Path, provider: &str) -> Option<(String, i64)> {
     None
 }
 
+/// How the active credential for a provider is supplied, as `/session` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthDetails {
+    /// TS `resolveProviderAuthMode`: `oauth` | `api key` | `env api key` | `runtime/fallback` | `unknown`.
+    pub mode: &'static str,
+    /// TS `KeyCascade.describe`: where the active credential came from; `None` when unknown.
+    pub source: Option<String>,
+}
+
+/// [`AuthDetails`] for `provider` from `models.yml` `apiKey`, env vars and the
+/// enabled `agent.db` `auth_credentials` rows (the omp `AuthStorage` strata).
+#[must_use]
+pub fn auth_details(dir: &AgentDir, provider: &str) -> AuthDetails {
+    let config_key = Config::load(&dir.0)
+        .ok()
+        .is_some_and(|cfg| cfg.provider(provider).and_then(|p| p.get("apiKey")).and_then(Value::as_str).is_some());
+    // (type, data, id) of every enabled stored credential, in pool order.
+    let rows: Vec<(String, Value, i64)> = open_ro(&dir.0.join("agent.db"))
+        .and_then(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT credential_type, data, id FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NULL ORDER BY id")
+                .ok()?;
+            let rows = stmt
+                .query_map([provider], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+                .ok()?
+                .filter_map(std::result::Result::ok)
+                .map(|(kind, data, id)| (kind, serde_json::from_str(&data).unwrap_or(Value::Null), id))
+                .collect();
+            Some(rows)
+        })
+        .unwrap_or_default();
+    let env = env_key(provider).is_some();
+    let mode = if rows.iter().any(|(kind, ..)| kind == "oauth") {
+        "oauth"
+    } else if !rows.is_empty() {
+        "api key"
+    } else if env {
+        "env api key"
+    } else if config_key {
+        "runtime/fallback"
+    } else {
+        "unknown"
+    };
+    const BASE_LABEL: &str = "local store";
+    let describe = |kind: &str, filter: &dyn Fn(&Value) -> bool| {
+        let (_, data, id) = rows.iter().find(|(k, d, _)| k == kind && filter(d))?;
+        let identity = if kind == "oauth" {
+            ["email", "accountId", "projectId"]
+                .iter()
+                .find_map(|f| data.get(*f).and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_else(|| format!("cred {id}"))
+        } else {
+            format!("cred {id}")
+        };
+        Some(format!("{BASE_LABEL} · {kind} #{id} ({identity})"))
+    };
+    let is_login = |d: &Value| d.get("source").and_then(Value::as_str) == Some("login");
+    let source = if config_key {
+        Some("config override (models.yml)".to_string())
+    } else {
+        describe("oauth", &|_| true)
+            .or_else(|| describe("api_key", &is_login))
+            .or_else(|| env.then(|| format!("env (over {BASE_LABEL})")))
+            .or_else(|| describe("api_key", &|d| !is_login(d)))
+    };
+    AuthDetails { mode, source }
+}
+
 #[cfg(test)]
 mod tests {
     /// Async resolution never parks the executor: two concurrent `!command`

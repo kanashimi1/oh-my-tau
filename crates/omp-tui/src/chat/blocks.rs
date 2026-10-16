@@ -66,7 +66,7 @@ pub fn entry_lines(
         ChatKind::Compaction(c) => compaction_lines(c, expanded, width, theme),
         ChatKind::Branch { summary } => branch_lines(summary, expanded, width, theme),
         ChatKind::Custom(c) => custom_lines(c, theme),
-        ChatKind::Usage(usage) => vec![usage_row(usage, theme)],
+        ChatKind::Usage(usage) => usage_block_lines(usage, width, theme),
         ChatKind::Notice(text) => notice_lines(text, expanded, width, theme),
     }
 }
@@ -78,7 +78,7 @@ pub fn revealed_lines(blocks: &[RevealBlock], width: usize, theme: &Theme) -> Ve
     let mut lines = Vec::new();
     for block in blocks {
         match block {
-            RevealBlock::Text(text) => lines.extend(markdown::render(text, width as u16, theme).lines),
+            RevealBlock::Text(text) => lines.extend(prose_lines(text, width, theme)),
             RevealBlock::Thinking { display, .. } => {
                 let view = ThinkingBlockView {
                     text: display.clone(),
@@ -128,41 +128,74 @@ fn user_lines(
     width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    // `UserMessageComponent`: Markdown with paddingX 1 / paddingY 1 on the
+    // `userMessageBg` fill — a flush-left bubble, no glyph, full-width rows.
     let chipped = collapse_chips(text);
-    let mut text = markdown::render(&chipped, width as u16, theme);
-    let bg = theme.color("border");
+    let inner = width.saturating_sub(2).max(1);
+    let mut text = markdown::render(&chipped, inner as u16, theme);
+    let bg = theme.color("userMessageBg");
+    let fg = theme.color("userMessageText");
+    let fill = Style::default().bg(bg);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(text.lines.len() + 2);
+    // Top padding row; a live-steered message carries `*` at its left.
+    let top = if live_steered {
+        Line::from(vec![Span::styled(
+            "* ",
+            Style::default().fg(theme.color("warning")).bg(bg),
+        )])
+    } else {
+        Line::default()
+    };
+    lines.push(pad_row(top, width, fill));
     for line in &mut text.lines {
         for span in &mut line.spans {
             let mut style = span.style;
             style.bg = Some(bg);
             if synthetic {
                 style.fg = Some(theme.color("text_muted"));
+            } else if style.fg.is_none() && fg != ratatui::style::Color::Reset {
+                style.fg = Some(fg);
             }
             span.style = style;
         }
+        let mut spans = vec![Span::styled(" ", fill)];
+        spans.append(&mut line.spans);
+        lines.push(pad_row(Line::from(spans), width, fill));
     }
-    let mut lines = text.lines;
-    let bg_style = Style::default().fg(theme.color("accent")).bg(bg);
-    if let Some(first) = lines.first_mut() {
-        let mut spans = vec![Span::styled(format!("{} ", theme.glyph("prompt")), bg_style)];
-        if live_steered {
-            spans.push(Span::styled(
-                "* ",
-                Style::default().fg(theme.color("warning")).bg(bg),
-            ));
-        }
-        spans.append(&mut first.spans);
-        *first = Line::from(spans);
-    } else {
-        lines.push(Line::from(Span::styled(
-            format!("{} ", theme.glyph("prompt")),
-            bg_style,
-        )));
-    }
+    lines.push(pad_row(Line::default(), width, fill));
     lines
 }
 
+/// Pad `line` with the bubble fill out to `width` cells.
+fn pad_row(mut line: Line<'static>, width: usize, fill: Style) -> Line<'static> {
+    let used: usize = line
+        .spans
+        .iter()
+        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    if used < width {
+        line.spans.push(Span::styled(" ".repeat(width - used), fill));
+    }
+    line
+}
+
 // ─── Assistant (chat.md §3) ────────────────────────────────────────────────
+
+/// Assistant prose: Markdown at paddingX 1 (`AssistantMessageComponent`
+/// builds `new Markdown(text, 1, 0, ...)`) — a one-cell left indent.
+fn prose_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let inner = width.saturating_sub(2).max(1);
+    markdown::render(text, inner as u16, theme)
+        .lines
+        .into_iter()
+        .map(|mut line| {
+            if !line.spans.is_empty() {
+                line.spans.insert(0, Span::raw(" "));
+            }
+            line
+        })
+        .collect()
+}
 
 fn assistant_lines(
     a: &AssistantMsg,
@@ -175,7 +208,7 @@ fn assistant_lines(
     for segment in &a.segments {
         match segment {
             crate::chat::AssistantSegment::Text { text } => {
-                lines.extend(markdown::render(text, width as u16, theme).lines);
+                lines.extend(prose_lines(text, width, theme));
             }
             crate::chat::AssistantSegment::Thinking { text } => {
                 let view = ThinkingBlockView {
@@ -189,18 +222,20 @@ fn assistant_lines(
             }
         }
     }
-    if let Some(error) = &a.error_message {
+    // While the error is pinned above the editor the inline block is
+    // suppressed unless expanded (TS `#errorPinned`); the caller-owned
+    // Spacer precedes it.
+    if let Some(error) = a.error_message.as_ref().filter(|_| !a.error_pinned || expanded) {
+        lines.push(Line::default());
         lines.extend(format_error_block(error, width, expanded, theme));
-    }
-    if let Some(usage) = &a.usage {
-        lines.push(usage_row(usage, theme));
     }
     lines
 }
 
-/// `chrome/error-block.ts` port: wrap at `width`, cap at
-/// [`ERROR_ROW_CAP`] rows unless `expanded`, `Error:` prefix on the first
-/// row, dim `… +N more lines (ctrl+o to expand)` trailer when capped.
+/// Inline turn-ending error (TS `AssistantMessageComponent#appendErrorBlock`):
+/// `formatErrorBlock` rows at paddingX 1, `Error: ` on the first logical
+/// line, everything error-tinted; capped at [`ERROR_ROW_CAP`] rows unless
+/// `expanded`, with a dim `… +N more lines (ctrl+o to expand)` trailer.
 #[must_use]
 pub fn format_error_block(
     message: &str,
@@ -208,20 +243,94 @@ pub fn format_error_block(
     expanded: bool,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let width = width.max(CONTINUATION_INDENT.len() + 8);
+    let cap = if expanded { usize::MAX } else { ERROR_ROW_CAP };
+    let error = Style::default().fg(theme.color("error"));
+    error_block_rows(message, width.saturating_sub(2), cap, "Error: ")
+        .into_iter()
+        .map(|row| match row {
+            ErrorRow::Text(text) => Line::from(vec![Span::raw(" "), Span::styled(text, error)]),
+            ErrorRow::More(text) => Line::from(vec![
+                Span::raw(" "),
+                Span::styled(text, Style::default().fg(theme.color("dim"))),
+            ]),
+        })
+        .collect()
+}
+
+/// Max wrapped message rows in the pinned banner (TS `MAX_BANNER_ROWS`).
+pub const BANNER_ROW_CAP: usize = 4;
+
+/// TS `ErrorBannerComponent` (`overlays/error-banner.ts`): the turn-ending
+/// provider error pinned above the editor — a spacer, an error-tinted
+/// full-width rule, the message (`✘ ` + line 0 bold, wrapped, capped at
+/// [`BANNER_ROW_CAP`] rows), the dim dismissal hint, and a closing rule.
+#[must_use]
+pub fn error_banner_lines(message: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let error = Style::default().fg(theme.color("error"));
+    let dim = Style::default().fg(theme.color("dim"));
+    let rule = Line::from(Span::styled("─".repeat(width), error));
+    let prefix = format!("{} ", theme.symbol("status.error"));
+    let mut lines = vec![Line::default(), rule.clone()];
+    for (index, row) in error_block_rows(message, width.saturating_sub(2), BANNER_ROW_CAP, &prefix)
+        .into_iter()
+        .enumerate()
+    {
+        let span = match row {
+            ErrorRow::Text(text) if index == 0 => {
+                Span::styled(text, error.add_modifier(Modifier::BOLD))
+            }
+            ErrorRow::Text(text) => Span::styled(text, error),
+            ErrorRow::More(text) => Span::styled(text, dim),
+        };
+        lines.push(Line::from(vec![Span::raw(" "), span]));
+    }
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled("Dismissed when you send your next message.", dim),
+    ]));
+    lines.push(rule);
+    lines
+}
+
+/// One row of a [`error_block_rows`] block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorRow {
+    /// A wrapped message row (continuations carry the hanging indent).
+    Text(String),
+    /// The dim `… +N more lines (ctrl+o to expand)` overflow row.
+    More(String),
+}
+
+/// TS `formatErrorBlock` text: logical lines trimmed, blank ones dropped,
+/// `first_prefix` glued to line 0 before wrapping at `content_width - 2`,
+/// every row after the first hung under [`CONTINUATION_INDENT`], at most
+/// `max_rows` rows plus an overflow row.
+#[must_use]
+pub fn error_block_rows(
+    message: &str,
+    content_width: usize,
+    max_rows: usize,
+    first_prefix: &str,
+) -> Vec<ErrorRow> {
     let mut logical: Vec<String> = message
         .replace("\r\n", "\n")
+        .replace('\t', "   ")
         .split('\n')
-        .map(|l| l.trim().split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|l| l.trim().to_owned())
         .filter(|l| !l.is_empty())
         .collect();
     if logical.is_empty() {
         logical.push("Unknown error".to_owned());
     }
-    let wrap_width = width - CONTINUATION_INDENT.len();
+    let wrap_width = content_width.saturating_sub(CONTINUATION_INDENT.len()).max(1);
     let mut rows: Vec<String> = Vec::new();
-    for line in &logical {
-        for row in wrap_text(line, wrap_width) {
+    for (index, line) in logical.iter().enumerate() {
+        let styled = if index == 0 {
+            format!("{first_prefix}{line}")
+        } else {
+            line.clone()
+        };
+        for row in wrap_text(&styled, wrap_width) {
             rows.push(if rows.is_empty() {
                 row
             } else {
@@ -229,40 +338,16 @@ pub fn format_error_block(
             });
         }
     }
-    let cap = if expanded { usize::MAX } else { ERROR_ROW_CAP };
-    let hidden = rows.len().saturating_sub(cap);
-    rows.truncate(cap);
-    let mut lines: Vec<Line<'static>> = rows
-        .into_iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let spans = if index == 0 {
-                vec![
-                    Span::styled(
-                        format!("{} Error: ", theme.glyph("failure")),
-                        Style::default().fg(theme.color("error")),
-                    ),
-                    Span::styled(row, Style::default().fg(theme.color("error"))),
-                ]
-            } else {
-                vec![Span::styled(
-                    row,
-                    Style::default().fg(theme.color("error")),
-                )]
-            };
-            Line::from(spans)
-        })
-        .collect();
+    let hidden = rows.len().saturating_sub(max_rows);
+    rows.truncate(max_rows);
+    let mut out: Vec<ErrorRow> = rows.into_iter().map(ErrorRow::Text).collect();
     if hidden > 0 {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "{CONTINUATION_INDENT}… +{hidden} more line{} (ctrl+o to expand)",
-                if hidden == 1 { "" } else { "s" }
-            ),
-            Style::default().fg(theme.color("text_muted")),
+        out.push(ErrorRow::More(format!(
+            "{CONTINUATION_INDENT}… +{hidden} more line{} (ctrl+o to expand)",
+            if hidden == 1 { "" } else { "s" }
         )));
     }
-    lines
+    out
 }
 
 /// Greedy word wrap to `width` display columns (chars approximation).
@@ -309,42 +394,115 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
 // ─── Usage row (overlays/usage-row.ts) ─────────────────────────────────────
 
-/// The settled-turn usage line: duration · tok/s · ttft · token totals.
+/// Below this the rate is nonsense (cached/instant responses).
+const MIN_RATE_DURATION_MS: u64 = 100;
+
+/// TS `formatUsageRow`: the metric specs (`usageRowSpecs`) joined by two
+/// spaces — local `YYYY-MM-DD HH:MM:SS`, `Δ <turn time>`, `⤵ input`,
+/// `⤴ output`, `💾 cache read`, `⏱ ttft`, `⚡ tok/s`.
 #[must_use]
-pub fn usage_row(usage: &Usage, theme: &Theme) -> Line<'static> {
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(duration_ms) = usage.duration_ms.filter(|d| *d > 0) {
-        parts.push(format!("{:.1}s", duration_ms as f64 / 1000.0));
-        // Below 100 ms the rate is nonsense (cached/instant responses).
-        if duration_ms > 100 && usage.output > 0 {
-            parts.push(format!(
-                "{:.0} tok/s",
-                usage.output as f64 * 1000.0 / duration_ms as f64
-            ));
+#[allow(clippy::cast_precision_loss)] // display-only rounding
+pub fn usage_metrics(usage: &Usage, theme: &Theme) -> String {
+    let mut specs: Vec<String> = Vec::new();
+    if let Some(ts) = usage.timestamp_ms.filter(|t| *t > 0) {
+        specs.push(crate::chat::local_time::format_local_timestamp(ts));
+    }
+    if let Some(elapsed) = usage.turn_elapsed_ms.filter(|e| *e > 0) {
+        specs.push(format!("Δ {}", format_duration(elapsed)));
+    }
+    let metric = |icon: &str, value: String| format!("{} {value}", theme.symbol(icon));
+    specs.push(metric("icon.input", format_number(usage.input + usage.cache_write)));
+    specs.push(metric("icon.output", format_number(usage.output)));
+    if usage.cache_read > 0 {
+        specs.push(metric("icon.cache", format_number(usage.cache_read)));
+    }
+    if let Some(ttft) = usage.ttft_ms.filter(|t| *t > 0) {
+        specs.push(metric("icon.time", format!("{}s", to_fixed1(ttft as f64 / 1000.0))));
+    }
+    if let Some(duration) = usage.duration_ms.filter(|d| *d > MIN_RATE_DURATION_MS) {
+        if usage.output > 0 {
+            let rate = usage.output as f64 * 1000.0 / duration as f64;
+            specs.push(metric("icon.throughput", format!("{}/s", to_fixed1(rate))));
         }
     }
-    if let Some(ttft_ms) = usage.ttft_ms.filter(|t| *t > 0) {
-        parts.push(format!("ttft {:.2}s", ttft_ms as f64 / 1000.0));
-    }
-    let total = usage.input + usage.output + usage.cache_read + usage.cache_write;
-    if total > 0 {
-        parts.push(format!("{} tok", compact(total)));
-    }
-    Line::from(Span::styled(
-        format!("⏱ {} this turn", parts.join(" · ")),
-        Style::default().fg(theme.color("text_muted")),
-    ))
+    specs.join("  ")
 }
 
-/// `formatNumber`-style compact amounts (`19K`, `1.2M`).
-#[allow(clippy::cast_precision_loss)] // display-only rounding of token counts
-fn compact(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.0}K", n as f64 / 1_000.0)
+/// TS `createUsageRowBlock`: a spacer row, then the dim metric strip at
+/// paddingX 1 (word-wrapped when wider than the row).
+#[must_use]
+pub fn usage_block_lines(usage: &Usage, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme.color("dim"));
+    let metrics = usage_metrics(usage, theme);
+    let inner = width.saturating_sub(2).max(1);
+    let rows = if unicode_width::UnicodeWidthStr::width(metrics.as_str()) <= inner {
+        vec![metrics]
     } else {
-        n.to_string()
+        wrap_text(&metrics, inner)
+    };
+    let mut lines = vec![Line::default()];
+    lines.extend(
+        rows.into_iter()
+            .map(|row| Line::from(vec![Span::raw(" "), Span::styled(row, dim)])),
+    );
+    lines
+}
+
+/// JS `Number#toFixed(1)` (half away from zero, unlike `{:.1}`'s
+/// half-to-even).
+fn to_fixed1(v: f64) -> String {
+    format!("{:.1}", (v * 10.0).round() / 10.0)
+}
+
+/// pi-utils `formatNumber`: `999`, `1.2K`, `19K`, `1.5M`, `12M`, `2B`.
+#[must_use]
+#[allow(clippy::cast_precision_loss)] // display-only rounding of token counts
+pub fn format_number(n: u64) -> String {
+    let trim1 = |v: f64| {
+        let s = to_fixed1(v);
+        s.strip_suffix(".0").map_or_else(|| s.clone(), str::to_owned)
+    };
+    let f = n as f64;
+    match n {
+        0..=999 => n.to_string(),
+        1_000..=9_999 => format!("{}K", trim1(f / 1e3)),
+        10_000..=999_999 => format!("{}K", (f / 1e3).round()),
+        1_000_000..=9_999_999 => format!("{}M", trim1(f / 1e6)),
+        10_000_000..=999_999_999 => format!("{}M", (f / 1e6).round()),
+        1_000_000_000..=9_999_999_999 => format!("{}B", trim1(f / 1e9)),
+        _ => format!("{}B", (f / 1e9).round()),
+    }
+}
+
+/// pi-utils `formatDuration`: `850ms`, `6.2s`, `3m12s`, `2h5m`, `1d4h`.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn format_duration(ms: u64) -> String {
+    const SEC: u64 = 1_000;
+    const MIN: u64 = 60 * SEC;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    let unit = |major: u64, major_s: &str, minor: u64, minor_s: &str| {
+        if minor > 0 {
+            format!("{major}{major_s}{minor}{minor_s}")
+        } else {
+            format!("{major}{major_s}")
+        }
+    };
+    match ms {
+        0 => "0ms".to_owned(),
+        1..SEC => format!("{ms}ms"),
+        SEC..MIN => {
+            let tenths = (ms as f64 / 100.0).round() as u64;
+            if tenths < 600 {
+                format!("{:.1}s", tenths as f64 / 10.0)
+            } else {
+                "1m".to_owned()
+            }
+        }
+        MIN..HOUR => unit(ms / MIN, "m", (ms % MIN) / SEC, "s"),
+        HOUR..DAY => unit(ms / HOUR, "h", (ms % HOUR) / MIN, "m"),
+        _ => unit(ms / DAY, "d", (ms % DAY) / HOUR, "h"),
     }
 }
 
@@ -362,6 +520,7 @@ fn tool_call_value(card: &ToolCard, expanded: bool) -> Value {
         call["result"] = json!({
             "text": text,
             "isError": card.status == ToolStatus::Error,
+            "details": card.details,
         });
         // The bash/eval families read the raw stream from the top-level
         // `output` key (`BashCard::parse`).
@@ -381,13 +540,34 @@ fn tool_card_lines(
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let call = tool_call_value(card, expanded);
+    let lines = tool_card_body(card, &call, expanded, width, theme);
+    // TS `ToolExecutionComponent` opens with a one-row Spacer (read cards
+    // keep their own grouping, see `read_group_lines`).
+    if card.name == "read" || lines.is_empty() {
+        return lines;
+    }
+    std::iter::once(Line::default()).chain(lines).collect()
+}
+
+fn tool_card_body(
+    card: &ToolCard,
+    call: &Value,
+    expanded: bool,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     match card.name.as_str() {
         // Families with a native line API render their settled card
         // directly (edit: numbered unified diff; read: snippets).
         "edit" | "apply_patch" => {
-            tools::edit::build_card_lines(&call, call.get("result"), expanded, width, theme)
+            tools::edit::build_card_lines(call, call.get("result"), expanded, width, theme)
         }
-        "read" => tools::read::render_frame(&call, expanded, theme),
+        "read" => tools::read::render_frame(call, expanded, theme),
+        "bash" => tools::bash::card_lines(call, width, theme),
+        "grep" | "search" => tools::search::grep_lines(call, expanded, theme),
+        "glob" => tools::search::glob_lines(call, expanded, theme),
+        "find" => tools::find::find_lines(call, expanded, theme),
+        "write" => tools::write::build_card_lines(call, call.get("result"), expanded, width, theme),
         _ => family_frame_lines(&card.name, &call, width, theme),
     }
 }
@@ -457,9 +637,129 @@ fn buffer_lines(buf: &Buffer) -> Vec<Line<'static>> {
 fn read_group_lines(
     group: &ReadGroup,
     expanded: bool,
-    _width: usize,
+    width: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    if group.preview {
+        return read_group_preview_lines(group, expanded, theme);
+    }
+    read_group_summary_lines(group, width, theme)
+}
+
+/// TS `ReadToolGroupComponent#updateDisplay` without content previews: one
+/// read is ` ● Read <path>`; several are ` • Read (N)` over a `├─`/`└─`
+/// tree (status glyph only for non-success rows). Attached usage rows nest
+/// under their anchor read.
+fn read_group_summary_lines(group: &ReadGroup, _width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme.color("dim"));
+    let title = Span::styled(
+        "Read",
+        Style::default()
+            .fg(theme.color("toolTitle"))
+            .add_modifier(Modifier::BOLD),
+    );
+    let usage_rows = |call_id: &str, prefix: &str, lines: &mut Vec<Line<'static>>| {
+        for (anchor, usage) in &group.usages {
+            if anchor == call_id {
+                lines.push(Line::from(Span::styled(
+                    format!("{prefix}{}", usage_metrics(usage, theme)),
+                    dim,
+                )));
+            }
+        }
+    };
+    let mut lines = Vec::new();
+    match group.reads.as_slice() {
+        [] => lines.push(Line::from(vec![
+            Span::raw(format!(" {} ", theme.symbol("format.bullet"))),
+            title,
+        ])),
+        [read] => {
+            let mut spans = vec![
+                Span::raw(" "),
+                read_status_span(read.status, theme),
+                Span::raw(" "),
+                title,
+            ];
+            let path = read_display_path(&read.path);
+            if !path.is_empty() {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(path, Style::default().fg(theme.color("text"))));
+            }
+            lines.push(Line::from(spans));
+            usage_rows(&read.call_id, "   ", &mut lines);
+        }
+        reads => {
+            lines.push(Line::from(vec![
+                Span::raw(format!(" {} ", theme.symbol("format.bullet"))),
+                title,
+                Span::styled(format!(" ({})", reads.len()), dim),
+            ]));
+            for (index, read) in reads.iter().enumerate() {
+                let last = index + 1 == reads.len();
+                let connector = theme.symbol(if last { "tree.last" } else { "tree.branch" });
+                let mut spans = vec![Span::raw("   "), Span::styled(connector, dim), Span::raw(" ")];
+                if read.status != ToolStatus::Ok {
+                    spans.push(read_status_span(read.status, theme));
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    read_display_path(&read.path),
+                    Style::default().fg(theme.color("text")),
+                ));
+                lines.push(Line::from(spans));
+                let connector_width = unicode_width::UnicodeWidthStr::width(connector);
+                let continuation = if last {
+                    " ".repeat(connector_width)
+                } else {
+                    let vertical = theme.symbol("tree.vertical");
+                    let pad = connector_width
+                        .saturating_sub(unicode_width::UnicodeWidthStr::width(vertical));
+                    format!("{vertical}{}", " ".repeat(pad))
+                };
+                usage_rows(&read.call_id, &format!("   {continuation} "), &mut lines);
+            }
+        }
+    }
+    lines
+}
+
+/// TS `#formatStatus`: `●` success (text), `⚠` warning, `✘` error,
+/// `⏳` pending (dim).
+fn read_status_span(status: ToolStatus, theme: &Theme) -> Span<'static> {
+    match status {
+        ToolStatus::Ok => Span::styled(
+            theme.symbol("status.enabled"),
+            Style::default().fg(theme.color("text")),
+        ),
+        ToolStatus::Error => Span::styled(
+            theme.symbol("status.error"),
+            Style::default().fg(theme.color("error")),
+        ),
+        ToolStatus::Pending | ToolStatus::Running => Span::styled(
+            theme.symbol("status.pending"),
+            Style::default().fg(theme.color("dim")),
+        ),
+    }
+}
+
+/// TS `shortenPath`: the home directory as `~`.
+fn read_display_path(path: &str) -> String {
+    if let Some(home) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
+        if !home.is_empty() && home != "/" {
+            if path == home {
+                return "~".to_owned();
+            }
+            if let Some(rest) = path.strip_prefix(&home).filter(|r| r.starts_with('/')) {
+                return format!("~{rest}");
+            }
+        }
+    }
+    path.to_owned()
+}
+
+/// `read.toolResultPreview`: each read as a snippet card (family renderer).
+fn read_group_preview_lines(group: &ReadGroup, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
     let mut entries = Vec::new();
     let mut plain: Vec<Line<'static>> = Vec::new();
     for read in &group.reads {
@@ -503,10 +803,13 @@ fn read_group_lines(
     }
     let mut lines = tools::read::group_lines(&entries, expanded, theme);
     lines.extend(plain);
-    // Turn usage attaches beneath the group when the turn was reads-only
-    // (TS `ReadToolGroupComponent.attachUsage`).
-    if let Some(usage) = &group.usage {
-        lines.push(usage_row(usage, theme));
+    // TS `#addPreviewUsage`: usage rows under the previews at paddingX 3.
+    let dim = Style::default().fg(theme.color("dim"));
+    for (_, usage) in &group.usages {
+        lines.push(Line::from(Span::styled(
+            format!("   {}", usage_metrics(usage, theme)),
+            dim,
+        )));
     }
     lines
 }
@@ -524,12 +827,26 @@ fn exec_lines(exec: &Execution, tool: &str, width: usize, theme: &Theme) -> Vec<
         "isPartial": exec.status == ExecStatus::Running,
     });
     if exec.status != ExecStatus::Running {
+        let mut details = if exec.details.is_object() {
+            exec.details.clone()
+        } else {
+            json!({})
+        };
+        if details.get("exitCode").is_none() {
+            details["exitCode"] = json!(exec.exit_code);
+        }
         call["result"] = json!({
             "isError": exec.status == ExecStatus::Error,
-            "details": {"exitCode": exec.exit_code},
+            "details": details,
         });
     }
-    let mut lines = family_frame_lines(tool, &call, width, theme);
+    let mut lines = if tool == "bash" {
+        tools::bash::card_lines(&call, width, theme)
+    } else {
+        family_frame_lines(tool, &call, width, theme)
+    };
+    // `BashExecutionComponent` opens with a one-row Spacer as well.
+    lines.insert(0, Line::default());
     if exec.excluded {
         for line in &mut lines {
             for span in &mut line.spans {
@@ -646,6 +963,7 @@ mod tests {
             args: json!({"command": "cargo test -p omp-tui"}),
             status: ToolStatus::Ok,
             result_text: Some("test result: ok. 42 passed".into()),
+            details: json!(null),
             partial: false,
         };
         let entry = ChatEntry::new_for_test(
@@ -673,6 +991,7 @@ mod tests {
             }),
             status: ToolStatus::Ok,
             result_text: Some(diff.into()),
+            details: json!(null),
             partial: false,
         };
         let entry = ChatEntry::new_for_test(ChatRole::Tool, ChatKind::Tool(card));
@@ -690,7 +1009,7 @@ mod tests {
             }],
             stop_reason: Some("stop".into()),
             error_message: None,
-            usage: None,
+            error_pinned: false,
             live: false,
         };
         let entry = ChatEntry::new_for_test(ChatRole::Assistant, ChatKind::Assistant(a));
@@ -708,7 +1027,7 @@ mod tests {
             }],
             stop_reason: None,
             error_message: None,
-            usage: None,
+            error_pinned: false,
             live: false,
         };
         let entry = ChatEntry::new_for_test(ChatRole::Assistant, ChatKind::Assistant(a));
@@ -724,30 +1043,125 @@ mod tests {
     fn error_block_caps_at_eight_rows_with_prefix() {
         let message = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
         let lines = format_error_block(&message, 40, false, &theme());
-        assert!(lines.len() <= ERROR_ROW_CAP + 1);
-        assert!(lines[0].to_string().starts_with('✗'));
-        assert!(lines[0].to_string().contains("Error: line 1"));
-        assert!(lines.last().unwrap().to_string().contains("more line"));
+        assert_eq!(lines.len(), ERROR_ROW_CAP + 1);
+        // TS inline block: paddingX 1, `Error: ` on line 0, hanging indent.
+        assert_eq!(lines[0].to_string(), " Error: line 1");
+        assert_eq!(lines[1].to_string(), "   line 2");
+        assert_eq!(
+            lines.last().unwrap().to_string(),
+            "   … +12 more lines (ctrl+o to expand)"
+        );
         let expanded = format_error_block(&message, 40, true, &theme());
-        assert!(expanded.len() > lines.len());
+        assert_eq!(expanded.len(), 20);
     }
 
     #[test]
-    fn usage_row_shows_rate_duration_and_ttft() {
+    fn error_banner_matches_ts_layout() {
+        let message = "400 E2E-PROVIDER-FAILURE\nE2E-PROVIDER-FAILURE (type=invalid_request_error param=e2e_failure)\nraw-http-request=/tmp/h/.omp/logs/http-400-requests/1-x.json";
+        let rows = rows(&error_banner_lines(message, 100, &theme()));
+        assert_eq!(rows[0], "");
+        assert_eq!(rows[1], "─".repeat(100));
+        assert_eq!(rows[2], " ✘ 400 E2E-PROVIDER-FAILURE");
+        assert_eq!(rows[3], "   E2E-PROVIDER-FAILURE (type=invalid_request_error param=e2e_failure)");
+        assert_eq!(rows[4], "   raw-http-request=/tmp/h/.omp/logs/http-400-requests/1-x.json");
+        assert_eq!(rows[5], " Dismissed when you send your next message.");
+        assert_eq!(rows[6], "─".repeat(100));
+        assert_eq!(rows.len(), 7);
+    }
+
+    #[test]
+    fn pinned_error_is_suppressed_inline_until_expanded() {
+        let a = AssistantMsg {
+            segments: Vec::new(),
+            stop_reason: Some("error".into()),
+            error_message: Some("400 boom".into()),
+            error_pinned: true,
+            live: false,
+        };
+        let entry = ChatEntry::new_for_test(ChatRole::Assistant, ChatKind::Assistant(a));
+        assert!(entry_lines(&entry, false, 60, &theme()).is_empty());
+        let shown = rows(&entry_lines(&entry, true, 60, &theme()));
+        assert_eq!(shown, vec!["".to_owned(), " Error: 400 boom".to_owned()]);
+    }
+
+    #[test]
+    fn usage_row_matches_ts_metric_strip() {
         let usage = Usage {
             input: 900,
             output: 480,
             cache_read: 100,
-            cache_write: 0,
+            cache_write: 200,
             duration_ms: Some(12_000),
             ttft_ms: Some(400),
+            timestamp_ms: None,
+            turn_elapsed_ms: Some(6_200),
         };
-        let line = usage_row(&usage, &theme());
-        let s = line.to_string();
-        assert!(s.contains("12.0s"), "{s}");
-        assert!(s.contains("40 tok/s"), "{s}");
-        assert!(s.contains("ttft 0.40s"), "{s}");
-        assert!(s.contains("1K tok"), "{s}");
+        assert_eq!(
+            usage_metrics(&usage, &theme()),
+            "Δ 6.2s  ⤵ 1.1K  ⤴ 480  💾 100  ⏱ 0.4s  ⚡ 40.0/s"
+        );
+        let block = rows(&usage_block_lines(&usage, 120, &theme()));
+        assert_eq!(block[0], "");
+        assert!(block[1].starts_with(" Δ 6.2s  ⤵ 1.1K"), "{block:?}");
+        // Instant responses carry no rate.
+        let quick = Usage { duration_ms: Some(40), turn_elapsed_ms: None, ..usage };
+        assert_eq!(usage_metrics(&quick, &theme()), "⤵ 1.1K  ⤴ 480  💾 100  ⏱ 0.4s");
+    }
+
+    #[test]
+    fn number_and_duration_formats_match_pi_utils() {
+        assert_eq!(format_number(999), "999");
+        assert_eq!(format_number(1_000), "1K");
+        assert_eq!(format_number(1_250), "1.3K");
+        assert_eq!(format_number(19_400), "19K");
+        assert_eq!(format_number(1_500_000), "1.5M");
+        assert_eq!(format_duration(850), "850ms");
+        assert_eq!(format_duration(59_960), "1m");
+        assert_eq!(format_duration(192_000), "3m12s");
+        assert_eq!(format_duration(7_500_000), "2h5m");
+    }
+
+    fn read_group(reads: &[(&str, &str, ToolStatus)], usages: Vec<(String, Usage)>) -> ChatEntry {
+        ChatEntry::new_for_test(
+            ChatRole::Tool,
+            ChatKind::ReadGroup(ReadGroup {
+                reads: reads
+                    .iter()
+                    .map(|(id, path, status)| crate::chat::ReadItem {
+                        call_id: (*id).into(),
+                        path: (*path).into(),
+                        status: *status,
+                        preview: Some("body".into()),
+                    })
+                    .collect(),
+                usages,
+                open: false,
+                preview: false,
+            }),
+        )
+    }
+
+    #[test]
+    fn read_group_summary_matches_ts_rows() {
+        let usage = Usage { input: 100, output: 7, ..Usage::default() };
+        let one = read_group(&[("r1", "e2e-read-me.txt", ToolStatus::Ok)], vec![("r1".into(), usage)]);
+        assert_eq!(
+            rows(&entry_lines(&one, false, 80, &theme())),
+            vec![" ● Read e2e-read-me.txt".to_owned(), "   ⤵ 100  ⤴ 7".to_owned()]
+        );
+        let many = read_group(
+            &[("r1", "a.rs", ToolStatus::Ok), ("r2", "b.rs", ToolStatus::Error)],
+            vec![("r1".into(), usage)],
+        );
+        assert_eq!(
+            rows(&entry_lines(&many, false, 80, &theme())),
+            vec![
+                " • Read (2)".to_owned(),
+                "   ├─ a.rs".to_owned(),
+                "   │  ⤵ 100  ⤴ 7".to_owned(),
+                "   └─ ✘ b.rs".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -763,8 +1177,15 @@ mod tests {
         let lines = entry_lines(&entry, false, 60, &theme());
         let joined = rows(&lines).join("\n");
         assert!(joined.contains("🖼 shot"), "{joined}");
+        // Flush-left bubble on the `userMessageBg` fill: padding rows above
+        // and below, one-space indent, rows padded to the full width.
         assert!(lines.iter().all(|l| {
-            l.spans.iter().all(|s| s.style.bg == Some(theme().color("border")))
+            l.spans.iter().all(|s| s.style.bg == Some(theme().color("userMessageBg")))
         }));
+        let plain = rows(&lines);
+        assert!(plain.first().is_some_and(|r| r.trim().is_empty()));
+        assert!(plain.last().is_some_and(|r| r.trim().is_empty()));
+        assert!(plain.iter().any(|r| r.starts_with(" hello")), "{plain:?}");
+        assert!(plain.iter().all(|r| unicode_width::UnicodeWidthStr::width(r.as_str()) == 60), "{plain:?}");
     }
 }

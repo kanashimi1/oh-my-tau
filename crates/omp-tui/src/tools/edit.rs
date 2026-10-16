@@ -183,40 +183,27 @@ pub(crate) fn truncate_width(s: &str, width: usize) -> String {
     }
 }
 
-/// Frame body rows in a rounded card with a themed border color.
+/// Frame a card: `body[0]` is the header row and rides in the top bar
+/// (`╭─── ✎ Edit: 🗒 path ⟦+1/-1⟧ ──╮`); the rest are flush-left content rows
+/// (TS edit frames use `contentPaddingLeft: 0`).
 pub(crate) fn frame_card(
-    body: Vec<Line<'static>>,
+    mut body: Vec<Line<'static>>,
     width: usize,
     theme: &Theme,
     border_token: &str,
 ) -> Vec<Line<'static>> {
-    let width = width.max(4);
-    let inner = width - 2;
-    let border = Style::default().fg(theme.color(border_token));
-    let bar = "─".repeat(inner);
-    let mut out = Vec::with_capacity(body.len() + 2);
-    out.push(Line::from(vec![
-        Span::styled("╭".to_owned(), border),
-        Span::styled(bar.clone(), border),
-        Span::styled("╮".to_owned(), border),
-    ]));
-    for row in body {
-        let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
-        let visible = text.chars().count();
-        let mut spans = vec![Span::styled("│".to_owned(), border)];
-        spans.extend(row.spans);
-        if visible < inner {
-            spans.push(Span::raw(" ".repeat(inner - visible)));
-        }
-        spans.push(Span::styled("│".to_owned(), border));
-        out.push(Line::from(spans));
-    }
-    out.push(Line::from(vec![
-        Span::styled("╰".to_owned(), border),
-        Span::styled(bar, border),
-        Span::styled("╯".to_owned(), border),
-    ]));
-    out
+    let header = (!body.is_empty()).then(|| body.remove(0));
+    let border = if border_token == "border" {
+        super::frame::token(theme, "borderMuted", "text_muted")
+    } else {
+        theme.color(border_token)
+    };
+    let sections = if body.is_empty() {
+        Vec::new()
+    } else {
+        vec![super::frame::CardSection::plain(body)]
+    };
+    super::frame::framed_card_padded(header, sections, width, border, 0)
 }
 
 /// Concatenated text blocks of a tool-result message.
@@ -435,52 +422,62 @@ fn diff_row_line(row: &str, width: usize, theme: &Theme) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Header row: icon by phase, op verb, accent path, dim `(+a −r)` stats.
+/// Header row (TS `renderEditHeader`): `[icon ]Edit: 🗒 path ⟦+a/-r⟧`.
 fn header_line(
     op: &str,
     path: &str,
     phase: Phase,
     stats: Option<(usize, usize)>,
-    width: usize,
+    _width: usize,
     theme: &Theme,
 ) -> Line<'static> {
-    let inner = width.saturating_sub(4).max(1);
-    let (icon, icon_color) = match phase {
-        Phase::Pending => ("⧗", theme.color("warning")),
-        Phase::Partial => ("◐", theme.color("accent")),
-        Phase::Success => (theme.glyph("success"), theme.color("success")),
-        Phase::Error => (theme.glyph("failure"), theme.color("error")),
-    };
-    let mut spans = vec![
-        Span::styled(format!("{icon} "), Style::default().fg(icon_color)),
-        Span::styled(format!("{op} "), Style::default().fg(theme.color("text"))),
-    ];
-    let stats_width = stats.map_or(0, |(a, r)| format!(" (+{a} −{r})").chars().count());
-    let path_width = inner.saturating_sub(2 + op.chars().count() + 1 + stats_width);
-    spans.push(Span::styled(
-        truncate_width(path, path_width),
-        Style::default().fg(theme.color("accent")),
-    ));
-    if let Some((a, r)) = stats {
-        spans.push(Span::styled(
-            " (",
-            Style::default().fg(theme.color("text_muted")),
-        ));
-        spans.push(Span::styled(
-            format!("+{a}"),
-            Style::default().fg(theme.color("success")),
-        ));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            format!("−{r}"),
-            Style::default().fg(theme.color("error")),
-        ));
-        spans.push(Span::styled(
-            ")",
-            Style::default().fg(theme.color("text_muted")),
-        ));
+    use super::frame::{lang_icon, status_header, token};
+    let icon = match phase {
+        Phase::Pending => Some(("status.pending", "muted")),
+        Phase::Partial => Some(("status.running", "accent")),
+        Phase::Success => Some((if op == "Delete" { "tool.delete" } else { "tool.edit" }, "accent")),
+        Phase::Error => Some(("status.error", "error")),
     }
-    Line::from(spans)
+    .map(|(key, tok)| {
+        Span::styled(
+            theme.symbol(key).to_owned(),
+            Style::default().fg(token_of(theme, tok)),
+        )
+    });
+    let dim = Style::default().fg(token(theme, "dim", "text_muted"));
+    let mut description = vec![
+        Span::styled(
+            format!("{} ", lang_icon(theme, path)),
+            Style::default().fg(token(theme, "muted", "text_muted")),
+        ),
+        Span::styled(path.to_owned(), Style::default().fg(theme.color("accent"))),
+    ];
+    if let Some((a, r)) = stats.filter(|(a, r)| a + r > 0) {
+        description.push(Span::styled(format!(" {}", theme.symbol("format.bracketLeft")), dim));
+        let mut parts: Vec<Span<'static>> = Vec::new();
+        if a > 0 {
+            parts.push(Span::styled(
+                format!("+{a}"),
+                Style::default().fg(token(theme, "toolDiffAdded", "success")),
+            ));
+        }
+        if r > 0 {
+            if !parts.is_empty() {
+                parts.push(Span::styled("/".to_owned(), dim));
+            }
+            parts.push(Span::styled(
+                format!("-{r}"),
+                Style::default().fg(token(theme, "toolDiffRemoved", "error")),
+            ));
+        }
+        description.extend(parts);
+        description.push(Span::styled(theme.symbol("format.bracketRight").to_owned(), dim));
+    }
+    status_header(theme, icon, op, "accent", description, Vec::new())
+}
+
+fn token_of(theme: &Theme, name: &str) -> ratatui::style::Color {
+    super::frame::token(theme, name, "text_muted")
 }
 
 /// Dim expand-hint footer (TS `formatExpandHint`).
@@ -838,7 +835,7 @@ mod tests {
         let theme = Theme::default();
         let lines = build_card_lines(&call, None, false, 40, &theme);
         let text = render_to_string(lines, 40, 12);
-        assert!(text.contains("Edit src/lib.rs"), "got:\n{text}");
+        assert!(text.contains("Edit: ") && text.contains("src/lib.rs"), "got:\n{text}");
         assert!(text.contains("line3"), "got:\n{text}");
         assert!(text.contains("(streaming)"), "got:\n{text}");
         assert!(text.contains('╭'), "framed card expected:\n{text}");
@@ -851,8 +848,8 @@ mod tests {
         let theme = Theme::default();
         let lines = build_card_lines(&call, Some(&result), false, 40, &theme);
         let text = render_to_string(lines, 40, 12);
-        assert!(text.contains("Edit src/lib.rs"), "got:\n{text}");
-        assert!(text.contains("+1 −1"), "stats missing:\n{text}");
+        assert!(text.contains("Edit: ") && text.contains("src/lib.rs"), "got:\n{text}");
+        assert!(text.contains("⟦+1/-1⟧"), "stats missing:\n{text}");
         assert!(text.contains("-2|old"), "got:\n{text}");
         assert!(text.contains("+2|new"), "got:\n{text}");
     }
@@ -905,8 +902,8 @@ mod tests {
         let theme = Theme::default();
         let lines = build_card_lines(&call, Some(&result), false, 40, &theme);
         let text = render_to_string(lines, 40, 16);
-        assert!(text.contains("Edit a.rs"), "got:\n{text}");
-        assert!(text.contains("Edit b.rs"), "got:\n{text}");
+        assert!(text.contains("Edit: ") && text.contains("a.rs"), "got:\n{text}");
+        assert!(text.contains("b.rs"), "got:\n{text}");
         assert!(text.contains("1 more files pending"), "got:\n{text}");
     }
 }

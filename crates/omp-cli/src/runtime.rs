@@ -137,6 +137,9 @@ pub struct Runtime {
     /// Set by `abort()` (TS `#advisors.autoResumeSuppressed`): a follow-up-only
     /// queued-message drain stays suppressed until the next explicit user prompt.
     user_interrupt: std::sync::atomic::AtomicBool,
+    /// Interactive-TUI hosts only: emit `context_usage` frames (status-line
+    /// model identity + context gauge). RPC consumers never see them.
+    ui_context_frames: std::sync::atomic::AtomicBool,
     /// Report stashed by a successful `rewind` tool result, consumed by the
     /// `TurnEnd` hook that truncates the context (TS `#pendingRewindReport`).
     pending_rewind_report: Mutex<Option<String>>,
@@ -331,6 +334,7 @@ impl Runtime {
             settled: tokio::sync::Notify::new(),
             retry_task: Mutex::new(None),
             user_interrupt: std::sync::atomic::AtomicBool::new(false),
+            ui_context_frames: std::sync::atomic::AtomicBool::new(false),
             pending_rewind_report: Mutex::new(None),
             on_session_name: Mutex::new(None),
             title_task: Mutex::new(None),
@@ -457,6 +461,15 @@ impl Runtime {
         if trace {
             let n = serde_json::to_string(&frame).map_or(0, |s| s.len());
             turn_trace!("[turn-trace] framed={ev_kind} frame_json={n}B rss={}kB", rss_kb());
+        }
+        if matches!(
+            event,
+            AgentEvent::AgentEnd { .. }
+                | AgentEvent::MessageEnd {
+                    message: AgentMessage::Standard(Message::Assistant(_) | Message::ToolResult(_))
+                }
+        ) {
+            self.publish_context_usage();
         }
         if let AgentEvent::AgentEnd { messages } = event {
             self.on_agent_end(frame, messages);
@@ -1414,6 +1427,68 @@ impl Runtime {
         Value::Object(out)
     }
 
+    /// The `context_usage` frame the TUI status line renders: active model
+    /// (selector + display name), context tokens/percent/window and the
+    /// auto-compaction gauge boundaries (TS `getContextUsage` +
+    /// `getSessionCompactionBoundaries`).
+    pub async fn context_usage_frame(&self) -> Value {
+        let (s, _) = self.agent.status().await;
+        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
+        let window = s.model.context_window;
+        let usage = self.agent.with_messages(|m| context_usage(m.iter(), window, base)).await;
+        let mut frame = json!({
+            "type": "context_usage",
+            "model": format!("{}/{}", s.model.provider, s.model.id),
+            "modelName": s.model.name,
+            "contextWindow": window,
+        });
+        if let Some(Value::Object(u)) = usage {
+            for (k, v) in u {
+                frame[k.as_str()] = v;
+            }
+        }
+        let compaction = crate::compact::load_settings();
+        if window > 0 && compaction.enabled && compaction.strategy.as_deref() != Some("off") {
+            let threshold = omp_compact::settings::resolve_threshold_tokens(window, &compaction);
+            #[allow(clippy::cast_precision_loss)]
+            if threshold > 0.0 && threshold <= window as f64 {
+                let w = window as f64;
+                frame["thresholdPercent"] = json!(threshold / w * 100.0);
+                let async_enabled = omp_settings::Settings::load(&self.cwd)
+                    .get_bool("compaction.asyncEnabled")
+                    .unwrap_or(true);
+                if async_enabled {
+                    let lead = ((threshold * 0.125).floor()).clamp(8192.0, 32000.0);
+                    frame["speculationPercent"] = json!((threshold - lead).max(0.0) / w * 100.0);
+                }
+            }
+        }
+        frame
+    }
+
+    /// Turn on `context_usage` frame emission (interactive TUI host).
+    pub fn enable_context_usage_frames(&self) {
+        self.ui_context_frames
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Publish a fresh `context_usage` frame to the UI stream (off the
+    /// caller's task: the agent's state lock must not be re-entered from an
+    /// event callback).
+    pub fn publish_context_usage(self: &Arc<Self>) {
+        if !self.ui_context_frames.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let rt = self.clone();
+        handle.spawn(async move {
+            let frame = rt.context_usage_frame().await;
+            rt.send(frame);
+        });
+    }
+
     pub async fn messages(&self) -> Vec<Value> {
         // Shared snapshot: serialize outside the state lock, without a deep copy first.
         self.agent
@@ -2273,6 +2348,10 @@ impl Runtime {
         }
         if changing {
             self.emit_event(json!({"type": "model_changed"}));
+            if self.ui_context_frames.load(std::sync::atomic::Ordering::Relaxed) {
+                let usage = self.context_usage_frame().await;
+                self.send(usage);
+            }
         }
         let selector = format!("{}/{}", resolved.provider, resolved.id);
         let _ = self

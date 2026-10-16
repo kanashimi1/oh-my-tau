@@ -97,6 +97,8 @@ pub struct ToolCard {
     pub status: ToolStatus,
     /// Result text (partial or final).
     pub result_text: Option<String>,
+    /// Settled result `details` (`Null` until the result arrived).
+    pub details: Value,
     /// True until the final result arrived.
     pub partial: bool,
 }
@@ -119,10 +121,15 @@ pub struct ReadItem {
 pub struct ReadGroup {
     /// Reads in call order.
     pub reads: Vec<ReadItem>,
-    /// Turn usage attached beneath the group when the turn was reads-only.
-    pub usage: Option<Usage>,
+    /// Per-request usage rows attached beneath the group (TS
+    /// `ReadToolGroupComponent.attachUsage`): `(anchor toolCallId, usage)`,
+    /// the anchor being the request's last read in this group.
+    pub usages: Vec<(String, Usage)>,
     /// False once a non-read entry displaced the group (no more folding).
     pub open: bool,
+    /// `read.toolResultPreview` at creation: content previews instead of
+    /// the compact summary.
+    pub preview: bool,
 }
 
 /// State of a `!`/`$` execution block (§7.2).
@@ -153,6 +160,9 @@ pub struct Execution {
     pub exit_code: Option<i64>,
     /// `!!`/`$$` — excluded from context (renders dim).
     pub excluded: bool,
+    /// Settled tool result `details` (bash: `wallTimeMs`, `timeoutSeconds`, …);
+    /// `Null` for user `!` executions and streaming entries.
+    pub details: Value,
 }
 
 /// Token usage tallies (assistant message `usage` field).
@@ -170,6 +180,37 @@ pub struct Usage {
     pub duration_ms: Option<u64>,
     /// Time to first token (ms), when the provider reports it.
     pub ttft_ms: Option<u64>,
+    /// The assistant message's `timestamp` (epoch ms): the row's leading
+    /// local wall-clock stamp.
+    pub timestamp_ms: Option<i64>,
+    /// Prompt→yield wall time (`display.showTurnTime`, TS `turnElapsedMs`).
+    pub turn_elapsed_ms: Option<u64>,
+}
+
+/// Transcript display settings the model honours (TS `display.*` /
+/// `read.*` settings read by the event controller).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DisplayPrefs {
+    /// `display.showTokenUsage` (default false): a usage row per billed
+    /// assistant message.
+    pub show_token_usage: bool,
+    /// `display.showTurnTime` (default false): `Δ <elapsed>` in usage rows.
+    pub show_turn_time: bool,
+    /// `read.toolResultPreview` (default false): read groups show content
+    /// previews instead of the compact `Read <path>` summary.
+    pub read_preview: bool,
+}
+
+/// A settled message's usage waiting for its tool cards to exist (the
+/// runtime announces cards with `tool_execution_start` after `message_end`;
+/// TS places the row below the message's tool blocks).
+#[derive(Debug, Clone, PartialEq)]
+struct PendingUsage {
+    usage: Usage,
+    /// Tool calls of the message whose cards have not been created yet.
+    waiting: Vec<String>,
+    /// TS `groupedReadUsageCallIds`: set when every call is a groupable read.
+    read_ids: Option<Vec<String>>,
 }
 
 /// A compaction/handoff divider (§10).
@@ -262,8 +303,9 @@ pub struct AssistantMsg {
     pub stop_reason: Option<String>,
     /// `errorMessage` when the turn failed.
     pub error_message: Option<String>,
-    /// Billed usage once settled.
-    pub usage: Option<Usage>,
+    /// The turn-ending error is shown in the pinned banner above the editor,
+    /// so the inline block is suppressed (TS `setErrorPinned`).
+    pub error_pinned: bool,
     /// True while the message is still streaming.
     pub live: bool,
 }
@@ -366,8 +408,15 @@ pub struct Messages {
     /// A locally echoed user prompt still awaits its runtime echo (dedupe
     /// against `message_*` frames).
     user_echo_pending: bool,
-    /// Usage captured at `message_end`, flushed when the turn settles.
-    pending_usage: Option<Usage>,
+    /// Usage captured at `message_end`, placed once the message's tool
+    /// cards exist (or at the next message / turn end).
+    pending_usage: Option<PendingUsage>,
+    /// The latest user prompt's timestamp (epoch ms): the turn-time anchor.
+    turn_started_at: Option<i64>,
+    /// Entry index + message of the error shown in the pinned banner.
+    pinned_error: Option<(usize, String)>,
+    /// Display settings (usage rows, read previews).
+    prefs: DisplayPrefs,
     /// Number of leading assistant content parts already frozen into
     /// earlier (pre-tool) entries; later updates skip them.
     split_skip: usize,
@@ -396,6 +445,9 @@ impl Default for Messages {
             open_group: None,
             user_echo_pending: false,
             pending_usage: None,
+            turn_started_at: None,
+            pinned_error: None,
+            prefs: DisplayPrefs::default(),
             split_skip: 0,
             seen_parts: 0,
             streaming: false,
@@ -509,6 +561,40 @@ impl Messages {
         self.theme = theme;
     }
 
+    /// Display settings in effect.
+    #[must_use]
+    pub fn display_prefs(&self) -> DisplayPrefs {
+        self.prefs
+    }
+
+    /// Apply display settings (startup, `/settings` edits). Affects entries
+    /// settled from now on (TS reads the settings at `message_end`).
+    pub fn set_display_prefs(&mut self, prefs: DisplayPrefs) {
+        self.prefs = prefs;
+    }
+
+    /// The turn-ending provider error pinned above the editor (TS
+    /// `ErrorBannerComponent`); cleared when the next run starts.
+    #[must_use]
+    pub fn pinned_error(&self) -> Option<&str> {
+        self.pinned_error.as_ref().map(|(_, message)| message.as_str())
+    }
+
+    /// Drop the pinned banner and restore its error inline in the
+    /// transcript (TS `clearPinnedError` + `setErrorPinned(false)`). The
+    /// entry was held live while pinned, so it commits with the error shown.
+    fn clear_pinned_error(&mut self) {
+        let Some((idx, _)) = self.pinned_error.take() else {
+            return;
+        };
+        if let Some(entry) = self.entries.get_mut(idx) {
+            if let ChatKind::Assistant(a) = &mut entry.kind {
+                a.error_pinned = false;
+            }
+            entry.finished = true;
+        }
+    }
+
     /// One draw-loop reveal tick (chat.md §8, 30 fps cadence). Call once per
     /// frame from the draw loop; the live tail renders the returned
     /// snapshot until the next tick.
@@ -537,7 +623,11 @@ impl Messages {
     /// Apply one runtime event (live path).
     pub fn apply(&mut self, event: &AppEvent) {
         match event {
-            AppEvent::AgentStart | AppEvent::TurnStart => self.streaming = true,
+            AppEvent::AgentStart => {
+                self.streaming = true;
+                self.clear_pinned_error();
+            }
+            AppEvent::TurnStart => self.streaming = true,
             AppEvent::AgentEnd(_) | AppEvent::TurnEnd(_) | AppEvent::SessionSettled => {
                 self.streaming = false;
                 self.seal_turn();
@@ -605,8 +695,10 @@ impl Messages {
     /// `messages`, a resumed session's entries). Everything is finished.
     pub fn rebuild(&mut self, messages: &[Value]) {
         let theme = std::mem::take(&mut self.theme);
+        let prefs = self.prefs;
         *self = Self::new();
         self.theme = theme;
+        self.prefs = prefs;
         for message in messages {
             self.append_message(message, true);
         }
@@ -663,6 +755,7 @@ impl Messages {
 
     fn begin_message(&mut self, message: &Value) {
         if role_of(message) == "assistant" && self.live_assistant.is_none() {
+            self.flush_usage();
             let idx = self.push(assistant_entry(Vec::new(), true));
             self.live_assistant = Some(idx);
             self.streaming = true;
@@ -703,23 +796,33 @@ impl Messages {
                     // Settle: capture stop reason / error / deferred usage.
                     self.streaming = false;
                     self.reveal_display = Some(self.reveal.finish());
-                    let idx = self
-                        .live_assistant
-                        .take()
-                        .or_else(|| self.last_assistant_index());
+                    let idx = match self.live_assistant.take() {
+                        Some(idx) => Some(idx),
+                        // An error that streamed nothing still needs its own
+                        // block (never an earlier turn's answer).
+                        None if str_field(message, "errorMessage").is_some() => {
+                            Some(self.push(assistant_entry(Vec::new(), false)))
+                        }
+                        None => self.last_assistant_index(),
+                    };
+                    let pinned = pinned_error_message(message);
                     if let Some(idx) = idx {
                         let entry = &mut self.entries[idx];
                         if let ChatKind::Assistant(a) = &mut entry.kind {
                             a.live = false;
                             a.stop_reason = str_field(message, "stopReason").map(String::from);
                             a.error_message = str_field(message, "errorMessage").map(String::from);
-                            // Usage is NOT kept on the live block: the deferred
-                            // row flushed at turn end shows it once (§2
-                            // `#flushPendingUsage`); keeping both printed `⏱` twice.
+                            a.error_pinned = pinned.is_some();
                         }
-                        entry.finished = true;
+                        // A pinned error's entry stays live until the banner
+                        // clears: it then commits with the error inline.
+                        entry.finished = pinned.is_none();
+                        if let Some(message) = pinned {
+                            self.clear_pinned_error();
+                            self.pinned_error = Some((idx, message));
+                        }
                     }
-                    self.pending_usage = parse_usage(message.get("usage"));
+                    self.settle_usage(message, true);
                     self.split_skip = 0;
                 }
             }
@@ -761,9 +864,11 @@ impl Messages {
             if let ChatKind::Assistant(a) = &mut self.entries[idx].kind {
                 a.stop_reason = str_field(message, "stopReason").map(String::from);
                 a.error_message = error_message;
-                a.usage = parse_usage(message.get("usage"));
             }
         }
+        // Rebuild: the message's tool entries already exist (TS rebuild
+        // `flushPendingUsage` once the turn's tool blocks materialized).
+        self.settle_usage(message, false);
     }
 
     fn flush_assistant_chunk(&mut self, chunk: &mut Vec<Value>) -> Option<usize> {
@@ -780,6 +885,13 @@ impl Messages {
     fn append_message(&mut self, message: &Value, finished: bool) {
         match role_of(message) {
             "user" | "developer" => {
+                // Only user-attributed prompts anchor the turn time (TS
+                // `#turnStartedAt`; an agent-attributed redirect must not).
+                if str_field(message, "attribution") != Some("agent") {
+                    if let Some(ts) = message.get("timestamp").and_then(Value::as_i64) {
+                        self.turn_started_at = Some(ts);
+                    }
+                }
                 let text = flatten_content(message.get("content"));
                 // Dedupe the runtime echo of a locally submitted prompt.
                 if self.user_echo_pending
@@ -820,11 +932,12 @@ impl Messages {
                     ToolStatus::Ok
                 };
                 let text = flatten_content(message.get("content"));
+                let details = message.get("details").cloned().unwrap_or(Value::Null);
                 if self.pending.contains_key(call_id) {
-                    self.apply_tool_result(call_id, status, text);
+                    self.apply_tool_result(call_id, status, text, details);
                 } else {
                     let name = str_field(message, "toolName").unwrap_or("tool");
-                    self.push_orphan_result(call_id, name, status, text);
+                    self.push_orphan_result(call_id, name, status, text, details);
                 }
             }
             "assistant" => self.append_assistant(message),
@@ -857,6 +970,7 @@ impl Messages {
                     status,
                     exit_code,
                     excluded,
+                    details: Value::Null,
                 };
                 let text = exec_summary(&exec);
                 let kind = if role == "bashExecution" {
@@ -947,7 +1061,81 @@ impl Messages {
         let call_id = str_field(frame, "toolCallId").unwrap_or("").to_owned();
         let name = str_field(frame, "toolName").unwrap_or("tool").to_owned();
         let args = frame.get("args").cloned().unwrap_or(Value::Null);
-        self.start_tool_entry(call_id, name, args);
+        self.start_tool_entry(call_id.clone(), name, args);
+        self.note_tool_started(&call_id);
+    }
+
+    // ---- usage rows (TS event-controller `message_end` usage block) --------
+
+    /// A settled assistant message's usage (`display.showTokenUsage` only,
+    /// billed messages only). Placed once the message's tool cards exist:
+    /// `wait_for_tools` is false on rebuild, where they already do.
+    fn settle_usage(&mut self, message: &Value, wait_for_tools: bool) {
+        self.flush_usage();
+        if !self.prefs.show_token_usage {
+            return;
+        }
+        let Some(mut usage) = parse_usage(message) else {
+            return;
+        };
+        if self.prefs.show_turn_time {
+            usage.turn_elapsed_ms = turn_elapsed_ms(self.turn_started_at, message);
+        }
+        let waiting = if wait_for_tools {
+            tool_call_ids(message)
+                .into_iter()
+                .filter(|id| !self.pending.contains_key(id))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        self.pending_usage = Some(PendingUsage {
+            usage,
+            waiting,
+            read_ids: grouped_read_usage_call_ids(message),
+        });
+        if self.pending_usage.as_ref().is_some_and(|p| p.waiting.is_empty()) {
+            self.flush_usage();
+        }
+    }
+
+    /// A tool card was created: place the pending usage row once every call
+    /// of its message has a card.
+    fn note_tool_started(&mut self, call_id: &str) {
+        let Some(pending) = &mut self.pending_usage else {
+            return;
+        };
+        pending.waiting.retain(|id| id != call_id);
+        if pending.waiting.is_empty() {
+            self.flush_usage();
+        }
+    }
+
+    /// Place the pending usage: nested under the open read group when the
+    /// message only made groupable reads (TS `attachUsage`), else a
+    /// standalone row that also ends the read group.
+    fn flush_usage(&mut self) {
+        let Some(pending) = self.pending_usage.take() else {
+            return;
+        };
+        if let (Some(ids), Some(idx)) = (&pending.read_ids, self.open_group) {
+            if let ChatKind::ReadGroup(g) = &mut self.entries[idx].kind {
+                let anchor = ids
+                    .iter()
+                    .rev()
+                    .find(|id| g.reads.iter().any(|r| &r.call_id == *id));
+                if let (true, Some(anchor)) = (g.open, anchor) {
+                    g.usages.push((anchor.clone(), pending.usage));
+                    return;
+                }
+            }
+        }
+        self.push(ChatEntry::new(
+            ChatRole::System,
+            usage_text(pending.usage),
+            ChatKind::Usage(pending.usage),
+            true,
+        ));
     }
 
     /// Create the pending entry for a tool call (shared by the live
@@ -991,6 +1179,7 @@ impl Messages {
                 status: ExecStatus::Running,
                 exit_code: None,
                 excluded,
+                details: Value::Null,
             };
             let text = exec_summary(&exec);
             let kind = if name == "bash" {
@@ -1012,6 +1201,7 @@ impl Messages {
                 args,
                 status: ToolStatus::Pending,
                 result_text: None,
+                details: Value::Null,
                 partial: true,
             }),
             false,
@@ -1026,8 +1216,9 @@ impl Messages {
             text,
             ChatKind::ReadGroup(ReadGroup {
                 reads: vec![item],
-                usage: None,
+                usages: Vec::new(),
                 open: true,
+                preview: self.prefs.read_preview,
             }),
             false,
         ))
@@ -1072,6 +1263,11 @@ impl Messages {
             .get("isError")
             .is_some_and(|v| v == &Value::Bool(true));
         let text = frame.get("result").map_or_else(String::new, result_text);
+        let details = frame
+            .get("result")
+            .and_then(|r| r.get("details"))
+            .cloned()
+            .unwrap_or(Value::Null);
         let status = if is_error {
             ToolStatus::Error
         } else {
@@ -1079,16 +1275,23 @@ impl Messages {
         };
         if !self.pending.contains_key(call_id) {
             let name = str_field(frame, "toolName").unwrap_or("tool");
-            self.push_orphan_result(call_id, name, status, text);
+            self.push_orphan_result(call_id, name, status, text, details);
             return;
         }
-        self.apply_tool_result(call_id, status, text);
+        self.apply_tool_result(call_id, status, text, details);
     }
 
     /// Result without a card: create a finished one (builder
     /// `#appendToolResult`). Registered in `pending` so a later duplicate
     /// result for the same call attaches instead of creating a second row.
-    fn push_orphan_result(&mut self, call_id: &str, name: &str, status: ToolStatus, text: String) {
+    fn push_orphan_result(
+        &mut self,
+        call_id: &str,
+        name: &str,
+        status: ToolStatus,
+        text: String,
+        details: Value,
+    ) {
         let idx = self.push(ChatEntry::new(
             ChatRole::Tool,
             format!("tool result: {}", first_line(&text)),
@@ -1098,6 +1301,7 @@ impl Messages {
                 args: Value::Null,
                 status,
                 result_text: Some(text),
+                details,
                 partial: false,
             }),
             true,
@@ -1108,13 +1312,20 @@ impl Messages {
     }
 
     /// Route a settled result into the card / read item / execution.
-    fn apply_tool_result(&mut self, call_id: &str, status: ToolStatus, text: String) {
+    fn apply_tool_result(
+        &mut self,
+        call_id: &str,
+        status: ToolStatus,
+        text: String,
+        details: Value,
+    ) {
         let Some(&idx) = self.pending.get(call_id) else {
             return;
         };
         self.with_tool_card(idx, |card| {
             card.status = status;
             card.result_text = Some(text.clone());
+            card.details = details.clone();
             card.partial = false;
         });
         if let Some(entry) = self.entries.get_mut(idx) {
@@ -1136,6 +1347,7 @@ impl Messages {
                 }
                 ChatKind::Bash(e) | ChatKind::Python(e) => {
                     e.output = text;
+                    e.details = details;
                     e.status = if status.settled() && status == ToolStatus::Error {
                         ExecStatus::Error
                     } else if e.status == ExecStatus::Running {
@@ -1171,6 +1383,8 @@ impl Messages {
     /// Turn settled: close the live assistant, seal abandoned pending tools
     /// and flush the deferred usage row (§2 `#flushPendingUsage`).
     fn seal_turn(&mut self) {
+        // Before the read groups close: a reads-only message's row nests.
+        self.flush_usage();
         self.split_skip = 0;
         if let Some(idx) = self.live_assistant.take() {
             if let Some(entry) = self.entries.get_mut(idx) {
@@ -1192,26 +1406,6 @@ impl Messages {
                     entry.finished = true;
                 }
                 _ => {}
-            }
-        }
-        if let Some(usage) = self.pending_usage.take() {
-            let text = usage_text(usage);
-            let mut attached = false;
-            if let Some(last) = self.entries.last_mut() {
-                if let ChatKind::ReadGroup(g) = &mut last.kind {
-                    g.usage = Some(usage);
-                    g.open = false;
-                    last.finished = true;
-                    attached = true;
-                }
-            }
-            if !attached {
-                self.push(ChatEntry::new(
-                    ChatRole::System,
-                    text,
-                    ChatKind::Usage(usage),
-                    true,
-                ));
             }
         }
     }
@@ -1312,30 +1506,111 @@ fn assistant_entry(segments: Vec<AssistantSegment>, live: bool) -> ChatEntry {
             segments,
             stop_reason: None,
             error_message: None,
-            usage: None,
+            error_pinned: false,
             live,
         }),
         !live,
     )
 }
 
-fn parse_usage(value: Option<&Value>) -> Option<Usage> {
-    let usage = value?;
+/// A message's billed usage plus its request timing (`duration`/`ttft`/
+/// `timestamp` ride on the message, not inside `usage`). `None` unless
+/// billed (TS `assistantUsageIsBilled`).
+fn parse_usage(message: &Value) -> Option<Usage> {
+    let usage = message.get("usage")?;
     let ms = |key: &str| -> Option<u64> {
-        let v = usage.get(key)?;
+        let v = message.get(key)?;
         v.as_u64()
             .or_else(|| v.as_f64().map(|f| f.round().max(0.0) as u64))
     };
+    let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
     let parsed = Usage {
-        input: usage.get("input").and_then(Value::as_u64).unwrap_or(0),
-        output: usage.get("output").and_then(Value::as_u64).unwrap_or(0),
-        cache_read: usage.get("cacheRead").and_then(Value::as_u64).unwrap_or(0),
-        cache_write: usage.get("cacheWrite").and_then(Value::as_u64).unwrap_or(0),
+        input: count("input"),
+        output: count("output"),
+        cache_read: count("cacheRead"),
+        cache_write: count("cacheWrite"),
         duration_ms: ms("duration"),
         ttft_ms: ms("ttft"),
+        timestamp_ms: message.get("timestamp").and_then(Value::as_i64).filter(|t| *t > 0),
+        turn_elapsed_ms: None,
     };
-    (parsed.input != 0 || parsed.output != 0 || parsed.cache_read != 0 || parsed.cache_write != 0)
+    let premium = usage
+        .get("premiumRequests")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    (parsed.input != 0
+        || parsed.output != 0
+        || parsed.cache_read != 0
+        || parsed.cache_write != 0
+        || premium > 0.0)
         .then_some(parsed)
+}
+
+/// TS `turnElapsedMs`: prompt timestamp → the response's `completedAt`.
+fn turn_elapsed_ms(turn_started_at: Option<i64>, message: &Value) -> Option<u64> {
+    let completed = message.get("completedAt").and_then(Value::as_i64)?;
+    let elapsed = completed - turn_started_at?;
+    u64::try_from(elapsed).ok().filter(|e| *e > 0)
+}
+
+/// `toolCall` ids of an assistant message, in content order.
+fn tool_call_ids(message: &Value) -> Vec<String> {
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .filter(|part| str_field(part, "type") == Some("toolCall"))
+        .filter_map(|part| str_field(part, "id").map(String::from))
+        .collect()
+}
+
+/// TS `groupedReadUsageCallIds`: the message's call ids when every call is a
+/// read that folds into a group and nothing visible follows the first call.
+fn grouped_read_usage_call_ids(message: &Value) -> Option<Vec<String>> {
+    let parts = message.get("content").and_then(Value::as_array)?;
+    let mut ids = Vec::new();
+    for part in parts {
+        match str_field(part, "type") {
+            Some("toolCall") => {
+                let args = part.get("arguments").unwrap_or(&Value::Null);
+                let has_target = arg_str(args, "path")
+                    .or_else(|| arg_str(args, "file_path"))
+                    .is_some_and(|p| !p.trim().is_empty());
+                if str_field(part, "name") != Some("read") || !has_target {
+                    return None;
+                }
+                ids.push(str_field(part, "id").unwrap_or("").to_owned());
+            }
+            Some("image") if !ids.is_empty() => return None,
+            Some("text") if !ids.is_empty() && !part_text(part, "text").trim().is_empty() => {
+                return None;
+            }
+            Some("thinking")
+                if !ids.is_empty() && !part_text(part, "thinking").trim().is_empty() =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    (!ids.is_empty()).then_some(ids)
+}
+
+fn part_text<'v>(part: &'v Value, key: &str) -> &'v str {
+    str_field(part, key).unwrap_or("")
+}
+
+/// The error to pin above the editor for a settled assistant message (TS
+/// `message_end`: `stopReason === "error"` with a message, not a silent
+/// abort).
+fn pinned_error_message(message: &Value) -> Option<String> {
+    if str_field(message, "stopReason") != Some("error") {
+        return None;
+    }
+    str_field(message, "errorMessage")
+        .filter(|m| !m.trim().is_empty())
+        .map(String::from)
 }
 
 fn usage_text(usage: Usage) -> String {
@@ -1547,6 +1822,42 @@ mod tests {
     }
 
     #[test]
+    fn bash_result_details_reach_the_card_as_wall_and_timeout_line() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start",
+            "toolCallId": "b1",
+            "toolName": "bash",
+            "args": {"command": "echo hi"}
+        })));
+        m.apply(&AppEvent::ToolExecutionEnd(json!({
+            "type": "tool_execution_end",
+            "toolCallId": "b1",
+            "toolName": "bash",
+            "result": {
+                "content": [{"type": "text", "text": "hi\n\nWall time: 0.45 seconds"}],
+                "details": {"wallTimeMs": 450, "timeoutSeconds": 300}
+            },
+            "isError": false
+        })));
+        let ChatKind::Bash(exec) = &m.entries()[0].kind else {
+            panic!("expected bash execution");
+        };
+        assert_eq!(exec.details["wallTimeMs"], 450);
+        let text: Vec<String> = m
+            .entry_lines_at(0, 60)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert!(
+            text.iter().any(|r| r.contains("⟦Wall: 0.45s | Timeout: 300s⟧")),
+            "{text:?}"
+        );
+        assert!(!text.iter().any(|r| r.contains("Wall time:")), "{text:?}");
+    }
+
+    #[test]
     fn consecutive_reads_fold_into_one_group() {
         let mut m = Messages::new();
         m.apply(&AppEvent::AgentStart);
@@ -1597,26 +1908,148 @@ mod tests {
         let ChatKind::ReadGroup(g) = &last.kind else {
             panic!("usage should attach under the read group, got {last:?}");
         };
-        assert!(g.usage.is_none()); // no usage in the message; group still last
+        assert!(g.usages.is_empty()); // no usage in the message; group still last
+    }
+
+    fn usage_on() -> Messages {
+        let mut m = Messages::new();
+        m.set_display_prefs(DisplayPrefs {
+            show_token_usage: true,
+            ..DisplayPrefs::default()
+        });
+        m
+    }
+
+    fn billed_end(content: &Value, stop: &str) -> AppEvent {
+        AppEvent::MessageEnd(json!({
+            "type": "message_end",
+            "message": {
+                "role": "assistant",
+                "content": content,
+                "usage": {"input": 100, "output": 7, "cacheRead": 0, "cacheWrite": 0},
+                "stopReason": stop,
+                "timestamp": 1_792_111_302_143_i64,
+                "duration": 41.2,
+                "ttft": 40.7,
+                "completedAt": 1_792_111_302_223_i64
+            }
+        }))
     }
 
     #[test]
-    fn deferred_usage_row_appended_after_turn() {
+    fn usage_rows_off_by_default() {
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&billed_end(&json!([{"type": "text", "text": "hi"}]), "stop"));
+        m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
+        assert!(!m.entries().iter().any(|e| matches!(e.kind, ChatKind::Usage(_))));
+    }
+
+    #[test]
+    fn usage_row_follows_each_billed_message() {
+        let mut m = usage_on();
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&billed_end(&json!([{"type": "text", "text": "hi"}]), "stop"));
+        // Placed at message_end (TS), not deferred to the turn end.
+        let last = m.entries().last().unwrap();
+        let ChatKind::Usage(u) = &last.kind else {
+            panic!("expected usage row, got {last:?}");
+        };
+        assert_eq!((u.input, u.output, u.ttft_ms, u.duration_ms), (100, 7, Some(41), Some(41)));
+        assert_eq!(u.timestamp_ms, Some(1_792_111_302_143));
+        assert_eq!(m.finished_len(), m.entries().len());
+    }
+
+    /// TS tool turn: the reads-only message's row nests under the read
+    /// group once its card exists; the final answer gets a standalone row.
+    #[test]
+    fn read_turn_usage_nests_under_group_then_answer_row() {
+        let mut m = usage_on();
+        m.apply(&AppEvent::AgentStart);
+        let call = json!([{"type": "toolCall", "id": "r1", "name": "read", "arguments": {"path": "a.rs"}}]);
+        m.apply(&billed_end(&call, "toolUse"));
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start", "toolCallId": "r1",
+            "toolName": "read", "args": {"path": "a.rs"}
+        })));
+        m.apply(&AppEvent::ToolExecutionEnd(json!({
+            "type": "tool_execution_end", "toolCallId": "r1", "toolName": "read",
+            "result": {"content": [{"type": "text", "text": "x"}]}, "isError": false
+        })));
+        m.apply(&billed_end(&json!([{"type": "text", "text": "done"}]), "stop"));
+        m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
+        let kinds: Vec<&ChatKind> = m.entries().iter().map(|e| &e.kind).collect();
+        let ChatKind::ReadGroup(g) = kinds[0] else {
+            panic!("{kinds:?}");
+        };
+        assert_eq!(g.usages.len(), 1);
+        assert_eq!(g.usages[0].0, "r1");
+        assert!(matches!(kinds[1], ChatKind::Assistant(_)));
+        assert!(matches!(kinds[2], ChatKind::Usage(_)));
+        assert_eq!(kinds.len(), 3);
+    }
+
+    /// A non-read tool keeps the standalone row, below the tool card.
+    #[test]
+    fn tool_turn_usage_row_goes_below_its_card() {
+        let mut m = usage_on();
+        m.apply(&AppEvent::AgentStart);
+        let call = json!([{"type": "toolCall", "id": "b1", "name": "bash", "arguments": {"command": "ls"}}]);
+        m.apply(&billed_end(&call, "toolUse"));
+        assert!(!m.entries().iter().any(|e| matches!(e.kind, ChatKind::Usage(_))));
+        m.apply(&AppEvent::ToolExecutionStart(json!({
+            "type": "tool_execution_start", "toolCallId": "b1",
+            "toolName": "bash", "args": {"command": "ls"}
+        })));
+        let kinds: Vec<&ChatKind> = m.entries().iter().map(|e| &e.kind).collect();
+        assert!(matches!(kinds[kinds.len() - 2], ChatKind::Bash(_)), "{kinds:?}");
+        assert!(matches!(kinds[kinds.len() - 1], ChatKind::Usage(_)), "{kinds:?}");
+    }
+
+    #[test]
+    fn turn_time_measures_prompt_to_completion() {
+        let mut m = Messages::new();
+        m.set_display_prefs(DisplayPrefs {
+            show_token_usage: true,
+            show_turn_time: true,
+            read_preview: false,
+        });
+        m.apply(&AppEvent::MessageEnd(json!({
+            "type": "message_end",
+            "message": {"role": "user", "content": "go", "timestamp": 1_792_111_300_000_i64}
+        })));
+        m.apply(&AppEvent::AgentStart);
+        m.apply(&billed_end(&json!([{"type": "text", "text": "hi"}]), "stop"));
+        let ChatKind::Usage(u) = &m.entries().last().unwrap().kind else {
+            panic!("expected usage row");
+        };
+        assert_eq!(u.turn_elapsed_ms, Some(2_223));
+    }
+
+    /// TS pinned banner: a turn-ending provider error is pinned (inline
+    /// block suppressed, entry held live) until the next run starts; then
+    /// it is restored inline and commits.
+    #[test]
+    fn provider_error_pins_until_next_run() {
         let mut m = Messages::new();
         m.apply(&AppEvent::AgentStart);
         m.apply(&AppEvent::MessageEnd(json!({
             "type": "message_end",
             "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "hi"}],
-                "usage": {"input": 256_000, "output": 20_000, "cacheRead": 0, "cacheWrite": 0},
-                "stopReason": "stop"
+                "role": "assistant", "content": [],
+                "stopReason": "error", "errorMessage": "400 E2E-PROVIDER-FAILURE"
             }
         })));
-        assert_eq!(m.entries().len(), 1); // usage deferred, not yet a row
-        m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
-        let last = m.entries().last().unwrap();
-        assert!(matches!(last.kind, ChatKind::Usage(_)));
+        m.apply(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
+        assert_eq!(m.pinned_error(), Some("400 E2E-PROVIDER-FAILURE"));
+        let idx = m.entries().len() - 1;
+        assert!(m.entry_lines_at(idx, 80).is_empty(), "inline error suppressed while pinned");
+        assert_eq!(m.finished_len(), idx, "pinned entry stays live");
+        m.push_user("after failure");
+        m.apply(&AppEvent::AgentStart);
+        assert_eq!(m.pinned_error(), None);
+        let rows: Vec<String> = m.entry_lines_at(idx, 80).iter().map(ToString::to_string).collect();
+        assert!(rows.iter().any(|r| r == " Error: 400 E2E-PROVIDER-FAILURE"), "{rows:?}");
         assert_eq!(m.finished_len(), m.entries().len());
     }
 
@@ -1625,7 +2058,7 @@ mod tests {
     /// never sends; the TS frame carries `status`).
     #[test]
     fn successful_turn_shows_one_usage_row_and_no_error() {
-        let mut m = Messages::new();
+        let mut m = usage_on();
         m.apply(&AppEvent::AgentStart);
         m.apply(&AppEvent::MessageEnd(json!({
             "type": "message_end",
@@ -1647,7 +2080,7 @@ mod tests {
             .flat_map(|i| m.entry_lines_at(i, 100))
             .map(|l| l.to_string() + "\n")
             .collect();
-        assert_eq!(text.matches("this turn").count(), 1, "{text}");
+        assert_eq!(text.matches("⤵").count(), 1, "{text}");
         assert!(!text.contains("Error"), "{text}");
 
         // An agent-run failure is already on the assistant block: no extra row.
@@ -1848,7 +2281,7 @@ mod tests {
         m.push_user("hi");
         let rows = m.take_committed_rows(80);
         assert!(!rows.is_empty());
-        assert!(rows[0].to_string().contains("hi"));
+        assert!(rows.iter().any(|r| r.to_string().contains("hi")));
         // Nothing new: no rows.
         assert!(m.take_committed_rows(80).is_empty());
         // Streaming entry is not committed until settled.

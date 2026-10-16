@@ -25,6 +25,7 @@ use crate::types::{
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
 use crate::utils_inner::wire_json::request_body;
 use crate::utils_inner::json_parse::{
     parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
@@ -241,6 +242,16 @@ async fn run_stream(
     };
 
     let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
+    // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
+    let request_dump = RawHttpRequestDump {
+        provider: model.provider.to_string(),
+        api: model.api.to_string(),
+        model: model.id.clone(),
+        method: "POST".to_owned(),
+        url: url.clone(),
+        headers: headers.clone(),
+        body: body.clone(),
+    };
     let mut response: HttpResponse = send(RequestOptions {
         method: reqwest::Method::POST,
         url,
@@ -272,11 +283,9 @@ async fn run_stream(
 
     if response.status >= 400 {
         let body = response.read_all_text().await.unwrap_or_default();
-        return Err(ProviderError::from_http_status_body(
-            response.status,
-            &body,
-            response.headers.clone(),
-        ));
+        let error =
+            ProviderError::from_http_status_body(response.status, &body, response.headers.clone());
+        return Err(finalize_http_error(error, false, Some(&request_dump)));
     }
 
     writer.push(AssistantMessageEvent::Start {

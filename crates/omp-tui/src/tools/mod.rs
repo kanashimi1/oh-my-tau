@@ -22,6 +22,7 @@ pub mod checkpoint;
 pub mod edit;
 pub mod eval;
 pub mod find;
+pub(crate) mod frame;
 pub mod goal;
 pub mod jobs;
 pub mod lsp;

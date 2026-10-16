@@ -51,6 +51,7 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
+use super::frame::{framed_card, CardSection};
 use super::{error_detail_lines, ToolRenderer};
 
 /// Default collapsed shell output preview height (TS `BASH_DEFAULT_PREVIEW_LINES`).
@@ -1095,10 +1096,10 @@ pub enum BashPhase {
 impl BashPhase {
     fn border_color(self, theme: &Theme) -> Color {
         match self {
-            Self::Pending => themed(theme, "text_muted", "text_muted"),
+            Self::Pending => themed(theme, "accent", "text_muted"),
             Self::Error => theme.color("error"),
             Self::Warning => theme.color("warning"),
-            Self::Success => themed(theme, "border", "text_muted"),
+            Self::Success => themed(theme, "dim", "text_muted"),
         }
     }
 }
@@ -1193,10 +1194,10 @@ impl<'a> BashCard<'a> {
         }
     }
 
-    /// Body lines between the card borders.
-    fn body_lines(&self, viewport_rows: Option<usize>) -> Vec<Line<'static>> {
+    /// Card sections: the command, then the labelled `Output` section with
+    /// output rows, the dim stats line and the truncation warning.
+    fn sections(&self, viewport_rows: Option<usize>) -> Vec<CardSection> {
         let theme = self.theme;
-        let mut lines: Vec<Line<'static>> = Vec::new();
 
         // (1) Command lines, capped to the viewport tail window.
         let cmd_lines = cap_preview_lines(
@@ -1205,19 +1206,13 @@ impl<'a> BashCard<'a> {
             None,
             viewport_rows,
         );
-        lines.extend(cmd_lines);
+        let mut out: Vec<Line<'static>> = Vec::new();
 
-        // (2) Output section. A settled error whose entire output is an
+        // (2) Output pane. A settled error whose entire output is an
         //     `Error: ` failure notice renders as an error-detail block (TS
         //     `formatErrorDetail`) instead of a plain output pane.
-        lines.push(Line::from(Span::styled(
-            "Output",
-            Style::default()
-                .fg(themed(theme, "toolTitle", "text_muted"))
-                .add_modifier(Modifier::BOLD),
-        )));
         if self.is_error && !self.is_partial && self.output.starts_with("Error: ") {
-            lines.extend(error_detail_lines(&self.output, usize::MAX, theme));
+            out.extend(error_detail_lines(&self.output, usize::MAX, theme));
         } else {
             let output_style = Style::default().fg(themed(theme, "toolOutput", "text"));
             let out_lines: Vec<Line<'static>> = if self.output.trim().is_empty() {
@@ -1228,7 +1223,7 @@ impl<'a> BashCard<'a> {
                     .map(|l| Line::from(Span::styled(replace_tabs(l), output_style)))
                     .collect()
             };
-            lines.extend(cap_output_tail(
+            out.extend(cap_output_tail(
                 out_lines,
                 self.preview_lines,
                 self.expanded,
@@ -1244,9 +1239,14 @@ impl<'a> BashCard<'a> {
             self.is_error,
         );
         if !stats.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("{BRACKET_LEFT}{}{BRACKET_RIGHT}", stats.join(" | ")),
-                Style::default().fg(themed(theme, "text_muted", "text_muted")),
+            out.push(Line::from(Span::styled(
+                format!(
+                    "{}{}{}",
+                    theme.symbol("format.bracketLeft"),
+                    stats.join(" | "),
+                    theme.symbol("format.bracketRight")
+                ),
+                Style::default().fg(themed(theme, "dim", "text_muted")),
             )));
         }
 
@@ -1257,14 +1257,35 @@ impl<'a> BashCard<'a> {
             || (self.details.truncation.is_some() && !showing_full_output)
         {
             if let Some(warning) = format_truncation_warning(&self.details) {
-                lines.push(Line::from(Span::styled(
+                out.push(Line::from(Span::styled(
                     warning,
                     Style::default().fg(theme.color("warning")),
                 )));
             }
         }
-        lines
+        vec![
+            CardSection::plain(cmd_lines),
+            CardSection::labelled(theme, "Output", out),
+        ]
     }
+
+    /// The framed card rows at `width`.
+    fn card_lines(&self, width: usize, viewport_rows: Option<usize>) -> Vec<Line<'static>> {
+        framed_card(
+            None,
+            self.sections(viewport_rows),
+            width,
+            self.phase().border_color(self.theme),
+        )
+    }
+}
+
+/// Framed bash card rows for a call payload (`output` / `result{details,
+/// isError}` / `isPartial` as in [`BashCard::parse`]).
+#[must_use]
+pub fn card_lines(call: &Value, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    let card = BashCard::parse(call, theme);
+    card.card_lines(width, None)
 }
 
 /// TS `resolveTitle`: `Bash · {name}` or `Bash`. Exported for the native/TSP
@@ -1295,18 +1316,8 @@ impl ToolRenderer for Bash {
 
     fn render(&self, frame: &mut Frame<'_>, area: Rect, call: &Value, theme: &Theme) {
         let card = BashCard::parse(call, theme);
-        let phase = card.phase();
-        let body = card.body_lines(Some(area.height as usize));
-        let height = u16::try_from(body.len().saturating_add(2))
-            .unwrap_or(u16::MAX)
-            .min(area.height.max(2));
-        let area = Rect { height, ..area };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(phase.border_color(theme)));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), inner);
+        let lines = card.card_lines(area.width as usize, Some(area.height as usize));
+        frame.render_widget(Paragraph::new(lines), area);
     }
 }
 
@@ -1823,7 +1834,7 @@ mod tests {
         assert!(text.contains("$ cargo test"), "{text}");
         assert!(text.contains("Output"), "{text}");
         assert!(text.contains("ok"), "{text}");
-        assert!(text.contains("⟨Wall: 1.20s | Timeout: 30s⟩"), "{text}");
+        assert!(text.contains("⟦Wall: 1.20s | Timeout: 30s⟧"), "{text}");
     }
 
     #[test]

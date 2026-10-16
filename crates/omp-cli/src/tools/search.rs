@@ -147,6 +147,12 @@ fn bool_arg(args: &serde_json::Value, key: &str) -> Option<bool> {
 // Layout mirrors omp's `glob` flow top-to-bottom; splitting it would obscure that parity.
 // The limit casts below are lossless: both limits are small fixed constants (200).
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+fn with_details(text: String, details: serde_json::Value) -> AgentToolResult {
+    let mut result = AgentToolResult::text(text);
+    result.details = details;
+    result
+}
+
 pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let mut patterns = path_list(args.get("path").and_then(serde_json::Value::as_str));
     if patterns.is_empty() {
@@ -222,7 +228,17 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if merged.is_empty() {
         let mut parts = vec!["No files found matching pattern".to_string()];
         parts.extend(missing_note);
-        return Ok(AgentToolResult::text(parts.join("\n")));
+        let mut details = serde_json::json!({
+            "scopePath": scope,
+            "fileCount": 0,
+            "files": [],
+            "truncated": false,
+            "cwd": env.cwd.display().to_string(),
+        });
+        if !missing.is_empty() {
+            details["missingPaths"] = serde_json::json!(missing);
+        }
+        return Ok(with_details(parts.join("\n"), details));
     }
     let files: Vec<String> = merged.into_iter().map(|(p, _)| p).collect();
     let reached = files.len() >= limit;
@@ -256,7 +272,20 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if !notices.is_empty() {
         let _ = write!(text, "\n\n[{}]", notices.join(". "));
     }
-    Ok(AgentToolResult::text(text))
+    let mut details = serde_json::json!({
+        "scopePath": scope,
+        "fileCount": limited.len(),
+        "files": limited,
+        "truncated": reached || t.truncated,
+        "cwd": env.cwd.display().to_string(),
+    });
+    if reached {
+        details["resultLimitReached"] = serde_json::json!(limit);
+    }
+    if !missing.is_empty() {
+        details["missingPaths"] = serde_json::json!(missing);
+    }
+    Ok(with_details(text, details))
 }
 
 // ------------------------------------------------------------------ grep
@@ -510,6 +539,12 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             missing.join(", ")
         );
     }
+    let scope_path = targets
+        .iter()
+        .map(|t| format_path_relative_to_cwd(&t.base, &env.cwd, false))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let search_path = targets[0].base.display().to_string();
     let matcher = build_matcher(pattern, ignore_case, multiline)?;
     // One `Searcher` per walker-pool worker (a `Searcher` is not `Sync`).
     let new_searcher = move || {
@@ -688,11 +723,25 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         } else {
             format!("{no_match}\n{warning}")
         };
-        return Ok(AgentToolResult::text(text));
+        let mut details = serde_json::json!({
+            "scopePath": scope_path,
+            "searchPath": search_path,
+            "cwd": env.cwd.display().to_string(),
+            "matchCount": 0,
+            "fileCount": 0,
+            "files": [],
+            "fileMatches": [],
+            "truncated": false,
+            "displayContent": "",
+        });
+        if !missing.is_empty() {
+            details["missingPaths"] = serde_json::json!(missing);
+        }
+        return Ok(with_details(text, details));
     }
 
     // Render per file; hashline snapshot tags bind to the displayed rows.
-    let render = |h: &FileHits| -> (Vec<String>, Option<String>) {
+    let render = |h: &FileHits| -> (Vec<String>, Vec<String>, Option<String>) {
         let key = canonical_key(&h.absolute);
         let tag = if env.hashline {
             env.store.record_file(&key, None)
@@ -700,12 +749,28 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             None
         };
         let mut out: Vec<String> = Vec::new();
+        let mut disp: Vec<String> = Vec::new();
         let mut last: Option<u64> = None;
+        let gutter_w = h
+            .matches
+            .iter()
+            .map(|m| m.line_number.to_string().len())
+            .max()
+            .unwrap_or(1)
+            + 1;
         for m in &h.matches {
             if last.is_some_and(|l| m.line_number > l + 1) {
                 out.push("...".into());
+                disp.push(format!("{:gutter_w$}\u{2502}...", ""));
             }
             let marker = if m.matched { '*' } else { ' ' };
+            // TS `formatCodeFrameLine`: `*2│beta` / ` 1│alpha`, width-padded.
+            let gutter = if m.matched {
+                format!("*{}", m.line_number)
+            } else {
+                m.line_number.to_string()
+            };
+            disp.push(format!("{gutter:>gutter_w$}\u{2502}{}", m.line));
             if tag.is_some() {
                 out.push(format!("{marker}{}:{}", m.line_number, m.line));
             } else {
@@ -717,13 +782,14 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             env.store
                 .record_seen_lines(&key, t, &seen_lines_from_body(&out.join("\n")));
         }
-        (out, tag)
+        (out, disp, tag)
     };
     let mut model: Vec<String> = Vec::new();
+    let mut display: Vec<String> = Vec::new();
     if is_multi_scope {
         let entries: Vec<(String, bool)> =
             window.iter().map(|h| (h.shown.clone(), false)).collect();
-        let rendered: HashMap<usize, (Vec<String>, Option<String>)> = window
+        let rendered: HashMap<usize, (Vec<String>, Vec<String>, Option<String>)> = window
             .iter()
             .enumerate()
             .map(|(i, h)| (i, render(h)))
@@ -733,41 +799,48 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
             let hashes = "#".repeat(e.depth + 1);
             if emitted && (e.depth == 0 || e.kind == Kind::Dir) {
                 model.push(String::new());
+                display.push(String::new());
             }
             match e.kind {
                 Kind::Dir => {
                     model.push(format!("{hashes} {}/", e.name));
+                    display.push(format!("{hashes} {}/", e.name));
                     emitted = true;
                 }
                 Kind::File => {
-                    let (lines, tag) = &rendered[&e.key];
+                    let (lines, disp, tag) = &rendered[&e.key];
                     if lines.is_empty() {
                         // Skipped files leave no header; undo the separator.
                         if model.last().is_some_and(String::is_empty) {
                             model.pop();
+                            display.pop();
                         }
                         continue;
                     }
                     emitted = true;
                     let suffix = tag.as_ref().map(|t| format!("#{t}")).unwrap_or_default();
                     model.push(format!("{hashes} {}{suffix}", e.name));
+                    display.push(format!("{hashes} {}{suffix}", e.name));
                     model.extend(lines.iter().cloned());
+                    display.extend(disp.iter().cloned());
                 }
             }
         }
     } else {
         for h in &window {
-            let (lines, tag) = render(h);
+            let (lines, disp, tag) = render(h);
             if lines.is_empty() {
                 continue;
             }
             if !model.is_empty() {
                 model.push(String::new());
+                display.push(String::new());
             }
             if let Some(t) = tag {
                 model.push(format!("[{}#{t}]", h.shown));
             }
             model.extend(lines);
+            display.extend(disp);
         }
     }
     if let Some(m) = limit_message {
@@ -796,7 +869,41 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if !notices.is_empty() {
         let _ = write!(text, "\n\n[{}]", notices.join(". "));
     }
-    Ok(AgentToolResult::text(text))
+    let match_total: usize = window
+        .iter()
+        .map(|h| h.matches.iter().filter(|m| m.matched).count())
+        .sum();
+    let files: Vec<String> = window.iter().map(|h| h.shown.clone()).collect();
+    let file_matches: Vec<serde_json::Value> = window
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "path": h.shown,
+                "count": h.matches.iter().filter(|m| m.matched).count(),
+            })
+        })
+        .collect();
+    let mut details = serde_json::json!({
+        "scopePath": scope_path,
+        "searchPath": search_path,
+        "cwd": env.cwd.display().to_string(),
+        "matchCount": match_total,
+        "fileCount": files.len(),
+        "files": files,
+        "fileMatches": file_matches,
+        "truncated": file_limit_reached || limit_reached || t.truncated || lines_truncated,
+        "displayContent": display.join("\n"),
+    });
+    if file_limit_reached {
+        details["fileLimitReached"] = serde_json::json!(DEFAULT_FILE_LIMIT);
+    }
+    if lines_truncated {
+        details["linesTruncated"] = serde_json::json!(true);
+    }
+    if !missing.is_empty() {
+        details["missingPaths"] = serde_json::json!(missing);
+    }
+    Ok(with_details(text, details))
 }
 
 #[cfg(test)]
@@ -860,6 +967,24 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert_eq!(err, "Path not found: missing/dir");
+    }
+
+    #[test]
+    fn glob_and_grep_emit_card_details() {
+        let dir = fixture();
+        let env = Env::new(dir.path(), true);
+        let g = glob(&env, &serde_json::json!({"path": "**/*.rs"})).unwrap();
+        assert_eq!(g.details["fileCount"], 2, "{:?}", g.details);
+        assert_eq!(g.details["scopePath"], ".");
+        assert_eq!(g.details["files"].as_array().unwrap().len(), 2);
+        let r = grep(&env, &serde_json::json!({"pattern": "beta", "path": "."})).unwrap();
+        assert_eq!(r.details["matchCount"], 3, "{:?}", r.details);
+        assert_eq!(r.details["fileCount"], 3);
+        let display = r.details["displayContent"].as_str().unwrap();
+        assert!(display.contains("*2\u{2502}fn beta() {}"), "{display}");
+        assert!(display.starts_with("# "), "{display}");
+        let none = grep(&env, &serde_json::json!({"pattern": "zzzz", "path": "."})).unwrap();
+        assert_eq!(none.details["matchCount"], 0);
     }
 
     #[test]

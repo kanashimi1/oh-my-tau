@@ -399,7 +399,40 @@ pub async fn bash(
     if outcome.is_some() || code != Some(0) {
         bail!("{text}");
     }
-    Ok(AgentToolResult::text(text))
+    let mut result = AgentToolResult::text(text);
+    // Transcript card facts (`⟦Wall: … | Timeout: …⟧`); failures keep the
+    // error-text path, which carries no details.
+    result.details = run_details(timeout, &args, elapsed);
+    Ok(result)
+}
+
+/// omp `BashToolDetails` for a finished foreground run.
+fn run_details(timeout: Option<f64>, args: &Value, elapsed: Duration) -> Value {
+    let mut d = serde_json::Map::new();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // ms fit u64; whole seconds fit u64
+    {
+        d.insert(
+            "wallTimeMs".into(),
+            Value::from(elapsed.as_millis().min(u128::from(u64::MAX)) as u64),
+        );
+        match timeout {
+            Some(t) => {
+                d.insert("timeoutSeconds".into(), Value::from(t.round() as u64));
+            }
+            None => {
+                d.insert("timeoutDisabled".into(), Value::Bool(true));
+            }
+        }
+        if let (Some(req), Some(t)) = (args.get("timeout").and_then(Value::as_f64), timeout) {
+            if req != 0.0 && (req - t).abs() > f64::EPSILON {
+                d.insert(
+                    "requestedTimeoutSeconds".into(),
+                    Value::from(req.round() as u64),
+                );
+            }
+        }
+    }
+    Value::Object(d)
 }
 
 /// What the bash tool reports after a service start attempt.
@@ -705,6 +738,24 @@ mod tests {
         let t = text_of(&r);
         assert!(t.starts_with("out\nerr\n\nWall time: "), "{t}");
         assert!(t.ends_with(" seconds"), "{t}");
+    }
+
+    #[tokio::test]
+    async fn success_carries_wall_and_timeout_details_for_the_card() {
+        let env = test_env();
+        let r = bash(env.clone(), serde_json::json!({"command": "true"}), sig())
+            .await
+            .unwrap();
+        assert!(r.details["wallTimeMs"].is_u64(), "{:?}", r.details);
+        assert_eq!(r.details["timeoutSeconds"], 300);
+        let r = bash(
+            env,
+            serde_json::json!({"command": "true", "timeout": 0}),
+            sig(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.details["timeoutDisabled"], true);
     }
 
     #[tokio::test]

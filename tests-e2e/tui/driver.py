@@ -15,6 +15,7 @@ import signal
 import struct
 import subprocess
 import termios
+import copy
 import time
 
 import pyte
@@ -31,10 +32,61 @@ KEYS = {
 }
 
 
+class AltScreen(pyte.HistoryScreen):
+    """pyte screen with xterm's DEC 1049 alternate buffer (pyte ignores it):
+    `?1049h` saves the normal grid + cursor and clears, `?1049l` restores
+    them, so a fullscreen overlay closing reveals the untouched chat. Also
+    tracks the mouse-reporting modes (1000/1003/1006) the app has on."""
+
+    MOUSE_MODES = (1000, 1003, 1006)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.alt_active = False
+        self.mouse_modes: set[int] = set()
+        self._saved = None
+
+    def set_mode(self, *modes, **kwargs):
+        if kwargs.get("private"):
+            if 1049 in modes and not self.alt_active:
+                self._saved = (copy.deepcopy(self.buffer), copy.copy(self.cursor))
+                self.alt_active = True
+                self.erase_in_display(2)
+            self.mouse_modes.update(m for m in modes if m in self.MOUSE_MODES)
+            modes = tuple(m for m in modes if m != 1049)
+        if modes:
+            super().set_mode(*modes, **kwargs)
+
+    def reset_mode(self, *modes, **kwargs):
+        if kwargs.get("private"):
+            if 1049 in modes and self.alt_active:
+                buffer, cursor = self._saved
+                self.buffer.clear()
+                self.buffer.update(buffer)
+                self.cursor = cursor
+                self.dirty.update(range(self.lines))
+                self.alt_active = False
+                self._saved = None
+            self.mouse_modes.difference_update(modes)
+            modes = tuple(m for m in modes if m != 1049)
+        if modes:
+            super().reset_mode(*modes, **kwargs)
+
+
+def sgr_click(col: int, row: int) -> bytes:
+    """Left press + release at 1-based screen cell (col, row), SGR encoded."""
+    return f"\x1b[<0;{col};{row}M\x1b[<0;{col};{row}m".encode()
+
+
+def sgr_wheel(col: int, row: int, down: bool = True) -> bytes:
+    """One vertical wheel notch at 1-based (col, row)."""
+    return f"\x1b[<{65 if down else 64};{col};{row}M".encode()
+
+
 class Term:
     def __init__(self, argv: list[str], *, env: dict[str, str], cwd: str, rows: int = 40, cols: int = 120):
         self.rows, self.cols = rows, cols
-        self.screen_ = pyte.HistoryScreen(cols, rows, history=5000)
+        self.screen_ = AltScreen(cols, rows, history=5000)
         self.screen_.set_mode(pyte.modes.LNM)
         self.stream = pyte.ByteStream(self.screen_)
         self.raw = bytearray()

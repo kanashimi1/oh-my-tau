@@ -8,7 +8,7 @@
 //! scrollback and is never redrawn. Only the live region (streaming text,
 //! pending tools, editor, status line) is repainted each frame, in an inline
 //! viewport anchored to the bottom of the screen. Full-screen overlays
-//! temporarily borrow the alternate screen (see [`Shell::with_fullscreen`]).
+//! hold the alternate screen while open (see [`Shell::draw_fullscreen`]).
 //!
 //! Every paint is bracketed with hide-cursor + DEC 2026 synchronized output
 //! (when supported) + autowrap-off … autowrap-on, matching pi-tui's
@@ -41,6 +41,31 @@ pub const ENTER_ALT: &str = "\x1b[?1049h";
 pub const LEAVE_ALT: &str = "\x1b[?1049l";
 pub const MOUSE_TRACKING_ON: &str = "\x1b[?1000h\x1b[?1003h\x1b[?1006h";
 pub const MOUSE_TRACKING_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
+
+/// Whether a full-screen overlay currently holds the alternate screen
+/// (TS `terminal.ts` `altScreenActive`). Consulted by the emergency restore
+/// (panic hook / signals): DECRST 1049 must not be written blindly — on
+/// Windows' shared VT dispatcher it homes the cursor on the main buffer.
+pub static ALT_SCREEN_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Best-effort terminal restore for crash/signal paths (TS
+/// `emergencyTerminalRestore` blind branch): end sync output, autowrap on,
+/// normal cursor keys, bracketed paste off, mouse tracking off, leave the
+/// alt screen only when one is held (popping its kitty frame first), pop the
+/// main kitty frame, cursor shape reset + visible, raw mode off.
+pub fn emergency_restore() {
+    let mut out = String::from("\x1b[?2026l\x1b[?7h\x1b[?1l\x1b>\x1b[?2004l");
+    out.push_str(MOUSE_TRACKING_OFF);
+    if ALT_SCREEN_ACTIVE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        out.push_str("\x1b[<u");
+        out.push_str(LEAVE_ALT);
+    }
+    out.push_str("\x1b[<u\x1b[>4;0m\x1b[0 q\x1b[?25h");
+    let mut stdout = io::stdout();
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
+    let _ = crossterm::terminal::disable_raw_mode();
+}
 /// Destructive reset: ED2 **before** ED3 (tmux implements ED2 by scrolling the
 /// live screen into pane history; ED3-first would duplicate it, core.md §2.5).
 pub const CLEAR_SCREEN_AND_SCROLLBACK: &str = "\x1b[H\x1b[2J\x1b[3J";
@@ -305,7 +330,17 @@ pub struct Shell<B: Backend, R: RawOut> {
     sync: bool,
     kitty: KittyKeys,
     mux: Multiplexer,
-    fullscreen: bool,
+    /// A full-screen overlay currently holds the alternate screen.
+    alt: bool,
+    /// Paints the alternate screen while [`Self::alt`] (concrete shell
+    /// only; a fresh full-screen terminal per alt-screen lifecycle).
+    alt_term: Option<Terminal<ShellBackend>>,
+    /// A resize arrived while the alt screen was up: the inline viewport
+    /// is re-laid out when the overlay closes (TS defers the normal-buffer
+    /// recovery to the alt exit).
+    pending_resize: bool,
+    /// Whether SGR mouse reporting (1000/1003/1006) is currently on.
+    mouse: bool,
     /// Last known full-screen area (tracked from completed frames).
     screen: Rect,
 }
@@ -379,56 +414,40 @@ impl Shell<ShellBackend, io::Stdout> {
             sync: sync_output_enabled(),
             kitty,
             mux: Multiplexer::detect(),
-            fullscreen: false,
+            alt: false,
+            alt_term: None,
+            pending_resize: false,
+            mouse: false,
             screen,
         })
     }
 
-    /// Borrow the alternate screen for a full-screen overlay: enter alt,
-    /// re-push kitty flags (they are per-screen; Ghostty/kitty/iTerm2 revert
-    /// to legacy encoding inside overlays otherwise, core.md §3), enable
-    /// mouse tracking, run `draw` (once per overlay frame), then restore the
-    /// inline layout.
+    /// Paint one frame of a full-screen overlay on the alternate screen
+    /// (TS `#renderAltFrame`). The first call of a lifecycle enters the alt
+    /// buffer (see [`Self::enter_alt`]); later calls diff against the
+    /// previous alt frame. The inline viewport's diff state over the normal
+    /// buffer stays frozen until [`Self::leave_alt`]. The frame's area is the
+    /// whole terminal at origin (0,0), so overlay rows map 1:1 onto SGR
+    /// mouse rows.
     ///
     /// # Errors
     ///
-    /// Fails if the alt-screen paint or restore writes fail.
-    pub fn with_fullscreen(&mut self, draw: impl FnMut(&mut ratatui::Frame<'_>)) -> io::Result<()> {
-        use crossterm::event::{
-            KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    /// Fails if the alt-screen entry or paint writes fail.
+    pub fn draw_fullscreen(&mut self, draw: impl FnOnce(&mut ratatui::Frame<'_>)) -> io::Result<()> {
+        self.enter_alt()?;
+        if self.alt_term.is_none() {
+            self.alt_term = Some(Terminal::new(ShellBackend::new())?);
+        }
+        self.paint_begin()?;
+        let result = match self.alt_term.as_mut() {
+            Some(alt) => alt.draw(draw).map(|_| ()),
+            None => Ok(()),
         };
-        if self.fullscreen {
-            return Ok(());
-        }
-        self.fullscreen = true;
-        let mut out = String::with_capacity(64);
-        out.push_str(ENTER_ALT);
-        out.push_str(MOUSE_TRACKING_ON);
-        out.push_str(HIDE_CURSOR);
-        if self.kitty == KittyKeys::Pushed {
-            out.push_str(&cmd_ansi(&PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS,
-            )));
-        }
-        self.raw.raw(&out)?;
-        // A throwaway fullscreen terminal paints the modal; the inline
-        // terminal's diff state over the main screen stays frozen.
-        let mut alt = Terminal::new(ShellBackend::new())?;
-        let _ = alt.draw(draw)?;
-        ratatui::backend::Backend::flush(alt.backend_mut())?;
-        drop(alt);
-        let mut restore = String::new();
-        if self.kitty == KittyKeys::Pushed {
-            restore.push_str(&cmd_ansi(&PopKeyboardEnhancementFlags));
-        }
-        restore.push_str(MOUSE_TRACKING_OFF);
-        restore.push_str(LEAVE_ALT);
-        self.raw.raw(&restore)?;
-        self.fullscreen = false;
-        // Force a full repaint of the inline viewport next frame.
-        self.term.resize(self.screen)
+        self.raw.raw(HIDE_CURSOR)?;
+        self.paint_end()?;
+        result
     }
+
 
     /// Restore the terminal: leave any fullscreen borrow, pop kitty /
     /// modifyOtherKeys, bracketed paste off, DECCKM normal, show cursor,
@@ -440,9 +459,23 @@ impl Shell<ShellBackend, io::Stdout> {
     /// too.
     pub fn leave(&mut self) -> io::Result<()> {
         use crossterm::event::PopKeyboardEnhancementFlags;
-        if self.fullscreen {
-            self.raw.raw(&format!("{MOUSE_TRACKING_OFF}{LEAVE_ALT}"))?;
-            self.fullscreen = false;
+        if self.mouse {
+            self.raw.raw(MOUSE_TRACKING_OFF)?;
+            self.mouse = false;
+        }
+        if self.alt {
+            // Keyboard enhancement state is screen-local: pop the alt-screen
+            // frame before leaving it (TS `emergencyTerminalRestore`), the
+            // main-screen frame is popped below.
+            let mut out = String::new();
+            if self.kitty == KittyKeys::Pushed {
+                out.push_str(&cmd_ansi(&PopKeyboardEnhancementFlags));
+            }
+            out.push_str(LEAVE_ALT);
+            self.raw.raw(&out)?;
+            self.alt = false;
+            self.alt_term = None;
+            ALT_SCREEN_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
         }
         let mut out = String::new();
         if self.kitty == KittyKeys::Pushed {
@@ -474,8 +507,104 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
             sync,
             kitty: KittyKeys::Inactive,
             mux: Multiplexer::None,
-            fullscreen: false,
+            alt: false,
+            alt_term: None,
+            pending_resize: false,
+            mouse: false,
         }
+    }
+
+    /// Whether a full-screen overlay currently holds the alternate screen.
+    #[must_use]
+    pub fn is_alt(&self) -> bool {
+        self.alt
+    }
+
+    /// Whether SGR mouse reporting is currently on.
+    #[must_use]
+    pub fn mouse_tracking(&self) -> bool {
+        self.mouse
+    }
+
+    /// Transition mouse reporting, emitting only the sequences a change
+    /// needs (TS `#setMouseTracking`: inline and full-screen reporting are
+    /// the same bytes, 1000 = clicks, 1003 = any-motion for hover, 1006 =
+    /// SGR coordinates).
+    ///
+    /// # Errors
+    ///
+    /// Fails if the write fails.
+    pub fn set_mouse_tracking(&mut self, on: bool) -> io::Result<()> {
+        if on == self.mouse {
+            return Ok(());
+        }
+        self.raw.raw(if on { MOUSE_TRACKING_ON } else { MOUSE_TRACKING_OFF })?;
+        self.mouse = on;
+        Ok(())
+    }
+
+    /// Enter the alternate screen for a full-screen overlay (TS `tui.ts`
+    /// `wantAlt && !#altActive`): `?1049h`, re-push the kitty flags (they
+    /// are per-screen; Ghostty/kitty/iTerm2 revert to legacy encoding inside
+    /// overlays otherwise, core.md §3) and hide the cursor. No-op while
+    /// already on the alt screen.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the write fails.
+    pub fn enter_alt(&mut self) -> io::Result<()> {
+        use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+        if self.alt {
+            return Ok(());
+        }
+        let mut out = String::with_capacity(64);
+        out.push_str(ENTER_ALT);
+        if self.kitty == KittyKeys::Pushed {
+            out.push_str(&cmd_ansi(&PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS,
+            )));
+        }
+        out.push_str(HIDE_CURSOR);
+        self.raw.raw(&out)?;
+        self.alt = true;
+        ALT_SCREEN_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Leave the alternate screen when the last full-screen overlay closes
+    /// (TS fused exit: pop the alt-screen kitty frame, `?1049l`). The
+    /// terminal restores the untouched normal buffer (scrollback + live
+    /// region); the live region is then invalidated so the next
+    /// [`Self::draw_live`] repaints it fully. A resize that arrived while
+    /// covered is applied now and may require a scrollback rebuild. Mouse
+    /// reporting is left to [`Self::set_mouse_tracking`]. No-op when not on
+    /// the alt screen.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the restore writes or the repaint invalidation fail.
+    pub fn leave_alt(&mut self) -> io::Result<ResizeAction> {
+        use crossterm::event::PopKeyboardEnhancementFlags;
+        if !self.alt {
+            return Ok(ResizeAction::Repaint);
+        }
+        let mut out = String::new();
+        if self.kitty == KittyKeys::Pushed {
+            out.push_str(&cmd_ansi(&PopKeyboardEnhancementFlags));
+        }
+        out.push_str(LEAVE_ALT);
+        self.raw.raw(&out)?;
+        self.alt = false;
+        self.alt_term = None;
+        ALT_SCREEN_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
+        if std::mem::take(&mut self.pending_resize) {
+            return self.on_resize();
+        }
+        // ratatui diffs against its cached buffers; force a full repaint of
+        // the restored live region.
+        self.term.clear()?;
+        Ok(ResizeAction::Repaint)
     }
 
     /// Number of rows in the live region.
@@ -532,6 +661,16 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
         let frame = self.term.insert_before(u16::try_from(lines.len()).unwrap_or(u16::MAX), |buf| {
             let area = buf.area;
             Paragraph::new(lines.to_vec()).render(area, buf);
+            // `insert_before` prints every cell, so the reset cell behind a
+            // width-2 glyph (🔍, 🦀) would add a stray space and shift the
+            // row right; blank it so only the glyph's own two columns print.
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right().saturating_sub(1) {
+                    if unicode_width::UnicodeWidthStr::width(buf[(x, y)].symbol()) == 2 {
+                        buf[(x + 1, y)].set_symbol("");
+                    }
+                }
+            }
         });
         let result = frame;
         self.raw.raw(OSC133_ZONE_CLOSE)?;
@@ -610,6 +749,13 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
     ///
     /// Fails if the repaint writes fail.
     pub fn on_resize(&mut self) -> io::Result<ResizeAction> {
+        if self.alt {
+            // The normal buffer is covered: resizing the inline viewport now
+            // would write its clears onto the alt screen. Defer to
+            // `leave_alt` (TS re-anchors after the alt exit).
+            self.pending_resize = true;
+            return Ok(ResizeAction::Repaint);
+        }
         let before = self.term.size()?;
         self.term.autoresize()?;
         let after = self.term.size()?;
@@ -843,5 +989,47 @@ mod tests {
         shell.set_live(&[line("live")]).unwrap();
         // Same size: autoresize is a no-op, plain repaint.
         assert_eq!(shell.on_resize().unwrap(), ResizeAction::Repaint);
+    }
+
+    fn inline_shell(rec: Recorder) -> Shell<TestBackend, Recorder> {
+        let term = Terminal::with_options(
+            TestBackend::new(20, 10),
+            TerminalOptions {
+                viewport: Viewport::Inline(3),
+            },
+        )
+        .unwrap();
+        Shell::new_for_backend(term, rec, 3, false)
+    }
+
+    #[test]
+    fn alt_screen_lifecycle_enters_once_and_restores() {
+        let rec = Recorder::default();
+        let mut shell = inline_shell(rec.clone());
+        shell.set_live(&[line("live")]).unwrap();
+        rec.take();
+        shell.enter_alt().unwrap();
+        shell.set_mouse_tracking(true).unwrap();
+        // Repeated per-frame calls emit nothing new.
+        shell.enter_alt().unwrap();
+        shell.set_mouse_tracking(true).unwrap();
+        let entered = rec.take().concat();
+        assert_eq!(entered.matches(ENTER_ALT).count(), 1);
+        assert_eq!(entered.matches(MOUSE_TRACKING_ON).count(), 1);
+        assert!(shell.is_alt() && shell.mouse_tracking());
+        // Resize while covered is deferred, never painted onto the alt screen.
+        assert_eq!(shell.on_resize().unwrap(), ResizeAction::Repaint);
+        assert!(rec.take().is_empty());
+        // Close: mouse off then leave alt (TS fused exit order).
+        shell.set_mouse_tracking(false).unwrap();
+        assert_eq!(shell.leave_alt().unwrap(), ResizeAction::Repaint);
+        let left = rec.take().concat();
+        let off = left.find(MOUSE_TRACKING_OFF).expect("mouse off");
+        let leave = left.find(LEAVE_ALT).expect("leave alt");
+        assert!(off < leave);
+        assert!(!shell.is_alt() && !shell.mouse_tracking());
+        // Not on alt: leave is a no-op.
+        shell.leave_alt().unwrap();
+        assert!(rec.take().is_empty());
     }
 }
