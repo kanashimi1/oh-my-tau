@@ -7,13 +7,14 @@
 pub mod config;
 pub mod export;
 pub mod gc;
+pub mod judge_sessions;
 pub mod models;
 pub mod stats;
 
 /// Subcommands this module implements.
 #[must_use]
 pub fn known(name: &str) -> bool {
-    matches!(name, "models" | "stats" | "config" | "gc" | "export")
+    matches!(name, "models" | "stats" | "config" | "gc" | "export" | "judge-sessions")
 }
 
 /// Dispatch `omp-rs <name> <args>`; `args` excludes the subcommand token.
@@ -28,6 +29,7 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "config" => config::run(args),
         "gc" => gc::run(args),
         "export" => export::run(args),
+        "judge-sessions" => judge_sessions::run(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),
     }
 }

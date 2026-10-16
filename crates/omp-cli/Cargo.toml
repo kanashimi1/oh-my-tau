@@ -30,6 +30,7 @@ omp-task = { path = "../omp-task" }
 omp-eval = { path = "../omp-eval" }
 omp-mcp = { path = "../omp-mcp" }
 omp-lsp = { path = "../omp-lsp" }
+omp-judge = { path = "../omp-judge" }
 tracing = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
 serde_yaml_ng = "0.10"

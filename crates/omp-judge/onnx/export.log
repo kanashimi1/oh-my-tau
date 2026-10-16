@@ -1,0 +1,29 @@
+/home/kaneki/fleet-split/runs/laya-pool/rs/laya-ort/export_onnx.py:111: UserWarning: Exporting a model while it is in training mode. Please ensure that this is intended, as it may lead to different behavior during inference. Calling model.eval() before export is recommended.
+  torch.onnx.export(
+/home/kaneki/fleet-split/runs/laya-pool/rs/laya-ort/export_onnx.py:111: UserWarning: # 'dynamic_axes' is not recommended when dynamo=True, and may lead to 'torch._dynamo.exc.UserError: Constraints violated.' Supply the 'dynamic_shapes' argument instead if export is unsuccessful.
+  torch.onnx.export(
+W1016 19:36:57.975000 1859112 torch/onnx/_internal/exporter/_registration.py:107] torchvision is not installed. Skipping torchvision::nms
+W1016 19:36:57.976000 1859112 torch/onnx/_internal/exporter/_registration.py:107] torchvision is not installed. Skipping torchvision::roi_align
+W1016 19:36:57.976000 1859112 torch/onnx/_internal/exporter/_registration.py:107] torchvision is not installed. Skipping torchvision::roi_pool
+W1016 19:36:57.976000 1859112 torch/onnx/_internal/exporter/_registration.py:107] torchvision is not installed. Skipping torchvision::deform_conv2d
+[torch.onnx] Obtain model graph for `ExportWrapper([...]` with `torch.export.export(..., strict=False)`...
+[torch.onnx] Obtain model graph for `ExportWrapper([...]` with `torch.export.export(..., strict=False)`... ✅
+[torch.onnx] Run decompositions...
+[torch.onnx] Run decompositions... ✅
+[torch.onnx] Translate the graph into ONNX...
+[torch.onnx] Translate the graph into ONNX... ✅
+[torch.onnx] Optimize the ONNX graph...
+[torch.onnx] Optimize the ONNX graph... ✅
+/home/kaneki/fleet-split/harness-ckpt/solpi/finetune/laya/venv/lib/python3.12/site-packages/torch/onnx/_internal/exporter/_onnx_program.py:486: UserWarning: # The axis name: batch will not be used, since it shares the same shape constraints with another axis: batch.
+  rename_mapping = _dynamic_shapes.create_rename_mapping(
+/home/kaneki/fleet-split/harness-ckpt/solpi/finetune/laya/venv/lib/python3.12/site-packages/torch/onnx/_internal/exporter/_onnx_program.py:486: UserWarning: # The axis name: seq will not be used, since it shares the same shape constraints with another axis: seq.
+  rename_mapping = _dynamic_shapes.create_rename_mapping(
+/home/kaneki/fleet-split/harness-ckpt/solpi/finetune/laya/venv/lib/python3.12/site-packages/torch/onnx/_internal/exporter/_onnx_program.py:486: UserWarning: # The axis name: markers will not be used, since it shares the same shape constraints with another axis: markers.
+  rename_mapping = _dynamic_shapes.create_rename_mapping(
+wrote /home/kaneki/fleet-split/omp-rs/crates/omp-judge/onnx/laya_judge_tjsel.onnx (1289.9 MB)
+onnxruntime parity: max|dlogits|=2.503e-06 max|dact|=9.766e-04
+  L=37: max|dlogits|=1.264e-05
+  L=200: max|dlogits|=5.722e-06
+  L=700: max|dlogits|=2.861e-06
+  L=1024: max|dlogits|=7.153e-06
+onnxruntime parity OK

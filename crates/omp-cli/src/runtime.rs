@@ -117,6 +117,8 @@ pub struct Runtime {
     target: Target,
     pub cwd: PathBuf,
     persist: Persistence,
+    /// Prompt runs seen by the Laya shadow judge (`OMP_LAYA_JUDGE=1`): its `turn_index`.
+    judge_turns: std::sync::atomic::AtomicU64,
     out: UnboundedSender<Value>,
     prompts: Mutex<PromptState>,
     settings: Mutex<Settings>,
@@ -306,6 +308,7 @@ impl Runtime {
             target,
             cwd,
             persist,
+            judge_turns: std::sync::atomic::AtomicU64::new(0),
             out,
             prompts: Mutex::new(PromptState::default()),
             settings: Mutex::new(Settings {
@@ -672,9 +675,26 @@ impl Runtime {
         }
     }
 
+    /// Laya shadow judge (default OFF, `OMP_LAYA_JUDGE=1`): hand the finished run to the
+    /// background worker. Never blocks or fails the turn: nothing is built when disabled, the
+    /// queue is bounded and an overflowing turn is dropped (counted).
+    fn shadow_judge_turn(&self, messages: &[AgentMessage]) {
+        let Some(worker) = omp_judge::shadow::global() else { return };
+        let entries = omp_judge::shadow::message_entries(messages.iter().map(crate::events::message_value));
+        let turn_index = self.judge_turns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        worker.submit(omp_judge::shadow::Job {
+            session_id: self.persist.session_id(),
+            turn_index,
+            ts: crate::persist::now_iso(),
+            entries,
+            is_sub: false,
+        });
+    }
+
     /// Terminal `agent_end`, or the retry saga when the run failed transiently.
     fn on_agent_end(self: &Arc<Self>, frame: Value, messages: &[AgentMessage]) {
         self.emit_queue_update();
+        self.shadow_judge_turn(messages);
         let failed = last_assistant_msg(messages).and_then(FailedTurn::from_message);
         // Cheap pre-check only; the threshold decision itself (`checkCompaction`)
         // runs on the live typed context inside the task, off the agent's state
