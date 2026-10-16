@@ -117,7 +117,10 @@ pub fn collapse_variant_id(provider: &str, model: &str) -> CollapsedVariant {
 /// infix token used to pair live discovery siblings. Negated forms such as
 /// `non-thinking` and `no-thinking` are not variants.
 pub fn strip_thinking_variant_suffix(model: &str) -> Option<String> {
-	let lower = model.to_lowercase();
+	// ASCII-only lowercasing keeps byte offsets aligned with `model` (full
+	// Unicode lowercasing can change byte lengths and misplace the slices
+	// below); tokens and word characters are ASCII, so matching is unchanged.
+	let lower = model.to_ascii_lowercase();
 	for token in &taxonomy_rules().collapse.pair_tokens {
 		let needle = format!("-{}", token);
 		let mut search_from = 0usize;
@@ -152,8 +155,12 @@ pub fn strip_thinking_variant_suffix(model: &str) -> Option<String> {
 /// wire identifier, returning the base id it shares a transport with.
 pub fn billing_variant_plain(wire_model: &str) -> Option<String> {
 	for suffix in &taxonomy_rules().discovery.billing_variant_suffixes {
-		let split = wire_model.len().checked_sub(suffix.len())?;
-		if split == 0 {
+		// TS `if (split <= 0) continue`: a suffix longer than the id skips to
+		// the next one instead of ending the search.
+		let Some(split) = wire_model.len().checked_sub(suffix.len()) else {
+			continue;
+		};
+		if split == 0 || !wire_model.is_char_boundary(split) {
 			continue;
 		}
 		if wire_model[split..].to_lowercase() == *suffix {

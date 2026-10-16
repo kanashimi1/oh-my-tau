@@ -23,7 +23,8 @@ pub(super) struct Timeouts {
 
 impl Default for Timeouts {
     fn default() -> Self {
-        Self { header_read: Duration::from_secs(30), idle: Duration::from_secs(60) }
+        // idle: Bun.serve default `idleTimeout` (10 s), which the TS dashboard uses.
+        Self { header_read: Duration::from_secs(30), idle: Duration::from_secs(10) }
     }
 }
 
@@ -53,11 +54,20 @@ pub(super) async fn serve_connection(stream: tokio::net::TcpStream, ctx: Arc<Ctx
     let service = service_fn(move |req| {
         let (ctx, state) = (Arc::clone(&ctx), Arc::clone(&svc_state));
         async move {
-            if req.uri().path() == "/api/events" {
-                state.sse.store(true, Ordering::SeqCst);
-            }
             state.inflight.fetch_add(1, Ordering::SeqCst);
             let response = serve(req, ctx).await;
+            // Exempt only a stream actually opened: a rejected (403) or failed
+            // `/api/events` must not pin the connection open forever.
+            if let Ok(resp) = &response {
+                let is_sse = resp
+                    .headers()
+                    .get(hyper::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|ct| ct.starts_with("text/event-stream"));
+                if is_sse {
+                    state.sse.store(true, Ordering::SeqCst);
+                }
+            }
             state.inflight.fetch_sub(1, Ordering::SeqCst);
             state.touch();
             response
@@ -80,7 +90,9 @@ pub(super) async fn serve_connection(stream: tokio::net::TcpStream, ctx: Arc<Ctx
             () = tokio::time::sleep(tick) => {
                 if state.idle_for().is_some_and(|idle| idle >= timeouts.idle) {
                     conn.as_mut().graceful_shutdown();
-                    let _ = conn.await;
+                    // A peer that never acknowledges the close must not keep
+                    // the task alive: bound the drain.
+                    let _ = tokio::time::timeout(Duration::from_secs(5), conn).await;
                     return;
                 }
             }

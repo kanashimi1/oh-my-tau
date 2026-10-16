@@ -175,8 +175,12 @@ fn run(inner: &Arc<Inner>, epoch: u64, roots: &[PathBuf], tx: &mpsc::Sender<Msg>
         }
         let now = Instant::now();
         if now >= next_poll && watches.incomplete(roots) {
-            if !watches.active() {
-                let current = snapshot(roots);
+            // Poll exactly the roots no watcher covers (a root whose watch
+            // failed while another root is watched must not wait for the
+            // 5-minute full sync); watched roots are never re-walked.
+            let unwatched: Vec<PathBuf> = roots.iter().filter(|r| !watches.watched.contains(*r)).cloned().collect();
+            {
+                let current = snapshot(&unwatched);
                 if let Some(known) = &known {
                     for (file, meta) in &current {
                         if known.get(file) != Some(meta) {

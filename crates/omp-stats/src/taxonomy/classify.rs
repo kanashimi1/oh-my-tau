@@ -503,7 +503,7 @@ fn classify_model_uncached(
 
 fn classify_memo_key(provider: &str, model_id: &str, lenient: bool) -> String {
 	format!(
-		"{}:{}{}{}{}",
+		"{}:{}{}:{}{}",
 		provider.len(),
 		provider,
 		model_id.len(),

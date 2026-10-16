@@ -26,11 +26,15 @@ pub struct StatsArgs {
     pub summary: bool,
 }
 
+/// TS `parseInt(value, 10)`: leading digits (after optional whitespace) are
+/// the port, trailing junk is ignored; no digits at all is an error (TS would
+/// try to listen on `NaN`).
 fn parse_port(value: &str) -> Result<u16> {
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+    let digits: String = value.trim_start().chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
         bail!("Invalid port: {value}");
     }
-    value.parse::<u16>().map_err(|_| anyhow::anyhow!("Invalid port: {value}"))
+    digits.parse::<u16>().map_err(|_| anyhow::anyhow!("Invalid port: {value}"))
 }
 
 /// Parse `omp stats` flags like TS `parseStandaloneStatsArgs`: `-p/--port`
@@ -50,7 +54,27 @@ pub fn parse_args(args: &[String]) -> Result<StatsArgs> {
             "--host" => it.next().context("--host needs a value")?.clone_into(&mut parsed.host),
             other if other.starts_with("--port=") => parsed.port = parse_port(&other["--port=".len()..])?,
             other if other.starts_with("--host=") => parsed.host = other["--host=".len()..].to_string(),
-            other if other.len() > 2 && other.starts_with("-p") && !other.starts_with("--") => parsed.port = parse_port(&other[2..])?,
+            // node `parseArgs` short clusters: `-js`, `-jp3000`, `-sp 4000`.
+            other if other.len() > 2 && other.starts_with('-') && !other.starts_with("--") => {
+                let cluster = &other[1..];
+                for (i, flag) in cluster.char_indices() {
+                    match flag {
+                        'j' => parsed.json = true,
+                        's' => parsed.summary = true,
+                        'p' => {
+                            let rest = &cluster[i + 1..];
+                            let value = if rest.is_empty() {
+                                it.next().context("--port needs a value")?.as_str()
+                            } else {
+                                rest
+                            };
+                            parsed.port = parse_port(value)?;
+                            break;
+                        }
+                        _ => bail!("Unknown option: -{flag}. {USAGE}"),
+                    }
+                }
+            }
             other if !other.starts_with('-') || other == "-" => {}
             other => bail!("Unknown option: {other}. {USAGE}"),
         }
@@ -391,6 +415,16 @@ mod tests {
         let p = parse_args(&args(&["--sync", "-p3000", "extra", "-j"])).expect("ts flags");
         assert_eq!((p.port, p.summary, p.json), (3000, true, true));
         assert!(parse_args(&args(&["-pabc"])).is_err());
+        // node parseArgs short clusters (verified with bun): -js, -jp3000, -sp 4000.
+        let p = parse_args(&args(&["-js"])).expect("cluster");
+        assert_eq!((p.json, p.summary), (true, true));
+        let p = parse_args(&args(&["-jp3000"])).expect("cluster with value");
+        assert_eq!((p.json, p.port), (true, 3000));
+        let p = parse_args(&args(&["-sp", "4000"])).expect("cluster, value next");
+        assert_eq!((p.summary, p.port), (true, 4000));
+        // TS parseInt keeps leading digits.
+        assert_eq!(parse_args(&args(&["--port", "3000extra"])).expect("parseInt").port, 3000);
+        assert!(parse_args(&args(&["-jx"])).is_err());
     }
 
     #[test]

@@ -325,7 +325,13 @@ pub fn complete_session_sync(reconcile: bool) -> Result<()> {
 /// # Errors
 /// DB failure.
 pub fn insert_message_stats(stats: impl IntoIterator<Item = MessageStatsInput>) -> Result<i64> {
-    with_db(|conn| write::insert_message_stats_conn(conn, stats))
+    // One transaction like TS `db.transaction()`: all rows or none.
+    with_db(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let changed = write::insert_message_stats_conn(&tx, stats)?;
+        tx.commit()?;
+        Ok(changed)
+    })
 }
 
 /// TS `getMessageCount`.

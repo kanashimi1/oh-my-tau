@@ -101,3 +101,22 @@ fn idle_keepalive_connection_closes_but_sse_stays_open() {
     drop(sse);
     handle.stop();
 }
+
+/// Regression (review): a rejected `/api/events` (403 from the Host guard)
+/// must not mark the connection as an SSE stream, which used to exempt it
+/// from the idle timeout forever.
+#[test]
+fn rejected_events_request_is_still_idle_closed() {
+    let (_home, handle) = start(StartServerOptions {
+        header_read_timeout: Some(Duration::from_secs(30)),
+        idle_timeout: Some(Duration::from_millis(400)),
+    });
+    let mut stream = connect(handle.port);
+    write!(stream, "GET /api/events HTTP/1.1\r\nHost: evil.example\r\n\r\n").expect("send");
+    let mut raw = Vec::new();
+    let started = std::time::Instant::now();
+    stream.read_to_end(&mut raw).expect("server closes the rejected connection (EOF), not a read timeout");
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(status_of(&String::from_utf8_lossy(&raw)), 403);
+    handle.stop();
+}

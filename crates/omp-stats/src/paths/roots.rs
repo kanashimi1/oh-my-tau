@@ -21,7 +21,10 @@ pub fn omp_rs_sessions_dir() -> PathBuf {
 pub fn session_roots() -> Vec<PathBuf> {
     let mut roots = vec![sessions_dir()];
     let extra = omp_rs_sessions_dir();
-    if !roots.contains(&extra) {
+    // Compare resolved paths: a TS root configured onto (or symlinked to) the
+    // omp-rs store must not be listed, and ingested, twice.
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    if canon(&roots[0]) != canon(&extra) {
         roots.push(extra);
     }
     roots
