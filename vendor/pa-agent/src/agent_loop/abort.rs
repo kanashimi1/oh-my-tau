@@ -88,6 +88,7 @@ pub(crate) fn create_aborted_assistant_message(
         usage: partial_message.map_or_else(crate::types::Usage::zero, |p| p.usage.clone()),
         stop_reason: StopReason::Aborted,
         stop_reason_raw: None,
+        error_status: None,
         error_message: Some(ABORT_ERROR_MESSAGE.to_string()),
         timestamp: crate::now_ms(),
         // TS's synthesized aborted message is fresh: no credential/timing meta

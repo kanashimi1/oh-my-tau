@@ -140,6 +140,7 @@ fn synthetic_turn(call: &ToolCall) -> AssistantMessage {
         usage: Usage::zero(),
         stop_reason: StopReason::ToolUse,
         stop_reason_raw: None,
+        error_status: None,
         error_message: None,
         timestamp: 0,
         meta: AssistantMeta::default(),

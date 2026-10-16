@@ -390,6 +390,21 @@ pub enum ProviderError {
     Aborted,
 }
 
+impl ProviderError {
+    /// HTTP status the provider surfaced for this failure (TS `errorStatus`), when one is known.
+    #[must_use]
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            ProviderError::Http(http) => http.status,
+            ProviderError::StreamFailure(failure) => failure.info.status,
+            ProviderError::Connection(_)
+            | ProviderError::Transport(_)
+            | ProviderError::Message(_)
+            | ProviderError::Aborted => None,
+        }
+    }
+}
+
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -862,6 +877,7 @@ pub fn record_stream_failure(
     if output.stop_reason != crate::types::StopReason::Error {
         return;
     }
+    output.error_status = error.status();
     let info = extract_stream_failure_info(error);
     let info_json = serde_json::to_value(&info).unwrap_or(serde_json::Value::Null);
     append_assistant_message_diagnostic(

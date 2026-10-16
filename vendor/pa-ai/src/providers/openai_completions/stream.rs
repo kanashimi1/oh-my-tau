@@ -526,6 +526,7 @@ pub fn stream_openai_completions(
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             stop_reason_raw: None,
+            error_status: None,
             error_message: None,
             timestamp: crate::utils_inner::diagnostics::now_ms(),
             rest: Map::default(),
@@ -822,6 +823,10 @@ mod tests {
     // own child module with this file's test harness.
     #[path = "stream_wire.rs"]
     mod stream_wire;
+
+    // The failed-request HTTP status recorded on the message (TS `errorStatus`).
+    #[path = "stream_error_status.rs"]
+    mod stream_error_status;
 
     /// Serve one SSE response body for the provider's POST and return the
     /// bound address.

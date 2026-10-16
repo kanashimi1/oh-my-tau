@@ -27,17 +27,59 @@ pub struct ServiceTierByFamily {
     pub google: Option<ServiceTier>,
 }
 
-/// Minimal pi-ai `StopReason`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Minimal pi-ai `StopReason`. A wire string this port does not know (written
+/// by a newer producer) is kept verbatim in `Other` and round-trips unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum StopReason {
     #[default]
     Stop,
     Length,
-    #[serde(alias = "tool_calls")]
     ToolUse,
     Error,
     Aborted,
+    Other(String),
+}
+
+impl StopReason {
+    /// The wire string (`toolUse`, not `tool_calls`); `Other` is returned as stored.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stop => "stop",
+            Self::Length => "length",
+            Self::ToolUse => "toolUse",
+            Self::Error => "error",
+            Self::Aborted => "aborted",
+            Self::Other(raw) => raw,
+        }
+    }
+
+    /// Parse a wire string. `tool_calls` is the legacy alias of `toolUse`; any
+    /// other unknown string becomes `Other`.
+    #[must_use]
+    pub fn from_wire(raw: &str) -> Self {
+        match raw {
+            "stop" => Self::Stop,
+            "length" => Self::Length,
+            "toolUse" | "tool_calls" => Self::ToolUse,
+            "error" => Self::Error,
+            "aborted" => Self::Aborted,
+            other => Self::Other(other.to_string()),
+        }
+    }
+}
+
+impl Serialize for StopReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for StopReason {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::from_wire(&raw))
+    }
 }
 
 /// Minimal pi-ai money/cost bucket.

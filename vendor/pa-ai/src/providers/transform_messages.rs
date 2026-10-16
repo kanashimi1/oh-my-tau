@@ -286,6 +286,7 @@ mod tests {
             usage: Usage::default(),
             stop_reason: StopReason::ToolUse,
             stop_reason_raw: None,
+            error_status: None,
             error_message: None,
             timestamp: 0,
             rest: Map::default(),

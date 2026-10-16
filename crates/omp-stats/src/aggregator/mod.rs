@@ -5,14 +5,15 @@
 //! on scoped threads inside [`sync_all_sessions`], so there is no worker to
 //! smoke-test (`smokeTestSyncWorker` is intentionally not ported).
 //!
-//! Subscription windows (`usage-windows.ts`) are out of scope: they come from
-//! provider auth/usage snapshots, and [`get_provider_window_stats`] returns
-//! what the TS returns when none are recorded (empty insights and series).
+//! Subscription windows (`usage-windows.ts`) are served by
+//! [`get_provider_window_stats`] from the agent.db `usage_history` snapshots.
 
 mod lock;
 mod sync;
 #[cfg(test)]
 mod tests;
+
+use crate::usage_windows;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ pub use crate::rollup::get_time_range_config;
 use crate::rollup::{
     get_cost_time_series, get_model_performance_series, get_model_time_series, get_overall_stats,
     get_provider_hourly_burn, get_provider_time_series, get_stats_by_agent_type, get_stats_by_folder,
-    get_stats_by_model, get_time_series, get_tool_stats, get_tool_stats_by_model, get_tool_time_series,
+    get_stats_by_model, get_stats_by_provider, get_time_series, get_tool_stats, get_tool_stats_by_model, get_tool_time_series,
 };
 use crate::types::{
     AgentTypeStats, AggregatedStats, CostTimeSeriesPoint, DashboardStats, FolderStats, MessageStats,
@@ -210,15 +211,31 @@ pub fn get_provider_dashboard_stats(range: Option<&str>) -> Result<ProviderDashb
     })
 }
 
-/// Subscription-window analytics. Usage-limit snapshots (`usage-windows.ts`:
-/// auth broker / agent db) are not ported, so this is the TS result for no
-/// recorded snapshots: `computeUsageWindowStats([])` yields no insights and no
-/// series, whatever `provider` asks for.
+/// Subscription-window analytics (TS `getProviderWindowStats`): insights for
+/// every provider window in range, plus utilization series for `provider` only
+/// (all series can number in the thousands).
+///
+/// Token estimates use the broker's fleet tokens when present; the Rust port
+/// has no broker client, so they always come from local message stats.
 ///
 /// # Errors
-/// DB open failure.
+/// DB failure.
 pub fn get_provider_window_stats(range: Option<&str>, provider: Option<&str>) -> Result<ProviderWindowStats> {
     init_db()?;
-    let _ = (range, provider);
-    Ok(ProviderWindowStats { window_insights: Vec::new(), usage_series: Vec::new() })
+    let cutoff = get_time_range_config(range).cutoff;
+    let usage = usage_windows::cached_usage_data(cutoff.unwrap_or(0));
+    let tokens_by_provider = match usage.fleet_tokens_by_provider {
+        Some(fleet) => fleet,
+        None => get_stats_by_provider(cutoff)?.into_iter().map(|p| (p.provider, p.total_tokens as f64)).collect(),
+    };
+    let stats = usage_windows::compute_usage_window_stats(&usage.rows, &tokens_by_provider);
+    Ok(ProviderWindowStats {
+        window_insights: stats.window_insights,
+        usage_series: match provider {
+            Some(provider) if !provider.is_empty() => {
+                stats.usage_series.into_iter().filter(|series| series.provider == provider).collect()
+            }
+            _ => Vec::new(),
+        },
+    })
 }

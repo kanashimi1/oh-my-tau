@@ -467,6 +467,7 @@ impl AgentInner {
                 },
                 error_message: Some(format!("{error:#}")),
                 stop_reason_raw: None,
+                error_status: None,
                 timestamp: crate::now_ms(),
                 meta: crate::types::AssistantMeta::default(),
             }
@@ -1474,6 +1475,7 @@ mod tests {
                         stop_reason: crate::types::StopReason::Stop,
                         error_message: None,
                         stop_reason_raw: None,
+                        error_status: None,
                         timestamp: 0,
                         meta: crate::types::AssistantMeta::default(),
                     };

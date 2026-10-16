@@ -109,13 +109,14 @@ impl FailedTurn {
         if m.stop_reason != pa_agent::types::StopReason::Error {
             return None;
         }
-        let status = m
-            .diagnostics
-            .iter()
-            .flatten()
-            .filter_map(|d| d.details.as_ref())
-            .find_map(|d| d.get("status").and_then(Value::as_u64))
-            .and_then(|s| u16::try_from(s).ok());
+        let status = m.error_status.or_else(|| {
+            m.diagnostics
+                .iter()
+                .flatten()
+                .filter_map(|d| d.details.as_ref())
+                .find_map(|d| d.get("status").and_then(Value::as_u64))
+                .and_then(|s| u16::try_from(s).ok())
+        });
         Some(Self {
             message: m
                 .error_message

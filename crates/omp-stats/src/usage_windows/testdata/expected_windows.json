@@ -1,0 +1,2275 @@
+{
+ "tokensByProvider": {
+  "anthropic": 1000000,
+  "openai-codex": 500000
+ },
+ "sinceMs": 1700000000000,
+ "stats": {
+  "usageSeries": [
+   {
+    "provider": "anthropic",
+    "accountKey": "key-c",
+    "accountLabel": "",
+    "windowKey": "anthropic:7d",
+    "windowLabel": "Claude 7 Day",
+    "points": [
+     {
+      "timestamp": 1700007200000,
+      "usedFraction": 0.4,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700021600000,
+      "usedFraction": 0.45,
+      "exhausted": false
+     }
+    ]
+   },
+   {
+    "provider": "anthropic",
+    "accountKey": "key-a",
+    "accountLabel": "a@x.io",
+    "windowKey": "anthropic:7d",
+    "windowLabel": "Claude 7 Day",
+    "points": [
+     {
+      "timestamp": 1700000000000,
+      "usedFraction": 0.1,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003600000,
+      "usedFraction": 0.35,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007200000,
+      "usedFraction": 0.8,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010800000,
+      "usedFraction": 0.999,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700014400000,
+      "usedFraction": 0.05,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700018000000,
+      "usedFraction": 0.03,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700021600000,
+      "usedFraction": null,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025200000,
+      "usedFraction": 0.2,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700028800000,
+      "usedFraction": 0.22,
+      "exhausted": false
+     }
+    ]
+   },
+   {
+    "provider": "anthropic",
+    "accountKey": "key-b",
+    "accountLabel": "org-b",
+    "windowKey": "anthropic:7d",
+    "windowLabel": "Claude 7 Day",
+    "points": [
+     {
+      "timestamp": 1700003600000,
+      "usedFraction": 0.5,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007200000,
+      "usedFraction": 0.2,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010800000,
+      "usedFraction": 1.2,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700014400000,
+      "usedFraction": 1.17,
+      "exhausted": true
+     }
+    ]
+   },
+   {
+    "provider": "anthropic",
+    "accountKey": "key-a",
+    "accountLabel": "a@x.io",
+    "windowKey": "anthropic:7d-opus",
+    "windowLabel": "Claude 7 Day (Opus 7 Day)",
+    "points": [
+     {
+      "timestamp": 1700000000000,
+      "usedFraction": 0.6,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014400000,
+      "usedFraction": 0.7,
+      "exhausted": false
+     }
+    ]
+   },
+   {
+    "provider": "google",
+    "accountKey": "g-1",
+    "accountLabel": "g@example.com",
+    "windowKey": "google:daily",
+    "windowLabel": "Usage (Google) v2 · Daily",
+    "points": [
+     {
+      "timestamp": 1700000000000,
+      "usedFraction": 0.3,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003600000,
+      "usedFraction": 0.45,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007200000,
+      "usedFraction": 0.95,
+      "exhausted": false
+     }
+    ]
+   },
+   {
+    "provider": "google",
+    "accountKey": "g-2",
+    "accountLabel": "g-2",
+    "windowKey": "google:weekly",
+    "windowLabel": "Usage (Google) · Weekly",
+    "points": [
+     {
+      "timestamp": 1700000000000,
+      "usedFraction": 0.1,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010800000,
+      "usedFraction": 0.12,
+      "exhausted": false
+     }
+    ]
+   },
+   {
+    "provider": "openai-codex",
+    "accountKey": "c-1",
+    "accountLabel": "c@example.com",
+    "windowKey": "codex:primary",
+    "windowLabel": "Codex 5h",
+    "points": [
+     {
+      "timestamp": 1700000000000,
+      "usedFraction": 0.25,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003600000,
+      "usedFraction": 0.55,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007200000,
+      "usedFraction": 0.05,
+      "exhausted": false
+     }
+    ]
+   },
+   {
+    "provider": "openai-codex",
+    "accountKey": "c-2",
+    "accountLabel": "dense@example.com",
+    "windowKey": "codex:primary",
+    "windowLabel": "Codex 5h",
+    "points": [
+     {
+      "timestamp": 1700000120000,
+      "usedFraction": 0.02,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700000240000,
+      "usedFraction": 0.04,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700000420000,
+      "usedFraction": 0.07,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700000540000,
+      "usedFraction": 0.09,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700000720000,
+      "usedFraction": 0.12,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700000840000,
+      "usedFraction": 0.14,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700001020000,
+      "usedFraction": 0.17,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700001140000,
+      "usedFraction": 0.19,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700001320000,
+      "usedFraction": 0.22,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700001440000,
+      "usedFraction": 0.24,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700001620000,
+      "usedFraction": 0.27,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700001740000,
+      "usedFraction": 0.29,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700001920000,
+      "usedFraction": 0.32,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700002040000,
+      "usedFraction": 0.34,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700002220000,
+      "usedFraction": 0.37,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700002340000,
+      "usedFraction": 0.39,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700002520000,
+      "usedFraction": 0.42,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700002640000,
+      "usedFraction": 0.44,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700002820000,
+      "usedFraction": 0.47,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700002940000,
+      "usedFraction": 0.49,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003120000,
+      "usedFraction": 0.52,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003240000,
+      "usedFraction": 0.54,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003420000,
+      "usedFraction": 0.57,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003540000,
+      "usedFraction": 0.59,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003720000,
+      "usedFraction": 0.62,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700003840000,
+      "usedFraction": 0.64,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700004020000,
+      "usedFraction": 0.67,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700004140000,
+      "usedFraction": 0.69,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700004320000,
+      "usedFraction": 0.72,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700004440000,
+      "usedFraction": 0.74,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700004620000,
+      "usedFraction": 0.77,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700004740000,
+      "usedFraction": 0.79,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700004920000,
+      "usedFraction": 0.82,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700005040000,
+      "usedFraction": 0.84,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700005220000,
+      "usedFraction": 0.87,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700005340000,
+      "usedFraction": 0.89,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700005520000,
+      "usedFraction": 0.92,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700005640000,
+      "usedFraction": 0.94,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700005760000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700005940000,
+      "usedFraction": 0.02,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700006120000,
+      "usedFraction": 0.05,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700006240000,
+      "usedFraction": 0.07,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700006420000,
+      "usedFraction": 0.1,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700006540000,
+      "usedFraction": 0.12,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700006720000,
+      "usedFraction": 0.15,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700006840000,
+      "usedFraction": 0.17,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007020000,
+      "usedFraction": 0.2,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007140000,
+      "usedFraction": 0.22,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007320000,
+      "usedFraction": 0.25,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007440000,
+      "usedFraction": 0.27,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007620000,
+      "usedFraction": 0.3,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007740000,
+      "usedFraction": 0.32,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700007920000,
+      "usedFraction": 0.35,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700008040000,
+      "usedFraction": 0.37,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700008220000,
+      "usedFraction": 0.4,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700008340000,
+      "usedFraction": 0.42,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700008520000,
+      "usedFraction": 0.45,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700008640000,
+      "usedFraction": 0.47,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700008820000,
+      "usedFraction": 0.5,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700008940000,
+      "usedFraction": 0.52,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700009120000,
+      "usedFraction": 0.55,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700009240000,
+      "usedFraction": 0.57,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700009420000,
+      "usedFraction": 0.6,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700009540000,
+      "usedFraction": 0.62,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700009720000,
+      "usedFraction": 0.65,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700009840000,
+      "usedFraction": 0.67,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010020000,
+      "usedFraction": 0.7,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010140000,
+      "usedFraction": 0.72,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010320000,
+      "usedFraction": 0.75,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010440000,
+      "usedFraction": 0.77,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010620000,
+      "usedFraction": 0.8,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010740000,
+      "usedFraction": 0.82,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700010920000,
+      "usedFraction": 0.85,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700011040000,
+      "usedFraction": 0.87,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700011220000,
+      "usedFraction": 0.9,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700011340000,
+      "usedFraction": 0.92,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700011520000,
+      "usedFraction": 0.95,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700011580000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700011820000,
+      "usedFraction": 0.03,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700011940000,
+      "usedFraction": 0.05,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700012120000,
+      "usedFraction": 0.08,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700012240000,
+      "usedFraction": 0.1,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700012420000,
+      "usedFraction": 0.13,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700012540000,
+      "usedFraction": 0.15,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700012720000,
+      "usedFraction": 0.18,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700012840000,
+      "usedFraction": 0.2,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700013020000,
+      "usedFraction": 0.23,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700013140000,
+      "usedFraction": 0.25,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700013320000,
+      "usedFraction": 0.28,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700013440000,
+      "usedFraction": 0.3,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700013620000,
+      "usedFraction": 0.33,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700013740000,
+      "usedFraction": 0.35,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700013920000,
+      "usedFraction": 0.38,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014040000,
+      "usedFraction": 0.4,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014220000,
+      "usedFraction": 0.43,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014340000,
+      "usedFraction": 0.45,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014520000,
+      "usedFraction": 0.48,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014640000,
+      "usedFraction": 0.5,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014820000,
+      "usedFraction": 0.53,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700014940000,
+      "usedFraction": 0.55,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700015120000,
+      "usedFraction": 0.58,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700015240000,
+      "usedFraction": 0.6,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700015420000,
+      "usedFraction": 0.63,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700015540000,
+      "usedFraction": 0.65,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700015720000,
+      "usedFraction": 0.68,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700015840000,
+      "usedFraction": 0.7,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700016020000,
+      "usedFraction": 0.73,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700016140000,
+      "usedFraction": 0.75,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700016320000,
+      "usedFraction": 0.78,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700016440000,
+      "usedFraction": 0.8,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700016620000,
+      "usedFraction": 0.83,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700016740000,
+      "usedFraction": 0.85,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700016920000,
+      "usedFraction": 0.88,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700017040000,
+      "usedFraction": 0.9,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700017220000,
+      "usedFraction": 0.93,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700017340000,
+      "usedFraction": 0.95,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700017400000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700017640000,
+      "usedFraction": 0.03,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700017820000,
+      "usedFraction": 0.06,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700017940000,
+      "usedFraction": 0.08,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700018120000,
+      "usedFraction": 0.11,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700018240000,
+      "usedFraction": 0.13,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700018420000,
+      "usedFraction": 0.16,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700018540000,
+      "usedFraction": 0.18,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700018720000,
+      "usedFraction": 0.21,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700018840000,
+      "usedFraction": 0.23,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700019020000,
+      "usedFraction": 0.26,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700019140000,
+      "usedFraction": 0.28,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700019320000,
+      "usedFraction": 0.31,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700019440000,
+      "usedFraction": 0.33,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700019620000,
+      "usedFraction": 0.36,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700019740000,
+      "usedFraction": 0.38,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700019920000,
+      "usedFraction": 0.41,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700020040000,
+      "usedFraction": 0.43,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700020220000,
+      "usedFraction": 0.46,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700020340000,
+      "usedFraction": 0.48,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700020520000,
+      "usedFraction": 0.51,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700020640000,
+      "usedFraction": 0.53,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700020820000,
+      "usedFraction": 0.56,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700020940000,
+      "usedFraction": 0.58,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700021120000,
+      "usedFraction": 0.61,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700021240000,
+      "usedFraction": 0.63,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700021420000,
+      "usedFraction": 0.66,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700021540000,
+      "usedFraction": 0.68,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700021720000,
+      "usedFraction": 0.71,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700021840000,
+      "usedFraction": 0.73,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700022020000,
+      "usedFraction": 0.76,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700022140000,
+      "usedFraction": 0.78,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700022320000,
+      "usedFraction": 0.81,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700022440000,
+      "usedFraction": 0.83,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700022620000,
+      "usedFraction": 0.86,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700022740000,
+      "usedFraction": 0.88,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700022920000,
+      "usedFraction": 0.91,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700023040000,
+      "usedFraction": 0.93,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700023220000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700023340000,
+      "usedFraction": 0.01,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700023520000,
+      "usedFraction": 0.04,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700023640000,
+      "usedFraction": 0.06,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700023820000,
+      "usedFraction": 0.09,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700023940000,
+      "usedFraction": 0.11,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700024120000,
+      "usedFraction": 0.14,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700024240000,
+      "usedFraction": 0.16,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700024420000,
+      "usedFraction": 0.19,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700024540000,
+      "usedFraction": 0.21,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700024720000,
+      "usedFraction": 0.24,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700024840000,
+      "usedFraction": 0.26,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025020000,
+      "usedFraction": 0.29,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025140000,
+      "usedFraction": 0.31,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025320000,
+      "usedFraction": 0.34,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025440000,
+      "usedFraction": 0.36,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025620000,
+      "usedFraction": 0.39,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025740000,
+      "usedFraction": 0.41,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700025920000,
+      "usedFraction": 0.44,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700026040000,
+      "usedFraction": 0.46,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700026220000,
+      "usedFraction": 0.49,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700026340000,
+      "usedFraction": 0.51,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700026520000,
+      "usedFraction": 0.54,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700026640000,
+      "usedFraction": 0.56,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700026820000,
+      "usedFraction": 0.59,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700026940000,
+      "usedFraction": 0.61,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700027120000,
+      "usedFraction": 0.64,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700027240000,
+      "usedFraction": 0.66,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700027420000,
+      "usedFraction": 0.69,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700027540000,
+      "usedFraction": 0.71,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700027720000,
+      "usedFraction": 0.74,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700027840000,
+      "usedFraction": 0.76,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700028020000,
+      "usedFraction": 0.79,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700028140000,
+      "usedFraction": 0.81,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700028320000,
+      "usedFraction": 0.84,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700028440000,
+      "usedFraction": 0.86,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700028620000,
+      "usedFraction": 0.89,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700028740000,
+      "usedFraction": 0.91,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700028920000,
+      "usedFraction": 0.94,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700029040000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700029220000,
+      "usedFraction": 0.02,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700029340000,
+      "usedFraction": 0.04,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700029520000,
+      "usedFraction": 0.07,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700029640000,
+      "usedFraction": 0.09,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700029820000,
+      "usedFraction": 0.12,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700029940000,
+      "usedFraction": 0.14,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700030060000,
+      "usedFraction": 0.16,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700030240000,
+      "usedFraction": 0.19,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700030360000,
+      "usedFraction": 0.21,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700030540000,
+      "usedFraction": 0.24,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700030660000,
+      "usedFraction": 0.26,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700030840000,
+      "usedFraction": 0.29,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700030960000,
+      "usedFraction": 0.31,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700031140000,
+      "usedFraction": 0.34,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700031260000,
+      "usedFraction": 0.36,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700031440000,
+      "usedFraction": 0.39,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700031560000,
+      "usedFraction": 0.41,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700031740000,
+      "usedFraction": 0.44,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700031860000,
+      "usedFraction": 0.46,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700032040000,
+      "usedFraction": 0.49,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700032160000,
+      "usedFraction": 0.51,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700032340000,
+      "usedFraction": 0.54,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700032460000,
+      "usedFraction": 0.56,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700032640000,
+      "usedFraction": 0.59,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700032760000,
+      "usedFraction": 0.61,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700032940000,
+      "usedFraction": 0.64,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700033060000,
+      "usedFraction": 0.66,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700033240000,
+      "usedFraction": 0.69,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700033360000,
+      "usedFraction": 0.71,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700033540000,
+      "usedFraction": 0.74,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700033660000,
+      "usedFraction": 0.76,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700033840000,
+      "usedFraction": 0.79,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700033960000,
+      "usedFraction": 0.81,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700034140000,
+      "usedFraction": 0.84,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700034260000,
+      "usedFraction": 0.86,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700034440000,
+      "usedFraction": 0.89,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700034560000,
+      "usedFraction": 0.91,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700034740000,
+      "usedFraction": 0.94,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700034860000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700035040000,
+      "usedFraction": 0.02,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700035160000,
+      "usedFraction": 0.04,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700035340000,
+      "usedFraction": 0.07,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700035460000,
+      "usedFraction": 0.09,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700035640000,
+      "usedFraction": 0.12,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700035760000,
+      "usedFraction": 0.14,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700035940000,
+      "usedFraction": 0.17,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700036060000,
+      "usedFraction": 0.19,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700036240000,
+      "usedFraction": 0.22,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700036360000,
+      "usedFraction": 0.24,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700036540000,
+      "usedFraction": 0.27,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700036660000,
+      "usedFraction": 0.29,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700036840000,
+      "usedFraction": 0.32,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700036960000,
+      "usedFraction": 0.34,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700037140000,
+      "usedFraction": 0.37,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700037260000,
+      "usedFraction": 0.39,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700037440000,
+      "usedFraction": 0.42,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700037560000,
+      "usedFraction": 0.44,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700037740000,
+      "usedFraction": 0.47,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700037860000,
+      "usedFraction": 0.49,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700038040000,
+      "usedFraction": 0.52,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700038160000,
+      "usedFraction": 0.54,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700038340000,
+      "usedFraction": 0.57,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700038460000,
+      "usedFraction": 0.59,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700038640000,
+      "usedFraction": 0.62,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700038760000,
+      "usedFraction": 0.64,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700038940000,
+      "usedFraction": 0.67,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700039060000,
+      "usedFraction": 0.69,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700039240000,
+      "usedFraction": 0.72,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700039360000,
+      "usedFraction": 0.74,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700039540000,
+      "usedFraction": 0.77,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700039660000,
+      "usedFraction": 0.79,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700039840000,
+      "usedFraction": 0.82,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700039960000,
+      "usedFraction": 0.84,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700040140000,
+      "usedFraction": 0.87,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700040260000,
+      "usedFraction": 0.89,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700040440000,
+      "usedFraction": 0.92,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700040560000,
+      "usedFraction": 0.94,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700040680000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700040860000,
+      "usedFraction": 0.02,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700041040000,
+      "usedFraction": 0.05,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700041160000,
+      "usedFraction": 0.07,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700041340000,
+      "usedFraction": 0.1,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700041460000,
+      "usedFraction": 0.12,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700041640000,
+      "usedFraction": 0.15,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700041760000,
+      "usedFraction": 0.17,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700041940000,
+      "usedFraction": 0.2,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700042060000,
+      "usedFraction": 0.22,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700042240000,
+      "usedFraction": 0.25,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700042360000,
+      "usedFraction": 0.27,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700042540000,
+      "usedFraction": 0.3,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700042660000,
+      "usedFraction": 0.32,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700042840000,
+      "usedFraction": 0.35,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700042960000,
+      "usedFraction": 0.37,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700043140000,
+      "usedFraction": 0.4,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700043260000,
+      "usedFraction": 0.42,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700043440000,
+      "usedFraction": 0.45,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700043560000,
+      "usedFraction": 0.47,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700043740000,
+      "usedFraction": 0.5,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700043860000,
+      "usedFraction": 0.52,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700044040000,
+      "usedFraction": 0.55,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700044160000,
+      "usedFraction": 0.57,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700044340000,
+      "usedFraction": 0.6,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700044460000,
+      "usedFraction": 0.62,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700044640000,
+      "usedFraction": 0.65,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700044760000,
+      "usedFraction": 0.67,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700044940000,
+      "usedFraction": 0.7,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700045060000,
+      "usedFraction": 0.72,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700045240000,
+      "usedFraction": 0.75,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700045360000,
+      "usedFraction": 0.77,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700045540000,
+      "usedFraction": 0.8,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700045660000,
+      "usedFraction": 0.82,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700045840000,
+      "usedFraction": 0.85,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700045960000,
+      "usedFraction": 0.87,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700046140000,
+      "usedFraction": 0.9,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700046260000,
+      "usedFraction": 0.92,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700046440000,
+      "usedFraction": 0.95,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700046500000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700046740000,
+      "usedFraction": 0.03,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700046860000,
+      "usedFraction": 0.05,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700047040000,
+      "usedFraction": 0.08,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700047160000,
+      "usedFraction": 0.1,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700047340000,
+      "usedFraction": 0.13,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700047460000,
+      "usedFraction": 0.15,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700047640000,
+      "usedFraction": 0.18,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700047760000,
+      "usedFraction": 0.2,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700047940000,
+      "usedFraction": 0.23,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700048060000,
+      "usedFraction": 0.25,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700048240000,
+      "usedFraction": 0.28,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700048360000,
+      "usedFraction": 0.3,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700048540000,
+      "usedFraction": 0.33,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700048660000,
+      "usedFraction": 0.35,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700048840000,
+      "usedFraction": 0.38,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700048960000,
+      "usedFraction": 0.4,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700049140000,
+      "usedFraction": 0.43,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700049260000,
+      "usedFraction": 0.45,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700049440000,
+      "usedFraction": 0.48,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700049560000,
+      "usedFraction": 0.5,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700049740000,
+      "usedFraction": 0.53,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700049860000,
+      "usedFraction": 0.55,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700050040000,
+      "usedFraction": 0.58,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700050160000,
+      "usedFraction": 0.6,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700050340000,
+      "usedFraction": 0.63,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700050460000,
+      "usedFraction": 0.65,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700050640000,
+      "usedFraction": 0.68,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700050760000,
+      "usedFraction": 0.7,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700050940000,
+      "usedFraction": 0.73,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700051060000,
+      "usedFraction": 0.75,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700051240000,
+      "usedFraction": 0.78,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700051360000,
+      "usedFraction": 0.8,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700051540000,
+      "usedFraction": 0.83,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700051660000,
+      "usedFraction": 0.85,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700051840000,
+      "usedFraction": 0.88,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700051960000,
+      "usedFraction": 0.9,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700052140000,
+      "usedFraction": 0.93,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700052260000,
+      "usedFraction": 0.95,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700052320000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700052560000,
+      "usedFraction": 0.03,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700052740000,
+      "usedFraction": 0.06,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700052860000,
+      "usedFraction": 0.08,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700053040000,
+      "usedFraction": 0.11,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700053160000,
+      "usedFraction": 0.13,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700053340000,
+      "usedFraction": 0.16,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700053460000,
+      "usedFraction": 0.18,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700053640000,
+      "usedFraction": 0.21,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700053760000,
+      "usedFraction": 0.23,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700053940000,
+      "usedFraction": 0.26,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700054060000,
+      "usedFraction": 0.28,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700054240000,
+      "usedFraction": 0.31,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700054360000,
+      "usedFraction": 0.33,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700054540000,
+      "usedFraction": 0.36,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700054660000,
+      "usedFraction": 0.38,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700054840000,
+      "usedFraction": 0.41,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700054960000,
+      "usedFraction": 0.43,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700055140000,
+      "usedFraction": 0.46,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700055260000,
+      "usedFraction": 0.48,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700055440000,
+      "usedFraction": 0.51,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700055560000,
+      "usedFraction": 0.53,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700055740000,
+      "usedFraction": 0.56,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700055860000,
+      "usedFraction": 0.58,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700056040000,
+      "usedFraction": 0.61,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700056160000,
+      "usedFraction": 0.63,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700056340000,
+      "usedFraction": 0.66,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700056460000,
+      "usedFraction": 0.68,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700056640000,
+      "usedFraction": 0.71,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700056760000,
+      "usedFraction": 0.73,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700056940000,
+      "usedFraction": 0.76,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700057060000,
+      "usedFraction": 0.78,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700057240000,
+      "usedFraction": 0.81,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700057360000,
+      "usedFraction": 0.83,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700057540000,
+      "usedFraction": 0.86,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700057660000,
+      "usedFraction": 0.88,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700057840000,
+      "usedFraction": 0.91,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700057960000,
+      "usedFraction": 0.93,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700058140000,
+      "usedFraction": 0.96,
+      "exhausted": true
+     },
+     {
+      "timestamp": 1700058260000,
+      "usedFraction": 0.01,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700058440000,
+      "usedFraction": 0.04,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700058560000,
+      "usedFraction": 0.06,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700058740000,
+      "usedFraction": 0.09,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700058860000,
+      "usedFraction": 0.11,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059040000,
+      "usedFraction": 0.14,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059160000,
+      "usedFraction": 0.16,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059340000,
+      "usedFraction": 0.19,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059460000,
+      "usedFraction": 0.21,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059640000,
+      "usedFraction": 0.24,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059760000,
+      "usedFraction": 0.26,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059880000,
+      "usedFraction": 0.28,
+      "exhausted": false
+     },
+     {
+      "timestamp": 1700059940000,
+      "usedFraction": 0.29,
+      "exhausted": false
+     }
+    ]
+   }
+  ],
+  "windowInsights": [
+   {
+    "provider": "anthropic",
+    "windowKey": "anthropic:7d",
+    "windowLabel": "Claude 7 Day",
+    "accounts": 3,
+    "cycles": 2,
+    "fractionConsumed": 2.139,
+    "estTokensPerWindow": 467508,
+    "peakConcurrentFraction": 2.5989999999999998,
+    "idealAccounts": 3,
+    "exhaustedEvents": 4
+   },
+   {
+    "provider": "anthropic",
+    "windowKey": "anthropic:7d-opus",
+    "windowLabel": "Claude 7 Day (Opus 7 Day)",
+    "accounts": 1,
+    "cycles": 0,
+    "fractionConsumed": 0.09999999999999998,
+    "estTokensPerWindow": null,
+    "peakConcurrentFraction": 0.7,
+    "idealAccounts": 1,
+    "exhaustedEvents": 0
+   },
+   {
+    "provider": "google",
+    "windowKey": "google:daily",
+    "windowLabel": "Usage (Google) v2 · Daily",
+    "accounts": 1,
+    "cycles": 0,
+    "fractionConsumed": 0.6499999999999999,
+    "estTokensPerWindow": null,
+    "peakConcurrentFraction": 0.95,
+    "idealAccounts": 2,
+    "exhaustedEvents": 0
+   },
+   {
+    "provider": "google",
+    "windowKey": "google:weekly",
+    "windowLabel": "Usage (Google) · Weekly",
+    "accounts": 1,
+    "cycles": 0,
+    "fractionConsumed": 0.01999999999999999,
+    "estTokensPerWindow": null,
+    "peakConcurrentFraction": 0.12,
+    "idealAccounts": 1,
+    "exhaustedEvents": 0
+   },
+   {
+    "provider": "openai-codex",
+    "windowKey": "codex:primary",
+    "windowLabel": "Codex 5h",
+    "accounts": 2,
+    "cycles": 11,
+    "fractionConsumed": 10.189999999999827,
+    "estTokensPerWindow": 49068,
+    "peakConcurrentFraction": 1.5100000000000007,
+    "idealAccounts": 2,
+    "exhaustedEvents": 10
+   }
+  ]
+ }
+}

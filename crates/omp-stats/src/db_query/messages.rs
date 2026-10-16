@@ -30,7 +30,7 @@ fn row_to_message_stats(row: &Row<'_>) -> rusqlite::Result<MessageStats> {
         timestamp: row.get("timestamp")?,
         duration: row.get("duration")?,
         ttft: row.get("ttft")?,
-        stop_reason: serde_json::from_value::<StopReason>(Value::String(stop_reason)).unwrap_or_default(),
+        stop_reason: StopReason::from_wire(&stop_reason),
         error_message: row.get("error_message")?,
         usage: Usage {
             input: row.get("input_tokens")?,

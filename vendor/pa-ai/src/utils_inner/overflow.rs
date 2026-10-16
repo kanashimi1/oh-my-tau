@@ -145,6 +145,7 @@ mod tests {
             usage,
             stop_reason,
             stop_reason_raw: None,
+            error_status: None,
             error_message: error_message.map(std::string::ToString::to_string),
             timestamp: 0,
             rest: Map::default(),

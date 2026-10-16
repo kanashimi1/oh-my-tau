@@ -110,15 +110,36 @@ pub fn session_project_dir(session_path: &str) -> String {
     omp_rs_slug_to_ts_name(&project, &home, Path::new(&tmp))
 }
 
-/// `cwd` of the `{"type":"session"}` header within the first few lines of a
-/// transcript (a `title` line may precede it).
+/// `cwd` of the `{"type":"session"}` header within the first 32 non-empty lines
+/// of a transcript (a `title` line may precede it). Lines that are not valid
+/// UTF-8 JSON are skipped, not fatal.
 fn header_cwd(path: &Path) -> Option<PathBuf> {
     use std::io::{BufRead, BufReader, Read};
-    let reader = BufReader::new(std::fs::File::open(path).ok()?.take(256 * 1024));
-    reader.lines().take(8).map_while(Result::ok).find_map(|line| {
-        let header: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
-        (header.get("type")?.as_str()? == "session").then(|| header.get("cwd")?.as_str().map(PathBuf::from)).flatten()
-    })
+    const HEADER_SCAN_LINES: usize = 32;
+    let mut reader = BufReader::new(std::fs::File::open(path).ok()?.take(256 * 1024));
+    let mut line = Vec::new();
+    let mut scanned = 0;
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line).ok()? == 0 {
+            return None;
+        }
+        let text = line.trim_ascii();
+        if text.is_empty() {
+            continue;
+        }
+        scanned += 1;
+        if let Ok(header) = serde_json::from_slice::<serde_json::Value>(text) {
+            if header.get("type").and_then(serde_json::Value::as_str) == Some("session") {
+                if let Some(cwd) = header.get("cwd").and_then(serde_json::Value::as_str) {
+                    return Some(PathBuf::from(cwd));
+                }
+            }
+        }
+        if scanned == HEADER_SCAN_LINES {
+            return None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +157,51 @@ mod tests {
         assert_eq!(map("-mnt-c-Temp"), "--mnt-c-Temp--");
         // A sibling sharing a string prefix is not inside home.
         assert_eq!(map("-home-user2"), "--home-user2--");
+    }
+
+    #[test]
+    fn home_symlink_maps_like_its_target() {
+        let dir = std::env::temp_dir().join(format!("omp-roots-home-{}", std::process::id()));
+        let real = dir.join("real-home");
+        let link = dir.join("link-home");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let real = std::fs::canonicalize(&real).unwrap();
+        let slug = format!("{}-proj", slugify(&real));
+        // A tmp dir outside the slug's prefix, so only the home mapping applies.
+        let mapped = omp_rs_slug_to_ts_name(&slug, &link, Path::new("/var/omp-no-such-tmp"));
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(mapped, "-proj");
+    }
+
+    #[test]
+    fn header_cwd_skips_invalid_utf8_and_scans_32_non_empty_lines() {
+        let dir = std::env::temp_dir().join(format!("omp-roots-hdr2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut late = Vec::new();
+        for _ in 0..31 {
+            late.extend_from_slice(b"\n{\"type\":\"title\"}\n");
+        }
+        late.extend_from_slice(b"{\"type\":\"session\",\"cwd\":\"/w/late\"}\n");
+        let far = dir.join("far.jsonl");
+        std::fs::write(&far, &late).unwrap();
+        let mut bad = b"\xff\xfe not utf8\n".to_vec();
+        bad.extend_from_slice(b"{\"type\":\"session\",\"cwd\":\"/w/after-garbage\"}\n");
+        let garbled = dir.join("garbled.jsonl");
+        std::fs::write(&garbled, &bad).unwrap();
+        let mut beyond = Vec::new();
+        for _ in 0..32 {
+            beyond.extend_from_slice(b"{\"type\":\"title\"}\n");
+        }
+        beyond.extend_from_slice(b"{\"type\":\"session\",\"cwd\":\"/w/too-late\"}\n");
+        let too_far = dir.join("too-far.jsonl");
+        std::fs::write(&too_far, &beyond).unwrap();
+        let got = (header_cwd(&far), header_cwd(&garbled), header_cwd(&too_far));
+        std::fs::remove_dir_all(&dir).unwrap();
+        // The 32nd non-empty line is the last one scanned.
+        assert_eq!(got.0, Some(PathBuf::from("/w/late")));
+        assert_eq!(got.1, Some(PathBuf::from("/w/after-garbage")));
+        assert_eq!(got.2, None);
     }
 
     #[test]

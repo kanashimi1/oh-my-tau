@@ -132,6 +132,25 @@ pub fn format_captured_http_error(body: &str) -> Option<String> {
     })
 }
 
+/// TS `stripRawHttpRequestDiagnostics`: drop the trailing local request-dump lines
+/// ([`append_raw_http_request_dump`]) so relayed provider errors carry no OMP-local paths.
+#[must_use]
+pub fn strip_raw_http_request_diagnostics(message: &str) -> String {
+    let lines: Vec<&str> = message.split('\n').collect();
+    let mut end = lines.len();
+    while end > 0
+        && (lines[end - 1].starts_with(RAW_HTTP_REQUEST_LINE)
+            || lines[end - 1].starts_with(RAW_HTTP_REQUEST_SAVE_FAILED_LINE))
+    {
+        end -= 1;
+    }
+    if end == lines.len() {
+        message.to_owned()
+    } else {
+        lines[..end].join("\n")
+    }
+}
+
 /// TS `appendRawHttpRequestDumpFor400`: write the sanitized request (plus
 /// the error) for a 400/413 rejection and reference it from the message.
 fn append_raw_http_request_dump(message: String, status: u16, dump: Option<&RawHttpRequestDump>) -> String {

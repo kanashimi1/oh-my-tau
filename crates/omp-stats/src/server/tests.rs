@@ -137,3 +137,20 @@ fn serves_api_and_client_over_tcp() {
     drop(stream);
     handle.stop();
 }
+
+/// `--host [::1]` binds `::1`, identifies itself as `::1` (not `[::1]`), and
+/// its guard accepts the bracketed `Host` the browser sends.
+#[test]
+fn bracketed_ipv6_host_binds_bare_and_passes_its_own_guard() {
+    let handle = start_server(0, "[::1]", StartServerOptions::default()).expect("start server on [::1]");
+    assert_eq!(handle.hostname, "::1");
+    assert_eq!(super::format_stats_dashboard_url(&handle.hostname, handle.port), format!("http://[::1]:{}", handle.port));
+    let mut stream = TcpStream::connect(("::1", handle.port)).expect("connect");
+    write!(stream, "GET /some/route HTTP/1.1\r\nHost: [::1]:{}\r\nConnection: close\r\n\r\n", handle.port).expect("send");
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("read");
+    handle.stop();
+    let head = String::from_utf8_lossy(&raw).to_ascii_lowercase();
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(head.contains("x-omp-stats-hostname: ::1\r\n"), "{head}");
+}

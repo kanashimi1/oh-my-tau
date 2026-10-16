@@ -123,10 +123,12 @@ async fn serve_systemone(
                 envelope_message(model, body)
             } else {
                 let detail: String = body.chars().take(ERROR_BODY_CHARS).collect();
-                error_message(
+                let mut message = error_message(
                     model,
                     &format!("systemone returned HTTP {status}: {detail}"),
-                )
+                );
+                message.error_status = Some(status.as_u16());
+                message
             }
         }
         Err(error) => error_message(model, &format!("the systemone request failed: {error}")),

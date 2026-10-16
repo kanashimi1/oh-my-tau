@@ -10,6 +10,7 @@ pub mod gc;
 pub mod judge_sessions;
 pub mod models;
 pub mod stats;
+pub mod stats_judge;
 
 /// Subcommands this module implements.
 #[must_use]

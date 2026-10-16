@@ -541,6 +541,9 @@ pub struct AssistantMessage {
     pub stop_reason_raw: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
+    /// HTTP status the provider surfaced when the request failed (TS `errorStatus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_status: Option<u16>,
     /// Unix timestamp in milliseconds.
     pub timestamp: u64,
     #[serde(flatten)]

@@ -274,6 +274,7 @@ fn empty_partial(model: &Model) -> AssistantMessage {
         usage: Usage::zero(),
         stop_reason: StopReason::Stop,
         stop_reason_raw: None,
+        error_status: None,
         error_message: None,
         timestamp: crate::now_ms(),
         meta: crate::types::AssistantMeta::default(),

@@ -97,6 +97,7 @@ pub fn run(args: &[String]) -> Result<i32> {
     }
     // The dashboard starts immediately and ingests sessions in the background,
     // streaming progress to the page.
+    super::stats_judge::register();
     let handle = start_server(parsed.port, &parsed.host, StartServerOptions::default())?;
     let url = format_stats_dashboard_url(&handle.hostname, handle.port);
     println!("Dashboard available at: {url}");
@@ -359,6 +360,8 @@ static ACTIVE_SERVER: Mutex<Option<StatsServerHandle>> = Mutex::new(None);
 /// # Errors
 /// Server start failure.
 pub fn launch_dashboard(port: u16, host: &str) -> Result<(String, String)> {
+    // Like TS `launchStatsDashboard(args, judge)`: every launch (re)registers the host judge.
+    super::stats_judge::register();
     let mut active = ACTIVE_SERVER.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut ignored = false;
     let handle = if let Some(handle) = active.as_ref() {

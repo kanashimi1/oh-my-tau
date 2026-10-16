@@ -358,6 +358,7 @@ pub fn stream_simple_openai_completions(
             usage: Usage::default(),
             stop_reason: StopReason::Error,
             stop_reason_raw: None,
+            error_status: None,
             error_message: Some(format!("No API key for provider: {}", model.provider)),
             timestamp: crate::utils_inner::diagnostics::now_ms(),
             rest: Map::default(),

@@ -8,18 +8,16 @@ use std::net::IpAddr;
 use hyper::header::{HOST, ORIGIN};
 use hyper::HeaderMap;
 
-fn bare(host: &str) -> &str {
-    host.trim_start_matches('[').trim_end_matches(']')
-}
+use crate::port_conflict::normalize_host;
 
 fn is_loopback(host: &str) -> bool {
-    let host = bare(host);
+    let host = normalize_host(host);
     host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
 /// `host[:port]` authority with IPv6 literals bracketed.
 fn authority(host: &str, port: u16) -> String {
-    let host = bare(host);
+    let host = normalize_host(host);
     if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
@@ -71,6 +69,18 @@ mod tests {
         let ok = headers(&[("host", "localhost:3847"), ("origin", "http://127.0.0.1:3847")]);
         assert!(check(&ok, "127.0.0.1", 3847).is_ok());
         assert!(check(&headers(&[("host", "[::1]:3847")]), "::1", 3847).is_ok());
+        assert!(check(&headers(&[("host", "[::1]:3847")]), "[::1]", 3847).is_ok());
+        assert!(check(&headers(&[("host", "[::1]:3847"), ("origin", "http://[::1]:3847")]), "[::1]", 3847).is_ok());
+    }
+
+    #[test]
+    fn bracketed_and_bare_ipv6_guard_the_same_authorities() {
+        for hostname in ["[::1]", "::1"] {
+            assert!(check(&headers(&[("host", "[::1]:3847")]), hostname, 3847).is_ok(), "{hostname}");
+            assert!(check(&headers(&[("host", "[::1]:1")]), hostname, 3847).is_err(), "{hostname} wrong port");
+            assert!(check(&headers(&[("host", "[::2]:3847")]), hostname, 3847).is_err(), "{hostname} other ip");
+        }
+        assert!(enforced("[::1]") == enforced("::1"));
     }
 
     #[test]

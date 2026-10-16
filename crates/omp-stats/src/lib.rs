@@ -28,6 +28,8 @@ pub mod db_query;
 pub mod rollup;
 #[cfg(feature = "aggregator")]
 pub mod aggregator;
+#[cfg(feature = "aggregator")]
+pub mod usage_windows;
 #[cfg(feature = "trace")]
 pub mod trace;
 #[cfg(feature = "gain")]

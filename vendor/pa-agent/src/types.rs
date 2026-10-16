@@ -272,6 +272,13 @@ pub struct AssistantMessage {
         skip_serializing_if = "Option::is_none"
     )]
     pub error_message: Option<String>,
+    /// HTTP status the provider surfaced when the request failed (TS `errorStatus`).
+    #[serde(
+        rename = "errorStatus",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub error_status: Option<u16>,
     #[serde(default)]
     pub timestamp: i64,
     /// Request timing, credential and context-accounting extras (flattened onto the wire object).

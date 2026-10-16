@@ -5,21 +5,12 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use crate::parser::SessionParserState;
-use crate::types::{MessageStatsInput, ServiceTier, StopReason};
+use crate::types::{MessageStatsInput, ServiceTier};
 
 use crate::db::schema::{
     agent_type_str, calculate_no_cache_input_cost, resolve_stored_cost, usage_from_input,
 };
 
-fn stop_reason_str(reason: StopReason) -> &'static str {
-    match reason {
-        StopReason::Stop => "stop",
-        StopReason::Length => "length",
-        StopReason::ToolUse => "toolUse",
-        StopReason::Error => "error",
-        StopReason::Aborted => "aborted",
-    }
-}
 
 fn service_tier_str(tier: Option<ServiceTier>) -> Option<&'static str> {
     tier.map(|t| match t {
@@ -171,7 +162,7 @@ pub(super) fn insert_message_stats_conn(
             s.timestamp,
             s.duration,
             s.ttft,
-            stop_reason_str(s.stop_reason),
+            s.stop_reason.as_str(),
             s.error_message,
             s.usage.input,
             s.usage.output,

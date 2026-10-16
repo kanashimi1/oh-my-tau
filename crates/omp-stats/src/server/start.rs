@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context as _, Result};
 use super::conn::{serve_connection, Timeouts};
 use super::http::Ctx;
 use crate::live;
-use crate::port_conflict::{prepare_stats_port, recover_stats_port, PortAction};
+use crate::port_conflict::{normalize_host, prepare_stats_port, recover_stats_port, PortAction};
 
 /// Default dashboard port (TS `startServer(port = 3847)`).
 pub const DEFAULT_PORT: u16 = 3847;
@@ -18,7 +18,8 @@ pub const DEFAULT_PORT: u16 = 3847;
 /// Format a dashboard origin, including brackets required by IPv6 literals.
 #[must_use]
 pub fn format_stats_dashboard_url(hostname: &str, port: u16) -> String {
-    let host = if hostname.contains(':') && !hostname.starts_with('[') { format!("[{hostname}]") } else { hostname.to_string() };
+    let host = normalize_host(hostname);
+    let host = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
     format!("http://{host}:{port}")
 }
 
@@ -84,8 +85,7 @@ impl StatsServerHandle {
 /// Bind `hostname:port` and serve on a dedicated runtime. Blocking (port probe
 /// up to ~0.5s): call from `spawn_blocking` inside async code.
 fn create_dashboard_server(port: u16, hostname: &str, timeouts: Timeouts) -> std::io::Result<(tokio::runtime::Runtime, u16)> {
-    let bare = hostname.trim_start_matches('[').trim_end_matches(']');
-    let listener = StdListener::bind((bare, port))?;
+    let listener = StdListener::bind((hostname, port))?;
     listener.set_nonblocking(true)?;
     let actual = listener.local_addr()?.port();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -117,6 +117,8 @@ fn create_dashboard_server(port: u16, hostname: &str, timeouts: Timeouts) -> std
 /// # Errors
 /// Port preflight/reclaim failure, or the bind failing even after reclaiming.
 pub fn start_server(port: u16, hostname: &str, options: StartServerOptions) -> Result<StatsServerHandle> {
+    // One form everywhere: the bind, the reuse key, the identity header and the probe.
+    let hostname = normalize_host(hostname);
     let key = format!("{hostname}:{port}");
     let defaults = Timeouts::default();
     let timeouts = Timeouts {

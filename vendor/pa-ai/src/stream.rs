@@ -398,6 +398,7 @@ mod tests {
                     usage: Usage::default(),
                     stop_reason: crate::types::StopReason::Stop,
                     stop_reason_raw: None,
+                    error_status: None,
                     error_message: None,
                     timestamp: 0,
                     rest: Map::default(),

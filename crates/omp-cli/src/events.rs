@@ -410,6 +410,7 @@ fn header_of(m: &AssistantMessage) -> AssistantMessage {
         stop_reason,
         stop_reason_raw,
         error_message,
+        error_status,
         timestamp,
         meta,
     } = m;
@@ -425,6 +426,7 @@ fn header_of(m: &AssistantMessage) -> AssistantMessage {
         stop_reason: *stop_reason,
         stop_reason_raw: stop_reason_raw.clone(),
         error_message: error_message.clone(),
+        error_status: *error_status,
         timestamp: *timestamp,
         meta: meta.clone(),
     }
@@ -444,6 +446,7 @@ fn header_eq(header: &AssistantMessage, m: &AssistantMessage) -> bool {
         stop_reason,
         stop_reason_raw,
         error_message,
+        error_status,
         timestamp,
         meta,
     } = m;
@@ -457,6 +460,7 @@ fn header_eq(header: &AssistantMessage, m: &AssistantMessage) -> bool {
         && header.stop_reason == *stop_reason
         && header.stop_reason_raw == *stop_reason_raw
         && header.error_message == *error_message
+        && header.error_status == *error_status
         && header.timestamp == *timestamp
         && header.meta == *meta
 }

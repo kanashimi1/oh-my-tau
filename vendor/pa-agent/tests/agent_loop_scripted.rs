@@ -703,6 +703,7 @@ fn scripted_event_shapes_round_trip_through_the_event_enum() {
         usage: pa_agent::types::Usage::zero(),
         stop_reason: StopReason::Stop,
         stop_reason_raw: None,
+        error_status: None,
         error_message: None,
         timestamp: 0,
         meta: Default::default(),

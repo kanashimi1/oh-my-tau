@@ -6,7 +6,7 @@ use rusqlite::{params, Connection};
 use super::*;
 use crate::db::with_db;
 use crate::testutil::TestHome;
-use crate::types::{ToolCallStats, ToolResultLink, UserMessageLink, UserMessageStats};
+use crate::types::{StopReason, ToolCallStats, ToolResultLink, UserMessageLink, UserMessageStats};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS messages (
@@ -138,6 +138,22 @@ fn recent_requests_newest_first_and_limited() {
     assert_eq!(recent[0].entry_id, "e7");
     assert_eq!(recent[0].usage.total_tokens, 18);
     assert_eq!(recent[0].cost_unpriced, Some(false));
+}
+
+#[test]
+fn unknown_stop_reason_is_preserved_not_collapsed_to_stop() {
+    let _home = fresh_home();
+    let base = now_ms() - 1_000_000;
+    seed_messages(&[("odd".into(), base, "contentFilter"), ("known".into(), base + 1000, "tool_calls")]);
+    let recent = get_recent_requests(2).expect("recent");
+    assert_eq!(recent[0].entry_id, "known");
+    assert_eq!(recent[0].stop_reason, StopReason::ToolUse, "legacy alias maps to toolUse");
+    assert_eq!(recent[1].stop_reason, StopReason::Other("contentFilter".into()));
+    // The wire form is the stored string, so the API and a re-read agree.
+    let json = serde_json::to_value(&recent[1]).expect("serialize");
+    assert!(json.to_string().contains("\"contentFilter\""), "{json}");
+    let back: StopReason = serde_json::from_value(serde_json::json!("contentFilter")).expect("deserialize");
+    assert_eq!(back, StopReason::Other("contentFilter".into()));
 }
 
 #[test]

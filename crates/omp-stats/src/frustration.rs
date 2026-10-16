@@ -5,15 +5,14 @@
 //! otherwise by the regex signals stored at ingest (`user_metrics`); the SQL is
 //! in `db_query::frustration`.
 //!
-//! Port note: the TS judge run needs the omp host's LLM judge, which this port
-//! does not have (standalone `omp-stats` never calls `setStatsJudgeProvider`).
-//! The judge-dependent surface therefore returns the TS "no judge" shapes:
-//! `judgeAvailable: false`, an unavailable estimate, and a 503 start refusal.
-//! The job state machine is kept so the status payload has the TS shape.
+//! The paid judge run lives in [`run`]: the host registers a [`StatsJudge`] with
+//! [`set_stats_judge_provider`] (standalone `omp-stats` registers none, so the
+//! dashboard reports `judgeAvailable: false`, an unavailable estimate and a 503
+//! start refusal, like TS).
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+use std::sync::LazyLock;
 
 use anyhow::{bail, Result};
 use serde::Deserialize;
@@ -22,16 +21,20 @@ use serde_json::Value;
 use crate::db_query::{get_frustration_by_model, get_frustration_overall, FrustrationModelRow};
 use crate::rollup::get_time_range_config;
 use crate::taxonomy::{classify_model, compare_revision, parse_revision, ClassifyOptions, ModelIdentity};
-use crate::types::{
-    FrustrationCounts, FrustrationDashboardStats, FrustrationEstimate, FrustrationJobState, FrustrationJobStatus,
-    FrustrationModelStats,
-};
+use crate::types::{FrustrationCounts, FrustrationDashboardStats, FrustrationModelStats};
 
 /// The judge questions, one judge request per prose text (TS `prompts/judge/frustration.json`).
 const QUESTION_FILE: &str = include_str!("../data/frustration.json");
 
-const NO_PROVIDER_REASON: &str =
-    "This dashboard was started without a judge (standalone omp-stats). Run `omp stats` to classify.";
+mod run;
+
+pub use run::{
+    cancel_frustration_run, estimate_frustration_run, get_frustration_job_status, judge_available,
+    set_stats_judge_provider, start_frustration_run, wait_frustration_run_finished, JudgeAnswer, JudgeFuture,
+    JudgeModel, StartFrustrationRunResult, StatsJudge, StatsJudgeProvider,
+};
+#[cfg(test)]
+pub(crate) use run::reset_for_tests;
 
 /// One question as the judge sees it. Kind follows the shape of `criteria`,
 /// the same rule as TS `judgeQuestions` (`ai/src/judgment/question-file.ts`).
@@ -102,34 +105,6 @@ fn to_question(id: &str, spec: QuestionSpec) -> Result<Question> {
 /// `FRUSTRATION_QUESTIONS`: parsed once from the compiled-in question file.
 pub static FRUSTRATION_QUESTIONS: LazyLock<Questions> =
     LazyLock::new(|| judge_questions(QUESTION_FILE).expect("bundled frustration.json is valid"));
-
-/// Idle status: the value before any run and after a fresh process starts.
-const fn idle_job() -> FrustrationJobStatus {
-    FrustrationJobStatus {
-        state: FrustrationJobState::Idle,
-        total: 0,
-        done: 0,
-        failed: 0,
-        cost: 0.0,
-        judge: None,
-        error: None,
-        started_at: None,
-        finished_at: None,
-        concurrency: 0,
-    }
-}
-
-/// Live status of the latest run (process-wide, like the TS module global).
-static CURRENT_JOB: Mutex<FrustrationJobStatus> = Mutex::new(idle_job());
-
-fn lock_job() -> MutexGuard<'static, FrustrationJobStatus> {
-    CURRENT_JOB.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-/// Snapshot of the current run's progress.
-pub fn get_frustration_job_status() -> FrustrationJobStatus {
-    lock_job().clone()
-}
 
 /// Merge per-(model, provider) rows into catalog identities (`class/family/revision`)
 /// so provider and spelling variants share a row. Classified rows sort by class,
@@ -232,51 +207,9 @@ pub fn get_frustration_dashboard_stats(range: Option<&str>) -> Result<Frustratio
     Ok(FrustrationDashboardStats {
         overall: get_frustration_overall(cutoff)?,
         by_model: merge_frustration_rows(&get_frustration_by_model(cutoff)?),
-        judge_available: false,
+        judge_available: judge_available(),
         job: get_frustration_job_status(),
     })
-}
-
-/// Pre-run cost quote. Without a judge provider the TS answer is unavailable
-/// before any db read, so this never touches the db.
-pub fn estimate_frustration_run(_range: Option<&str>) -> FrustrationEstimate {
-    FrustrationEstimate::Unavailable { available: false, reason: NO_PROVIDER_REASON.to_owned() }
-}
-
-/// Outcome of [`start_frustration_run`]: the new job, or the HTTP status and reason it was refused.
-#[derive(Debug, Clone)]
-pub enum StartFrustrationRunResult {
-    /// Unreachable in this port: a run needs a judge provider.
-    Started { job: FrustrationJobStatus },
-    Refused { status: u16, error: String },
-}
-
-/// Start the judge run. Same order as TS: a run in progress gives 409, then a
-/// missing judge gives 503. This port has no judge, so it always refuses with 503.
-pub fn start_frustration_run(_range: Option<&str>) -> StartFrustrationRunResult {
-    if lock_job().state == FrustrationJobState::Running {
-        return StartFrustrationRunResult::Refused {
-            status: 409,
-            error: "A frustration judge run is already in progress.".to_owned(),
-        };
-    }
-    StartFrustrationRunResult::Refused { status: 503, error: NO_PROVIDER_REASON.to_owned() }
-}
-
-/// Abort the active run; a run that is not running is left untouched.
-pub fn cancel_frustration_run() -> FrustrationJobStatus {
-    let mut job = lock_job();
-    if job.state == FrustrationJobState::Running {
-        job.state = FrustrationJobState::Cancelled;
-        job.finished_at = Some(now_ms());
-    }
-    job.clone()
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 #[cfg(test)]

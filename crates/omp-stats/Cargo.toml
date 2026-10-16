@@ -30,6 +30,8 @@ flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# Exact f64 parsing for the TS-recorded usage_windows oracle values.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 # Every module behind a feature so each one can be checked alone
 # (`cargo check -p omp-stats --no-default-features --features parser`)

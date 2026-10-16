@@ -176,12 +176,11 @@ pub fn resolve_usage_total(usage: Option<&Value>) -> f64 {
 fn parse_stop_reason(msg: &Value) -> StopReason {
     match msg.get("stopReason") {
         Some(v) if !v.is_null() => {
-            if let Ok(r) = serde_json::from_value::<StopReason>(v.clone()) {
-                r
-            } else {
+            match serde_json::from_value::<StopReason>(v.clone()) {
                 // Unknown stopReason string: fall back like TS does for an
-                // unterminated message (typed port cannot keep the garbage).
-                fallback_stop_reason(msg)
+                // unterminated message (ingest keeps only the typed reasons).
+                Ok(StopReason::Other(_)) | Err(_) => fallback_stop_reason(msg),
+                Ok(reason) => reason,
             }
         }
         _ => fallback_stop_reason(msg),

@@ -42,6 +42,7 @@ pub mod utils {
     //! parsing, and structured diagnostics. SSE decoding, HTTP plumbing,
     //! hashing, and logging are crate-internal.
     pub use crate::utils_inner::diagnostics;
+    pub use crate::utils_inner::http_inspector;
     pub use crate::utils_inner::json_parse;
     pub use crate::utils_inner::overflow;
     pub use crate::utils_inner::stream_failure;

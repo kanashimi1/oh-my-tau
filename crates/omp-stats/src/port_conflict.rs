@@ -110,6 +110,8 @@ pub fn recover_stats_port_on_loopback(port: u16) -> Result<PortAction> {
 }
 
 fn probe_stats_dashboard(port: u16, hostname: &str) -> StatsDashboardProbe {
+    // The identity header carries the normalized host (see `start_server`), so compare that.
+    let hostname = normalize_host(hostname);
     let probe_hostname = match hostname {
         "0.0.0.0" => STATS_DASHBOARD_HOSTNAME,
         "::" => "::1",
@@ -222,8 +224,10 @@ fn parse_response(raw: &[u8]) -> Option<ProbeResponse> {
     Some(ProbeResponse { status, headers })
 }
 
-fn normalize_host(hostname: &str) -> &str {
-    hostname.trim_start_matches('[').trim_end_matches(']')
+/// Bare host of a `--host` value: exactly one `[`…`]` pair is removed, so
+/// `[::1]` and `::1` name the same listener. Other strings pass through.
+pub(crate) fn normalize_host(hostname: &str) -> &str {
+    hostname.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(hostname)
 }
 
 fn reclaim_stats_port(port: u16, has_dashboard_identity: bool) -> Result<PortAction> {
@@ -410,7 +414,11 @@ mod tests {
 
     /// Binds an ephemeral loopback port and answers `response` to `connections` probes.
     fn start_server(response: &'static str, connections: usize) -> u16 {
-        let listener = TcpListener::bind((STATS_DASHBOARD_HOSTNAME, 0)).expect("bind test server");
+        start_server_on(STATS_DASHBOARD_HOSTNAME, response, connections)
+    }
+
+    fn start_server_on(host: &str, response: &'static str, connections: usize) -> u16 {
+        let listener = TcpListener::bind((host, 0)).expect("bind test server");
         let port = listener.local_addr().expect("local addr").port();
         std::thread::spawn(move || {
             for _ in 0..connections {
@@ -472,6 +480,20 @@ mod tests {
         assert_eq!(probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME), StatsDashboardProbe::Reusable);
         assert_eq!(prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("prepare"), PortAction::Reuse);
         assert_eq!(recover_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("recover"), PortAction::Reuse);
+    }
+
+    #[test]
+    fn bracketed_and_bare_ipv6_hosts_share_one_identity() {
+        assert_eq!(normalize_host("[::1]"), "::1");
+        assert_eq!(normalize_host("::1"), "::1");
+        assert_eq!(normalize_host("[[::1]]"), "[::1]", "exactly one pair");
+        assert_eq!(normalize_host("[::1"), "[::1");
+        assert_eq!(normalize_host("127.0.0.1"), "127.0.0.1");
+        // The dashboard bound to `::1` identifies itself as `::1`; both spellings must reuse it.
+        let response = "HTTP/1.1 200 OK\r\nx-omp-stats-dashboard: 3\r\nx-omp-stats-hostname: ::1\r\ncontent-length: 0\r\n\r\n";
+        let port = start_server_on("::1", response, 4);
+        assert_eq!(probe_stats_dashboard(port, "[::1]"), StatsDashboardProbe::Reusable);
+        assert_eq!(probe_stats_dashboard(port, "::1"), StatsDashboardProbe::Reusable);
     }
 
     #[test]

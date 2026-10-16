@@ -2746,15 +2746,29 @@ fn run_outcome(messages: &[AgentMessage]) -> RunOutcome {
     for m in messages.iter().rev() {
         if let AgentMessage::Standard(Message::Assistant(a)) = m {
             return match a.stop_reason {
-                StopReason::Error => RunOutcome {
-                    status: "error",
-                    error: Some(json!({
-                        "message": a.error_message.clone().unwrap_or_else(|| "Provider request failed".into()),
+                StopReason::Error => {
+                    // TS `promptError`: strip the local raw-request dump lines, classify with the
+                    // provider's HTTP status, and report that status as `httpStatus`.
+                    let raw = a.error_message.as_deref().unwrap_or("");
+                    let message = if raw.is_empty() {
+                        "Provider request failed".to_string()
+                    } else {
+                        pa_ai::utils::http_inspector::strip_raw_http_request_diagnostics(raw)
+                    };
+                    let mut error = json!({
+                        "message": message,
                         "provider": a.provider,
                         "model": a.model,
-                        "retryable": recovery::is_transient(None, a.error_message.as_deref().unwrap_or("")),
-                    })),
-                },
+                        "retryable": recovery::is_transient(a.error_status, raw),
+                    });
+                    if let Some(status) = a.error_status {
+                        error["httpStatus"] = json!(status);
+                    }
+                    RunOutcome {
+                        status: "error",
+                        error: Some(error),
+                    }
+                }
                 StopReason::Aborted => RunOutcome {
                     status: "aborted",
                     error: None,
@@ -3498,5 +3512,56 @@ mod resume_seed_tests {
         assert_eq!(payloads.len(), 1);
         assert_eq!(payloads[0]["role"], json!("user"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod run_outcome_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn failed(error_message: &str, error_status: Option<u16>) -> AgentMessage {
+        let mut value = json!({
+            "content": [], "api": "openai-completions", "provider": "openai", "model": "gpt-5.5",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": "error", "errorMessage": error_message, "timestamp": 1
+        });
+        if let Some(status) = error_status {
+            value["errorStatus"] = json!(status);
+        }
+        let a: pa_agent::types::AssistantMessage = serde_json::from_value(value).expect("assistant json");
+        AgentMessage::Standard(Message::Assistant(a))
+    }
+
+    #[test]
+    fn rate_limit_reports_http_status_and_is_retryable() {
+        let message = failed(
+            "429 Rate limit reached\nraw-http-request=/home/u/.omp/logs/http-400-requests/1.json",
+            Some(429),
+        );
+        let outcome = run_outcome(&[message]);
+        assert_eq!(outcome.status, "error");
+        let error = outcome.error.expect("error payload");
+        assert_eq!(error["httpStatus"], json!(429));
+        assert_eq!(error["retryable"], json!(true));
+        assert_eq!(error["message"], json!("429 Rate limit reached"));
+        assert_eq!(error["provider"], json!("openai"));
+    }
+
+    #[test]
+    fn bad_request_reports_http_status_and_is_not_retryable() {
+        let outcome = run_outcome(&[failed("400 Invalid value: 'x'.", Some(400))]);
+        let error = outcome.error.expect("error payload");
+        assert_eq!(error["httpStatus"], json!(400));
+        assert_eq!(error["retryable"], json!(false));
+    }
+
+    #[test]
+    fn error_without_status_omits_http_status() {
+        let outcome = run_outcome(&[failed("", None)]);
+        let error = outcome.error.expect("error payload");
+        assert!(error.get("httpStatus").is_none());
+        assert_eq!(error["message"], json!("Provider request failed"));
     }
 }

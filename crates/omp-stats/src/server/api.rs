@@ -92,7 +92,7 @@ pub fn handle_api(method: &str, path_and_query: &str, headers: &HeaderMap) -> an
         "/api/stats/model-dashboard" => return ok(&aggregator::get_model_dashboard_stats(range)?),
         "/api/stats/costs" => return ok(&aggregator::get_cost_dashboard_stats(range)?),
         "/api/stats/frustration" => return ok(&frustration::get_frustration_dashboard_stats(range)?),
-        "/api/frustration/estimate" => return ok(&frustration::estimate_frustration_run(range)),
+        "/api/frustration/estimate" => return ok(&frustration::estimate_frustration_run(range)?),
         "/api/frustration/judge" | "/api/frustration/cancel" => return frustration_action(method, path, range, headers),
         "/api/stats/tools" => return ok(&aggregator::get_tool_dashboard_stats(range)?),
         "/api/stats/provider-windows" => {
@@ -160,7 +160,7 @@ fn frustration_action(
     if path == "/api/frustration/cancel" {
         return ok(&frustration::cancel_frustration_run());
     }
-    match frustration::start_frustration_run(range) {
+    match frustration::start_frustration_run(range)? {
         frustration::StartFrustrationRunResult::Started { job } => ApiResponse::json(202, &job),
         frustration::StartFrustrationRunResult::Refused { status, error } => {
             ApiResponse::json(status, &json!({ "error": error }))

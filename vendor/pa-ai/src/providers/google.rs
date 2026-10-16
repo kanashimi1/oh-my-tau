@@ -100,6 +100,7 @@ pub fn stream_google(
             usage: Usage::default(),
             stop_reason: StopReason::Stop,
             stop_reason_raw: None,
+            error_status: None,
             error_message: None,
             timestamp: now_ms(),
             rest: Map::default(),
