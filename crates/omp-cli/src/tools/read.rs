@@ -19,8 +19,8 @@ use pi_edit::text::{normalize_to_lf, strip_bom};
 use regex::Regex;
 
 use super::util::{
-    format_age, format_bytes, format_path_relative_to_cwd, resolve_to_cwd, shorten_path,
-    truncate_head, DEFAULT_MAX_BYTES,
+    format_age, format_bytes, format_path_relative_to_cwd, notice_with_artifact, resolve_to_cwd,
+    save_artifact, shorten_path, truncate_head, SpillConfig, DEFAULT_MAX_BYTES,
 };
 use super::Env;
 
@@ -308,7 +308,48 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     } else {
         display
     };
-    format_read_output(env, &normalized, &sel, &selector_base, &display, env.hashline, Some(&absolute))
+    let result =
+        format_read_output(env, &normalized, &sel, &selector_base, &display, env.hashline, Some(&absolute))?;
+    Ok(relevance_spill(env, result, save_artifact))
+}
+
+/// A file read past `tools.artifactSpillThreshold` with a known request
+/// (`env.query`): the full text goes to an artifact (via `save`) and the
+/// inline view keeps head 1/9 + tail 2/9 of the
+/// `artifactHeadBytes + artifactTailBytes` budget plus the BM25-best chunks
+/// (see [`super::relevance`]). `OMP_TRUNC_BM25=0`, an empty request or a
+/// short read leave the result unchanged.
+fn relevance_spill(
+    env: &Env,
+    mut result: AgentToolResult,
+    save: impl Fn(&str) -> Option<String>,
+) -> AgentToolResult {
+    use pa_agent::types::ToolResultContent;
+    let [ToolResultContent::Text(block)] = result.content.as_mut_slice() else {
+        return result;
+    };
+    if block.text.len() <= 1024 || !super::relevance::enabled() {
+        return result;
+    }
+    let query = env.query();
+    if query.trim().is_empty() {
+        return result;
+    }
+    let cfg = SpillConfig::load(&env.cwd);
+    if block.text.len() <= cfg.threshold {
+        return result;
+    }
+    let budget = match cfg.head_bytes + cfg.tail_bytes {
+        0 => cfg.threshold,
+        b => b.min(cfg.threshold),
+    };
+    let hybrid = (budget / 9, budget * 2 / 9);
+    let Some(p) = super::relevance::pick(&block.text, &query, budget, Some(hybrid), hybrid) else {
+        return result;
+    };
+    let url = save(&block.text);
+    block.text = format!("{}\n\n[{}]", p.content, notice_with_artifact(&p.notice, url.as_deref()));
+    result
 }
 
 /// Format already-in-memory text the way omp's read pipeline does: selector
@@ -1034,6 +1075,42 @@ mod tests {
             out.starts_with("Line 9 is beyond end of file (1 lines total)."),
             "{out}"
         );
+    }
+
+    /// Past the spill threshold a file read keeps its header (head), the
+    /// continue footer (tail) and the line the request names; everything
+    /// else is elided behind markers plus the artifact pointer.
+    #[test]
+    fn spilled_read_keeps_edges_and_the_requested_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".omp")).unwrap();
+        std::fs::write(
+            dir.path().join(".omp/config.yml"),
+            "tools:\n  artifactSpillThreshold: 12\n  artifactHeadBytes: 3\n  artifactTailBytes: 6\n  artifactTailLines: 150\nread:\n  defaultLimit: 300\n",
+        )
+        .unwrap();
+        let body: String = (1..=400)
+            .map(|i| {
+                if i == 150 {
+                    "fn reconcile_ledger_snapshot() { /* the one */ }\n".to_string()
+                } else {
+                    format!("let filler_{i} = compute_value({i}, \"padding padding padding padding padding\");\n")
+                }
+            })
+            .collect();
+        std::fs::write(dir.path().join("big.rs"), &body).unwrap();
+        let env = Env::new(dir.path(), false);
+        let full = read(&env, &serde_json::json!({"path": "big.rs"})).unwrap();
+        let full_text = text_of(&full);
+        assert!(full_text.len() > 12 * 1024, "{}", full_text.len());
+        *env.query.lock() = "where is reconcile_ledger_snapshot defined?".to_string();
+        let out = text_of(&relevance_spill(&env, full, |_| Some("artifact://9".to_string())));
+        assert!(out.len() < 10 * 1024, "{}", out.len());
+        assert!(out.contains("reconcile_ledger_snapshot"), "{out}");
+        assert!(out.starts_with(full_text.lines().next().unwrap()), "{out}");
+        assert!(out.contains("to continue]"), "{out}");
+        assert!(out.contains(" lines omitted] …"), "{out}");
+        assert!(out.ends_with("Read artifact://9 for full output]"), "{out}");
     }
 
     #[test]

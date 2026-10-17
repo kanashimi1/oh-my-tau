@@ -19,6 +19,7 @@ mod find;
 mod jobs;
 pub mod mcp;
 mod read;
+pub(crate) mod relevance;
 mod search;
 mod task;
 mod todo;
@@ -52,6 +53,10 @@ pub struct Env {
     pub hashline: bool,
     /// Background `bash` jobs (async mode) and the `proc://` read surface.
     pub jobs: jobs::JobRegistry,
+    /// Request text of the running tool call (latest user message + assistant
+    /// text), set per call from [`relevance::take`]; ranks the inline view of
+    /// spilled `bash`/`read` output.
+    pub query: parking_lot::Mutex<String>,
 }
 
 impl Env {
@@ -63,7 +68,14 @@ impl Env {
             edit_mode,
             hashline: edit_mode == EditMode::Hashline,
             jobs: jobs::JobRegistry::default(),
+            query: parking_lot::Mutex::default(),
         }
+    }
+
+    /// The current call's request text (see [`Env::query`]).
+    #[must_use]
+    pub fn query(&self) -> String {
+        self.query.lock().clone()
     }
 
     #[cfg(test)]
@@ -128,11 +140,14 @@ impl AgentTool for FnTool {
     }
     fn execute(
         self: Arc<Self>,
-        _tool_call_id: String,
+        tool_call_id: String,
         params: Value,
         signal: AbortSignal,
         _on_update: AgentToolUpdateCallback,
     ) -> BoxFut<'static, Result<AgentToolResult>> {
+        if let Some(q) = relevance::take(&tool_call_id) {
+            *self.env.query.lock() = q;
+        }
         (self.run)(self.env.clone(), params, signal)
     }
 }

@@ -198,7 +198,7 @@ pub fn build_agent(
         }),
         stream_fn: Some(switchable_stream_fn(target.clone())),
         transform_context,
-        before_tool_call,
+        before_tool_call: crate::tools::relevance::wrap_before(before_tool_call),
         after_tool_call,
         ..AgentOptions::default()
     });

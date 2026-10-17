@@ -47,11 +47,27 @@ pub fn wall_time_notice(elapsed: Duration) -> String {
 /// `tools.artifactSpillThreshold` + slack. Anything cut is saved as an
 /// artifact through `save` (returns its `artifact://` URL); returns the
 /// inline body and, when only the stream window cut, its notice.
+///
+/// Past the spill threshold with a non-empty `query` (the request the call
+/// serves), the inline body is instead the BM25-selected chunks within
+/// `artifactHeadBytes + artifactTailBytes` (see [`super::relevance`]);
+/// `OMP_TRUNC_BM25=0` keeps the head/tail path.
 fn bound_output(
     output: &str,
     cfg: &SpillConfig,
+    query: &str,
     save: impl Fn(&str) -> Option<String>,
 ) -> (String, Option<String>) {
+    if output.len() > cfg.threshold && !query.trim().is_empty() && super::relevance::enabled() {
+        let budget = match cfg.head_bytes + cfg.tail_bytes {
+            0 => cfg.threshold,
+            b => b.min(cfg.threshold),
+        };
+        if let Some(p) = super::relevance::pick(output, query, budget, None, (cfg.head_bytes, cfg.tail_bytes)) {
+            let url = save(output);
+            return (p.content, Some(notice_with_artifact(&p.notice, url.as_deref())));
+        }
+    }
     let (body, notice, mut artifact) = match sink_window(output, cfg) {
         Some(e) => {
             let url = save(output);
@@ -201,9 +217,10 @@ fn finished_text(
     timeout: Option<f64>,
     code: Option<i32>,
     cfg: &SpillConfig,
+    query: &str,
 ) -> String {
     use std::fmt::Write as _;
-    let (shown, elision) = bound_output(output.trim_end_matches('\n'), cfg, save_artifact);
+    let (shown, elision) = bound_output(output.trim_end_matches('\n'), cfg, query, save_artifact);
     let body = if shown.is_empty() {
         "(no output)".to_string()
     } else {
@@ -385,13 +402,14 @@ pub async fn bash(
         notices.push("Ignored ready: service-only, and no service name was given.".to_string());
     }
     let spill = SpillConfig::load(&cwd);
+    let query = env.query();
     if async_requested {
         return Ok(start_background(
-            &env.jobs, dir, command, timeout, notices, spill, &signal,
+            &env.jobs, dir, command, timeout, notices, spill, query, &signal,
         ));
     }
     let (output, code, elapsed, outcome) = run(&dir, &command, timeout, &signal, None).await?;
-    let mut text = finished_text(&output, elapsed, outcome, timeout, code, &spill);
+    let mut text = finished_text(&output, elapsed, outcome, timeout, code, &spill, &query);
     if !notices.is_empty() {
         text = format!("{}\n{text}", notices.join("\n"));
     }
@@ -640,6 +658,7 @@ async fn start_service(
 
 /// omp `BashTool` async mode: register a `bg_N` job, run it detached, and
 /// return `formatBackgroundNotice` (the result is read later via `proc://`).
+#[allow(clippy::too_many_arguments)] // job plumbing: registry, command, limits, spill policy, request query
 fn start_background(
     registry: &JobRegistry,
     dir: std::path::PathBuf,
@@ -647,6 +666,7 @@ fn start_background(
     timeout: Option<f64>,
     notices: Vec<String>,
     spill: SpillConfig,
+    query: String,
     _signal: &AbortSignal,
 ) -> AgentToolResult {
     let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -667,7 +687,7 @@ fn start_background(
         let raw = run(&dir, &command, timeout, &controller.signal(), Some(output)).await;
         let (status, result, error) = match &raw {
             Ok((output, code, elapsed, outcome)) => {
-                let text = finished_text(output, *elapsed, *outcome, timeout, *code, &spill);
+                let text = finished_text(output, *elapsed, *outcome, timeout, *code, &spill, &query);
                 let status = if outcome.is_none() && *code == Some(0) {
                     JobStatus::Completed
                 } else {
@@ -1103,7 +1123,7 @@ mod tests {
             use std::fmt::Write as _;
             let _ = writeln!(long, "line number {i}");
         }
-        let (shown, notice) = bound_output(long.trim_end(), &SpillConfig::default(), |_| None);
+        let (shown, notice) = bound_output(long.trim_end(), &SpillConfig::default(), "", |_| None);
         assert!(shown.len() < long.len());
         assert!(shown.starts_with("line number 1\n"));
         assert!(shown.ends_with("line number 5000"));
@@ -1143,7 +1163,7 @@ mod tests {
             saved.push(text.to_string());
             Some(format!("artifact://{}", saved.len() - 1))
         };
-        let (body, notice) = bound_output(output.trim_end_matches('\n'), &cfg, save);
+        let (body, notice) = bound_output(output.trim_end_matches('\n'), &cfg, "", save);
         assert!(notice.is_none(), "{notice:?}");
         assert!(body.len() < 9 * 1024, "inline body is {} bytes", body.len());
         assert!(body.starts_with(&format!("{:099}\n", 1)), "{body}");
@@ -1162,5 +1182,55 @@ mod tests {
             99_999,
             "artifact holds the full (trimmed) output"
         );
+    }
+
+    /// A 100 KB output whose only relevant line sits in the middle: the
+    /// relevance view keeps it when the request names it (and points at the
+    /// artifact); plain head/tail (no request) drops it.
+    #[test]
+    fn relevance_view_keeps_mid_output_line_named_by_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".omp")).unwrap();
+        std::fs::write(
+            dir.path().join(".omp/config.yml"),
+            "tools:\n  artifactSpillThreshold: 12\n  artifactHeadBytes: 3\n  artifactTailBytes: 6\n  artifactTailLines: 150\n",
+        )
+        .unwrap();
+        let marker = "deploy failed: QuorumLostError on shard_alpha7";
+        // 1000 lines of 99 digits + newline = 100 000 bytes, marker at line 500.
+        let cmd = format!(
+            "for i in $(seq 1 1000); do if [ $i -eq 500 ]; then echo '{marker}'; else printf '%099d\\n' \"$i\"; fi; done"
+        );
+        let env = std::sync::Arc::new(super::super::Env::new(dir.path(), false));
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let run_with = |query: &str| {
+            *env.query.lock() = query.to_string();
+            text_of(
+                &rt.block_on(bash(env.clone(), serde_json::json!({"command": cmd}), sig()))
+                    .unwrap(),
+            )
+        };
+        let ranked = run_with("why did the deploy hit QuorumLostError?\nChecking the shard_alpha7 log.");
+        assert!(ranked.contains(marker), "{ranked}");
+        assert!(ranked.contains(" lines omitted] …"), "{ranked}");
+        assert!(ranked.len() < 12 * 1024, "inline {} bytes", ranked.len());
+        let plain = run_with("");
+        assert!(!plain.contains(marker), "head/tail keeps only the edges");
+        assert!(plain.contains("B elided…]"), "{plain}");
+        // The relevance view always carries the artifact pointer.
+        let output = rt
+            .block_on(run(dir.path(), &cmd, Some(60.0), &sig(), None))
+            .unwrap()
+            .0;
+        let cfg = SpillConfig::load(dir.path());
+        let (body, notice) = bound_output(output.trim_end_matches('\n'), &cfg, "QuorumLostError", |_| {
+            Some("artifact://4".to_string())
+        });
+        assert!(body.contains(marker));
+        let notice = notice.unwrap();
+        assert!(notice.ends_with("Read artifact://4 for full output"), "{notice}");
     }
 }
