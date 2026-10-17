@@ -1491,10 +1491,15 @@ impl App {
         }
     }
 
-    /// Echo a user message and submit it; while streaming the behavior is
-    /// forced to `steer`/`followUp` and the band is updated optimistically.
+    /// Submit a user message. Idle: echo it into the chat immediately.
+    /// Streaming: the behavior is forced to `steer`/`followUp` and the message
+    /// shows only in the pending band (TS); it enters the chat when the runtime
+    /// delivers it (`message_start` user). Echoing it here as well showed the
+    /// prompt twice (chat + queue) and cut the live assistant block short.
     fn queue_message(&mut self, text: String, behavior: SubmitBehavior, port: &impl RuntimePort) {
-        self.messages.push_user(&text);
+        if self.streaming_behavior().is_none() {
+            self.messages.push_user(&text);
+        }
         match self.streaming_behavior() {
             Some(_) => {
                 // Optimistic band update (TS refreshes at local call sites);
@@ -2839,6 +2844,23 @@ mod tests {
         assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
         assert_eq!(app.editor.text(), "draft");
         assert!(log(&port).is_empty());
+    }
+
+    /// Regression: a prompt submitted while streaming shows only in the
+    /// steering band, not also as a chat message (it entered both, so the user
+    /// saw the prompt "sent and queued" at once).
+    #[test]
+    fn steer_while_streaming_is_not_echoed_into_chat() {
+        let mut app = app();
+        let port = port();
+        start_streaming(&mut app);
+        let users_before = app.messages.entries().iter().filter(|e| e.role == ChatRole::User).count();
+        type_text(&mut app, &port, "steer me");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.steering, vec!["steer me".to_string()]);
+        let users_after = app.messages.entries().iter().filter(|e| e.role == ChatRole::User).count();
+        assert_eq!(users_after, users_before, "queued prompt must not be echoed into the chat");
+        assert!(log(&port).iter().any(|c| c.contains("steer me")), "{:?}", log(&port));
     }
 
     #[test]
