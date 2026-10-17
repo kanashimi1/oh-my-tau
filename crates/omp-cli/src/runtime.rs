@@ -22,7 +22,7 @@ use crate::adapter::{json_round_trip, ProviderTarget};
 use crate::agent::Target;
 use crate::events::Framer;
 use crate::persist::Persistence;
-use crate::tools::{builtin_tools, edit_mode_for};
+use crate::tools::edit_mode_for;
 
 // Declared here (not in main.rs, which another agent owns); same file `src/recovery.rs`.
 #[path = "recovery.rs"]
@@ -2363,11 +2363,11 @@ impl Runtime {
         };
         if rebuild {
             {
-                let mut tools = builtin_tools(&self.cwd, mode);
+                let settings = omp_settings::Settings::load(&self.cwd);
+                let mut tools = crate::tools::session_builtin_tools(&self.cwd, mode, &settings);
                 tools.extend(crate::tools::mcp::mcp_tools(&self.cwd));
                 // TS `reconcileThinkTool`: model swaps re-evaluate the hidden
                 // think tool's eligibility.
-                let settings = omp_settings::Settings::load(&self.cwd);
                 let hidden =
                     crate::tools::hidden_tools(&settings, Some(&resolved.model), false, false);
                 tools.extend(hidden);

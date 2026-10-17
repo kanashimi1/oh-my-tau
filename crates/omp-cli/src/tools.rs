@@ -137,9 +137,9 @@ impl AgentTool for FnTool {
 }
 
 const READ_DESCRIPTION: &str = "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4.\n\nSources:\n- Selected file: `[foo.ts#1A2B]` snapshot+lines. Copy `[FILENAME#TAG]` for anchored edits; NEVER invent tag.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.";
-const BASH_DESCRIPTION: &str = "Persistent shell: one fact command/pipeline; dependencies use `&&`.\nScripts/heredocs/`$(…)`/complex pipelines → `eval`.\n`cwd`, not `cd`; `pty` only interactive.\nInternal URIs work as paths for builtins/coreutils, redirects, globs.\n`async` defers finite results but keeps the deadline (default 300s); `timeout: 0` for watchers and long jobs.\nNo `head`/`tail`/redirection; output trunc by default, full result at `artifact://<id>`.\nLong-lived services: unique name; ready requires name; no async/timeout; pty defaults true. ready needs log regex or port (both if given); host defaults 127.0.0.1, ready.timeout 30s.\nBackground results follow; NEVER poll; foreground wait unchanged.";
-const GLOB_DESCRIPTION: &str = "Glob files/dirs: `;`-separated paths or internal URLs (`local://*.md`, `omp://**/*.md`); default workspace root.\n`gitignore` and `hidden` default true; ignored dotfiles need `gitignore: false`. Newest-first by directory; dirs end `/`.\nBehavior search → `find`.\nMulti-round discovery → Task + scout.";
-const GREP_DESCRIPTION: &str = "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files.\nFile-only selector: `src/foo.ts:50-100`. Literal `\\n`/`\\\\n` enables cross-line.\nBare glob `*.ts` matches any depth; `dir/*.ts` only `dir`'s direct children (`dir/**/*.ts` recurses).\nBehavior/unknown symbol → `find`; literals/regex → `grep`.\nMulti-round search MUST use Task + scout, not chained calls.";
+const BASH_DESCRIPTION: &str = "Persistent shell: one fact command/pipeline; dependencies use `&&`.\nScripts/heredocs/`$(…)`/complex pipelines → `eval`.\n`cwd`, not `cd`; `pty` only interactive.\nInternal URIs work as paths for builtins/coreutils, redirects, globs.\n`async` defers finite results but keeps the deadline (default 300s); `timeout: 0` for watchers and long jobs.\nNo `head`/`tail`/redirection; output trunc by default, full result at `artifact://<id>`.\nLong-lived services: unique name; ready requires name; no async/timeout; pty defaults true. ready needs log regex or port (both if given); host defaults 127.0.0.1, ready.timeout 30s.\nBackground results auto-deliver.";
+const GLOB_DESCRIPTION: &str = "Glob files/dirs: `;`-separated paths or internal URLs (`local://*.md`, `omp://**/*.md`); default workspace root.\n`gitignore` and `hidden` default true; ignored dotfiles need `gitignore: false`. Newest-first by directory; dirs end `/`.";
+const GREP_DESCRIPTION: &str = "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files.\nFile-only selector: `src/foo.ts:50-100`. Literal `\\n`/`\\\\n` enables cross-line.\nBare glob `*.ts` matches any depth; `dir/*.ts` only `dir`'s direct children (`dir/**/*.ts` recurses).";
 const WRITE_DESCRIPTION: &str = "SHOULD `edit` existing files; `write` for required new files or whole-file replacement. NEVER create docs or emojis unless requested.";
 const FIND_DESCRIPTION: &str = "Describe behavior, get implementing files and line ranges. MUST use first for unknown locations; known strings/regex/symbols → `grep`, names → `glob`.\n`query`: plain language, not regex; quoted phrases match whole. `grep_keywords`: likely verbatim terms, `[]` if unsure.\n`path`: one directory or file, host path or internal URL (`omp://`, `omp://<file>.md`, `skill://<name>`, `local://…`); omitted = workspace root. Scope known subsystem; batch related questions. Searches live files, no index; no `:start-end` selector (judges whole files).\nHits strongest first: `path:start-end score snippet` (workspace-relative, or URL under URL scope); read returned ranges. Scores: absolute comparable 0–1 probability; below ~0.4 = weak evidence, so widen query or use `grep` before concluding absence.";
 
@@ -261,6 +261,40 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
     ]
 }
 
+/// TS `isToolAllowed` setting gates for the plain built-ins: a tool whose
+/// `<id>.enabled` setting is off is not advertised (`astGrep`/`checkpoint`
+/// default off, the rest on).
+#[must_use]
+pub fn enabled_by_settings(settings: &omp_settings::Settings, name: &str) -> bool {
+    let id = match name {
+        "bash" => "bash.enabled",
+        "glob" => "glob.enabled",
+        "grep" => "grep.enabled",
+        "ast_grep" => "astGrep.enabled",
+        "ast_edit" => "astEdit.enabled",
+        "ask" => "ask.enabled",
+        "todo" => "todo.enabled",
+        "web_search" => "web_search.enabled",
+        "lsp" => "lsp.enabled",
+        "checkpoint" | "rewind" => "checkpoint.enabled",
+        _ => return true,
+    };
+    settings.get_bool(id).unwrap_or(true)
+}
+
+/// [`builtin_tools`] minus the ones switched off by settings: the surface a
+/// session advertises.
+#[must_use]
+pub fn session_builtin_tools(
+    cwd: &Path,
+    edit_mode: EditMode,
+    settings: &omp_settings::Settings,
+) -> Vec<Arc<dyn AgentTool>> {
+    let mut tools = builtin_tools(cwd, edit_mode);
+    tools.retain(|t| enabled_by_settings(settings, t.name()));
+    tools
+}
+
 /// Active hidden tools for a session (TS `resolveBuiltinToolPlan`'s
 /// `...(externalThinkingActive ? ["think"] : [])`, `...(includeYield ? ["yield"]
 /// : [])`, `...(goalModeActive ? ["goal"] : [])` legs, in that order; never in
@@ -318,6 +352,33 @@ mod tests {
         assert_eq!(edit_mode_for("kimi-k2.5"), EditMode::Replace);
         assert_eq!(edit_mode_for("claude-opus-5-5"), EditMode::Hashline);
         assert_eq!(edit_mode_for("glm-5.2"), EditMode::Hashline);
+    }
+
+    #[test]
+    fn settings_gate_the_advertised_builtins() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = |yaml: &str| -> Vec<String> {
+            let cfg = dir.path().join("config.yml");
+            std::fs::write(&cfg, yaml).unwrap();
+            let settings = omp_settings::Settings::load_from(Some(&cfg), dir.path());
+            session_builtin_tools(dir.path(), EditMode::Hashline, &settings)
+                .iter()
+                .map(|t| t.name().to_string())
+                .collect()
+        };
+        // TS defaults: astGrep and checkpoint/rewind off, the rest on.
+        let defaults = names("{}");
+        for off in ["ast_grep", "checkpoint", "rewind"] {
+            assert!(!defaults.iter().any(|n| n == off), "{off} on by default");
+        }
+        for on in ["read", "bash", "ast_edit", "lsp", "todo"] {
+            assert!(defaults.iter().any(|n| n == on), "{on} off by default");
+        }
+        let custom = names("lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\n");
+        assert!(!custom.iter().any(|n| n == "lsp"));
+        for on in ["ast_grep", "checkpoint", "rewind"] {
+            assert!(custom.iter().any(|n| n == on), "{on} not enabled by config");
+        }
     }
 
     #[test]

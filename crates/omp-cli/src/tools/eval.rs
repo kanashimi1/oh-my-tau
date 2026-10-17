@@ -42,34 +42,15 @@ const DEFAULT_TIMEOUT_SECS: f64 = 30.0;
 const MIN_TIMEOUT_SECS: f64 = 1.0;
 const MAX_TIMEOUT_SECS: f64 = 3600.0;
 
-/// Static model-facing description (omp `getEvalToolDescription` under the
-/// protocol defaults: py+js advertised, prelude topics linked).
-pub const DESCRIPTION: &str = r"One cell per call; top-level state persists, including across compaction. Subagents have separate kernels.
-For 2+ independent items, use a named `workpool()`; results auto-deliver. If blocked, leave `eval` and call `wait`.
-Python: top-level `await` works; `asyncio.run(…)` fails.
-JS: Bun (`Bun.file`, `Bun.write`, `Bun.$`); top-level `await`/`return` work.
-On error, new/rebound names of the failed cell are rolled back (side effects and in-place mutations stay) — re-run the whole fixed cell.
-
-<prelude>
-Python helpers: sync, kwargs; JS helpers: async, ONE trailing options object.
-```
-display(value)  print(value, ...)  log(message)  phase(title)
-read(path, offset?, limit?)  write(path, content)  env(key?, value?)  output(*ids, format?, query?, offset?, limit?)
-await tool.<name>(args) — session tool; `args` is its parameter object
-wait(handles, timeout?=None, raise_errors?=True) — agent/completion barrier, ordered results; JS: wait(handles, { timeout, raiseErrors }); `raise_errors=False` retains failures.
-```
-</prelude>
-
-<namespaces>
-More globals; `read` the linked docs before first use:
-- `judge`, `judge_batch`, `completion`: classification, bulk judgment, model calls → `xd://eval/judge`
-- `%load`, `%pip`, `%bun add`, `budget`, `@tool`/`tool(fn)`: setup, installs, utilities → `xd://eval/helpers`
-- `agent`, `workpool`: background subagents, DAG waves → `xd://eval/agents`
-</namespaces>
-
-<critical>
-NEVER repeat successful setup. Kernel-loss notice means reload setup.
-</critical>";
+/// Static model-facing description: the persistence/await/rollback contract
+/// and the prelude signatures inline; namespace details stay behind
+/// `xd://eval/*` docs (read on first use).
+pub const DESCRIPTION: &str = r"One cell per call; top-level state persists across calls and compaction; subagents get separate kernels.
+Python (IPython): top-level `await` works, `asyncio.run` fails. JS (Bun): top-level `await`/`return` work.
+On error, names (re)bound by the failed cell roll back (side effects and in-place mutations stay): re-run the whole fixed cell.
+Prelude (py: sync, kwargs; js: async, one trailing options object): `display(v)` `print` `log(msg)` `phase(title)` `read(path, offset?, limit?)` `write(path, content)` `env(key?, value?)` `output(*ids, format?, query?, offset?, limit?)` `await tool.<name>(args)` `wait(handles, timeout?, raise_errors?=True)` (ordered results).
+Read the doc before first use: `judge`/`judge_batch`/`completion` → `xd://eval/judge`; `%load`/`%pip`/`%bun add`/`budget`/`@tool` → `xd://eval/helpers`; `agent`/`workpool` (2+ independent items) → `xd://eval/agents`.
+Never repeat successful setup; after a kernel-loss notice, reload it.";
 
 /// Wire schema, byte-matching the TS `evalSchema` (`py` + `js` language
 /// union, `language` + `code` required).

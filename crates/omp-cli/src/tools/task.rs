@@ -53,8 +53,8 @@ pub const DESCRIPTION_HEADER: &str = r"Spawn `tasks[]` concurrently; IDs return 
 `outputSchema` parsed payload, even invalid: `agent://<id>` (field `/<field>`, nested `/reports/0/data`); invalid preview inline.
 
 # Delegation
-Use most specific agent. Read-only research MUST use `scout` only when files unknown. Prefer one agent to investigate + edit. Omit `agent` only for default (`task`); NEVER specify it.
-Shared edits need one integration owner; siblings coordinate via `write agent://<id>`. Set interfaces in `context`. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
+Use most specific agent. Prefer one agent to investigate + edit. Omit `agent` only for default (`task`); NEVER specify it.
+Shared edits need one integration owner; siblings coordinate via `write agent://<id>`. Set interfaces in `context`.
 
 # Inputs
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name. `outputSchema` overrides agent/session schemas.
@@ -107,12 +107,61 @@ fn agent_is_read_only(tools: Option<&Vec<String>>) -> bool {
     }
 }
 
+/// Agent descriptions are condensed for the listing: enough to pick an
+/// agent; the full text stays in the agent definition file.
+const AGENT_SUMMARY_MAX: usize = 120;
+
+/// `description` without parenthesized asides (route/model details),
+/// whitespace collapsed, capped at [`AGENT_SUMMARY_MAX`] chars on a word
+/// boundary.
+fn agent_summary(description: &str) -> String {
+    let mut flat = String::with_capacity(description.len());
+    let mut depth = 0usize;
+    for c in description.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => flat.push(c),
+            _ => {}
+        }
+    }
+    let flat = flat
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" ;", ";")
+        .replace(" ,", ",")
+        .replace(" .", ".")
+        .replace(" :", ":");
+    let mut out = String::with_capacity(AGENT_SUMMARY_MAX);
+    let mut len = 0usize;
+    for word in flat.split(' ') {
+        let add = word.chars().count() + usize::from(len > 0);
+        if len + add > AGENT_SUMMARY_MAX {
+            break;
+        }
+        if len > 0 {
+            out.push(' ');
+        }
+        out.push_str(word);
+        len += add;
+    }
+    if out.len() < flat.len() {
+        // Truncated: end on the last clause boundary when one keeps at least
+        // half the budget, so the line never stops mid-phrase.
+        if let Some(i) = out.rfind(['.', ';']).filter(|&i| i >= AGENT_SUMMARY_MAX / 2) {
+            out.truncate(i);
+        }
+    }
+    out.trim_end_matches(['.', ';', ',']).to_string()
+}
+
 /// Tool description: static header plus the discovered agent list
-/// (`~/.omp/agent/agents` + `.omp/agents`, omp's `renderDescription`).
+/// (`~/.omp/agent/agents` + `.omp/agents`), one summary line per agent.
 #[must_use]
 pub fn description(cwd: &Path) -> String {
     let mut out = String::from(DESCRIPTION_HEADER);
-    out.push_str("# Available Agents\n");
+    out.push_str("\n\n# Available Agents\n");
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     let mut agents: Vec<_> = discover_user_agents(&home)
         .agents
@@ -125,13 +174,13 @@ pub fn description(cwd: &Path) -> String {
         out.push_str(&agent.fields.name);
         out.push('`');
         if agent_is_read_only(agent.fields.tools.as_ref()) {
-            out.push_str(" (READ-ONLY; investigation only, no edits)");
+            out.push_str(" (read-only)");
         }
         if agent.fields.blocking == Some(true) {
-            out.push_str(" (BLOCKING; inline result)");
+            out.push_str(" (blocking)");
         }
         out.push_str(": ");
-        out.push_str(&agent.fields.description);
+        out.push_str(&agent_summary(&agent.fields.description));
         out.push('\n');
     }
     out
@@ -375,6 +424,22 @@ mod tests {
 
     fn wire_item(args: serde_json::Value) -> WireTaskItem {
         serde_json::from_value(args).unwrap()
+    }
+
+    #[test]
+    fn agent_summary_drops_asides_and_caps_on_words() {
+        assert_eq!(
+            agent_summary("Cheap scout on zai (GLM-5.1); for extraction.\n  Use when busy."),
+            "Cheap scout on zai; for extraction. Use when busy"
+        );
+        // Over the cap with a clause boundary past half the budget: cut there.
+        let clauses = format!("{}; {}", "a".repeat(70), "b ".repeat(40));
+        assert_eq!(agent_summary(&clauses), "a".repeat(70));
+        // Over the cap: cut on a word boundary, never inside a multi-byte char.
+        let long = "слово ".repeat(40);
+        let s = agent_summary(&long);
+        assert!(s.chars().count() <= AGENT_SUMMARY_MAX);
+        assert!(long.starts_with(&s) && s.ends_with("слово"));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::sync::{Arc, RwLock};
 
 use crate::adapter::{json_round_trip, switchable_stream_fn, ProviderTarget};
 use crate::model::Selected;
-use crate::tools::{builtin_tools, edit_mode_for};
+use crate::tools::edit_mode_for;
 
 /// Custom-role messages extension hooks inject: omp's `developer`
 /// (`additionalContext`) reaches the model as user text; other custom roles
@@ -73,8 +73,9 @@ pub fn system_prompt(
     active_hidden: &[Arc<dyn AgentTool>],
 ) -> String {
     // Edit mode does not affect the prompt; the tool surface (names) does.
+    let settings = omp_settings::Settings::load(cwd);
     let mut metas: Vec<crate::sysprompt::ToolMeta> =
-        crate::tools::builtin_tools(cwd, crate::tools::edit_mode_for(""))
+        crate::tools::session_builtin_tools(cwd, crate::tools::edit_mode_for(""), &settings)
             .iter()
             .map(|t| (t.name().to_string(), t.name().to_string()))
             .collect();
@@ -106,13 +107,14 @@ pub fn build_agent(
 ) -> Result<(Agent, Target)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
-    let mut tools = builtin_tools(cwd, edit_mode_for(&selected.model.id));
+    let settings = omp_settings::Settings::load(cwd);
+    let mut tools =
+        crate::tools::session_builtin_tools(cwd, edit_mode_for(&selected.model.id), &settings);
     tools.extend(crate::tools::mcp::mcp_tools(cwd));
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too
     // (subagent runs carry `yield` in their csv), like TS's requestedTools
     // filter over BUILTIN_TOOLS + HIDDEN_TOOLS.
-    let settings = omp_settings::Settings::load(cwd);
     let hidden = crate::tools::hidden_tools(&settings, Some(&selected.model), false, false);
     if let Some(csv) = sysprompt_opts.tools_csv.as_deref() {
         let keep: Vec<String> = csv

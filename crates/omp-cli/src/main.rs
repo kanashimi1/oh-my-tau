@@ -320,9 +320,10 @@ async fn main() -> Result<()> {
         generated_append: Vec::new(),
     };
     if args.dump_system_prompt {
-        let metas: Vec<sysprompt::ToolMeta> = tools::builtin_tools(
+        let metas: Vec<sysprompt::ToolMeta> = tools::session_builtin_tools(
             &cwd,
             tools::edit_mode_for(sp_opts.model.split('/').next().unwrap_or("")),
+            &omp_settings::Settings::load(&cwd),
         )
         .iter()
         .map(|t| (t.name().to_string(), t.name().to_string()))
