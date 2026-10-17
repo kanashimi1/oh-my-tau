@@ -29,6 +29,7 @@ KEYS = {
     "up": b"\x1b[A",
     "down": b"\x1b[B",
     "backspace": b"\x7f",
+    "ctrl-shift-v": b"\x1b[118;6u",
 }
 
 
@@ -84,8 +85,9 @@ def sgr_wheel(col: int, row: int, down: bool = True) -> bytes:
 
 
 class Term:
-    def __init__(self, argv: list[str], *, env: dict[str, str], cwd: str, rows: int = 40, cols: int = 120):
+    def __init__(self, argv: list[str], *, env: dict[str, str], cwd: str, rows: int = 40, cols: int = 120, kitty: bool = False):
         self.rows, self.cols = rows, cols
+        self.kitty = kitty
         self.screen_ = AltScreen(cols, rows, history=5000)
         self.screen_.set_mode(pyte.modes.LNM)
         self.stream = pyte.ByteStream(self.screen_)
@@ -130,8 +132,9 @@ class Term:
             os.write(self.master, b"\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\")
         if b"\x1b[c" in data or b"\x1b[0c" in data:  # primary device attributes
             os.write(self.master, b"\x1b[?62;22c")
-        if b"\x1b[?u" in data:  # kitty keyboard protocol query: unsupported
-            pass
+        if b"\x1b[?u" in data:  # kitty keyboard protocol query
+            if self.kitty:
+                os.write(self.master, b"\x1b[?0u")  # speaks kitty, fresh stack
 
     def send(self, text: str | bytes) -> None:
         os.write(self.master, text.encode() if isinstance(text, str) else text)

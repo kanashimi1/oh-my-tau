@@ -369,9 +369,11 @@ pub fn key_id_from_event(event: &KeyEvent) -> Option<String> {
     if mods.contains(KeyModifiers::CONTROL) {
         prefixed.push_str("ctrl+");
     }
-    // Shift is already expressed by an uppercase char base; add the explicit
-    // prefix only for non-char keys (BackTab handled above as plain `tab`).
-    if mods.contains(KeyModifiers::SHIFT) && !matches!(event.code, KeyCode::Char(_)) {
+    // Shift is already expressed by an uppercase char base for plain typed
+    // bytes; an explicit SHIFT flag (CSI-u / modifyOtherKeys encodings, e.g.
+    // `ctrl+shift+v` = `\x1b[118;6u`) must still surface — TS sees the same
+    // press as an uppercase base (`ctrl+V` → `ctrl+shift+v`).
+    if mods.contains(KeyModifiers::SHIFT) {
         prefixed.push_str("shift+");
     }
     if mods.contains(KeyModifiers::ALT) {

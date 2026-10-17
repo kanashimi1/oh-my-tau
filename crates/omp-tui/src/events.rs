@@ -98,6 +98,12 @@ pub enum AppEvent {
     /// status line's model identity and context gauge inputs (omp-cli
     /// `Runtime::context_usage_frame`).
     ContextUsage(Value),
+    /// `{"type":"models_changed","models":[…]}` — the `/model` picker
+    /// catalogue changed (F5 online refresh updated `models.db`); the
+    /// picker list is replaced so new models are visible immediately.
+    ModelsChanged {
+        models: Vec<crate::overlays::models::ModelEntry>,
+    },
     /// `{"type":"session_info", "lines": [...]}` — the `/session` report
     /// (omp-cli `session_info_frame`), shown in the session info overlay.
     SessionInfo(Vec<crate::overlays::session_info::SessionInfoLine>),
@@ -176,6 +182,13 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
         "session_info" => AppEvent::SessionInfo(
             crate::overlays::session_info::SessionInfoLine::parse_frame(frame),
         ),
+        "models_changed" => AppEvent::ModelsChanged {
+            models: frame
+                .get("models")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(parse_model_entry).collect())
+                .unwrap_or_default(),
+        },
         _ => AppEvent::Unknown(frame.clone()),
     }
 }
@@ -203,6 +216,36 @@ fn session_loaded_name(frame: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|n| !n.is_empty())
         .map(str::to_owned)
+}
+
+/// One `models_changed` entry → a picker row (inverse of the JSON the
+/// omp-cli port emits after a refresh).
+fn parse_model_entry(entry: &Value) -> Option<crate::overlays::models::ModelEntry> {
+    use crate::overlays::models::ModelEntry;
+    let mut model = ModelEntry::new(
+        entry.get("provider").and_then(Value::as_str)?,
+        entry.get("id").and_then(Value::as_str)?,
+        entry.get("contextWindow").and_then(Value::as_u64),
+    );
+    model.name = entry
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    model.max_tokens = entry.get("maxTokens").and_then(Value::as_u64);
+    model.cost_input = entry.get("costInput").and_then(Value::as_f64).unwrap_or(0.0);
+    model.cost_output = entry.get("costOutput").and_then(Value::as_f64).unwrap_or(0.0);
+    model.cost_cache_read = entry.get("costCacheRead").and_then(Value::as_f64).unwrap_or(0.0);
+    model.reasoning = entry.get("reasoning").and_then(Value::as_bool).unwrap_or(false);
+    model.vision = entry.get("vision").and_then(Value::as_bool).unwrap_or(false);
+    model.available = entry.get("available").and_then(Value::as_bool).unwrap_or(false);
+    model.kind = entry
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    model.priority = entry.get("priority").and_then(Value::as_i64);
+    Some(model)
 }
 
 /// Extract a `Vec<String>` field, tolerating missing/non-string entries.

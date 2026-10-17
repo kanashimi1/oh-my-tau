@@ -22,6 +22,7 @@
 pub mod command_palette;
 pub mod diff;
 pub mod help;
+pub mod large_paste;
 pub mod models;
 pub mod sessions;
 pub mod session_info;
@@ -78,6 +79,8 @@ pub enum OpenOverlay {
     SessionInfo,
     /// Thinking-level selector (bare `/effort`), anchored over the composer.
     Thinking,
+    /// Large-paste chooser (`paste.largeMenuThreshold` gate).
+    LargePaste,
 }
 
 impl OpenOverlay {
@@ -121,6 +124,7 @@ pub struct Overlays {
     settings: settings::SettingsOverlay,
     session_info: session_info::SessionInfoOverlay,
     thinking: thinking::ThinkingSelector,
+    large_paste: large_paste::LargePasteMenu,
     stack: Vec<OpenOverlay>,
 }
 
@@ -215,6 +219,18 @@ impl Overlays {
         self.stack.push(OpenOverlay::Thinking);
     }
 
+    /// Open the large-paste chooser (TS `presentLargePasteMenu`).
+    pub fn open_large_paste(&mut self, line_count: usize) {
+        self.large_paste.open(line_count);
+        self.close(OpenOverlay::LargePaste);
+        self.stack.push(OpenOverlay::LargePaste);
+    }
+
+    /// Mutable access to the large-paste chooser (pick drain).
+    pub fn large_paste_mut(&mut self) -> &mut large_paste::LargePasteMenu {
+        &mut self.large_paste
+    }
+
     /// Close the top overlay (esc routing).
     pub fn pop(&mut self) {
         self.stack.pop();
@@ -256,6 +272,7 @@ impl Overlays {
             OpenOverlay::Settings => &self.settings,
             OpenOverlay::SessionInfo => &self.session_info,
             OpenOverlay::Thinking => &self.thinking,
+            OpenOverlay::LargePaste => &self.large_paste,
         }
     }
 
@@ -270,6 +287,7 @@ impl Overlays {
             OpenOverlay::Settings => &mut self.settings,
             OpenOverlay::SessionInfo => &mut self.session_info,
             OpenOverlay::Thinking => &mut self.thinking,
+            OpenOverlay::LargePaste => &mut self.large_paste,
         }
     }
 

@@ -80,6 +80,8 @@ pub struct Args {
     pub plan_yolo: bool,
     pub plan_yolo_into: Option<String>,
     pub dump_system_prompt: bool,
+    /// `--context-strategy append|clm|clm-host` (opt-in; default `append`).
+    pub context_strategy: Option<String>,
     /// Image attachments collected from `@<image>` positional args
     /// (kept out of the text prompt; passed to the agent as content).
     pub images: Vec<pa_agent::types::ImageContent>,
@@ -123,6 +125,7 @@ const STRING_FLAGS: &[&str] = &[
     "--approval-mode",
     "--profile",
     "--alias",
+    "--context-strategy",
 ];
 
 /// Optional-value flags: consume the next token only when it is value-like
@@ -263,6 +266,10 @@ fn set_string(a: &mut Args, flag: &str, value: String, invalid: &mut Vec<String>
             a.service_tier = Some(value);
         }
         "--api-key" => a.api_key = Some(value),
+        "--context-strategy" => match crate::context::Kind::parse(&value) {
+            Ok(_) => a.context_strategy = Some(value),
+            Err(e) => invalid.push(format!("Invalid --context-strategy value: {e}")),
+        },
         "--system-prompt" => a.system_prompt = Some(value),
         "--system-prompt-template" => a.system_prompt_template = Some(value),
         "--append-system-prompt" => a.append_system_prompt = Some(value),

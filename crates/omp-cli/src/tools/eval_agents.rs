@@ -315,6 +315,9 @@ pub async fn handle(
         "__judge_batch__" => Some(run_judge_batch_op(&args, ctx).await),
         "__workpool__" => Some(run_workpool(&args, ctx)),
         "__budget__" => Some(Ok(budget_snapshot())),
+        "__llm_query__" => Some(super::rlm::llm_query_op(&args, ctx).await),
+        "__rlm_stats__" => Some(Ok(super::rlm::stats_snapshot())),
+        "__rlm_context__" => Some(super::rlm::context_op()),
         "__wait__" => Some(run_wait(&args, ctx).await),
         "__status__" => Some(run_status(&args)),
         "__cancel__" => Some(run_cancel(&args)),
@@ -742,7 +745,7 @@ async fn execute_completion(
     schema: Option<&Value>,
     candidates: &[CompletionCandidate],
     cancel: &CancellationToken,
-) -> Result<(String, Option<Value>), String> {
+) -> Result<(String, Option<Value>, pa_types::ai::Usage, Model), String> {
     let tools = schema.map(|schema| {
         vec![Tool {
             name: STRUCTURED_TOOL_NAME.to_string(),
@@ -833,15 +836,58 @@ async fn execute_completion(
                     })?
                 }
             };
-            return Ok((serde_json::to_string(&value).unwrap_or_default(), Some(value)));
+            return Ok((serde_json::to_string(&value).unwrap_or_default(), Some(value), response.usage, candidate.model.clone()));
         }
         let text = assistant_text(&response.content);
         if text.is_empty() {
             return Err("completion() returned no text output.".to_string());
         }
-        return Ok((text, None));
+        return Ok((text, None, response.usage, candidate.model.clone()));
     }
     Err(last_error.unwrap_or_else(|| "completion() request failed.".to_string()))
+}
+
+/// Resolve the candidate chain for an `llm_query` model: a tier name
+/// (`smol`/`default`/`slow`) or any model selector `resolve_in` understands
+/// (`provider/id[:level]`, other role names).
+async fn resolve_query_candidates(model: &str) -> Result<Vec<CompletionCandidate>, String> {
+    if matches!(model, "smol" | "default" | "slow") {
+        return resolve_completion_candidates(model).await;
+    }
+    let dir = AgentDir::default();
+    let primary = omp_providers::resolve_in_async(dir.clone(), model.to_string())
+        .await
+        .map_err(|e| format!("llm_query() could not resolve model {model:?}: {e}"))?;
+    let mut candidates = vec![candidate_from_resolved(primary.clone())];
+    candidates.extend(walk_fallbacks(dir, primary).await);
+    Ok(candidates)
+}
+
+/// One stateless sub-LLM call for `llm_query` (RLM): resolves `model`, runs
+/// under the shared eval request-slot ceiling and the cell's abort signal, and
+/// returns the text with the provider-reported usage and the model that
+/// actually answered (fallback chains may land on a later candidate).
+pub(crate) async fn query_once(
+    model: &str,
+    prompt: &str,
+    system: Option<&str>,
+    cell_signal: &AbortSignal,
+) -> Result<(String, pa_types::ai::Usage, Model), String> {
+    let candidates = resolve_query_candidates(model).await?;
+    let _permit = REQUEST_SLOTS
+        .acquire()
+        .await
+        .map_err(|_| "llm_query() request aborted.".to_string())?;
+    let cancel = CancellationToken::new();
+    tokio::select! {
+        () = cell_signal.aborted() => {
+            cancel.cancel();
+            Err("llm_query() request aborted.".to_string())
+        }
+        result = execute_completion(prompt, system, None, &candidates, &cancel) => {
+            result.map(|(text, _, usage, model)| (text, usage, model))
+        }
+    }
 }
 
 fn assistant_text(content: &[AssistantContentBlock]) -> String {
@@ -890,7 +936,7 @@ async fn run_completion(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
         )
         .await
         {
-            Ok((text, data)) => handle.settle(HandleStatus::Completed, Some(text), data, None),
+            Ok((text, data, _usage)) => handle.settle(HandleStatus::Completed, Some(text), data, None),
             Err(error) => {
                 let status = if cancel.is_cancelled() {
                     HandleStatus::Cancelled
@@ -918,7 +964,7 @@ async fn completion_job(
     candidates: Vec<CompletionCandidate>,
     cancel: CancellationToken,
     cell_signal: AbortSignal,
-) -> Result<(String, Option<Value>), String> {
+) -> Result<(String, Option<Value>, pa_types::ai::Usage), String> {
     let _permit = REQUEST_SLOTS
         .acquire()
         .await
@@ -931,7 +977,9 @@ async fn completion_job(
             cancel.cancel();
             Err("completion() request aborted.".to_string())
         }
-        result = execute_completion(&prompt, system.as_deref(), schema.as_ref(), &candidates, &cancel) => result,
+        result = execute_completion(&prompt, system.as_deref(), schema.as_ref(), &candidates, &cancel) => {
+            result.map(|(text, data, usage, _model)| (text, data, usage))
+        },
     }
 }
 

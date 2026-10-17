@@ -100,6 +100,13 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
         app.poll_deadlines(now, &port);
         let mut pump_tick: Option<Pin<Box<Sleep>>> =
             app.has_pending_update().then(|| Box::pin(sleep(PUMP_TICK)));
+        // Pending paste results (in-flight clipboard read, open large-paste
+        // menu pick): wake the select so `poll_paste_results` runs — and the
+        // following paint lands — even with no further terminal events (an
+        // idle loop otherwise never iterates).
+        let mut paste_tick: Option<Pin<Box<Sleep>>> = app
+            .has_pending_paste_results()
+            .then(|| Box::pin(sleep(PUMP_TICK)));
 
         tokio::select! {
             biased;
@@ -140,6 +147,9 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
                 if app.pump_events(Instant::now()) {
                     commit_retired(&mut app, shell).context("commit scrollback")?;
                 }
+            }
+            () = async { match paste_tick.as_mut() { Some(t) => t.as_mut().await, None => std::future::pending().await } } => {
+                app.poll_paste_results();
             }
         }
 

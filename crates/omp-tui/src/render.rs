@@ -177,23 +177,51 @@ pub fn sync_output_enabled() -> bool {
         || program == "warpterminal"
 }
 
-/// Whether the environment plausibly speaks the kitty keyboard protocol, and
-/// a probe is worth its latency on startup (core.md §6.1 step 4).
-fn kitty_probe_worthwhile() -> bool {
-    if std::env::var_os("OMP_TUI_KITTY_KEYS").is_some_and(|v| v == "0") {
-        return false;
+/// Whether the kitty-keyboard probe is disabled (`OMP_TUI_KITTY_KEYS=0`).
+fn kitty_probe_opt_out() -> bool {
+    std::env::var_os("OMP_TUI_KITTY_KEYS").is_some_and(|v| v == "0")
+}
+
+/// ConPTY hosting (TS `terminal.ts` `isConPTYHosted`): win32 always hosts
+/// through ConPTY, and under WSL stdout crosses into ConPTY at the `wslhost`
+/// boundary. Deliberate superset of TS `isWsl` (which checks only
+/// `WSL_DISTRO_NAME`/`WSL_INTEROP`): herdr runs as a systemd user service
+/// where those are absent, so the `/proc/sys/kernel/osrelease` "microsoft"
+/// check is kept to still classify WSL as ConPTY-hosted.
+fn is_conpty_hosted() -> bool {
+    cfg!(windows) || crate::chrome::title::is_wsl()
+}
+
+/// Kitty push level for a confirmed-kitty terminal (TS reply handler):
+/// ConPTY drops Shift+letter when flag 4 (report alternate keys) is on, so
+/// ConPTY hosts push disambiguate-only (preserving event-type reporting, flag
+/// 2, if a parent enabled it); otherwise disambiguate + alternate keys
+/// (event-type reporting only when inherited, TS `>5u`/`>7u`).
+fn kitty_push_flags(conpty: bool, reported_event_types: bool) -> crossterm::event::KeyboardEnhancementFlags {
+    use crossterm::event::KeyboardEnhancementFlags as F;
+    let disambiguate = F::DISAMBIGUATE_ESCAPE_CODES;
+    match (conpty, reported_event_types) {
+        (true, true) => disambiguate | F::REPORT_EVENT_TYPES,
+        (true, false) => disambiguate,
+        (false, true) => disambiguate | F::REPORT_EVENT_TYPES | F::REPORT_ALTERNATE_KEYS,
+        (false, false) => disambiguate | F::REPORT_ALTERNATE_KEYS,
     }
-    let term = std::env::var("TERM").unwrap_or_default();
-    let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    std::env::var_os("KITTY_WINDOW_ID").is_some()
-        || term.contains("kitty")
-        || term.contains("wezterm")
-        || term.contains("ghostty")
-        || term.contains("rio")
-        || term.contains("contour")
-        || program == "ghostty"
-        || program == "WezTerm"
-        || program == "kitty"
+}
+
+/// Settled keyboard mode after the probe (TS `#queryAndEnableKittyProtocol` +
+/// the reply handler): kitty reply → push one level; no reply → the
+/// `modifyOtherKeys` fallback engages automatically (TS arms it 150 ms after
+/// the query; here `supports_keyboard_enhancement` resolves first, and
+/// `enter` writes `MODIFY_OTHER_KEYS_ON` for [`KittyKeys::ModifyOtherKeys`]).
+fn keyboard_mode_after_probe(supported: bool, opt_out: bool) -> KittyKeys {
+    if opt_out {
+        return KittyKeys::Inactive;
+    }
+    if supported {
+        KittyKeys::Pushed
+    } else {
+        KittyKeys::ModifyOtherKeys
+    }
 }
 
 /// Vertical layout of the live region: keep the bottom `height` rows
@@ -345,34 +373,34 @@ pub struct Shell<B: Backend, R: RawOut> {
     screen: Rect,
 }
 
-/// Probe the kitty keyboard protocol: send `CSI ? u`; any reply means the
-/// terminal speaks the protocol, then push exactly one flag level. On a
-/// confirmed unsupported terminal, optionally engage the `modifyOtherKeys`
-/// fallback when `OMP_TUI_MODIFY_OTHER_KEYS=1` (core.md §6.1 step 4).
+/// Probe the kitty keyboard protocol (TS `#queryAndEnableKittyProtocol`):
+/// query `CSI ? u`; any reply means the terminal speaks the protocol, then
+/// push exactly one flag level (`kitty_push_flags`). On a terminal that does
+/// not answer, the `modifyOtherKeys` fallback engages automatically (TS arms
+/// it 150 ms after the query; the opt-out `OMP_TUI_KITTY_KEYS=0` skips both).
 fn probe_kitty_keys() -> io::Result<KittyKeys> {
     use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
-    if !kitty_probe_worthwhile() {
+    let opt_out = kitty_probe_opt_out();
+    if opt_out {
         return Ok(KittyKeys::Inactive);
     }
     // `supports_keyboard_enhancement` sends the query and consumes the reply
     // from crossterm's shared event source (a late reply therefore never
     // reaches the app's EventStream as a phantom keypress).
     let supported = crossterm::terminal::supports_keyboard_enhancement()?;
-    if supported {
-        // Default TS level `>5u`: disambiguate escape codes + report
-        // alternate keys (no event types — release events would confuse the
-        // editor; core.md §6.4/§6.5).
-        let push = cmd_ansi(&PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS,
-        ));
+    let mode = keyboard_mode_after_probe(supported, opt_out);
+    if mode == KittyKeys::Pushed {
+        // crossterm's API reports support as a bool, not the terminal's
+        // reported flag set, so the TS "preserve reported flag 2" branch
+        // (conpty `>3u` / non-conpty `>7u`) degrades to assuming no inherited
+        // event-type reporting (`>1u` / `>5u`).
+        let push = cmd_ansi(&PushKeyboardEnhancementFlags(kitty_push_flags(
+            is_conpty_hosted(),
+            false,
+        )));
         io::stdout().write_all(push.as_bytes())?;
-        return Ok(KittyKeys::Pushed);
     }
-    if std::env::var_os("OMP_TUI_MODIFY_OTHER_KEYS").is_some_and(|v| v == "1") {
-        return Ok(KittyKeys::ModifyOtherKeys);
-    }
-    Ok(KittyKeys::Inactive)
+    Ok(mode)
 }
 
 impl Shell<ShellBackend, io::Stdout> {
@@ -1031,5 +1059,45 @@ mod tests {
         // Not on alt: leave is a no-op.
         shell.leave_alt().unwrap();
         assert!(rec.take().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod keyboard_probe_tests {
+    use super::*;
+
+    #[test]
+    fn opt_out_is_inactive_without_probing() {
+        assert_eq!(keyboard_mode_after_probe(true, true), KittyKeys::Inactive);
+        assert_eq!(keyboard_mode_after_probe(false, true), KittyKeys::Inactive);
+    }
+
+    #[test]
+    fn kitty_reply_pushes_exactly_one_level() {
+        assert_eq!(keyboard_mode_after_probe(true, false), KittyKeys::Pushed);
+        assert_eq!(keyboard_mode_after_probe(false, false), KittyKeys::ModifyOtherKeys);
+    }
+
+    #[test]
+    fn push_flags_match_ts_levels() {
+        use crossterm::event::{KeyboardEnhancementFlags as F, PushKeyboardEnhancementFlags};
+        let seq = |conpty: bool, event_types: bool| {
+            cmd_ansi(&PushKeyboardEnhancementFlags(kitty_push_flags(conpty, event_types)))
+        };
+        // TS: conpty → `>1u` (disambiguate only; ConPTY drops Shift+letter
+        // under flag 4), preserving flag 2 if reported (`>3u`).
+        assert!(seq(true, false).contains(">1u"), "{}", seq(true, false));
+        assert!(seq(true, true).contains(">3u"));
+        // TS: otherwise `>5u` (disambiguate + alternate keys), `>7u` when
+        // event-type reporting is already on.
+        assert!(seq(false, false).contains(">5u"));
+        assert!(seq(false, true).contains(">7u"));
+        let _ = F::DISAMBIGUATE_ESCAPE_CODES;
+    }
+
+    #[test]
+    fn modify_other_keys_sequences_unchanged() {
+        assert_eq!(MODIFY_OTHER_KEYS_ON, "\x1b[>4;2m");
+        assert_eq!(MODIFY_OTHER_KEYS_OFF, "\x1b[>4;1m");
     }
 }

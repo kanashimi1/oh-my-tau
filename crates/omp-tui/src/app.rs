@@ -311,6 +311,12 @@ pub struct App {
     appearance: crate::theme::Appearance,
     /// Working directory the session runs in (settings re-reads on edits).
     cwd: PathBuf,
+    /// In-flight clipboard read (paste chord → worker thread → drained in
+    /// [`App::poll_deadlines`]); the read shells out and must not block the
+    /// render loop (TS spawns off the event loop, clipboard.ts `spawnCapture`).
+    clipboard_rx: Option<std::sync::mpsc::Receiver<crate::clipboard::ClipboardOutcome>>,
+    /// Paste staged behind the open large-paste menu (`paste.largeMenuThreshold`).
+    pending_large_paste: Option<(String, usize)>,
 }
 
 impl App {
@@ -353,6 +359,8 @@ impl App {
             session_sources: Vec::new(),
             appearance: crate::theme::Appearance::Dark,
             cwd: cwd.to_path_buf(),
+            clipboard_rx: None,
+            pending_large_paste: None,
         }
     }
 
@@ -627,6 +635,31 @@ impl App {
         for (id, value) in self.extension_ui.poll_deadlines(now) {
             port.extension_ui_response(id, value);
         }
+        self.poll_paste_results();
+    }
+
+    /// Apply finished paste results: a clipboard read (paste chord) and a
+    /// resolved large-paste menu pick. The controller wakes on
+    /// [`App::has_pending_paste_results`] so this runs — and the following
+    /// paint lands — even when the loop would otherwise block with no
+    /// terminal events.
+    pub fn poll_paste_results(&mut self) {
+        if let Some(rx) = &self.clipboard_rx {
+            if let Ok(outcome) = rx.try_recv() {
+                self.clipboard_rx = None;
+                self.apply_clipboard_outcome(outcome);
+            }
+        }
+        if let Some(pick) = self.overlays.large_paste_mut().take_pick() {
+            self.apply_large_paste_pick(pick);
+        }
+    }
+
+    /// Whether paste results are pending: a clipboard read in flight or an
+    /// open large-paste menu whose pick still needs draining.
+    #[must_use]
+    pub fn has_pending_paste_results(&self) -> bool {
+        self.clipboard_rx.is_some() || self.overlays.stack().contains(&OpenOverlay::LargePaste)
     }
 
     /// Whether a `message_update` is still inside its coalesce window; the
@@ -698,6 +731,10 @@ impl App {
                 }
             }
             AppEvent::ContextUsage(frame) => self.apply_context_usage(frame),
+            AppEvent::ModelsChanged { models } => {
+                let picker = self.overlays.models_mut();
+                picker.models = models.clone();
+            }
             AppEvent::ThinkingLevelChanged(frame) => {
                 let configured_auto = frame.get("configured").and_then(Value::as_str) == Some("auto");
                 self.status.auto_thinking = configured_auto;
@@ -789,7 +826,17 @@ impl App {
             return true;
         }
         let Event::Key(key) = event else {
-            return true; // resize/paste: redraw-only for now
+            // Bracketed paste: unwrap the payload (crossterm turns the
+            // `\x1b[200~…\x1b[201~` bytes into `Event::Paste`) and run the
+            // paste pipeline. Everything between the markers is paste
+            // *content* — an Enter that shares the paste burst arrives as a
+            // separate `Event::Key` after the end marker (TS `stdin-buffer.ts`
+            // `leadingEnter` splits bytes *after* `\x1b[201~`), so there is
+            // nothing submit-shaped inside the payload.
+            if let Some(payload) = crate::bracketed_paste::paste_of(event) {
+                self.route_paste(payload, false);
+            }
+            return true; // resize: redraw-only
         };
         self.handle_key(*key, port, Instant::now()).unwrap_or(false)
     }
@@ -829,6 +876,7 @@ impl App {
             Action::PromoteQueued { text } => port.promote_queued(text),
             Action::Abort => port.abort(),
             Action::Continue => port.continue_run(),
+            Action::RefreshModels => port.refresh_models(),
             Action::ResumeSession { path, fork } => {
                 // A resumed session replaces the transcript: drop the
                 // journal feeding the rewind/tree overlays.
@@ -989,6 +1037,19 @@ impl App {
             }
         }
 
+        // System-clipboard pastes (custom-editor.ts `app.clipboard.*`):
+        // ctrl+v smart-pastes (image first, then text), ctrl+shift+v /
+        // alt+shift+v paste the clipboard text raw. The read shells out, so
+        // it runs on a worker thread and lands via `poll_deadlines`.
+        if self.keys.matches_event(&key, "app.clipboard.pasteImage") {
+            self.begin_clipboard_paste(crate::clipboard::PasteRequest::Smart);
+            return Some(true);
+        }
+        if self.keys.matches_event(&key, "app.clipboard.pasteTextRaw") {
+            self.begin_clipboard_paste(crate::clipboard::PasteRequest::TextRaw);
+            return Some(true);
+        }
+
         if self.keys.matches_event(&key, "app.interrupt") {
             return Some(self.esc_ladder(now, port));
         }
@@ -1012,6 +1073,135 @@ impl App {
             return None;
         }
         Some(true)
+    }
+
+    /// `paste.largeMenuThreshold` from settings (TS `cfgPasteLargeMenuThreshold`,
+    /// default 100; `0` disables the menu so large pastes always collapse).
+    fn large_paste_menu_threshold(&self) -> usize {
+        omp_settings::Settings::load(&self.cwd)
+            .get_number("paste.largeMenuThreshold")
+            .map_or(100, |v| if v <= 0.0 { 0 } else { v as usize })
+    }
+
+    /// Route an incoming paste payload through the TS paste pipeline
+    /// (`#handlePaste` + `handleLargePaste`): small pastes insert inline,
+    /// marker-sized pastes below the menu threshold stage as a
+    /// text-attachment chip (`insertTextAttachment`), and a paste at/above
+    /// the threshold opens the large-paste menu instead. `submit_after_paste`
+    /// skips the menu (nobody can answer it before the submit lands, TS
+    /// `options.submitAfterPaste`).
+    fn route_paste(&mut self, text: &str, submit_after_paste: bool) {
+        if !crate::editor::paste::is_large(text) {
+            self.editor.handle_paste(text);
+            return;
+        }
+        let line_count = crate::editor::paste::sanitize(text).lines().count();
+        let threshold = self.large_paste_menu_threshold();
+        if threshold > 0 && line_count >= threshold && !submit_after_paste {
+            self.pending_large_paste = Some((text.to_owned(), line_count));
+            self.overlays.open_large_paste(line_count);
+            return;
+        }
+        // Below the gate: stage as a text-attachment chip (TS default in
+        // `handleLargePaste`).
+        self.editor.attach_text("paste.md", text);
+    }
+
+    /// Kick off a system-clipboard read on a worker thread (`handleImagePaste`
+    /// / `handleClipboardTextRawPaste`); the result is applied when
+    /// [`App::poll_deadlines`] drains it.
+    fn begin_clipboard_paste(&mut self, request: crate::clipboard::PasteRequest) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.clipboard_rx = Some(rx);
+        std::thread::spawn(move || {
+            // A panicking bridge (bad stub command, odd locale) must not kill
+            // the app: report it as a failed read.
+            let outcome = std::panic::catch_unwind(|| crate::clipboard::perform(request))
+                .unwrap_or(crate::clipboard::ClipboardOutcome::Failed);
+            let _ = tx.send(outcome);
+        });
+    }
+
+    /// Apply one drained clipboard read (TS `handleImagePaste` smart order:
+    /// image first — a resolved text payload is discarded unused when an
+    /// image is present — then text, with "Clipboard is empty" only when
+    /// both miss).
+    fn apply_clipboard_outcome(&mut self, outcome: crate::clipboard::ClipboardOutcome) {
+        use crate::clipboard::ClipboardOutcome;
+        match outcome {
+            ClipboardOutcome::Image(png) => self.attach_clipboard_image(png),
+            ClipboardOutcome::TextRaw(text) => {
+                self.editor.insert_str_at_cursor(&text);
+            }
+            ClipboardOutcome::Text(text) if text.is_empty() => {
+                self.push_system("Clipboard is empty".to_owned());
+            }
+            ClipboardOutcome::Text(text) => self.route_paste(&text, false),
+            ClipboardOutcome::Empty => {
+                self.push_system("Clipboard is empty".to_owned());
+            }
+            ClipboardOutcome::Failed => {
+                self.push_system("Failed to read clipboard".to_owned());
+            }
+        }
+    }
+
+    /// Save a clipboard PNG to a temp file and queue it as an image
+    /// attachment (TS `sink.attach({type:"image", …})`; omp-rs attachments
+    /// reference a file path, so the payload is materialized first).
+    fn attach_clipboard_image(&mut self, png: Vec<u8>) {
+        let path = std::env::temp_dir().join(format!(
+            "omp-clipboard-{}.png",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis())
+        ));
+        if std::fs::write(&path, &png).is_err() {
+            self.push_system("Failed to save clipboard image".to_owned());
+            return;
+        }
+        self.editor.attach_image(&path.display().to_string(), None, None);
+    }
+
+    /// Apply the large-paste menu choice (`presentLargePasteMenu` switch):
+    /// wrapped `<attachment>` block, file reference, inline marker, or the
+    /// Esc fallback (stage as a text-attachment chip). The content is never
+    /// lost.
+    fn apply_large_paste_pick(&mut self, pick: crate::overlays::large_paste::LargePastePick) {
+        use crate::overlays::large_paste::LargePastePick;
+        let Some((text, line_count)) = self.pending_large_paste.take() else {
+            return;
+        };
+        self.overlays.pop(); // close the LargePaste panel (it is on top)
+        match pick {
+            LargePastePick::WrappedBlock => {
+                let wrapped = format!("<attachment>\n{text}\n</attachment>");
+                self.editor.attach_text("paste.md", &wrapped);
+            }
+            LargePastePick::LocalFile => {
+                // TS saves to the session's `local://` store; omp-rs has no
+                // session-local store on the UI side yet, so the paste lands
+                // in a temp file and the path is referenced inline. Failure
+                // falls back to the text chip like TS `#attachPasteAsFile`.
+                let path = std::env::temp_dir().join(format!(
+                    "omp-paste-{}.md",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis())
+                ));
+                if std::fs::write(&path, &text).is_ok() {
+                    self.editor.insert_str_at_cursor(&format!("{} ", path.display()));
+                    self.push_system(format!("Saved {line_count} pasted lines to {}", path.display()));
+                } else {
+                    self.editor.attach_text("paste.md", &text);
+                    self.push_system(
+                        "Failed to save paste to a file — attached as a text chip instead".to_owned(),
+                    );
+                }
+            }
+            LargePastePick::Inline => self.editor.handle_paste(&text),
+            LargePastePick::Cancelled => self.editor.attach_text("paste.md", &text),
+        }
     }
 
     /// Recompute popup suggestions for the text before the cursor (opens,
@@ -3132,5 +3322,179 @@ mod tests {
             "type": "message_end",
             "message": message,
         })));
+    }
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::*;
+    use crate::clipboard::ClipboardOutcome;
+    use crossterm::event::{Event, KeyCode as CtKeyCode, KeyEvent as CtKeyEvent, KeyModifiers as CtMods};
+    use std::path::Path;
+    use std::time::Instant;
+
+    fn app() -> App {
+        App::new("zai/glm-5.3-flash".into(), Path::new("/repo"))
+    }
+
+    fn port() -> super::super::port::FakePort {
+        crate::port::FakePort::default()
+    }
+
+    fn key(code: CtKeyCode) -> KeyEvent {
+        CtKeyEvent::new(code, CtMods::NONE)
+    }
+
+    fn log(port: &crate::port::FakePort) -> Vec<String> {
+        port.log.lock().clone()
+    }
+
+    fn shift_ctrl(code: char) -> KeyEvent {
+        CtKeyEvent::new(CtKeyCode::Char(code), CtMods::CONTROL | CtMods::SHIFT)
+    }
+
+    #[test]
+    fn paste_chords_arm_clipboard_read() {
+        let mut app = app();
+        let port = port();
+        let ctrl_v = CtKeyEvent::new(CtKeyCode::Char('v'), CtMods::CONTROL);
+        assert!(app.handle_key(ctrl_v, &port, Instant::now()).is_some());
+        assert!(app.clipboard_rx.is_some(), "ctrl+v arms the clipboard read");
+        app.clipboard_rx = None;
+        let csi_u = CtKeyEvent::new(CtKeyCode::Char('v'), CtMods::CONTROL | CtMods::SHIFT);
+        assert!(app.handle_key(csi_u, &port, Instant::now()).is_some());
+        assert!(app.clipboard_rx.is_some(), "ctrl+shift+v arms the clipboard read");
+    }
+
+    #[test]
+    fn bracketed_paste_small_inserts_verbatim() {
+        let mut app = app();
+        let port = port();
+        assert!(app.handle_terminal_event(&Event::Paste("hello\nworld".into()), &port));
+        assert_eq!(app.editor.text(), "hello\nworld");
+    }
+
+    #[test]
+    fn bracketed_paste_large_collapses_to_marker() {
+        let mut app = app();
+        let port = port();
+        let payload = "x".repeat(1200);
+        assert!(app.handle_terminal_event(&Event::Paste(payload), &port));
+        // TS input-controller stages a marker-sized paste as a text chip
+        // (`insertTextAttachment`); the raw-text marker stays the editor
+        // default for hosts without the large-paste gate.
+        assert_eq!(app.editor.text(), "[Text #1, paste.md]");
+    }
+
+    #[test]
+    fn bracketed_paste_keeps_payload_verbatim_including_newlines() {
+        let mut app = app();
+        let port = port();
+        // A trailing newline inside the markers is paste content; a real
+        // Enter sharing the burst arrives as its own Event::Key (TS
+        // `leadingEnter` splits bytes after `\x1b[201~`).
+        assert!(app.handle_terminal_event(&Event::Paste("hi there\n".into()), &port));
+        assert_eq!(app.editor.text(), "hi there\n");
+        assert!(!log(&port).iter().any(|l| l.contains("hi there")), "no auto-submit");
+    }
+
+    #[test]
+    fn paste_text_raw_inserts_verbatim_without_collapse() {
+        let mut app = app();
+        let port = port();
+        assert!(app.handle_terminal_event(&Event::Key(shift_ctrl('v')), &port));
+        // The read is in flight; nothing inserted yet.
+        assert_eq!(app.editor.text(), "");
+        app.apply_clipboard_outcome(ClipboardOutcome::TextRaw("a\nb\nc".into()));
+        assert_eq!(app.editor.text(), "a\nb\nc");
+    }
+
+    #[test]
+    fn clipboard_smart_text_routes_through_paste_pipeline() {
+        let mut app = app();
+        app.apply_clipboard_outcome(ClipboardOutcome::Text("x".repeat(1200)));
+        assert_eq!(app.editor.text(), "[Text #1, paste.md]");
+        app.editor.take();
+        app.apply_clipboard_outcome(ClipboardOutcome::Empty);
+        assert_eq!(app.editor.text(), "", "empty clipboard inserts nothing");
+    }
+
+    #[test]
+    fn clipboard_image_attaches_chip() {
+        let mut app = app();
+        app.apply_clipboard_outcome(ClipboardOutcome::Image(b"png".to_vec()));
+        assert!(app.editor.text().starts_with("[Image #1]"), "{}", app.editor.text());
+        assert_eq!(app.editor.attachments().len(), 1);
+    }
+
+    #[test]
+    fn large_paste_menu_opens_at_threshold_and_inline_collapses() {
+        let mut app = app();
+        let port = port();
+        let mut cfg_home = std::env::temp_dir();
+        cfg_home.push(format!("omp-paste-menu-test-{}", std::process::id()));
+        std::fs::create_dir_all(&cfg_home).unwrap();
+        // Default settings file location derives from cwd/env; keep the
+        // default threshold (100 lines) and use a 120-line paste.
+        let payload = "line\n".repeat(119) + "line";
+        assert!(app.handle_terminal_event(&Event::Paste(payload.clone()), &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::LargePaste), "menu gate");
+        assert_eq!(app.editor.text(), "", "insert deferred while the menu is open");
+        // Choose "Paste inline" (third row) → collapse to the inline marker.
+        app.overlays.handle_key(key(CtKeyCode::Down));
+        app.overlays.handle_key(key(CtKeyCode::Down));
+        app.overlays.handle_key(key(CtKeyCode::Enter));
+        app.poll_deadlines(Instant::now(), &port);
+        assert_eq!(app.overlays.open(), None);
+        assert!(
+            app.editor.text().contains("[Paste #1,") || app.editor.text().contains("[Text #1,"),
+            "{}",
+            app.editor.text()
+        );
+        let _ = std::fs::remove_dir_all(cfg_home);
+    }
+
+    #[test]
+    fn large_paste_menu_cancel_stages_text_chip() {
+        let mut app = app();
+        let port = port();
+        let payload = "line\n".repeat(119) + "line";
+        assert!(app.handle_terminal_event(&Event::Paste(payload), &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::LargePaste));
+        // Esc bubbles out of the panel; the host then applies the fallback.
+        assert!(app.handle_terminal_event(&Event::Key(key(CtKeyCode::Esc)), &port));
+        app.poll_deadlines(Instant::now(), &port);
+        assert_eq!(app.overlays.open(), None);
+        assert!(app.editor.text().starts_with("[Text #1, paste.md]"), "{}", app.editor.text());
+    }
+
+    #[test]
+    fn large_paste_below_threshold_stages_chip_without_menu() {
+        let mut app = app();
+        let port = port();
+        // Marker-sized (>10 lines) but under the 100-line menu gate.
+        let payload = "line\n".repeat(20);
+        assert!(app.handle_terminal_event(&Event::Paste(payload), &port));
+        assert_eq!(app.overlays.open(), None, "below gate: no menu");
+        assert!(app.editor.text().starts_with("[Text #1, paste.md]"), "{}", app.editor.text());
+    }
+}
+
+#[cfg(test)]
+mod paste_key_tests {
+    use super::*;
+    use crossterm::event::{KeyCode as CtKeyCode, KeyEvent as CtKeyEvent, KeyModifiers as CtMods};
+    use std::path::Path;
+
+    #[test]
+    fn ctrl_shift_v_csi_u_matches_paste_text_raw() {
+        let app = App::new("m".into(), Path::new("/repo"));
+        let key = CtKeyEvent::new(CtKeyCode::Char('v'), CtMods::CONTROL | CtMods::SHIFT);
+        assert_eq!(
+            crate::keybindings::key_id_from_event(&key).as_deref(),
+            Some("ctrl+shift+v"),
+            "CSI-u ctrl+shift+v canonicalizes to the binding id"
+        );
+        assert!(app.keys.matches_event(&key, "app.clipboard.pasteTextRaw"));
     }
 }

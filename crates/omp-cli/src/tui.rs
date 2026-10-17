@@ -146,6 +146,33 @@ struct Port {
     rt: Arc<Runtime>,
 }
 
+/// `models_changed` frame: the re-read `/model` picker catalogue after an
+/// F5 refresh (fields mirror the startup mapping in `tui_main`).
+fn models_changed_frame() -> Value {
+    let models: Vec<Value> = crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
+        .into_iter()
+        .map(|b| {
+            let m = &b.model;
+            serde_json::json!({
+                "provider": m.provider,
+                "id": m.id,
+                "name": if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
+                "contextWindow": m.context_window,
+                "maxTokens": m.max_tokens,
+                "costInput": m.cost.input.as_f64(),
+                "costOutput": m.cost.output.as_f64(),
+                "costCacheRead": m.cost.cache_read.as_f64(),
+                "reasoning": m.reasoning,
+                "vision": m.input.contains(&pa_types::ai::ModelInput::Image),
+                "available": b.available,
+                "kind": b.kind,
+                "priority": b.priority,
+            })
+        })
+        .collect();
+    serde_json::json!({"type": "models_changed", "models": models})
+}
+
 /// TS `RpcPromptResultFrame` for a prompt that failed before or outside the
 /// agent run (the TUI-local paths below; the runtime emits its own).
 fn prompt_failed(message: impl Into<String>) -> Value {
@@ -555,6 +582,39 @@ impl omp_tui::RuntimePort for Port {
     fn abort_compaction(&self) {
         // No compaction-abort RPC in the omp-rs runtime yet; kept as a
         // stable no-op so the app wiring does not change when it lands.
+    }
+
+    fn refresh_models(&self) {
+        let rt = self.rt.clone();
+        tokio::task::spawn_blocking(move || {
+            // TS `ModelRegistry.refresh`: per-provider /models discovery →
+            // `models.db`.
+            match omp_providers::refresh(&omp_providers::AgentDir::default(), None) {
+                Ok(reports) => {
+                    for r in reports {
+                        let msg = match &r.note {
+                            Some(note) => format!("model refresh {}: {note}", r.provider),
+                            None if r.discovered.is_empty() => {
+                                format!("model refresh {}: no new models ({} cached)", r.provider, r.total)
+                            }
+                            None => format!(
+                                "model refresh {}: +{} ({})",
+                                r.provider,
+                                r.discovered.len(),
+                                r.discovered.join(", ")
+                            ),
+                        };
+                        // `session_info` is the one free-text frame the TUI
+                        // renders verbatim.
+                        rt.send(serde_json::json!({"type": "session_info", "lines": [{"text": msg}]}));
+                    }
+                    // Re-read the merged catalog so the open /model browser
+                    // shows new models immediately (TS model hub behavior).
+                    rt.send(models_changed_frame());
+                }
+                Err(e) => rt.send(prompt_failed(format!("model refresh failed: {e:#}"))),
+            }
+        });
     }
 
     fn request_session_info(&self) {

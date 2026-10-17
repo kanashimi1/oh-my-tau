@@ -104,6 +104,7 @@ pub fn build_agent(
     extra_tools: Vec<Arc<dyn AgentTool>>,
     ext_hooks: Option<&Arc<crate::ext::Extensions>>,
     sysprompt_opts: &crate::sysprompt::Options,
+    context_strategy: crate::context::Kind,
 ) -> Result<(Agent, Target)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
@@ -135,6 +136,21 @@ pub fn build_agent(
     let prompt = system_prompt(cwd, sysprompt_opts, &hidden);
     tools.extend(hidden);
     tools.extend(extra_tools);
+    let ctx = (context_strategy != crate::context::Kind::Append).then(|| {
+        let policy = crate::context_policy::Policy::resolve(&settings, &|k| std::env::var(k).ok())
+            .unwrap_or_else(|e| {
+                tracing::warn!("{e}; context policy disabled");
+                None
+            });
+        crate::context::Shared::with_policy(
+            context_strategy,
+            crate::context::Limits::from_settings(&settings),
+            policy,
+        )
+    });
+    if let Some(ctx) = &ctx {
+        tools.push(crate::context::tool(ctx.clone()));
+    }
     let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
         api_key: selected.api_key,
         model: selected.model,
@@ -158,14 +174,26 @@ pub fn build_agent(
             tools: Some(tools),
             messages: None,
         },
-        convert_to_llm: Some(if crate::dedup::dedup_enabled() {
-            let base = convert_to_llm();
-            Arc::new(move |messages: Vec<AgentMessage>| {
-                let base = Arc::clone(&base);
-                Box::pin(async move { base(crate::dedup::dedup_tool_results(messages)).await })
-            })
-        } else {
-            convert_to_llm()
+        convert_to_llm: Some({
+            let dedup = crate::dedup::dedup_enabled();
+            if dedup || ctx.is_some() {
+                let base = convert_to_llm();
+                Arc::new(move |messages: Vec<AgentMessage>| {
+                    let base = Arc::clone(&base);
+                    let ctx = ctx.clone();
+                    Box::pin(async move {
+                        let messages = match &ctx {
+                            Some(c) => c.wire(messages),
+                            None => messages,
+                        };
+                        let messages =
+                            if dedup { crate::dedup::dedup_tool_results(messages) } else { messages };
+                        base(messages).await
+                    })
+                })
+            } else {
+                convert_to_llm()
+            }
         }),
         stream_fn: Some(switchable_stream_fn(target.clone())),
         transform_context,

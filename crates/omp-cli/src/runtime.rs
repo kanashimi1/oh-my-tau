@@ -151,6 +151,10 @@ pub struct Runtime {
     pending_rewind_report: Mutex<Option<String>>,
     /// Sinks every applied session-name change (ext bridge `set_session_name`).
     on_session_name: Mutex<Option<NameListener>>,
+    /// Native Herdr agent-state reporter (`HERDR_ENV=1` only; `None` elsewhere).
+    herdr: Option<std::sync::Arc<crate::herdr::Herdr>>,
+    /// `ask`-tool runs currently waiting on the user: >0 means Blocked.
+    ask_blocked: std::sync::atomic::AtomicU64,
     /// In-flight automatic title generation (`--mode print` awaits it before exiting).
     title_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -305,8 +309,19 @@ impl Runtime {
         };
         let recovery = TurnRecovery::new(recovery_cfg);
         persist.defer_errors(true);
+        // RLM sub-call accounting: every `llm_query` provider call lands as a
+        // `model_usage` entry in this session (bench/stats count sub-call tokens).
+        crate::tools::rlm::set_entry_sink(Some(persist.entry_sink()));
         let compaction = crate::compact::load_settings();
         let todo_cfg = omp_settings::Settings::load(&cwd);
+        // Herdr pane integration (HERDR_ENV=1 only): adopt the current
+        // session (resume command + session identity) and report idle so the
+        // pane is held from the start. No-op outside Herdr.
+        let herdr = crate::herdr::global().inspect(|h| {
+            let model_ref = format!("{}/{}", live.provider, live.id);
+            h.set_session(persist.file().as_deref(), Some(&model_ref), "startup");
+            h.report(crate::herdr::State::Idle, None);
+        });
         let rt = Arc::new(Self {
             agent,
             target,
@@ -345,6 +360,8 @@ impl Runtime {
             auto_thinking: std::sync::atomic::AtomicBool::new(false),
             pending_rewind_report: Mutex::new(None),
             on_session_name: Mutex::new(None),
+            herdr,
+            ask_blocked: std::sync::atomic::AtomicU64::new(0),
             title_task: Mutex::new(None),
             compaction: Mutex::new(compaction),
             compacting: std::sync::atomic::AtomicBool::new(false),
@@ -489,6 +506,31 @@ impl Runtime {
                 let mut p = lock(&self.prompts);
                 p.agent_starts += 1;
                 p.active = true;
+                drop(p);
+                self.herdr_working();
+            }
+            AgentEvent::ToolExecutionStart { tool_name, args, .. } if tool_name == "ask" => {
+                // Herdr: an ask dialog blocks on the user.
+                self.ask_blocked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let message = args
+                    .get("questions")
+                    .and_then(Value::as_array)
+                    .and_then(|qs| qs.iter().find_map(|q| q.get("question").and_then(Value::as_str)))
+                    .map(str::to_string);
+                if let (Some(h), Some(m)) = (&self.herdr, message) {
+                    h.report(crate::herdr::State::Blocked, Some(&m));
+                } else if let Some(h) = &self.herdr {
+                    h.report(crate::herdr::State::Blocked, Some("waiting for user input"));
+                }
+            }
+            AgentEvent::ToolExecutionEnd { tool_name, .. } if tool_name == "ask" => {
+                let prev = self
+                    .ask_blocked
+                    .fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |n| Some(n.saturating_sub(1)))
+                    .unwrap_or(0);
+                if prev == 1 {
+                    self.herdr_working();
+                }
             }
             AgentEvent::MessageEnd { message } if message.role() == "user" => {
                 self.emit_queue_update();
@@ -710,6 +752,12 @@ impl Runtime {
             && last_assistant_msg(messages)
                 .is_some_and(|a| !matches!(a.stop_reason, StopReason::Error | StopReason::Aborted));
         if let Some(f) = failed.filter(|f| lock(&self.recovery).is_retryable(f)) {
+            // Herdr: the retry saga holds the pane Blocked until the backoff
+            // elapses and the run continues (AgentStart -> working).
+            if let Some(h) = &self.herdr {
+                let msg = f.message.chars().take(200).collect::<String>();
+                h.report(crate::herdr::State::Blocked, Some(&msg));
+            }
             let rt = self.clone();
             let messages = messages.to_vec();
             // The listener runs while the agent holds its state lock: recovery (model swap,
@@ -745,6 +793,8 @@ impl Runtime {
         messages: &[AgentMessage],
         error_override: Option<&str>,
     ) {
+        // Herdr: the turn is over — the pane waits for input.
+        self.herdr_idle();
         let mut messages = messages.to_vec();
         if let Some(AgentMessage::Standard(Message::Assistant(a))) =
             messages.iter_mut().rev().find(|m| m.role() == "assistant")
@@ -1030,6 +1080,35 @@ impl Runtime {
         match level {
             Some(l) => format!("{p}/{i}:{}", level_name(l)),
             None => format!("{p}/{i}"),
+        }
+    }
+
+    // --- Herdr pane integration (all no-ops unless HERDR_ENV=1) ---
+
+    /// Report `working`, unless an `ask` dialog still holds the pane Blocked.
+    fn herdr_working(&self) {
+        if let Some(h) = &self.herdr {
+            if self.ask_blocked.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+                h.report(crate::herdr::State::Working, None);
+            }
+        }
+    }
+
+    fn herdr_idle(&self) {
+        if let Some(h) = &self.herdr {
+            h.report(crate::herdr::State::Idle, None);
+        }
+    }
+
+    /// Session switch: rebuild the resume command and report the new identity.
+    fn herdr_session(&self, start_source: &str) {
+        if let Some(h) = &self.herdr {
+            let model_ref = self.live_selector_with_level(None);
+            h.set_session(
+                self.persist.file().as_deref(),
+                Some(&model_ref),
+                start_source,
+            );
         }
     }
 
@@ -1627,6 +1706,7 @@ impl Runtime {
         self.agent.reset().await;
         self.persist.start_new(&self.cwd, dir)?;
         self.publish_session_file();
+        self.herdr_session("new");
         self.rehydrate_todo_tool(&[]).await;
         {
             let mut st = lock(&self.settings);
@@ -1770,6 +1850,7 @@ impl Runtime {
         .await;
         self.agent.set_messages(messages).await;
         rss_trace!("messages-set");
+        self.herdr_session("resume");
         lock(&self.prompts).open.clear();
         self.restore_title_from(&index);
         Ok(())
@@ -3568,8 +3649,21 @@ mod resume_seed_tests {
     }
 }
 
+/// Herdr teardown: the last Runtime drop (TUI/RPC/print run ended) is the
+/// agent exiting its pane — release the pane so its agent name, state, and
+/// resume command clear at once instead of via the idle-shell safety net.
+/// Blocking is bounded by the reporter's per-report timeout and no-ops unless
+/// `HERDR_ENV=1`.
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Some(h) = &self.herdr {
+            h.release_blocking();
+        }
+    }
+}
+
 #[cfg(test)]
-mod run_outcome_tests {
+mod turn_outcome_tests {
     use super::*;
     use serde_json::json;
 

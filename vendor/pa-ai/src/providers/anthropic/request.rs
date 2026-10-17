@@ -951,6 +951,20 @@ fn apply_cache_control_to_message(message: &mut Value, cache_control: &Value) ->
     }
 }
 
+/// First bytes of the context-strategy slots message (`omp-cli/src/context.rs`).
+const SLOTS_MARKER: &str = "<context-slots>";
+
+fn is_slots_message(p: &Param) -> bool {
+    if p.role() != "user" {
+        return false;
+    }
+    match &p.value["content"] {
+        Value::String(t) => t.starts_with(SLOTS_MARKER),
+        Value::Array(b) => b.first().and_then(|b| b["text"].as_str()).is_some_and(|t| t.starts_with(SLOTS_MARKER)),
+        _ => false,
+    }
+}
+
 fn apply_prompt_caching(
     messages: &mut [Param],
     head_breakpoints: usize,
@@ -983,6 +997,15 @@ fn apply_prompt_caching(
     let mut applied = 0usize;
     if let Some(&first) = trailing_candidates.first() {
         if applied < budget && apply_cache_control_to_message(&mut messages[first].value, cache_control) {
+            applied += 1;
+        }
+    }
+    // CLM slot region (rs-only; the marker never occurs on TS wire bodies): keep a breakpoint on
+    // the slots message so prefix + unchanged slots stay cached while the tail churns.
+    if let Some(slots) = messages[..=message_end].iter().rposition(is_slots_message) {
+        if applied < budget && Some(slots) != trailing_candidates.first().copied()
+            && apply_cache_control_to_message(&mut messages[slots].value, cache_control)
+        {
             applied += 1;
         }
     }
@@ -1370,4 +1393,44 @@ pub(crate) fn prompt_cache_key(session_id: Option<&str>, retention: Option<Cache
     }
     let value = session_id.filter(|v| !v.is_empty())?;
     crate::providers::openai_completions::normalize_stable_id(value, 64, "pc_")
+}
+
+#[cfg(test)]
+mod slots_cache_tests {
+    use super::*;
+
+    fn p(role: &str, text: &str, conversational: bool) -> Param {
+        Param { value: json!({ "role": role, "content": text }), conversational }
+    }
+
+    fn marked(m: &[Param]) -> Vec<usize> {
+        m.iter()
+            .enumerate()
+            .filter(|(_, p)| p.value.to_string().contains("cache_control"))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[test]
+    fn slots_message_gets_a_breakpoint_in_addition_to_the_tail() {
+        let cc = json!({ "type": "ephemeral" });
+        let mut m = vec![
+            p("user", "task", true),
+            p("user", "<context-slots>\nslot a\n</context-slots>", false),
+            p("assistant", "a1", false),
+            p("user", "u1", true),
+            p("assistant", "a2", false),
+            p("user", "u2", true),
+        ];
+        apply_prompt_caching(&mut m, 2, &cc);
+        assert_eq!(marked(&m), vec![1, 5], "slots + last message (budget 2)");
+    }
+
+    #[test]
+    fn without_marker_layout_is_unchanged() {
+        let cc = json!({ "type": "ephemeral" });
+        let mut m = vec![p("user", "task", true), p("assistant", "a1", false), p("user", "u1", true)];
+        apply_prompt_caching(&mut m, 2, &cc);
+        assert_eq!(marked(&m), vec![1, 2], "the two trailing messages, as in TS");
+    }
 }

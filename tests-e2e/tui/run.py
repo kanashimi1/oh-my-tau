@@ -535,6 +535,46 @@ def _selected_label(t: Term) -> str:
     return ""
 
 
+# ── paste scenarios ─────────────────────────────────────────────────────────
+PASTE_START, PASTE_END = "\x1b[200~", "\x1b[201~"
+
+
+def sc_paste_small(t: Term, r: Result) -> None:
+    """Bracketed paste of a short payload lands verbatim in the composer."""
+    ready(t)
+    t.send(PASTE_START + "hello from paste" + PASTE_END)
+    t.pump(0.8)
+    comp = t.text()
+    r.screens["composer"] = comp
+    r.check("paste small: text in composer", "hello from paste" in comp)
+    t.key("enter")
+    ok = t.wait_for(r"E2E-REPLY-1", 90)
+    r.check("paste small: submitted and replied", ok)
+    r.check("paste small: user text echoed", "hello from paste" in t.transcript())
+
+
+def sc_paste_large(t: Term, r: Result) -> None:
+    """A marker-sized paste collapses to a chip, not the raw payload."""
+    ready(t)
+    payload = " ".join("L" * 60 for _ in range(20))  # ~1259 chars, one line
+    t.send(PASTE_START + payload + PASTE_END)
+    t.pump(1.0)
+    comp = t.text()
+    r.screens["composer"] = comp
+    r.check("paste large: raw payload collapsed", "L" * 60 not in comp)
+    r.check("paste large: chip token shown", re.search(r"#1\b", comp) is not None)
+
+
+def sc_paste_clipboard(t: Term, r: Result) -> None:
+    """ctrl+shift+v pastes the clipboard text raw (stub clipboard command)."""
+    ready(t)
+    t.key("ctrl-shift-v")
+    t.pump(1.5)
+    comp = t.text()
+    r.screens["composer"] = comp
+    r.check("ctrl+shift+v: stub clipboard text pasted raw", "stub-clipboard-text" in comp)
+
+
 SCENARIOS = {
     "startup": ("text", sc_startup),
     "two_prompts": ("text", sc_two_prompts),
@@ -550,6 +590,15 @@ SCENARIOS = {
     "settings_edit": ("text", overlay_settings_edit()),
     "composer_shape": ("text", sc_composer_shape),
     "effort": ("think", sc_effort),
+    "paste_small": ("text", sc_paste_small),
+    "paste_large": ("text", sc_paste_large),
+    "paste_clipboard": ("text", sc_paste_clipboard, "",
+                        {"OMP_CLIPBOARD_TEXT_GET": "printf stub-clipboard-text",
+                         "OMP_CLIPBOARD_IMAGE_GET": "printf PNGSTUB"}),
+    "paste_clipboard_kitty": ("text", sc_paste_clipboard, "",
+                              {"OMP_CLIPBOARD_TEXT_GET": "printf stub-clipboard-text",
+                               "OMP_CLIPBOARD_IMAGE_GET": "printf PNGSTUB",
+                               "E2E_KITTY": "1"}),
 }
 
 
@@ -575,11 +624,15 @@ def reap_home_processes(root: Path) -> list[str]:
     return [f"reaped daemons {','.join(killed)}"] if killed else []
 
 
-def run_client(binary: str, model: str, fn, port: int, keep: Path, extra_config: str = "") -> Result:
+def run_client(binary: str, model: str, fn, port: int, keep: Path, extra_config: str = "",
+               extra_env: dict[str, str] | None = None) -> Result:
     root = Path(tempfile.mkdtemp(prefix="e2e-home-"))
     env = make_home(root, port, extra_config)
+    if extra_env:
+        env.update(extra_env)
     r = Result()
-    t = Term([binary, "--model", f"mock/{model}"], env=env, cwd=env["E2E_WORK"])
+    t = Term([binary, "--model", f"mock/{model}"], env=env, cwd=env["E2E_WORK"],
+             kitty=(extra_env or {}).get("E2E_KITTY") == "1")
     try:
         fn(t, r)
     except Exception as e:  # a crashed scenario is a failed check, not a crashed run
@@ -638,11 +691,13 @@ def main() -> int:
     results: dict[str, dict[str, Result]] = {}
     for name in names:
         model, fn, *extra = SCENARIOS[name]
+        extra_config = extra[0] if extra else ""
+        extra_env = extra[1] if len(extra) > 1 else {}
         for tag, binary in clients.items():
             print(f"[{tag}] {name} …", flush=True)
             keep = out / name / tag
             keep.mkdir(parents=True, exist_ok=True)
-            res = run_client(binary, model, fn, port, keep, *extra)
+            res = run_client(binary, model, fn, port, keep, extra_config, extra_env)
             results.setdefault(name, {})[tag] = res
             for screen, text in res.screens.items():
                 (keep / f"{screen}.txt").write_text(text)

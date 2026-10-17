@@ -23,6 +23,52 @@ fn output(rt: &Runtime, text: &str) {
     }));
 }
 
+/// `/rlm <question> @file | -- text` (opt-in RLM phase 1, design §3.3): loads
+/// the context into the Python eval kernel as `context`, resets the sub-call
+/// ledger and hands the RLM loop prompt to the model.
+async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
+    use crate::tools::rlm;
+    let trimmed = args.trim();
+    if trimmed.is_empty() || trimmed == "help" {
+        output(rt, rlm::USAGE);
+        return Outcome::Handled { agent_invoked: false };
+    }
+    if trimmed == "stats" {
+        let stats = rlm::stats_snapshot();
+        output(rt, &serde_json::to_string_pretty(&stats).unwrap_or_default());
+        return Outcome::Handled { agent_invoked: false };
+    }
+    let parsed = match rlm::parse_args(trimmed) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            output(rt, &message);
+            return Outcome::Handled { agent_invoked: false };
+        }
+    };
+    let context = match parsed.context {
+        rlm::ContextSource::Text(text) => text,
+        rlm::ContextSource::File(path) => {
+            let full = if Path::new(&path).is_absolute() { path.clone().into() } else { rt.cwd.join(&path) };
+            match std::fs::read_to_string(&full) {
+                Ok(text) => text,
+                Err(e) => {
+                    output(rt, &format!("/rlm: cannot read {}: {e}", full.display()));
+                    return Outcome::Handled { agent_invoked: false };
+                }
+            }
+        }
+    };
+    rlm::SESSION.reset();
+    rlm::set_override(parsed.max_depth, parsed.max_calls, parsed.max_tokens);
+    let context_chars = context.chars().count();
+    rlm::SESSION.set_context(Some(context));
+    if let Err(e) = rlm::load_context_cell(&rt.cwd).await {
+        output(rt, &format!("/rlm: failed to load context into the eval kernel: {e}"));
+        return Outcome::Handled { agent_invoked: false };
+    }
+    Outcome::Prompt(rlm::loop_prompt(&parsed.question, context_chars, rlm::Limits::effective()))
+}
+
 /// Check whether `name` is one of the extra builtin commands or their aliases
 /// (only the catalog⊆handlers test needs it; dispatch matches directly).
 #[cfg(test)]
@@ -50,6 +96,7 @@ pub fn is_extra_command(name: &str) -> bool {
             | "debug"
             | "restart"
             | "btw"
+            | "rlm"
     )
 }
 
@@ -59,6 +106,14 @@ pub fn is_extra_command(name: &str) -> bool {
 #[must_use]
 pub fn extra_catalog() -> Vec<Value> {
     vec![
+        json!({
+            "name": "rlm",
+            "description": "RLM (opt-in): load @file/text as `context` in the eval kernel; model inspects it with code and delegates chunks to llm_query (smol)",
+            "input": {
+                "hint": "[--max-calls=N] <question> @file | -- text"
+            },
+            "source": "builtin",
+        }),
         json!({
             "name": "new",
             "description": "Start a new session",
@@ -183,6 +238,7 @@ pub fn extra_catalog() -> Vec<Value> {
 /// extension and file commands.
 pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option<Outcome> {
     match name {
+        "rlm" => Some(rlm_command(rt, args).await),
         "new" => {
             if rt.state().await.get("isStreaming").and_then(Value::as_bool) == Some(true) {
                 output(
@@ -413,7 +469,7 @@ mod tests {
     #[test]
     fn test_extra_catalog_names_all_handled() {
         let catalog = extra_catalog();
-        assert_eq!(catalog.len(), 17, "expected 17 extra commands in catalog");
+        assert_eq!(catalog.len(), 18, "expected 18 extra commands in catalog");
         for cmd in &catalog {
             let name = cmd["name"].as_str().expect("command must have name");
             assert!(

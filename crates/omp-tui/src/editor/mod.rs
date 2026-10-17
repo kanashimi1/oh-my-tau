@@ -24,7 +24,7 @@ mod dispatch;
 mod history;
 mod kill_ring;
 pub(crate) mod layout;
-mod paste;
+pub mod paste;
 mod render;
 mod submit;
 mod undo;

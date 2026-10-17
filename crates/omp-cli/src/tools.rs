@@ -14,6 +14,7 @@ mod eval;
 pub(crate) mod eval_agents;
 pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;
+pub(crate) mod rlm;
 mod find;
 mod jobs;
 pub mod mcp;

@@ -479,7 +479,21 @@
     hard: async () => Boolean((await budgetSnap()).hard),
   };
 
+  // RLM sub-call: `llm_query(prompt, { context, model, depth })` -> text. Default model is
+  // the session's smol role; memoized and budgeted host-side (errors reject the promise).
+  const llm_query = async (prompt, opts, ...rest) => {
+    const options = optionsArg("llm_query", opts, rest, ["context", "model", "depth"], "{ context, model, depth }");
+    const result = await hostCall("__llm_query__", { prompt, ...options });
+    if (!result || typeof result.text !== "string") throw new Error("llm_query() did not return text");
+    return result.text;
+  };
+  const llm_stats = async () => await hostCall("__rlm_stats__", {});
+  const rlm_context = async () => await hostCall("__rlm_context__", {});
+
   Object.assign(globalThis, {
+    llm_query,
+    llm_stats,
+    rlm_context,
     completion,
     agent,
     wait,

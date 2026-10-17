@@ -132,3 +132,9 @@ used_underscore_binding = "warn"
 lto = "thin"
 codegen-units = 4
 debug = "line-tables-only"
+
+# Vendored crossterm: adds xterm modifyOtherKeys (`CSI 27 ; mods ; code ~`) decoding
+# that upstream lacks — needed so ctrl+shift+v works when only the modifyOtherKeys
+# fallback (no kitty keyboard protocol) is engaged (TS keys.ts parity).
+[patch.crates-io]
+crossterm = { path = "vendor/crossterm" }

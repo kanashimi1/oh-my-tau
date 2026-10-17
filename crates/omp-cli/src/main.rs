@@ -4,9 +4,12 @@ mod adapter;
 mod agent;
 mod cli;
 mod compact;
+mod context;
+mod context_policy;
 mod dedup;
 mod events;
 mod ext;
+mod herdr;
 mod images;
 mod model;
 mod paging;
@@ -375,8 +378,18 @@ async fn main() -> Result<()> {
         Some(e) => e.tools().await.unwrap_or_default(),
         None => Vec::new(),
     };
-    let (agent, target) =
-        agent::build_agent(&cwd, selected, extra_tools, extensions.as_ref(), &sp_opts)?;
+    let context_strategy =
+        context::Kind::resolve(args.context_strategy.as_deref(), &omp_settings::Settings::load(&cwd))
+            .map_err(|e| anyhow::anyhow!(e))?;
+    context::set_active(context_strategy);
+    let (agent, target) = agent::build_agent(
+        &cwd,
+        selected,
+        extra_tools,
+        extensions.as_ref(),
+        &sp_opts,
+        context_strategy,
+    )?;
     // eval's in-cell bridge: `tool.<name>` dispatches to the session's tools, and
     // completion()/judge() need the live provider target.
     crate::tools::eval_bridge::set_session_tools(agent.tools().await);
@@ -580,6 +593,12 @@ fn shutdown_lsp() {
 
 /// `shutdown_lsp` + `process::exit` (the only way main may terminate).
 fn exit(code: i32) -> ! {
+    // Herdr: an exit() bypasses Runtime's Drop — release the pane here so it
+    // clears instead of waiting for the idle-shell safety net. Bounded, no-op
+    // unless HERDR_ENV=1.
+    if let Some(h) = herdr::global() {
+        h.release_blocking();
+    }
     shutdown_lsp();
     std::process::exit(code);
 }

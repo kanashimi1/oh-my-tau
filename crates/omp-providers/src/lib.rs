@@ -25,6 +25,12 @@ pub use pa_ai::AssistantMessageEventStream;
 pub use command::{
     invalidate as invalidate_command_value, resolve_config_value, resolve_config_value_async,
 };
+
+mod discovery;
+pub use discovery::{
+    append_models_path, extract_model_ids, models_hash, refresh, refresh_async, MATERIALIZATION_POLICY,
+    ProviderRefresh,
+};
 pub use fallback::{
     fallback_cooldown_ms, is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, ActiveFallback,
     CandidateOptions, FallbackConfig, FallbackState, FallbackWalker, ModelLookup, RateLimitReason, RestorePlan,

@@ -435,3 +435,27 @@ if "__omp_agents_prelude_loaded__" not in globals():
                 return "<budget unavailable>"
 
     budget = _Budget()
+
+    def llm_query(prompt, context=None, model=None, *, depth=1):
+        """RLM sub-call: ask a cheap sub-LLM `prompt` (optionally over `context`); returns text.
+
+        Default model is the session's smol role. Memoized by (model, context, prompt)
+        and charged against hard max-depth/calls/tokens budgets (error in the cell when
+        exceeded). Accounting: `llm_stats()`."""
+        args = {"prompt": prompt, "depth": depth}
+        if context is not None:
+            args["context"] = context
+        if model is not None:
+            args["model"] = model
+        result = _bridge_call("__llm_query__", args)
+        if not isinstance(result, dict) or not isinstance(result.get("text"), str):
+            raise RuntimeError("llm_query() did not return text")
+        return result["text"]
+
+    def llm_stats():
+        """Sub-call accounting: calls, memo_hits, input/output/total tokens, limits, per-call records."""
+        return _bridge_call("__rlm_stats__", {})
+
+    def rlm_context():
+        """The context loaded by `/rlm` (None when none)."""
+        return _bridge_call("__rlm_context__", {})

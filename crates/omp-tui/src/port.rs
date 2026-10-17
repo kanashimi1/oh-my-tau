@@ -77,6 +77,11 @@ pub trait RuntimePort: Send + Sync + 'static {
     /// stable.
     fn abort_compaction(&self);
 
+    /// Refresh the online model catalog (TS `ModelRegistry.refresh`):
+    /// per-provider `/models` discovery → `models.db` update. Errors are
+    /// surfaced as system notices by the embedding port.
+    fn refresh_models(&self);
+
     /// Effective values for `ids` (TS `cfg://` batch get: defaults < global
     /// config.yml < project config < env). Used by the `/settings` overlay
     /// to seed its rows; ids not found come back as `Null`.
@@ -154,6 +159,9 @@ impl RuntimePort for FakePort {
     }
     fn abort_compaction(&self) {
         self.record("abort_compaction()".into());
+    }
+    fn refresh_models(&self) {
+        self.record("refresh_models()".into());
     }
     fn rewind_entry(&self, entry_id: String) {
         self.record(format!("rewind_entry({entry_id})"));

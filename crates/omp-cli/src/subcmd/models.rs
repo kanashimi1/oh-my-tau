@@ -33,11 +33,14 @@ enum Action {
 /// Unreadable `models.db`/`models.yml` (parse problems are skipped per source).
 pub fn run(args: &[String]) -> Result<i32> {
     let mut json = false;
+    let mut refresh = false;
     let mut positional: Vec<&str> = Vec::new();
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
+            "--refresh" | "--refresh=true" => refresh = true,
+            "--refresh=false" => refresh = false,
             "--kind" => {
                 // Accepted for flag compatibility; omp-rs only tracks chat models.
                 let _ = it.next();
@@ -48,8 +51,24 @@ pub fn run(args: &[String]) -> Result<i32> {
         }
     }
     let (action, pattern) = resolve_args(positional.first().copied(), positional.get(1).copied());
-    if action == Action::Refresh {
-        eprintln!("omp-rs: online catalog refresh is not supported; listing on-disk caches");
+    // `--refresh` (or the `refresh` action) triggers the online discovery
+    // pass; `provider` scopes it to one provider. After the refresh the
+    // listing below re-reads `models.db`, so new models appear immediately.
+    if refresh || action == Action::Refresh {
+        let dir = omp_providers::AgentDir::default();
+        let only = pattern;
+        let reports = omp_providers::refresh(&dir, only)
+            .map_err(|e| eprintln!("omp-rs: refresh failed: {e:#}"))
+            .unwrap_or_default();
+        if !json {
+            for r in &reports {
+                match (&r.note, r.discovered.is_empty()) {
+                    (Some(note), _) => eprintln!("omp-rs: {}: {note}", r.provider),
+                    (None, true) => eprintln!("omp-rs: {}: no new models ({} cached)", r.provider, r.total),
+                    (None, false) => eprintln!("omp-rs: {}: +{} ({})", r.provider, r.discovered.len(), r.discovered.join(", ")),
+                }
+            }
+        }
     }
 
     let dir = omp_providers::AgentDir::default();
@@ -365,6 +384,22 @@ fn available_providers(models_yml: &Path, agent_db: &Path) -> std::collections::
         .into_iter()
         .map(|(provider, _)| provider)
         .collect();
+    // Any provider declared in models.yml is available (TS `Config.providers`
+    // ∪ credentials), not just ones with inline `models:` entries — a
+    // baseUrl + apiKey provider with discovery-fed cache rows resolves too.
+    if let Ok(Ok(serde_yaml_ng::Value::Mapping(root))) =
+        std::fs::read_to_string(models_yml).map(|text| serde_yaml_ng::from_str(&text))
+    {
+        if let Some(serde_yaml_ng::Value::Mapping(map)) =
+            root.get(serde_yaml_ng::Value::from("providers"))
+        {
+            for (name, _pcfg) in map {
+                if let Some(name) = serde_yaml_ng::Value::as_str(name) {
+                    set.insert(name.to_string());
+                }
+            }
+        }
+    }
     if let Ok(conn) = rusqlite::Connection::open_with_flags(
         agent_db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -759,6 +794,48 @@ fn yaml_to_json(value: serde_yaml_ng::Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Mock `/models` endpoint → `omp_providers::refresh` → the new model is
+    /// listed by the catalog merge and resolvable via the `--model` path
+    /// (`omp_providers::resolve_in`).
+    #[test]
+    fn refresh_makes_new_model_listed_and_resolvable() {
+        let body = r#"{"data":[{"id":"mock-brand-new"}]}"#;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = sock.write_all(resp.as_bytes());
+        });
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = omp_providers::AgentDir(tmp.path().to_path_buf());
+        std::fs::write(
+            tmp.path().join("models.yml"),
+            format!("providers:\n  mockprov:\n    baseUrl: http://127.0.0.1:{port}/v1\n    apiKey: test-key\n"),
+        )
+        .expect("write models.yml");
+
+        omp_providers::refresh(&dir, Some("mockprov")).expect("refresh");
+        server.join().expect("server");
+
+        // Listed by `omp models` (mockprov is declared in models.yml → available).
+        let catalog = collect_catalog(&dir);
+        assert!(catalog.contains_key(&("mockprov".into(), "mock-brand-new".into())), "not listed");
+
+        // Resolvable by `--model mockprov/mock-brand-new` (same `resolve_in`
+        // path the CLI flag takes).
+        let resolved = omp_providers::resolve_in(&dir, "mockprov/mock-brand-new").expect("resolve");
+        assert_eq!(resolved.provider, "mockprov");
+        assert_eq!(resolved.id, "mock-brand-new");
+    }
 
     #[test]
     fn format_number_matches_ts() {

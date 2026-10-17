@@ -1112,6 +1112,9 @@ impl ModelPicker {
                     self.activate_model(m);
                 }
             }
+            // F5: online catalog refresh (TS model hub refresh); the runtime
+            // port updates `models.db`, and reopening the browser re-reads it.
+            KeyCode::F(5) => self.pending.push(Action::RefreshModels),
             _ => {
                 if self.edit_query(key) {
                     self.focus_list = true;

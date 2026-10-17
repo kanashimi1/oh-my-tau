@@ -84,6 +84,9 @@ pub enum Action {
     },
     /// Scroll the chat backlog.
     Scroll(ScrollDir),
+    /// Refresh the online model catalog (`F5` in the /model browser;
+    /// TS `ModelRegistry.refresh` → `models.db` update).
+    RefreshModels,
     /// Leave the TUI (Ctrl+C on the idle editor / `:q` future).
     Quit,
 }

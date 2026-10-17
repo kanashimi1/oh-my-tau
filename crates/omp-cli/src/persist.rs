@@ -132,6 +132,17 @@ impl Persistence {
             .map(|_| ())
     }
 
+    /// A shareable sink appending non-message entries (`model_usage`, …) to
+    /// this session, for subsystems that only see a process-global hook (RLM
+    /// sub-call accounting). Writes are best-effort.
+    #[must_use]
+    pub fn entry_sink(&self) -> std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync> {
+        let writer = std::sync::Arc::clone(&self.writer);
+        std::sync::Arc::new(move |kind, payload| {
+            let _ = writer.lock().unwrap().append_entry(kind, payload, &now_iso());
+        })
+    }
+
     /// `model_change {model, role?, resolvedModelIsFallback}` (`SessionManager.appendModelChange`).
     ///
     /// # Errors
@@ -274,7 +285,13 @@ impl Persistence {
         };
         let id = uuid_v7();
         let fresh = SessionWriter::create(&dir, &cwd.display().to_string(), &id, &now_iso())?;
-        *self.writer.lock().unwrap() = fresh;
+        {
+            let mut fresh = fresh;
+            if let Some(e) = crate::context::session_entry() {
+                let _ = fresh.append_entry("custom", e, &now_iso());
+            }
+            *self.writer.lock().unwrap() = fresh;
+        }
         *self.session_id.lock().unwrap() = id;
         self.deferred.lock().unwrap().take();
         Ok(())
@@ -311,6 +328,10 @@ pub async fn attach_with(agent: &Agent, cwd: &Path, ephemeral: bool) -> Result<P
         )
     };
     let writer = SessionWriter::create(&dir, &cwd.display().to_string(), &session_id, &now_iso())?;
+    let mut writer = writer;
+    if let Some(e) = crate::context::session_entry() {
+        let _ = writer.append_entry("custom", e, &now_iso());
+    }
     let writer = Arc::new(Mutex::new(writer));
     let defer_errors = Arc::new(AtomicBool::new(false));
     let deferred = Arc::new(Mutex::new(None));

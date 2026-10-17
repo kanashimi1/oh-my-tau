@@ -24,6 +24,7 @@ pub mod action;
 pub mod app;
 pub mod autocomplete;
 pub mod bracketed_paste;
+pub mod clipboard;
 pub mod chat;
 pub mod chrome;
 pub mod composer;
