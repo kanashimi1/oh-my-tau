@@ -23,6 +23,8 @@ fn tier_model(provider: &str, api: &str, id: &str) -> Model {
         context_window: 0,
         max_tokens: 0,
         max_tokens_explicit: false,
+        omit_max_output_tokens: None,
+        request_model_id: None,
         featured: None,
         headers: None,
         compat: None,

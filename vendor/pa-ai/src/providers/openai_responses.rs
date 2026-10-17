@@ -50,23 +50,21 @@ pub struct ResolvedResponsesCompat {
 }
 
 pub fn get_responses_compat(model: &Model) -> ResolvedResponsesCompat {
-    // TS reads the responses compat directly: the wire object cannot tag its shape, and a
-    // shared-key-only object still decodes — every field is optional and unknown keys are ignored,
-    // so the responses view of any compat object is lossless for this API.
-    let compat = model.compat.as_ref().and_then(|compat| {
-        serde_json::from_value::<pa_types::ai::OpenAiResponsesCompat>(compat.raw.clone().into())
-            .ok()
-    });
-    ResolvedResponsesCompat {
-        send_session_id_header: compat
-            .as_ref()
-            .and_then(|c| c.send_session_id_header)
-            .unwrap_or(true),
-        supports_long_cache_retention: compat
-            .as_ref()
-            .and_then(|c| c.supports_long_cache_retention)
-            .unwrap_or(true),
-    }
+    // `sendSessionIdHeader` is an authored override only; the long-retention capability is the
+    // resolved record's (TS `resolveOpenAIResponsesPolicy`: `supportsLongPromptCacheRetention`,
+    // an official-OpenAI-endpoint capability).
+    let send_session_id_header = model
+        .compat
+        .as_ref()
+        .and_then(|c| c.raw.get("sendSessionIdHeader"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let supports_long_cache_retention = crate::compat::resolve_for_model(model)
+        .ok()
+        .and_then(|p| p.compat)
+        .and_then(|c| c.get("supportsLongPromptCacheRetention").and_then(serde_json::Value::as_bool))
+        .unwrap_or(false);
+    ResolvedResponsesCompat { send_session_id_header, supports_long_cache_retention }
 }
 
 fn get_prompt_cache_retention(
@@ -523,10 +521,10 @@ mod tests {
 
     #[test]
     fn the_shared_key_only_compat_decodes_for_responses_models() {
-        // TS `getXaiSubscriptionModel`'s compat carries only `supportsLongCacheRetention: false`;
-        // the responses provider reads the responses view directly (the wire object cannot tag its
-        // shape).
-        let model = compat_model(serde_json::json!({ "supportsLongCacheRetention": false }));
+        // A shared-key-only override object decodes for responses models; the long-retention
+        // capability is the resolver's (`supportsLongPromptCacheRetention`: first-party OpenAI
+        // endpoints only, so false on xAI).
+        let model = compat_model(serde_json::json!({ "supportsReasoningEffort": false }));
         let compat = get_responses_compat(&model);
         assert!(!compat.supports_long_cache_retention);
         assert!(
@@ -538,12 +536,12 @@ mod tests {
     #[test]
     fn the_responses_shaped_compat_keeps_its_values() {
         let model = compat_model(
-            serde_json::json!({ "sendSessionIdHeader": false, "supportsLongCacheRetention": true }),
+            serde_json::json!({ "sendSessionIdHeader": false, "supportsLongPromptCacheRetention": true }),
         );
         let compat = get_responses_compat(&model);
         assert!(!compat.send_session_id_header);
         assert!(compat.supports_long_cache_retention);
-        // Absent compat: both defaults on (TS's defaults).
+        // Absent compat on the first-party OpenAI endpoint: both on.
         let plain = serde_json::from_value::<Model>(serde_json::json!({
             "id": "m", "name": "m", "api": "openai-responses", "provider": "openai",
             "baseUrl": "https://api.openai.com/v1", "reasoning": false, "input": ["text"],

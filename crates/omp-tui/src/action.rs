@@ -44,6 +44,13 @@ pub enum Action {
     SetThinkingLevel(String),
     /// Run a slash command (`Runtime`-side dispatch, TS `slash` module).
     Slash { name: String, args: String },
+    /// Live preview of a highlighted `/settings` choice (not persisted).
+    SettingPreview {
+        /// Setting id (`theme.dark` / `theme.light`).
+        id: String,
+        /// Previewed value.
+        value: String,
+    },
     /// Answer an extension `ask`-dialog (`extension_ui_response` frame).
     ExtensionUiResponse {
         id: String,

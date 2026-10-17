@@ -86,6 +86,13 @@ pub trait RuntimePort: Send + Sync + 'static {
     /// `saveConfigFile`). An error string is surfaced as a system notice.
     fn settings_set(&self, id: String, value: Value) -> Result<(), String>;
 
+    /// Efforts the live model supports, least to most intensive and without
+    /// `off` (TS `getAvailableThinkingLevels`); empty when the model cannot
+    /// think. Drives the Shift+Tab cycle and the thinking selectors.
+    fn available_thinking_levels(&self) -> Vec<String> {
+        ["minimal", "low", "medium", "high", "xhigh"].map(String::from).to_vec()
+    }
+
     /// Gather the `/session` info report; the runtime answers with a
     /// `{"type":"session_info","lines":[…]}` frame that opens the overlay.
     fn request_session_info(&self) {}

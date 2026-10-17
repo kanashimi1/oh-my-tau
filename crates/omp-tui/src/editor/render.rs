@@ -16,7 +16,7 @@ use std::cell::Cell;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
@@ -25,9 +25,6 @@ use crate::editor::layout::{display_width, layout, LayoutLine};
 use crate::editor::{Editor, EditorOutcome};
 use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
 use crate::theme::Theme;
-
-/// Prompt gutter of the band composer (`bandComposerStyle.defaultPromptGutter`).
-pub const PROMPT_GUTTER: &str = "╰─ ";
 
 /// Minimum free cells between the end-of-line cursor and the right hint
 /// (`PLACEHOLDER_MIN_GAP`).
@@ -61,20 +58,43 @@ impl Editor {
         self.scroll_offset.set(cur + step);
     }
 
-    /// The height the editor wants for `width` columns: wrapped content
-    /// rows (the band composer has no vertical chrome), capped at
-    /// [`Editor::max_height`] minus the band row (TS `setMaxHeight`).
+    /// Geometry of the active composer shape for `width` columns:
+    /// `(padding_x, side chrome per side, prompt gutter)`.
+    fn shape_geometry(&self) -> (usize, usize, Option<&'static str>) {
+        let shape = self.shape;
+        let padding_x = shape.default_padding_x();
+        let chrome = shape.side_chrome_width(padding_x);
+        // The box frame never renders a gutter (TS `#getEffectivePromptGutter`).
+        let gutter = if shape.side_borders() { None } else { shape.default_prompt_gutter() };
+        (padding_x, chrome, gutter)
+    }
+
+    /// Width available to wrapped text for a composer `width` columns wide.
+    fn text_width(&self, width: usize) -> usize {
+        let (_, chrome, gutter) = self.shape_geometry();
+        let gutter_w = gutter.map_or(0, display_width).min(width.saturating_sub(chrome * 2));
+        width.saturating_sub(chrome * 2 + gutter_w).max(1)
+    }
+
+    /// Chrome rows the shape draws around the content (box merges its bottom
+    /// border into the last content row).
+    fn chrome_rows(&self) -> u16 {
+        u16::from(self.shape.has_top()) + u16::from(self.shape.has_bottom())
+    }
+
+    /// The height the editor wants for `width` columns: wrapped content rows
+    /// capped at [`Editor::max_height`] minus the shape's vertical chrome
+    /// (TS `setMaxHeight` / `#getVisibleContentHeight`), plus the chrome rows.
     #[must_use]
     pub fn desired_height(&self, width: u16) -> u16 {
-        let content_width = width
-            .saturating_sub(display_width(PROMPT_GUTTER) as u16)
-            .max(1) as usize;
+        let content_width = self.text_width(usize::from(width));
         let rows = if self.buffer.is_empty() {
             1
         } else {
             layout(self.buffer.lines(), content_width).len().max(1)
         };
-        u16::try_from(rows.min(self.max_height.saturating_sub(1).max(2) as usize)).unwrap_or(u16::MAX)
+        let max_content = usize::from(self.max_height.saturating_sub(self.shape.vertical_chrome()).max(1));
+        u16::try_from(rows.min(max_content)).unwrap_or(u16::MAX) + self.chrome_rows()
     }
 
     /// Keep the scroll offset showing the cursor (called from render).
@@ -105,72 +125,114 @@ impl Component for Editor {
         if area.height < 1 || area.width < 4 {
             return;
         }
-        let inner = area;
-        let content_height = area.height as usize;
+        let shape = self.shape;
+        let (padding_x, chrome_w, gutter) = self.shape_geometry();
         let gutter_color = if self.is_bash_mode() {
             theme.color("accent")
         } else {
             theme.color("border")
         };
         let gutter_style = Style::default().fg(gutter_color);
-        let gutter_w = display_width(PROMPT_GUTTER);
+        let width = usize::from(area.width);
+        let gutter_w = gutter.map_or(0, display_width).min(width.saturating_sub(chrome_w * 2));
+        let text_w = width.saturating_sub(chrome_w * 2 + gutter_w).max(1);
+        let (accent, surface) = crate::composer::chrome_styles(theme, gutter_style);
+        let ctx = crate::composer::Chrome {
+            width,
+            padding_x,
+            border: gutter_style,
+            accent,
+            surface,
+            top: self.top_border.clone(),
+        };
 
-        // Empty composer: gutter, cursor, and the right-aligned hint.
-        if self.buffer.is_empty() {
-            let mut spans = vec![Span::styled(PROMPT_GUTTER, gutter_style)];
-            if let Some((key, label)) = &self.hint {
-                let hint_w = display_width(key) + 1 + display_width(label);
-                let avail = (inner.width as usize).saturating_sub(gutter_w);
-                // The cursor cell sits at the start of the free area.
-                if avail >= hint_w + HINT_MIN_GAP {
-                    spans.push(Span::raw(" ".repeat(avail - hint_w)));
-                    spans.push(Span::styled(key.clone(), Style::default().fg(theme.color("accent"))));
-                    spans.push(Span::raw(" "));
-                    spans.push(Span::styled(
-                        label.clone(),
-                        Style::default()
-                            .fg(theme.color("text_muted"))
-                            .add_modifier(Modifier::ITALIC),
-                    ));
+        // Top chrome row.
+        let mut y = area.y;
+        if let Some(top) = shape.render_top(&ctx) {
+            frame.render_widget(Paragraph::new(top), Rect { y, height: 1, ..area });
+            y += 1;
+        }
+        let bottom_rows = u16::from(shape.has_bottom());
+        let content_height = (area.y + area.height).saturating_sub(y + bottom_rows).max(1) as usize;
+        let content_top = y;
+
+        // Visual rows (an empty draft shows one row carrying the hint).
+        let empty = self.buffer.is_empty();
+        let rows = if empty {
+            Vec::new()
+        } else {
+            layout(self.buffer.lines(), text_w)
+        };
+        if !empty {
+            self.sync_scroll(&rows, content_height);
+        }
+        let offset = if empty { 0 } else { self.scroll_offset.get() };
+        let visible_count = if empty {
+            1
+        } else {
+            rows.len().saturating_sub(offset).min(content_height)
+        };
+        let gutter_first = gutter.map(|g| Span::styled(g.to_owned(), gutter_style));
+        let gutter_rest = gutter.map(|_| Span::raw(" ".repeat(gutter_w)));
+        for vis in 0..visible_count {
+            let (text, text_cells) = if empty {
+                let mut spans = Vec::new();
+                let mut used = 0usize;
+                if let Some((key, label)) = &self.hint {
+                    let hint_w = display_width(key) + 1 + display_width(label);
+                    // The cursor cell sits at the start of the free area.
+                    if text_w >= hint_w + HINT_MIN_GAP {
+                        spans.push(Span::raw(" ".repeat(text_w - hint_w)));
+                        spans.push(Span::styled(key.clone(), Style::default().fg(theme.color("accent"))));
+                        spans.push(Span::raw(" "));
+                        spans.push(Span::styled(
+                            label.clone(),
+                            Style::default()
+                                .fg(theme.color("text_muted"))
+                                .add_modifier(Modifier::ITALIC),
+                        ));
+                        used = text_w;
+                    }
                 }
-            }
-            frame.render_widget(Paragraph::new(Line::from(spans)), inner);
-            let cursor_area = Rect {
-                x: inner.x + u16::try_from(gutter_w).unwrap_or(0),
-                width: inner.width.saturating_sub(u16::try_from(gutter_w).unwrap_or(0)),
-                ..inner
+                (spans, used)
+            } else {
+                let row = &rows[offset + vis];
+                let cells = display_width(&row.text);
+                (vec![Span::raw(row.text.clone())], cells)
             };
+            let row = crate::composer::Row {
+                text,
+                pad: text_w.saturating_sub(text_cells),
+                gutter: if vis == 0 { gutter_first.clone() } else { gutter_rest.clone() },
+                is_last: vis + 1 == visible_count,
+            };
+            let line = shape.render_row(&ctx, &row);
+            frame.render_widget(
+                Paragraph::new(line),
+                Rect { y: content_top + vis as u16, height: 1, ..area },
+            );
+        }
+
+        // Bottom chrome row (rules); the box merges its border into the last
+        // content row.
+        if let Some(bottom) = shape.render_bottom(&ctx) {
+            let by = content_top + visible_count as u16;
+            if by < area.y + area.height {
+                frame.render_widget(Paragraph::new(bottom), Rect { y: by, height: 1, ..area });
+            }
+        }
+
+        // Cursor: find its visual row/column and invert the cell.
+        let cursor_area = Rect {
+            x: area.x + u16::try_from(chrome_w + gutter_w).unwrap_or(0),
+            y: content_top,
+            width: u16::try_from(text_w).unwrap_or(area.width),
+            height: u16::try_from(visible_count).unwrap_or(1),
+        };
+        if empty {
             Self::draw_cursor(frame.buffer_mut(), cursor_area, "", 0, 0, theme);
             return;
         }
-
-        // Every content row reserves the prompt-gutter width: the `╰─ ` cue
-        // on the first row, blank indent on the rest — wrap width and
-        // cursor column both account for it.
-        let rows = layout(
-            self.buffer.lines(),
-            (inner.width as usize).saturating_sub(gutter_w).max(1),
-        );
-        self.sync_scroll(&rows, content_height);
-        let offset = self.scroll_offset.get();
-        let visible: Vec<Line<'_>> = rows
-            .iter()
-            .enumerate()
-            .skip(offset)
-            .take(content_height)
-            .enumerate()
-            .map(|(vis, (_, r))| {
-                let lead: Span<'_> = if vis == 0 {
-                    Span::styled(PROMPT_GUTTER, gutter_style)
-                } else {
-                    Span::raw(" ".repeat(gutter_w))
-                };
-                Line::from(vec![lead, Span::raw(r.text.as_str())])
-            })
-            .collect();
-        frame.render_widget(Paragraph::new(visible), inner);
-
-        // Cursor: find its visual row/column and invert the cell.
         let cursor = self.buffer.cursor();
         let mut vis_row = 0usize;
         let mut col_in_row = 0usize;
@@ -187,11 +249,6 @@ impl Component for Editor {
         let before = rows
             .get(vis_row)
             .map_or("", |r| &r.text[..col_in_row.min(r.text.len())]);
-        let cursor_area = Rect {
-            x: inner.x + u16::try_from(gutter_w).unwrap_or(0),
-            width: inner.width.saturating_sub(u16::try_from(gutter_w).unwrap_or(0)),
-            ..inner
-        };
         Self::draw_cursor(
             frame.buffer_mut(),
             cursor_area,

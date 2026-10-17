@@ -59,6 +59,11 @@ pub enum ThinkingFormat {
     Qwen,
     #[serde(rename = "qwen-chat-template")]
     QwenChatTemplate,
+    /// Moonshot/Kimi: `thinking: { type, effort }`.
+    Kimi,
+    /// Generic chat-template kwargs dialect (`chat_template_kwargs.thinking`).
+    #[serde(rename = "chat-template")]
+    ChatTemplate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -150,8 +155,21 @@ impl ModelCompat {
         } else if has_key(RESPONSES_COMPAT_KEYS) {
             Ok(CompatKind::OpenAiResponses(serde_json::from_value(value)?))
         } else {
+            // Catalog caches carry the full resolved TS compat record; a key whose value this
+            // struct cannot represent (a newer enum spelling) must not discard the rest, or flags
+            // such as `supportsDeveloperRole: false` silently revert to host detection.
+            let lenient: JsonMap = self
+                .raw
+                .iter()
+                .filter(|(k, v)| {
+                    let mut one = JsonMap::new();
+                    one.insert((*k).clone(), (*v).clone());
+                    serde_json::from_value::<OpenAiCompletionsCompat>(Value::Object(one)).is_ok()
+                })
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
             Ok(CompatKind::OpenAiCompletions(Box::new(
-                serde_json::from_value(value)?,
+                serde_json::from_value(Value::Object(lenient))?,
             )))
         }
     }

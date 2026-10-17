@@ -139,46 +139,39 @@ fn model(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Vec<Piece> {
         .unwrap_or(&ctx.st.model)
         .trim_start_matches("Claude ")
         .to_string();
-    let mut text = if ctx.st.compact_thinking && ctx.st.thinking.is_some() {
-        // Compact form: the level glyph replaces the model icon.
-        format!(
-            "{} {name}",
-            thinking_glyph(ctx.st.thinking.as_deref(), theme)
-        )
-    } else {
-        format!("{} {name}", style::icon(theme, "icon.model", "⬢"))
+    let display = thinking_display(ctx.st, theme);
+    // Compact mode swaps the model icon for the thinking-level glyph and
+    // drops the ` · <level>` tail.
+    let compact = ctx.st.compact_thinking && display.is_some();
+    let icon = match (&display, compact) {
+        (Some(display), true) => display.split(' ').next().unwrap_or_default().to_owned(),
+        _ => style::icon(theme, "icon.model", "⬢").to_owned(),
     };
-    if !ctx.st.compact_thinking {
-        if let Some(display) = thinking_display(ctx.st.thinking.as_deref(), theme) {
-            text.push_str(&display);
-        }
-    }
+    let mut text = format!("{icon} {name}");
     if ctx.st.fast_mode {
         text.push(' ');
         text.push_str(style::icon(theme, "icon.fast", "⚡"));
     }
+    if let (Some(display), false) = (&display, compact) {
+        text.push_str(theme.symbol("sep.dot"));
+        text.push_str(display);
+    }
     vec![Piece::new(ctx.tok("statusLineModel"), text)]
 }
 
-fn thinking_glyph(level: Option<&str>, theme: &crate::theme::Theme) -> &'static str {
-    match level {
-        Some("high" | "xhigh" | "max") => style::icon(theme, "thinking.high", "◉"),
-        Some("medium") => style::icon(theme, "thinking.medium", "○"),
-        Some("low" | "minimal") => style::icon(theme, "thinking.low", "·"),
-        _ => style::icon(theme, "icon.model", "⬢"),
+/// Thinking-level display (`modelThinkingDisplay`): `◒ high`, `⦸ off`,
+/// `⟳ auto` while auto thinking has no classified level; `None` when the
+/// model has no thinking.
+fn thinking_display(st: &super::StatusLine, theme: &crate::theme::Theme) -> Option<String> {
+    let level = st.thinking.as_deref()?;
+    if st.auto_thinking {
+        return Some(format!("{} auto", theme.symbol("thinking.autoPending")));
     }
-}
-
-fn thinking_display(level: Option<&str>, theme: &crate::theme::Theme) -> Option<String> {
-    let level = level?;
     if level == "off" {
-        Some(format!(
-            " {} off",
-            style::icon(theme, "status.disabled", "○")
-        ))
-    } else {
-        Some(format!(" · {level}"))
+        return Some(format!("{} off", theme.symbol("status.disabled")));
     }
+    let symbol = theme.symbol(&format!("thinking.{level}"));
+    Some(if symbol.is_empty() { level.to_owned() } else { symbol.to_owned() })
 }
 
 /// `mode` — Plan/Prewalk/Goal/Vibe/Loop (`segments.ts:486-562`).

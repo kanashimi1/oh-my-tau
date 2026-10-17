@@ -45,7 +45,8 @@ def make_home(root: Path, port: int, extra_config: str = "") -> dict[str, str]:
         "    api: openai-completions\n"
         "    models:\n"
         + "".join(f"      - id: {m}\n        name: e2e {m}\n        contextWindow: 128000\n        maxTokens: 4096\n"
-                  for m in ("text", "tool", "tools", "fail"))
+                  + ("        reasoning: true\n" if m == "think" else "")
+                  for m in ("text", "tool", "tools", "fail", "think"))
     )
     # No onboarding wizard / update probe / changelog: they would cover the
     # chat screen on a fresh HOME (TS omp; omp-rs ignores unknown keys).
@@ -435,6 +436,96 @@ def overlay_settings_edit():
     return sc
 
 
+def _model_glyph(t: Term, model: str) -> str:
+    """The status-line glyph in front of the model name (`π > ◒ e2e think`):
+    the thinking-level icon in compact mode, `⬢` for a model without thinking."""
+    m = re.search(r"π > (\S+) e2e " + re.escape(model), t.text())
+    return m.group(1) if m else ""
+
+
+def _composer_look(t: Term) -> dict[str, bool]:
+    """What the composer frame looks like on the ready screen."""
+    lines = t.screen()
+    return {
+        "box-top": any(l.startswith("╭") and "π" in l for l in lines),
+        "box-bottom": any(l.startswith("╰") and l.rstrip().endswith("╯") for l in lines),
+        "band-row": any(l.startswith(" π > ") for l in lines),
+        "rule-row": any(set(l.strip()) == {"─"} and len(l.strip()) > 40 for l in lines),
+    }
+
+
+def sc_composer_shape(t: Term, r: Result) -> None:
+    """Editing Composer Shape in /settings changes the editor's look live and
+    persists: band (status band + `╰─` prompt) → Rounded Box (status embedded
+    in a framed top border, `╰─ … ─╯` prompt row)."""
+    def home_config() -> str:
+        env = Path(f"/proc/{t.proc.pid}/environ").read_bytes().split(b"\0")
+        home = next(e.split(b"=", 1)[1] for e in env if e.startswith(b"HOME="))
+        config = Path(home.decode()) / ".omp" / "agent" / "config.yml"
+        return config.read_text() if config.exists() else ""
+
+    ready(t)
+    before = _composer_look(t)
+    r.check("composer-shape: default is the band", before["band-row"] and not before["box-top"])
+    r.screens["composer-before"] = t.text()
+    submit(t, "/settings")
+    t.settle(1.5, 15)
+    for _ in range(12):
+        if _selected_label(t).startswith("Composer Shape"):
+            break
+        t.key("down")
+        t.settle(0.2, 3)
+    r.check("composer-shape: row selected", _selected_label(t).startswith("Composer Shape"))
+    t.key("enter")
+    t.settle(0.8, 8)
+    r.check("composer-shape: opens a choice list", "Rounded Box" in t.text())
+    r.screens["composer-menu"] = t.text()
+    t.key("down")
+    t.settle(0.4, 5)
+    t.key("enter")
+    t.settle(0.8, 8)
+    r.check("composer-shape: edit persisted", "shape: box" in home_config())
+    t.key("esc")
+    t.settle(1.0, 10)
+    if t.screen_.alt_active:
+        t.key("esc")
+        t.settle(1.0, 10)
+    after = _composer_look(t)
+    r.screens["composer-after"] = t.text()
+    r.check("composer-shape: box frame drawn live", after["box-top"] and after["box-bottom"])
+    r.check("composer-shape: band gone", not after["band-row"])
+
+
+def sc_effort(t: Term, r: Result) -> None:
+    """Shift+Tab cycles the thinking effort (off → auto → minimal … xhigh) and
+    the status line's level glyph follows; the editor hint advertises the
+    chord; a bare /effort opens the Thinking Level selector."""
+    ready(t)
+    r.check("effort: editor hint", "⇧⇥ to change thinking effort" in t.text())
+    start = _model_glyph(t, "think")
+    glyphs = []
+    for _ in range(8):
+        t.send(b"\x1b[Z")
+        t.settle(0.5, 6)
+        glyphs.append(_model_glyph(t, "think"))
+    r.notes.append(f"glyphs {start!r} -> {glyphs}")
+    r.check("effort: shift+tab changes the status glyph", bool(start) and glyphs[0] not in ("", start))
+    # off, auto, then the efforts the model supports, in that order (the
+    # ladder's top differs per model, so compare the common prefix).
+    want = ["⦸", "⟳", "○", "◔", "◑"]
+    it = iter(glyphs)
+    r.check("effort: cycle order off/auto/min/low/med", all(any(g == w for g in it) for w in want))
+    r.check("effort: cycle wraps", len(set(glyphs)) >= 6 and glyphs[-1] in glyphs[:-1])
+    submit(t, "/effort")
+    t.settle(1.0, 8)
+    r.screens["effort-selector"] = t.text()
+    r.check("effort: selector title", "Thinking Level" in t.text())
+    r.check("effort: selector rows", "No reasoning" in t.text() and "Very brief reasoning" in t.text())
+    t.key("esc")
+    t.settle(0.8, 8)
+    r.check("effort: selector closes", "Thinking Level" not in t.text())
+
+
 def _selected_label(t: Term) -> str:
     """The label of the ❯-selected settings row on the current screen."""
     for line in t.screen():
@@ -457,6 +548,8 @@ SCENARIOS = {
     "overlay_model": ("text", fullscreen_overlay("/model")),
     "overlay_settings": ("text", fullscreen_overlay("/settings")),
     "settings_edit": ("text", overlay_settings_edit()),
+    "composer_shape": ("text", sc_composer_shape),
+    "effort": ("think", sc_effort),
 }
 
 

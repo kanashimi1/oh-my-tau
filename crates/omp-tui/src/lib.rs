@@ -26,6 +26,7 @@ pub mod autocomplete;
 pub mod bracketed_paste;
 pub mod chat;
 pub mod chrome;
+pub mod composer;
 pub mod component;
 pub mod controller;
 pub mod editor;

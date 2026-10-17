@@ -23,7 +23,7 @@ mod buffer;
 mod dispatch;
 mod history;
 mod kill_ring;
-mod layout;
+pub(crate) mod layout;
 mod paste;
 mod render;
 mod submit;
@@ -84,6 +84,10 @@ pub struct Editor {
     pub(crate) max_height: u16,
     /// Right-aligned composer hint `(key, label)` shown while the draft is empty.
     pub(crate) hint: Option<(String, String)>,
+    /// Active composer shape (`composer.shape`).
+    pub(crate) shape: crate::composer::ComposerShape,
+    /// Status content for the shape's top chrome (set by the app per frame).
+    pub(crate) top_border: Option<crate::composer::TopBorder>,
     pub(crate) disable_submit: bool,
     submit_kind: submit::SubmitKind,
     last_action: LastAction,
@@ -113,6 +117,8 @@ impl Editor {
             page_scroll_step: std::cell::Cell::new(1),
             max_height: 10,
             hint: None,
+            shape: crate::composer::ComposerShape::default(),
+            top_border: None,
             disable_submit: false,
             submit_kind: submit::SubmitKind::Normal,
             last_action: LastAction::Other,
@@ -246,6 +252,23 @@ impl Editor {
     /// buffer (TS `editor.placeholder`, `composer-hints.ts`).
     pub fn set_hint(&mut self, hint: Option<(String, String)>) {
         self.hint = hint;
+    }
+
+    /// Switch the composer shape (TS `editor.setBorderStyle`).
+    pub fn set_shape(&mut self, shape: crate::composer::ComposerShape) {
+        self.shape = shape;
+    }
+
+    /// The active composer shape.
+    #[must_use]
+    pub fn shape(&self) -> crate::composer::ComposerShape {
+        self.shape
+    }
+
+    /// Status content drawn into the shape's top chrome (TS
+    /// `setTopBorderProvider` result for this frame).
+    pub fn set_top_border(&mut self, top: Option<crate::composer::TopBorder>) {
+        self.top_border = top;
     }
 
     /// Cap the editor height (TS `setMaxHeight`).
@@ -987,12 +1010,13 @@ mod render_tests {
     fn band_editor_renders_gutter_and_right_hint() {
         let mut e = Editor::new();
         e.set_hint(Some(("⇧⇥".into(), "to change thinking effort".into())));
-        let row = render_row(&e, 0, 60, 1);
+        // Row 0 is the band's status row; the prompt sits under it.
+        let row = render_row(&e, 1, 60, 2);
         assert!(row.starts_with("╰─ "), "gutter: {row:?}");
         assert!(row.ends_with("⇧⇥ to change thinking effort"), "hint flush right: {row:?}");
         assert!(!row.contains('│') && !row.contains('╭'), "no box: {row:?}");
         e.set_hint(None);
-        assert_eq!(render_row(&e, 0, 60, 1).trim_end(), "╰─");
+        assert_eq!(render_row(&e, 1, 60, 2).trim_end(), "╰─");
     }
 
     #[test]
@@ -1004,7 +1028,7 @@ mod render_tests {
                 KeyModifiers::NONE,
             ));
         }
-        let content = render_row(&e, 0, 40, 1);
+        let content = render_row(&e, 1, 40, 2);
         assert!(content.starts_with("╰─ hello"), "content: {content:?}");
     }
 
@@ -1038,7 +1062,7 @@ mod render_tests {
         let mut e = Editor::new();
         type_str(&mut e, "hello world");
         // gutter(3) + 11 chars => column 14.
-        assert_eq!(cursor_col(&e, 0, 40, 1), Some(14));
+        assert_eq!(cursor_col(&e, 1, 40, 2), Some(14));
     }
 
     #[test]
@@ -1048,12 +1072,12 @@ mod render_tests {
         let mut e = Editor::new();
         type_str(&mut e, "abcdefghijklmnopqrstu");
         let height = e.desired_height(20);
-        assert_eq!(height, 2, "two wrapped rows, no chrome");
-        let r0 = render_row(&e, 0, 20, height);
-        let r1 = render_row(&e, 1, 20, height);
+        assert_eq!(height, 3, "status band row + two wrapped rows");
+        let r0 = render_row(&e, 1, 20, height);
+        let r1 = render_row(&e, 2, 20, height);
         assert_eq!(r0, "╰─ abcdefghijklmnopq");
         assert_eq!(r1.trim_end(), "   rstu");
-        assert_eq!(cursor_col(&e, 1, 20, height), Some(7));
+        assert_eq!(cursor_col(&e, 2, 20, height), Some(7));
     }
 
     #[test]
@@ -1061,16 +1085,61 @@ mod render_tests {
         let mut e = Editor::new();
         type_str(&mut e, "!ls");
         assert!(e.is_bash_mode());
-        let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 2)).unwrap();
         let theme = crate::theme::Theme::default();
         terminal.draw(|f| e.render(f, f.area(), &theme)).unwrap();
-        assert_eq!(terminal.backend().buffer()[(0, 0)].fg, theme.color("accent"));
+        assert_eq!(terminal.backend().buffer()[(0, 1)].fg, theme.color("accent"));
+    }
+
+    /// All rows of a `width`x`height` render, trailing blanks trimmed.
+    fn render_all(e: &Editor, width: u16, height: u16) -> Vec<String> {
+        (0..height).map(|y| render_row(e, y, width, height).trim_end().to_owned()).collect()
+    }
+
+    #[test]
+    fn shapes_change_the_editor_look() {
+        use crate::composer::ComposerShape;
+        let mut e = Editor::new();
+        type_str(&mut e, "hi");
+        let expect = |shape: ComposerShape, rows: u16| {
+            let mut e = e.clone();
+            e.set_shape(shape);
+            assert_eq!(e.desired_height(40), rows, "{shape:?} height");
+            render_all(&e, 40, rows)
+        };
+        let box_rows = expect(ComposerShape::Box, 2);
+        assert!(box_rows[0].starts_with("╭──") && box_rows[0].ends_with("──╮"), "{box_rows:?}");
+        assert!(box_rows[1].starts_with("╰─ hi") && box_rows[1].ends_with(" ─╯"), "{box_rows:?}");
+        let claude = expect(ComposerShape::Claude, 3);
+        assert_eq!(claude[0], "─".repeat(40), "{claude:?}");
+        assert_eq!(claude[1], "❯ hi");
+        assert_eq!(claude[2], "─".repeat(40));
+        let pi = expect(ComposerShape::Pi, 3);
+        assert_eq!(pi[1], " hi");
+        let borderless = expect(ComposerShape::Borderless, 1);
+        assert_eq!(borderless[0], "❯ hi");
+        let rule = expect(ComposerShape::Rule, 2);
+        assert_eq!(rule[0], "─".repeat(40));
+        assert_eq!(rule[1], "❯ hi");
+        let field = expect(ComposerShape::Field, 1);
+        assert!(field[0].starts_with("▐ hi") && field[0].ends_with('▌'), "{field:?}");
+        let rail = expect(ComposerShape::Rail, 1);
+        assert!(rail[0].starts_with("▎ hi"), "{rail:?}");
+    }
+
+    #[test]
+    fn box_shape_cursor_follows_chrome() {
+        let mut e = Editor::new();
+        e.set_shape(crate::composer::ComposerShape::Box);
+        type_str(&mut e, "abc");
+        // `╰─ ` (3 cells) + 3 chars.
+        assert_eq!(cursor_col(&e, 1, 40, 2), Some(6));
     }
 
     #[test]
     fn desired_height_grows_with_content_and_caps() {
         let mut e = Editor::new();
-        assert_eq!(e.desired_height(80), 1);
+        assert_eq!(e.desired_height(80), 2, "band row + one prompt row");
         for i in 0..20 {
             e.handle_key(crate::keys::KeyEvent::new(
                 crate::keys::KeyCode::Char(char::from(b'a' + i as u8 % 26)),

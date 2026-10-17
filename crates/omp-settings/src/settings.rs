@@ -389,6 +389,7 @@ impl Settings {
 /// The existing file is read and updated in place (unknown keys preserved,
 /// same guarantee as [`Settings::load`]); the value's shape must match the
 /// setting's registry type. Returns the path written.
+/// A JSON `null` value unsets the key (the default applies again).
 ///
 /// # Errors
 ///
@@ -401,11 +402,16 @@ pub fn write_global(id: &str, value: &Value) -> std::io::Result<PathBuf> {
         crate::SettingType::Boolean => value.is_boolean(),
         crate::SettingType::Number => value.is_number(),
         crate::SettingType::String => value.is_string(),
-        crate::SettingType::Enum(values) => value.as_str().is_some_and(|s| values.contains(&s)),
+        // An empty value list means TS derives the choices at runtime
+        // (status-line presets, voices, devices): any string is accepted.
+        crate::SettingType::Enum(values) => {
+            value.as_str().is_some_and(|s| values.is_empty() || values.contains(&s))
+        }
         crate::SettingType::Array => value.is_array(),
         crate::SettingType::Record => value.is_object(),
     };
-    if !valid {
+    // `null` unsets the key so the default applies again (TS `settings.unset`).
+    if !valid && !value.is_null() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("value for {id} does not match registry type {}", def.ty.ts_name()),
@@ -417,7 +423,11 @@ pub fn write_global(id: &str, value: &Value) -> std::io::Result<PathBuf> {
     let mut merged = load_yaml_file(&path)
         .and_then(|(_, value)| value.as_object().cloned())
         .unwrap_or_default();
-    set_path(&mut merged, id, value.clone());
+    if value.is_null() {
+        remove_path(&mut merged, id);
+    } else {
+        set_path(&mut merged, id, value.clone());
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -525,6 +535,27 @@ fn set_path(base: &mut Map<String, Value>, id: &str, value: Value) {
         }
         current = entry.as_object_mut().expect("object just ensured");
     }
+}
+
+/// Remove the dotted `id` from the map, pruning parents left empty.
+fn remove_path(base: &mut Map<String, Value>, id: &str) {
+    fn walk(map: &mut Map<String, Value>, segments: &[&str]) {
+        let Some((head, rest)) = segments.split_first() else {
+            return;
+        };
+        if rest.is_empty() {
+            map.remove(*head);
+            return;
+        }
+        if let Some(Value::Object(child)) = map.get_mut(*head) {
+            walk(child, rest);
+            if child.is_empty() {
+                map.remove(*head);
+            }
+        }
+    }
+    let segments: Vec<&str> = id.split('.').collect();
+    walk(base, &segments);
 }
 
 fn get_path<'a>(base: &'a Map<String, Value>, id: &str) -> Option<&'a Value> {

@@ -15,10 +15,9 @@ use crate::providers::openai_completions::convert::{
     map_stop_reason, parse_chunk_usage, transform_for_request,
 };
 use crate::providers::openai_completions::errors::{openai_http_error, openrouter_raw_metadata};
-use crate::providers::openai_completions::get_compat_cache_control;
 use crate::providers::openai_completions::params::{build_headers, build_params};
 use crate::providers::openai_completions::{
-    encode_reasoning_details, get_compat, resolve_cache_retention, OpenAICompletionsOptions,
+    encode_reasoning_details, resolve_cache_retention, resolve_compat, OpenAICompletionsOptions,
     REASONING_FIELDS,
 };
 use crate::providers::openai_responses_hooks::apply_service_tier_pricing;
@@ -582,23 +581,11 @@ async fn run_stream(
         .clone()
         .or_else(|| get_env_api_key(&model.provider))
         .unwrap_or_default();
-    let compat = get_compat(model);
+    let compat = resolve_compat(model)?;
     let cache_retention = resolve_cache_retention(base_options.cache_retention);
-    let cache_control = get_compat_cache_control(&compat, cache_retention);
-    let cache_write_cost = if cache_control.is_some() && has_standard_anthropic_cache_pricing(model)
-    {
-        Some(get_anthropic_cache_write_cost(
-            model.cost.input.as_f64(),
-            if cache_control.as_ref().and_then(|control| control.ttl) == Some("1h") {
-                "1h"
-            } else {
-                "5m"
-            },
-            None,
-        ))
-    } else {
-        None
-    };
+    let cache_write_cost = (compat.cache_control_format.as_deref() == Some("anthropic")
+        && has_standard_anthropic_cache_pricing(model))
+    .then(|| get_anthropic_cache_write_cost(model.cost.input.as_f64(), "5m", None));
     let cache_session_id = if cache_retention == CacheRetention::None {
         None
     } else {
@@ -608,16 +595,8 @@ async fn run_stream(
     // The body is serialized straight from the transformed history; neither the history copy nor
     // the params tree outlives this block (the response stream never needs them).
     let body = {
-        let transformed = transform_for_request(model, context);
-        let params = build_params(
-            model,
-            context,
-            &transformed,
-            options,
-            &compat,
-            cache_retention,
-            cache_control.as_ref(),
-        );
+        let transformed = transform_for_request(model, context, &compat);
+        let params = build_params(model, context, &transformed, options, &compat, cache_retention);
         request_body(&params, base_options.on_payload.as_ref(), model)
     };
 

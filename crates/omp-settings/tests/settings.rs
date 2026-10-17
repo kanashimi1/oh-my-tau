@@ -14,8 +14,9 @@ fn tempdir(tag: &str) -> PathBuf {
 
 #[test]
 fn schema_covers_ts_registry() {
-    // 526 register({...}) definitions extracted from TS v18.6.1.
-    assert_eq!(SETTINGS.len(), 526);
+    // 526 register({...}) definitions extracted from TS v18.6.1, plus the 19
+    // settings only the TS panel (`createSettingsHost`) lists.
+    assert_eq!(SETTINGS.len(), 545);
     assert!(lookup("modelRoles").is_some());
     assert!(lookup("cycleOrder").is_some());
     assert!(lookup("workspace.additionalDirectories").is_some());

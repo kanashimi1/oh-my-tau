@@ -80,8 +80,25 @@ pub fn transform_messages_with_normalizer(
     model: &Model,
     normalize_tool_call_id: &Normalizer<'_>,
 ) -> Vec<Message> {
+    transform_messages_with_options(messages, model, normalize_tool_call_id, true)
+}
+
+/// [`transform_messages_with_normalizer`] with the image downgrade optional: chat-completions
+/// encodes images itself (TS `isOpenAICompletionsVisionSupported`), so history reaches it intact.
+// Long by design: mirrors the provider's stream shape.
+#[allow(clippy::too_many_lines)]
+pub fn transform_messages_with_options(
+    messages: &[Message],
+    model: &Model,
+    normalize_tool_call_id: &Normalizer<'_>,
+    downgrade_images: bool,
+) -> Vec<Message> {
     let mut tool_call_id_map: HashMap<String, String> = HashMap::new();
-    let image_aware = downgrade_unsupported_images(messages, model);
+    let image_aware = if downgrade_images {
+        downgrade_unsupported_images(messages, model)
+    } else {
+        messages.to_vec()
+    };
 
     let transformed: Vec<Message> = image_aware
         .iter()
@@ -307,6 +324,8 @@ mod tests {
             context_window: 128_000,
             max_tokens: 8192,
             max_tokens_explicit: false,
+            omit_max_output_tokens: None,
+            request_model_id: None,
             featured: None,
             headers: None,
             compat: None,

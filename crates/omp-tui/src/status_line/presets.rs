@@ -285,6 +285,43 @@ pub struct StatusLineConfig {
     pub right_segments: Option<Vec<SegmentId>>,
 }
 
+impl StatusLineConfig {
+    /// Read the `statusLine.*` keys from the layered settings (TS
+    /// `StatusLineComponent.#resolveSettings`); unset keys keep the defaults.
+    #[must_use]
+    pub fn from_settings(settings: &omp_settings::Settings) -> Self {
+        let mut cfg = Self::default();
+        if let Some(name) = settings.get_string("statusLine.preset") {
+            cfg.preset = Preset::from_name(&name);
+        }
+        if let Some(name) = settings.get_string("statusLine.separator") {
+            cfg.separator = SeparatorStyle::from_name(&name);
+        }
+        if let Some(name) = settings.get_string("statusLine.contextLine") {
+            cfg.context_line = ContextLineMode::from_name(&name);
+        }
+        if let Some(v) = settings.get_bool("statusLine.sessionAccent") {
+            cfg.session_accent = v;
+        }
+        if let Some(v) = settings.get_bool("statusLine.transparent") {
+            cfg.transparent = v;
+        }
+        if let Some(v) = settings.get_bool("statusLine.compactThinkingLevel") {
+            cfg.compact_thinking = v;
+        }
+        if let Some(v) = settings.get_bool("statusLine.showHookStatus") {
+            cfg.show_hook_status = v;
+        }
+        let segments = |id: &str| -> Option<Vec<SegmentId>> {
+            let names = settings.get_string_array(id);
+            (!names.is_empty()).then(|| names.iter().filter_map(|n| SegmentId::from_name(n)).collect())
+        };
+        cfg.left_segments = segments("statusLine.leftSegments");
+        cfg.right_segments = segments("statusLine.rightSegments");
+        cfg
+    }
+}
+
 impl Default for StatusLineConfig {
     fn default() -> Self {
         Self {

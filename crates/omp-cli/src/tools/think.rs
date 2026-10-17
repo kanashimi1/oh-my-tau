@@ -38,7 +38,10 @@ pub struct ThinkTool {
 #[must_use]
 pub fn supports_external_thinking(model: &pa_types::ai::Model) -> bool {
     use serde_json::Value;
-    let compat = model.compat.as_ref().map(|c| &c.raw);
+    // The resolved record (not the model's sparse `compat` overrides): the flags below are
+    // resolver outputs.
+    let compat = pa_ai::compat::resolve_for_model(model).ok().and_then(|p| p.compat);
+    let compat = compat.as_ref();
     let compat_true = |key: &str| {
         compat.is_some_and(|raw| raw.get(key).is_some_and(|v| v == &Value::Bool(true)))
     };

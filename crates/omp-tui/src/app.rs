@@ -254,6 +254,9 @@ pub struct App {
     /// Slash / `@file` / path completion popup above the editor.
     autocomplete: Autocomplete,
     status: StatusLine,
+    /// Efforts the active model supports (without `off`); empty = the model
+    /// cannot think.
+    thinking_levels: Vec<String>,
     overlays: Overlays,
     extension_ui: ExtensionUi,
     theme: Theme,
@@ -326,6 +329,7 @@ impl App {
             editor: Editor::new(),
             autocomplete: Autocomplete::new(cwd.to_path_buf()),
             status: StatusLine::new(model, cwd.display().to_string()),
+            thinking_levels: Vec::new(),
             overlays: Overlays::default(),
             extension_ui: ExtensionUi::new(),
             theme: Theme::default(),
@@ -367,6 +371,81 @@ impl App {
         self.status.model_name = name;
     }
 
+    /// Mirror the runtime's thinking state (`thinkingLevel`, supported
+    /// `thinkingLevels`, `autoThinking`) into the status line; a model
+    /// without thinking shows no level (TS `thinkingLevelWord`).
+    fn apply_thinking_state(&mut self, frame: &Value) {
+        if let Some(levels) = frame.get("thinkingLevels").and_then(Value::as_array) {
+            self.thinking_levels = levels.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+        }
+        if let Some(auto) = frame.get("autoThinking").and_then(Value::as_bool) {
+            self.status.auto_thinking = auto;
+        }
+        if let Some(level) = frame.get("thinkingLevel").and_then(Value::as_str) {
+            self.set_thinking_display(level);
+        }
+        if self.thinking_levels.is_empty() {
+            self.status.thinking = None;
+            self.status.auto_thinking = false;
+        }
+    }
+
+    fn set_thinking_display(&mut self, level: &str) {
+        self.status.thinking = (!self.thinking_levels.is_empty()).then(|| level.to_owned());
+    }
+
+    /// Selector values for the active model in cycle order
+    /// (`getAvailableEffortSelectors`): `off`, `auto`, then the efforts.
+    fn effort_selectors(&self) -> Vec<String> {
+        if self.thinking_levels.is_empty() {
+            return Vec::new();
+        }
+        ["off", "auto"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .chain(self.thinking_levels.iter().cloned())
+            .collect()
+    }
+
+    /// The configured selector (`configuredThinkingLevel`): `auto` while auto
+    /// thinking is on, else the effective level.
+    fn current_effort_selector(&self) -> String {
+        if self.status.auto_thinking {
+            "auto".to_owned()
+        } else {
+            self.status.thinking.clone().unwrap_or_else(|| "off".to_owned())
+        }
+    }
+
+    /// Shift+Tab (`app.thinking.cycle`): off → auto → minimal..max → off
+    /// (TS `cycleThinkingLevel`).
+    fn cycle_thinking_level(&mut self, port: &impl RuntimePort) {
+        let levels = self.effort_selectors();
+        if levels.is_empty() {
+            self.push_system("Current model does not support thinking".into());
+            return;
+        }
+        let current = self.current_effort_selector();
+        let next = levels
+            .iter()
+            .position(|l| *l == current)
+            .map_or(0, |idx| (idx + 1) % levels.len());
+        self.dispatch(Action::SetThinkingLevel(levels[next].clone()), port);
+    }
+
+    /// Bare `/effort`: open the thinking-level selector (TS
+    /// `showThinkingSelector`).
+    fn open_thinking_selector(&mut self) {
+        let mut levels = self.effort_selectors();
+        if levels.is_empty() {
+            self.push_system("Current model does not support thinking".into());
+            return;
+        }
+        // TS lists `off, auto, …`; the selector shows the same order.
+        let current = self.current_effort_selector();
+        self.overlays.open_thinking(std::mem::take(&mut levels), &current);
+    }
+
     /// Apply a `context_usage` frame: model identity plus the context gauge
     /// inputs (percent, window, compaction boundaries).
     fn apply_context_usage(&mut self, frame: &Value) {
@@ -379,6 +458,7 @@ impl App {
         if let Some(name) = frame.get("modelName") {
             self.status.model_name = name.as_str().filter(|n| !n.is_empty()).map(str::to_owned);
         }
+        self.apply_thinking_state(frame);
         self.status.context_percent = frame.get("percent").and_then(Value::as_f64);
         self.status.context_tokens = frame.get("tokens").and_then(Value::as_u64);
         self.status.context_window = frame
@@ -440,6 +520,40 @@ impl App {
             read_preview: flag("read.toolResultPreview"),
         });
         self.mouse_capture = flag("tui.mouse");
+        self.reload_composer(&settings);
+    }
+
+    /// Apply the composer shape and `statusLine.*` settings (TS
+    /// `syncComposerShape` + the status line's live settings read).
+    fn reload_composer(&mut self, settings: &omp_settings::Settings) {
+        let shape = settings
+            .get_string("composer.shape")
+            .map_or(crate::composer::ComposerShape::default(), |name| {
+                crate::composer::ComposerShape::from_name(&name)
+            });
+        self.editor.set_shape(shape);
+        self.status
+            .apply_config(crate::status_line::StatusLineConfig::from_settings(settings));
+        // Input settings with a live consumer here (TS `#applyUiSettingChanges`).
+        self.editor.set_vim_mode(settings.get_bool("tui.vimMode").unwrap_or(false));
+        self.status.vim_text_display =
+            settings.get_string("tui.vimModeDisplay").is_none_or(|mode| mode == "text");
+        if let Some(max) = settings.get("autocompleteMaxVisible").as_u64() {
+            self.autocomplete.max_visible = usize::try_from(max).unwrap_or(8).clamp(3, 20);
+        }
+    }
+
+    /// Mirror the editor's Vim state into the status line's `vim` segment.
+    fn sync_vim_status(&mut self) {
+        use crate::editor::vim::VimMode as Editor;
+        use crate::status_line::VimMode as Status;
+        self.status.vim = self.editor.vim_mode().map(|mode| match mode {
+            Editor::Normal => Status::Normal,
+            Editor::Insert => Status::Insert,
+            Editor::Visual => Status::Visual,
+            Editor::VisualLine => Status::VisualLine,
+        });
+        self.status.vim_pending = self.editor.vim_pending();
     }
 
     /// Load user key overrides from `~/.omp/agent/keybindings.yml`
@@ -584,6 +698,13 @@ impl App {
                 }
             }
             AppEvent::ContextUsage(frame) => self.apply_context_usage(frame),
+            AppEvent::ThinkingLevelChanged(frame) => {
+                let configured_auto = frame.get("configured").and_then(Value::as_str) == Some("auto");
+                self.status.auto_thinking = configured_auto;
+                if let Some(level) = frame.get("thinkingLevel").and_then(Value::as_str) {
+                    self.set_thinking_display(level);
+                }
+            }
             AppEvent::QueueUpdate {
                 steering,
                 follow_up,
@@ -731,9 +852,21 @@ impl App {
                     overlay.seed(&values);
                 }
             }
+            Action::SettingPreview { id, value } => self.preview_setting(&id, &value),
             Action::ExtensionUiResponse { id, value } => port.extension_ui_response(id, value),
             Action::Scroll(dir) => self.apply_scroll(dir),
             Action::Quit => {}
+        }
+    }
+
+    /// Live preview of a highlighted `/settings` choice (TS `onThemePreview`):
+    /// the theme hot-swaps while the select field is open; the previous theme
+    /// returns on cancel.
+    fn preview_setting(&mut self, id: &str, value: &str) {
+        if matches!(id, "theme.dark" | "theme.light") {
+            if let Ok(theme) = crate::theme::load(value) {
+                self.set_theme(theme);
+            }
         }
     }
 
@@ -810,6 +943,12 @@ impl App {
         // Pending extension dialogs own keys before the editor (ExtUi
         // contract): they render modally above the live region.
         if self.extension_ui.handle_key(key, port) {
+            return Some(true);
+        }
+
+        // Shift+Tab: cycle the thinking effort (`app.thinking.cycle`).
+        if self.keys.matches_event(&key, "app.thinking.cycle") {
+            self.cycle_thinking_level(port);
             return Some(true);
         }
 
@@ -1152,6 +1291,7 @@ impl App {
             "help" | "hotkeys" => self.overlays.toggle(OpenOverlay::Help),
             "settings" => self.slash_settings(port),
             "model" => self.slash_model(args, port),
+            "effort" if args.is_empty() => self.open_thinking_selector(),
             "resume" => self.slash_resume(),
             "tree" => {
                 if self.journal.is_empty() {
@@ -1220,6 +1360,10 @@ impl App {
         let ids = overlay.ids();
         let values = port.settings_get(&ids);
         overlay.seed(&values);
+        overlay.set_available_themes(
+            crate::theme::available_themes().into_iter().map(|t| t.name).collect(),
+        );
+        overlay.set_thinking_levels(port.available_thinking_levels());
     }
 
     /// `/resume`: open the embedded session picker (overlays-b P0 #10); the
@@ -1263,6 +1407,22 @@ impl App {
             }
             "display.showTokenUsage" | "display.showTurnTime" | "read.toolResultPreview" | "tui.mouse" => {
                 self.reload_display_prefs();
+            }
+            "composer.shape"
+            | "statusLine.preset"
+            | "statusLine.separator"
+            | "statusLine.contextLine"
+            | "statusLine.sessionAccent"
+            | "statusLine.transparent"
+            | "statusLine.compactThinkingLevel"
+            | "statusLine.showHookStatus"
+            | "statusLine.leftSegments"
+            | "statusLine.rightSegments"
+            | "tui.vimMode"
+            | "tui.vimModeDisplay"
+            | "autocompleteMaxVisible" => {
+                let settings = omp_settings::Settings::load(&self.cwd);
+                self.reload_composer(&settings);
             }
             _ => {}
         }
@@ -1316,7 +1476,45 @@ impl App {
     #[must_use]
     pub fn live_height(&self) -> u16 {
         let width = crossterm::terminal::size().map_or(80, |(w, _)| w);
-        self.band_height() + self.error_banner_height(width) + u16::from(self.show_loader()) + 1 + 1
+        let shape = self.editor.shape();
+        // One content row inside the shape's chrome, plus the standalone bar.
+        let editor = 1 + u16::from(shape.has_top()) + u16::from(shape.has_bottom());
+        self.band_height()
+            + self.error_banner_height(width)
+            + u16::from(self.show_loader())
+            + editor
+            + self.bottom_bar_rows(width)
+    }
+
+    /// Rows of the standalone status bar under the editor (gap + bar) for
+    /// the active composer shape (`ComposerStyle.bottomBar`).
+    fn bottom_bar_rows(&self, width: u16) -> u16 {
+        let shape = self.editor.shape();
+        if crate::composer::bottom_bar(shape, &self.status, &self.theme, usize::from(width)).is_none() {
+            return 0;
+        }
+        1 + u16::from(shape.bottom_bar_gap())
+    }
+
+    /// Push this frame's status content into the editor's top chrome (TS
+    /// `attachToEditor` provider) for a composer `width` columns wide.
+    fn sync_composer_chrome(&mut self, width: u16) {
+        let shape = self.editor.shape();
+        let top = crate::composer::top_border(shape, &self.status, &self.theme, usize::from(width));
+        self.editor.set_top_border(top);
+    }
+
+    /// Paint the standalone bar (and its spacer row) under the editor.
+    fn render_bottom_bar(&self, frame: &mut Frame<'_>, area: Rect) {
+        let shape = self.editor.shape();
+        let Some(bar) = crate::composer::bottom_bar(shape, &self.status, &self.theme, usize::from(area.width))
+        else {
+            return;
+        };
+        let y = area.y + u16::from(shape.bottom_bar_gap());
+        if y < area.y + area.height {
+            frame.render_widget(ratatui::widgets::Paragraph::new(bar), Rect { y, height: 1, ..area });
+        }
     }
 
     /// Rows of the pinned provider-error banner (TS `ErrorBannerComponent`,
@@ -1385,10 +1583,13 @@ impl App {
     pub fn render_live(&mut self, frame: &mut Frame<'_>, area: Rect) {
         self.status.tick(now_millis());
         self.editor.set_hint(self.composer_hint());
+        self.sync_vim_status();
+        self.sync_composer_chrome(area.width);
+        let bar_h = self.bottom_bar_rows(area.width);
         let editor_h = self
             .editor
             .desired_height(area.width)
-            .min(area.height.saturating_sub(1))
+            .min(area.height.saturating_sub(bar_h))
             .max(1);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1396,16 +1597,16 @@ impl App {
                 Constraint::Length(self.band_height()),
                 Constraint::Length(self.error_banner_height(area.width)),
                 Constraint::Length(u16::from(self.show_loader())),
-                Constraint::Length(1),
                 Constraint::Length(editor_h),
+                Constraint::Length(bar_h),
                 Constraint::Min(0),
             ])
             .split(area);
         self.render_band(frame, chunks[0]);
         self.render_error_banner(frame, chunks[1]);
         self.render_loader(frame, chunks[2]);
-        self.status.render(frame, chunks[3], &self.theme);
-        self.editor.render(frame, chunks[4], &self.theme);
+        self.editor.render(frame, chunks[3], &self.theme);
+        self.render_bottom_bar(frame, chunks[4]);
         self.render_autocomplete(frame, area, chunks[3]);
         self.overlays.render(frame, area, &self.theme);
         self.extension_ui.render(frame, area, &self.theme);
@@ -1418,10 +1619,12 @@ impl App {
         self.status.tick(now_millis());
         self.editor.set_hint(self.composer_hint());
         let area = frame.area();
+        self.sync_composer_chrome(area.width);
+        let bar_h = self.bottom_bar_rows(area.width);
         let editor_h = self
             .editor
             .desired_height(area.width)
-            .min(area.height.saturating_sub(1))
+            .min(area.height.saturating_sub(bar_h))
             .max(1);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1430,16 +1633,16 @@ impl App {
                 Constraint::Length(self.band_height()),
                 Constraint::Length(self.error_banner_height(area.width)),
                 Constraint::Length(u16::from(self.show_loader())),
-                Constraint::Length(1),
                 Constraint::Length(editor_h),
+                Constraint::Length(bar_h),
             ])
             .split(area);
         self.render_chat(frame, chunks[0]);
         self.render_band(frame, chunks[1]);
         self.render_error_banner(frame, chunks[2]);
         self.render_loader(frame, chunks[3]);
-        self.status.render(frame, chunks[4], &self.theme);
-        self.editor.render(frame, chunks[5], &self.theme);
+        self.editor.render(frame, chunks[4], &self.theme);
+        self.render_bottom_bar(frame, chunks[5]);
         self.render_autocomplete(frame, area, chunks[4]);
         self.overlays.render(frame, area, &self.theme);
         self.extension_ui.render(frame, area, &self.theme);
@@ -1932,13 +2135,16 @@ mod tests {
             type_text(&mut app, &port, "/settings");
             assert!(enter(&mut app, &port));
             assert!(app.overlays.settings_mut().select("theme.dark"));
-            // Text row: Enter opens the inline editor pre-filled with the
-            // current value ("titanium"); clear it, then type + save.
+            // Submenu row: Enter opens the theme select field with the
+            // current theme highlighted; ↓ to "light", Enter picks.
             assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
-            for _ in 0.."titanium".len() {
-                assert!(press(&mut app, &port, key(CtKeyCode::Backspace)));
+            let names: Vec<String> =
+                crate::theme::available_themes().into_iter().map(|t| t.name).collect();
+            let from = names.iter().position(|n| n == "titanium").unwrap();
+            let to = names.iter().position(|n| n == "light").unwrap();
+            for _ in 0..(to + names.len() - from) % names.len() {
+                assert!(press(&mut app, &port, key(CtKeyCode::Down)));
             }
-            type_text(&mut app, &port, "light");
             assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
             // Saved…
             assert_eq!(
@@ -1971,6 +2177,210 @@ mod tests {
                 {"name": "compact", "description": "Compact context", "source": "builtin"}
             ]
         })));
+    }
+
+    /// Every row of every tab is editable like TS and the edit persists to
+    /// config.yml (temp HOME): bool toggle, enum cycle, submenu pick, text /
+    /// JSON input, multiselect toggle.
+    #[test]
+    fn every_settings_row_is_editable_and_persists() {
+        let _guard = HOME_LOCK.lock();
+        let old_home = std::env::var_os("HOME");
+        let home = with_temp_home("all-rows");
+        {
+            let mut app = app();
+            let port = port();
+            type_text(&mut app, &port, "/settings");
+            assert!(enter(&mut app, &port));
+            let rows = app.overlays.settings_mut().shown_rows();
+            assert!(rows.len() > 300, "TS panel lists ~380 rows, got {}", rows.len());
+            let kinds: std::collections::BTreeSet<&str> = rows.iter().map(|(_, k)| *k).collect();
+            for kind in ["bool", "enum", "submenu", "text", "multi", "limits"] {
+                assert!(kinds.contains(kind), "no {kind} row in the panel");
+            }
+            let mut unchanged: Vec<String> = Vec::new();
+            for (id, kind) in &rows {
+                let overlay = app.overlays.settings_mut();
+                assert!(overlay.select(id), "{id}: not selectable");
+                let before = overlay.value_of(id);
+                assert!(press(&mut app, &port, key(CtKeyCode::Enter)), "{id}: enter");
+                match *kind {
+                    // Enter/Space flip the bool / cycle the enum in place.
+                    "bool" | "enum" => {}
+                    // Submenu: ↓ moves to another choice, Enter picks it.
+                    "submenu" => {
+                        assert!(app.overlays.settings_mut().is_editing(), "{id}: submenu did not open");
+                        assert!(press(&mut app, &port, key(CtKeyCode::Down)));
+                        assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+                    }
+                    // Text field: type a value of the right shape, Enter saves.
+                    "text" | "limits" => {
+                        assert!(app.overlays.settings_mut().is_editing(), "{id}: text field did not open");
+                        let schema = if *kind == "limits" { "record" } else { text_schema(id) };
+                        // The field opens pre-filled: clear it first.
+                        for _ in 0..400 {
+                            press(&mut app, &port, key(CtKeyCode::Backspace));
+                        }
+                        let input = match schema {
+                            "array" => "[\"e2e\"]",
+                            "record" if *kind == "limits" => "{\"openai\": 3}",
+                            "record" => "{\"e2e\": \"1\"}",
+                            _ => "e2e-value",
+                        };
+                        type_text(&mut app, &port, input);
+                        assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+                    }
+                    // Multiselect: Enter toggles the first choice, Esc goes back.
+                    "multi" => {
+                        assert!(app.overlays.settings_mut().is_editing(), "{id}: multiselect did not open");
+                        assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+                        assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+                    }
+                    other => panic!("{id}: unknown kind {other}"),
+                }
+                let overlay = app.overlays.settings_mut();
+                assert!(!overlay.is_editing(), "{id} ({kind}): field still open");
+                let after = overlay.value_of(id);
+                if after == before {
+                    unchanged.push(format!("{id} ({kind})"));
+                    continue;
+                }
+                // Persisted: a fresh layered read (config.yml + env) agrees.
+                let stored = port.settings_get(std::slice::from_ref(id))[0].1.clone();
+                assert_eq!(Some(stored), after, "{id} ({kind}): not persisted");
+            }
+            assert!(
+                unchanged.is_empty(),
+                "rows whose edit did not change the value: {unchanged:?}"
+            );
+            let config = std::fs::read_to_string(home.join(".omp/agent/config.yml")).unwrap();
+            assert!(config.contains("composer:"), "{config}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        restore_home(old_home);
+    }
+
+    /// Registry value type of a text row (`array` JSON lists vs plain strings).
+    fn text_schema(id: &str) -> &'static str {
+        match omp_settings::lookup(id).map(|d| d.ty) {
+            Some(omp_settings::SettingType::Array) => "array",
+            Some(omp_settings::SettingType::Record) => "record",
+            _ => "string",
+        }
+    }
+
+    /// Composer Shape edit changes the live editor look at once and persists
+    /// (TS `syncComposerShape`).
+    #[test]
+    fn composer_shape_edit_changes_editor_live_and_persists() {
+        let _guard = HOME_LOCK.lock();
+        let old_home = std::env::var_os("HOME");
+        let home = with_temp_home("shape");
+        {
+            let mut app = app();
+            let port = port();
+            assert_eq!(app.editor.shape(), crate::composer::ComposerShape::Band);
+            type_text(&mut app, &port, "/settings");
+            assert!(enter(&mut app, &port));
+            assert!(app.overlays.settings_mut().select("composer.shape"));
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+            // band → box (second choice).
+            assert!(press(&mut app, &port, key(CtKeyCode::Down)));
+            let s = screen(&mut app, 120, 40);
+            assert!(s.contains("Rounded Box"), "{s}");
+            assert!(s.contains("Preview:"), "{s}");
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+            assert_eq!(app.editor.shape(), crate::composer::ComposerShape::Box);
+            let config = std::fs::read_to_string(home.join(".omp/agent/config.yml")).unwrap();
+            assert!(config.contains("shape: box"), "{config}");
+            assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+            // The live region now draws the box frame around the prompt.
+            let s = screen(&mut app, 80, 12);
+            assert!(s.contains('╭') && s.contains('╯'), "{s}");
+            // Re-seeding from disk (a fresh start) restores the same shape.
+            let mut fresh = App::new("p/m".into(), Path::new("/nonexistent"));
+            fresh.configure(Vec::new(), Vec::new());
+            assert_eq!(fresh.editor.shape(), crate::composer::ComposerShape::Box);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        restore_home(old_home);
+    }
+
+    /// Status-line settings apply live to the real status line.
+    #[test]
+    fn status_line_settings_apply_live() {
+        let _guard = HOME_LOCK.lock();
+        let old_home = std::env::var_os("HOME");
+        let home = with_temp_home("statusline");
+        {
+            let mut app = app();
+            let port = port();
+            type_text(&mut app, &port, "/settings");
+            assert!(enter(&mut app, &port));
+            assert!(app.overlays.settings_mut().select("statusLine.compactThinkingLevel"));
+            assert!(app.status.config.compact_thinking);
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+            assert!(!app.status.config.compact_thinking);
+            assert!(app.overlays.settings_mut().select("statusLine.separator"));
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+            assert!(press(&mut app, &port, key(CtKeyCode::Down)));
+            assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+            assert_ne!(app.status.config.separator, crate::status_line::SeparatorStyle::PowerlineThin);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        restore_home(old_home);
+    }
+
+    /// Shift+Tab cycles off → auto → efforts → off and updates the status line.
+    #[test]
+    fn shift_tab_cycles_thinking_effort() {
+        let mut app = app();
+        let port = port();
+        // A model without thinking: nothing to cycle.
+        let shift_tab = KeyEvent::new(CtKeyCode::BackTab, CtMods::SHIFT);
+        assert!(press(&mut app, &port, shift_tab));
+        assert!(!log(&port).iter().any(|c| c.starts_with("set_thinking_level")));
+        // Reasoning model: context_usage announces the supported efforts.
+        app.apply_event(&AppEvent::ContextUsage(json!({
+            "type": "context_usage", "model": "p/m", "thinkingLevel": "high",
+            "thinkingLevels": ["minimal", "low", "medium", "high"], "autoThinking": false,
+            "contextWindow": 1000,
+        })));
+        assert_eq!(app.status.thinking.as_deref(), Some("high"));
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            assert!(press(&mut app, &port, shift_tab));
+            let last = log(&port).last().cloned().unwrap();
+            let level = last.trim_start_matches("set_thinking_level(").trim_end_matches(')').to_owned();
+            // The runtime echoes the change.
+            let configured = if level == "auto" { json!("auto") } else { json!(level) };
+            app.apply_event(&AppEvent::ThinkingLevelChanged(json!({
+                "type": "thinking_level_changed",
+                "thinkingLevel": if level == "auto" { "medium" } else { level.as_str() },
+                "configured": configured,
+            })));
+            seen.push(level);
+        }
+        assert_eq!(seen, ["off", "auto", "minimal", "low", "medium", "high"]);
+        assert_eq!(app.status.thinking.as_deref(), Some("high"));
+    }
+
+    /// Bare `/effort` opens the thinking selector; Enter applies the pick.
+    #[test]
+    fn effort_selector_opens_and_applies_pick() {
+        let mut app = app();
+        let port = port();
+        app.apply_event(&AppEvent::ContextUsage(json!({
+            "type": "context_usage", "model": "p/m", "thinkingLevel": "low",
+            "thinkingLevels": ["minimal", "low", "medium"], "contextWindow": 1000,
+        })));
+        type_text(&mut app, &port, "/effort");
+        assert!(enter(&mut app, &port));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::Thinking));
+        assert!(press(&mut app, &port, key(CtKeyCode::Down)));
+        assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
+        assert!(log(&port).iter().any(|c| c == "set_thinking_level(medium)"), "{:?}", log(&port));
+        assert_eq!(app.overlays.open(), None);
     }
 
     fn screen(app: &mut App, w: u16, h: u16) -> String {

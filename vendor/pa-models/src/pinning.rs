@@ -130,6 +130,8 @@ mod tests {
                 context_window: 1,
                 max_tokens: 1,
                 max_tokens_explicit: false,
+                omit_max_output_tokens: None,
+                request_model_id: None,
                 featured: None,
                 headers,
                 compat: None,

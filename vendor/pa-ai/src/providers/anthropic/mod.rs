@@ -156,19 +156,19 @@ pub struct ResolvedAnthropicCompat {
 }
 
 pub fn get_anthropic_compat(model: &Model) -> ResolvedAnthropicCompat {
-    let compat = model.compat_kind().and_then(|kind| match kind {
-        crate::types::CompatKind::AnthropicMessages(compat) => Some(compat),
-        _ => None,
-    });
+    // The resolved record (TS `resolveAnthropicPolicy`): eager tool-input streaming and the 1h
+    // cache TTL are first-party-endpoint capabilities, off for every proxy unless authored.
+    let record = crate::compat::resolve_for_model(model).ok().and_then(|p| p.compat);
+    let flag = |key: &str| {
+        record
+            .as_ref()
+            .and_then(|c| c.get(key))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
     ResolvedAnthropicCompat {
-        supports_eager_tool_input_streaming: compat
-            .as_ref()
-            .and_then(|c| c.supports_eager_tool_input_streaming)
-            .unwrap_or(true),
-        supports_long_cache_retention: compat
-            .as_ref()
-            .and_then(|c| c.supports_long_cache_retention)
-            .unwrap_or(true),
+        supports_eager_tool_input_streaming: flag("supportsEagerToolInputStreaming"),
+        supports_long_cache_retention: flag("supportsLongCacheRetention"),
     }
 }
 
@@ -619,6 +619,8 @@ mod subscription_identity_tests {
             context_window: 200_000,
             max_tokens: 32_000,
             max_tokens_explicit: false,
+            omit_max_output_tokens: None,
+            request_model_id: None,
             featured: None,
             headers: None,
             compat: None,

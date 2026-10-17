@@ -26,6 +26,7 @@ pub mod models;
 pub mod sessions;
 pub mod session_info;
 pub mod settings;
+pub mod thinking;
 pub mod tree;
 
 use crate::component::{Component, EventOutcome};
@@ -75,6 +76,8 @@ pub enum OpenOverlay {
     Settings,
     /// `/session` info panel (bottom-anchored, full width).
     SessionInfo,
+    /// Thinking-level selector (bare `/effort`), anchored over the composer.
+    Thinking,
 }
 
 impl OpenOverlay {
@@ -117,6 +120,7 @@ pub struct Overlays {
     tree: tree::TreeNavigator,
     settings: settings::SettingsOverlay,
     session_info: session_info::SessionInfoOverlay,
+    thinking: thinking::ThinkingSelector,
     stack: Vec<OpenOverlay>,
 }
 
@@ -203,6 +207,14 @@ impl Overlays {
         self.stack.push(OpenOverlay::SessionInfo);
     }
 
+    /// Open the thinking-level selector over `levels` with `current`
+    /// preselected (bare `/effort`).
+    pub fn open_thinking(&mut self, levels: Vec<String>, current: &str) {
+        self.thinking.open(levels, current);
+        self.close(OpenOverlay::Thinking);
+        self.stack.push(OpenOverlay::Thinking);
+    }
+
     /// Close the top overlay (esc routing).
     pub fn pop(&mut self) {
         self.stack.pop();
@@ -243,6 +255,7 @@ impl Overlays {
             OpenOverlay::Tree => &self.tree,
             OpenOverlay::Settings => &self.settings,
             OpenOverlay::SessionInfo => &self.session_info,
+            OpenOverlay::Thinking => &self.thinking,
         }
     }
 
@@ -256,6 +269,7 @@ impl Overlays {
             OpenOverlay::Tree => &mut self.tree,
             OpenOverlay::Settings => &mut self.settings,
             OpenOverlay::SessionInfo => &mut self.session_info,
+            OpenOverlay::Thinking => &mut self.thinking,
         }
     }
 
@@ -310,6 +324,13 @@ impl Overlays {
         }
         // Settings edits persist through the port and apply live where the
         // app can; the overlay stays open like the model picker.
+        if let Some(level) = self.thinking.take_pick() {
+            out.push(Action::SetThinkingLevel(level));
+            self.close(OpenOverlay::Thinking);
+        }
+        for (id, value) in self.settings.take_previews() {
+            out.push(Action::SettingPreview { id, value });
+        }
         for (id, value) in self.settings.take_changes() {
             out.push(Action::SettingChanged { id, value });
         }

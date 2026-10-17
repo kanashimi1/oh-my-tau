@@ -12,17 +12,21 @@ use crate::models::clamp_thinking_level;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
-    AssistantContent, AssistantMessage, CacheRetention, Context, Model, ModelExt,
+    AssistantContent, AssistantMessage, CacheRetention, Context, Model,
     ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage, UsageCost,
 };
 
-#[cfg(test)]
-mod body_equivalence_tests;
+mod compat;
 mod convert;
 mod errors;
 mod params;
+mod schema;
 mod stream;
 
+#[cfg(test)]
+mod body_parity_tests;
+
+pub(crate) use compat::resolve_compat;
 pub use stream::stream_openai_completions;
 
 pub const API_OPENAI_COMPLETIONS: &str = "openai-completions";
@@ -71,197 +75,24 @@ pub struct OpenAICompletionsOptions {
     pub base: StreamOptions,
     pub tool_choice: Option<ToolChoice>,
     pub reasoning_effort: Option<ModelThinkingLevel>,
-    /// Explicit reasoning toggle. `None` preserves the provider/model default.
+    /// Explicit reasoning toggle. `None` preserves the provider/model default; `Some(false)` is
+    /// the TS `disableReasoning`.
     pub reasoning_enabled: Option<bool>,
+    /// The caller set `max_tokens` itself (TS `maxTokensExplicit`): hosts that route across
+    /// upstreams with different output caps omit catalog-default caps.
+    pub max_tokens_explicit: bool,
 }
 
 impl OpenAICompletionsOptions {
     pub fn from_base(base: StreamOptions) -> Self {
+        let max_tokens_explicit = base.max_tokens.is_some();
         Self {
             base,
             tool_choice: None,
             reasoning_effort: None,
             reasoning_enabled: None,
+            max_tokens_explicit,
         }
-    }
-}
-
-/// Anthropic-style `cache_control` payload on OpenAI-compat proxies.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct OpenAICompatCacheControl {
-    ttl: Option<&'static str>, // Some("1h") or None (default 5m)
-}
-
-impl OpenAICompatCacheControl {
-    fn to_json(&self) -> Value {
-        let mut map = Map::new();
-        map.insert("type".into(), json!("ephemeral"));
-        if let Some(ttl) = self.ttl {
-            map.insert("ttl".into(), json!(ttl));
-        }
-        Value::Object(map)
-    }
-}
-
-/// Fully resolved compat settings (`ResolvedOpenAICompletionsCompat`).
-// A flat capability-flag contract mirroring the upstream compat table; reshaping is an API change.
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Clone, Debug, PartialEq)]
-pub struct ResolvedCompat {
-    pub supports_store: bool,
-    pub supports_developer_role: bool,
-    pub supports_reasoning_effort: bool,
-    pub supports_usage_in_streaming: bool,
-    pub max_tokens_field: crate::types::MaxTokensField,
-    pub requires_tool_result_name: bool,
-    pub requires_assistant_after_tool_result: bool,
-    pub requires_thinking_as_text: bool,
-    pub requires_reasoning_content_on_assistant_messages: bool,
-    pub thinking_format: crate::types::ThinkingFormat,
-    pub supports_strict_mode: bool,
-    pub cache_control_format: Option<crate::types::CacheControlFormat>,
-    pub send_session_affinity_headers: bool,
-    pub supports_long_cache_retention: bool,
-    pub zai_tool_stream: bool,
-    pub open_router_routing: Option<crate::types::OpenRouterRouting>,
-    pub vercel_gateway_routing: Option<pa_types::ai::VercelGatewayRouting>,
-}
-
-/// Detect compatibility settings from provider and baseUrl for known providers.
-/// Provider takes precedence over URL-based detection since it's explicitly configured.
-pub fn detect_compat(model: &Model) -> ResolvedCompat {
-    let provider = model.provider.as_str();
-    let base_url = model.base_url.as_str();
-
-    let is_zai = provider == "zai" || base_url.contains("api.z.ai");
-    let is_moonshot = provider == "moonshotai"
-        || provider == "moonshotai-cn"
-        || base_url.contains("api.moonshot.");
-    let is_cloudflare_workers_ai =
-        provider == "cloudflare-workers-ai" || base_url.contains("api.cloudflare.com");
-    let is_cloudflare_ai_gateway =
-        provider == "cloudflare-ai-gateway" || base_url.contains("gateway.ai.cloudflare.com");
-    let is_prime_inference =
-        provider == "prime-inference" || base_url.contains("api.pinference.ai");
-
-    let is_non_standard = provider == "cerebras"
-        || base_url.contains("cerebras.ai")
-        || provider == "xai"
-        || base_url.contains("api.x.ai")
-        || base_url.contains("chutes.ai")
-        || base_url.contains("deepseek.com")
-        || is_zai
-        || is_moonshot
-        || provider == "opencode"
-        || base_url.contains("opencode.ai")
-        || is_cloudflare_workers_ai
-        || is_cloudflare_ai_gateway
-        || is_prime_inference;
-
-    let use_max_tokens = base_url.contains("chutes.ai")
-        || is_moonshot
-        || is_cloudflare_ai_gateway
-        || is_prime_inference;
-
-    let is_grok = provider == "xai" || base_url.contains("api.x.ai");
-    let is_deep_seek = provider == "deepseek" || base_url.contains("deepseek.com");
-    let is_anthropic_model = model.id.starts_with("anthropic/");
-    let cache_control_format =
-        if is_anthropic_model && (provider == "openrouter" || is_prime_inference) {
-            Some(crate::types::CacheControlFormat::Anthropic)
-        } else {
-            None
-        };
-
-    ResolvedCompat {
-        supports_store: !is_non_standard,
-        supports_developer_role: !is_non_standard,
-        supports_reasoning_effort: !is_grok && !is_zai && !is_moonshot && !is_cloudflare_ai_gateway,
-        supports_usage_in_streaming: true,
-        max_tokens_field: if use_max_tokens {
-            crate::types::MaxTokensField::MaxTokens
-        } else {
-            crate::types::MaxTokensField::MaxCompletionTokens
-        },
-        requires_tool_result_name: false,
-        requires_assistant_after_tool_result: false,
-        requires_thinking_as_text: false,
-        requires_reasoning_content_on_assistant_messages: is_deep_seek,
-        thinking_format: if is_deep_seek {
-            crate::types::ThinkingFormat::Deepseek
-        } else if is_zai {
-            crate::types::ThinkingFormat::Zai
-        } else if provider == "openrouter" || base_url.contains("openrouter.ai") {
-            crate::types::ThinkingFormat::Openrouter
-        } else {
-            crate::types::ThinkingFormat::Openai
-        },
-        open_router_routing: None,
-        vercel_gateway_routing: None,
-        zai_tool_stream: false,
-        supports_strict_mode: !is_moonshot && !is_cloudflare_ai_gateway && !is_prime_inference,
-        cache_control_format,
-        send_session_affinity_headers: false,
-        supports_long_cache_retention: !(is_cloudflare_workers_ai || is_cloudflare_ai_gateway),
-    }
-}
-
-/// Resolve compat for a model: explicit `model.compat` fields override the detected defaults.
-pub fn get_compat(model: &Model) -> ResolvedCompat {
-    let detected = detect_compat(model);
-    let Some(compat) = model.compat_kind() else {
-        return detected;
-    };
-    let crate::types::CompatKind::OpenAiCompletions(compat) = compat else {
-        return detected;
-    };
-    let compat = compat.as_ref();
-    ResolvedCompat {
-        supports_store: compat.supports_store.unwrap_or(detected.supports_store),
-        supports_developer_role: compat
-            .supports_developer_role
-            .unwrap_or(detected.supports_developer_role),
-        supports_reasoning_effort: compat
-            .supports_reasoning_effort
-            .unwrap_or(detected.supports_reasoning_effort),
-        supports_usage_in_streaming: compat
-            .supports_usage_in_streaming
-            .unwrap_or(detected.supports_usage_in_streaming),
-        max_tokens_field: compat.max_tokens_field.unwrap_or(detected.max_tokens_field),
-        requires_tool_result_name: compat
-            .requires_tool_result_name
-            .unwrap_or(detected.requires_tool_result_name),
-        requires_assistant_after_tool_result: compat
-            .requires_assistant_after_tool_result
-            .unwrap_or(detected.requires_assistant_after_tool_result),
-        requires_thinking_as_text: compat
-            .requires_thinking_as_text
-            .unwrap_or(detected.requires_thinking_as_text),
-        requires_reasoning_content_on_assistant_messages: compat
-            .requires_reasoning_content_on_assistant_messages
-            .unwrap_or(detected.requires_reasoning_content_on_assistant_messages),
-        thinking_format: compat.thinking_format.unwrap_or(detected.thinking_format),
-        open_router_routing: compat
-            .open_router_routing
-            .clone()
-            .or(detected.open_router_routing),
-        vercel_gateway_routing: compat
-            .vercel_gateway_routing
-            .clone()
-            .or(detected.vercel_gateway_routing),
-        zai_tool_stream: compat.zai_tool_stream.unwrap_or(detected.zai_tool_stream),
-        supports_strict_mode: compat
-            .supports_strict_mode
-            .unwrap_or(detected.supports_strict_mode),
-        cache_control_format: compat
-            .cache_control_format
-            .or(detected.cache_control_format),
-        send_session_affinity_headers: compat
-            .send_session_affinity_headers
-            .unwrap_or(detected.send_session_affinity_headers),
-        supports_long_cache_retention: compat
-            .supports_long_cache_retention
-            .unwrap_or(detected.supports_long_cache_retention),
     }
 }
 
@@ -273,23 +104,6 @@ pub fn resolve_cache_retention(cache_retention: Option<CacheRetention>) -> Cache
         return CacheRetention::Long;
     }
     CacheRetention::Short
-}
-
-pub(crate) fn get_compat_cache_control(
-    compat: &ResolvedCompat,
-    cache_retention: CacheRetention,
-) -> Option<OpenAICompatCacheControl> {
-    if compat.cache_control_format != Some(crate::types::CacheControlFormat::Anthropic)
-        || cache_retention == CacheRetention::None
-    {
-        return None;
-    }
-    let ttl = if cache_retention == CacheRetention::Long && compat.supports_long_cache_retention {
-        Some("1h")
-    } else {
-        None
-    };
-    Some(OpenAICompatCacheControl { ttl })
 }
 
 pub(crate) fn has_tool_history(messages: &[crate::types::Message]) -> bool {
@@ -400,6 +214,7 @@ pub fn stream_simple_openai_completions(
         tool_choice,
         reasoning_effort,
         reasoning_enabled,
+        max_tokens_explicit: options.is_some_and(|o| o.base.max_tokens.is_some()),
     };
     stream_openai_completions(model, context, Some(&stream_options))
 }

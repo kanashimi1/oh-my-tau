@@ -10,19 +10,20 @@
 //! key-hint footer over the bottom border.
 //!
 //! Differences from TS, kept deliberate and documented:
-//! - Display metadata (label/description/tab/group/order) is extracted from
-//!   the TS `register({...})` declarations into `settings_meta.rs`
-//!   (regenerate with `tests-e2e/tui/gen_settings_meta.py`); settings TS
-//!   hides (no `ui` metadata) are hidden here the same way. Kinds still come
-//!   from the omp-settings registry (bool/enum/text/number; arrays/records
-//!   need structured editors that are not ported).
-//! - Secrets (`credential: true`) are omitted rather than mask-rendered.
-//! - Row interaction: Enter/Space cycle bool and enum values, Enter on
-//!   text/number rows opens an inline editor; ←/→ switch tabs, Tab toggles
+//! - The row list is generated from the TS panel itself (`settings_defs.rs`,
+//!   regenerate with `tests-e2e/tui/gen_settings_defs.py`): the same rows,
+//!   kinds, options, defaults and visibility conditions TS builds with
+//!   `getAllSettingDefs`. Hidden settings (no `ui`, numbers without options)
+//!   are hidden here the same way.
+//! - Row interaction follows TS `SettingsList`: Enter/Space flip booleans and
+//!   cycle plain enums; submenu rows (enums/numbers/strings with options,
+//!   themes, composer shapes, thinking levels) open a select field with
+//!   live preview; text rows open a text field (empty clears the key);
+//!   multiselect rows open a toggle list. ←/→ switch tabs, Tab toggles
 //!   section focus, printable characters start the cross-tab search.
 //! - Values persist through `RuntimePort::settings_set` (global config.yml,
-//!   TS `cfg://` set); rows whose values omp-rs cannot apply immediately are
-//!   still saved (the app's live-apply handles the ones it can).
+//!   TS `cfg://` set; `null` unsets) and the app applies them live
+//!   (`App::apply_setting_live`).
 
 use std::cell::RefCell;
 
@@ -38,10 +39,10 @@ use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
 use crate::mouse::SgrMouseEvent;
 use crate::theme::Theme;
 
-#[path = "settings_meta.rs"]
-mod settings_meta;
+#[path = "settings_defs.rs"]
+mod settings_defs;
 
-use settings_meta::SETTING_UI;
+use settings_defs::{DefKind, DefOption, SettingDefMeta, SETTING_DEFS};
 
 /// One settings tab (TS `SettingTab`), in `SETTING_TABS` order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,25 +165,65 @@ impl Tab {
     }
 }
 
-/// Settings omp-rs applies immediately on edit; everything else is saved for
-/// the next runtime read (the app hot-applies these in `apply_setting_live`).
+/// Settings the app applies the moment they change (`App::apply_setting_live`);
+/// everything else is saved for the next runtime read.
 pub const LIVE_APPLIED: &[&str] = &[
     "theme.dark",
     "theme.light",
     "defaultThinkingLevel",
+    "composer.shape",
+    "statusLine.preset",
+    "statusLine.separator",
+    "statusLine.contextLine",
+    "statusLine.sessionAccent",
+    "statusLine.transparent",
+    "statusLine.compactThinkingLevel",
+    "statusLine.showHookStatus",
+    "tui.vimMode",
+    "tui.vimModeDisplay",
+    "autocompleteMaxVisible",
     "display.showTokenUsage",
     "display.showTurnTime",
     "read.toolResultPreview",
     "tui.mouse",
 ];
 
-/// Which value editor a row uses.
+/// Which value editor a row uses (TS `SettingDef.type`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
+    /// Boolean toggle (Enter/Space flip).
     Bool,
+    /// Plain enum without `ui.options`: Enter/Space cycle the values.
     Enum(&'static [&'static str]),
+    /// Single-choice select field (enum/number/string with options).
+    Submenu,
+    /// Free-text field (strings, JSON arrays/records).
     Text,
-    Number,
+    /// Array-of-enum toggle list.
+    Multi,
+    /// `providers.maxInFlightRequests` per-provider limits (edited as JSON).
+    Limits,
+}
+
+/// One choice of a select/multiselect field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuOpt {
+    /// Stored value.
+    pub value: String,
+    /// Display label.
+    pub label: String,
+    /// One-line description shown after the label.
+    pub description: String,
+}
+
+impl MenuOpt {
+    fn from_def(opt: &DefOption) -> Self {
+        Self {
+            value: opt.value.to_string(),
+            label: opt.label.to_string(),
+            description: opt.description.to_string(),
+        }
+    }
 }
 
 /// One editable settings row.
@@ -197,44 +238,42 @@ pub struct SettingRow {
     tab: Tab,
     group: &'static str,
     kind: Kind,
+    def: &'static SettingDefMeta,
     /// Current effective value (seeded from the port, updated on edit).
     pub value: Value,
 }
 
 impl SettingRow {
-    /// Classify a registry setting from the ported TS `ui` metadata; `None`
-    /// when TS hides the setting from the panel the same way (no `ui`).
-    fn classify(def: &omp_settings::SettingDef) -> Option<(Tab, &'static str, Kind)> {
-        if def.credential {
-            return None;
-        }
-        let meta = SETTING_UI.iter().find(|(id, _, _, _)| *id == def.id)?;
-        let tab = Tab::from_name(meta.3 .0)?;
-        let group = if meta.3 .1.is_empty() {
-            // No `ui.group` (TS "ungrouped" rendering): land in the tab's
-            // first section.
-            tab.groups().first().copied().unwrap_or("General")
-        } else {
-            meta.3 .1
+    /// Build the row for a TS panel definition.
+    fn from_def(def: &'static SettingDefMeta) -> Option<Self> {
+        let tab = Tab::from_name(def.tab)?;
+        let kind = match def.kind {
+            DefKind::Bool => Kind::Bool,
+            DefKind::Enum => Kind::Enum(def.values),
+            DefKind::Submenu => Kind::Submenu,
+            DefKind::Text => Kind::Text,
+            DefKind::Multi => Kind::Multi,
+            DefKind::ProviderLimits => Kind::Limits,
         };
-        let kind = match def.ty {
-            omp_settings::SettingType::Boolean => Kind::Bool,
-            omp_settings::SettingType::Enum(values) => Kind::Enum(values),
-            omp_settings::SettingType::String => Kind::Text,
-            omp_settings::SettingType::Number => Kind::Number,
-            // Arrays and records need structured editors TS builds
-            // per-shape; not ported.
-            _ => return None,
-        };
-        Some((tab, group, kind))
+        let value = serde_json::from_str::<Value>(def.default_json).unwrap_or(Value::Null);
+        Some(Self {
+            id: def.id,
+            label: def.label.to_string(),
+            description: def.description,
+            tab,
+            group: def.group,
+            kind,
+            def,
+            value,
+        })
     }
 
-    /// Cycle the value one step (bool flips; enums advance through their
-    /// value list, wrapping). Text/number rows do not cycle.
+    /// Cycle the value one step (bool flips; plain enums advance through
+    /// their value list, wrapping). Other kinds open a field instead.
     fn cycled(&self) -> Option<Value> {
         match self.kind {
             Kind::Bool => Some(Value::Bool(!self.value.as_bool().unwrap_or(false))),
-            Kind::Enum(values) => {
+            Kind::Enum(values) if !values.is_empty() => {
                 let current = self.value.as_str().unwrap_or("");
                 let next = values
                     .iter()
@@ -242,46 +281,143 @@ impl SettingRow {
                     .map_or(0, |idx| (idx + 1) % values.len());
                 Some(Value::String(values[next].to_string()))
             }
-            Kind::Text | Kind::Number => None,
+            _ => None,
         }
     }
 
-    /// Value rendered after the label (TS renders the raw currentValue).
+    /// Whether the registry value is numeric (submenu values parse to numbers).
+    fn is_number(&self) -> bool {
+        self.def.schema == "number"
+    }
+
+    /// Whether this row's value is a JSON structure (array/record).
+    fn is_structured(&self) -> bool {
+        matches!(self.def.schema, "array" | "record")
+    }
+
+    /// Choices of a static (non-runtime) submenu/multiselect.
+    fn static_options(&self) -> Vec<MenuOpt> {
+        self.def.options.iter().map(MenuOpt::from_def).collect()
+    }
+
+    /// Value rendered after the label (TS `currentValue` string).
     fn value_display(&self) -> String {
         match self.kind {
             Kind::Bool => self.value.as_bool().unwrap_or(false).to_string(),
-            Kind::Number => match self.value.as_f64() {
-                Some(n) => format!("{n}"),
-                None => "unset".into(),
-            },
-            Kind::Enum(_) | Kind::Text => match self.value.as_str() {
-                Some(s) if !s.is_empty() => s.to_string(),
-                _ => "unset".into(),
-            },
+            Kind::Enum(_) => self.value.as_str().unwrap_or("").to_string(),
+            Kind::Submenu => {
+                let raw = scalar_text(&self.value);
+                // TS `#getSubmenuCurrentValue`: -1 / unset reads "default".
+                if matches!(self.id, "compaction.thresholdPercent" | "compaction.thresholdTokens")
+                    && (raw == "-1" || raw.is_empty())
+                {
+                    "default".to_string()
+                } else {
+                    raw
+                }
+            }
+            Kind::Text => text_edit_value(&self.value),
+            Kind::Multi => {
+                let ordered = self.def.ordered;
+                let labels: Vec<&str> = self
+                    .value
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .filter_map(|v| self.def.options.iter().find(|o| o.value == v))
+                            .map(|o| o.label)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if labels.is_empty() {
+                    (if ordered { "default" } else { "none" }).to_string()
+                } else {
+                    labels.join(if ordered { " → " } else { ", " })
+                }
+            }
+            Kind::Limits => {
+                let Some(map) = self.value.as_object().filter(|m| !m.is_empty()) else {
+                    return "Unlimited".to_string();
+                };
+                let mut entries: Vec<(&String, String)> =
+                    map.iter().map(|(k, v)| (k, scalar_text(v))).collect();
+                entries.sort_by(|a, b| a.0.cmp(b.0));
+                entries
+                    .iter()
+                    .map(|(k, v)| format!("{k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
         }
     }
 }
 
-/// Derive a label from the last id segment: `defaultThinkingLevel` →
-/// "default thinking level". Only used when the TS metadata carries no
-/// label.
-fn label_for(id: &str) -> String {
-    let last = id.rsplit('.').next().unwrap_or(id);
-    let mut out = String::with_capacity(last.len() + 8);
-    for ch in last.chars() {
-        if ch.is_uppercase() && !out.is_empty() {
-            out.push(' ');
-        }
-        out.extend(ch.to_lowercase());
+/// `String(value ?? "")`: scalars as text, unset as empty.
+fn scalar_text(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        other => other.to_string(),
     }
-    out
 }
 
-/// TS panel-order index of a setting id (position in the generated table).
-fn panel_order(id: &str) -> usize {
-    SETTING_UI
+/// TS `#formatTextInputEditValue`: strings verbatim, structures as JSON.
+fn text_edit_value(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        Value::Object(_) | Value::Array(_) => value.to_string(),
+        other => scalar_text(other),
+    }
+}
+
+/// Parse a submenu choice into the stored value: numbers for numeric
+/// settings (`default` is the `-1` sentinel), text otherwise.
+fn menu_value(row: &SettingRow, raw: &str) -> Value {
+    if row.is_number() {
+        if raw == "default" {
+            return Value::from(-1);
+        }
+        if let Ok(int) = raw.parse::<i64>() {
+            return Value::from(int);
+        }
+        if let Ok(float) = raw.parse::<f64>() {
+            return serde_json::Number::from_f64(float).map_or(Value::Null, Value::Number);
+        }
+    }
+    Value::String(raw.to_string())
+}
+
+/// The string form a stored value takes in the submenu option list.
+fn menu_key(row: &SettingRow) -> String {
+    let raw = scalar_text(&row.value);
+    if row.is_number() && raw == "-1" && row.def.options.iter().any(|o| o.value == "default") {
+        return "default".to_string();
+    }
+    raw
+}
+
+/// Built-in composer shapes (TS `BUILTIN_COMPOSER_SHAPES`) as select choices.
+fn composer_shape_options() -> Vec<MenuOpt> {
+    crate::composer::ComposerShape::ALL
         .iter()
-        .position(|(sid, _, _, _)| *sid == id)
+        .map(|shape| MenuOpt {
+            value: shape.name().to_string(),
+            label: shape.label().to_string(),
+            description: shape.description().to_string(),
+        })
+        .collect()
+}
+
+/// Rank of a group inside its tab's section order (unknown groups last).
+fn group_rank(tab: Tab, group: &str) -> usize {
+    tab.groups()
+        .iter()
+        .position(|candidate| *candidate == group)
         .unwrap_or(usize::MAX)
 }
 
@@ -296,6 +432,33 @@ enum DispRow {
     Heading(&'static str),
     /// Index into `rows`.
     Row(usize),
+}
+
+/// The value field open over the row list (TS `submenu` of a setting item).
+#[derive(Debug, Clone)]
+enum Menu {
+    /// Single-choice select field.
+    Select {
+        row: usize,
+        options: Vec<MenuOpt>,
+        selected: usize,
+        /// The committed choice, restored when a previewed field is cancelled.
+        base: String,
+    },
+    /// Free-text field.
+    Text {
+        row: usize,
+        buf: String,
+        /// Inline validation error.
+        error: Option<String>,
+    },
+    /// Toggle list for array-of-enum settings.
+    Multi {
+        row: usize,
+        options: Vec<MenuOpt>,
+        cursor: usize,
+        value: Vec<String>,
+    },
 }
 
 /// Cross-tab search state (TS `#startSearch`): a query over every tab's
@@ -329,6 +492,8 @@ struct MouseMap {
     pane: Vec<Option<usize>>,
     /// Column index where pane rows end (scrollbar excluded).
     pane_end_col: u16,
+    /// Open value field: screen row → option index.
+    menu: Vec<(u16, usize)>,
 }
 
 impl MouseMap {
@@ -353,10 +518,23 @@ pub struct SettingsOverlay {
     section_focus: bool,
     /// Cross-tab search, active while `Some`.
     search: Option<SearchState>,
-    /// Inline text editor state: row index being edited + buffer.
-    edit: Option<(usize, String)>,
+    /// Open value field (select / text / multiselect submenu), if any.
+    menu: Option<Menu>,
     /// Committed edits, drained by the host through [`Self::take_changes`].
     changes: Vec<(String, Value)>,
+    /// Live-preview requests (`id`, `value`) for the host (theme hot-swap),
+    /// drained through [`Self::take_previews`].
+    previews: Vec<(String, String)>,
+    /// Highlighted-but-uncommitted submenu choice (`id`, `value`): drives the
+    /// status-line / composer-shape previews inside the overlay.
+    preview_override: Option<(String, String)>,
+    /// Themes offered by `theme.dark` / `theme.light` (host-provided).
+    themes: Vec<String>,
+    /// Efforts of the active model (`defaultThinkingLevel` choices).
+    thinking_levels: Vec<String>,
+    /// Whether the terminal speaks an inline image protocol (TS condition
+    /// `hasImageProtocol`).
+    image_protocol: bool,
     /// Row under the pointer (hover highlight).
     hover: RefCell<Option<usize>>,
     /// Tab under the pointer.
@@ -377,50 +555,21 @@ impl SettingsOverlay {
     /// [`Self::seed`]).
     #[must_use]
     pub fn new() -> Self {
-        let mut rows: Vec<SettingRow> = omp_settings::SETTINGS
-            .iter()
-            .filter_map(|def| {
-                let (tab, group, kind) = SettingRow::classify(def)?;
-                let value = def
-                    .default_yaml
-                    .and_then(|raw| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw).ok())
-                    .map(|v| match v {
-                        serde_yaml_ng::Value::Bool(b) => Value::Bool(b),
-                        serde_yaml_ng::Value::Number(n) => {
-                            n.as_i64().map_or(Value::Null, Value::from)
-                        }
-                        serde_yaml_ng::Value::String(s) => Value::String(s),
-                        _ => Value::Null,
-                    })
-                    .unwrap_or(Value::Null);
-                let meta = SETTING_UI.iter().find(|(id, _, _, _)| *id == def.id);
-                let (label, description) = meta.map_or_else(
-                    || (label_for(def.id), ""),
-                    |(_, label, desc, _)| {
-                        (
-                            if label.is_empty() { label_for(def.id) } else { label.to_string() },
-                            *desc,
-                        )
-                    },
-                );
-                Some(SettingRow {
-                    id: def.id,
-                    label,
-                    description,
-                    tab,
-                    group,
-                    kind,
-                    value,
-                })
-            })
-            .collect();
-        // TS lists a tab's settings in registration (panel) order.
-        rows.sort_by_key(|row| panel_order(row.id));
+        let mut rows: Vec<SettingRow> = SETTING_DEFS.iter().filter_map(SettingRow::from_def).collect();
+        // Display order: tab, then the tab's section order (TS
+        // `getSettingsForTab` stable-sorts by group rank); panel order inside
+        // a section is the generated table order (stable sort).
+        rows.sort_by_key(|row| {
+            (
+                Tab::ALL.iter().position(|tab| *tab == row.tab).unwrap_or(usize::MAX),
+                group_rank(row.tab, row.group),
+            )
+        });
         // Land the selection on the first row of the initial tab (TS opens
         // the appearance tab with its first setting selected).
         let selected = rows
             .iter()
-            .position(|row| row.tab == Tab::Appearance)
+            .position(|row| row.tab == Tab::Appearance && row.def.condition.is_empty())
             .unwrap_or(0);
         Self {
             rows,
@@ -428,8 +577,15 @@ impl SettingsOverlay {
             selected,
             section_focus: false,
             search: None,
-            edit: None,
+            menu: None,
             changes: Vec::new(),
+            previews: Vec::new(),
+            preview_override: None,
+            themes: Vec::new(),
+            thinking_levels: ["minimal", "low", "medium", "high", "xhigh"]
+                .map(String::from)
+                .to_vec(),
+            image_protocol: crate::images::detect() != crate::images::ImageProtocol::None,
             hover: RefCell::new(None),
             hover_tab: RefCell::new(None),
             mouse: RefCell::new(MouseMap::default()),
@@ -484,12 +640,95 @@ impl SettingsOverlay {
         std::mem::take(&mut self.changes)
     }
 
-    /// Whether an interactive sub-mode owns Esc (the inline editor or the
+    /// Drain live-preview requests (`id`, `value`) raised while a submenu
+    /// choice is highlighted (the host hot-swaps the theme for these).
+    pub fn take_previews(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.previews)
+    }
+
+    /// Whether an interactive sub-mode owns Esc (a value field or the
     /// search): the host must not close the overlay on Esc while this is
     /// true.
     #[must_use]
     pub fn is_editing(&self) -> bool {
-        self.edit.is_some() || self.search.is_some()
+        self.menu.is_some() || self.search.is_some()
+    }
+
+    /// Every row the panel shows, tab by tab in display order, as
+    /// `(id, editor kind)` where the kind is one of `bool`, `enum`,
+    /// `submenu`, `text`, `multi`, `limits` (the TS `SettingDef.type`).
+    #[must_use]
+    pub fn shown_rows(&self) -> Vec<(String, &'static str)> {
+        Tab::ALL
+            .iter()
+            .flat_map(|tab| self.shown_in_tab(*tab))
+            .map(|idx| {
+                let kind = match self.rows[idx].kind {
+                    Kind::Bool => "bool",
+                    Kind::Enum(_) => "enum",
+                    Kind::Submenu => "submenu",
+                    Kind::Text => "text",
+                    Kind::Multi => "multi",
+                    Kind::Limits => "limits",
+                };
+                (self.rows[idx].id.to_string(), kind)
+            })
+            .collect()
+    }
+
+    /// Themes offered by the `theme.dark` / `theme.light` selectors.
+    pub fn set_available_themes(&mut self, themes: Vec<String>) {
+        self.themes = themes;
+    }
+
+    /// Efforts the active model supports (`defaultThinkingLevel` choices;
+    /// `auto` is always offered first, like TS).
+    pub fn set_thinking_levels(&mut self, levels: Vec<String>) {
+        self.thinking_levels = levels;
+    }
+
+    /// Whether row `idx` is shown (TS `def.condition`).
+    fn shown(&self, idx: usize) -> bool {
+        let Some(row) = self.rows.get(idx) else {
+            return false;
+        };
+        let flag = |id: &str| self.value_of(id).and_then(|v| v.as_bool()).unwrap_or(false);
+        let text = |id: &str| self.value_of(id).and_then(|v| v.as_str().map(str::to_owned));
+        match row.def.condition {
+            "" => true,
+            "macOS" => cfg!(target_os = "macos"),
+            "hasImageProtocol" => self.image_protocol,
+            // Native (Tern) rendering is not part of the terminal client.
+            "nativeRendering" => false,
+            "advisorEnabled" => flag("advisor.enabled"),
+            "vimModeEnabled" => flag("tui.vimMode"),
+            "hindsightActive" => text("memory.backend").as_deref() == Some("hindsight"),
+            "mnemopiActive" => text("memory.backend").as_deref() == Some("mnemopi"),
+            "autolearnActive" => flag("autolearn.enabled"),
+            "autoThinkingActive" => text("defaultThinkingLevel").as_deref() == Some("auto"),
+            "usageAwareFallbackEnabled" => flag("retry.usageAwareFallback"),
+            "planModeEnabled" => flag("plan.enabled"),
+            "planAutosaveEnabled" => flag("plan.enabled") && flag("plan.autosave"),
+            // The panel only ever edits the global layer; provenance of the
+            // value is not tracked here, so the row is always offered.
+            "contextFilesExtraNotProject" => true,
+            _ => true,
+        }
+    }
+
+    /// Indices of the shown rows of `tab`, in display order.
+    fn shown_in_tab(&self, tab: Tab) -> Vec<usize> {
+        (0..self.rows.len())
+            .filter(|idx| self.rows[*idx].tab == tab && self.shown(*idx))
+            .collect()
+    }
+
+    /// First shown row of `tab` (optionally of `group`).
+    fn first_shown(&self, tab: Tab, group: Option<&str>) -> Option<usize> {
+        (0..self.rows.len()).find(|idx| {
+            let row = &self.rows[*idx];
+            row.tab == tab && group.is_none_or(|g| row.group == g) && self.shown(*idx)
+        })
     }
 
     // ---- selection and edits ---------------------------------------------
@@ -518,7 +757,7 @@ impl SettingsOverlay {
         let len = Tab::ALL.len() as isize;
         self.tab = ((self.tab as isize + dir).rem_euclid(len)) as usize;
         // Land the selection on the first row of the new tab.
-        if let Some(pos) = self.rows.iter().position(|row| row.tab == Tab::ALL[self.tab]) {
+        if let Some(pos) = self.first_shown(Tab::ALL[self.tab], None) {
             self.selected = pos;
         }
         self.section_focus = false;
@@ -528,13 +767,7 @@ impl SettingsOverlay {
     /// (TS list navigation flows across section boundaries).
     fn move_selection(&mut self, delta: isize) {
         let tab = Tab::ALL[self.active_tab()];
-        let in_tab: Vec<usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| row.tab == tab)
-            .map(|(idx, _)| idx)
-            .collect();
+        let in_tab = self.shown_in_tab(tab);
         if in_tab.is_empty() {
             return;
         }
@@ -550,13 +783,7 @@ impl SettingsOverlay {
     fn wheel_move(&mut self, delta: i8) {
         self.section_focus = false;
         let tab = Tab::ALL[self.active_tab()];
-        let in_tab: Vec<usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| row.tab == tab)
-            .map(|(idx, _)| idx)
-            .collect();
+        let in_tab = self.shown_in_tab(tab);
         let Some(pos) = in_tab.iter().position(|idx| *idx == self.selected) else {
             return;
         };
@@ -568,7 +795,7 @@ impl SettingsOverlay {
     fn tab_sections(&self, tab: Tab) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = Vec::new();
         for group in tab.groups() {
-            if self.rows.iter().any(|row| row.tab == tab && row.group == *group) {
+            if self.first_shown(tab, Some(group)).is_some() {
                 out.push(group);
             }
         }
@@ -586,11 +813,7 @@ impl SettingsOverlay {
         let current = self.rows.get(self.selected).map_or(sections[0], |row| row.group);
         let pos = sections.iter().position(|name| *name == current).unwrap_or(0);
         let next = sections[(pos as isize + dir).rem_euclid(sections.len() as isize) as usize];
-        if let Some(idx) = self
-            .rows
-            .iter()
-            .position(|row| row.tab == tab && row.group == next)
-        {
+        if let Some(idx) = self.first_shown(tab, Some(next)) {
             self.selected = idx;
         }
     }
@@ -603,20 +826,267 @@ impl SettingsOverlay {
         }
     }
 
-    /// Enter/Space on a row (TS confirm): cycle bool/enum, open the inline
-    /// editor for text/number.
+    /// Choices of a submenu/multiselect row (TS `#submenuOptions`).
+    fn options_for(&self, idx: usize) -> Vec<MenuOpt> {
+        let row = &self.rows[idx];
+        if row.def.runtime {
+            return match row.id {
+                "theme.dark" | "theme.light" => self
+                    .themes
+                    .iter()
+                    .map(|name| MenuOpt {
+                        value: name.clone(),
+                        label: name.clone(),
+                        description: String::new(),
+                    })
+                    .collect(),
+                "composer.shape" => composer_shape_options(),
+                _ => Vec::new(),
+            };
+        }
+        if row.id == "defaultThinkingLevel" {
+            // `auto` first, then the model's supported efforts.
+            let declared = row.static_options();
+            return std::iter::once("auto")
+                .chain(self.thinking_levels.iter().map(String::as_str))
+                .map(|level| {
+                    declared.iter().find(|o| o.value == level).cloned().unwrap_or_else(|| MenuOpt {
+                        value: level.to_string(),
+                        label: level.to_string(),
+                        description: String::new(),
+                    })
+                })
+                .collect();
+        }
+        row.static_options()
+    }
+
+    /// Settings whose highlighted choice previews live (TS
+    /// `PREVIEWED_SETTINGS`).
+    fn previews_live(id: &str) -> bool {
+        matches!(
+            id,
+            "theme.dark" | "theme.light" | "statusLine.preset" | "statusLine.separator"
+                | "statusLine.contextLine" | "composer.shape"
+        )
+    }
+
+    /// Announce the highlighted choice of a previewed submenu.
+    fn announce_preview(&mut self, id: &str, value: &str) {
+        if !Self::previews_live(id) {
+            return;
+        }
+        self.preview_override = Some((id.to_string(), value.to_string()));
+        if matches!(id, "theme.dark" | "theme.light") {
+            self.previews.push((id.to_string(), value.to_string()));
+        }
+    }
+
+    /// Leave the previewed state (cancel or commit): theme rows restore the
+    /// active theme through the host.
+    fn end_preview(&mut self, id: &str, restore: Option<&str>) {
+        self.preview_override = None;
+        if let (true, Some(base)) = (matches!(id, "theme.dark" | "theme.light"), restore) {
+            self.previews.push((id.to_string(), base.to_string()));
+        }
+    }
+
+    /// Enter/Space on a row (TS confirm): cycle bool/plain enum, otherwise
+    /// open the row's value field.
     fn activate(&mut self, idx: usize) {
         let Some(row) = self.rows.get(idx) else {
             return;
         };
         if let Some(next) = row.cycled() {
             self.commit(idx, next);
+            return;
+        }
+        match row.kind {
+            Kind::Submenu => {
+                let options = self.options_for(idx);
+                let key = menu_key(&self.rows[idx]);
+                let selected = options.iter().position(|o| o.value == key).unwrap_or(0);
+                let id = self.rows[idx].id;
+                if Self::previews_live(id) {
+                    self.preview_override = Some((id.to_string(), key.clone()));
+                }
+                self.menu = Some(Menu::Select { row: idx, options, selected, base: key });
+            }
+            Kind::Multi => {
+                let options = self.options_for(idx);
+                let value: Vec<String> = row
+                    .value
+                    .as_array()
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .filter(|v| options.iter().any(|o| o.value == *v))
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                self.menu = Some(Menu::Multi { row: idx, options, cursor: 0, value });
+            }
+            Kind::Text | Kind::Limits => {
+                self.menu = Some(Menu::Text {
+                    row: idx,
+                    buf: text_edit_value(&row.value),
+                    error: None,
+                });
+            }
+            // Bool / Enum always cycle (handled above); an empty enum has
+            // nothing to pick.
+            Kind::Bool | Kind::Enum(_) => {}
+        }
+    }
+
+    /// Commit the highlighted submenu choice and close the field.
+    fn confirm_select(&mut self) {
+        let Some(Menu::Select { row, options, selected, .. }) = self.menu.take() else {
+            return;
+        };
+        let Some(opt) = options.get(selected) else {
+            return;
+        };
+        let id = self.rows[row].id;
+        let value = menu_value(&self.rows[row], &opt.value);
+        self.end_preview(id, None);
+        self.commit(row, value);
+    }
+
+    /// Esc on a select field: restore any preview and go back.
+    fn cancel_menu(&mut self) {
+        match self.menu.take() {
+            Some(Menu::Select { row, base, .. }) => {
+                let id = self.rows[row].id;
+                self.end_preview(id, Some(&base));
+            }
+            Some(Menu::Multi { .. } | Menu::Text { .. }) | None => {}
+        }
+    }
+
+    /// Submit a text field: empty clears the key, structures must be valid
+    /// JSON of the right shape (TS `#setSettingValue`).
+    fn confirm_text(&mut self) {
+        let Some(Menu::Text { row, buf, .. }) = self.menu.take() else {
+            return;
+        };
+        let r = &self.rows[row];
+        if buf.is_empty() {
+            self.commit(row, Value::Null);
+            return;
+        }
+        let structured = r.is_structured() || r.kind == Kind::Limits;
+        let value = if structured {
+            let parsed: Result<Value, _> = serde_json::from_str(&buf);
+            let want_array = r.def.schema == "array";
+            match parsed {
+                Ok(v) if (want_array && v.is_array()) || (!want_array && v.is_object()) => v,
+                _ => {
+                    let kind = if want_array { "array" } else { "record" };
+                    let error = format!("Invalid {kind} JSON for {}", r.id);
+                    self.menu = Some(Menu::Text { row, buf, error: Some(error) });
+                    return;
+                }
+            }
+        } else if r.is_number() {
+            match buf.trim().parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
+                Some(n) => Value::Number(n),
+                None => {
+                    self.menu = Some(Menu::Text { row, buf, error: Some("Not a number".into()) });
+                    return;
+                }
+            }
         } else {
-            let current = match row.kind {
-                Kind::Number => row.value.as_f64().map_or(String::new(), |n| format!("{n}")),
-                _ => row.value.as_str().unwrap_or_default().to_string(),
-            };
-            self.edit = Some((idx, current));
+            Value::String(buf)
+        };
+        self.commit(row, value);
+    }
+
+    /// Toggle the multiselect choice under the cursor and persist.
+    fn toggle_multi(&mut self) {
+        let Some(Menu::Multi { row, options, cursor, value }) = &mut self.menu else {
+            return;
+        };
+        let Some(opt) = options.get(*cursor) else {
+            return;
+        };
+        if let Some(pos) = value.iter().position(|v| *v == opt.value) {
+            value.remove(pos);
+        } else {
+            value.push(opt.value.clone());
+        }
+        let (row, next) = (*row, value.clone());
+        self.commit(row, Value::Array(next.into_iter().map(Value::String).collect()));
+    }
+
+    /// Keys while a value field is open.
+    fn handle_menu_key(&mut self, key: KeyEvent) -> EventOutcome {
+        let Some(menu) = self.menu.as_mut() else {
+            return EventOutcome::Ignored;
+        };
+        match menu {
+            Menu::Select { options, selected, .. } => {
+                let len = options.len();
+                let step = |cur: usize, delta: isize| -> usize {
+                    if len == 0 {
+                        0
+                    } else {
+                        (cur as isize + delta).rem_euclid(len as isize) as usize
+                    }
+                };
+                match key.code {
+                    KeyCode::Esc => self.cancel_menu(),
+                    KeyCode::Enter | KeyCode::Char(' ') => self.confirm_select(),
+                    KeyCode::Up | KeyCode::Down => {
+                        let delta = if key.code == KeyCode::Up { -1 } else { 1 };
+                        *selected = step(*selected, delta);
+                        self.menu_highlight_changed();
+                    }
+                    _ => {}
+                }
+            }
+            Menu::Text { buf, error, .. } => match key.code {
+                KeyCode::Esc => self.menu = None,
+                KeyCode::Enter => self.confirm_text(),
+                KeyCode::Backspace => {
+                    buf.pop();
+                    *error = None;
+                }
+                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    buf.push(ch);
+                    *error = None;
+                }
+                KeyCode::Char('u') => {
+                    buf.clear();
+                    *error = None;
+                }
+                _ => {}
+            },
+            Menu::Multi { options, cursor, .. } => {
+                let len = options.len();
+                match key.code {
+                    KeyCode::Esc => self.menu = None,
+                    KeyCode::Enter | KeyCode::Char(' ') => self.toggle_multi(),
+                    KeyCode::Up if len > 0 => *cursor = (*cursor + len - 1) % len,
+                    KeyCode::Down if len > 0 => *cursor = (*cursor + 1) % len,
+                    _ => {}
+                }
+            }
+        }
+        EventOutcome::Consumed
+    }
+
+    /// The select field's highlight moved: refresh the live preview.
+    fn menu_highlight_changed(&mut self) {
+        let Some(Menu::Select { row, options, selected, .. }) = &self.menu else {
+            return;
+        };
+        let id = self.rows[*row].id;
+        if let Some(opt) = options.get(*selected) {
+            let value = opt.value.clone();
+            self.announce_preview(id, &value);
         }
     }
 
@@ -648,7 +1118,7 @@ impl SettingsOverlay {
                 .rows
                 .iter()
                 .enumerate()
-                .filter(|(_, row)| row.tab == *tab)
+                .filter(|(idx, row)| row.tab == *tab && self.shown(*idx))
                 .filter(|(_, row)| {
                     row.label.to_lowercase().contains(&query)
                         || row.id.to_lowercase().contains(&query)
@@ -733,6 +1203,165 @@ impl SettingsOverlay {
         }
     }
 
+    /// Paint the open value field over the list area `[top, bottom)` and
+    /// return the next free row (TS `SelectFormField` / `TextFormField` /
+    /// `MultiSelectSubmenu` rendering inside the overlay card).
+    #[allow(clippy::too_many_arguments)]
+    fn render_menu(
+        &self,
+        frame: &mut Frame<'_>,
+        menu: &Menu,
+        inner: Rect,
+        top: u16,
+        bottom: u16,
+        theme: &Theme,
+        map: &mut MouseMap,
+    ) -> u16 {
+        let dim = Style::default().fg(theme.color("dim"));
+        let accent = Style::default().fg(theme.color("accent"));
+        let text = Style::default().fg(theme.color("text"));
+        let x = inner.x + 1;
+        let width = inner.width.saturating_sub(2);
+        let row_of = |idx: usize| &self.rows[idx];
+        let (row_idx, hint) = match menu {
+            Menu::Select { row, .. } => (*row, "⏎ to select · ⎋ to go back"),
+            Menu::Text { row, .. } => (*row, "⏎ to save · ⎋ to cancel · Clear field to unset"),
+            Menu::Multi { row, .. } => (*row, "⏎/␣ to toggle · ⎋ to go back"),
+        };
+        let row = row_of(row_idx);
+        let mut lines: Vec<(Line<'static>, Option<usize>)> = Vec::new();
+        lines.push((Line::from(Span::styled(row.label.clone(), text.add_modifier(Modifier::BOLD))), None));
+        lines.push((Line::default(), None));
+        for wrapped in wrap_text(row.description, width.saturating_sub(2) as usize) {
+            lines.push((Line::from(Span::styled(wrapped, dim)), None));
+        }
+        if !row.description.is_empty() {
+            lines.push((Line::default(), None));
+        }
+        match menu {
+            Menu::Select { options, selected, .. } => {
+                const MAX_VISIBLE: usize = 10;
+                let start = selected
+                    .saturating_sub(MAX_VISIBLE / 2)
+                    .min(options.len().saturating_sub(MAX_VISIBLE));
+                let label_w = options.iter().map(|o| o.label.chars().count()).max().unwrap_or(0).min(30) + 2;
+                for (i, opt) in options.iter().enumerate().skip(start).take(MAX_VISIBLE) {
+                    let current = i == *selected;
+                    let prefix = if current { "❯ " } else { "  " };
+                    let style = if current { accent } else { text };
+                    let pad = label_w.saturating_sub(opt.label.chars().count());
+                    let mut spans = vec![
+                        Span::styled(prefix.to_string(), style),
+                        Span::styled(opt.label.clone(), style),
+                    ];
+                    if !opt.description.is_empty() {
+                        spans.push(Span::styled(" ".repeat(pad), style));
+                        spans.push(Span::styled(opt.description.clone(), if current { accent } else { dim }));
+                    }
+                    lines.push((Line::from(spans), Some(i)));
+                }
+                if options.len() > MAX_VISIBLE {
+                    lines.push((
+                        Line::from(Span::styled(format!("  ({}/{})", selected + 1, options.len()), dim)),
+                        None,
+                    ));
+                }
+                if row.id == "composer.shape" {
+                    for line in self.shape_preview_lines(theme, width as usize) {
+                        lines.push((line, None));
+                    }
+                }
+            }
+            Menu::Text { buf, error, .. } => {
+                lines.push((
+                    Line::from(vec![
+                        Span::styled("› ", accent),
+                        Span::styled(buf.clone(), text),
+                        Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+                    ]),
+                    None,
+                ));
+                if let Some(error) = error {
+                    lines.push((
+                        Line::from(Span::styled(error.clone(), Style::default().fg(theme.color("error")))),
+                        None,
+                    ));
+                }
+            }
+            Menu::Multi { options, cursor, value, .. } => {
+                let ordered = row.def.ordered;
+                for (i, opt) in options.iter().enumerate() {
+                    let position = value.iter().position(|v| *v == opt.value);
+                    let mark = match (position, ordered) {
+                        (None, true) => " · ".to_string(),
+                        (None, false) => " ○ ".to_string(),
+                        (Some(pos), true) => format!("{:>2}.", pos + 1),
+                        (Some(_), false) => " ● ".to_string(),
+                    };
+                    let current = i == *cursor;
+                    let style = if current { accent } else { text };
+                    let mut spans = vec![
+                        Span::styled(if current { "❯" } else { " " }, style),
+                        Span::styled(mark, if position.is_some() { accent } else { dim }),
+                        Span::styled(format!(" {}", opt.label), style),
+                    ];
+                    if !opt.description.is_empty() {
+                        spans.push(Span::styled(format!("  {}", opt.description), dim));
+                    }
+                    lines.push((Line::from(spans), Some(i)));
+                }
+            }
+        }
+        lines.push((Line::default(), None));
+        lines.push((Line::from(Span::styled(format!("  {hint}"), dim)), None));
+
+        map.menu.clear();
+        let mut y = top;
+        for (line, opt) in lines {
+            if y >= bottom {
+                break;
+            }
+            if let Some(opt) = opt {
+                map.menu.push((y, opt));
+            }
+            frame.render_widget(
+                Paragraph::new(truncate_line(line, width as usize)),
+                Rect { x, y, width, height: 1 },
+            );
+            y += 1;
+        }
+        bottom
+    }
+
+    /// The composer-shape preview under the shape select field (TS
+    /// `ComposerShapePreview`): the candidate shape's chrome around a stand-in
+    /// prompt, with the live status line.
+    fn shape_preview_lines(&self, theme: &Theme, width: usize) -> Vec<Line<'static>> {
+        let shape = match &self.preview_override {
+            Some((id, value)) if id == "composer.shape" => value.clone(),
+            _ => self
+                .value_of("composer.shape")
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "band".to_owned()),
+        };
+        let mut st = crate::status_line::StatusLine::new("model".to_owned(), "~/project");
+        st.session_name = None;
+        st.context_percent = Some(5.0);
+        st.context_window = Some(200_000);
+        st.config = self.status_config();
+        let mut out = vec![
+            Line::default(),
+            Line::from(Span::styled("Preview:", Style::default().fg(theme.color("muted")))),
+        ];
+        out.extend(crate::composer::preview_lines(
+            crate::composer::ComposerShape::from_name(&shape),
+            width.max(24),
+            theme,
+            &st,
+        ));
+        out
+    }
+
     // ---- status line preview ----------------------------------------------
 
     /// `StatusLineConfig` built from the seeded `statusLine.*` row values
@@ -740,7 +1369,10 @@ impl SettingsOverlay {
     fn status_config(&self) -> crate::status_line::StatusLineConfig {
         use crate::status_line::{ContextLineMode, Preset, SeparatorStyle, StatusLineConfig};
         let mut cfg = StatusLineConfig::default();
-        let str_of = |id: &str| self.value_of(id).and_then(|v| v.as_str().map(str::to_owned));
+        let str_of = |id: &str| match &self.preview_override {
+            Some((over, value)) if over == id => Some(value.clone()),
+            _ => self.value_of(id).and_then(|v| v.as_str().map(str::to_owned)),
+        };
         let bool_of = |id: &str| self.value_of(id).and_then(|v| v.as_bool());
         if let Some(name) = str_of("statusLine.preset") { let name = name.as_str();
             cfg.preset = Preset::from_name(name);
@@ -807,7 +1439,7 @@ impl SettingsOverlay {
                 .rows
                 .iter()
                 .enumerate()
-                .filter(|(_, row)| row.tab == tab && row.group == *group)
+                .filter(|(idx, row)| row.tab == tab && row.group == *group && self.shown(*idx))
                 .map(|(idx, _)| idx)
                 .collect();
             if members.is_empty() {
@@ -826,6 +1458,32 @@ impl SettingsOverlay {
             return search.results.clone();
         }
         self.tab_rows(Tab::ALL[self.tab])
+    }
+
+    /// Mouse while a value field is open: the wheel moves the highlight, a
+    /// click on a choice picks (select) or toggles (multiselect) it.
+    fn handle_menu_mouse(&mut self, ev: &SgrMouseEvent, map: &MouseMap) -> EventOutcome {
+        if let Some(delta) = ev.wheel {
+            let code = if delta > 0 { KeyCode::Down } else { KeyCode::Up };
+            return self.handle_menu_key(KeyEvent::from(code));
+        }
+        if ev.left_click {
+            if let Some((_, opt)) = map.menu.iter().find(|(y, _)| *y == ev.row) {
+                match &mut self.menu {
+                    Some(Menu::Select { selected, .. }) => {
+                        *selected = *opt;
+                        self.menu_highlight_changed();
+                        self.confirm_select();
+                    }
+                    Some(Menu::Multi { cursor, .. }) => {
+                        *cursor = *opt;
+                        self.toggle_multi();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        EventOutcome::Consumed
     }
 
     /// Selected row as a display-list position (for the scroll window).
@@ -966,263 +1624,266 @@ impl Component for SettingsOverlay {
         }
         map.content = (content_start, content_end);
 
-        let list = self.display_list();
-        let sel_pos = self.selected_display_pos(&list);
+        let mut y: u16;
+        if let Some(menu) = &self.menu {
+            y = self.render_menu(frame, menu, inner, content_start, content_end + 4, theme, &mut map);
+            *self.mouse.borrow_mut() = map;
+        } else {
+            let list = self.display_list();
+            let sel_pos = self.selected_display_pos(&list);
 
-        // TS insets the list content by border + space + row() space.
-        let content_x = inner.x + 1;
-        let content_w = inner.width.saturating_sub(2);
+            // TS insets the list content by border + space + row() space.
+            let content_x = inner.x + 1;
+            let content_w = inner.width.saturating_sub(2);
 
-        // ── Layout: split sidebar + pane, or flat (TS `#renderSplitList`) ──
-        let tab = Tab::ALL[self.tab];
-        let sections = self.tab_sections(tab);
-        // TS: sidebarWidth = min(22, nameWidth) + 4 where nameWidth spans
-        // the longest section name (pane column stays stable across tabs).
-        let max_name = Tab::ALL
-            .iter()
-            .flat_map(|tab| tab.groups().iter())
-            .map(|name| name.len())
-            .max()
-            .unwrap_or(0);
-        let sidebar_width = (max_name.min(22) + 4) as u16; // 2 indent + 2 gap
-        let split = !searching
-            && sections.len() >= 2
-            && inner.width >= sidebar_width + 2 + 60; // pane ≥ 60 (TS rule)
-        let pane_x = if split { content_x + sidebar_width + 2 } else { content_x };
-        let pane_width = content_x + content_w - pane_x;
-        map.sidebar_col = if split { content_x + sidebar_width } else { u16::MAX };
-        map.pane_end_col = content_x + content_w;
+            // ── Layout: split sidebar + pane, or flat (TS `#renderSplitList`) ──
+            let tab = Tab::ALL[self.tab];
+            let sections = self.tab_sections(tab);
+            // TS: sidebarWidth = min(22, nameWidth) + 4 where nameWidth spans
+            // the longest section name (pane column stays stable across tabs).
+            let max_name = Tab::ALL
+                .iter()
+                .flat_map(|tab| tab.groups().iter())
+                .map(|name| name.len())
+                .max()
+                .unwrap_or(0);
+            let sidebar_width = (max_name.min(22) + 4) as u16; // 2 indent + 2 gap
+            let split = !searching
+                && sections.len() >= 2
+                && inner.width >= sidebar_width + 2 + 60; // pane ≥ 60 (TS rule)
+            let pane_x = if split { content_x + sidebar_width + 2 } else { content_x };
+            let pane_width = content_x + content_w - pane_x;
+            map.sidebar_col = if split { content_x + sidebar_width } else { u16::MAX };
+            map.pane_end_col = content_x + content_w;
 
-        // Scroll window: center the selection (TS `startRow`).
-        let start = sel_pos.map_or(0, |pos| {
-            pos.saturating_sub(height / 2)
-                .min(list.len().saturating_sub(height))
-        });
-        let overflow = list.len() > height;
-        let row_width = if overflow { pane_width.saturating_sub(1) } else { pane_width };
-        map.pane_end_col = pane_x + row_width;
+            // Scroll window: center the selection (TS `startRow`).
+            let start = sel_pos.map_or(0, |pos| {
+                pos.saturating_sub(height / 2)
+                    .min(list.len().saturating_sub(height))
+            });
+            let overflow = list.len() > height;
+            let row_width = if overflow { pane_width.saturating_sub(1) } else { pane_width };
+            map.pane_end_col = pane_x + row_width;
 
-        // Label column spans the whole list so the layout stays stable.
-        let max_label = list
-            .iter()
-            .filter_map(|dr| match dr {
-                DispRow::Row(idx) => Some(self.rows[*idx].label.len()),
-                DispRow::Heading(_) => None,
-            })
-            .max()
-            .unwrap_or(0)
-            .min(30);
+            // Label column spans the whole list so the layout stays stable.
+            let max_label = list
+                .iter()
+                .filter_map(|dr| match dr {
+                    DispRow::Row(idx) => Some(self.rows[*idx].label.len()),
+                    DispRow::Heading(_) => None,
+                })
+                .max()
+                .unwrap_or(0)
+                .min(30);
 
-        // Active section range (dim everything outside it in split layout):
-        // [index of the active section's heading (or first row), index of
-        // its last row].
-        let active_section: &str = self.rows.get(self.selected).map_or("", |row| row.group);
-        let active_range: Option<(usize, usize)> = if split {
-            let mut bounds: Option<(usize, usize)> = None;
-            let mut heading: Option<&str> = None;
-            let mut section_start: usize = 0;
-            let mut section_last_row: usize = 0;
-            let mut has_row = false;
-            for (pos, dr) in list.iter().enumerate() {
+            // Active section range (dim everything outside it in split layout):
+            // [index of the active section's heading (or first row), index of
+            // its last row].
+            let active_section: &str = self.rows.get(self.selected).map_or("", |row| row.group);
+            let active_range: Option<(usize, usize)> = if split {
+                let mut bounds: Option<(usize, usize)> = None;
+                let mut heading: Option<&str> = None;
+                let mut section_start: usize = 0;
+                let mut section_last_row: usize = 0;
+                let mut has_row = false;
+                for (pos, dr) in list.iter().enumerate() {
+                    match dr {
+                        DispRow::Heading(name) => {
+                            if heading == Some(active_section) {
+                                bounds = Some((section_start, section_last_row));
+                            }
+                            heading = Some(*name);
+                            section_start = pos;
+                            section_last_row = pos;
+                            has_row = false;
+                        }
+                        DispRow::Row(_) => {
+                            if !has_row {
+                                // A nameless leading section starts at its row.
+                                if heading.is_none() {
+                                    section_start = pos;
+                                }
+                                has_row = true;
+                            }
+                            section_last_row = pos;
+                        }
+                    }
+                }
+                if heading == Some(active_section) {
+                    bounds = Some((section_start, section_last_row));
+                }
+                bounds
+            } else {
+                None
+            };
+
+            // ── Sidebar: section names, highlight follows the selection ────────
+            map.sidebar.clear();
+            map.pane.clear();
+            let hover = *self.hover.borrow();
+            if split {
+                let mut lines = Vec::new();
+                for (i, name) in sections.iter().enumerate() {
+                    let is_active = *name == active_section;
+                    let focused = self.section_focus && is_active;
+                    let prefix = if focused { "❯ " } else { "  " };
+                    let style = if is_active {
+                        accent
+                    } else {
+                        dim
+                    };
+                    let field = sidebar_width.saturating_sub(4) as usize;
+                    let label: String = if name.len() > field {
+                        name.chars().take(field.saturating_sub(1)).collect()
+                    } else {
+                        name.to_string()
+                    };
+                    let pad = sidebar_width.saturating_sub(2 + label.len() as u16);
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix.to_string(), style),
+                        Span::styled(label, style),
+                        Span::styled(" ".repeat(pad as usize), dim),
+                        Span::styled("│ ", dim),
+                    ]));
+                    // Sidebar hit → first row of that section.
+                    let first = self.first_shown(tab, Some(name));
+                    map.sidebar.push(first);
+                    let _ = i;
+                }
+                // TS paints the sidebar separator for the full pane height,
+                // blank-padding rows below the last section.
+                while lines.len() < height {
+                    lines.push(Line::from(vec![
+                        Span::styled(" ".repeat(sidebar_width as usize), dim),
+                        Span::styled("│ ", dim),
+                    ]));
+                    map.sidebar.push(None);
+                }
+                frame.render_widget(
+                    Paragraph::new(lines),
+                    Rect { x: content_x, y: content_start, width: sidebar_width + 2, height: height as u16 },
+                );
+            }
+
+            // ── Pane: heading + setting rows, scrollbar when overflowing ───────
+            let mut pane_lines: Vec<Line<'_>> = Vec::new();
+            for r in 0..height {
+                let Some(dr) = list.get(start + r) else {
+                    pane_lines.push(Line::from(""));
+                    map.pane.push(None);
+                    continue;
+                };
                 match dr {
                     DispRow::Heading(name) => {
-                        if heading == Some(active_section) {
-                            bounds = Some((section_start, section_last_row));
-                        }
-                        heading = Some(*name);
-                        section_start = pos;
-                        section_last_row = pos;
-                        has_row = false;
+                        let dimmed = active_range
+                            .is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
+                        let style = if dimmed { dim } else { dim.add_modifier(Modifier::BOLD) };
+                        pane_lines.push(Line::from(Span::styled(format!("  {name}"), style)));
+                        map.pane.push(None);
                     }
-                    DispRow::Row(_) => {
-                        if !has_row {
-                            // A nameless leading section starts at its row.
-                            if heading.is_none() {
-                                section_start = pos;
-                            }
-                            has_row = true;
-                        }
-                        section_last_row = pos;
+                    DispRow::Row(idx) => {
+                        let row = &self.rows[*idx];
+                        let is_selected = *idx == self.selected && !self.section_focus;
+                        let dimmed = active_range
+                            .is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
+                        let hovered = hover == Some(*idx) && !is_selected;
+                        let prefix = if is_selected { "❯ " } else { "  " };
+                        let label_pad = max_label.saturating_sub(row.label.len());
+                        let value = row.value_display();
+                        let spans = if dimmed && !is_selected {
+                            vec![Span::styled(
+                                format!("  {}{}  {}", row.label, " ".repeat(label_pad), value),
+                                dim,
+                            )]
+                        } else {
+                            let label_style = if is_selected || hovered { accent } else { text };
+                            let value_style = if is_selected { accent } else { text };
+                            vec![
+                                Span::styled(prefix.to_string(), label_style),
+                                Span::styled(row.label.clone(), label_style),
+                                Span::styled(" ".repeat(label_pad), label_style),
+                                Span::styled("  ".to_string(), text),
+                                Span::styled(value, value_style),
+                            ]
+                        };
+                        let mut line = Line::from(spans);
+                        line = truncate_line(line, row_width as usize);
+                        pane_lines.push(line);
+                        map.pane.push(Some(*idx));
                     }
                 }
             }
-            if heading == Some(active_section) {
-                bounds = Some((section_start, section_last_row));
-            }
-            bounds
-        } else {
-            None
-        };
-
-        // ── Sidebar: section names, highlight follows the selection ────────
-        map.sidebar.clear();
-        map.pane.clear();
-        let hover = *self.hover.borrow();
-        if split {
-            let mut lines = Vec::new();
-            for (i, name) in sections.iter().enumerate() {
-                let is_active = *name == active_section;
-                let focused = self.section_focus && is_active;
-                let prefix = if focused { "❯ " } else { "  " };
-                let style = if is_active {
-                    accent
+            // Scrollbar (TS ScrollView): thumb `█` with size
+            // max(1, min(h*h/len, h)) positioned over the scroll travel, track
+            // `│` on every other row.
+            if overflow && height > 1 {
+                let size = ((height * height) / list.len()).clamp(1, height);
+                let travel = height - size;
+                let max_offset = list.len() - height;
+                let thumb_start = if max_offset == 0 {
+                    0
                 } else {
-                    dim
+                    (start.saturating_mul(travel) + max_offset / 2) / max_offset
                 };
-                let field = sidebar_width.saturating_sub(4) as usize;
-                let label: String = if name.len() > field {
-                    name.chars().take(field.saturating_sub(1)).collect()
-                } else {
-                    name.to_string()
-                };
-                let pad = sidebar_width.saturating_sub(2 + label.len() as u16);
-                lines.push(Line::from(vec![
-                    Span::styled(prefix.to_string(), style),
-                    Span::styled(label, style),
-                    Span::styled(" ".repeat(pad as usize), dim),
-                    Span::styled("│ ", dim),
-                ]));
-                // Sidebar hit → first row of that section.
-                let first = self
-                    .rows
-                    .iter()
-                    .position(|row| row.tab == tab && row.group == *name);
-                map.sidebar.push(first);
-                let _ = i;
-            }
-            // TS paints the sidebar separator for the full pane height,
-            // blank-padding rows below the last section.
-            while lines.len() < height {
-                lines.push(Line::from(vec![
-                    Span::styled(" ".repeat(sidebar_width as usize), dim),
-                    Span::styled("│ ", dim),
-                ]));
-                map.sidebar.push(None);
-            }
-            frame.render_widget(
-                Paragraph::new(lines),
-                Rect { x: content_x, y: content_start, width: sidebar_width + 2, height: height as u16 },
-            );
-        }
-
-        // ── Pane: heading + setting rows, scrollbar when overflowing ───────
-        let mut pane_lines: Vec<Line<'_>> = Vec::new();
-        for r in 0..height {
-            let Some(dr) = list.get(start + r) else {
-                pane_lines.push(Line::from(""));
-                map.pane.push(None);
-                continue;
-            };
-            match dr {
-                DispRow::Heading(name) => {
-                    let dimmed = active_range
-                        .is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
-                    let style = if dimmed { dim } else { dim.add_modifier(Modifier::BOLD) };
-                    pane_lines.push(Line::from(Span::styled(format!("  {name}"), style)));
-                    map.pane.push(None);
-                }
-                DispRow::Row(idx) => {
-                    let row = &self.rows[*idx];
-                    let is_selected = *idx == self.selected && !self.section_focus;
-                    let dimmed = active_range
-                        .is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
-                    let hovered = hover == Some(*idx) && !is_selected;
-                    let prefix = if is_selected { "❯ " } else { "  " };
-                    let label_pad = max_label.saturating_sub(row.label.len());
-                    let value = row.value_display();
-                    let spans = if dimmed && !is_selected {
-                        vec![Span::styled(
-                            format!("  {}{}  {}", row.label, " ".repeat(label_pad), value),
-                            dim,
-                        )]
+                for (r, line) in pane_lines.iter_mut().enumerate() {
+                    let used: usize = line.spans.iter().map(|span| span.content.len()).sum();
+                    let pad = (row_width as usize).saturating_sub(used);
+                    if pad > 0 {
+                        line.spans.push(Span::styled(" ".repeat(pad), text));
+                    }
+                    let (marker, style) = if (thumb_start..thumb_start + size).contains(&r) {
+                        ("█", accent)
                     } else {
-                        let label_style = if is_selected || hovered { accent } else { text };
-                        let value_style = if is_selected { accent } else { text };
-                        vec![
-                            Span::styled(prefix.to_string(), label_style),
-                            Span::styled(row.label.clone(), label_style),
-                            Span::styled(" ".repeat(label_pad), label_style),
-                            Span::styled("  ".to_string(), text),
-                            Span::styled(value, value_style),
-                        ]
+                        ("│", dim)
                     };
-                    let mut line = Line::from(spans);
-                    line = truncate_line(line, row_width as usize);
-                    pane_lines.push(line);
-                    map.pane.push(Some(*idx));
+                    line.spans.push(Span::styled(marker, style));
                 }
             }
-        }
-        // Scrollbar (TS ScrollView): thumb `█` with size
-        // max(1, min(h*h/len, h)) positioned over the scroll travel, track
-        // `│` on every other row.
-        if overflow && height > 1 {
-            let size = ((height * height) / list.len()).clamp(1, height);
-            let travel = height - size;
-            let max_offset = list.len() - height;
-            let thumb_start = if max_offset == 0 {
-                0
-            } else {
-                (start.saturating_mul(travel) + max_offset / 2) / max_offset
-            };
-            for (r, line) in pane_lines.iter_mut().enumerate() {
-                let used: usize = line.spans.iter().map(|span| span.content.len()).sum();
-                let pad = (row_width as usize).saturating_sub(used);
-                if pad > 0 {
-                    line.spans.push(Span::styled(" ".repeat(pad), text));
-                }
-                let (marker, style) = if (thumb_start..thumb_start + size).contains(&r) {
-                    ("█", accent)
-                } else {
-                    ("│", dim)
-                };
-                line.spans.push(Span::styled(marker, style));
-            }
-        }
-        // Rows truncate/pad to `row_width`; the scrollbar marker occupies
-        // the reserved last column, so render the full pane width.
-        frame.render_widget(
-            Paragraph::new(pane_lines),
-            Rect { x: pane_x, y: content_start, width: pane_width, height: height as u16 },
-        );
-        *self.mouse.borrow_mut() = map;
-
-        // ── Description area: blank + up to 3 wrapped rows (TS constant) ───
-        let desc_row = self
-            .selected_display_pos(&list)
-            .and_then(|pos| list.get(pos))
-            .and_then(|dr| match dr {
-                DispRow::Row(idx) => Some(*idx),
-                DispRow::Heading(_) => None,
-            })
-            .or(if searching {
-                None
-            } else {
-                Some(self.selected)
-            });
-        let desc: &str = desc_row
-            .and_then(|idx| self.rows.get(idx))
-            .map_or("", |row| row.description);
-        let mut y = content_end;
-        frame.render_widget(Paragraph::new(Line::from("")), Rect { x: inner.x, y, width: inner.width, height: 1 });
-        y += 1;
-        for wrapped in wrap_text(desc, inner.width.saturating_sub(4) as usize)
-            .into_iter()
-            .take(3)
-        {
-            let mut line = format!("  {wrapped}");
-            if line.chars().count() as u16 > inner.width {
-                line = line.chars().take(inner.width as usize).collect();
-            }
+            // Rows truncate/pad to `row_width`; the scrollbar marker occupies
+            // the reserved last column, so render the full pane width.
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(line, dim))),
-                Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 },
+                Paragraph::new(pane_lines),
+                Rect { x: pane_x, y: content_start, width: pane_width, height: height as u16 },
             );
-            y += 1;
-        }
-        while y < content_end + 4 {
+            *self.mouse.borrow_mut() = map;
+
+            // ── Description area: blank + up to 3 wrapped rows (TS constant) ───
+            let desc_row = self
+                .selected_display_pos(&list)
+                .and_then(|pos| list.get(pos))
+                .and_then(|dr| match dr {
+                    DispRow::Row(idx) => Some(*idx),
+                    DispRow::Heading(_) => None,
+                })
+                .or(if searching {
+                    None
+                } else {
+                    Some(self.selected)
+                });
+            let desc: &str = desc_row
+                .and_then(|idx| self.rows.get(idx))
+                .map_or("", |row| row.description);
+            y = content_end;
             frame.render_widget(Paragraph::new(Line::from("")), Rect { x: inner.x, y, width: inner.width, height: 1 });
             y += 1;
+            for wrapped in wrap_text(desc, inner.width.saturating_sub(4) as usize)
+                .into_iter()
+                .take(3)
+            {
+                let mut line = format!("  {wrapped}");
+                if line.chars().count() as u16 > inner.width {
+                    line = line.chars().take(inner.width as usize).collect();
+                }
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(line, dim))),
+                    Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 },
+                );
+                y += 1;
+            }
+            while y < content_end + 4 {
+                frame.render_widget(Paragraph::new(Line::from("")), Rect { x: inner.x, y, width: inner.width, height: 1 });
+                y += 1;
+            }
         }
 
         // ── Live Preview (appearance tab only, TS status-line preview) ─────
@@ -1254,13 +1915,17 @@ impl Component for SettingsOverlay {
             Rect { x: area.x, y, width: area.width, height: 1 },
         );
         y += 1;
-        let hint = if self.edit.is_some() {
-            "⏎ save · ⎋ cancel"
+        let hint = if let Some(menu) = &self.menu {
+            match menu {
+                Menu::Select { .. } => "⏎ to select · ⎋ to go back",
+                Menu::Text { .. } => "⏎ to save · ⎋ to cancel · Clear field to unset",
+                Menu::Multi { .. } => "⏎/␣ to toggle · ⎋ to go back",
+            }
         } else if searching {
             "⏎ change · ⇥ jump tabs · ⎋ exit search"
         } else if self.section_focus {
             "↑/↓ jump sections · ⇥/⏎ to settings · ←/→ to switch tabs · ⎋ to close"
-        } else if sections.len() >= 2 {
+        } else if self.tab_sections(Tab::ALL[self.tab]).len() >= 2 {
             "⏎/␣ to change · ⇥ to jump sections · ←/→ to switch tabs · Type to search · ⎋ to close"
         } else {
             "⏎/␣ to change · ⇥ to switch tabs · ←/→ to switch tabs · Type to search · ⎋ to close"
@@ -1273,34 +1938,9 @@ impl Component for SettingsOverlay {
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> EventOutcome {
-        // Inline text editor owns every key while active.
-        if self.edit.is_some() {
-            let (idx, mut buf) = self.edit.take().expect("checked is_some");
-            match key.code {
-                KeyCode::Esc => {
-                    self.edit = None;
-                }
-                KeyCode::Enter => {
-                    let row = &self.rows[idx];
-                    match row.kind {
-                        Kind::Number => match buf.trim().parse::<f64>() {
-                            Ok(n) => self.commit(idx, Value::from(n)),
-                            Err(_) => self.edit = Some((idx, buf)),
-                        },
-                        _ => self.commit(idx, Value::String(buf)),
-                    }
-                }
-                KeyCode::Backspace => {
-                    buf.pop();
-                    self.edit = Some((idx, buf));
-                }
-                KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    buf.push(ch);
-                    self.edit = Some((idx, buf));
-                }
-                _ => self.edit = Some((idx, buf)),
-            }
-            return EventOutcome::Consumed;
+        // An open value field owns every key.
+        if self.menu.is_some() {
+            return self.handle_menu_key(key);
         }
 
         // Search owns its keys (TS `#handleSearchModeInput`).
@@ -1311,12 +1951,7 @@ impl Component for SettingsOverlay {
                     if let Some(search) = &self.search {
                         if let DispRow::Row(idx) = search.results[search.selected] {
                             // Cycle/edit in place; the query stays.
-                            if self.rows[idx].cycled().is_some() {
-                                let next = self.rows[idx].cycled().expect("checked");
-                                self.commit(idx, next);
-                            } else {
-                                self.activate(idx);
-                            }
+                            self.activate(idx);
                         }
                     }
                 }
@@ -1409,6 +2044,9 @@ impl Component for SettingsOverlay {
 
     fn handle_mouse(&mut self, ev: &SgrMouseEvent) -> EventOutcome {
         let map = self.mouse.borrow().clone();
+        if self.menu.is_some() {
+            return self.handle_menu_mouse(ev, &map);
+        }
         if let Some(delta) = ev.wheel {
             // Wheel scrolls the rows pane (TS `handleWheelAt`; the sidebar
             // does not scroll).
@@ -1443,9 +2081,7 @@ impl Component for SettingsOverlay {
                     self.end_search();
                     self.tab = tab;
                     self.section_focus = false;
-                    if let Some(pos) =
-                        self.rows.iter().position(|row| row.tab == Tab::ALL[self.tab])
-                    {
+                    if let Some(pos) = self.first_shown(Tab::ALL[self.tab], None) {
                         self.selected = pos;
                     }
                 }
@@ -1652,12 +2288,6 @@ mod tests {
     }
 
     #[test]
-    fn labels_derive_from_last_segment_as_fallback() {
-        assert_eq!(label_for("defaultThinkingLevel"), "default thinking level");
-        assert_eq!(label_for("bash.autoBackground.enabled"), "enabled");
-    }
-
-    #[test]
     fn commit_queues_change_and_updates_row() {
         let mut overlay = SettingsOverlay::new();
         let idx = overlay
@@ -1846,9 +2476,9 @@ mod tests {
         click(&mut overlay, col, row);
         assert_eq!(overlay.selected, target);
         // A repeated click on the selected row activates it (theme.light is
-        // a text row: opens the inline editor).
+        // a submenu row: opens the select field).
         click(&mut overlay, col, row);
-        assert!(overlay.edit.is_some());
+        assert!(overlay.menu.is_some());
     }
 
     #[test]

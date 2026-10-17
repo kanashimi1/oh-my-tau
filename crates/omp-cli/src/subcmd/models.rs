@@ -242,7 +242,9 @@ fn is_non_chat_kind(kind: &str) -> bool {
 /// Parse a `models.db` cache entry tolerantly: rows may carry `null` limits
 /// (TS renders them as `-`), which the strict `Model` serde shape rejects.
 fn lenient_model(entry: &Value, provider: &str) -> Option<Model> {
-    if let Ok(model) = serde_json::from_value::<Model>(entry.clone()) {
+    // The stored resolved `compat` is re-derived from the row's `compatConfig` by the policy
+    // resolver (`sends_image_input` below), never trusted as an override set.
+    if let Some((model, _)) = pa_ai::compat::model_from_catalog_row(entry.clone()) {
         return Some(model);
     }
     let id = entry.get("id").and_then(Value::as_str)?.to_string();
@@ -276,6 +278,8 @@ fn lenient_model(entry: &Value, provider: &str) -> Option<Model> {
         context_window: num("contextWindow"),
         max_tokens: num("maxTokens"),
         max_tokens_explicit: true,
+        omit_max_output_tokens: None,
+        request_model_id: None,
         featured: None,
         headers: None,
         compat: None,
@@ -467,6 +471,8 @@ fn custom_model(provider: &str, entry: &Value) -> Option<Model> {
         context_window: num("contextWindow"),
         max_tokens: num("maxTokens"),
         max_tokens_explicit: true,
+        omit_max_output_tokens: None,
+        request_model_id: None,
         featured: None,
         headers: None,
         compat: None,
@@ -513,11 +519,10 @@ fn format_limit(n: u64) -> String {
 /// TS `sendsImageInputOnWire`: declared image input minus `compat.stripImageInput`.
 fn sends_image_input(m: &Model) -> bool {
     let declared = m.input.contains(&ModelInput::Image);
-    let stripped = m
-        .compat
-        .as_ref()
-        .and_then(|c| c.raw.get("stripImageInput"))
-        .and_then(Value::as_bool)
+    let stripped = pa_ai::compat::resolve_for_model(m)
+        .ok()
+        .and_then(|p| p.compat)
+        .and_then(|c| c.get("stripImageInput").and_then(Value::as_bool))
         .unwrap_or(false);
     declared && !stripped
 }

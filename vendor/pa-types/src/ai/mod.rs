@@ -717,6 +717,13 @@ pub struct Model {
     /// reaches the provider unchanged; catalog values stay capped.
     #[serde(default, skip_serializing_if = "is_false")]
     pub max_tokens_explicit: bool,
+    /// Drop the output-token cap from requests entirely (proxies with unknown upstream caps;
+    /// TS `omitMaxOutputTokens`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omit_max_output_tokens: Option<bool>,
+    /// Wire model id when it differs from the catalog id (TS `requestModelId`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_model_id: Option<String>,
     /// Flagship model surfaced above non-featured models of the same provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub featured: Option<bool>,

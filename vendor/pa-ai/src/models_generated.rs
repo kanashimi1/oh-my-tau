@@ -4426,9 +4426,14 @@ fn model_from_raw(raw: &RawModel) -> Model {
         context_window: raw.context_window,
         max_tokens: raw.max_tokens,
         max_tokens_explicit: false,
+        omit_max_output_tokens: None,
+        request_model_id: None,
         featured: raw.featured,
         headers,
-        compat: raw.compat.as_ref().map(compat_from_raw),
+        // Only the Prime Inference rows carry authored compat (a deliberate offline floor, see
+        // `prime_inference_fallback_declares_no_reasoning_controls`); every other row resolves
+        // through the shared policy resolver (`crate::compat`) from provider/id/baseUrl alone.
+        compat: (raw.provider == "prime-inference").then(|| raw.compat.as_ref().map(compat_from_raw)).flatten(),
     }
 }
 
@@ -4436,7 +4441,9 @@ fn catalog() -> &'static ProviderCatalog {
     static CATALOG: LazyLock<ProviderCatalog> = LazyLock::new(|| {
         let mut catalog: ProviderCatalog = HashMap::with_capacity(RAW_MODELS.len());
         for raw in RAW_MODELS {
-            let model = model_from_raw(raw);
+            let mut model = model_from_raw(raw);
+            // TS `buildModel`: resolve the policy once (thinking ladder, `reasoning` correction).
+            let _ = crate::compat::materialize(&mut model, None);
             catalog
                 .entry(model.provider.clone())
                 .or_default()
@@ -4562,12 +4569,10 @@ mod tests {
                 model.id
             );
         }
-        // The direct z.ai provider keeps the toggle.
+        // The direct z.ai provider keeps the toggle: the resolver picks the zai dialect from the host.
         let glm = get_model("zai", "glm-4.7").expect("direct zai template is compiled");
-        assert!(matches!(
-            glm.compat_kind(),
-            Some(crate::types::CompatKind::OpenAiCompletions(compat))
-                if compat.thinking_format == Some(crate::types::ThinkingFormat::Zai)
-        ));
+        let resolved = crate::compat::resolve_for_model(glm).expect("policy resolves");
+        let compat = resolved.compat.expect("openai-completions has a compat record");
+        assert_eq!(compat.get("thinkingFormat"), Some(&serde_json::json!("zai")));
     }
 }

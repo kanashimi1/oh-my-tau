@@ -116,6 +116,30 @@ pub enum Speculation {
     Running,
 }
 
+/// The TS `StatusLineLayout`s a composer shape asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusLayout {
+    /// Powerline groups joined by the context gauge, flush-left band row.
+    #[default]
+    Band,
+    /// Same bar embedded in the box composer's top border.
+    Box,
+    /// Plain (no background, dot separators) bar with both groups.
+    PlainFull,
+    /// Plain bar with the left group only (standalone bottom bar).
+    PlainLeft,
+    /// Right group only, kept as a chip on the top rule.
+    PlainRight,
+}
+
+impl StatusLayout {
+    /// Plain layouts drop the gauge, powerline caps and group separators.
+    #[must_use]
+    pub const fn is_plain(self) -> bool {
+        matches!(self, Self::PlainFull | Self::PlainLeft | Self::PlainRight)
+    }
+}
+
 /// What the status line knows about the session right now.
 #[allow(clippy::struct_excessive_bools)] // mirrors the TS SegmentContext aggregate
 #[derive(Debug, Clone)]
@@ -305,6 +329,16 @@ impl StatusLine {
         }
     }
 
+    /// Install a new `statusLine.*` configuration (settings hot-apply): the
+    /// segment helpers that read mirrored flags follow it too.
+    pub fn apply_config(&mut self, config: StatusLineConfig) {
+        self.compact_thinking = config.compact_thinking;
+        self.path_abbreviate = config.path_abbreviate;
+        self.time_12h = config.time_12h;
+        self.time_show_seconds = config.time_show_seconds;
+        self.config = config;
+    }
+
     /// Advance live timers (§5.6): wall clock and the speculation blink.
     /// The app calls this once per draw tick.
     pub fn tick(&mut self, now_ms: u64) {
@@ -439,6 +473,43 @@ fn paint_group(
     Group { spans, width }
 }
 
+impl StatusLine {
+    /// Build the bar for one composer layout as styled spans plus their
+    /// visible width (`StatusLineComponent.#buildStatusLine`); `None` when
+    /// the layout has nothing to show.
+    #[must_use]
+    pub fn render_layout(
+        &self,
+        theme: &Theme,
+        width: usize,
+        layout_kind: StatusLayout,
+    ) -> Option<(Vec<Span<'static>>, usize)> {
+        if width == 0 {
+            return None;
+        }
+        let accent = self.session_accent();
+        let ctx = Ctx {
+            st: self,
+            accent,
+            path_max: self.config.path_max_length,
+        };
+        let gauge_input = gauge::GaugeInput {
+            percent: self.context_percent,
+            window: self.context_window,
+            tokens: self.context_tokens,
+            mode: self.config.context_line,
+            compaction_pct: self.compaction_pct,
+            speculation_pct: self.speculation_pct,
+            accent,
+            boundaries_known: self.boundaries_known,
+            embed: false,
+        };
+        let line = layout(&ctx, theme, width, &gauge_input, layout_kind);
+        let used: usize = line.spans.iter().map(|span| str_width(&span.content)).sum();
+        (used > 0).then_some((line.spans, used))
+    }
+}
+
 impl Component for StatusLine {
     fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let width = area.width as usize;
@@ -462,7 +533,7 @@ impl Component for StatusLine {
             boundaries_known: self.boundaries_known,
             embed: false,
         };
-        let line = layout(&ctx, theme, width, &gauge_input);
+        let line = layout(&ctx, theme, width, &gauge_input, StatusLayout::Band);
         frame.render_widget(Paragraph::new(line), Rect { height: 1, ..area });
 
         // §5.5 hook status lines on the rows below.
@@ -502,7 +573,9 @@ fn layout(
     theme: &Theme,
     width: usize,
     gauge_input: &gauge::GaugeInput,
+    kind: StatusLayout,
 ) -> Line<'static> {
+    let plain = kind.is_plain();
     let (mut left_ids, mut right_ids) = match ctx.st.config.preset {
         presets::Preset::Custom => (
             ctx.st
@@ -518,11 +591,17 @@ fn layout(
         ),
         p => p.segments(),
     };
+    match kind {
+        StatusLayout::PlainRight => left_ids.clear(),
+        StatusLayout::PlainLeft => right_ids.clear(),
+        _ => {}
+    }
     // `embedContext`: with a known window and at least one non-context
     // segment, the gauge absorbs the context segments (percent + window
     // labels ride inside it).
     let is_context = |id: &SegmentId| matches!(id, SegmentId::ContextPct | SegmentId::ContextTotal);
-    let embed = ctx.st.config.context_line == presets::ContextLineMode::Embedded
+    let embed = !plain
+        && ctx.st.config.context_line == presets::ContextLineMode::Embedded
         && ctx.st.context_window.unwrap_or(0) > 0
         && left_ids.iter().chain(right_ids.iter()).any(is_context)
         && left_ids.iter().chain(right_ids.iter()).any(|id| !is_context(id));
@@ -539,12 +618,18 @@ fn layout(
         .preset
         .separator()
         .unwrap_or(ctx.st.config.separator);
-    let seps = separators::Separators::for_style(sep_style);
-    let transparent = ctx.st.config.transparent;
+    let seps = if plain {
+        separators::Separators::plain()
+    } else {
+        separators::Separators::for_style(sep_style)
+    };
+    // Plain bottom bars drop the background; the top-rule chip keeps it.
+    let transparent = ctx.st.config.transparent
+        || matches!(kind, StatusLayout::PlainFull | StatusLayout::PlainLeft);
 
     // 1. The right group also carries badges that are not registry
     //    segments: the `⚙ <n>` background-jobs badge (§5.3 step 1).
-    let jobs_badge = ctx.st.jobs > 0;
+    let jobs_badge = ctx.st.jobs > 0 && kind != StatusLayout::PlainLeft;
 
     let mut path_max = ctx.path_max;
     let mut name_floor = usize::MAX; // session_name elastic budget
@@ -567,7 +652,12 @@ fn layout(
         }
         let left_w = group_width(&left, &seps, false, theme);
         let right_w = group_width(&right, &seps, true, theme);
-        if left_w + right_w + gauge::embedded_min_width(gauge_input) <= width {
+        let min_gap = if plain {
+            usize::from(left_w > 0 && right_w > 0)
+        } else {
+            gauge::embedded_min_width(gauge_input)
+        };
+        if left_w + right_w + min_gap <= width {
             break;
         }
         // 2. Pop right segments from the end (the badge is gone first).
@@ -595,6 +685,19 @@ fn layout(
     // middle (widened by any leftover cells).
     let left_group = paint_group(&flatten(&left), &seps, false, theme, transparent);
     let right_group = paint_group(&flatten(&right), &seps, true, theme, transparent);
+    if plain {
+        // Standalone composers: no gauge between the groups, just air.
+        if left_group.width == 0 || right_group.width == 0 {
+            let mut spans = left_group.spans;
+            spans.extend(right_group.spans);
+            return Line::from(spans);
+        }
+        let gap = width.saturating_sub(left_group.width + right_group.width).max(1);
+        let mut spans = left_group.spans;
+        spans.push(Span::raw(" ".repeat(gap)));
+        spans.extend(right_group.spans);
+        return Line::from(spans);
+    }
     let gauge_w = width
         .saturating_sub(left_group.width + right_group.width)
         .max(1);

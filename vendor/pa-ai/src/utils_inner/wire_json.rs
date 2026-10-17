@@ -79,6 +79,11 @@ impl<'a> WireObject<'a> {
         self.get(key).is_some()
     }
 
+    /// Remove `key`, keeping the order of the remaining entries.
+    pub(crate) fn remove(&mut self, key: &str) {
+        self.entries.retain(|(name, _)| name != key);
+    }
+
     /// Build an object from literal entries, in order (`json!({ .. })`).
     pub(crate) fn from_entries<const N: usize>(entries: [(&'a str, Wire<'a>); N]) -> Self {
         let mut object = Self::new();

@@ -175,7 +175,6 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     };
     let selector = role_selector(&cfg, model_ref);
     let fallbacks = cfg.fallback(&dir.0).candidates(&selector, role.as_deref());
-    apply_overrides(&cfg, &provider, &mut model);
     // omp "pseudo apis" that are plain OpenAI-compatible chat endpoints.
     if model.api == "openrouter" {
         model.api = "openai-completions".to_string();
@@ -430,7 +429,10 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
         .and_then(Value::as_array)
         .and_then(|a| a.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(id)))
     {
-        return Ok((custom_model(provider, pcfg.expect("checked"), entry)?, entry.get("thinking").cloned()));
+        let mut model = custom_model(provider, pcfg.expect("checked"), entry)?;
+        let thinking = entry.get("thinking").cloned();
+        finish_model(cfg, provider, &mut model, thinking.as_ref())?;
+        return Ok((model, thinking));
     }
     // 2. omp's dynamic catalog cache, 3. pa-ai compiled catalog
     let (mut model, meta) = match cache_model(&dir.join("models.db"), provider, id) {
@@ -458,7 +460,30 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
             model.api = a.to_string();
         }
     }
+    finish_model(cfg, provider, &mut model, meta.as_ref())?;
     Ok((model, meta))
+}
+
+/// Every model source ends here (TS `buildModel`): `modelOverrides` first (they feed the policy
+/// input), then the one-time policy resolution — thinking ladder, `reasoning` correction and
+/// catalog assignments — through the shared resolver in `pa_ai::compat`.
+fn finish_model(cfg: &Config, provider: &str, model: &mut Model, thinking: Option<&Value>) -> Result<()> {
+    // TS `mergeCompat(model.compatConfig, providerOverride.compat)`: the provider-level `compat:`
+    // block (and `disableStrictTools`) layers over the model's authored overrides.
+    if let Some(p) = cfg.provider(provider) {
+        if let Some(c) = p.get("compat").and_then(Value::as_object) {
+            merge_compat(model, c);
+        }
+        if p.get("disableStrictTools").and_then(Value::as_bool) == Some(true) {
+            let mut c = Map::new();
+            c.insert("disableStrictTools".into(), Value::Bool(true));
+            merge_compat(model, &c);
+        }
+    }
+    apply_overrides(cfg, provider, model);
+    pa_ai::compat::materialize(model, thinking)
+        .map(drop)
+        .map_err(|e| anyhow!("model policy for {provider}/{}: {e}", model.id))
 }
 
 /// Effective thinking level for a model, in omp's order (`sdk.ts` `pickInitialThinkingLevel`):
@@ -574,6 +599,24 @@ fn custom_model(provider: &str, pcfg: &Map<String, Value>, entry: &Value) -> Res
     serde_json::from_value(v).with_context(|| format!("invalid model entry {provider}/{id} in models.yml"))
 }
 
+/// TS `mergeCompat`: `over` layered over the model's sparse compat, nested objects merged
+/// recursively, everything else replaced.
+fn merge_compat(m: &mut Model, over: &Map<String, Value>) {
+    fn merge(base: &mut Map<String, Value>, over: &Map<String, Value>) {
+        for (k, v) in over {
+            match (base.get_mut(k), v) {
+                (Some(Value::Object(b)), Value::Object(o)) => merge(b, o),
+                _ => {
+                    base.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    let mut raw = m.compat.take().map(|c| c.raw).unwrap_or_default();
+    merge(&mut raw, over);
+    m.compat = Some(pa_types::ai::ModelCompat { raw });
+}
+
 fn apply_overrides(cfg: &Config, provider: &str, m: &mut Model) {
     let Some(o) = cfg
         .provider(provider)
@@ -607,6 +650,9 @@ fn apply_overrides(cfg: &Config, provider: &str, m: &mut Model) {
     if let Some(c) = o.get("cost").and_then(|c| serde_json::from_value(c.clone()).ok()) {
         m.cost = c;
     }
+    if let Some(c) = o.get("compat").and_then(Value::as_object) {
+        merge_compat(m, c);
+    }
 }
 
 fn open_ro(path: &Path) -> Option<rusqlite::Connection> {
@@ -633,9 +679,10 @@ fn cache_model(db: &Path, provider: &str, id: &str) -> Option<(Model, Option<Val
     for json in rows {
         let Ok(Value::Array(models)) = serde_json::from_str::<Value>(&json) else { continue };
         if let Some(entry) = models.into_iter().find(|m| m.get("id").and_then(Value::as_str) == Some(id)) {
-            let thinking = entry.get("thinking").cloned();
-            if let Ok(m) = serde_json::from_value::<Model>(entry) {
-                return Some((m, thinking));
+            // The stored resolved `compat` may predate the current rules; the policy resolver
+            // re-derives it from the row's authored `compatConfig` (see `materialize`).
+            if let Some((model, thinking)) = pa_ai::compat::model_from_catalog_row(entry) {
+                return Some((model, thinking));
             }
         }
     }
@@ -960,5 +1007,192 @@ mod tests {
         assert_eq!(key("none"), None);
         // The row id travels with the key (the live oauth row is the 3rd insert for `p`).
         assert_eq!(db_credential(&db, "q").map(|(_, id)| id), Some(4));
+    }
+
+    // ---- kimi-code compat (regression: `400 role 'developer' is not allowed`)
+
+    /// The TS-resolved compat record `models.db` stores for `kimi-code/kimi-for-coding`
+    /// (`thinkingFormat: "kimi"` is not a spelling older Rust enums knew).
+    const KIMI_CACHE_COMPAT: &str = r#"{"supportsStore":false,"supportsDeveloperRole":false,"supportsMultipleSystemMessages":false,"supportsReasoningEffort":true,"reasoningEffortMap":{},"supportsUsageInStreaming":true,"alwaysSendMaxTokens":true,"maxTokensField":"max_tokens","thinkingFormat":"kimi","kimiApiFormat":"anthropic","reasoningDisableMode":"zai-thinking-disabled","supportsStrictMode":false,"toolSchemaFlavor":"moonshot-mfjs"}"#;
+
+    fn kimi_dir(source: &str, base_url: &str) -> (tempfile::TempDir, AgentDir) {
+        let t = tempfile::tempdir().unwrap();
+        match source {
+            "cache" => {
+                let c = rusqlite::Connection::open(t.path().join("models.db")).unwrap();
+                c.execute_batch(
+                    "CREATE TABLE model_cache (provider_id TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at INTEGER NOT NULL, authoritative INTEGER NOT NULL DEFAULT 0, static_fingerprint TEXT NOT NULL DEFAULT '', models TEXT NOT NULL);",
+                )
+                .unwrap();
+                let models = json!([{
+                    "id": "kimi-for-coding", "name": "K2.8 Preview", "api": "openai-completions",
+                    "provider": "kimi-code", "baseUrl": base_url, "reasoning": true,
+                    "input": ["text", "image"],
+                    "cost": {"input": 0.95, "output": 4, "cacheRead": 0.19, "cacheWrite": 0},
+                    "contextWindow": 1_048_576, "maxTokens": 32768,
+                    "thinking": {"mode": "effort", "efforts": ["low", "high", "max"], "requiresEffort": true, "defaultLevel": "max"},
+                    "identity": {"class": "kimi"},
+                    "compat": serde_json::from_str::<Value>(KIMI_CACHE_COMPAT).unwrap(),
+                }]);
+                c.execute(
+                    "INSERT INTO model_cache(provider_id, version, updated_at, models) VALUES ('kimi-code', 1, 1, ?1)",
+                    [models.to_string()],
+                )
+                .unwrap();
+                std::fs::write(t.path().join("models.yml"), format!("providers:\n  kimi-code:\n    apiKey: k\n    baseUrl: {base_url}\n")).unwrap();
+            }
+            "yml-custom" => std::fs::write(
+                t.path().join("models.yml"),
+                format!("providers:\n  kimi-code:\n    baseUrl: {base_url}\n    apiKey: k\n    api: openai-completions\n    models:\n      - id: kimi-for-coding\n        reasoning: true\n"),
+            )
+            .unwrap(),
+            // Provider configured, model unknown to every catalog: synthesized.
+            _ => std::fs::write(t.path().join("models.yml"), format!("providers:\n  kimi-code:\n    baseUrl: {base_url}\n    apiKey: k\n    api: openai-completions\n")).unwrap(),
+        }
+        let dir = AgentDir(t.path().to_path_buf());
+        (t, dir)
+    }
+
+    /// Request body over a real socket: system prompt rides `role: system`, never `developer`.
+    #[tokio::test]
+    async fn kimi_code_request_body_uses_system_role() {
+        use futures::StreamExt as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        for source in ["cache", "yml-custom", "synthesized"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}/coding/v1", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = Vec::new();
+                let body = loop {
+                    let mut chunk = [0u8; 4096];
+                    let n = sock.read(&mut chunk).await.unwrap();
+                    buf.extend_from_slice(&chunk[..n]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some((head, rest)) = text.split_once("\r\n\r\n") {
+                        let len = head
+                            .lines()
+                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                            .unwrap_or(0);
+                        if rest.len() >= len {
+                            break rest[..len].to_string();
+                        }
+                    }
+                    if n == 0 {
+                        break String::new();
+                    }
+                };
+                let sse = "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+                let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}", sse.len());
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                body
+            });
+            let (_t, dir) = kimi_dir(source, &base);
+            let m = resolve_in(&dir, "kimi-code/kimi-for-coding").unwrap();
+            let ctx: Context = serde_json::from_value(json!({
+                "systemPrompt": "SYS PROMPT",
+                "messages": [{"role": "user", "content": "hi", "timestamp": 0}]
+            }))
+            .unwrap();
+            let mut s = stream(&m, ctx, None).await.unwrap();
+            while s.next().await.is_some() {}
+            let body: Value = serde_json::from_str(&server.await.unwrap()).unwrap();
+            let roles: Vec<&str> = body["messages"].as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap()).collect();
+            assert_eq!(roles, ["system", "user"], "{source}: {body}");
+            assert!(body.get("max_tokens").is_some(), "{source}: {body}");
+            assert!(body.get("max_completion_tokens").is_none(), "{source}");
+            if source != "synthesized" {
+                // Synthesized models are non-reasoning (as in TS); the others send the kimi dialect.
+                assert_eq!(body["thinking"]["type"], "enabled", "{source}: {body}");
+            }
+            assert!(body.get("store").is_none() || body["store"] == json!(false), "{source}");
+        }
+    }
+
+    // ---- every model source resolves its compat through the shared policy resolver
+
+    fn cache_dir(row: Value, models_yml: &str) -> (tempfile::TempDir, AgentDir) {
+        let t = tempfile::tempdir().unwrap();
+        let c = rusqlite::Connection::open(t.path().join("models.db")).unwrap();
+        c.execute_batch(
+            "CREATE TABLE model_cache (provider_id TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at INTEGER NOT NULL, authoritative INTEGER NOT NULL DEFAULT 0, static_fingerprint TEXT NOT NULL DEFAULT '', models TEXT NOT NULL);",
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO model_cache(provider_id, version, updated_at, models) VALUES ('groq', 1, 1, ?1)",
+            [json!([row]).to_string()],
+        )
+        .unwrap();
+        std::fs::write(t.path().join("models.yml"), models_yml).unwrap();
+        let dir = AgentDir(t.path().to_path_buf());
+        (t, dir)
+    }
+
+    fn groq_row(compat: Value, compat_config: Option<Value>) -> Value {
+        let mut row = json!({
+            "id": "llama-3.3-70b-versatile", "name": "L", "api": "openai-completions",
+            "provider": "groq", "baseUrl": "https://api.groq.com/openai/v1", "reasoning": false,
+            "input": ["text"], "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 131_072, "maxTokens": 32_768, "compat": compat,
+        });
+        if let Some(c) = compat_config {
+            row["compatConfig"] = c;
+        }
+        row
+    }
+
+    fn resolved_flag(m: &ResolvedModel, key: &str) -> Option<Value> {
+        pa_ai::compat::resolve_for_model(&m.model).unwrap().compat.unwrap().get(key).cloned()
+    }
+
+    /// A cache row's stored `compat` is the TS-resolved record as of the row's write: it can be
+    /// stale, so it is never used as an override set. Only the authored `compatConfig` is.
+    #[test]
+    fn cache_rows_resolve_from_compat_config_not_the_stale_stored_record() {
+        let stale = json!({"supportsDeveloperRole": true, "supportsStore": true});
+        let (_t, dir) = cache_dir(groq_row(stale.clone(), None), "providers:\n  groq:\n    apiKey: k\n");
+        let m = resolve_in(&dir, "groq/llama-3.3-70b-versatile").unwrap();
+        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(false)), "groq takes `system`");
+        assert_eq!(resolved_flag(&m, "supportsMultipleSystemMessages"), Some(json!(true)));
+
+        let (_t, dir) = cache_dir(
+            groq_row(stale, Some(json!({"supportsDeveloperRole": true}))),
+            "providers:\n  groq:\n    apiKey: k\n",
+        );
+        let m = resolve_in(&dir, "groq/llama-3.3-70b-versatile").unwrap();
+        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(true)), "authored override wins");
+    }
+
+    /// TS `mergeCompat(model.compatConfig, providerOverride.compat)`: a provider-level `compat:`
+    /// block and a `modelOverrides` `compat:` layer over the model's authored overrides.
+    #[test]
+    fn models_yml_provider_and_model_override_compat_layer_over_the_row() {
+        let yml = "providers:\n  groq:\n    apiKey: k\n    compat:\n      supportsStore: true\n      extraBody:\n        a: 1\n    modelOverrides:\n      llama-3.3-70b-versatile:\n        compat:\n          extraBody:\n            b: 2\n";
+        let (_t, dir) = cache_dir(groq_row(json!({}), Some(json!({"supportsDeveloperRole": true}))), yml);
+        let m = resolve_in(&dir, "groq/llama-3.3-70b-versatile").unwrap();
+        assert_eq!(resolved_flag(&m, "supportsStore"), Some(json!(true)));
+        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(true)), "row override survives");
+        assert_eq!(resolved_flag(&m, "extraBody"), Some(json!({"a": 1, "b": 2})), "nested objects merge");
+    }
+
+    /// A custom `models.yml` model resolves through the same resolver: a loopback endpoint is a
+    /// local serving backend (grammar tool schemas, no first-event timeout), and the model's
+    /// authored `compat` overrides the resolved record.
+    #[test]
+    fn custom_models_resolve_host_policy_and_authored_overrides() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(
+            t.path().join("models.yml"),
+            "providers:\n  local:\n    baseUrl: http://127.0.0.1:8080/v1\n    apiKey: k\n    api: openai-completions\n    models:\n      - id: qwen3-coder\n        reasoning: true\n        compat:\n          supportsDeveloperRole: true\n",
+        )
+        .unwrap();
+        let dir = AgentDir(t.path().to_path_buf());
+        let m = resolve_in(&dir, "local/qwen3-coder").unwrap();
+        assert_eq!(resolved_flag(&m, "toolSchemaFlavor"), Some(json!("grammar")));
+        assert_eq!(resolved_flag(&m, "streamFirstEventTimeoutMs"), Some(json!(0)));
+        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(true)));
+        assert_eq!(resolved_flag(&m, "thinkingFormat"), Some(json!("qwen")));
+        // The resolved ladder is materialized onto the model (qwen: reasoning effort ladder).
+        assert!(m.model.thinking_level_map.is_some());
     }
 }

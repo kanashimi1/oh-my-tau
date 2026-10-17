@@ -142,6 +142,10 @@ pub struct Runtime {
     /// Interactive-TUI hosts only: emit `context_usage` frames (status-line
     /// model identity + context gauge). RPC consumers never see them.
     ui_context_frames: std::sync::atomic::AtomicBool,
+    /// `auto` thinking selector active (TS `ModelControls.#autoThinking`): the
+    /// session runs a provisional concrete level and the status line shows
+    /// `auto` until a level is classified.
+    auto_thinking: std::sync::atomic::AtomicBool,
     /// Report stashed by a successful `rewind` tool result, consumed by the
     /// `TurnEnd` hook that truncates the context (TS `#pendingRewindReport`).
     pending_rewind_report: Mutex<Option<String>>,
@@ -338,6 +342,7 @@ impl Runtime {
             retry_task: Mutex::new(None),
             user_interrupt: std::sync::atomic::AtomicBool::new(false),
             ui_context_frames: std::sync::atomic::AtomicBool::new(false),
+            auto_thinking: std::sync::atomic::AtomicBool::new(false),
             pending_rewind_report: Mutex::new(None),
             on_session_name: Mutex::new(None),
             title_task: Mutex::new(None),
@@ -1461,6 +1466,9 @@ impl Runtime {
             "model": format!("{}/{}", s.model.provider, s.model.id),
             "modelName": s.model.name,
             "contextWindow": window,
+            "thinkingLevel": level_name(s.thinking_level),
+            "thinkingLevels": self.supported_efforts(),
+            "autoThinking": self.auto_thinking.load(std::sync::atomic::Ordering::Relaxed),
         });
         if let Some(Value::Object(u)) = usage {
             for (k, v) in u {
@@ -2402,7 +2410,52 @@ impl Runtime {
     }
 
     pub async fn set_thinking_level(&self, level: ThinkingLevel) {
+        // Pinning a concrete level leaves `auto` (TS `setThinkingLevel`).
+        self.auto_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
         self.apply_thinking(level).await;
+    }
+
+    /// `setThinkingLevel("auto")`: run a provisional concrete level and flag
+    /// the session as auto (the status line shows `auto` until classified).
+    pub async fn set_auto_thinking(&self) {
+        let provisional = self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map_or(ThinkingLevel::Medium, |t| crate::model::clamp_level(&t.model, ThinkingLevel::Medium));
+        self.apply_thinking(provisional).await;
+        let name = level_name(provisional);
+        let _ = self.persist.append_thinking_level_change(Some(name), Some("auto"));
+        self.auto_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "configured": "auto"}));
+    }
+
+    /// Efforts the live model supports, least to most intensive, without
+    /// `off` (TS `getSupportedEfforts`: catalog `thinking.efforts`; models
+    /// without catalog metadata offer the standard ladder). Empty when the
+    /// model cannot think.
+    #[must_use]
+    pub fn supported_efforts(&self) -> Vec<&'static str> {
+        let target = self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(t) = target.filter(|t| t.model.reasoning) else {
+            return Vec::new();
+        };
+        match crate::model::catalog_efforts(&t.model.provider, &t.model.id) {
+            Some(efforts) => efforts.into_iter().map(level_name).filter(|l| *l != "off").collect(),
+            // No catalog entry: offer the ladder levels the runtime would not
+            // clamp away, so every selector value actually takes effect.
+            None => ["minimal", "low", "medium", "high", "xhigh", "max"]
+                .into_iter()
+                .filter(|name| {
+                    parse_level(name).is_some_and(|l| crate::model::clamp_level(&t.model, l) == l)
+                })
+                .collect(),
+        }
     }
 
     /// Current service-tier override on the live provider target

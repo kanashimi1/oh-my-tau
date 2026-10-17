@@ -409,10 +409,16 @@ impl omp_tui::RuntimePort for Port {
     fn set_thinking_level(&self, level: String) {
         let rt = self.rt.clone();
         tokio::spawn(async move {
-            if let Some(level) = crate::runtime::parse_level(&level) {
+            if level == "auto" {
+                rt.set_auto_thinking().await;
+            } else if let Some(level) = crate::runtime::parse_level(&level) {
                 rt.set_thinking_level(level).await;
             }
         });
+    }
+
+    fn available_thinking_levels(&self) -> Vec<String> {
+        self.rt.supported_efforts().into_iter().map(String::from).collect()
     }
 
     fn run_slash(&self, name: String, args: String) {
