@@ -967,9 +967,9 @@ impl Runtime {
     /// (e.g. by an abort) starts a fresh turn via `Agent::continue_run`. A
     /// follow-up-only resume stays suppressed after a user interrupt until the next
     /// explicit prompt; a queued steer always resumes (it injects before the first
-    /// provider call, so any tail is valid). A drain that settles a user interrupt
-    /// inherits the still-aborted session signal (TS): the resumed turn stops
-    /// immediately, so the queued follow-up is never polled by it.
+    /// provider call, so any tail is valid). The drain turn is a fresh run with its
+    /// own abort signal (TS `#scheduleAgentContinue` -> `agent.continue()`), so an
+    /// empty Enter that interrupts a turn delivers the queued steer as a real turn.
     fn drain_stranded_queue(self: &Arc<Self>) {
         let (steering, _follow) = self.queued();
         let interrupted = self
@@ -984,37 +984,7 @@ impl Runtime {
             if !rt.agent.has_queued_messages() {
                 return;
             }
-            // The drain run inherits the user interrupt (TS: the queued turn
-            // runs under the still-aborted session signal). Abort on its first
-            // assistant message so the stream takes the graceful aborted-message
-            // path (`content: []`) and the queued follow-up is never polled.
-            // The listener is removed once that run settles: `Subscription` has
-            // no `Drop`, and a leaked listener aborted every later turn.
-            let sub = if interrupted {
-                let agent = rt.agent.clone();
-                Some(
-                    agent
-                        .clone()
-                        .subscribe(move |event, _| {
-                            if matches!(
-                                &event,
-                                AgentEvent::MessageStart { message }
-                                    if message.role() == "assistant"
-                            ) {
-                                agent.abort();
-                            }
-                            Box::pin(async { Ok(()) })
-                        })
-                        .await,
-                )
-            } else {
-                None
-            };
             let _ = rt.agent.continue_run_until_accepted().await;
-            if let Some(sub) = sub {
-                rt.agent.wait_for_idle().await;
-                sub.unsubscribe().await;
-            }
         });
     }
 

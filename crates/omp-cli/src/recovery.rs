@@ -1548,9 +1548,8 @@ mod tests {
         let mut h = harness_with(
             |provider| {
                 provider.push_stalled_turn("partial");
-                // The drain turn stalls without content; the inherited user
-                // interrupt aborts it into the graceful `content: []` shape.
-                provider.push_stalled_turn("");
+                // The drain turn is a fresh run (TS `agent.continue()`): it answers.
+                provider.push_text_turn("drained answer");
             },
             cfg(&["p/a"]),
         )
@@ -1603,15 +1602,16 @@ mod tests {
         assert!(second_turn_ended, "the drained turn settles");
     }
 
-    /// Regression: the drain run's abort-on-first-assistant listener must be
-    /// removed once it settles. A leaked listener aborted every later turn
-    /// ("Request was aborted", 0 output tokens) until the process restarted.
+    /// Regression ("Request was aborted" after an empty Enter): interrupting a run
+    /// with a queued steer delivers that steer as a real turn (TS
+    /// `#scheduleAgentContinue` -> `agent.continue()` with a fresh signal), and the
+    /// next prompt is not aborted either.
     #[tokio::test]
-    async fn prompt_after_drained_abort_is_not_aborted() {
+    async fn interrupted_run_delivers_queued_steer_as_a_real_turn() {
         let mut h = harness_with(
             |provider| {
                 provider.push_stalled_turn("partial");
-                provider.push_stalled_turn("");
+                provider.push_text_turn("drained answer");
                 provider.push_text_turn("fresh answer");
             },
             cfg(&["p/a"]),
@@ -1622,12 +1622,24 @@ mod tests {
             f["type"] == "message_update" && f["assistantMessageEvent"]["type"] == "text_delta"
         })
         .await;
-        h.rt.steer("queued");
+        h.rt.steer("как успехи");
         h.rt.abort().await;
-        // The drained turn starts and settles under the inherited interrupt.
         wait_for(&mut h.rx, |f| f["type"] == "agent_start").await;
         wait_for(&mut h.rx, |f| f["type"] == "agent_end").await;
         h.rt.agent.wait_for_idle().await;
+        let last_stop = |msgs: &[pa_agent::types::AgentMessage]| {
+            let last = msgs.iter().rev().find(|m| m.role() == "assistant").expect("assistant");
+            let pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::Assistant(a)) = last else {
+                panic!("assistant message")
+            };
+            a.stop_reason.clone()
+        };
+        let msgs = h.rt.agent.state().await.messages;
+        assert_ne!(
+            last_stop(&msgs),
+            pa_agent::types::StopReason::Aborted,
+            "the drained steer turn must run, not end as 'Request was aborted'"
+        );
 
         h.rt.prompt(None, "next", None, Vec::new()).await.expect("prompt");
         wait_for(&mut h.rx, |f| {
@@ -1636,15 +1648,7 @@ mod tests {
         .await;
         h.rt.agent.wait_for_idle().await;
         let msgs = h.rt.agent.state().await.messages;
-        let last = msgs.iter().rev().find(|m| m.role() == "assistant").expect("assistant");
-        let pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::Assistant(a)) = last else {
-            panic!("assistant message")
-        };
-        assert_ne!(
-            a.stop_reason,
-            pa_agent::types::StopReason::Aborted,
-            "a turn after a drained abort must not be aborted"
-        );
+        assert_ne!(last_stop(&msgs), pa_agent::types::StopReason::Aborted, "next prompt not aborted");
     }
 
     /// Read frames until `pred` matches (30 s guard).
