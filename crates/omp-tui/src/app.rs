@@ -1317,9 +1317,18 @@ impl App {
             return true;
         }
 
-        // Step 12: abort the live run; queued steering/follow-up drains in
-        // the post-unwind turn (§5.4).
+        // Step 12: abort the live run. TS `restoreQueuedMessagesToEditor({abort})`:
+        // queued steering/follow-up is pulled out of the runtime queue back into
+        // the editor first; otherwise the post-abort drain ran it under the user
+        // interrupt and every queued message ended as "Request was aborted".
         if self.messages.is_streaming() || self.status.streaming {
+            for text in self.steering.clone() {
+                port.remove_queued(text, crate::action::QueueKind::Steering);
+            }
+            for text in self.follow_up.clone() {
+                port.remove_queued(text, crate::action::QueueKind::FollowUp);
+            }
+            self.restore_queued_to_editor();
             self.dispatch(Action::Abort, port);
             return true;
         }
@@ -1378,14 +1387,19 @@ impl App {
     /// Concatenate every queued message into the editor (Esc during a
     /// pending submission, §5.3 `restoreQueuedMessagesToEditor`).
     fn restore_queued_to_editor(&mut self) {
-        let mut all = self.steering.clone();
-        all.append(&mut self.follow_up.clone());
-        self.follow_up.clear();
+        let mut all = std::mem::take(&mut self.steering);
+        all.append(&mut self.follow_up);
         self.status.queued = 0;
         if all.is_empty() {
             return;
         }
-        let joined = all.join("\n");
+        // Queued entries go ahead of the current draft (TS `#restoreEntriesToEditor`).
+        let draft = self.editor.text();
+        let mut joined = all.join("\n");
+        if !draft.is_empty() {
+            joined.push('\n');
+            joined.push_str(&draft);
+        }
         self.set_editor_text(&joined);
     }
 
@@ -2839,6 +2853,28 @@ mod tests {
         assert!(!app.pending_submission);
         assert_eq!(app.editor.text(), "queued one");
         assert!(app.follow_up.is_empty());
+    }
+
+    /// Regression: Esc during a run with an already-dispatched queued steer pulls it
+    /// out of the runtime queue into the editor before aborting (TS
+    /// `restoreQueuedMessagesToEditor({abort: true})`). Left queued, the post-abort
+    /// drain ran it under the interrupt and it ended as "Request was aborted".
+    #[test]
+    fn esc_while_streaming_restores_dispatched_queue_before_abort() {
+        let mut app = app();
+        let port = port();
+        start_streaming(&mut app);
+        app.steering.push("как успехи".into());
+        type_text(&mut app, &port, "draft");
+        assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+        let calls = log(&port);
+        assert_eq!(
+            calls.iter().filter(|c| c.as_str() != "abort()").cloned().collect::<Vec<_>>(),
+            vec![format!("remove_queued({:?}, Steering)", "как успехи")]
+        );
+        assert_eq!(calls.last().map(String::as_str), Some("abort()"));
+        assert_eq!(app.editor.text(), "как успехи\ndraft");
+        assert!(app.steering.is_empty());
     }
 
     #[test]
