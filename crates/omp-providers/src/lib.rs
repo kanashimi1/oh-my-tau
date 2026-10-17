@@ -2,13 +2,15 @@
 //! role name from `config.yml` `modelRoles`) into `pa-ai` models + credentials,
 //! and stream through `pa-ai`.
 //!
-//! Sources, all read-only (nothing is ever written under `~/.omp/agent`):
+//! Sources (only OAuth refresh write-back to `agent.db` writes under `~/.omp/agent`, see `auth`):
 //! * `models.yml`  - custom providers / `modelOverrides` / provider `baseUrl` overrides
 //! * `models.db`   - omp's dynamic model catalog cache (`model_cache`)
 //! * `pa-ai` compiled fallback catalog
-//! * credentials: `models.yml` `apiKey` -> env vars -> `agent.db` `auth_credentials`
-//!   (api keys and non-expired OAuth access tokens; OAuth is never refreshed here).
+//! * credentials: `models.yml` `apiKey` -> env vars -> the credential store (`auth`: the auth
+//!   broker when configured, else `agent.db` `auth_credentials`; expired OAuth tokens are refreshed
+//!   per lookup, and request paths re-resolve per request and retry once after a 401).
 
+pub mod auth;
 mod command;
 mod fallback;
 mod judge;
@@ -185,8 +187,8 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     // API (or chat completions with `PI_OPENROUTER_RESPONSES=0`), exactly as TS does.
     let (api_key, credential_id) = match cfg.provider_key(&provider).or_else(|| env_key(&provider)) {
         Some(key) => (Some(key), None),
-        None => match db_credential(&dir.0.join("agent.db"), &provider) {
-            Some((key, id)) => (Some(key), Some(id)),
+        None => match auth::credential(dir, &provider) {
+            Some(auth::Credential { key, id }) => (Some(key), Some(id)),
             None => (None, None),
         },
     };
@@ -719,39 +721,6 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-/// First enabled credential for `provider` in `agent.db`: an api key, or an
-/// OAuth access token that has not expired.
-fn db_credential(db: &Path, provider: &str) -> Option<(String, i64)> {
-    let conn = open_ro(db)?;
-    let mut stmt = conn
-        .prepare("SELECT credential_type, data, id FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NULL ORDER BY id")
-        .ok()?;
-    let rows: Vec<(String, String, i64)> = stmt
-        .query_map([provider], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .ok()?
-        .filter_map(std::result::Result::ok)
-        .collect();
-    let now = now_ms();
-    for (kind, data, id) in rows {
-        let Ok(d) = serde_json::from_str::<Value>(&data) else { continue };
-        match kind.as_str() {
-            "api_key" => {
-                if let Some(k) = d.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()) {
-                    return Some((k.to_string(), id));
-                }
-            }
-            "oauth" => {
-                let expired = d.get("expires").and_then(Value::as_u64).is_some_and(|e| e <= now);
-                if let (false, Some(a)) = (expired, d.get("access").and_then(Value::as_str)) {
-                    return Some((a.to_string(), id));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// How the active credential for a provider is supplied, as `/session` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthDetails {
@@ -1008,12 +977,12 @@ mod tests {
         )
         .unwrap();
         drop(c);
-        let key = |p: &str| db_credential(&db, p).map(|(k, _)| k);
+        let key = |p: &str| auth::local_credential(&db, p).map(|c| c.key);
         assert_eq!(key("p").as_deref(), Some("live"));
         assert_eq!(key("q").as_deref(), Some("k"));
         assert_eq!(key("none"), None);
         // The row id travels with the key (the live oauth row is the 3rd insert for `p`).
-        assert_eq!(db_credential(&db, "q").map(|(_, id)| id), Some(4));
+        assert_eq!(auth::local_credential(&db, "q").map(|c| c.id), Some(4));
     }
 
     // ---- kimi-code compat (regression: `400 role 'developer' is not allowed`)

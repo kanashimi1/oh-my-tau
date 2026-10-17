@@ -96,6 +96,7 @@ def run_rollout(name, task, seed, policy, script=None, rule=None, strategy="clm"
             if policy == "rule":
                 env["OMP_CONTEXT_POLICY_RULE_TOKENS"] = str(rule["tokens"])
                 env["OMP_CONTEXT_POLICY_RULE_EVERY"] = str(rule["every"])
+                env["OMP_CONTEXT_POLICY_RULE_OFFLOAD"] = str(rule.get("offload", 0))
             if policy == "laya":
                 env["OMP_CONTEXT_LAYA_CKPT"] = laya["ckpt"]
                 env["OMP_CONTEXT_LAYA_ONNX"] = laya["onnx"]
@@ -239,10 +240,10 @@ def main():
     else:
         srcs = [(x.split(":")[0], int(x.split(":")[1])) for x in a.sources.split(",")]
         scripts = json.load(open(a.script_from)) if a.script_from else {}
-        rule = dict(zip(("tokens", "every"), map(int, a.rule.split(",")))) if a.rule else None
+        rule = dict(zip(("tokens", "every", "offload"), map(int, a.rule.split(",")))) if a.rule else None
         laya = dict(zip(("ckpt", "onnx"), a.laya.split(","))) if a.laya else None
         pol = {"oracle": "schedule", "clm": "legacy-clm", "clm-host": "legacy-clm-host"}.get(a.policy, a.policy)
-        tag = a.tag or a.policy
+        tag = a.tag or a.policy  # reps: --tag append.r2 (report groups by the part before the dot)
         with cf.ThreadPoolExecutor(a.workers) as ex:
             futs = []
             for t, s in srcs:

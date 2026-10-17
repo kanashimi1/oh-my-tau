@@ -352,6 +352,7 @@ async fn main() -> Result<()> {
     let mut selected = model::select(reference.as_deref()).await?;
     if let Some(key) = args.api_key.clone() {
         selected.api_key = Some(key);
+        selected.credential_id = None;
     }
     if let Some(level) = args.thinking.as_deref() {
         if level != "auto" {

@@ -11,6 +11,8 @@ pub struct Selected {
     pub api_key: Option<String>,
     pub thinking: ThinkingLevel,
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// Stored `auth_credentials` row `api_key` came from; see `ProviderTarget::credential_id`.
+    pub credential_id: Option<i64>,
 }
 
 fn map_level(l: pa_types::ai::ModelThinkingLevel) -> ThinkingLevel {
@@ -32,6 +34,7 @@ async fn from_providers(reference: &str) -> Result<Selected> {
             map_level,
         ),
         api_key: r.api_key.clone(),
+        credential_id: r.credential_id,
         model: r.model,
         headers,
     })
@@ -93,6 +96,7 @@ pub async fn select(model_ref: Option<&str>) -> Result<Selected> {
         api_key,
         thinking: thinking.unwrap_or(ThinkingLevel::Off),
         headers: None,
+        credential_id: None,
     })
 }
 

@@ -6,6 +6,8 @@ Models (request `model`, `mock/` prefix optional):
   tool      -> first call: one `read` tool call on E2E_READ_FILE; after the
                tool result: "E2E-TOOL-DONE"
   tools     -> bash, write, grep, glob calls (one per request), then "E2E-TOOLS-DONE"
+  slow      -> 150 words in chunks of E2E_SLOW_WORDS (default 1), paced E2E_SLOW_MS apart (default
+               40 ms), then "SLOW-DONE"; for the streaming-cadence probe
   fail      -> HTTP 400 with an OpenAI-style error body "E2E-PROVIDER-FAILURE"
                when the last user message contains FAIL_MARKER, else like `text`
 Every request is appended to E2E_MOCK_LOG (JSON lines) when set.
@@ -22,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # Relative: the read tool resolves it against the client cwd (the e2e work dir).
 READ_FILE = os.environ.get("E2E_READ_FILE", "e2e-read-me.txt")
 LOG = os.environ.get("E2E_MOCK_LOG", "")
+SLOW_S = float(os.environ.get("E2E_SLOW_MS", "40")) / 1000
 _lock = threading.Lock()
 
 
@@ -77,6 +80,12 @@ def script(model: str, messages: list[dict]) -> tuple[list[dict], str]:
                     "function": {"name": name, "arguments": json.dumps(args)}}
             return [{"role": "assistant", "content": "", "tool_calls": [call]}], "tool_calls"
         return [{"role": "assistant", "content": "E2E-TOOLS-DONE"}], "stop"
+    if model == "slow":
+        n = int(os.environ.get("E2E_SLOW_WORDS", "1"))  # words per chunk (burstiness)
+        words = [f"w{i:03d} " for i in range(150)]
+        parts = ["".join(words[i:i + n]) for i in range(0, len(words), n)]
+        deltas = [{"role": "assistant", "content": parts[0]}] + [{"content": x} for x in parts[1:]]
+        return deltas + [{"content": "SLOW-DONE"}], "stop"
     reply = f"E2E-REPLY-{users}"
     return [{"role": "assistant", "content": reply[:6]}, {"content": reply[6:]}], "stop"
 
@@ -139,7 +148,7 @@ class Handler(BaseHTTPRequestHandler):
 
         for d in deltas:
             send(chunk(d))
-            time.sleep(0.02)
+            time.sleep(SLOW_S if model.removeprefix("mock/") == "slow" else 0.02)
         send(chunk({}, finish))
         send(b"data: [DONE]\n\n")
         self.wfile.write(b"0\r\n\r\n")

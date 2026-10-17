@@ -702,6 +702,7 @@ mod tests {
             model: primary,
             service_tier: None,
             headers: None,
+            credential_id: None,
         })));
         let (tx, rx) = mpsc::unbounded_channel();
         let resolver: Resolver = Arc::new(|sel: String| {

@@ -91,6 +91,88 @@ pub struct ProviderTarget {
     /// The auth-resolved provider-request headers: a live `set_model` carries
     /// them through to the stream like the build-time resolution does.
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// The stored `auth_credentials` row `api_key` came from (`None` for config/env/`--api-key`
+    /// keys). Such a key is re-resolved through the credential store on every request (so an
+    /// expired OAuth token is refreshed) and refreshed + retried once after a provider 401.
+    pub credential_id: Option<i64>,
+}
+
+/// The current key for a stored-credential target (see [`ProviderTarget::credential_id`]): the
+/// credential store's bearer, refreshed when expired; the last-known key when the lookup fails.
+pub async fn fresh_stored_key(
+    provider: &str,
+    credential_id: Option<i64>,
+    api_key: Option<String>,
+) -> (Option<String>, Option<i64>) {
+    if credential_id.is_none() {
+        return (api_key, None);
+    }
+    match omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider.to_string()).await {
+        Some(c) => (Some(c.key), Some(c.id)),
+        None => (api_key, credential_id),
+    }
+}
+
+/// Whether a failed assistant message is a provider authentication failure (HTTP 401).
+fn is_auth_failure(error: &pa_agent::types::AssistantMessage) -> bool {
+    error.error_status == Some(401)
+        || error
+            .error_message
+            .as_deref()
+            .is_some_and(|m| m.contains("401") && m.to_ascii_lowercase().contains("authentication"))
+}
+
+type Reopen = Box<
+    dyn FnOnce() -> pa_agent::BoxFut<'static, Option<Box<dyn ModelStream>>> + Send,
+>;
+
+/// TS `auth-retry`: a stream whose first failure is a provider 401, before any content, is
+/// re-opened once with a force-refreshed credential (`reopen` yields `None` when there is no
+/// different bearer to try); the failed attempt's events are replaced, not shown.
+struct AuthRetryStream {
+    inner: Box<dyn ModelStream>,
+    reopen: Option<Reopen>,
+    start_forwarded: bool,
+}
+
+impl ModelStream for AuthRetryStream {
+    fn next_event(
+        &mut self,
+    ) -> pa_agent::BoxFut<'_, Option<pa_agent::stream::AssistantMessageEvent>> {
+        use pa_agent::stream::AssistantMessageEvent as E;
+        Box::pin(async move {
+            loop {
+                let event = self.inner.next_event().await;
+                match &event {
+                    Some(E::Start { .. }) if !self.start_forwarded => self.start_forwarded = true,
+                    // The replacement attempt re-emits `start`; the caller already saw one.
+                    Some(E::Start { .. }) => continue,
+                    Some(E::Error { error, .. }) if self.reopen.is_some() && is_auth_failure(error) => {
+                        if let Some(reopen) = self.reopen.take() {
+                            if let Some(next) = reopen().await {
+                                self.inner = next;
+                                continue;
+                            }
+                        }
+                    }
+                    // Content arrived: the attempt is committed, drop the retry inputs.
+                    Some(_) => self.reopen = None,
+                    None => {}
+                }
+                return event;
+            }
+        })
+    }
+
+    fn result(
+        &mut self,
+    ) -> pa_agent::BoxFut<'_, anyhow::Result<pa_agent::types::AssistantMessage>> {
+        self.inner.result()
+    }
+
+    fn close(&mut self) {
+        self.inner.close();
+    }
 }
 
 /// A real pa-ai stream adapter reading its target from a shared slot the host can swap live
@@ -108,13 +190,48 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
                 model,
                 service_tier,
                 headers,
+                credential_id,
             } = target
                 .read()
                 .expect("provider target lock")
                 .clone()
                 .expect("provider target set before the first stream");
             Box::pin(async move {
-                stream_once(&model, api_key, service_tier, headers, context, options)
+                if credential_id.is_none() {
+                    return stream_once(&model, api_key, service_tier, headers, context, options);
+                }
+                let (api_key, credential_id) =
+                    fresh_stored_key(&model.provider, credential_id, api_key).await;
+                let (Some(key), Some(id)) = (api_key.clone(), credential_id) else {
+                    return stream_once(&model, api_key, service_tier, headers, context, options);
+                };
+                let retry_inputs = (context.clone(), options.clone());
+                let stream = stream_once(
+                    &model,
+                    api_key,
+                    service_tier,
+                    headers.clone(),
+                    context,
+                    options,
+                )?;
+                let reopen: Reopen = Box::new(move || {
+                    Box::pin(async move {
+                        let failed = omp_providers::auth::Credential { key, id };
+                        let next = omp_providers::auth::recover_async(
+                            omp_providers::AgentDir::default(),
+                            model.provider.clone(),
+                            failed,
+                        )
+                        .await?;
+                        let (context, options) = retry_inputs;
+                        stream_once(&model, Some(next.key), service_tier, headers, context, options).ok()
+                    })
+                });
+                Ok(Box::new(AuthRetryStream {
+                    inner: stream,
+                    reopen: Some(reopen),
+                    start_forwarded: false,
+                }) as Box<dyn ModelStream>)
             })
         },
     )
@@ -288,6 +405,7 @@ pub fn real_stream_fn(api_key: Option<String>, model: Model) -> StreamFn {
         model,
         service_tier: None,
         headers: None,
+        credential_id: None,
     }))))
 }
 
@@ -444,5 +562,105 @@ impl ModelStream for PumpedStream {
     /// — the token's cancelled state is sticky.
     fn close(&mut self) {
         self.cancel.cancel();
+    }
+}
+
+#[cfg(test)]
+mod auth_retry_tests {
+    use super::*;
+    use pa_agent::stream::{event_stream, AssistantMessageEvent as E};
+    use pa_agent::types::{AssistantMessage as Msg, StopReason};
+
+    fn message(text: &str, stop: &str, status: Option<u16>) -> Msg {
+        serde_json::from_value(serde_json::json!({
+            "content": [{"type": "text", "text": text}], "api": "openai-completions", "provider": "p", "model": "m",
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}},
+            "stopReason": stop, "timestamp": 1, "errorStatus": status,
+            "errorMessage": status.map(|s| format!("Provider authentication failed (invalid_authentication_error, {s})")),
+        }))
+        .expect("assistant json")
+    }
+
+    /// A scripted stream: `start`, then either a 401 failure or a text answer.
+    fn scripted(fail: bool) -> Box<dyn ModelStream> {
+        let (handle, consumer) = event_stream();
+        handle.push(E::Start { partial: message("", "stop", None) });
+        if fail {
+            let error = message("", "error", Some(401));
+            handle.push(E::Error { reason: StopReason::Error, error: error.clone() });
+            handle.end(Some(error));
+        } else {
+            let done = message("hello", "stop", None);
+            handle.push(E::Done { reason: StopReason::Stop, message: done.clone() });
+            handle.end(Some(done));
+        }
+        Box::new(consumer_wrapper(consumer))
+    }
+
+    fn consumer_wrapper(stream: pa_agent::stream::AssistantMessageEventStream) -> impl ModelStream {
+        struct W(pa_agent::stream::AssistantMessageEventStream);
+        impl ModelStream for W {
+            fn next_event(&mut self) -> pa_agent::BoxFut<'_, Option<E>> {
+                self.0.next_event()
+            }
+            fn result(&mut self) -> pa_agent::BoxFut<'_, anyhow::Result<Msg>> {
+                self.0.result()
+            }
+        }
+        W(stream)
+    }
+
+    async fn drain(stream: &mut dyn ModelStream) -> Vec<&'static str> {
+        let mut kinds = Vec::new();
+        while let Some(event) = stream.next_event().await {
+            kinds.push(match event {
+                E::Start { .. } => "start",
+                E::Done { .. } => "done",
+                E::Error { .. } => "error",
+                _ => "other",
+            });
+        }
+        kinds
+    }
+
+    fn retrying(first: Box<dyn ModelStream>, reopen: Option<Box<dyn ModelStream>>) -> (AuthRetryStream, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let reopen: Reopen = Box::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move { reopen })
+        });
+        (AuthRetryStream { inner: first, reopen: Some(reopen), start_forwarded: false }, calls)
+    }
+
+    #[tokio::test]
+    async fn a_401_before_content_reopens_once_and_hides_the_failed_attempt() {
+        let (mut stream, calls) = retrying(scripted(true), Some(scripted(false)));
+        assert_eq!(drain(&mut stream).await, ["start", "done"]);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(stream.result().await.unwrap().stop_reason, StopReason::Stop);
+    }
+
+    #[tokio::test]
+    async fn a_second_401_is_surfaced_not_retried_again() {
+        let (mut stream, calls) = retrying(scripted(true), Some(scripted(true)));
+        assert_eq!(drain(&mut stream).await, ["start", "error"]);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn no_different_bearer_surfaces_the_original_401() {
+        let (mut stream, calls) = retrying(scripted(true), None);
+        assert_eq!(drain(&mut stream).await, ["start", "error"]);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(stream.result().await.unwrap().error_status, Some(401));
+    }
+
+    #[tokio::test]
+    async fn success_never_reopens() {
+        let (mut stream, calls) = retrying(scripted(false), Some(scripted(false)));
+        assert_eq!(drain(&mut stream).await, ["start", "done"]);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

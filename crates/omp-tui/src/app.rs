@@ -70,6 +70,8 @@ const MESSAGE_UPDATE_COALESCE: Duration = Duration::from_millis(33);
 const DOUBLE_TAP_WINDOW: Duration = Duration::from_millis(500);
 /// Spinner frames for the "Working…" loader (TS loading animation set).
 const SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+/// Loader spinner glyph step (TS `SPINNER_ADVANCE_MS`).
+const SPINNER_ADVANCE_MS: u64 = 80;
 /// P0 builtin slash commands dispatched through `Action::Slash`
 /// (§4.2 MVP cut: `exit help model effort compact clear context export`
 /// plus the overlay-backed `resume`/`tree`/`theme`/`settings`/`hotkeys`).
@@ -266,6 +268,8 @@ pub struct App {
     /// The serialized, coalescing event pump (frames enter via
     /// [`Self::push_frame`], are applied by [`Self::pump_events`]).
     pump: EventPump,
+    /// Spinner clock origin (TS derives the glyph from wall time).
+    spinner_start: Instant,
     /// Run epoch, mirrored from the pump at every `agent_start`.
     pub run_epoch: u64,
     /// Steering queue previews (`queue_update.steering`), newest last.
@@ -341,6 +345,7 @@ impl App {
             theme: Theme::default(),
             scroll: 0,
             pump: EventPump::new(),
+            spinner_start: Instant::now(),
             run_epoch: 0,
             steering: Vec::new(),
             follow_up: Vec::new(),
@@ -667,6 +672,22 @@ impl App {
     #[must_use]
     pub fn has_pending_update(&self) -> bool {
         self.pump.has_pending_update()
+    }
+
+    /// The frame-timer period the controller loop must arm right now, or
+    /// `None` when nothing animates (idle loops must not wake): 30 fps
+    /// while the streaming reveal has a backlog (TS
+    /// `STREAMING_REVEAL_FRAME_MS`), the 80 ms spinner step while the
+    /// loader row is visible (TS `SPINNER_ADVANCE_MS`).
+    #[must_use]
+    pub fn animation_interval(&self) -> Option<Duration> {
+        if self.messages.reveal_animating() {
+            Some(Duration::from_millis(crate::chat::reveal::FRAME_MS))
+        } else if self.show_loader() {
+            Some(Duration::from_millis(SPINNER_ADVANCE_MS))
+        } else {
+            None
+        }
     }
 
     /// Apply one classified runtime event directly (tests + compat path).
@@ -1900,7 +1921,8 @@ impl App {
             return;
         }
         use ratatui::widgets::Paragraph;
-        let frame_idx = (Instant::now().elapsed().as_millis() / 80) as usize % SPINNER.len();
+        let frame_idx = (self.spinner_start.elapsed().as_millis() / u128::from(SPINNER_ADVANCE_MS)) as usize
+            % SPINNER.len();
         let label = match self.maintenance {
             Some(Maintenance::Compaction) => " compacting… (esc to cancel)",
             Some(Maintenance::Retry) => " retrying… (esc to cancel)",

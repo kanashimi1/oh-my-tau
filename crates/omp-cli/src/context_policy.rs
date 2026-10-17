@@ -126,6 +126,8 @@ pub struct Policy {
     pub kind: Kind,
     pub rule_tokens: usize,
     pub rule_every: usize,
+    /// `rule`: offload the largest old block once it is at least this many chars (0 = never).
+    pub rule_offload_chars: usize,
     pub schedule: Vec<u8>,
     laya_paths: Option<LayaPaths>,
     laya: Mutex<Option<Result<omp_judge::policy::PolicyScorer, ()>>>,
@@ -146,6 +148,7 @@ impl Policy {
             kind,
             rule_tokens: 8_000,
             rule_every: 0,
+            rule_offload_chars: 0,
             schedule: Vec::new(),
             laya_paths: None,
             laya: Mutex::new(None),
@@ -184,6 +187,8 @@ impl Policy {
         };
         p.rule_tokens = num("OMP_CONTEXT_POLICY_RULE_TOKENS", "context.policy.ruleTokens", p.rule_tokens);
         p.rule_every = num("OMP_CONTEXT_POLICY_RULE_EVERY", "context.policy.ruleEvery", p.rule_every);
+        p.rule_offload_chars =
+            num("OMP_CONTEXT_POLICY_RULE_OFFLOAD", "context.policy.ruleOffloadChars", p.rule_offload_chars);
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
             .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
             .unwrap_or_default();
@@ -251,7 +256,9 @@ impl Policy {
         let action = match self.kind {
             Kind::Always => Action::ClmEdit,
             Kind::Rule => {
-                if self.rule(st) {
+                if self.rule_offload_chars > 0 && st.largest_block_chars >= self.rule_offload_chars.max(OFFLOAD_MIN_CHARS) {
+                    Action::RlmOffload
+                } else if self.rule(st) {
                     Action::ClmEdit
                 } else {
                     Action::Noop
@@ -301,6 +308,22 @@ mod tests {
         assert!(p.rule(&st(3, 10, None)));
         p.rule_every = 0;
         assert!(!p.rule(&st(99, 10, None)), "ruleEvery=0 disables the age trigger");
+    }
+
+    #[test]
+    fn rule_offloads_big_old_block_before_editing() {
+        let mut p = Policy::new(Kind::Rule);
+        p.rule_tokens = 1000;
+        p.rule_offload_chars = 5000;
+        let mut s = st(2, 5000, None);
+        s.largest_block_chars = 4999;
+        assert_eq!(p.decide(&s).0, Action::ClmEdit, "block below the threshold: edit rule applies");
+        s.step = 3;
+        s.largest_block_chars = 5000;
+        assert_eq!(p.decide(&s).0, Action::RlmOffload);
+        p.rule_offload_chars = 0;
+        s.step = 4;
+        assert_eq!(p.decide(&s).0, Action::ClmEdit, "offload disabled by default");
     }
 
     #[test]

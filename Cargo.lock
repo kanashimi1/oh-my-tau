@@ -2047,6 +2047,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "omp-sot"
+version = "0.10.0"
+
+[[package]]
 name = "omp-stats"
 version = "0.10.0"
 dependencies = [

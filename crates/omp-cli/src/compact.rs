@@ -196,6 +196,8 @@ pub struct LiveCompleter {
     pub model: Model,
     pub api_key: Option<String>,
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// Stored credential row behind `api_key`: re-resolved per summary (expired OAuth refreshes).
+    pub credential_id: Option<i64>,
 }
 
 impl Completer for LiveCompleter {
@@ -205,8 +207,11 @@ impl Completer for LiveCompleter {
     ) -> impl Future<Output = Result<AssistantMessage>> + Send {
         let model = self.model.clone();
         let api_key = self.api_key.clone();
+        let credential_id = self.credential_id;
         let headers = self.headers.clone();
         async move {
+            let (api_key, _) =
+                crate::adapter::fresh_stored_key(&model.provider, credential_id, api_key).await;
             let options = pa_ai::types::SimpleStreamOptions {
                 base: pa_ai::types::StreamOptions {
                     max_tokens: Some(request.max_tokens),
@@ -244,6 +249,7 @@ impl LiveCompleter {
             model: t.model,
             api_key: t.api_key,
             headers: t.headers,
+            credential_id: t.credential_id,
         })
     }
 }
@@ -705,6 +711,7 @@ mod tests {
             model,
             service_tier: None,
             headers: None,
+            credential_id: None,
         })));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let rt = Runtime::start(Arc::new(agent), target, cwd, persist, tx).await;

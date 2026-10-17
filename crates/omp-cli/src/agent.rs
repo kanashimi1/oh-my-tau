@@ -156,6 +156,7 @@ pub fn build_agent(
         model: selected.model,
         service_tier: None,
         headers: selected.headers,
+        credential_id: selected.credential_id,
     })));
     let (transform_context, before_tool_call, after_tool_call) = match ext_hooks.as_ref() {
         Some(e) => {

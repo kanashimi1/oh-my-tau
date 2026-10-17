@@ -2432,6 +2432,7 @@ impl Runtime {
             service_tier: None,
             headers: (!resolved.headers.is_empty())
                 .then(|| resolved.headers.iter().cloned().collect()),
+            credential_id: resolved.credential_id,
         });
         self.agent.set_model(agent_model).await;
         self.agent.set_credential_id(resolved.credential_id);

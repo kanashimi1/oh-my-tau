@@ -50,6 +50,24 @@ const LIVE_HEIGHT: u16 = 12;
 /// the exact window, this only needs to be in the same ballpark).
 const PUMP_TICK: Duration = Duration::from_millis(33);
 
+/// Arm the animation frame timer: keep a running deadline, start one a full
+/// `interval` out when animation begins, and drop it when nothing animates
+/// (`interval == None`) so an idle loop never wakes.
+fn arm_frame_timer(deadline: Option<Instant>, now: Instant, interval: Option<Duration>) -> Option<Instant> {
+    let interval = interval?;
+    Some(deadline.unwrap_or(now + interval))
+}
+
+/// After a frame deadline fired: schedule the next on the fixed cadence
+/// (`fired + interval`, so loop latency does not stretch the period); when
+/// the loop fell behind, resume from `now` instead of bursting catch-up
+/// frames.
+fn advance_frame_timer(deadline: Option<Instant>, now: Instant, interval: Option<Duration>) -> Option<Instant> {
+    let interval = interval?;
+    let next = deadline.map_or(now + interval, |d| d + interval);
+    Some(if next > now { next } else { now + interval })
+}
+
 type StdShell = Shell<crate::render::ShellBackend, io::Stdout>;
 
 /// Entry point invoked by [`crate::run`]. Owns terminal lifecycle.
@@ -95,8 +113,12 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     shell.draw_live(|f| app.render(f)).context("initial draw")?;
 
     let mut signals = TermSignals::new();
+    let mut frame_deadline: Option<Instant> = None;
     loop {
         let now = Instant::now();
+        // Keep the animation clock running only while something animates;
+        // an idle app arms no timer and the loop blocks on input.
+        frame_deadline = arm_frame_timer(frame_deadline, now, app.animation_interval());
         app.poll_deadlines(now, &port);
         let mut pump_tick: Option<Pin<Box<Sleep>>> =
             app.has_pending_update().then(|| Box::pin(sleep(PUMP_TICK)));
@@ -150,6 +172,11 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
             }
             () = async { match paste_tick.as_mut() { Some(t) => t.as_mut().await, None => std::future::pending().await } } => {
                 app.poll_paste_results();
+            }
+            () = async { match frame_deadline { Some(at) => tokio::time::sleep_until(at.into()).await, None => std::future::pending().await } } => {
+                // Animation frame: nothing to apply — the paint below ticks
+                // the reveal and advances the spinner.
+                frame_deadline = advance_frame_timer(frame_deadline, Instant::now(), app.animation_interval());
             }
         }
 
@@ -417,5 +444,68 @@ mod tests {
             .iter()
             .any(|c| c.starts_with("rewind_entry(")));
         assert!(!app.has_fullscreen_overlay(), "tree closed after rewind");
+    }
+}
+
+#[cfg(test)]
+mod frame_timer_tests {
+    use super::*;
+
+    const IV: Duration = Duration::from_millis(33);
+
+    #[test]
+    fn idle_arms_nothing_and_clears_a_running_timer() {
+        let now = Instant::now();
+        assert_eq!(arm_frame_timer(None, now, None), None);
+        assert_eq!(arm_frame_timer(Some(now + IV), now, None), None);
+    }
+
+    #[test]
+    fn animation_start_arms_one_interval_out_and_keeps_running_deadline() {
+        let now = Instant::now();
+        assert_eq!(arm_frame_timer(None, now, Some(IV)), Some(now + IV));
+        let running = now + Duration::from_millis(10);
+        // Unrelated loop wakeups (keys, frames) must not push the frame back.
+        assert_eq!(arm_frame_timer(Some(running), now, Some(IV)), Some(running));
+    }
+
+    #[test]
+    fn advance_keeps_fixed_cadence_and_never_bursts() {
+        let t0 = Instant::now();
+        let fired = t0 + IV;
+        // On-time wake: next is fired + interval despite small latency.
+        let now = fired + Duration::from_millis(2);
+        assert_eq!(advance_frame_timer(Some(fired), now, Some(IV)), Some(fired + IV));
+        // Fell far behind: resume one interval from now, no catch-up burst.
+        let late = fired + Duration::from_millis(500);
+        assert_eq!(advance_frame_timer(Some(fired), late, Some(IV)), Some(late + IV));
+        // Animation ended meanwhile: timer disarms.
+        assert_eq!(advance_frame_timer(Some(fired), now, None), None);
+    }
+
+    #[test]
+    fn app_animates_only_while_streaming_or_revealing() {
+        use serde_json::json;
+        let mut app = App::new("p/m".into(), std::path::Path::new("/repo"));
+        let t0 = Instant::now();
+        assert_eq!(app.animation_interval(), None, "idle app must not arm a timer");
+        app.push_frame(&json!({"type":"agent_start"}), t0);
+        app.pump_events(t0);
+        // Loader visible: spinner cadence.
+        assert_eq!(app.animation_interval(), Some(Duration::from_millis(80)));
+        app.push_frame(
+            &json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+            t0,
+        );
+        let long = "word ".repeat(200);
+        app.push_frame(
+            &json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":long}]}}),
+            t0,
+        );
+        app.pump_events(t0 + Duration::from_millis(40));
+        // Reveal backlog: 30 fps cadence until caught up.
+        assert_eq!(app.animation_interval(), Some(Duration::from_millis(33)));
+        app.push_frame(&json!({"type":"agent_end"}), t0);
+        app.pump_events(t0 + Duration::from_millis(80));
     }
 }

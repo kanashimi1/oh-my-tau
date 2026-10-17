@@ -610,6 +610,12 @@ impl Messages {
         }
     }
 
+    /// Whether the streaming reveal still has frames to produce.
+    #[must_use]
+    pub fn reveal_animating(&self) -> bool {
+        self.reveal.is_animating()
+    }
+
     /// Rows for the live-tail entry at `idx` (transcript index). A live
     /// assistant entry renders the reveal snapshot when one exists; every
     /// other entry renders through [`blocks::entry_lines`].

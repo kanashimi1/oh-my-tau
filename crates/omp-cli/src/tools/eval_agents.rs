@@ -698,9 +698,15 @@ async fn resolve_completion_candidates(tier: &str) -> Result<Vec<CompletionCandi
             // Primary: the session's live target; fallbacks: the `@default`
             // role's configured chain, walked when the primary fails.
             let target = provider_target()?;
+            let (api_key, _) = crate::adapter::fresh_stored_key(
+                &target.model.provider,
+                target.credential_id,
+                target.api_key,
+            )
+            .await;
             candidates.push(CompletionCandidate {
                 model: target.model,
-                api_key: target.api_key,
+                api_key,
                 service_tier: target.service_tier,
                 headers: target.headers.map(|headers| headers.into_iter().collect()),
                 thinking: None,

@@ -27,6 +27,8 @@ mod transport_parity_tests;
 
 pub use event_stream::{AssistantMessageEventExt, AssistantMessageEventStream};
 pub use providers::faux;
+/// TS `getKimiCommonHeaders`: the device-identity headers every Kimi request (and Kimi OAuth refresh) carries.
+pub use providers::kimi::common_headers as kimi_common_headers;
 
 /// Codex WebSocket session debugging and cleanup surface (TS
 /// `getOpenAICodexWebSocketDebugStats` and its reset/close siblings).

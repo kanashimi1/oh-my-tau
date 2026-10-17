@@ -217,7 +217,7 @@ fn provider_key(dir: &AgentDir, name: &str, pcfg: &Value) -> Option<String> {
             return Some(k);
         }
     }
-    pa_ai::env_api_keys::get_env_api_key(name).or_else(|| db_credential(&dir.0.join("agent.db"), name))
+    pa_ai::env_api_keys::get_env_api_key(name).or_else(|| crate::auth::credential(dir, name).map(|c| c.key))
 }
 
 /// Env var for providers whose omp id differs from pa-ai's, plus `agent.db`.
@@ -233,7 +233,7 @@ fn builtin_key(dir: &AgentDir, name: &str) -> Option<String> {
         .ok()
         .filter(|v| !v.is_empty())
         .or_else(|| pa_ai::env_api_keys::get_env_api_key(name))
-        .or_else(|| db_credential(&dir.0.join("agent.db"), name))
+        .or_else(|| crate::auth::credential(dir, name).map(|c| c.key))
 }
 
 fn builtin_base_urls() -> Vec<(&'static str, &'static str)> {
@@ -245,42 +245,6 @@ fn builtin_base_urls() -> Vec<(&'static str, &'static str)> {
         ("anthropic", "https://api.anthropic.com"),
         ("openai", "https://api.openai.com/v1"),
     ]
-}
-
-/// First enabled credential for `provider` in `agent.db` (api key or
-/// unexpired OAuth access token) — mirrors `lib.rs::db_credential`.
-fn db_credential(db: &Path, provider: &str) -> Option<String> {
-    let conn = rusqlite::Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
-    let rows: Vec<(String, String)> = conn
-        .prepare("SELECT credential_type, data FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NULL ORDER BY id")
-        .ok()?
-        .query_map([provider], |r| Ok((r.get(0)?, r.get(1)?)))
-        .ok()?
-        .filter_map(std::result::Result::ok)
-        .collect();
-    let now = now_ms();
-    for (kind, data) in rows {
-        let Ok(d) = serde_json::from_str::<Value>(&data) else { continue };
-        match kind.as_str() {
-            "api_key" => {
-                if let Some(k) = d.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()) {
-                    return Some(k.to_owned());
-                }
-            }
-            "oauth" => {
-                let expired = d.get("expires").and_then(Value::as_u64).is_some_and(|e| e <= now);
-                if let (false, Some(a)) = (expired, d.get("access").and_then(Value::as_str)) {
-                    return Some(a.to_owned());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// TS `appendModelsPath`: `/models` appended to the pathname so a query

@@ -371,6 +371,14 @@ impl StreamingRevealController {
     pub fn revealed(&self) -> usize {
         self.revealed
     }
+
+    /// True while a [`Self::tick`] would still change the snapshot (a
+    /// reveal backlog, or a coalesced target not yet published) — the
+    /// controller's frame timer runs exactly while this holds.
+    #[must_use]
+    pub fn is_animating(&self) -> bool {
+        self.total > self.revealed || self.target_dirty
+    }
 }
 
 /// One per-tool-call reveal entry (TS `ToolArgsRevealController`).
