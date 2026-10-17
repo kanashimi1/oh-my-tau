@@ -1202,6 +1202,7 @@ mod tests {
         // The resolved ladder is materialized onto the model (qwen: reasoning effort ladder).
         assert!(m.model.thinking_level_map.is_some());
     }
+
     /// A `models.db` row known only by id (`contextWindow`/`maxTokens: null`, no thinking — what TS
     /// caches for `anthropic/claude-haiku-5-5`) resolves with "unknown" (0) limits, like TS `?? 0`.
     #[test]
@@ -1228,4 +1229,5 @@ mod tests {
         let m = resolve_in(&dir, "anthropic/claude-haiku-9-9").unwrap();
         assert_eq!((m.api.as_str(), m.context_window, m.max_tokens, m.reasoning), ("anthropic-messages", 0, 0, false));
     }
+
 }

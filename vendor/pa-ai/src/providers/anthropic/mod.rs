@@ -32,6 +32,12 @@ pub const API_ANTHROPIC_MESSAGES: &str = "anthropic-messages";
 const CLAUDE_CODE_VERSION: &str = "2.1.281";
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
+const CONTEXT_MANAGEMENT_BETA: &str = "context-management-2025-06-27";
+const EFFORT_BETA: &str = "effort-2025-11-24";
+const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026-08-01";
+const MID_CONVERSATION_SYSTEM_CLEAR_AT_BETA: &str = "mid-conversation-system-clear-at-2026-08-21";
+const MID_CONVERSATION_TOOL_CHANGES_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
+const MID_CONVERSATION_OUTPUT_CONFIG_BETA: &str = "mid-conversation-output-config-2026-07-01";
 
 /// Effort levels for adaptive thinking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,6 +142,40 @@ pub(crate) fn should_use_fine_grained_tool_streaming_beta(
         && !crate::compat::ModelView::of(model).is("supportsEagerToolInputStreaming")
 }
 
+/// TS `resolveAnthropicControlBetas`: the betas a request opts into through the resolved compat
+/// (thinking-binding controls, mid-conversation system/tool/effort changes). The binding beta must
+/// accompany `thinking.block_binding`, which the API rejects without it.
+pub(crate) fn control_betas(view: &crate::compat::ModelView) -> Vec<&'static str> {
+    let mut betas = Vec::new();
+    if view.thinking_flag("prefixBinding") == Some(true) && view.is("supportsThinkingBindingControls") {
+        betas.push(THINKING_BINDING_CONTROLS_BETA);
+    }
+    if view.is("supportsTurnScopedSystem") {
+        betas.push(MID_CONVERSATION_SYSTEM_CLEAR_AT_BETA);
+    }
+    if view.is("supportsMidConversationToolChanges") {
+        betas.push(MID_CONVERSATION_TOOL_CHANGES_BETA);
+    }
+    if view.is("supportsPerMessageEffort") {
+        betas.push(MID_CONVERSATION_OUTPUT_CONFIG_BETA);
+    }
+    betas
+}
+
+/// Betas the built request body requires: the compat control betas plus the field-gated ones TS
+/// attaches alongside the field (`context_management` needs the context-management beta,
+/// `output_config.effort` the effort beta). The API rejects each field without its beta.
+pub(crate) fn body_betas(view: &crate::compat::ModelView, body: &Value) -> Vec<&'static str> {
+    let mut betas = control_betas(view);
+    if body.get("context_management").is_some() {
+        betas.push(CONTEXT_MANAGEMENT_BETA);
+    }
+    if body.pointer("/output_config/effort").is_some() {
+        betas.push(EFFORT_BETA);
+    }
+    betas
+}
+
 pub(crate) fn merge_headers(sources: &[Option<Map<String, Value>>]) -> Map<String, Value> {
     let mut merged = Map::new();
     for source in sources.iter().flatten() {
@@ -163,6 +203,7 @@ pub(crate) fn build_request_headers(
     api_key: &str,
     interleaved_thinking: bool,
     use_fine_grained_tool_streaming_beta: bool,
+    extra_betas: &[&str],
     options_headers: Option<&std::collections::HashMap<String, String>>,
     session_id: Option<&str>,
 ) -> (Vec<(String, String)>, bool) {
@@ -174,6 +215,11 @@ pub(crate) fn build_request_headers(
     }
     if needs_interleaved_beta {
         beta_features.push(INTERLEAVED_THINKING_BETA);
+    }
+    for beta in extra_betas {
+        if !beta_features.contains(beta) {
+            beta_features.push(beta);
+        }
     }
     let beta_header = if beta_features.is_empty() {
         None
@@ -543,7 +589,7 @@ mod subscription_identity_tests {
     #[test]
     fn oauth_requests_claim_the_claude_code_identity() {
         let (headers, is_oauth) =
-            build_request_headers(&test_model(), "sk-ant-oat-test", false, false, None, None);
+            build_request_headers(&test_model(), "sk-ant-oat-test", false, false, &[], None, None);
         assert!(is_oauth);
         let header = |name: &str| {
             headers
@@ -556,5 +602,25 @@ mod subscription_identity_tests {
         assert_eq!(header("x-app"), Some("cli"));
         let beta = header("anthropic-beta").expect("the OAuth request sends the claude-code beta");
         assert!(beta.contains("claude-code-20250219"));
+    }
+
+    /// `thinking.block_binding` is rejected (400 "Extra inputs are not permitted") unless the
+    /// request carries the thinking-binding-controls beta.
+    #[test]
+    fn binding_controls_model_opts_into_the_beta() {
+        let mut model = test_model();
+        model.id = "claude-haiku-5-5".into();
+        model.reasoning = true;
+        let view = crate::compat::ModelView::of(&model);
+        let betas = super::body_betas(&view, &serde_json::json!({}));
+        assert!(betas.contains(&"thinking-binding-controls-2026-08-01"), "{betas:?}");
+        let (headers, _) = build_request_headers(&model, "sk-ant-oat-test", false, false, &betas, None, None);
+        let beta = headers.iter().find(|(k, _)| k == "anthropic-beta").map(|(_, v)| v.as_str()).unwrap();
+        assert!(beta.contains("thinking-binding-controls-2026-08-01"), "{beta}");
+        let body = serde_json::json!({"context_management": {}, "output_config": {"effort": "high"}});
+        let betas = super::body_betas(&crate::compat::ModelView::of(&test_model()), &body);
+        assert!(betas.contains(&"context-management-2025-06-27") && betas.contains(&"effort-2025-11-24"), "{betas:?}");
+        let plain = crate::compat::ModelView::of(&test_model());
+        assert!(!super::body_betas(&plain, &serde_json::json!({})).contains(&"thinking-binding-controls-2026-08-01"));
     }
 }

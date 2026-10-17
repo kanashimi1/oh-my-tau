@@ -15,7 +15,7 @@ use crate::event_stream::{
 use crate::models::{calculate_cost, CostOverrides};
 use crate::providers::anthropic::convert::map_stop_reason;
 use crate::providers::anthropic::{
-    build_request_headers,
+    body_betas, build_request_headers, is_oauth_token,
     should_use_fine_grained_tool_streaming_beta, AnthropicOptions,
 };
 use crate::types::{
@@ -205,16 +205,8 @@ async fn run_stream(
         .and_then(|options| options.interleaved_thinking)
         .unwrap_or(true);
     let use_fine_grained = should_use_fine_grained_tool_streaming_beta(model, context);
-    let (headers, is_oauth) = build_request_headers(
-        model,
-        &api_key,
-        interleaved_thinking,
-        use_fine_grained,
-        base_options.headers.as_ref(),
-        base_options.session_id.as_deref(),
-    );
-
     let view = options.and_then(|o| o.view.clone()).unwrap_or_else(|| crate::compat::ModelView::of(model));
+    let is_oauth = is_oauth_token(&api_key);
     let cache_control = crate::providers::anthropic::request::cache_control_value(&view, base_options.cache_retention, is_oauth);
     let cache_ttl_1h = cache_control.as_ref().is_some_and(|c| c.get("ttl").is_some());
     let uses_anthropic_cache_pricing = has_standard_anthropic_cache_pricing(model);
@@ -227,6 +219,7 @@ async fn run_stream(
         _ => None,
     };
 
+    let betas: Vec<&'static str>;
     let body = {
         let default_options = AnthropicOptions::default();
         let params = crate::providers::anthropic::build_request_body(
@@ -237,8 +230,18 @@ async fn run_stream(
             &api_key,
         )
         .map_err(ProviderError::Message)?;
+        betas = body_betas(&view, &params);
         crate::utils_inner::wire_json::request_body_value(params, base_options.on_payload.as_ref(), model)
     };
+    let (headers, _) = build_request_headers(
+        model,
+        &api_key,
+        interleaved_thinking,
+        use_fine_grained,
+        &betas,
+        base_options.headers.as_ref(),
+        base_options.session_id.as_deref(),
+    );
 
     let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
     // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
