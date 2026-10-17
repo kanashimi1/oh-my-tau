@@ -28,6 +28,7 @@ pub async fn run(
     cwd: PathBuf,
     persist: Persistence,
     resume: Option<PathBuf>,
+    extensions: Option<Arc<crate::ext::Extensions>>,
 ) -> Result<()> {
     // OSC 11 background probe: must run before the TUI takes over the
     // terminal (the response bytes would otherwise land in the crossterm
@@ -65,6 +66,11 @@ pub async fn run(
         rt.publish_session_file();
         announce_loaded_session(&rt).await;
     }
+    // Extension wiring (after the startup resume so `session_start` sees the
+    // resumed file/title; the resume itself emits no `session_switch`, as in TS).
+    if let Some(e) = &extensions {
+        e.attach_interactive(rt.clone()).await;
+    }
     // Slash catalog for the editor's `/` popup: builtins + extension/file
     // commands, same start-up announce sequence as RPC mode.
     rt.set_available_commands(crate::rpc::slash::dynamic_commands(&rt).await);
@@ -74,7 +80,11 @@ pub async fn run(
     // them into the UI stream as `session_name_changed` frames.
     {
         let listener_rt = rt.clone();
+        let ext_listener = extensions.as_ref().map(|e| e.name_listener());
         rt.set_name_listener(Some(Arc::new(move |name: &str| {
+            if let Some(f) = &ext_listener {
+                f(name);
+            }
             listener_rt.send(serde_json::json!({
                 "type": "session_name_changed",
                 "name": name,
@@ -88,7 +98,7 @@ pub async fn run(
     rt.enable_context_usage_frames();
     crate::slash_extra::mark_interactive_ui();
     rt.publish_context_usage();
-    let port = Port { rt };
+    let port = Port { rt, ext: extensions };
     omp_tui::run(
         omp_tui::RunConfig {
             frames: rx,
@@ -145,6 +155,28 @@ async fn announce_loaded_session(rt: &Runtime) {
 /// `Runtime` methods are spawned onto the tokio runtime from these sync hooks.
 struct Port {
     rt: Arc<Runtime>,
+    ext: Option<Arc<crate::ext::Extensions>>,
+}
+
+/// Extension `input` gate (`before_agent_start` + `input`), as print mode runs
+/// it: `Some(text)` to run (possibly rewritten), `None` when an extension
+/// handled the input.
+async fn gate_prompt(
+    rt: &Runtime,
+    ext: Option<&Arc<crate::ext::Extensions>>,
+    text: &str,
+) -> Option<String> {
+    let Some(ext) = ext else {
+        return Some(text.to_string());
+    };
+    match ext.before_prompt(&rt.agent, text).await {
+        Ok(crate::ext::PromptGate::Run(t)) => Some(t),
+        Ok(crate::ext::PromptGate::Handled) => None,
+        Err(e) => {
+            eprintln!("omp-rs: extension input: {e:#}");
+            Some(text.to_string())
+        }
+    }
 }
 
 /// `models_changed` frame: the re-read `/model` picker catalogue after an
@@ -385,7 +417,12 @@ async fn session_info_frame(rt: &Runtime) -> Value {
 impl omp_tui::RuntimePort for Port {
     fn submit(&self, id: Option<String>, text: String, behavior: Option<omp_tui::SubmitBehavior>) {
         let rt = self.rt.clone();
+        let ext = self.ext.clone();
         tokio::spawn(async move {
+            let Some(text) = gate_prompt(&rt, ext.as_ref(), &text).await else {
+                rt.send(prompt_completed(false));
+                return;
+            };
             let behavior = match behavior {
                 Some(omp_tui::SubmitBehavior::Steer) => Some("steer"),
                 Some(omp_tui::SubmitBehavior::FollowUp) => Some("followUp"),
@@ -451,6 +488,7 @@ impl omp_tui::RuntimePort for Port {
 
     fn run_slash(&self, name: String, args: String) {
         let rt = self.rt.clone();
+        let ext = self.ext.clone();
         tokio::spawn(async move {
             // Same dispatch chain as RPC `prompt` (builtins → extensions →
             // file templates); slash.rs emits `command_output`/`notice` frames
@@ -473,6 +511,10 @@ impl omp_tui::RuntimePort for Port {
                     rt.send(prompt_completed(false));
                 }
                 crate::rpc::slash::Outcome::Prompt(rewritten) => {
+                    let Some(rewritten) = gate_prompt(&rt, ext.as_ref(), &rewritten).await else {
+                        rt.send(prompt_completed(false));
+                        return;
+                    };
                     if let Err(e) = rt.prompt(None, &rewritten, None, Vec::new()).await {
                         rt.send(prompt_failed(e.message));
                     }
@@ -727,7 +769,7 @@ mod tests {
         )
         .await;
         Harness {
-            port: Port { rt },
+            port: Port { rt, ext: None },
             rx,
             _provider: provider,
         }

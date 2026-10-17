@@ -472,7 +472,7 @@ async fn main() -> Result<()> {
         && std::io::IsTerminal::is_terminal(&std::io::stdout())
     {
         let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
-        let result = tui::run(agent, target, cwd, persistence, resume_target).await;
+        let result = tui::run(agent, target, cwd, persistence, resume_target, extensions.clone()).await;
         if let Some(e) = &extensions {
             e.shutdown().await;
         }
@@ -661,16 +661,7 @@ async fn run_print(
     if let Some(e) = extensions {
         e.attach(rt.clone());
         crate::rpc::slash::set_extensions(e.clone());
-        // Every title change re-sends the ext ctx with the new sessionName so
-        // hosts reading `getSessionName()` (herdr-pane-names) see it at once.
-        let ext = e.clone();
-        rt.set_name_listener(Some(std::sync::Arc::new(move |name: &str| {
-            let ext = ext.clone();
-            let name = name.to_string();
-            tokio::spawn(async move {
-                let _ = ext.set_session_name(Some(name)).await;
-            });
-        })));
+        rt.set_name_listener(Some(e.name_listener()));
     }
     if let Some(path) = resume {
         // `--resume`/`--continue` keep appending to the same session file; `--fork`

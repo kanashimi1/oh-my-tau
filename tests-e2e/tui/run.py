@@ -611,6 +611,46 @@ def sc_paste_clipboard(t: Term, r: Result) -> None:
     r.check("ctrl+shift+v: stub clipboard text pasted raw", "stub-clipboard-text" in comp)
 
 
+EXT_PROBE = """// @ts-nocheck
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+export default function (pi) {
+  const log = (line) => fs.appendFileSync(path.join(os.homedir(), "ext.log"), line + "\\n");
+  for (const ev of ["session_start", "session_switch", "agent_end"]) {
+    pi.on(ev, (e, ctx) => log(`${ev} ui=${ctx?.hasUI === true} reason=${e?.reason ?? ""}`));
+  }
+  pi.on("input", (e) => { log(`input ${e?.text}`); });
+}
+"""
+
+
+def prepare_ext_probe(agent: Path) -> None:
+    (agent / "extensions").mkdir()
+    (agent / "extensions" / "probe.ts").write_text(EXT_PROBE)
+
+
+def sc_extensions(t: Term, r: Result) -> None:
+    """User extensions run in interactive mode: lifecycle events, hasUI, the
+    `input` gate, and `session_switch` on /new."""
+    ready(t)
+    submit(t, "ext probe prompt")
+    r.check("ext: reply shown", t.wait_for(r"E2E-REPLY-1", 90))
+    t.settle(1.0, 30)
+    log = Path(t.env["HOME"]) / "ext.log"
+    time.sleep(1.0)
+    text = log.read_text() if log.exists() else ""
+    r.notes.append(f"ext.log: {text!r}")
+    r.check("ext: session_start with hasUI", "session_start ui=true" in text)
+    r.check("ext: input gate saw the prompt", "input ext probe prompt" in text)
+    r.check("ext: agent_end emitted", "agent_end" in text)
+    submit(t, "/new")
+    t.settle(1.5, 30)
+    time.sleep(1.0)
+    text = log.read_text() if log.exists() else ""
+    r.check("ext: session_switch on /new", "session_switch ui=true reason=new" in text)
+
+
 def seed_history(agent: Path) -> None:
     """A history.db (TS schema) of distinct prompts that repeat two words, so
     both clients' n-gram engines learn `refactor` and `parser` from it."""
@@ -681,6 +721,7 @@ SCENARIOS = {
     "settings_edit": ("text", overlay_settings_edit()),
     "composer_shape": ("text", sc_composer_shape),
     "effort": ("think", sc_effort),
+    "extensions": ("text", sc_extensions, "", {}, prepare_ext_probe),
     "word_complete": ("text", sc_word_complete, "", {}, seed_history),
     "paste_small": ("text", sc_paste_small),
     "paste_large": ("text", sc_paste_large),
@@ -727,6 +768,7 @@ def run_client(binary: str, model: str, fn, port: int, keep: Path, extra_config:
     r = Result()
     t = Term([binary, "--model", f"mock/{model}"], env=env, cwd=env["E2E_WORK"],
              kitty=(extra_env or {}).get("E2E_KITTY") == "1")
+    t.env = env
     try:
         fn(t, r)
     except Exception as e:  # a crashed scenario is a failed check, not a crashed run

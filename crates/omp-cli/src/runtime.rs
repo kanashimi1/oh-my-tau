@@ -151,6 +151,9 @@ pub struct Runtime {
     pending_rewind_report: Mutex<Option<String>>,
     /// Sinks every applied session-name change (ext bridge `set_session_name`).
     on_session_name: Mutex<Option<NameListener>>,
+    /// Sinks every completed session switch (`new_session`/`load_session`/fork):
+    /// the ext bridge's ctx refresh + `session_switch` event.
+    on_session_switch: Mutex<Option<SwitchListener>>,
     /// Native Herdr agent-state reporter (`HERDR_ENV=1` only; `None` elsewhere).
     herdr: Option<std::sync::Arc<crate::herdr::Herdr>>,
     /// `ask`-tool runs currently waiting on the user: >0 means Blocked.
@@ -161,6 +164,10 @@ pub struct Runtime {
 
 /// Sink for applied session-name changes (the ext bridge's `set_session_name`).
 pub type NameListener = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Sink for completed session switches: `(reason, previous session file)`,
+/// reason being the TS `session_switch` reason (`new` | `resume` | `fork`).
+pub type SwitchListener = Arc<dyn Fn(&'static str, Option<PathBuf>) + Send + Sync>;
 
 /// One title-model candidate: model plus the credentials to call it with.
 type TitleCandidate = (
@@ -360,6 +367,7 @@ impl Runtime {
             auto_thinking: std::sync::atomic::AtomicBool::new(false),
             pending_rewind_report: Mutex::new(None),
             on_session_name: Mutex::new(None),
+            on_session_switch: Mutex::new(None),
             herdr,
             ask_blocked: std::sync::atomic::AtomicU64::new(0),
             title_task: Mutex::new(None),
@@ -1438,6 +1446,11 @@ impl Runtime {
         self.persist.session_id()
     }
 
+    /// The live session file; `None` under `--no-session`.
+    pub fn live_session_file(&self) -> Option<PathBuf> {
+        self.persist.file()
+    }
+
     pub fn session_file(&self) -> PathBuf {
         self.persist.path()
     }
@@ -1673,6 +1686,7 @@ impl Runtime {
 
     /// Clear the conversation and start a fresh session file.
     pub async fn new_session(&self, dir: Option<&Path>) -> Result<()> {
+        let previous = self.persist.file();
         self.cancel_retry_and_wait().await;
         self.agent.abort();
         self.agent.wait_for_idle().await;
@@ -1689,6 +1703,7 @@ impl Runtime {
         }
         lock(&self.prompts).open.clear();
         self.record_model_state().await;
+        self.notify_session_switch("new", previous);
         Ok(())
     }
 
@@ -1713,6 +1728,7 @@ impl Runtime {
     /// on demand from the raw lines. Non-compacted sessions never build the
     /// entry DOM at all: messages deserialize straight from the line text.
     async fn load_session_as(&self, path: &Path, dir: Option<&Path>, fork: bool) -> Result<()> {
+        let previous = self.persist.file();
         self.cancel_retry_and_wait().await;
         // `--no-session` must never write into the resumed file: seed a scratch copy instead.
         let fork = fork || self.persist.file().is_none();
@@ -1857,7 +1873,19 @@ impl Runtime {
         self.herdr_session("resume");
         lock(&self.prompts).open.clear();
         self.restore_title_from(&index);
+        self.notify_session_switch(if fork { "fork" } else { "resume" }, previous);
         Ok(())
+    }
+
+    fn notify_session_switch(&self, reason: &'static str, previous: Option<PathBuf>) {
+        if let Some(f) = lock(&self.on_session_switch).clone() {
+            f(reason, previous);
+        }
+    }
+
+    /// Sink completed session switches (the ext bridge's `session_switch`).
+    pub fn set_switch_listener(&self, f: Option<SwitchListener>) {
+        *lock(&self.on_session_switch) = f;
     }
 
     /// A resumed session keeps its title: seed the name/source from the file's

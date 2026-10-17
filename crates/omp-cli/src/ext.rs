@@ -20,7 +20,7 @@ use pa_agent::types::{
 use serde_json::{json, Value};
 
 use omp_ext::hooks::ExtHooks;
-use omp_ext::lifecycle::{self, HeadlessResponder, InputSource, LifecycleEvent};
+use omp_ext::lifecycle::{self, HeadlessResponder, InputSource, LifecycleEvent, SwitchReason};
 use omp_ext::{ExtHost, HostConfig, HostMessage, ToolInfo};
 
 use crate::adapter::json_round_trip;
@@ -132,6 +132,8 @@ struct SessionCtx {
     session_file: Option<PathBuf>,
     model: String,
     session_name: Option<String>,
+    /// TS `ctx.hasUI`: true for the interactive main session.
+    has_ui: bool,
 }
 
 /// Live extension host and its agent-facing hooks.
@@ -300,6 +302,7 @@ impl Extensions {
                 "sessionFile": ctx.session_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 "model": ctx.model,
                 "sessionName": ctx.session_name,
+                "hasUI": ctx.has_ui,
             })
         };
         self.host.set_ctx(body).await
@@ -442,6 +445,66 @@ impl Extensions {
             self.serve_incoming(&rt);
         }
         Ok(())
+    }
+
+    /// Interactive TUI wiring on top of [`Self::attach`]: `hasUI=true` (TS
+    /// interactive mode), slash-command registration, and a switch listener that
+    /// refreshes the ext ctx (id/file/model/name) and emits `session_switch`
+    /// for `/new`, `/resume` and `/fork`. Pushes the initial ctx and emits
+    /// `session_start`, so call it once the startup resume (if any) is loaded.
+    pub async fn attach_interactive(self: &Arc<Self>, rt: Arc<Runtime>) {
+        self.ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .has_ui = true;
+        self.attach(rt.clone());
+        crate::rpc::slash::set_extensions(self.clone());
+        let ext = self.clone();
+        let weak = Arc::downgrade(&rt);
+        rt.set_switch_listener(Some(Arc::new(move |reason, previous| {
+            let (ext, weak) = (ext.clone(), weak.clone());
+            tokio::spawn(async move {
+                let Some(rt) = weak.upgrade() else { return };
+                ext.push_session_ctx(&rt).await;
+                let reason = match reason {
+                    "new" => SwitchReason::New,
+                    "fork" => SwitchReason::Fork,
+                    _ => SwitchReason::Resume,
+                };
+                let previous = previous.map(|p| p.to_string_lossy().into_owned());
+                emit_silent(ext.host.emit_session_switch(reason, previous, None).await);
+            });
+        })));
+        self.push_session_ctx(&rt).await;
+        self.session_start().await;
+    }
+
+    /// Send the runtime's current session id/file/model/name to the host.
+    async fn push_session_ctx(&self, rt: &Runtime) {
+        let model = rt.agent.model().await;
+        let model_ref = format!("{}/{}", model.provider, model.id);
+        if let Err(e) = self
+            .set_session_ctx(&rt.session_id(), rt.live_session_file().as_deref(), &model_ref)
+            .await
+        {
+            eprintln!("omp-rs: extension ctx: {e:#}");
+        }
+        if let Err(e) = self.set_session_name(rt.session_name()).await {
+            eprintln!("omp-rs: extension ctx: {e:#}");
+        }
+    }
+
+    /// Name-change sink: every title change re-sends the ext ctx with the new
+    /// `sessionName` so hosts reading `getSessionName()` see it at once.
+    pub fn name_listener(self: &Arc<Self>) -> crate::runtime::NameListener {
+        let ext = self.clone();
+        Arc::new(move |name: &str| {
+            let ext = ext.clone();
+            let name = name.to_string();
+            tokio::spawn(async move {
+                let _ = ext.set_session_name(Some(name)).await;
+            });
+        })
     }
 
     /// `rpc::run_with` `OnStart` hook form of [`Self::attach`].
