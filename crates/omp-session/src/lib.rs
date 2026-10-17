@@ -161,6 +161,26 @@ impl SessionWriter {
         Ok(w)
     }
 
+    /// Reopen an existing session file for append (TS `SessionManager.open`: the file and its
+    /// header stay untouched, new entries are appended). The append point is `leaf` when given
+    /// (the active branch tip, which need not be the last line), else the last entry.
+    ///
+    /// # Errors
+    /// I/O failure, a missing file, or `leaf` is not an entry of the file.
+    pub fn open(path: &Path, leaf: Option<&str>) -> Result<Self> {
+        anyhow::ensure!(path.is_file(), "session file not found: {}", path.display());
+        let file = OpenOptions::new().append(true).open(path).with_context(|| format!("open {}", path.display()))?;
+        let mut w = Self { file, path: path.to_path_buf(), last_id: None, leaf: None, ids: HashSet::new() };
+        w.load_existing()?;
+        if std::fs::read(path).map(|b| b.last().is_some_and(|&c| c != b'\n')).unwrap_or(false) {
+            w.file.write_all(b"\n")?;
+        }
+        if let Some(leaf) = leaf {
+            w.branch_to(Some(leaf.to_owned()))?;
+        }
+        Ok(w)
+    }
+
     /// Record ids of an existing file (skipping lines that are not JSON objects) and its last entry.
     fn load_existing(&mut self) -> Result<()> {
         let file = File::open(&self.path).with_context(|| format!("open {}", self.path.display()))?;

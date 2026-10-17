@@ -432,8 +432,11 @@ async fn main() -> Result<()> {
             &dir,
             ts_dir.as_deref(),
         )?;
-        if args.session_dir.is_some() {
+        // With a resume/fork target `load_session` binds the right file itself (and drops
+        // the startup file); only a fresh run relocates to the new store here.
+        if args.session_dir.is_some() && target.is_none() {
             if let Ok(p) = &session {
+                p.discard_pristine();
                 p.start_new(&cwd, args.session_dir.as_deref())?;
             }
         }
@@ -497,6 +500,7 @@ async fn main() -> Result<()> {
         cwd,
         session,
         resume_target,
+        args.fork.is_some(),
         args.session_dir.clone(),
         prompt,
         images,
@@ -613,6 +617,7 @@ async fn run_print(
     cwd: PathBuf,
     persist: Option<persist::Persistence>,
     resume: Option<PathBuf>,
+    fork: bool,
     session_dir: Option<PathBuf>,
     prompt: String,
     images: Vec<pa_agent::types::ImageContent>,
@@ -668,10 +673,13 @@ async fn run_print(
         })));
     }
     if let Some(path) = resume {
-        // `--session-dir` relocates the session store: the resumed transcript
-        // continues in the same dir the launch already switched to (without
-        // this, load_session's start_new fell back to the default store).
-        rt.load_session(&path, session_dir.as_deref()).await?;
+        // `--resume`/`--continue` keep appending to the same session file; `--fork`
+        // writes a new one (in the `--session-dir` store when relocated).
+        if fork {
+            rt.fork_session(&path, session_dir.as_deref()).await?;
+        } else {
+            rt.load_session(&path, session_dir.as_deref()).await?;
+        }
     }
     // Slash-command dispatch in print mode (TS runs these through the same
     // dispatcher as the TUI); a matched command handles or rewrites the prompt.

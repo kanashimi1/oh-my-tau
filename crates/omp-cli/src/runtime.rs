@@ -1722,17 +1722,30 @@ impl Runtime {
         Ok(())
     }
 
-    /// Load `path`'s messages into the agent. The continuation is written to a
-    /// fresh session file seeded with the loaded history (the writer is
-    /// append-only and cannot reopen an existing file).
+    /// Resume `path` in place (TS `SessionManager.open`): the agent context is rebuilt from the
+    /// journal and new entries are appended to the SAME file, chained to the active branch tip.
+    /// `dir` is unused (the file keeps its own directory).
+    pub async fn load_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
+        self.load_session_as(path, dir, false).await
+    }
+
+    /// Fork `path` (TS `SessionManager.forkFrom`): the continuation is written to a fresh
+    /// session file in `dir` seeded with the loaded history.
+    pub async fn fork_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
+        self.load_session_as(path, dir, true).await
+    }
+
+    /// Shared body of [`Self::load_session`] / [`Self::fork_session`].
     ///
     /// Resume is lazy like omp's: the journal is scanned once into a link index
     /// ([`omp_session::index::SessionIndex`]) and only the active branch — TS
     /// `SessionEntryIndex.pathTo(leaf)`, root → leaf — is materialized, parsed
     /// on demand from the raw lines. Non-compacted sessions never build the
     /// entry DOM at all: messages deserialize straight from the line text.
-    pub async fn load_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
+    async fn load_session_as(&self, path: &Path, dir: Option<&Path>, fork: bool) -> Result<()> {
         self.cancel_retry_and_wait().await;
+        // `--no-session` must never write into the resumed file: seed a scratch copy instead.
+        let fork = fork || self.persist.file().is_none();
         let trace_t0 = std::time::Instant::now();
         macro_rules! rss_trace {
             ($label:expr) => {
@@ -1827,16 +1840,34 @@ impl Runtime {
         self.agent.abort();
         self.agent.wait_for_idle().await;
         self.agent.reset().await;
-        self.persist.start_new(&self.cwd, dir)?;
-        self.publish_session_file();
-        crate::tools::eval_journal::carry_over(path);
-        self.record_model_state().await;
-        if compacted {
-            crate::compact::seed_branch(&self.persist, &index, path)?;
-        } else {
-            for (m, raw) in messages.iter().zip(&raw_messages) {
-                seed_resumed_message(&self.persist, m, raw.as_ref());
+        if fork {
+            // TS fork: a NEW file seeded with the branch; the startup file never held anything.
+            if self.persist.path() != path {
+                self.persist.discard_pristine();
             }
+            self.persist.start_new(&self.cwd, dir)?;
+            self.publish_session_file();
+            crate::tools::eval_journal::carry_over(path);
+            self.record_model_state().await;
+            if compacted {
+                crate::compact::seed_branch(&self.persist, &index, path)?;
+            } else {
+                for (m, raw) in messages.iter().zip(&raw_messages) {
+                    seed_resumed_message(&self.persist, m, raw.as_ref());
+                }
+            }
+        } else {
+            // TS `SessionManager.open`: keep appending to the same file (header untouched,
+            // nothing re-seeded), chained to the active branch tip. A compacted journal is
+            // only read to rebuild the context above, never rewritten.
+            let header_id = index
+                .refs
+                .iter()
+                .find(|r| r.kind == omp_session::index::EntryKind::Header)
+                .map(|r| &*r.id);
+            let tip = branch.last().map(|&i| &*index.refs[i as usize].id);
+            self.persist.bind_existing(path, header_id, tip.filter(|t| !t.is_empty()))?;
+            self.publish_session_file();
         }
         rss_trace!("seeded");
         rss_trace!("pre-set");

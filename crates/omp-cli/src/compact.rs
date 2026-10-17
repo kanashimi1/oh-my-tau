@@ -684,6 +684,11 @@ mod tests {
     }
 
     async fn harness(turns: usize) -> Harness {
+        harness_in(turns, None).await
+    }
+
+    /// `dir = Some(..)`: a real (non-ephemeral) session file inside `dir`.
+    async fn harness_in(turns: usize, dir: Option<&std::path::Path>) -> Harness {
         let model = pa_model();
         let provider = Arc::new(ScriptedProvider::new(
             json_round_trip(&model).expect("agent model"),
@@ -703,9 +708,11 @@ mod tests {
             ..AgentOptions::default()
         });
         let cwd = std::env::temp_dir();
-        let persist = crate::persist::attach_with(&agent, &cwd, true)
-            .await
-            .expect("session");
+        let persist = match dir {
+            Some(d) => crate::persist::attach_in(&agent, &cwd, d, None, crate::persist::uuid_v7()).await,
+            None => crate::persist::attach_with(&agent, &cwd, true).await,
+        }
+        .expect("session");
         let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
             api_key: Some("k".into()),
             model,
@@ -754,6 +761,71 @@ mod tests {
             .expect("prompt");
             until_settled(&mut h.rx).await;
         }
+    }
+
+    fn journal(path: &std::path::Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    fn jsonl_count(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "jsonl"))
+            .count()
+    }
+
+    /// TS `SessionManager.open`: resume appends to the SAME file (header untouched, new entries
+    /// chained to the previous tip) and leaves no orphan startup file behind.
+    #[tokio::test]
+    async fn resume_continues_same_session_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = harness_in(2, Some(dir.path())).await;
+        talk(&mut first, 1).await;
+        let file = first.rt.session_file();
+        let before = journal(&file);
+        let tip = before.last().unwrap()["id"].as_str().unwrap().to_owned();
+        let header = before[0].clone();
+        assert_eq!(jsonl_count(dir.path()), 1);
+
+        // A second process: its startup file exists until the resume replaces it.
+        let mut second = harness_in(2, Some(dir.path())).await;
+        assert_eq!(jsonl_count(dir.path()), 2);
+        second.rt.load_session(&file, None).await.expect("resume");
+        assert_eq!(second.rt.session_file(), file, "same file");
+        assert_eq!(second.rt.session_id(), header["id"].as_str().unwrap());
+        assert_eq!(jsonl_count(dir.path()), 1, "startup file dropped, none forked");
+        assert_eq!(journal(&file).len(), before.len(), "resume itself appends nothing");
+
+        talk(&mut second, 1).await;
+        let after = journal(&file);
+        assert!(after.len() > before.len(), "new turn landed in the same file");
+        assert_eq!(after[0], header, "header untouched");
+        assert_eq!(&after[..before.len()], &before[..], "old entries untouched");
+        assert_eq!(after[before.len()]["parentId"], tip, "first new entry chains to the old tip");
+        for pair in after[before.len()..].windows(2) {
+            assert_eq!(pair[1]["parentId"], pair[0]["id"], "linear chain");
+        }
+        assert_eq!(jsonl_count(dir.path()), 1);
+    }
+
+    /// `--fork` keeps TS fork semantics: a new file, the source untouched.
+    #[tokio::test]
+    async fn fork_still_creates_new_session_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut first = harness_in(1, Some(dir.path())).await;
+        talk(&mut first, 1).await;
+        let file = first.rt.session_file();
+        let before = journal(&file);
+
+        let second = harness_in(1, Some(dir.path())).await;
+        second.rt.fork_session(&file, Some(dir.path())).await.expect("fork");
+        assert_ne!(second.rt.session_file(), file, "fork writes a new file");
+        assert_eq!(journal(&file), before, "source untouched");
+        assert_eq!(jsonl_count(dir.path()), 2, "source + fork, no orphan");
     }
 
     fn fixture() -> PathBuf {
@@ -820,7 +892,7 @@ mod tests {
         );
         assert!(expected.len() >= 2);
 
-        h.rt.load_session(&fixture(), None).await.expect("load");
+        h.rt.fork_session(&fixture(), None).await.expect("load");
         let live = h.rt.messages().await;
         assert_eq!(
             live.len(),

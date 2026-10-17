@@ -296,6 +296,50 @@ impl Persistence {
         self.deferred.lock().unwrap().take();
         Ok(())
     }
+
+    /// Continue an existing session file in place (TS `SessionManager.open`): the file and its
+    /// header stay untouched and new entries chain to `leaf` (the active branch tip; the last
+    /// entry when `None`). The session id becomes the file header's. The previous file is
+    /// removed when this process created it and nothing but its preamble was ever written
+    /// (no orphan per launch).
+    ///
+    /// # Errors
+    /// Fails when the file cannot be opened or `leaf` is not one of its entries.
+    pub fn bind_existing(&self, path: &Path, session_id: Option<&str>, leaf: Option<&str>) -> Result<()> {
+        let old = self.path();
+        let opened = SessionWriter::open(path, leaf)?;
+        *self.writer.lock().unwrap() = opened;
+        if let Some(id) = session_id {
+            *self.session_id.lock().unwrap() = id.to_owned();
+        }
+        self.deferred.lock().unwrap().take();
+        if old != path {
+            discard_if_preamble_only(&old);
+        }
+        Ok(())
+    }
+
+    /// Drop the current file when it holds only the startup preamble (before a switch to a
+    /// forked copy).
+    pub fn discard_pristine(&self) {
+        discard_if_preamble_only(&self.path());
+    }
+}
+
+/// Remove `path` when every record is a session-start bookkeeping entry (no message ever landed).
+fn discard_if_preamble_only(path: &Path) {
+    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let only_preamble = text.lines().filter(|l| !l.trim().is_empty()).all(|l| {
+        serde_json::from_str::<Value>(l).ok().is_some_and(|v| {
+            matches!(
+                v.get("type").and_then(Value::as_str),
+                Some("session" | "custom" | "model_change" | "thinking_level_change" | "service_tier_change" | "session_init")
+            )
+        })
+    });
+    if only_preamble {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Create a session file for this run and append every completed message.
@@ -327,7 +371,23 @@ pub async fn attach_with(agent: &Agent, cwd: &Path, ephemeral: bool) -> Result<P
             None,
         )
     };
-    let writer = SessionWriter::create(&dir, &cwd.display().to_string(), &session_id, &now_iso())?;
+    attach_in(agent, cwd, &dir, scratch, session_id).await
+}
+
+/// [`attach_with`] against an explicit session dir (`scratch` = the dir to remove on drop
+/// for an ephemeral session).
+///
+/// # Errors
+/// Fails when the session file cannot be created.
+pub(crate) async fn attach_in(
+    agent: &Agent,
+    cwd: &Path,
+    dir: &Path,
+    scratch: Option<PathBuf>,
+    session_id: String,
+) -> Result<Persistence> {
+    let ephemeral = scratch.is_some();
+    let writer = SessionWriter::create(dir, &cwd.display().to_string(), &session_id, &now_iso())?;
     let mut writer = writer;
     if let Some(e) = crate::context::session_entry() {
         let _ = writer.append_entry("custom", e, &now_iso());

@@ -3,12 +3,15 @@
 //! Provides [`dispatch_extra`] and [`extra_catalog`] for commands that extend
 //! the core text-mode builtin set. Commands with runtime backing in `omp-rs`
 //! execute their real handlers (`/new`, `/fork`, `/queue`); commands whose
-//! subsystems are not ported headlessly (clipboards, OAuth login flows, TUI
+//! subsystems are not ported headlessly (clipboards, TUI
 //! dashboards) emit an informative notice explaining what is missing and return
 //! [`Outcome::Handled`].
 
 use std::path::Path;
 use std::sync::Arc;
+
+mod login;
+pub use login::mark_interactive_ui;
 
 use serde_json::{json, Value};
 
@@ -306,7 +309,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                     agent_invoked: false,
                 });
             }
-            match rt.load_session(&path, None).await {
+            match rt.fork_session(&path, None).await {
                 Ok(()) => {
                     rt.publish_session_file();
                     output(
@@ -414,19 +417,13 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
             })
         }
         "login" => {
-            output(
-                rt,
-                "/login: OAuth flow is not ported to omp-rs; use `omp login` from the TS CLI",
-            );
+            login::login_command(rt, args).await;
             Some(Outcome::Handled {
                 agent_invoked: false,
             })
         }
         "logout" => {
-            output(
-                rt,
-                "/logout: OAuth flow is not ported to omp-rs; use `omp logout` from the TS CLI",
-            );
+            login::logout_command(rt, args).await;
             Some(Outcome::Handled {
                 agent_invoked: false,
             })
