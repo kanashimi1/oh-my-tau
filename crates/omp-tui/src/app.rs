@@ -304,6 +304,10 @@ pub struct App {
     title_label: String,
     /// Turn-settle notifications (chrome P0 notifications).
     notify: NotifySink,
+    /// Session name once known (TS `sessionManager.getSessionName()`): the notification title.
+    session_name: Option<String>,
+    /// `stopReason` of the turn's last assistant message (TS reads `agent_end.messages`).
+    last_stop_reason: Option<String>,
     /// Raw journal entries (`message_end` frames normalized to
     /// `{type:"message",id,parentId,message}`) feeding the rewind column /
     /// tree overlay; reset when a session is resumed.
@@ -366,6 +370,8 @@ impl App {
             title,
             title_label: dir,
             notify: NotifySink::default(),
+            session_name: None,
+            last_stop_reason: None,
             journal: Vec::new(),
             session_sources: Vec::new(),
             appearance: crate::theme::Appearance::Dark,
@@ -736,6 +742,7 @@ impl App {
     pub fn apply_event(&mut self, event: &AppEvent) {
         match &event {
             AppEvent::AgentStart => {
+                self.last_stop_reason = None;
                 self.status.streaming = true;
                 self.pending_submission = false;
                 self.title.set_state(TitleState::Working, Some(&self.title_label));
@@ -751,24 +758,29 @@ impl App {
             AppEvent::SessionSettled => {
                 self.status.streaming = false;
                 self.title.set_state(TitleState::Idle, Some(&self.title_label));
-                self.notify_turn_settled(None);
+                self.notify_turn_settled(false);
             }
             AppEvent::PromptResult { success, error, .. } => {
                 if !success {
                     // The transcript row is drawn by `messages.apply` below;
                     // here only the title and the settle notification.
-                    let error = error.clone();
                     self.title.set_state(TitleState::Idle, Some(&self.title_label));
-                    self.notify_turn_settled(error);
+                    self.notify_turn_settled(true);
                 }
             }
             AppEvent::MessageEnd(frame) => {
+                let message = frame.get("message");
+                if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant") {
+                    self.last_stop_reason =
+                        message.and_then(|m| m.get("stopReason")).and_then(Value::as_str).map(str::to_owned);
+                }
                 if let Some(entry) = journal_entry(frame) {
                     self.journal.push(entry);
                 }
             }
             AppEvent::SessionNameChanged(name) => {
                 self.title_label = name.clone();
+                self.session_name = Some(name.clone()).filter(|n| !n.is_empty());
                 // Re-emit the current state with the new label.
                 let state = if self.status.streaming {
                     TitleState::Working
@@ -860,6 +872,7 @@ impl App {
                 self.messages.rebuild(messages);
                 if let Some(name) = name {
                     self.title_label.clone_from(name);
+                    self.session_name = Some(name.clone()).filter(|n| !n.is_empty());
                 }
                 self.title.set_state(TitleState::Idle, Some(&self.title_label));
             }
@@ -869,16 +882,22 @@ impl App {
         self.messages.apply(event);
     }
 
-    /// Fire the turn-settle notification (chrome P0): error body on failure,
-    /// plain completion on success. Delivery honors `PI_NO_DESKTOP_NOTIFY`
-    /// inside [`send_notification`].
-    fn notify_turn_settled(&mut self, error: Option<String>) {
-        let body = match error {
-            Some(e) => format!("Turn failed: {e}"),
-            None => "Turn complete".to_owned(),
+    /// Turn-settle notifications (TS `sendErrorNotification` / `sendCompletionNotification`).
+    /// A failed turn (an errored assistant message or a failed prompt) rings `request` with
+    /// "Stopped with error" when `error.notify` is on (default off); any other non-aborted
+    /// settle rings `done` with "Complete" unless `completion.notify` is off. The title is the
+    /// session name, else `omp`.
+    fn notify_turn_settled(&mut self, failed: bool) {
+        let settings = omp_settings::Settings::load(&self.cwd);
+        let on = |id: &str| settings.get_string(id).as_deref() != Some("off");
+        let Some((body, kind)) =
+            turn_notification(failed, self.last_stop_reason.as_deref(), on("error.notify"), on("completion.notify"))
+        else {
+            return;
         };
         let mut n = TerminalNotification::body(body);
-        n.title = Some("omp".to_owned());
+        n.title = Some(self.session_name.clone().unwrap_or_else(|| "omp".to_owned()));
+        n.kind = kind;
         self.notify.fire(&n);
     }
 
@@ -2037,6 +2056,23 @@ fn now_millis() -> u64 {
 /// Normalize a `message_end` frame into the journal shape the session tree
 /// expects (`{type:"message", id, parentId?, message}`; omp-session `tree`
 /// helpers read exactly these fields). `None` when the message has no id.
+/// Which notification a settled turn raises (TS `sendErrorNotification` /
+/// `sendCompletionNotification`): an errored turn rings `request` ("Stopped with error") only
+/// when `error.notify` is on; any other turn that was not aborted rings `done` ("Complete")
+/// unless `completion.notify` is off.
+fn turn_notification(
+    failed: bool,
+    stop_reason: Option<&str>,
+    error_notify: bool,
+    completion_notify: bool,
+) -> Option<(&'static str, crate::chrome::notify::NotifyKind)> {
+    use crate::chrome::notify::NotifyKind;
+    if failed || stop_reason == Some("error") {
+        return error_notify.then_some(("Stopped with error", NotifyKind::Error));
+    }
+    (completion_notify && stop_reason != Some("aborted")).then_some(("Complete", NotifyKind::Completion))
+}
+
 fn journal_entry(frame: &Value) -> Option<Value> {
     let message = frame.get("message")?;
     let id = message.get("id").and_then(Value::as_str)?;
@@ -3356,8 +3392,21 @@ mod tests {
         app.apply_event(&AppEvent::SessionSettled);
         assert_eq!(
             app.notify_sink().record(),
-            vec!["omp: Turn complete".to_string()]
+            vec!["omp: Complete".to_string()]
         );
+    }
+
+    #[test]
+    fn turn_notification_follows_ts_gates() {
+        use crate::chrome::notify::NotifyKind;
+        assert_eq!(turn_notification(false, Some("stop"), false, true), Some(("Complete", NotifyKind::Completion)));
+        assert_eq!(turn_notification(false, None, false, true), Some(("Complete", NotifyKind::Completion)));
+        assert_eq!(turn_notification(false, Some("aborted"), true, true), None);
+        assert_eq!(turn_notification(false, Some("stop"), true, false), None);
+        assert_eq!(turn_notification(false, Some("error"), true, true), Some(("Stopped with error", NotifyKind::Error)));
+        assert_eq!(turn_notification(true, None, true, true), Some(("Stopped with error", NotifyKind::Error)));
+        // error.notify defaults to off: an errored turn is silent, and never reads as "Complete".
+        assert_eq!(turn_notification(true, Some("error"), false, true), None);
     }
 
     #[test]
@@ -3369,10 +3418,8 @@ mod tests {
             error: Some("kaboom".into()),
             frame: json!({"type":"prompt_result","status":"error","error":{"message":"kaboom"}}),
         });
-        assert_eq!(
-            app.notify_sink().record(),
-            vec!["omp: Turn failed: kaboom".to_string()]
-        );
+        // `error.notify` defaults to off (TS): silent, and never a "Complete" toast.
+        assert!(app.notify_sink().record().iter().all(|l| l != "omp: Complete"));
     }
 
     #[test]
@@ -3384,7 +3431,7 @@ mod tests {
             sink_got.lock().push(n.body.clone());
         }));
         app.apply_event(&AppEvent::SessionSettled);
-        assert_eq!(got.lock().clone(), vec!["Turn complete".to_string()]);
+        assert_eq!(got.lock().clone(), vec!["Complete".to_string()]);
     }
 
     // ---- keymap engine on the input path ---------------------------------

@@ -16,6 +16,7 @@ pub mod agent;
 pub mod discovery;
 pub mod envelope;
 pub mod params;
+pub mod rubric;
 pub mod runner;
 pub mod schema;
 

@@ -8,6 +8,8 @@ Models (request `model`, `mock/` prefix optional):
   tools     -> bash, write, grep, glob calls (one per request), then "E2E-TOOLS-DONE"
   slow      -> 150 words in chunks of E2E_SLOW_WORDS (default 1), paced E2E_SLOW_MS apart (default
                40 ms), then "SLOW-DONE"; for the streaming-cadence probe
+  retry     -> HTTP 503 on the first request after GET /reset, else like `text`
+  full      -> like `text` but reports a context-filling usage (auto-compaction trigger)
   fail      -> HTTP 400 with an OpenAI-style error body "E2E-PROVIDER-FAILURE"
                when the last user message contains FAIL_MARKER, else like `text`
 Every request is appended to E2E_MOCK_LOG (JSON lines) when set.
@@ -26,6 +28,8 @@ READ_FILE = os.environ.get("E2E_READ_FILE", "e2e-read-me.txt")
 LOG = os.environ.get("E2E_MOCK_LOG", "")
 SLOW_S = float(os.environ.get("E2E_SLOW_MS", "40")) / 1000
 _lock = threading.Lock()
+RETRY = {"n": 0}
+REQS: list[dict] = []  # every /chat/completions request body, in arrival order (in-process scenarios)
 
 
 def log(event: dict) -> None:
@@ -121,8 +125,12 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
+        if self.path.rstrip("/").endswith("/reset"):
+            RETRY["n"] = 0
+            self._json(200, {"ok": True})
+            return
         if self.path.rstrip("/").endswith("/models"):
-            ids = ["text", "tool", "tools", "guards", "fail"]
+            ids = ["text", "tool", "tools", "guards", "fail", "retry", "full", "devrole"]
             self._json(200, {"object": "list", "data": [
                 {"id": f"mock/{i}", "object": "model", "created": 0, "owned_by": "mock"} for i in ids]})
         else:
@@ -138,9 +146,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.path.endswith("/chat/completions"):
             self._json(404, {"error": "not found"})
             return
+        REQS.append(body)
         if model.removeprefix("mock/") == "fail" and FAIL_MARKER in last_user_text(body.get("messages", [])):
             self._json(400, {"error": {"message": "E2E-PROVIDER-FAILURE", "type": "invalid_request_error",
                                        "code": "e2e_failure"}})
+            return
+        if model.removeprefix("mock/") == "retry" and body.get("tools") and RETRY["n"] < 1:  # the tool-less title request must not eat the failure
+            RETRY["n"] += 1
+            self._json(503, {"error": {"message": "E2E-OVERLOADED", "type": "server_error", "code": "overloaded"}})
             return
         deltas, finish = script(model, body.get("messages", []))
         cid = f"chatcmpl-{time.time_ns()}"
@@ -149,7 +162,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = {"id": cid, "object": "chat.completion.chunk", "created": 0, "model": model,
                        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}]}
             if finish_reason:
-                payload["usage"] = {"prompt_tokens": 100, "completion_tokens": 7, "total_tokens": 107}
+                prompt = 7500 if model.removeprefix("mock/") == "full" else 100
+                payload["usage"] = {"prompt_tokens": prompt, "completion_tokens": 7, "total_tokens": prompt + 7}
             return f"data: {json.dumps(payload)}\n\n".encode()
 
         self.send_response(200)

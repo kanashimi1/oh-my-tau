@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import json
 import os
 import re
 import shutil
@@ -43,10 +44,12 @@ def make_home(root: Path, port: int, extra_config: str = "") -> dict[str, str]:
         f"    baseUrl: http://127.0.0.1:{port}/v1\n"
         "    apiKey: e2e-not-a-secret\n"
         "    api: openai-completions\n"
+        "    compat:\n      supportsDeveloperRole: true\n"
         "    models:\n"
-        + "".join(f"      - id: {m}\n        name: e2e {m}\n        contextWindow: 128000\n        maxTokens: 4096\n"
+        + "".join(f"      - id: {m}\n        name: e2e {m}\n        contextWindow: {8000 if m == 'full' else 128000}\n        maxTokens: 4096\n"
                   + ("        reasoning: true\n" if m == "think" else "")
-                  for m in ("text", "tool", "tools", "guards", "fail", "think"))
+
+                  for m in ("text", "tool", "tools", "guards", "fail", "think", "retry", "full", "devrole"))
     )
     # No onboarding wizard / update probe / changelog: they would cover the
     # chat screen on a fresh HOME (TS omp; omp-rs ignores unknown keys).
@@ -665,6 +668,44 @@ def sc_extensions(t: Term, r: Result) -> None:
     r.check("ext: session_switch on /new", "session_switch ui=true reason=new" in text)
 
 
+def sc_ext_developer(t: Term, r: Result) -> None:
+    """A `before_agent_start` message reaches the provider as role `developer` (TS converts custom
+    messages to developer; the model's compat allows the role)."""
+    ready(t)
+    start = len(mock_provider.REQS)
+    submit(t, "developer wire prompt")
+    r.check("ext developer: reply shown", t.wait_for(r"E2E-REPLY-\d", 90))
+    t.settle(1.0, 30)
+    msgs = [m for body in mock_provider.REQS[start:] for m in body.get("messages", [])]
+    hit = [m for m in msgs if "probe injected" in json.dumps(m.get("content"))]
+    r.notes.append(f"wire roles of the injected message: {[m.get('role') for m in hit]}")
+    r.check("ext developer: injected message sent as role developer", bool(hit) and all(m.get("role") == "developer" for m in hit))
+
+
+EXT_APPROVE_CONFIG = "tools:\n  approvalMode: always-ask\n"
+
+
+def sc_approval(t: Term, r: Result) -> None:
+    """`tools.approvalMode: always-ask`: write/exec tool calls prompt (Approve / Deny dialog), read tools run."""
+    ready(t)
+    submit(t, "use the tools")
+    r.check("approval: bash prompt shown", t.wait_for(r"Allow tool: bash", 60, in_transcript=False))
+    r.screens["approval-bash"] = t.text()
+    r.check("approval: bash prompt names the command", "echo E2E-BASH-OUT" in t.text())
+    r.check("approval: Approve / Deny offered", "Approve" in t.text() and "Deny" in t.text())
+    t.key("enter")  # Approve
+    r.check("approval: write prompt shown", t.wait_for(r"Allow tool: write", 60, in_transcript=False))
+    r.screens["approval-write"] = t.text()
+    t.key("down")
+    t.key("enter")  # Deny
+    r.check("approval: final reply after deny", t.wait_for(r"E2E-TOOLS-DONE", 90))
+    t.settle(1.5, 30)
+    tr = t.transcript()
+    r.screens["approval-turn"] = tr
+    r.check("approval: approved bash ran", "E2E-BASH-OUT" in tr)
+    r.check("approval: denied write reported", "Tool call denied by user: write" in tr)
+
+
 def seed_history(agent: Path) -> None:
     """A history.db (TS schema) of distinct prompts that repeat two words, so
     both clients' n-gram engines learn `refactor` and `parser` from it."""
@@ -736,6 +777,8 @@ SCENARIOS = {
     "composer_shape": ("text", sc_composer_shape),
     "effort": ("think", sc_effort),
     "extensions": ("text", sc_extensions, "", {}, prepare_ext_probe),
+    "ext_developer": ("devrole", sc_ext_developer, "", {}, prepare_ext_probe),
+    "approval": ("tools", sc_approval, EXT_APPROVE_CONFIG),
     "word_complete": ("text", sc_word_complete, "", {}, seed_history),
     "paste_small": ("text", sc_paste_small),
     "paste_large": ("text", sc_paste_large),

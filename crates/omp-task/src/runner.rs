@@ -203,6 +203,9 @@ fn apply_child_policy(command: &mut Command, spec: &TaskSpec) {
     command
         .env(SUBAGENT_NO_TITLE.0, SUBAGENT_NO_TITLE.1)
         .env(TASK_DEPTH_ENV, spec.depth.to_string());
+    // TS `executor.ts`: the parent task's approval is the authorization boundary, so subagents run
+    // unattended in yolo mode (user `tools.approval` policies still apply).
+    command.arg("--approval-mode").arg("yolo");
     command.args(&spec.extra_args);
 }
 

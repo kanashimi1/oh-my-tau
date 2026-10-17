@@ -102,19 +102,26 @@ pub(crate) fn convert_messages<'a>(
         // results: bridge the gap with a synthetic assistant message.
         if compat.requires_assistant_after_tool_result
             && last_role == Some("toolResult")
-            && matches!(msg, Message::User(_))
+            && matches!(msg, Message::User(_) | Message::Developer(_))
         {
             params.push(processed_tool_results());
         }
 
         match msg {
-            Message::User(user) => match &user.content {
+            Message::User(user) | Message::Developer(user) => match &user.content {
                 UserMessageContent::Text(text) => {
                     if text.trim().is_empty() {
                         index += 1;
                         continue;
                     }
-                    params.push(obj([("role", Wire::str("user")), ("content", Wire::str(text))]));
+                    // TS: only plain-string content keeps the `developer` role (and only when the host
+                    // supports it); array content is always sent as `user`.
+                    let role = if matches!(msg, Message::Developer(_)) && compat.supports_developer_role {
+                        "developer"
+                    } else {
+                        "user"
+                    };
+                    params.push(obj([("role", Wire::str(role)), ("content", Wire::str(text))]));
                 }
                 UserMessageContent::Blocks(blocks) => {
                     let mut content_blocks: Vec<Wire<'a>> = Vec::new();

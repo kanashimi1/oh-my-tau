@@ -207,6 +207,7 @@ impl MessageExt for Message {
     fn role(&self) -> &'static str {
         match self {
             Message::User(_) => "user",
+            Message::Developer(_) => "developer",
             Message::Assistant(_) => "assistant",
             Message::ToolResult(_) => "toolResult",
         }

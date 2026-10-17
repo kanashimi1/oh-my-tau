@@ -45,12 +45,37 @@ fn join_additional_context<'a>(values: impl Iterator<Item = &'a String>) -> Opti
     (!kept.is_empty()).then(|| kept.join("\n\n"))
 }
 
+/// Per-call preparations in source order: those computed before the assistant `message_end`
+/// (TS `prepareToolCallDispatch`), else prepared on demand.
+struct PreparedCalls(std::vec::IntoIter<Preparation>);
+
+impl PreparedCalls {
+    fn new(prepared: Vec<Preparation>, calls: usize) -> Option<Self> {
+        (prepared.len() == calls).then(|| Self(prepared.into_iter()))
+    }
+}
+
+async fn preparation_for(
+    pre: &mut Option<PreparedCalls>,
+    current_context: &AgentContext,
+    assistant_message: &AssistantMessage,
+    tool_call: &ToolCall,
+    config: &AgentLoopConfig,
+    signal: Option<&AbortSignal>,
+) -> Preparation {
+    match pre.as_mut().and_then(|p| p.0.next()) {
+        Some(p) => p,
+        None => prepare_tool_call(current_context, assistant_message, tool_call, config, signal).await,
+    }
+}
+
 pub(crate) async fn execute_tool_calls(
     current_context: &AgentContext,
     assistant_message: &AssistantMessage,
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
+    prepared: Vec<Preparation>,
 ) -> anyhow::Result<ExecutedToolCallBatch> {
     let tool_calls = assistant_message
         .tool_calls()
@@ -65,6 +90,7 @@ pub(crate) async fn execute_tool_calls(
             .and_then(|tool| tool.execution_mode())
             == Some(ToolExecutionMode::Sequential)
     });
+    let prepared = PreparedCalls::new(prepared, tool_calls.len());
     if config.tool_execution == ToolExecutionMode::Sequential || has_sequential_tool_call {
         execute_tool_calls_sequential(
             current_context,
@@ -73,6 +99,7 @@ pub(crate) async fn execute_tool_calls(
             config,
             signal,
             emit,
+            prepared,
         )
         .await
     } else {
@@ -83,6 +110,7 @@ pub(crate) async fn execute_tool_calls(
             config,
             signal,
             emit,
+            prepared,
         )
         .await
     }
@@ -95,6 +123,7 @@ async fn execute_tool_calls_sequential(
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
+    mut pre: Option<PreparedCalls>,
 ) -> anyhow::Result<ExecutedToolCallBatch> {
     let mut finalized_calls: Vec<FinalizedToolCallOutcome> = Vec::new();
     let mut messages: Vec<ToolResultMessage> = Vec::new();
@@ -111,7 +140,8 @@ async fn execute_tool_calls_sequential(
         })
         .await?;
 
-        let preparation = prepare_tool_call(
+        let preparation = preparation_for(
+            &mut pre,
             current_context,
             assistant_message,
             tool_call,
@@ -171,6 +201,7 @@ async fn execute_tool_calls_parallel(
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
+    mut pre: Option<PreparedCalls>,
 ) -> anyhow::Result<ExecutedToolCallBatch> {
     enum TaskOrOutcome {
         Task(tokio::task::JoinHandle<anyhow::Result<FinalizedToolCallOutcome>>),
@@ -190,7 +221,8 @@ async fn execute_tool_calls_parallel(
         })
         .await?;
 
-        let preparation = prepare_tool_call(
+        let preparation = preparation_for(
+            &mut pre,
             current_context,
             assistant_message,
             tool_call,

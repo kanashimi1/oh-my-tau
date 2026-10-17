@@ -45,17 +45,22 @@ fn downgrade_unsupported_images(messages: &[Message], model: &Model) -> Vec<Mess
     messages
         .iter()
         .map(|msg| match msg {
-            Message::User(user) => {
+            Message::User(user) | Message::Developer(user) => {
                 let UserMessageContent::Blocks(blocks) = &user.content else {
                     return msg.clone();
                 };
-                Message::User(UserMessage {
+                let downgraded = UserMessage {
                     content: UserMessageContent::Blocks(replace_images_with_placeholder(
                         blocks,
                         NON_VISION_USER_IMAGE_PLACEHOLDER,
                     )),
                     ..user.clone()
-                })
+                };
+                if matches!(msg, Message::Developer(_)) {
+                    Message::Developer(downgraded)
+                } else {
+                    Message::User(downgraded)
+                }
             }
             Message::ToolResult(tool_result) => Message::ToolResult(ToolResultMessage {
                 content: replace_images_with_placeholder(
@@ -103,7 +108,7 @@ pub fn transform_messages_with_options(
     let transformed: Vec<Message> = image_aware
         .iter()
         .map(|msg| match msg {
-            Message::User(_) => msg.clone(),
+            Message::User(_) | Message::Developer(_) => msg.clone(),
             Message::ToolResult(tool_result) => {
                 if let Some(normalized) = tool_call_id_map.get(&tool_result.tool_call_id) {
                     if normalized != &tool_result.tool_call_id {
@@ -252,7 +257,7 @@ pub fn transform_messages_with_options(
                 existing_tool_result_ids.insert(tool_result.tool_call_id.clone());
                 result.push(msg);
             }
-            Message::User(_) => {
+            Message::User(_) | Message::Developer(_) => {
                 insert_synthetic_tool_results(
                     &mut result,
                     &mut pending_tool_calls,

@@ -323,6 +323,8 @@ struct InputOptions {
     reasoning_for_all_turns: bool,
     reasoning_for_tool_calls: bool,
     system_role: Option<&'static str>,
+    /// Azure: a plain-string developer message goes out as a string `content` (TS `developerStringContent`).
+    developer_string_content: bool,
 }
 
 /// TS `buildResponsesInput` for the shapes this runtime carries.
@@ -340,9 +342,13 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
     let mut msg_index = 0usize;
     for msg in &transformed {
         match msg {
-            Message::User(user) => {
+            Message::User(user) | Message::Developer(user) => {
                 let Some(content) = convert_input_content(&user.content, supports_images, o.supports_original) else {
                     continue;
+                };
+                let content = match (&msg, &user.content) {
+                    (Message::Developer(_), UserMessageContent::Text(text)) if o.developer_string_content => json!(text),
+                    _ => json!(content),
                 };
                 messages.push(json!({ "role": "user", "content": content }));
             }
@@ -837,6 +843,7 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
                     reasoning_for_all_turns: enabled && view.is("requiresReasoningContentForAllAssistantTurns") && can_reconstruct,
                     reasoning_for_tool_calls: enabled && view.is("requiresReasoningContentForToolCalls") && can_reconstruct,
                     system_role: None,
+                    developer_string_content: false,
                 },
             );
             let prompts: Vec<&String> = context.system_prompt.iter().filter(|p| !p.trim().is_empty()).collect();
@@ -917,6 +924,7 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
                     reasoning_for_all_turns: false,
                     reasoning_for_tool_calls: false,
                     system_role: Some(system_role),
+                    developer_string_content: true,
                 },
             );
             params.insert("model".into(), json!(deployment));

@@ -171,6 +171,53 @@ impl JobRegistry {
         v
     }
 
+    /// TS `AgentSession.getAsyncJobSnapshot`: running jobs, the newest settled ones and the
+    /// (always idle here) delivery queue, as the extension ctx reads it.
+    #[must_use]
+    pub fn async_snapshot(&self, recent_limit: usize) -> serde_json::Value {
+        use serde_json::json;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis()),
+        )
+        .unwrap_or(0);
+        let start_of = |j: &Job| now - i64::try_from(j.started.elapsed().as_millis()).unwrap_or(0);
+        let label = |c: &str| {
+            if c.chars().count() > 120 {
+                format!("{}...", c.chars().take(117).collect::<String>())
+            } else {
+                c.to_owned()
+            }
+        };
+        let jobs = self.sorted();
+        let running: Vec<_> = jobs
+            .iter()
+            .filter(|(_, j)| j.status == JobStatus::Running)
+            .map(|(id, j)| {
+                json!({"id": id, "type": "bash", "status": "running", "label": label(&j.command),
+                       "command": j.command, "startTime": start_of(j)})
+            })
+            .collect();
+        let mut settled: Vec<_> = jobs.iter().filter(|(_, j)| j.status != JobStatus::Running).collect();
+        settled.sort_by_key(|(_, j)| std::cmp::Reverse(start_of(j)));
+        let recent: Vec<_> = settled
+            .into_iter()
+            .take(recent_limit)
+            .map(|(id, j)| {
+                let start = start_of(j);
+                let mut row = json!({"id": id, "type": "bash", "status": j.status.as_str(),
+                    "label": label(&j.command), "command": j.command, "startTime": start});
+                if let Some(d) = j.ended {
+                    row["endTime"] = json!(start + i64::try_from(d.as_millis()).unwrap_or(0));
+                }
+                row
+            })
+            .collect();
+        json!({"running": running, "recent": recent,
+               "delivery": {"queued": 0, "delivering": false, "pendingJobIds": []}})
+    }
+
     /// Register a service under its name (omp start with `replace: true`: a
     /// second start under the same name kills the previous instance).
     pub fn insert_service(&self, service: Service) -> Arc<Mutex<Service>> {

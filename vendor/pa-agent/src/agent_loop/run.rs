@@ -12,12 +12,12 @@ use crate::types::{
 use super::abort::{
     poll_messages_unless_aborted, race_with_abort, settle_post_turn, PostTurnResult,
 };
-use super::response::stream_assistant_response;
+use super::response::{prepare_llm_messages, stream_assistant_response};
 use super::tools::execute_tool_calls;
 use super::{AgentEventSink, AgentLoopConfig};
 
 /// Copy revised arguments from finalized calls onto the assistant message's tool calls.
-fn bake_revised_arguments(message: &mut AssistantMessage, finalized: &[ToolCall]) -> bool {
+pub(super) fn bake_revised_arguments(message: &mut AssistantMessage, finalized: &[ToolCall]) -> bool {
     let mut changed = false;
     for content in &mut message.content {
         if let AssistantContent::ToolCall(call) = content {
@@ -54,7 +54,10 @@ pub(crate) async fn run_loop(
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
     stream_fn: Option<&StreamFn>,
+    initial_messages: Vec<AgentMessage>,
 ) -> anyhow::Result<()> {
+    // Messages whose events open the next turn (the run's prompts, then queued/steering messages).
+    let mut turn_messages = initial_messages;
     let mut first_turn = true;
     let mut last_turn: Option<ShouldStopAfterTurnContext> = None;
     let mut pending_messages =
@@ -77,29 +80,36 @@ pub(crate) async fn run_loop(
 
         while has_more_tool_calls || !pending_messages.is_empty() {
             crate::abort::throw_if_aborted_signal(signal)?;
-            if first_turn {
-                first_turn = false;
-            } else {
-                emit(AgentEvent::TurnStart).await?;
+            first_turn = false;
+
+            // TS order: queued messages join the context, the provider request is prepared
+            // (`context` event), then the turn opens (`turn_start`) and its input messages emit.
+            for message in pending_messages.drain(..) {
+                current_context.messages.push(message.clone());
+                new_messages.push(message.clone());
+                turn_messages.push(message);
+            }
+            let llm_messages = prepare_llm_messages(current_context, config, signal).await;
+            emit(AgentEvent::TurnStart).await?;
+            for message in turn_messages.drain(..) {
+                emit(AgentEvent::MessageStart {
+                    message: message.clone(),
+                })
+                .await?;
+                emit(AgentEvent::MessageEnd { message }).await?;
             }
 
-            if !pending_messages.is_empty() {
-                for message in pending_messages.drain(..) {
-                    emit(AgentEvent::MessageStart {
-                        message: message.clone(),
-                    })
-                    .await?;
-                    emit(AgentEvent::MessageEnd {
-                        message: message.clone(),
-                    })
-                    .await?;
-                    current_context.messages.push(message.clone());
-                    new_messages.push(message);
-                }
-            }
-
-            let mut message =
-                stream_assistant_response(current_context, config, signal, emit, stream_fn).await?;
+            let mut prepared_calls = Vec::new();
+            let mut message = stream_assistant_response(
+                current_context,
+                config,
+                signal,
+                emit,
+                stream_fn,
+                llm_messages,
+                &mut prepared_calls,
+            )
+            .await?;
             new_messages.push(AgentMessage::from(message.clone()));
 
             if message.stop_reason == StopReason::Error
@@ -129,8 +139,15 @@ pub(crate) async fn run_loop(
                 // Tool hooks/executions each snapshot the context: freeze first so
                 // they share the history instead of copying it.
                 current_context.messages.freeze();
-                let executed_tool_batch =
-                    execute_tool_calls(current_context, &message, config, signal, emit).await?;
+                let executed_tool_batch = execute_tool_calls(
+                    current_context,
+                    &message,
+                    config,
+                    signal,
+                    emit,
+                    prepared_calls,
+                )
+                .await?;
                 // A `beforeToolCall` revision is baked into the assistant message itself so
                 // history (and the next provider request) holds a single version of the call.
                 if bake_revised_arguments(&mut message, &executed_tool_batch.tool_calls) {

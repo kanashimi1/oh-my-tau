@@ -307,6 +307,16 @@ mod tests {
     }
 
     #[test]
+    fn error_card_shows_the_flattened_result_text() {
+        let call = json!({"name":"write","arguments":{"path":"a.txt","content":"x"}});
+        let result = json!({"isError": true, "text": "Tool call denied by user: write"});
+        let theme = Theme::default();
+        let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
+        assert!(text.contains("Tool call denied by user: write"), "got:\n{text}");
+        assert!(!text.contains("Unknown error"), "got:\n{text}");
+    }
+
+    #[test]
     fn long_file_collapses_with_more_lines_hint() {
         let content = "a\nb\nc\nd\ne\nf\ng\nh\n";
         let call = json!({"name":"write","arguments":{"path":"out.txt","content":content}});

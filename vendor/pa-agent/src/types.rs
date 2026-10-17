@@ -211,6 +211,19 @@ pub struct UserMessage {
     pub timestamp: i64,
 }
 
+/// TS `DeveloperMessage`: only ever produced by a host's `convert_to_llm` (extension-injected custom
+/// messages, hook/continuation messages) and sent to the provider as `role: "developer"`. It never
+/// deserializes from session JSON (`skip_deserializing` on the variant): persisted developer/custom
+/// rows stay [`CustomAgentMessage`]s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeveloperMessage {
+    pub content: UserContent,
+    pub timestamp: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum UserContent {
@@ -377,6 +390,8 @@ impl ToolResultContent {
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum Message {
     User(UserMessage),
+    #[serde(skip_deserializing)]
+    Developer(DeveloperMessage),
     Assistant(AssistantMessage),
     ToolResult(ToolResultMessage),
 }
@@ -405,6 +420,7 @@ impl AgentMessage {
     pub fn role(&self) -> &str {
         match self {
             AgentMessage::Standard(Message::User(_)) => "user",
+            AgentMessage::Standard(Message::Developer(_)) => "developer",
             AgentMessage::Standard(Message::Assistant(_)) => "assistant",
             AgentMessage::Standard(Message::ToolResult(_)) => "toolResult",
             AgentMessage::Custom(custom) => custom.role.as_str(),
@@ -421,6 +437,7 @@ impl AgentMessage {
     pub fn timestamp(&self) -> i64 {
         match self {
             AgentMessage::Standard(Message::User(m)) => m.timestamp,
+            AgentMessage::Standard(Message::Developer(m)) => m.timestamp,
             AgentMessage::Standard(Message::Assistant(m)) => m.timestamp,
             AgentMessage::Standard(Message::ToolResult(m)) => m.timestamp,
             // Custom messages carry arbitrary payloads; a missing/absent

@@ -482,6 +482,20 @@ fn tree(entries: &[Value]) -> Vec<Value> {
 }
 
 async fn run_bash(rt: &Arc<Runtime>, command: &str) -> CmdResult {
+    // TS `executeBash`: a `user_bash` handler's result replaces the execution.
+    if let Some(host) = rt.ext_host().filter(|h| h.has_handlers("user_bash")) {
+        match host
+            .emit_user_bash(command.to_owned(), false, rt.cwd.display().to_string(), None)
+            .await
+        {
+            Ok(outcome) => {
+                if let Some(result) = outcome.result {
+                    return ok(result);
+                }
+            }
+            Err(e) => eprintln!("omp-rs: extension user_bash: {e:#}"),
+        }
+    }
     let controller = AbortController::new();
     let signal = controller.signal();
     rt.set(|s| s.running_bash(Some(controller)));
@@ -1311,6 +1325,9 @@ pub async fn run_with(
     let agent = Arc::new(agent);
     RUNTIME_TX.with(|slot| *slot.borrow_mut() = Some(tx.clone()));
     let rt = Runtime::start(agent.clone(), target, cwd, persist, tx.clone()).await;
+    if let Some(gate) = crate::approval::Gate::get() {
+        gate.bind(&rt, true);
+    }
 
     // The `ask` tool gets the RPC dialog transport (TS: rich `askDialog` once
     // the client sends `set_ask_dialog`, `select`/`editor` frames otherwise).

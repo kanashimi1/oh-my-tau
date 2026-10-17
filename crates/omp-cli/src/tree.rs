@@ -15,6 +15,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
+use omp_ext::lifecycle::BranchReason;
+
 use crate::persist;
 use crate::runtime::{CmdError, CmdResult, Runtime};
 
@@ -26,6 +28,33 @@ fn err(message: impl Into<String>) -> CmdError {
 fn entries(rt: &Runtime) -> Result<Vec<Value>, CmdError> {
     rt.entries()
         .map_err(|e| err(format!("cannot read session entries: {e:#}")))
+}
+
+/// `session_before_branch` (TS `#branchIntoNewSession`): `true` when an extension cancelled.
+async fn branch_cancelled(rt: &Runtime, reason: BranchReason, entry_id: &str) -> bool {
+    let Some(host) = rt.ext_host().filter(|h| h.has_handlers("session_before_branch")) else {
+        return false;
+    };
+    match host.emit_session_before_branch(reason, entry_id.to_owned(), None).await {
+        Ok(outcome) => outcome.cancel,
+        Err(e) => {
+            eprintln!("omp-rs: extension session_before_branch: {e:#}");
+            false
+        }
+    }
+}
+
+/// `session_branch`, after the new file is bound.
+async fn announce_branch(rt: &Runtime, reason: BranchReason, previous: Option<String>) {
+    if let Some(host) = rt.ext_host() {
+        if let Err(e) = host.emit_session_branch(reason, previous, None).await {
+            eprintln!("omp-rs: extension session_branch: {e:#}");
+        }
+    }
+}
+
+fn previous_file(rt: &Runtime) -> Option<String> {
+    rt.persist_file().map(|p| p.to_string_lossy().into_owned())
 }
 
 fn find_entry<'a>(entries: &'a [Value], id: &str) -> Option<&'a Value> {
@@ -168,10 +197,15 @@ pub async fn branch(rt: &Arc<Runtime>, entry_id: &str) -> CmdResult {
     }
     let text = omp_session::tree::user_message_text(selected).unwrap_or_default();
     let parent = selected.get("parentId").and_then(Value::as_str);
+    if branch_cancelled(rt, BranchReason::Branch, entry_id).await {
+        return Ok(Some(json!({"text": text, "cancelled": true})));
+    }
+    let previous = previous_file(rt);
     let file = write_branched_session(rt, parent)?;
-    rt.load_session(&file, None)
+    rt.load_branched_session(&file)
         .await
         .map_err(|e| err(format!("branch: {e:#}")))?;
+    announce_branch(rt, BranchReason::Branch, previous).await;
     Ok(Some(json!({"text": text, "cancelled": false})))
 }
 
@@ -186,10 +220,15 @@ pub async fn fork(rt: &Arc<Runtime>, entry_id: Option<&str>) -> CmdResult {
                 .map_err(|e| err(format!("fork: {e:#}")))?;
         }
         Some(id) => {
+            if branch_cancelled(rt, BranchReason::Fork, id).await {
+                return Ok(Some(json!({"cancelled": true})));
+            }
+            let previous = previous_file(rt);
             let file = write_branched_session(rt, Some(id))?;
-            rt.load_session(&file, None)
+            rt.load_branched_session(&file)
                 .await
                 .map_err(|e| err(format!("fork: {e:#}")))?;
+            announce_branch(rt, BranchReason::Fork, previous).await;
         }
     }
     Ok(Some(json!({"cancelled": false})))
@@ -226,9 +265,6 @@ pub async fn navigate_tree(
     }
 
     let wants_summary = options.get("summarize").and_then(Value::as_bool) == Some(true);
-    if wants_summary && summarize.is_none() {
-        return Err(err("No model available for summarization"));
-    }
 
     // Where the leaf lands: user-authored targets rewind PAST themselves (null = root).
     let new_leaf = if target_is_user {
@@ -240,12 +276,42 @@ pub async fn navigate_tree(
         Some(target.to_owned())
     };
 
+    let (abandoned, common_ancestor) = match old_leaf.as_deref() {
+        Some(old) => omp_session::tree::entries_for_branch_summary(&session, old, target),
+        None => (Vec::new(), None),
+    };
+    // `session_before_tree`: a handler may cancel, or supply the summary itself.
     let mut summary_result: Option<(String, Value)> = None;
-    if wants_summary {
-        let (abandoned, _) = match old_leaf.as_deref() {
-            Some(old) => omp_session::tree::entries_for_branch_summary(&session, old, target),
-            None => (Vec::new(), None),
-        };
+    let mut from_extension = false;
+    if let Some(host) = rt.ext_host().filter(|h| h.has_handlers("session_before_tree")) {
+        let preparation = json!({
+            "targetId": target,
+            "oldLeafId": old_leaf,
+            "commonAncestorId": common_ancestor,
+            "entriesToSummarize": abandoned,
+            "userWantsSummary": wants_summary,
+        });
+        match host.emit_session_before_tree(preparation, None).await {
+            Ok(outcome) => {
+                if outcome.cancel {
+                    return Ok(Some(json!({"cancelled": true})));
+                }
+                if let (true, Some(text)) = (
+                    wants_summary,
+                    outcome.result.pointer("/summary/summary").and_then(Value::as_str),
+                ) {
+                    let details = outcome.result.pointer("/summary/details").cloned().unwrap_or(Value::Null);
+                    summary_result = Some((text.to_owned(), details));
+                    from_extension = true;
+                }
+            }
+            Err(e) => eprintln!("omp-rs: extension session_before_tree: {e:#}"),
+        }
+    }
+    if wants_summary && summary_result.is_none() && summarize.is_none() {
+        return Err(err("No model available for summarization"));
+    }
+    if wants_summary && summary_result.is_none() {
         if !abandoned.is_empty() {
             let request = omp_compact::SummaryRequest {
                 kind: omp_compact::SummaryKind::BranchSummary,
@@ -313,6 +379,25 @@ pub async fn navigate_tree(
     rt.agent.abort();
     rt.agent.wait_for_idle().await;
     rt.agent.set_messages(messages).await;
+
+    if let Some(host) = rt.ext_host().filter(|h| h.has_handlers("session_tree")) {
+        let new_leaf_id = summary_entry
+            .as_ref()
+            .and_then(|e| e.get("id").and_then(Value::as_str).map(str::to_owned))
+            .or_else(|| new_leaf.clone());
+        if let Err(e) = host
+            .emit_session_tree(
+                new_leaf_id,
+                old_leaf.clone(),
+                summary_entry.clone(),
+                summary_entry.is_some().then_some(from_extension),
+                None,
+            )
+            .await
+        {
+            eprintln!("omp-rs: extension session_tree: {e:#}");
+        }
+    }
 
     let mut data = json!({"cancelled": false});
     if target_is_user {

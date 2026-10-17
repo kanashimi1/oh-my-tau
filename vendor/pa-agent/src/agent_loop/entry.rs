@@ -26,18 +26,9 @@ pub async fn run_agent_loop(
     current_context.messages.extend(prompts.iter().cloned());
 
     emit(AgentEvent::AgentStart).await?;
-    emit(AgentEvent::TurnStart).await?;
-    for prompt in &prompts {
-        emit(AgentEvent::MessageStart {
-            message: prompt.clone(),
-        })
-        .await?;
-        emit(AgentEvent::MessageEnd {
-            message: prompt.clone(),
-        })
-        .await?;
-    }
 
+    // `turn_start` and the prompts' message events are emitted by the loop, after the provider
+    // request is prepared (TS order).
     run_loop(
         &mut current_context,
         &mut new_messages,
@@ -45,6 +36,7 @@ pub async fn run_agent_loop(
         signal,
         &emit,
         stream_fn,
+        prompts,
     )
     .await?;
     Ok(new_messages)
@@ -79,7 +71,6 @@ pub async fn run_agent_loop_continue(
     let mut current_context = context;
 
     emit(AgentEvent::AgentStart).await?;
-    emit(AgentEvent::TurnStart).await?;
 
     run_loop(
         &mut current_context,
@@ -88,6 +79,7 @@ pub async fn run_agent_loop_continue(
         signal,
         &emit,
         stream_fn,
+        Vec::new(),
     )
     .await?;
     Ok(new_messages)

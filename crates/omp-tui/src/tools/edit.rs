@@ -209,6 +209,11 @@ pub(crate) fn frame_card(
 /// Concatenated text blocks of a tool-result message.
 #[must_use]
 pub(crate) fn result_text(result: &Value) -> String {
+    // The chat card hands the flattened text as `{"text": ...}` (a settled toolResult message
+    // carries `content` blocks instead).
+    if let Some(text) = result.get("text").and_then(Value::as_str) {
+        return text.to_owned();
+    }
     let Some(blocks) = result.get("content").and_then(Value::as_array) else {
         return String::new();
     };

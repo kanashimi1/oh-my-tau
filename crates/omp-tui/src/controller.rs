@@ -357,7 +357,7 @@ mod tests {
 
         // Turn settle fires the notification (recorded by the sink).
         assert!(apply_frame(&mut app, &json!({"type":"session_settled"}), t0));
-        assert_eq!(app.notify_sink().record(), vec!["omp: Turn complete".to_string()]);
+        assert_eq!(app.notify_sink().record(), vec!["omp: Complete".to_string()]);
     }
 
     #[test]
@@ -371,10 +371,8 @@ mod tests {
             t0,
         );
         app.pump_events(t0);
-        assert_eq!(
-            app.notify_sink().record(),
-            vec!["omp: Turn failed: boom".to_string()]
-        );
+        // `error.notify` defaults to off (TS): silent, and never a "Complete" toast.
+        assert!(app.notify_sink().record().iter().all(|l| l != "omp: Complete"));
         let _port = FakePort::default();
     }
 

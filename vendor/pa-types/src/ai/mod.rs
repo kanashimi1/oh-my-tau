@@ -468,6 +468,9 @@ pub enum ErrorStopReason {
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum Message {
     User(UserMessage),
+    /// TS `DeveloperMessage`: same shape as a user message, `role: "developer"` (extension-injected
+    /// custom messages, file mentions, hook messages).
+    Developer(UserMessage),
     Assistant(AssistantMessage),
     ToolResult(ToolResultMessage),
 }

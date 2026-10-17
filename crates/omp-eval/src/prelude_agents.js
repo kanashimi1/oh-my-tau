@@ -479,13 +479,37 @@
     hard: async () => Boolean((await budgetSnap()).hard),
   };
 
-  // RLM sub-call: `llm_query(prompt, { context, model, depth })` -> text. Default model is
-  // the session's smol role; memoized and budgeted host-side (errors reject the promise).
+  // RLM sub-call: `llm_query(prompt, { context, model, depth, frame, pointers, k, select, on_low,
+  // low, escalate_model })` -> text. Default model is the session's smol role; memoized and
+  // budgeted host-side (errors reject the promise).
+  // Frame (TTIC): the sub-call sees only prompt + context + pointers, never the parent
+  // transcript (`frame: "only"` is the default and the only accepted value).
+  // SRLM sampling: `k > 1` or `select` ('consistency' | 'uncertainty') draws k memo-aware,
+  // budgeted samples and resolves to a String object (use `String(x)` / `+ ""` for a primitive)
+  // carrying `.agreement`, `.candidates`, `.k`, `.low`, `.expanded`, `.escalated`, `.raw`;
+  // `on_low` ('return' | 'expand' | 'escalate') applies when agreement < `low` (default 0.5).
   const llm_query = async (prompt, opts, ...rest) => {
-    const options = optionsArg("llm_query", opts, rest, ["context", "model", "depth"], "{ context, model, depth }");
+    const options = { ...optionsArg(
+      "llm_query",
+      opts,
+      rest,
+      ["context", "model", "depth", "frame", "pointers", "k", "select", "on_low", "low", "escalate_model"],
+      "{ context, model, depth, frame, pointers, k, select, on_low, low, escalate_model }",
+    ) };
+    const sampled = (options.k !== undefined && Number(options.k) !== 1) || options.select != null;
+    if (options.frame === "only") delete options.frame;
     const result = await hostCall("__llm_query__", { prompt, ...options });
     if (!result || typeof result.text !== "string") throw new Error("llm_query() did not return text");
-    return result.text;
+    if (!sampled) return result.text;
+    return Object.assign(new String(result.text), {
+      agreement: result.agreement,
+      candidates: result.candidates ?? [],
+      k: result.k,
+      low: Boolean(result.low),
+      expanded: Boolean(result.expanded),
+      escalated: result.escalated ?? null,
+      raw: result,
+    });
   };
   const llm_stats = async () => await hostCall("__rlm_stats__", {});
   const rlm_context = async () => await hostCall("__rlm_context__", {});

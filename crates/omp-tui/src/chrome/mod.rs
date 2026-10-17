@@ -15,7 +15,7 @@ pub mod welcome;
 pub use banner::Banner;
 pub use hud::{HudEntry, HudProgress};
 pub use notify::{
-    format_notification, notification_to_line, send_notification, NotifyProtocol,
+    format_notification, notification_to_line, send_notification, NotifyKind, NotifyProtocol,
     TerminalNotification, Urgency,
 };
 pub use osc11::{parse_osc11_response, probe_osc11_background};

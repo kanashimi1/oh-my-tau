@@ -61,6 +61,9 @@ pub async fn run(
         })
         .collect();
     let rt = Runtime::start(Arc::new(agent), target, cwd.clone(), persist, tx).await;
+    if let Some(gate) = crate::approval::Gate::get() {
+        gate.bind(&rt, true);
+    }
     if let Some(path) = resume {
         rt.load_session(&path, None).await?;
         rt.publish_session_file();

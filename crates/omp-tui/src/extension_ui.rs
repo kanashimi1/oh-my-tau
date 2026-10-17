@@ -947,8 +947,20 @@ impl ExtensionUi {
                 lines.push(Line::styled(format!("{buffer}▏"), text));
             }
             DialogKind::Select {
-                options, cursor, ..
+                title,
+                options,
+                cursor,
             } => {
+                // The header shows the first title line; the rest (e.g. the tool approval
+                // prompt's `Command: ...` details) is body text above the options.
+                let detail: Vec<&str> = title.lines().skip(1).collect();
+                if !detail.is_empty() {
+                    lines.push(Line::default());
+                    for line in detail {
+                        lines.push(Line::styled(line.to_string(), text));
+                    }
+                    lines.push(Line::default());
+                }
                 for (i, option) in options.iter().enumerate() {
                     let marker = if i == *cursor {
                         theme.glyph("prompt")

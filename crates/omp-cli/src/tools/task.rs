@@ -74,6 +74,19 @@ Children start blank; parent IRC steers immediately; large payloads via `local:/
 /// (`"not": {}` — model selectors are per-item only).
 #[must_use]
 pub fn schema() -> Value {
+    let mut schema = base_schema();
+    // SERA rubric is advertised only when opted in (`OMP_TASK_RUBRIC=1`), so the
+    // default tool schema (and request body) stays byte-identical to TS.
+    if std::env::var("OMP_TASK_RUBRIC").is_ok_and(|v| v == "1") {
+        schema["properties"]["tasks"]["items"]["properties"]["rubric"] = json!({
+            "type": "array",
+            "items": {"type": "object", "properties": {"criterion": {"type": "string"}, "weight": {"type": "number"}}, "required": ["criterion"]},
+        });
+    }
+    schema
+}
+
+fn base_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -225,6 +238,9 @@ struct WireTaskItem {
     /// Per-item tool allow-list override.
     #[serde(default)]
     tools: Option<Vec<String>>,
+    /// SERA rubric `[{criterion, weight}]`, frozen before the child spawns (opt-in).
+    #[serde(default)]
+    rubric: Option<Value>,
 }
 
 fn default_agent() -> String {
@@ -326,6 +342,9 @@ struct WireParams {
     /// Flat-shape model selector (TS validates the call-level selector too).
     #[serde(default)]
     model: Option<Value>,
+    /// Flat-shape SERA rubric (see [`WireTaskItem::rubric`]).
+    #[serde(default)]
+    rubric: Option<Value>,
 }
 
 /// Execute a `task` call: validate, spawn every item, render envelopes.
@@ -334,6 +353,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         serde_json::from_value(args).map_err(|e| anyhow::anyhow!("invalid task params: {e}"))?;
 
     let mut specs = Vec::new();
+    let mut rubrics: Vec<Option<omp_task::rubric::FrozenRubric>> = Vec::new();
     if params.tasks.is_empty() {
         let Some(task_text) = params
             .task
@@ -365,6 +385,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
             params.context.as_deref(),
             env.cwd.clone(),
         ));
+        rubrics.push(super::rlm_combinators::freeze_wire(params.rubric.as_ref()).map_err(|e| anyhow::anyhow!("task: rubric: {e}"))?);
     } else {
         if params.task.is_some() {
             bail!(
@@ -377,6 +398,10 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
                 params.context.as_deref(),
                 env.cwd.clone(),
             ));
+            rubrics.push(
+                super::rlm_combinators::freeze_wire(item.rubric.as_ref())
+                    .map_err(|e| anyhow::anyhow!("task: rubric: {e}"))?,
+            );
         }
     }
 
@@ -394,8 +419,54 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
 
     let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omp-rs"));
     let runner = TaskRunner::new(binary, MAX_CONCURRENCY);
-    let outputs = runner.spawn_all(specs).await;
-    merge_outputs(&outputs)
+    if rubrics.iter().all(Option::is_none) {
+        let outputs = runner.spawn_all(specs).await;
+        return merge_outputs(&outputs);
+    }
+    // SERA: rubrics were frozen above, before any child spawned; score afterwards.
+    let scorer = super::rlm_combinators::SessionScorer::new(pa_agent::abort::AbortSignal::never());
+    let scored = omp_task::rubric::spawn_all_with_rubrics(&runner, specs.into_iter().zip(rubrics).collect(), &scorer).await;
+    let (outputs, records): (Vec<_>, Vec<_>) = scored.into_iter().unzip();
+    let mut result = merge_outputs(&outputs)?;
+    attach_rubric_scores(&mut result, &outputs, &records);
+    Ok(result)
+}
+
+/// Append the SERA verdicts to the merged result: one `rubric:` line per
+/// scored child in the text and a `details.rubric` array.
+fn attach_rubric_scores(
+    result: &mut AgentToolResult,
+    outputs: &[omp_task::runner::RunOutput],
+    records: &[Option<Result<omp_task::rubric::RubricRecord, String>>],
+) {
+    use std::fmt::Write as _;
+    let mut lines = String::new();
+    let mut rows = Vec::new();
+    for (out, rec) in outputs.iter().zip(records) {
+        match rec {
+            Some(Ok(r)) => {
+                let _ = writeln!(
+                    lines,
+                    "rubric {} [{}]: score={:.3} gate={} per_criterion={:?}",
+                    out.id, r.rubric_id, r.score, r.gate, r.per_criterion
+                );
+                rows.push(json!(r));
+            }
+            Some(Err(e)) => {
+                let _ = writeln!(lines, "rubric {}: scoring failed: {e}", out.id);
+                rows.push(json!({"run_id": out.id, "error": e}));
+            }
+            None => {}
+        }
+    }
+    if let Some(first) = result.content.first_mut() {
+        if let pa_agent::types::ToolResultContent::Text(t) = first {
+            let _ = write!(t.text, "\n\n{}", lines.trim_end());
+        }
+    }
+    if let Some(details) = result.details.as_object_mut() {
+        details.insert("rubric".into(), Value::Array(rows));
+    }
 }
 
 /// Merge per-child outputs into the tool result (TS `mergeSyncPayloads`):
@@ -602,6 +673,28 @@ mod tests {
         );
         let ok = merge_outputs(&[run_output("a", RunStatus::Completed)]).expect("ok");
         assert_eq!(ok.is_error, None);
+    }
+
+    #[test]
+    fn rubric_is_parsed_per_item_and_scores_are_attached() {
+        let item = wire_item(json!({
+            "task": "x", "solutionSpace": ".",
+            "rubric": [{"criterion": "correct", "weight": 3}, {"criterion": "short", "weight": 1}],
+        }));
+        let frozen = super::super::rlm_combinators::freeze_wire(item.rubric.as_ref()).unwrap().unwrap();
+        assert!((frozen.criteria[0].weight - 0.75).abs() < 1e-12);
+        let none = wire_item(json!({"task": "x", "solutionSpace": "."}));
+        assert!(super::super::rlm_combinators::freeze_wire(none.rubric.as_ref()).unwrap().is_none());
+        let bad = wire_item(json!({"task": "x", "solutionSpace": ".", "rubric": []}));
+        assert!(super::super::rlm_combinators::freeze_wire(bad.rubric.as_ref()).is_err());
+
+        let out = run_output("agent-1", RunStatus::Completed);
+        let rec = omp_task::rubric::RubricRecord::from_verdict("task", &frozen, "agent-1", 1, 1, true, vec![1.0, 0.0], Some(1.0)).unwrap();
+        let mut result = merge_outputs(std::slice::from_ref(&out)).unwrap();
+        attach_rubric_scores(&mut result, std::slice::from_ref(&out), &[Some(Ok(rec))]);
+        assert_eq!(result.details["rubric"][0]["score"], 0.75);
+        let pa_agent::types::ToolResultContent::Text(t) = &result.content[0] else { panic!("text") };
+        assert!(t.text.contains("score=0.750"), "{}", t.text);
     }
 
     #[test]

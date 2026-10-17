@@ -11,7 +11,71 @@ use crate::types::{
 };
 
 use super::abort::{create_aborted_assistant_message, race_with_abort};
+use super::tools::Preparation;
 use super::{AgentEventSink, AgentLoopConfig};
+
+/// Provider-bound messages for one request (TS `prepareProviderCall`): `transformContext`
+/// (the extension `context` event) then `convertToLlm`. The loop runs it before opening the turn.
+pub(crate) async fn prepare_llm_messages(
+    context: &AgentContext,
+    config: &AgentLoopConfig,
+    signal: Option<&AbortSignal>,
+) -> anyhow::Result<Vec<crate::types::Message>> {
+    crate::abort::throw_if_aborted_signal(signal)?;
+    // The hooks own their input: one materialization per request, which
+    // `convert_to_llm` consumes into the provider messages.
+    let mut messages: Vec<AgentMessage> = context.messages.to_vec();
+    if let Some(transform) = config.transform_context.as_ref() {
+        messages = race_with_abort(
+            transform(messages, signal.cloned().unwrap_or_default()),
+            signal,
+        )
+        .await?;
+    }
+    race_with_abort((config.convert_to_llm)(messages), signal).await
+}
+
+/// TS `prepareToolCallDispatch`: once the final assistant message is known (before its
+/// `message_end`), every tool call is validated and runs its `beforeToolCall` hook (the extension
+/// `tool_call` event). A hook argument revision is baked into the message so every consumer
+/// snapshots a single version of the call.
+async fn prepare_dispatch(
+    message: &mut AssistantMessage,
+    context: &mut AgentContext,
+    config: &AgentLoopConfig,
+    signal: Option<&AbortSignal>,
+) -> Vec<Preparation> {
+    if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
+        return Vec::new();
+    }
+    let calls: Vec<crate::types::ToolCall> = message.tool_calls().into_iter().cloned().collect();
+    if calls.is_empty() {
+        return Vec::new();
+    }
+    // Hooks and tool executions each snapshot the context: freeze first so they share the history.
+    context.messages.freeze();
+    let for_hooks = for_turn_end(message.clone());
+    let mut prepared = Vec::with_capacity(calls.len());
+    for call in &calls {
+        prepared.push(
+            super::tool_call::prepare_tool_call(context, &for_hooks, call, config, signal).await,
+        );
+    }
+    let finalized: Vec<crate::types::ToolCall> = calls
+        .iter()
+        .zip(&prepared)
+        .map(|(call, p)| match p {
+            Preparation::Prepared(p) => p.tool_call.clone(),
+            Preparation::Immediate { .. } => call.clone(),
+        })
+        .collect();
+    if super::run::bake_revised_arguments(message, &finalized) {
+        if let Some(last) = context.messages.last_mut() {
+            *last = AgentMessage::from(message.clone());
+        }
+    }
+    prepared
+}
 
 pub(crate) async fn stream_assistant_response(
     context: &mut AgentContext,
@@ -19,6 +83,8 @@ pub(crate) async fn stream_assistant_response(
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
     stream_fn: Option<&StreamFn>,
+    llm_messages: anyhow::Result<Vec<crate::types::Message>>,
+    prepared_calls: &mut Vec<Preparation>,
 ) -> anyhow::Result<AssistantMessage> {
     let mut partial_event: Option<Arc<crate::stream::AssistantMessageEvent>> = None;
     let mut added_partial = false;
@@ -61,6 +127,8 @@ pub(crate) async fn stream_assistant_response(
         signal,
         emit,
         stream_fn,
+        llm_messages,
+        prepared_calls,
         &mut partial_event,
         &mut added_partial,
         &mut timing,
@@ -87,24 +155,15 @@ async fn stream_assistant_response_inner(
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
     stream_fn: Option<&StreamFn>,
+    llm_messages: anyhow::Result<Vec<crate::types::Message>>,
+    prepared_calls: &mut Vec<Preparation>,
     partial_event: &mut Option<Arc<crate::stream::AssistantMessageEvent>>,
     added_partial: &mut bool,
     timing: &mut Timing,
 ) -> anyhow::Result<AssistantMessage> {
     crate::abort::throw_if_aborted_signal(signal)?;
 
-    // The hooks own their input: one materialization per request, which
-    // `convert_to_llm` consumes into the provider messages.
-    let mut messages: Vec<AgentMessage> = context.messages.to_vec();
-    if let Some(transform) = config.transform_context.as_ref() {
-        messages = race_with_abort(
-            transform(messages, signal.cloned().unwrap_or_default()),
-            signal,
-        )
-        .await?;
-    }
-
-    let llm_messages = race_with_abort((config.convert_to_llm)(messages), signal).await?;
+    let llm_messages = llm_messages?;
 
     let stream_fn = stream_fn.ok_or_else(|| {
         anyhow::anyhow!(
@@ -227,6 +286,7 @@ async fn stream_assistant_response_inner(
                         .messages
                         .push(AgentMessage::from(final_message.clone()));
                 }
+                *prepared_calls = prepare_dispatch(&mut final_message, context, config, signal).await;
                 if !*added_partial {
                     emit(AgentEvent::MessageStart {
                         message: AgentMessage::from(final_message.clone()),
@@ -253,6 +313,9 @@ async fn stream_assistant_response_inner(
         context
             .messages
             .push(AgentMessage::from(final_message.clone()));
+    }
+    *prepared_calls = prepare_dispatch(&mut final_message, context, config, signal).await;
+    if !*added_partial {
         emit(AgentEvent::MessageStart {
             message: AgentMessage::from(final_message.clone()),
         })

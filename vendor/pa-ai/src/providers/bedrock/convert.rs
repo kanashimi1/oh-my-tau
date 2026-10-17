@@ -165,7 +165,7 @@ pub fn convert_messages(
     let mut i = 0usize;
     while i < transformed.len() {
         match &transformed[i] {
-            Message::User(user) => {
+            Message::User(user) | Message::Developer(user) => {
                 let content_blocks: Vec<Value> = match &user.content {
                     UserMessageContent::Text(text) => {
                         vec![json!({ "text": sanitize_surrogates(text) })]

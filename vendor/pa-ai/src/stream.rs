@@ -34,7 +34,7 @@ fn estimated_input_tokens(context: &Context) -> u64 {
     }
     for message in &context.messages {
         chars = chars.saturating_add(match message {
-            crate::types::Message::User(user) => match &user.content {
+            crate::types::Message::User(user) | crate::types::Message::Developer(user) => match &user.content {
                 crate::types::UserMessageContent::Text(text) => text.chars().count() as u64,
                 crate::types::UserMessageContent::Blocks(blocks) => {
                     user_content_block_chars(blocks)

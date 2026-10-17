@@ -86,7 +86,15 @@ pub struct State {
     pub edits_total: usize,
     /// Chars of the largest not-yet-offloaded old user/tool-result block (what `rlm_offload` would move).
     pub largest_block_chars: usize,
+    /// User turns since that block was added.
+    pub block_age_turns: usize,
+    /// % of the block's distinctive tokens (ids/numbers) the model itself has written since (text or tool args).
+    pub block_restated_pct: usize,
+    /// User turns since the model last wrote >= 2 of the block's distinctive tokens (age when never).
+    pub block_since_ref_turns: usize,
     pub offloads_total: usize,
+    /// Tool calls whose arguments open an offloaded block file.
+    pub offload_reads: usize,
     pub cache_hit_pct: usize,
     /// Last 300 chars of the newest user message, whitespace-collapsed.
     pub excerpt: String,
@@ -100,9 +108,11 @@ impl State {
         let since = self.steps_since_edit.map_or_else(|| "none".to_owned(), |n| n.to_string());
         format!(
             "context controller\nstep: {}\nhistory_tokens: {}\nslots_chars: {} ({} slots)\nsteps_since_last_edit: {}\n\
-             edits_so_far: {}\nlargest_old_block_chars: {}\noffloads_so_far: {}\ncache_hit_pct: {}\nnext_instruction: {}",
+             edits_so_far: {}\nlargest_old_block_chars: {}\nblock_age_turns: {}\nblock_restated_pct: {}\n\
+             block_since_ref_turns: {}\noffloads_so_far: {}\noffload_reads: {}\ncache_hit_pct: {}\nnext_instruction: {}",
             self.step, self.history_tokens, self.slots_chars, self.slots_count, since, self.edits_total,
-            self.largest_block_chars, self.offloads_total, self.cache_hit_pct, self.excerpt
+            self.largest_block_chars, self.block_age_turns, self.block_restated_pct, self.block_since_ref_turns,
+            self.offloads_total, self.offload_reads, self.cache_hit_pct, self.excerpt
         )
     }
 }
@@ -128,6 +138,12 @@ pub struct Policy {
     pub rule_every: usize,
     /// `rule`: offload the largest old block once it is at least this many chars (0 = never).
     pub rule_offload_chars: usize,
+    /// `rule`: do not offload a block younger than this many user turns.
+    pub rule_offload_age: usize,
+    /// `rule`: do not offload before the model restated at least this % of the block's ids.
+    pub rule_offload_restated: usize,
+    /// `rule`: do not offload while the whole history is below this many tokens (0 = no gate).
+    pub rule_offload_hist: usize,
     pub schedule: Vec<u8>,
     laya_paths: Option<LayaPaths>,
     laya: Mutex<Option<Result<omp_judge::policy::PolicyScorer, ()>>>,
@@ -149,6 +165,9 @@ impl Policy {
             rule_tokens: 8_000,
             rule_every: 0,
             rule_offload_chars: 0,
+            rule_offload_age: 0,
+            rule_offload_restated: 0,
+            rule_offload_hist: 0,
             schedule: Vec::new(),
             laya_paths: None,
             laya: Mutex::new(None),
@@ -189,6 +208,11 @@ impl Policy {
         p.rule_every = num("OMP_CONTEXT_POLICY_RULE_EVERY", "context.policy.ruleEvery", p.rule_every);
         p.rule_offload_chars =
             num("OMP_CONTEXT_POLICY_RULE_OFFLOAD", "context.policy.ruleOffloadChars", p.rule_offload_chars);
+        p.rule_offload_age = num("OMP_CONTEXT_POLICY_RULE_AGE", "context.policy.ruleOffloadAge", p.rule_offload_age);
+        p.rule_offload_restated =
+            num("OMP_CONTEXT_POLICY_RULE_RESTATED", "context.policy.ruleOffloadRestated", p.rule_offload_restated);
+        p.rule_offload_hist =
+            num("OMP_CONTEXT_POLICY_RULE_OFFLOAD_HIST", "context.policy.ruleOffloadHist", p.rule_offload_hist);
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
             .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
             .unwrap_or_default();
@@ -256,7 +280,12 @@ impl Policy {
         let action = match self.kind {
             Kind::Always => Action::ClmEdit,
             Kind::Rule => {
-                if self.rule_offload_chars > 0 && st.largest_block_chars >= self.rule_offload_chars.max(OFFLOAD_MIN_CHARS) {
+                if self.rule_offload_chars > 0
+                    && st.largest_block_chars >= self.rule_offload_chars.max(OFFLOAD_MIN_CHARS)
+                    && st.block_age_turns >= self.rule_offload_age
+                    && st.block_restated_pct >= self.rule_offload_restated
+                    && st.history_tokens >= self.rule_offload_hist
+                {
                     Action::RlmOffload
                 } else if self.rule(st) {
                     Action::ClmEdit
@@ -327,6 +356,26 @@ mod tests {
     }
 
     #[test]
+    fn rule_offload_waits_for_age_and_restatement() {
+        let mut p = Policy::new(Kind::Rule);
+        p.rule_offload_chars = 5000;
+        p.rule_offload_age = 3;
+        p.rule_offload_restated = 60;
+        let mut s = st(5, 100, None);
+        s.largest_block_chars = 9000;
+        s.block_age_turns = 2;
+        s.block_restated_pct = 90;
+        assert_eq!(p.decide(&s).0, Action::Noop, "too young");
+        s.step = 6;
+        s.block_age_turns = 3;
+        s.block_restated_pct = 59;
+        assert_eq!(p.decide(&s).0, Action::Noop, "not restated enough");
+        s.step = 7;
+        s.block_restated_pct = 60;
+        assert_eq!(p.decide(&s).0, Action::RlmOffload);
+    }
+
+    #[test]
     fn decide_is_memoized_per_turn_and_schedule_replays() {
         let mut p = Policy::new(Kind::Schedule);
         p.schedule = vec![0, 1, 2];
@@ -355,11 +404,13 @@ mod tests {
     #[test]
     fn render_is_stable_and_excerpt_is_tail() {
         let s = State { step: 3, history_tokens: 1234, slots_chars: 56, slots_count: 2, steps_since_edit: None,
-                        edits_total: 0, largest_block_chars: 7, offloads_total: 0, cache_hit_pct: 91, excerpt: excerpt_of("a\n  b") };
+                        edits_total: 0, largest_block_chars: 7, block_age_turns: 4, block_restated_pct: 50,
+                        block_since_ref_turns: 2, offloads_total: 0, offload_reads: 1, cache_hit_pct: 91, excerpt: excerpt_of("a\n  b") };
         assert_eq!(
             s.render(),
             "context controller\nstep: 3\nhistory_tokens: 1234\nslots_chars: 56 (2 slots)\nsteps_since_last_edit: none\n\
-             edits_so_far: 0\nlargest_old_block_chars: 7\noffloads_so_far: 0\ncache_hit_pct: 91\nnext_instruction: a b"
+             edits_so_far: 0\nlargest_old_block_chars: 7\nblock_age_turns: 4\nblock_restated_pct: 50\n\
+             block_since_ref_turns: 2\noffloads_so_far: 0\noffload_reads: 1\ncache_hit_pct: 91\nnext_instruction: a b"
         );
         let long = "x".repeat(500) + "END";
         let e = excerpt_of(&long);

@@ -153,6 +153,10 @@ pub struct Runtime {
     on_session_name: Mutex<Option<NameListener>>,
     /// `session_before_switch` gate.
     switch_gate: Mutex<Option<SwitchGate>>,
+    ext_host: Mutex<Option<Arc<omp_ext::ExtHost>>>,
+    /// Ordered feed of the maintenance frames extensions subscribe to (`auto_compaction_*`,
+    /// `auto_retry_*`): these session events are the rpc frames themselves.
+    ext_frames: Mutex<Option<tokio::sync::mpsc::UnboundedSender<Value>>>,
     /// Sinks every completed session switch (`new_session`/`load_session`/fork):
     /// the ext bridge's ctx refresh + `session_switch` event.
     on_session_switch: Mutex<Option<SwitchListener>>,
@@ -439,6 +443,8 @@ impl Runtime {
             on_session_name: Mutex::new(None),
             on_session_switch: Mutex::new(None),
             switch_gate: Mutex::new(None),
+            ext_host: Mutex::new(None),
+            ext_frames: Mutex::new(None),
             before_start: Mutex::new(None),
             compaction_hooks: Mutex::new(None),
             herdr,
@@ -463,6 +469,14 @@ impl Runtime {
     }
 
     pub fn send(&self, frame: Value) {
+        if matches!(
+            frame["type"].as_str(),
+            Some("auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end")
+        ) {
+            if let Some(tx) = lock(&self.ext_frames).as_ref() {
+                let _ = tx.send(frame.clone());
+            }
+        }
         let _ = self.out.send(frame);
     }
 
@@ -1529,6 +1543,10 @@ impl Runtime {
         self.persist.file()
     }
 
+    pub fn persist_file(&self) -> Option<PathBuf> {
+        self.persist.file()
+    }
+
     pub fn session_file(&self) -> PathBuf {
         self.persist.path()
     }
@@ -1712,6 +1730,7 @@ impl Runtime {
                 for m in messages.iter() {
                     match m {
                         AgentMessage::Standard(Message::User(_)) => user += 1,
+                        AgentMessage::Standard(Message::Developer(_)) => {}
                         AgentMessage::Standard(Message::Assistant(a)) => {
                             assistant += 1;
                             calls += a.tool_calls().len() as u64;
@@ -1804,13 +1823,20 @@ impl Runtime {
     /// journal and new entries are appended to the SAME file, chained to the active branch tip.
     /// `dir` is unused (the file keeps its own directory).
     pub async fn load_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
-        self.load_session_as(path, dir, false).await
+        self.load_session_as(path, dir, false, false).await
+    }
+
+    /// Bind a freshly written branch file (TS `#branchIntoNewSession`): no `session_before_switch`
+    /// gate and no `session_switch` event — the caller emits `session_before_branch` /
+    /// `session_branch` itself; the listener only refreshes the extension ctx (`"branch"`).
+    pub async fn load_branched_session(&self, path: &Path) -> Result<()> {
+        self.load_session_as(path, None, false, true).await
     }
 
     /// Fork `path` (TS `SessionManager.forkFrom`): the continuation is written to a fresh
     /// session file in `dir` seeded with the loaded history.
     pub async fn fork_session(&self, path: &Path, dir: Option<&Path>) -> Result<()> {
-        self.load_session_as(path, dir, true).await
+        self.load_session_as(path, dir, true, false).await
     }
 
     /// Shared body of [`Self::load_session`] / [`Self::fork_session`].
@@ -1820,8 +1846,10 @@ impl Runtime {
     /// `SessionEntryIndex.pathTo(leaf)`, root → leaf — is materialized, parsed
     /// on demand from the raw lines. Non-compacted sessions never build the
     /// entry DOM at all: messages deserialize straight from the line text.
-    async fn load_session_as(&self, path: &Path, dir: Option<&Path>, fork: bool) -> Result<()> {
-        self.check_switch(if fork { "fork" } else { "resume" }, Some(path.to_path_buf())).await?;
+    async fn load_session_as(&self, path: &Path, dir: Option<&Path>, fork: bool, branched: bool) -> Result<()> {
+        if !branched {
+            self.check_switch(if fork { "fork" } else { "resume" }, Some(path.to_path_buf())).await?;
+        }
         let previous = self.persist.file();
         self.cancel_retry_and_wait().await;
         // `--no-session` must never write into the resumed file: seed a scratch copy instead.
@@ -1967,7 +1995,16 @@ impl Runtime {
         self.herdr_session("resume");
         lock(&self.prompts).open.clear();
         self.restore_title_from(&index);
-        self.notify_session_switch(if fork { "fork" } else { "resume" }, previous);
+        self.notify_session_switch(
+            if branched {
+                "branch"
+            } else if fork {
+                "fork"
+            } else {
+                "resume"
+            },
+            previous,
+        );
         Ok(())
     }
 
@@ -1979,6 +2016,34 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+
+    /// The extension host, once attached: `session_before_branch` / `session_before_tree` and the
+    /// other session events the runtime forwards itself.
+    #[must_use]
+    pub fn ext_host(&self) -> Option<Arc<omp_ext::ExtHost>> {
+        lock(&self.ext_host).clone()
+    }
+
+    /// Attach the extension host (see [`Self::ext_host`]).
+    pub fn set_ext_host(&self, host: Option<Arc<omp_ext::ExtHost>>) {
+        let feed = host.clone().map(|host| {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+            tokio::spawn(async move {
+                while let Some(frame) = rx.recv().await {
+                    let Some(ty) = frame["type"].as_str().map(str::to_owned) else { continue };
+                    if !host.has_handlers(&ty) {
+                        continue;
+                    }
+                    if let Err(e) = host.emit(frame, None).await {
+                        eprintln!("omp-rs: extension {ty}: {e:#}");
+                    }
+                }
+            });
+            tx
+        });
+        *lock(&self.ext_frames) = feed;
+        *lock(&self.ext_host) = host;
     }
 
     /// Install the `session_before_switch` gate.

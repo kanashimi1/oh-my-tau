@@ -35,6 +35,7 @@ const RUNNER_JS: &str = include_str!("runner.js");
 const PRELUDE_SOURCES: &[(&str, &str)] = &[
     ("prelude.js", include_str!("prelude.js")),
     ("prelude_agents.js", include_str!("prelude_agents.js")),
+    ("prelude_combinators.js", include_str!("prelude_combinators.js")),
     ("prelude_txn.js", include_str!("prelude_txn.js")),
 ];
 

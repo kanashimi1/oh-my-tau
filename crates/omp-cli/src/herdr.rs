@@ -111,12 +111,21 @@ impl Herdr {
 
     /// Report this integration from the process environment, or `None`
     /// outside Herdr (or when the env contract is incomplete).
-    pub fn detect() -> Option<Arc<Self>> {
+    pub fn detect() -> Option<Arc<Herdr>> {
         if std::env::var_os("HERDR_ENV").as_deref() != Some(std::ffi::OsStr::new("1")) {
             return None;
         }
         let bin = PathBuf::from(std::env::var_os("HERDR_BIN_PATH")?);
         let pane = std::env::var("HERDR_PANE_ID").ok().filter(|p| !p.is_empty())?;
+        // Nested/test processes inherit HERDR_ENV=1 from a pane owned by the
+        // TS `omp` integration (source `herdr:omp`). Reporting from them is
+        // rejected server-side (owner conflict; our reports carry resume
+        // argv, so every one logs a `resume_not_accepted` error — a storm).
+        // If the pane's foreground agent is `omp`, this process is not the
+        // pane's authoritative reporter: stay silent.
+        if pane_foreground_is_ts_omp(&bin, &pane) {
+            return None;
+        }
         Some(Self::new(bin, pane))
     }
 
@@ -337,6 +346,53 @@ fn worker(weak: std::sync::Weak<Herdr>) {
 static GLOBAL: std::sync::LazyLock<Option<Arc<Herdr>>> =
     std::sync::LazyLock::new(Herdr::detect);
 
+/// One bounded `pane process-info` probe: true when the pane's foreground
+/// process is the TS `omp` agent (i.e. the pane is owned by the `herdr:omp`
+/// integration). Any failure (spawn, timeout, parse) returns false so the
+/// reporter keeps its previous behaviour outside that one known-conflict case.
+fn pane_foreground_is_ts_omp(bin: &Path, pane: &str) -> bool {
+    let mut child = match Command::new(bin)
+        .args(["pane", "process-info", "--pane", pane])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let deadline = std::time::Instant::now() + Duration::from_millis(1500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return false,
+        }
+    }
+    let Ok(output) = child.wait_with_output() else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+        return false;
+    };
+    value["result"]["process_info"]["foreground_processes"]
+        .as_array()
+        .is_some_and(|processes| {
+            processes.iter().any(|p| {
+                p["name"]
+                    .as_str()
+                    .is_some_and(|name| name == "omp" || name.ends_with("/omp"))
+            })
+        })
+}
+
 /// Process-wide reporter (env-detected once); `None` outside Herdr.
 pub fn global() -> Option<Arc<Herdr>> {
     GLOBAL.clone()
@@ -447,6 +503,34 @@ mod tests {
         std::env::remove_var("HERDR_ENV");
         std::env::remove_var("HERDR_BIN_PATH");
         std::env::remove_var("HERDR_PANE_ID");
+    }
+
+    #[test]
+    fn foreground_ts_omp_probe_parses_stub_output() {
+        let dir = std::env::temp_dir().join(format!("herdr-probe-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("herdr");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\nprintf '%s' '{\"result\":{\"process_info\":{\"foreground_processes\":[{\"name\":\"omp\"}]}}}'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&bin, {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::Permissions::from_mode(0o755)
+        });
+        assert!(pane_foreground_is_ts_omp(&bin, "w1:p1"));
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\nprintf '%s' '{\"result\":{\"process_info\":{\"foreground_processes\":[{\"name\":\"omp-rs\"}]}}}'\n",
+        )
+        .unwrap();
+        assert!(!pane_foreground_is_ts_omp(&bin, "w1:p1"));
+        std::fs::write(&bin, "#!/bin/sh\nexit 1\n").unwrap();
+        assert!(!pane_foreground_is_ts_omp(&bin, "w1:p1"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

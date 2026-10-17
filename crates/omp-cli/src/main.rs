@@ -2,6 +2,7 @@
 
 mod adapter;
 mod agent;
+mod approval;
 mod cli;
 mod compact;
 mod context;
@@ -383,6 +384,12 @@ async fn main() -> Result<()> {
         context::Kind::resolve(args.context_strategy.as_deref(), &omp_settings::Settings::load(&cwd))
             .map_err(|e| anyhow::anyhow!(e))?;
     context::set_active(context_strategy);
+    approval::Gate::install(
+        args.approval_mode.as_deref().and_then(approval::parse_mode),
+        args.auto_approve,
+        &cwd,
+        extensions.as_ref(),
+    );
     let (agent, target) = agent::build_agent(
         &cwd,
         selected,

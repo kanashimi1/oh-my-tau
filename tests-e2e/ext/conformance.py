@@ -46,11 +46,10 @@ EXPLAINED: dict[str, str] = {
     ".omp/agent/terminal-sessions/": "TS TUI state",
     ".omp/run/daemons/": "TS text-predict daemon files",
     ".omp/agent/predict/": "omp-rs n-gram predictor state",
-    # Core TUI feature (turn-complete notification through the herdr CLI), not an extension: open gap in omp-rs.
-    "notification show omp": "TS completion notification via herdr CLI; not implemented in omp-rs TUI (core feature, outside the extension surface)",
+    # TS passes the live AbortSignal on session_before_tree (same as session_before_compact/session_stop).
+    "session_before_tree keys=": "AbortSignal `signal` key (not serializable across the host boundary)",
 }
-# `events` ordering inside a turn follows the vendored pa-agent loop (context/tool_call placement differ from
-# TS agent-loop.ts); compared as an informational `events_order` row, hard-compared as a multiset.
+# `events` are compared as an ordered sequence (the vendored pa-agent loop follows TS agent-loop.ts order).
 
 
 class FakeHerdr:
@@ -114,7 +113,7 @@ def copy_extensions(dst: Path) -> None:
 
 def prepare(client: str, port: int) -> tuple[Path, dict[str, str]]:
     root = Path(tempfile.mkdtemp(prefix=f"extconf-{client}-"))
-    env = tui_run.make_home(root, port, "compaction:\n  keepRecentTokens: 150\n  reserveTokens: 2000\n")
+    env = tui_run.make_home(root, port, "compaction:\n  keepRecentTokens: 150\n  reserveTokens: 2000\nretry:\n  baseDelayMs: 200\n")
     agent = root / ".omp/agent"
     copy_extensions(agent / "extensions")
     bindir = root / "shimbin"
@@ -132,6 +131,65 @@ def run_print(binary: str, env: dict[str, str], extra: list[str], model: str = "
     p = subprocess.run([binary, "-p", "--model", f"mock/{model}", *extra, "do the scripted tool run"], env=env,
                        cwd=env["E2E_WORK"], capture_output=True, text=True, timeout=240)
     return p.stdout + p.stderr
+
+
+def run_approval_rpc(binary: str, env: dict[str, str]) -> str:
+    """rpc with `--approval-mode always-ask`: approve the first prompt, deny the second, then cancel the rest."""
+    import select
+    proc = subprocess.Popen([binary, "--mode", "rpc", "--model", "mock/tools", "--approval-mode", "always-ask"], env=env, cwd=env["E2E_WORK"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    out: list[str] = []
+    answers = ["Approve", "Deny"]
+    buf = ""
+    deadline = time.time() + 120
+    sent = False
+    while time.time() < deadline:
+        r, _, _ = select.select([proc.stdout], [], [], 0.2)
+        if not r:
+            continue
+        line = proc.stdout.readline()
+        if not line:
+            break
+        out.append(line)
+        if '"type":"ready"' in line and not sent:
+            proc.stdin.write(json.dumps({"type": "prompt", "message": "do the scripted tool run", "id": "p1"}) + "\n"); proc.stdin.flush(); sent = True
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get("type") == "extension_ui_request" and d.get("method") == "select":
+            ans = answers.pop(0) if answers else "Deny"
+            proc.stdin.write(json.dumps({"type": "extension_ui_response", "id": d["id"], "value": ans}) + "\n"); proc.stdin.flush()
+        if d.get("type") == "prompt_result":
+            break
+    time.sleep(1)
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+    return "".join(out)
+
+
+def ui_prompts(log: str) -> list[str]:
+    rows = []
+    for line in log.splitlines():
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        if d.get("type") == "extension_ui_request" and d.get("method") == "select":
+            rows.append(f"select title={d.get('title')!r} options={d.get('options')}")
+    return rows
+
+
+def run_retry(binary: str, env: dict[str, str], port: int) -> str:
+    import urllib.request
+    urllib.request.urlopen(f"http://127.0.0.1:{port}/reset", timeout=5).read()
+    return run_print(binary, env, [], "retry")
 
 
 def run_rpc(binary: str, env: dict[str, str]) -> str:
@@ -161,6 +219,18 @@ def run_rpc(binary: str, env: dict[str, str]) -> str:
     send(cmds[0]); pump('"type":"prompt_result"', 120); time.sleep(1)
     send({"type": "prompt", "message": "second prompt " + "more filler. " * 3000, "id": "p2"}); pump('"id":"p2","status"', 60); time.sleep(2)
     send({"type": "compact", "id": "c1"}); pump('"id":"c1"', 60); time.sleep(1)
+    # fork/branch at the first user message of the transcript, a bash command and a tree navigation
+    send({"type": "get_branch_messages", "id": "g1"}); pump('"id":"g1"', 30)
+    entry = next((m.get("entryId") for l in out if '"id":"g1"' in l for m in (json.loads(l).get("data", {}).get("messages") or [])), None)
+    if entry:
+        send({"type": "fork", "entryId": entry, "id": "f1"}); pump('"id":"f1"', 30); time.sleep(1)
+        send({"type": "get_branch_messages", "id": "g2"}); pump('"id":"g2"', 30)
+        entry2 = next((m.get("entryId") for l in out if '"id":"g2"' in l for m in (json.loads(l).get("data", {}).get("messages") or [])), None)
+        if entry2:
+            send({"type": "branch", "entryId": entry2, "id": "b1"}); pump('"id":"b1"', 30); time.sleep(1)
+    send({"type": "bash", "command": "echo probe", "id": "sh1"}); pump('"id":"sh1"', 30); time.sleep(1)
+    send({"type": "prompt", "message": "third prompt", "id": "p3"}); pump('"id":"p3","status"', 60); time.sleep(2)
+    send({"type": "prompt", "message": "/probe-tree", "id": "t1"}); pump('"id":"t1"', 30); time.sleep(1)
     send({"type": "new_session", "id": "n1"}); pump('"id":"n1"', 30); time.sleep(1)
     try:
         proc.stdin.close()
@@ -214,7 +284,7 @@ def probe_keys(root: Path) -> list[str]:
     return sorted({f"{d['ev']} keys={','.join(d['keys'])}" for d in probe_rows(root)})
 
 
-FIXED_CTX = ("hasUI", "kind", "sid", "sfile", "cwd", "mode", "model")
+FIXED_CTX = ("hasUI", "kind", "sid", "sfile", "cwd", "mode", "model", "jobs")
 
 
 def probe_ctx(root: Path) -> list[str]:
@@ -275,12 +345,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rs", default=str(REPO / "target/shared/release/omp-rs"))
     ap.add_argument("--ts", default=shutil.which("omp") or "omp")
-    ap.add_argument("--mode", default="all", choices=["print", "rpc", "tui", "guards", "all"])
+    ap.add_argument("--mode", default="all", choices=["print", "rpc", "tui", "guards", "approval", "approval-rpc", "retry", "autocompact", "all"])
     ap.add_argument("--out", default=str(REPO.parent / "runs/omp-rust/ext-conformance" / time.strftime("%Y%m%d-%H%M%S")))
     args = ap.parse_args()
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
     srv = mock_provider.serve(0); port = srv.server_address[1]
-    modes = ["print", "rpc", "tui", "guards"] if args.mode == "all" else [args.mode]
+    modes = ["print", "rpc", "tui", "guards", "approval", "approval-rpc", "retry", "autocompact"] if args.mode == "all" else [args.mode]
     bad = 0
     for mode in modes:
         res: dict[str, dict[str, list[str]]] = {}
@@ -288,24 +358,48 @@ def main() -> int:
             root, env = prepare(client, port)
             herdr = FakeHerdr(env["HERDR_SOCKET_PATH"])
             try:
-                log = {"print": lambda: run_print(binary, env, []), "guards": lambda: run_print(binary, env, [], "guards"), "rpc": lambda: run_rpc(binary, env), "tui": lambda: run_tui(binary, env)}[mode]()
+                log = {"print": lambda: run_print(binary, env, []), "guards": lambda: run_print(binary, env, [], "guards"), "rpc": lambda: run_rpc(binary, env), "tui": lambda: run_tui(binary, env),
+                       "retry": lambda: run_retry(binary, env, port), "autocompact": lambda: run_print(binary, env, [], "full"),
+                       "approval": lambda: run_print(binary, env, ["--approval-mode", "always-ask"]), "approval-rpc": lambda: run_approval_rpc(binary, env)}[mode]()
                 (out / f"{mode}-{client}.log").write_text(norm(log, root))
                 time.sleep(1.0)
                 res[client] = {k: [norm(x, root) for x in v] for k, v in collect(root).items()}
                 res[client]["herdr_api"] = herdr.lines()
+                res[client]["ui_prompts"] = ui_prompts(log)
             finally:
                 herdr.close()
                 shutil.rmtree(root, ignore_errors=True)
         for client in res:
             for kind, rows in res[client].items():
                 (out / f"{mode}-{client}.{kind}.txt").write_text("\n".join(rows) + "\n")
-        for kind in ("events", "keys", "ctx", "hook_trace", "files", "shim", "herdr_api"):
+        for kind in ("events", "keys", "ctx", "hook_trace", "files", "shim", "herdr_api", "ui_prompts"):
             a, b = res["ts"][kind], res["rs"][kind]
-            if kind in ("hook_trace", "keys", "ctx", "herdr_api", "events"):  # concurrent handlers / sets / order-insensitive
+            if kind in ("hook_trace", "keys", "ctx", "herdr_api"):  # concurrent handlers / sets / order-insensitive
                 a, b = sorted(a), sorted(b)
             else:
                 a, b = dedupe_runs(a), dedupe_runs(b)
             d = [l for l in diff(a, b) if not any(k in l for k in EXPLAINED)]
+            if mode in ("retry", "autocompact"):
+                # Forwarding checks (not a TS diff): TS retries 5xx inside the provider transport (no
+                # `auto_retry_*` is visible) and runs a skipped pre-prompt compaction pass + other
+                # compaction-flow details omp-rs does not mirror, so only delivery to extensions is asserted.
+                d = []
+                if kind == "events":
+                    want = ("auto_retry_start", "auto_retry_end") if mode == "retry" else ("auto_compaction_start", "auto_compaction_end")
+                    for ev in want:
+                        got = [x for x in b if x.startswith(ev)]
+                        print(f"[{mode}] {ev}: rs={len(got)}")
+                        if not got:
+                            d.append(f"{mode}: omp-rs delivered no {ev} to the extension")
+                if kind == "keys":
+                    for ev, keys in (("auto_retry_start", "attempt,delayMs,errorMessage,maxAttempts,type"), ("auto_compaction_start", "action,reason,type")):
+                        if mode == ("retry" if ev.startswith("auto_retry") else "autocompact") and f"{ev} keys={keys}" not in b:
+                            d.append(f"{mode}: {ev} payload keys differ from TS ({keys})")
+            if mode.startswith("approval") and kind == "events":
+                n_req = len([x for x in a if x.startswith("tool_approval_requested")])
+                print(f"[{mode}] tool_approval_requested: ts={n_req} rs={len([x for x in b if x.startswith('tool_approval_requested')])}")
+                if not n_req:
+                    d.append("approval scenario produced no approval request under omp (oracle) — scenario is vacuous")
             if mode == "guards" and kind == "hook_trace":
                 blocks = [x for x in a if "action=block" in x]
                 print(f"[guards] blocked tool calls: ts={len(blocks)} rs={len([x for x in b if 'action=block' in x])}")

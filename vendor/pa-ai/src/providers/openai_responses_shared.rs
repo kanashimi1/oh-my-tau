@@ -149,7 +149,7 @@ pub fn convert_responses_messages(
 
     for (msg_index, msg) in transformed.iter().enumerate() {
         match msg {
-            Message::User(user) => match &user.content {
+            Message::User(user) | Message::Developer(user) => match &user.content {
                 UserMessageContent::Text(text) => messages.push(json!({
                     "role": "user",
                     "content": [{ "type": "input_text", "text": sanitize_surrogates(text) }],

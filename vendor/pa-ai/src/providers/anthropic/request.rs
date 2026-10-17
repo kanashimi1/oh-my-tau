@@ -330,12 +330,14 @@ impl Param {
 /// TS `convertAnthropicMessages` for the message shapes this runtime carries.
 fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is_oauth: bool) -> Vec<Param> {
     let mut params: Vec<Param> = Vec::new();
+    // Indices of params emitted from `developer` messages (upgraded to `system` below).
+    let mut developer_params: Vec<usize> = Vec::new();
     let escape = view.is("escapeBuiltinToolNames");
     let supports_images = model.supports_image_input();
     let mut i = 0;
     while i < transformed.len() {
         match &transformed[i] {
-            Message::User(user) => {
+            Message::User(user) | Message::Developer(user) => {
                 let content: Value = match &user.content {
                     UserMessageContent::Text(text) => {
                         if text.trim().is_empty() {
@@ -359,8 +361,19 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
                         }
                     }
                 };
+                let is_developer = matches!(&transformed[i], Message::Developer(_));
+                if is_developer {
+                    developer_params.push(params.len());
+                }
+                // Conversational = a real user turn: not a developer message, not agent-authored
+                // (`synthetic`, or `attribution: "agent"`), not a synthetic user note.
                 let synthetic = user.rest.get(SYNTHETIC_USER_KEY) == Some(&Value::Bool(true));
-                params.push(Param { value: json!({ "role": "user", "content": content }), conversational: !synthetic });
+                let agent_authored = user.rest.get("synthetic") == Some(&Value::Bool(true))
+                    || user.rest.get("attribution").and_then(Value::as_str) == Some("agent");
+                params.push(Param {
+                    value: json!({ "role": "user", "content": content }),
+                    conversational: !is_developer && !agent_authored && !synthetic,
+                });
             }
             Message::Assistant(assistant) => {
                 let mut blocks: Vec<Value> = Vec::new();
@@ -466,6 +479,25 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
             }
         }
         i += 1;
+    }
+    // Upgrade developer-origin params to mid-conversation `system` messages where Anthropic's
+    // placement rules allow it: right after a `user` turn, and last or followed by an `assistant`.
+    if !developer_params.is_empty() && view.is("supportsMidConversationSystem") {
+        for &idx in developer_params.iter().rev() {
+            let follows_user = idx > 0 && params[idx - 1].role() == "user";
+            let next = idx + 1;
+            let last_or_before_assistant = next >= params.len() || params[next].role() == "assistant";
+            let system_compatible = match &params[idx].value["content"] {
+                Value::String(_) => true,
+                Value::Array(blocks) => blocks.iter().all(|b| {
+                    matches!(b["type"].as_str(), Some("text" | "tool_addition" | "tool_removal"))
+                }),
+                _ => false,
+            };
+            if follows_user && last_or_before_assistant && system_compatible {
+                params[idx].value["role"] = json!("system");
+            }
+        }
     }
     // Assistant followed by assistant needs a user turn between them.
     let mut k = params.len();
@@ -1357,7 +1389,7 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
 
 fn first_user_message_text(messages: &[Message]) -> String {
     for message in messages {
-        let Message::User(user) = message else { continue };
+        let (Message::User(user) | Message::Developer(user)) = message else { continue };
         match &user.content {
             UserMessageContent::Text(t) => {
                 if !t.trim().is_empty() {

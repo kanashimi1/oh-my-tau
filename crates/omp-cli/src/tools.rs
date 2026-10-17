@@ -15,6 +15,7 @@ pub(crate) mod eval_agents;
 pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;
 pub(crate) mod rlm;
+pub(crate) mod rlm_combinators;
 mod find;
 mod jobs;
 pub mod mcp;
@@ -42,6 +43,29 @@ use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_agent::BoxFut;
 use pi_edit::{EditMode, EditStore};
 use serde_json::{json, Value};
+
+/// Job registry of the most recently built tool set (see [`take_last_jobs`]).
+static LAST_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mutex::new(None);
+/// The agent session's job registry (see [`set_session_jobs`]).
+static SESSION_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mutex::new(None);
+
+/// The registry of the tool set built last, for the caller that builds the session's tools to
+/// capture right after (before anything else builds a throwaway set).
+#[must_use]
+pub fn take_last_jobs() -> Option<jobs::JobRegistry> {
+    LAST_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+/// Publish the agent session's job registry (`ctx.getAsyncJobSnapshot()`).
+pub fn set_session_jobs(jobs: Option<jobs::JobRegistry>) {
+    *SESSION_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = jobs;
+}
+
+/// The agent session's job registry, once published.
+#[must_use]
+pub fn session_jobs() -> Option<jobs::JobRegistry> {
+    SESSION_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
 
 /// Per-session state shared by the tools: working directory, the hashline
 /// snapshot store (`read` mints tags, `edit` validates them) and edit mode.
@@ -164,6 +188,7 @@ const FIND_DESCRIPTION: &str = "Describe behavior, get implementing files and li
 #[allow(clippy::too_many_lines)] // the tool registry table; order mirrors omp's builtinTools
 pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>> {
     let env = Arc::new(Env::with_mode(cwd, edit_mode));
+    *LAST_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(env.jobs.clone());
     let mk = |name: &'static str,
               description: String,
               schema: Value,

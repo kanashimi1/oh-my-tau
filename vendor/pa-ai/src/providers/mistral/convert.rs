@@ -151,7 +151,7 @@ fn to_chat_messages(messages: &[Message], supports_images: bool) -> Vec<Value> {
 
     for msg in messages {
         match msg {
-            Message::User(user) => match &user.content {
+            Message::User(user) | Message::Developer(user) => match &user.content {
                 crate::types::UserMessageContent::Text(text) => {
                     result.push(json!({
                         "role": "user",

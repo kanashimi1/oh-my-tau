@@ -353,6 +353,12 @@ pub struct Extensions {
     live: Arc<Live>,
     /// Runtime attached via [`Extensions::attach`]; re-served on reconnect.
     rt: Mutex<Option<Arc<Runtime>>>,
+    /// Tool calls an extension `tool_call` handler blocked: their result events are delivered to
+    /// extensions in TS's order (see `subscribe_lifecycle`).
+    blocked_calls: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Print/json runs: TS reaches extensions with `agent_end` only after `session_shutdown`
+    /// (its settle path emits it detached), so the messages wait here for [`Self::shutdown`].
+    deferred_agent_end: Arc<Mutex<Option<Vec<Value>>>>,
 }
 
 /// `session_before_compact` / `session_compact` emission around runtime compactions.
@@ -495,6 +501,8 @@ impl Extensions {
             prompt_override: Mutex::new(None),
             live: Arc::new(Live::default()),
             rt: Mutex::new(None),
+            blocked_calls: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            deferred_agent_end: Arc::new(Mutex::new(None)),
         });
         ext.live.needs_branch.store(
             sources_read_branch(ext.dir.as_deref(), &ext.extra),
@@ -518,11 +526,28 @@ impl Extensions {
     /// `pa-agent` hook points backed by the host.
     #[must_use]
     pub fn hook_fns(&self) -> (TransformContextFn, BeforeToolCallFn, AfterToolCallFn) {
-        (
-            self.hooks.transform_context(),
-            self.hooks.before_tool_call(),
-            self.hooks.after_tool_call(),
-        )
+        let inner = self.hooks.before_tool_call();
+        let blocked = self.blocked_calls.clone();
+        let before: BeforeToolCallFn = Arc::new(move |ctx, signal| {
+            let id = ctx.tool_call.id.clone();
+            let (fut, blocked) = (inner(ctx, signal), blocked.clone());
+            Box::pin(async move {
+                let result = fut.await?;
+                if result.as_ref().is_some_and(|r| r.block) {
+                    blocked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id);
+                }
+                Ok(result)
+            })
+        });
+        let inner_after = self.hooks.after_tool_call();
+        let after: AfterToolCallFn = Arc::new(move |ctx, signal| {
+            // A call the approval gate refused never ran, so (as in TS) `tool_result` is not emitted.
+            if crate::approval::Gate::get().is_some_and(|g| g.take_refused(&ctx.tool_call.id)) {
+                return Box::pin(async { Ok(None) });
+            }
+            inner_after(ctx, signal)
+        });
+        (self.hooks.transform_context(), before, after)
     }
 
     /// Extension tools as `AgentTool` wrappers (`list_tools` -> `call_tool`).
@@ -718,6 +743,10 @@ impl Extensions {
 
     /// Declare the serving mode before [`Self::attach`]: sets `ctx.mode` / `hasUI` like TS
     /// (`print`/`json`: no UI; `rpc` and `tui`: a UI context exists).
+    fn mode(&self) -> ExtMode {
+        *self.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub fn set_mode(&self, mode: ExtMode) {
         *self.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
         let mut ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -807,6 +836,7 @@ impl Extensions {
     /// resume (if any) is loaded.
     pub async fn attach_session(self: &Arc<Self>, rt: Arc<Runtime>, mode: ExtMode) {
         self.set_mode(mode);
+        rt.set_ext_host(Some(self.host.clone()));
         self.attach(rt.clone());
         crate::rpc::slash::set_extensions(self.clone());
         rt.set_name_listener(Some(self.name_listener()));
@@ -817,6 +847,10 @@ impl Extensions {
             tokio::spawn(async move {
                 let Some(rt) = weak.upgrade() else { return };
                 ext.push_session_ctx(&rt).await;
+                // A branch/fork-into-file move emits `session_branch` from the caller (TS).
+                if reason == "branch" {
+                    return;
+                }
                 let reason = match reason {
                     "new" => SwitchReason::New,
                     "fork" => SwitchReason::Fork,
@@ -867,6 +901,10 @@ impl Extensions {
             snap.insert("pending".into(), json!(rt.has_pending_messages()));
             snap.insert("contextUsage".into(), usage.unwrap_or(Value::Null));
             snap.insert("model".into(), rt.model_info());
+            snap.insert(
+                "asyncJobs".into(),
+                crate::tools::session_jobs().map_or(Value::Null, |j| j.async_snapshot(5)),
+            );
         }
         if with_branch && self.live.needs_branch.load(Ordering::Relaxed) {
             self.refresh_branch(rt);
@@ -949,6 +987,14 @@ impl Extensions {
     /// Emit `session_shutdown` and stop the host.
     pub async fn shutdown(&self) {
         emit_silent(self.host.emit_session_shutdown(None).await);
+        let deferred = self
+            .deferred_agent_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(messages) = deferred {
+            emit_silent(self.host.emit_agent_end(messages, None, None).await);
+        }
         if let Err(e) = self.host.shutdown().await {
             eprintln!("omp-rs: extension host shutdown: {e:#}");
         }
@@ -1048,6 +1094,14 @@ impl Extensions {
         // listener in order, and `forward_event` enqueues each emit while
         // holding the encoder, so encode order == wire order.
         let updates = Arc::new(Mutex::new(ExtUpdateEncoder::default()));
+        // TS delivers `tool_execution_end` to extensions after the same call's tool-result
+        // `message_start` (its session event path awaits before emitting the end), so the end is
+        // held back one event. For a call an extension blocked the start is late too: the whole
+        // `message_start` / `tool_execution_start` / `tool_execution_end` burst of an immediate
+        // result reaches extensions as message_start, start, end.
+        let held: Arc<Mutex<Vec<AgentEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let blocked_calls = self.blocked_calls.clone();
+        let deferred_end = self.deferred_agent_end.clone();
         let ext = self.clone();
         let weak = Arc::downgrade(&rt);
         rt.agent
@@ -1057,6 +1111,9 @@ impl Extensions {
                 let turn = turn.clone();
                 let stop = stop.clone();
                 let updates = updates.clone();
+                let held = held.clone();
+                let blocked_calls = blocked_calls.clone();
+                let deferred_end = deferred_end.clone();
                 Box::pin(async move {
                     if let Some(rt) = weak.upgrade() {
                         let boundary = matches!(
@@ -1073,6 +1130,69 @@ impl Extensions {
                         {
                             ext.refresh_live(&rt, boundary).await;
                         }
+                    }
+                    let mut pending: Vec<AgentEvent> = std::mem::take(
+                        &mut *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                    );
+                    if let AgentEvent::ToolExecutionEnd { tool_call_id: end_id, .. } = &event {
+                        if pending.iter().any(|e| matches!(e, AgentEvent::ToolExecutionStart { tool_call_id, .. } if tool_call_id == end_id)) {
+                            pending.push(event);
+                            *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = pending;
+                            return Ok(());
+                        }
+                    }
+                    // A run's input messages (prompt, injected, queued) reach extensions as all
+                    // starts first, then all ends: TS lets `message_end` lag `message_start`.
+                    let input_role = |m: &AgentMessage| matches!(m.role(), "user" | "custom" | "developer");
+                    if !pending.is_empty()
+                        && pending.iter().all(|e| matches!(e, AgentEvent::MessageEnd { message } if input_role(message)))
+                        && matches!(&event, AgentEvent::MessageStart { message } if input_role(message))
+                    {
+                        forward_event(&host, &turn, &stop, &updates, &event);
+                        *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = pending;
+                        return Ok(());
+                    }
+                    if !pending.is_empty() {
+                        let owns_result = |id: &str| {
+                            pending.iter().any(|e| {
+                                matches!(e, AgentEvent::ToolExecutionStart { tool_call_id, .. }
+                                    | AgentEvent::ToolExecutionEnd { tool_call_id, .. } if tool_call_id == id)
+                            })
+                        };
+                        let result_start = matches!(
+                            &event,
+                            AgentEvent::MessageStart { message: AgentMessage::Standard(pa_agent::types::Message::ToolResult(r)) }
+                                if owns_result(&r.tool_call_id)
+                        );
+                        if result_start {
+                            forward_event(&host, &turn, &stop, &updates, &event);
+                        }
+                        for e in &pending {
+                            forward_event(&host, &turn, &stop, &updates, e);
+                        }
+                        if result_start {
+                            return Ok(());
+                        }
+                    }
+                    if let AgentEvent::AgentEnd { messages } = &event {
+                        if matches!(ext.mode(), ExtMode::Print | ExtMode::Json) {
+                            *deferred_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                                Some(messages.iter().map(message_value).collect());
+                            return Ok(());
+                        }
+                    }
+                    let delay = match &event {
+                        AgentEvent::ToolExecutionEnd { .. } => true,
+                        AgentEvent::MessageEnd { message } => input_role(message),
+                        AgentEvent::ToolExecutionStart { tool_call_id, .. } => blocked_calls
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .contains(tool_call_id),
+                        _ => false,
+                    };
+                    if delay {
+                        held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event);
+                        return Ok(());
                     }
                     forward_event(&host, &turn, &stop, &updates, &event);
                     Ok(())

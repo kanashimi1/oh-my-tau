@@ -436,21 +436,70 @@ if "__omp_agents_prelude_loaded__" not in globals():
 
     budget = _Budget()
 
-    def llm_query(prompt, context=None, model=None, *, depth=1):
+    class _LLMAnswer(str):
+        """`llm_query(..., k=K)` result: the selected answer (a `str`) plus the SRLM sampling metadata.
+
+        `.agreement` (plurality share of the K samples), `.candidates` (per-sample dicts: text,
+        confidence, score, cached, tokens), `.k` (samples actually drawn), `.low` (agreement below
+        the `low=` threshold after `on_low`), `.expanded`, `.escalated` (None or dict), `.raw`."""
+
+    def llm_query(prompt, context=None, model=None, *, depth=1, frame="only", pointers=None,
+                  k=1, select=None, on_low=None, low=None, escalate_model=None):
         """RLM sub-call: ask a cheap sub-LLM `prompt` (optionally over `context`); returns text.
 
         Default model is the session's smol role. Memoized by (model, context, prompt)
         and charged against hard max-depth/calls/tokens budgets (error in the cell when
-        exceeded). Accounting: `llm_stats()`."""
+        exceeded). Accounting: `llm_stats()`.
+
+        Frame (TTIC): the sub-call sees ONLY its active frame -- `prompt`, the explicit `context`
+        and optional `pointers` (list of path/id strings listed in a <pointers> block) -- never
+        the parent transcript. `frame="only"` is the default and the only accepted value.
+
+        SRLM sampling: `k=K` (>1) or `select=` draws K samples (memo-aware, budget-counted),
+        groups them by normalized answer and returns the plurality answer as a str subclass with
+        `.agreement` / `.candidates`. `select='consistency'` (default) takes the earliest member
+        of the plurality group; `select='uncertainty'` asks for a verbalized confidence and takes
+        the member maximizing ln(confidence/100) * reply_tokens (<= 0, best closest to 0).
+        If agreement < `low` (default 0.5): `on_low='return'` (default) flags `.low`,
+        `'expand'` draws K more samples and reselects, `'escalate'` asks `escalate_model`
+        (default the `default` tier) once and returns that answer."""
         args = {"prompt": prompt, "depth": depth}
         if context is not None:
             args["context"] = context
         if model is not None:
             args["model"] = model
+        if frame != "only":
+            args["frame"] = frame
+        if pointers:
+            args["pointers"] = [str(p) for p in pointers]
+        sampled = k != 1 or select is not None
+        if sampled:
+            args["k"] = k
+        for key, val in (("select", select), ("on_low", on_low), ("low", low),
+                         ("escalate_model", escalate_model)):
+            if val is not None:
+                args[key] = val
         result = _bridge_call("__llm_query__", args)
         if not isinstance(result, dict) or not isinstance(result.get("text"), str):
             raise RuntimeError("llm_query() did not return text")
-        return result["text"]
+        if not sampled:
+            return result["text"]
+        out = _LLMAnswer(result["text"])
+        out.agreement = result.get("agreement")
+        out.candidates = result.get("candidates") or []
+        out.k = result.get("k")
+        out.low = bool(result.get("low"))
+        out.expanded = bool(result.get("expanded"))
+        out.escalated = result.get("escalated")
+        out.raw = result
+        return out
+
+    def llm_map(prompt, text, chunk_lines=150, model=None):
+        """Engine-run map: split `text` into chunks of `chunk_lines` lines and run
+        `llm_query(prompt, context=chunk)` on every chunk; returns the list of replies in order."""
+        lines = str(text).splitlines()
+        chunks = ["\n".join(lines[i:i + chunk_lines]) for i in range(0, len(lines), chunk_lines)]
+        return [llm_query(prompt, context=c, model=model) for c in chunks]
 
     def llm_stats():
         """Sub-call accounting: calls, memo_hits, input/output/total tokens, limits, per-call records."""

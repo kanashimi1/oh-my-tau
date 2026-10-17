@@ -6,13 +6,40 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
 use pa_agent::agent_loop::ConvertToLlmFn;
-use pa_agent::types::{AgentMessage, AgentTool, Message, UserContent, UserMessage};
+use pa_agent::types::{AgentMessage, AgentTool, DeveloperMessage, Message, UserContent, UserPart};
 
 use std::sync::{Arc, RwLock};
 
 use crate::adapter::{json_round_trip, switchable_stream_fn, ProviderTarget};
 use crate::model::Selected;
 use crate::tools::edit_mode_for;
+
+/// TS `convertMessageToLlm` for `custom` / `hookMessage` / `developer` rows: a provider-facing
+/// `developer` message. A custom message's string content becomes one text part; a developer
+/// message keeps its content shape; attribution defaults to the message's own (`agent` for
+/// developer rows).
+fn developer_message(custom: &pa_agent::types::CustomAgentMessage) -> Option<DeveloperMessage> {
+    let is_custom = custom.role == "custom";
+    let content = match &custom.payload["content"] {
+        serde_json::Value::String(text) if is_custom => UserContent::Parts(vec![UserPart::Text(
+            pa_agent::types::TextContent { text: text.clone(), text_signature: None },
+        )]),
+        serde_json::Value::String(text) => UserContent::Text(text.clone()),
+        serde_json::Value::Array(parts) => UserContent::Parts(
+            parts.iter().filter_map(|p| serde_json::from_value::<UserPart>(p.clone()).ok()).collect(),
+        ),
+        _ => return None,
+    };
+    let attribution = custom.payload["attribution"]
+        .as_str()
+        .map(str::to_owned)
+        .or_else(|| (!is_custom).then(|| "agent".to_owned()));
+    Some(DeveloperMessage {
+        content,
+        timestamp: custom.payload["timestamp"].as_i64().unwrap_or_default(),
+        attribution,
+    })
+}
 
 /// Custom-role messages extension hooks inject: omp's `developer`
 /// (`additionalContext`) reaches the model as user text; other custom roles
@@ -27,21 +54,7 @@ pub fn convert_to_llm() -> ConvertToLlmFn {
                 .filter_map(|m| match m {
                     AgentMessage::Standard(message) => Some(message),
                     AgentMessage::Custom(custom) if custom.role == "developer" || custom.role == "custom" => {
-                        // `content` is a string or an array of text/image parts (TS custom message).
-                        let text = match &custom.payload["content"] {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other
-                                .as_array()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|part| part["text"].as_str())
-                                .collect::<Vec<_>>()
-                                .join("\n"),
-                        };
-                        Some(Message::User(UserMessage {
-                            content: UserContent::Text(text),
-                            timestamp: custom.payload["timestamp"].as_i64().unwrap_or_default(),
-                        }))
+                        developer_message(&custom).map(Message::Developer)
                     }
                     AgentMessage::Custom(_) => None,
                 })
@@ -115,6 +128,7 @@ pub fn build_agent(
     let settings = omp_settings::Settings::load(cwd);
     let mut tools =
         crate::tools::session_builtin_tools(cwd, edit_mode_for(&selected.model.id), &settings);
+    let session_jobs = crate::tools::take_last_jobs();
     tools.extend(crate::tools::mcp::mcp_tools(cwd));
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too
@@ -138,6 +152,7 @@ pub fn build_agent(
         }
     }
     let prompt = system_prompt(cwd, sysprompt_opts, &hidden);
+    crate::tools::set_session_jobs(session_jobs);
     tools.extend(hidden);
     tools.extend(extra_tools);
     let ctx = (context_strategy != crate::context::Kind::Append).then(|| {
@@ -155,6 +170,11 @@ pub fn build_agent(
     if let Some(ctx) = &ctx {
         tools.push(crate::context::tool(ctx.clone()));
     }
+    // TS `ExtensionToolWrapper`: every tool passes the approval gate before it executes.
+    let tools = match crate::approval::Gate::get() {
+        Some(gate) => gate.wrap_tools(tools),
+        None => tools,
+    };
     let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
         api_key: selected.api_key,
         model: selected.model,

@@ -77,7 +77,7 @@ fn sanitize_malformed_tool_calls(messages: &[Message]) -> Vec<Message> {
                 }
                 result.push(msg.clone());
             }
-            Message::User(_) => {
+            Message::User(_) | Message::Developer(_) => {
                 drop_queues.clear();
                 result.push(msg.clone());
             }
@@ -196,7 +196,7 @@ pub(crate) fn transform_messages(
         .iter()
         .enumerate()
         .map(|(index, msg)| match msg {
-            Message::User(_) => msg.clone(),
+            Message::User(_) | Message::Developer(_) => msg.clone(),
             Message::ToolResult(r) => match tool_call_id_map.get(&r.tool_call_id) {
                 Some(id) if id != &r.tool_call_id => {
                     Message::ToolResult(ToolResultMessage { tool_call_id: id.clone(), ..r.clone() })
@@ -458,7 +458,7 @@ pub(crate) fn transform_messages(
 
     for (i, msg) in normalized.iter().enumerate() {
         let message_ts = match msg {
-            Message::User(u) => u.timestamp,
+            Message::User(u) | Message::Developer(u) => u.timestamp,
             Message::Assistant(a) => a.timestamp,
             Message::ToolResult(r) => r.timestamp,
         };
@@ -537,7 +537,7 @@ pub(crate) fn transform_messages(
                     }
                 }
             }
-            Message::User(_) => {
+            Message::User(_) | Message::Developer(_) => {
                 flush_pending!(message_ts);
                 flush_aborted!();
                 result.push(msg.clone());

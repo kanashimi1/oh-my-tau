@@ -419,7 +419,14 @@ impl Shared {
         let table = plan(&messages, self.kind, &self.limits).table;
         let mut st = policy_state(&messages, &table);
         st.offloads_total = off.len();
-        st.largest_block_chars = largest_old_block(&messages, &off).map_or(0, |(_, n)| n);
+        if let Some((i, n)) = largest_old_block(&messages, &off) {
+            st.largest_block_chars = n;
+            let f = block_features(&messages, i);
+            st.block_age_turns = f.0;
+            st.block_restated_pct = f.1;
+            st.block_since_ref_turns = f.2;
+        }
+        st.offload_reads = offload_reads(&messages, &off);
         let (action, fresh) = pol.decide(&st);
         if action == crate::context_policy::Action::RlmOffload && fresh {
             if let Some((i, _)) = largest_old_block(&messages, &off) {
@@ -472,6 +479,85 @@ fn largest_old_block(messages: &[AgentMessage], off: &[(usize, String)]) -> Opti
         .max_by_key(|(_, n)| *n)
 }
 
+/// Distinctive tokens of a block: identifiers/numbers (>= 6 chars with a digit), at most 400.
+fn distinctive_tokens(text: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for t in text.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '.')) {
+        let t = t.trim_matches(|c| c == '.' || c == '-');
+        if t.len() >= 6 && t.chars().any(|c| c.is_ascii_digit()) {
+            out.insert(t.to_owned());
+            if out.len() >= 400 {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Text the model itself wrote in an assistant message (text blocks + tool-call arguments).
+fn assistant_written(m: &AgentMessage) -> Option<String> {
+    let AgentMessage::Standard(Message::Assistant(a)) = m else { return None };
+    let mut s = String::new();
+    for c in &a.content {
+        match c {
+            AssistantContent::Text(t) => s.push_str(&t.text),
+            AssistantContent::ToolCall(tc) => s.push_str(&tc.arguments.to_string()),
+            AssistantContent::Thinking(_) => {}
+        }
+        s.push('\n');
+    }
+    Some(s)
+}
+
+/// `(age_turns, restated_pct, since_ref_turns)` of the block at message index `idx`.
+fn block_features(messages: &[AgentMessage], idx: usize) -> (usize, usize, usize) {
+    let turns = user_turns(messages);
+    let turn_of = |i: usize| turns.iter().filter(|t| **t <= i).count();
+    let now = turns.len();
+    let born = turn_of(idx);
+    let age = now.saturating_sub(born);
+    let Some(text) = block_text(&messages[idx]) else { return (age, 0, age) };
+    let d = distinctive_tokens(&text);
+    if d.is_empty() {
+        return (age, 0, age);
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut last_ref_turn = None;
+    for (i, m) in messages.iter().enumerate().skip(idx + 1) {
+        let Some(w) = assistant_written(m) else { continue };
+        let hits: std::collections::HashSet<&String> = d.iter().filter(|t| w.contains(t.as_str())).collect();
+        if hits.len() >= 2 {
+            last_ref_turn = Some(turn_of(i));
+        }
+        seen.extend(hits.into_iter().cloned());
+    }
+    let since = last_ref_turn.map_or(age, |t| now.saturating_sub(t));
+    (age, 100 * seen.len() / d.len(), since)
+}
+
+/// Tool calls whose arguments mention an offloaded block file.
+fn offload_reads(messages: &[AgentMessage], off: &[(usize, String)]) -> usize {
+    if off.is_empty() {
+        return 0;
+    }
+    let names: Vec<String> = off.iter().map(|(i, _)| format!("block-{i}.txt")).collect();
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            AgentMessage::Standard(Message::Assistant(a)) => Some(a),
+            _ => None,
+        })
+        .flat_map(|a| a.content.iter())
+        .filter(|c| match c {
+            AssistantContent::ToolCall(tc) => {
+                let args = tc.arguments.to_string();
+                names.iter().any(|n| args.contains(n.as_str()))
+            }
+            _ => false,
+        })
+        .count()
+}
+
 /// Write the block to the offload dir and return the one-line reference that replaces it.
 fn offload_block(m: &AgentMessage, idx: usize) -> Option<String> {
     let text = block_text(m)?;
@@ -482,22 +568,44 @@ fn offload_block(m: &AgentMessage, idx: usize) -> Option<String> {
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("block-{idx}.txt"));
     std::fs::write(&path, &text).ok()?;
+    let summary = std::env::var("OMP_CONTEXT_OFFLOAD_SUMMARY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .map(|n| extractive_summary(&text, n))
+        .unwrap_or_default();
     Some(format!(
         "[offloaded: {} chars of earlier content are NOT in your context; they are in the file {}. \
          Read them on demand with the eval tool, e.g. `ctx = open({:?}).read()` then \
-         `llm_query(question, context=ctx, model=\"{}\")` or slice/grep `ctx` directly.]",
+         `llm_query(question, context=ctx, model=\"{}\")` or slice/grep `ctx` directly.{}]",
         text.chars().count(),
         path.display(),
         path.display().to_string(),
         std::env::var("OMP_CONTEXT_OFFLOAD_MODEL").unwrap_or_else(|_| "smol".to_owned()),
+        summary,
     ))
+}
+
+/// Deterministic extractive summary (LCM-lite): the head and tail of the block, whitespace-flattened,
+/// at most `n` chars in total.
+fn extractive_summary(text: &str, n: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = flat.chars().collect();
+    if chars.len() <= n {
+        return format!(" Content: {flat}");
+    }
+    let head = n * 2 / 3;
+    let tail = n - head;
+    let h: String = chars[..head].iter().collect();
+    let t: String = chars[chars.len() - tail..].iter().collect();
+    format!(" Summary (head...tail): {h} ... {t}")
 }
 
 fn replace_block_text(m: &mut Message, reference: &str) {
     match m {
         Message::User(u) => u.content = UserContent::Text(reference.to_owned()),
         Message::ToolResult(tr) => tr.content = vec![ToolResultContent::text(reference)],
-        Message::Assistant(_) => {}
+        Message::Assistant(_) | Message::Developer(_) => {}
     }
 }
 
@@ -592,7 +700,11 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         steps_since_edit,
         edits_total: edits.len(),
         largest_block_chars: 0,
+        block_age_turns: 0,
+        block_restated_pct: 0,
+        block_since_ref_turns: 0,
         offloads_total: 0,
+        offload_reads: 0,
         cache_hit_pct: if input == 0 { 0 } else { (100 * cached / input) as usize },
         excerpt,
     }
@@ -990,6 +1102,28 @@ mod tests {
             h.push(assistant_text("ok"));
         }
         assert_eq!(std::fs::read_to_string(dir.path().join("block-2.txt")).unwrap(), big);
+    }
+
+    #[test]
+    fn block_features_age_restatement_and_offload_reads() {
+        let block = format!("{} ID-1234567 ID-7654321 ID-1111111 ID-2222222", "filler ".repeat(400));
+        let h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            user(&block),
+            assistant_text("noted ID-1234567 and ID-7654321"),
+            user("s2"),
+            assistant_text("nothing"),
+            user("s3"),
+        ];
+        let (age, pct, since) = block_features(&h, 2);
+        assert_eq!(age, 2, "two user turns after the block's turn");
+        assert_eq!(pct, 50, "2 of 4 distinct ids restated");
+        assert_eq!(since, 2, "last restatement was in the turn right after the block");
+        let mut h2 = h.clone();
+        h2.insert(5, asst(json!([{"type":"toolCall","id":"e1","name":"eval","arguments":{"code":"open('/x/block-2.txt').read()"}}]), "toolUse"));
+        assert_eq!(offload_reads(&h2, &[(2, "ref".into())]), 1);
+        assert_eq!(offload_reads(&h2, &[]), 0);
     }
 
     #[test]

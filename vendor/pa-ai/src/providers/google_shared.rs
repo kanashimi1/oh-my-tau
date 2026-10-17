@@ -192,7 +192,7 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
 
     for msg in &transformed {
         match msg {
-            Message::User(user) => match &user.content {
+            Message::User(user) | Message::Developer(user) => match &user.content {
                 UserMessageContent::Text(text) => contents.push(json!({
                     "role": "user",
                     "parts": [{ "text": sanitize_surrogates(text) }],

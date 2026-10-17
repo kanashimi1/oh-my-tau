@@ -338,7 +338,7 @@ fn tool_result_to_text(message: &ToolResultMessage) -> String {
 
 fn message_to_text(message: &Message) -> String {
     match message {
-        Message::User(user) => content_to_text(&user.content),
+        Message::User(user) | Message::Developer(user) => content_to_text(&user.content),
         Message::Assistant(assistant) => assistant_content_to_text(&assistant.content),
         Message::ToolResult(tool_result) => tool_result_to_text(tool_result),
     }

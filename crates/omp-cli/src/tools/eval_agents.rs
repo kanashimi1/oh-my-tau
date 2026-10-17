@@ -318,6 +318,9 @@ pub async fn handle(
         "__llm_query__" => Some(super::rlm::llm_query_op(&args, ctx).await),
         "__rlm_stats__" => Some(Ok(super::rlm::stats_snapshot())),
         "__rlm_context__" => Some(super::rlm::context_op()),
+        op if op.starts_with("__lam_") || op.starts_with("__rubric_") => {
+            super::rlm_combinators::handle(op, &args, ctx).await
+        }
         "__wait__" => Some(run_wait(&args, ctx).await),
         "__status__" => Some(run_status(&args)),
         "__cancel__" => Some(run_cancel(&args)),

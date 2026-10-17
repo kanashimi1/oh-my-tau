@@ -541,7 +541,7 @@ impl PythonKernel {
     /// `__omp_prelude_loaded__` flag, so no stamp cell precedes it. Loaded via
     /// `include_str!` so the runner needs no filesystem access to its source.
     fn run_preloads(&self) -> io::Result<()> {
-        for prelude in [PRELUDE_PY, PRELUDE_AGENTS_PY, PRELUDE_TXN_PY] {
+        for prelude in [PRELUDE_PY, PRELUDE_AGENTS_PY, PRELUDE_COMBINATORS_PY, PRELUDE_TXN_PY] {
             self.run_startup(prelude)?;
         }
         Ok(())
@@ -965,6 +965,7 @@ impl Drop for PythonKernel {
 /// Startup cells loaded in TS `preludes.ts` order (silent, `storeHistory: false`).
 const PRELUDE_PY: &str = include_str!("prelude.py");
 const PRELUDE_AGENTS_PY: &str = include_str!("prelude_agents.py");
+const PRELUDE_COMBINATORS_PY: &str = include_str!("prelude_combinators.py");
 const PRELUDE_TXN_PY: &str = include_str!("prelude_txn.py");
 
 /// Default interpreter resolution (omp falls back to the platform python3).
