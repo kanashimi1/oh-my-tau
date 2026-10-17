@@ -295,6 +295,18 @@ pub struct CompactParams<'a> {
     pub custom_instructions: Option<&'a str>,
     /// System prompt + tool schema tokens, added to the `tokensAfter` projection.
     pub non_message_tokens: u64,
+    /// Extension `session_before_compact` gate (see [`CompactHook`]).
+    pub hook: Option<&'a dyn CompactHook>,
+}
+
+/// `session_before_compact` bridge: receives the TS-shaped `preparation` (and the journal's
+/// branch entries) before the summarizer runs; `true` cancels the compaction.
+pub trait CompactHook: Send + Sync {
+    fn before<'a>(
+        &'a self,
+        preparation: Value,
+        custom_instructions: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
 }
 
 fn now_ms() -> u64 {
@@ -441,6 +453,26 @@ pub async fn compact_now(
     let Some(prep) = prep else {
         return Err(anyhow!("Nothing to compact (session too small)"));
     };
+    if let Some(hook) = params.hook {
+        let preparation = json!({
+            "firstKeptEntryId": prep.first_kept_entry_id,
+            "messagesToSummarize": prep.messages_to_summarize,
+            "turnPrefixMessages": prep.turn_prefix_messages,
+            "recentMessages": prep.recent_messages,
+            "isSplitTurn": prep.is_split_turn,
+            "tokensBefore": prep.tokens_before,
+            "previousSummary": prep.previous_summary,
+            "previousPreserveData": prep.previous_preserve_data,
+            "fileOps": {
+                "read": prep.file_ops.read,
+                "written": prep.file_ops.written,
+                "edited": prep.file_ops.edited,
+            },
+        });
+        if hook.before(preparation, params.custom_instructions).await {
+            return Err(anyhow!("Compaction cancelled"));
+        }
+    }
     let mut summary_params = SummaryParams::new(now_ms()).for_model(params.model_id);
     summary_params.reserve_tokens = params
         .settings

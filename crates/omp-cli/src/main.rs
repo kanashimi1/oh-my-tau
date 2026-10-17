@@ -505,6 +505,7 @@ async fn main() -> Result<()> {
         prompt,
         images,
         extensions.as_ref(),
+        if args.mode.as_deref() == Some("json") { ext::ExtMode::Json } else { ext::ExtMode::Print },
     );
     let messages = if let Some(secs) = args.max_time {
         if let Ok(r) = tokio::time::timeout(std::time::Duration::from_secs_f64(secs), run).await { r? } else {
@@ -622,6 +623,7 @@ async fn run_print(
     prompt: String,
     images: Vec<pa_agent::types::ImageContent>,
     extensions: Option<&std::sync::Arc<ext::Extensions>>,
+    mode: ext::ExtMode,
 ) -> Result<Vec<pa_agent::types::AgentMessage>> {
     let Some(persist) = persist else {
         // No session persistence: replaying a transcript is impossible; a
@@ -632,25 +634,26 @@ async fn run_print(
         if !images.is_empty() {
             eprintln!("omp-rs: image attachments require session persistence; dropped");
         }
-        let prompt = match extensions {
-            Some(e) => match e.before_prompt(&agent, &prompt).await {
-                Ok(ext::PromptGate::Run(text)) => text,
-                Ok(ext::PromptGate::Handled) => String::new(),
-                Err(e) => {
-                    eprintln!("omp-rs: extension input: {e:#}");
-                    prompt.clone()
-                }
-            },
-            None => prompt,
-        };
+        let mut injected = Vec::new();
+        if let Some(e) = extensions {
+            e.set_mode(mode);
+            e.session_start().await;
+            // No runtime here (no session file): the TS `before_agent_start` still precedes the run.
+            injected = e
+                .before_agent_start(&agent, &prompt, None)
+                .await
+                .unwrap_or_else(|err| {
+                    eprintln!("omp-rs: extension before_agent_start: {err:#}");
+                    Vec::new()
+                });
+        }
         if !prompt.is_empty() {
-            agent.prompt(prompt.as_str()).await?;
+            agent
+                .prompt(runtime::prompt_input(&prompt, Vec::new(), injected))
+                .await?;
         }
         return Ok(agent.messages_snapshot().await.into_vec());
     };
-    if let Some(e) = extensions {
-        e.session_start().await;
-    }
     if let Some(f) = persist.file() {
         eprintln!("session: {}", f.display());
     }
@@ -658,11 +661,6 @@ async fn run_print(
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     drop(rx);
     let rt = runtime::Runtime::start(agent.clone(), target, cwd, persist, tx).await;
-    if let Some(e) = extensions {
-        e.attach(rt.clone());
-        crate::rpc::slash::set_extensions(e.clone());
-        rt.set_name_listener(Some(e.name_listener()));
-    }
     if let Some(path) = resume {
         // `--resume`/`--continue` keep appending to the same session file; `--fork`
         // writes a new one (in the `--session-dir` store when relocated).
@@ -671,6 +669,9 @@ async fn run_print(
         } else {
             rt.load_session(&path, session_dir.as_deref()).await?;
         }
+    }
+    if let Some(e) = extensions {
+        e.attach_session(rt.clone(), mode).await;
     }
     // Slash-command dispatch in print mode (TS runs these through the same
     // dispatcher as the TUI); a matched command handles or rewrites the prompt.
@@ -682,17 +683,6 @@ async fn run_print(
         crate::rpc::slash::Outcome::Prompt(expanded) => prompt = expanded,
         crate::rpc::slash::Outcome::NotSlash => {}
     }
-    let prompt = match extensions {
-        Some(e) => match e.before_prompt(&agent, &prompt).await {
-            Ok(ext::PromptGate::Run(text)) => text,
-            Ok(ext::PromptGate::Handled) => String::new(),
-            Err(e) => {
-                eprintln!("omp-rs: extension input: {e:#}");
-                prompt.clone()
-            }
-        },
-        None => prompt,
-    };
     if !prompt.is_empty() || !images.is_empty() {
         rt.prompt(None, &prompt, None, images)
             .await

@@ -46,7 +46,7 @@ def make_home(root: Path, port: int, extra_config: str = "") -> dict[str, str]:
         "    models:\n"
         + "".join(f"      - id: {m}\n        name: e2e {m}\n        contextWindow: 128000\n        maxTokens: 4096\n"
                   + ("        reasoning: true\n" if m == "think" else "")
-                  for m in ("text", "tool", "tools", "fail", "think"))
+                  for m in ("text", "tool", "tools", "guards", "fail", "think"))
     )
     # No onboarding wizard / update probe / changelog: they would cover the
     # chat screen on a fresh HOME (TS omp; omp-rs ignores unknown keys).
@@ -620,7 +620,13 @@ export default function (pi) {
   for (const ev of ["session_start", "session_switch", "agent_end"]) {
     pi.on(ev, (e, ctx) => log(`${ev} ui=${ctx?.hasUI === true} reason=${e?.reason ?? ""}`));
   }
-  pi.on("input", (e) => { log(`input ${e?.text}`); });
+  pi.on("input", (e) => { log(`input ${e?.text} source=${e?.source}`); });
+  pi.on("before_agent_start", (e) => { log(`before_agent_start ${e?.prompt}`); return { message: { customType: "probe-note", content: "probe injected", display: false } }; });
+  pi.on("context", (e) => { log(`context has_probe_note=${JSON.stringify(e?.messages ?? []).includes("probe injected")}`); });
+  pi.registerCommand("probeconfirm", { description: "probe", handler: async (_a, ctx) => {
+    const ok = await ctx.ui.confirm("Probe", "Proceed?");
+    log(`confirm=${ok} hasUI=${ctx.hasUI}`);
+  } });
 }
 """
 
@@ -635,14 +641,22 @@ def sc_extensions(t: Term, r: Result) -> None:
     `input` gate, and `session_switch` on /new."""
     ready(t)
     submit(t, "ext probe prompt")
-    r.check("ext: reply shown", t.wait_for(r"E2E-REPLY-1", 90))
+    r.check("ext: reply shown", t.wait_for(r"E2E-REPLY-\d", 90))
     t.settle(1.0, 30)
     log = Path(t.env["HOME"]) / "ext.log"
     time.sleep(1.0)
     text = log.read_text() if log.exists() else ""
     r.notes.append(f"ext.log: {text!r}")
     r.check("ext: session_start with hasUI", "session_start ui=true" in text)
-    r.check("ext: input gate saw the prompt", "input ext probe prompt" in text)
+    r.check("ext: input gate saw the prompt", "input ext probe prompt source=interactive" in text)
+    r.check("ext: before_agent_start injected message reaches the model", "context has_probe_note=true" in text)
+    submit(t, "/probeconfirm")
+    t.wait_for(r"Proceed\?", 15, in_transcript=False)
+    t.key("enter")
+    t.settle(1.0, 15)
+    time.sleep(1.0)
+    text = log.read_text() if log.exists() else ""
+    r.check("ext: ui.confirm round-trips through the TUI dialog", "confirm=true hasUI=true" in text)
     r.check("ext: agent_end emitted", "agent_end" in text)
     submit(t, "/new")
     t.settle(1.5, 30)

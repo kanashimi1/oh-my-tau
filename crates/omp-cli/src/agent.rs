@@ -26,14 +26,18 @@ pub fn convert_to_llm() -> ConvertToLlmFn {
                 .into_iter()
                 .filter_map(|m| match m {
                     AgentMessage::Standard(message) => Some(message),
-                    AgentMessage::Custom(custom) if custom.role == "developer" => {
-                        let text = custom.payload["content"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|part| part["text"].as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n");
+                    AgentMessage::Custom(custom) if custom.role == "developer" || custom.role == "custom" => {
+                        // `content` is a string or an array of text/image parts (TS custom message).
+                        let text = match &custom.payload["content"] {
+                            serde_json::Value::String(s) => s.clone(),
+                            other => other
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|part| part["text"].as_str())
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        };
                         Some(Message::User(UserMessage {
                             content: UserContent::Text(text),
                             timestamp: custom.payload["timestamp"].as_i64().unwrap_or_default(),

@@ -69,7 +69,7 @@ pub async fn run(
     // Extension wiring (after the startup resume so `session_start` sees the
     // resumed file/title; the resume itself emits no `session_switch`, as in TS).
     if let Some(e) = &extensions {
-        e.attach_interactive(rt.clone()).await;
+        e.attach_session(rt.clone(), crate::ext::ExtMode::Tui).await;
     }
     // Slash catalog for the editor's `/` popup: builtins + extension/file
     // commands, same start-up announce sequence as RPC mode.
@@ -158,18 +158,17 @@ struct Port {
     ext: Option<Arc<crate::ext::Extensions>>,
 }
 
-/// Extension `input` gate (`before_agent_start` + `input`), as print mode runs
-/// it: `Some(text)` to run (possibly rewritten), `None` when an extension
+/// Extension `input` gate (TS input-controller `#runInputHandlers`, source
+/// `interactive`): `Some(text)` to run (possibly rewritten), `None` when an extension
 /// handled the input.
 async fn gate_prompt(
-    rt: &Runtime,
     ext: Option<&Arc<crate::ext::Extensions>>,
     text: &str,
 ) -> Option<String> {
     let Some(ext) = ext else {
         return Some(text.to_string());
     };
-    match ext.before_prompt(&rt.agent, text).await {
+    match ext.input_gate(text, omp_ext::lifecycle::InputSource::Interactive).await {
         Ok(crate::ext::PromptGate::Run(t)) => Some(t),
         Ok(crate::ext::PromptGate::Handled) => None,
         Err(e) => {
@@ -419,7 +418,7 @@ impl omp_tui::RuntimePort for Port {
         let rt = self.rt.clone();
         let ext = self.ext.clone();
         tokio::spawn(async move {
-            let Some(text) = gate_prompt(&rt, ext.as_ref(), &text).await else {
+            let Some(text) = gate_prompt(ext.as_ref(), &text).await else {
                 rt.send(prompt_completed(false));
                 return;
             };
@@ -438,11 +437,21 @@ impl omp_tui::RuntimePort for Port {
     }
 
     fn steer(&self, text: String) {
-        self.rt.steer(&text);
+        let (rt, ext) = (self.rt.clone(), self.ext.clone());
+        tokio::spawn(async move {
+            if let Some(text) = gate_prompt(ext.as_ref(), &text).await {
+                rt.steer(&text);
+            }
+        });
     }
 
     fn follow_up(&self, text: String) {
-        self.rt.follow_up(&text);
+        let (rt, ext) = (self.rt.clone(), self.ext.clone());
+        tokio::spawn(async move {
+            if let Some(text) = gate_prompt(ext.as_ref(), &text).await {
+                rt.follow_up(&text);
+            }
+        });
     }
 
     fn remove_queued(&self, text: String, queue: omp_tui::action::QueueKind) {
@@ -498,6 +507,11 @@ impl omp_tui::RuntimePort for Port {
             } else {
                 format!("/{name} {args}")
             };
+            // TS input-controller runs the `input` handlers before slash handling.
+            let Some(text) = gate_prompt(ext.as_ref(), &text).await else {
+                rt.send(prompt_completed(false));
+                return;
+            };
             match crate::rpc::slash::try_dispatch(&rt, &text).await {
                 crate::rpc::slash::Outcome::Handled { agent_invoked } => {
                     // The RPC layer answers with an ok response; the TUI has no
@@ -511,11 +525,13 @@ impl omp_tui::RuntimePort for Port {
                     rt.send(prompt_completed(false));
                 }
                 crate::rpc::slash::Outcome::Prompt(rewritten) => {
-                    let Some(rewritten) = gate_prompt(&rt, ext.as_ref(), &rewritten).await else {
-                        rt.send(prompt_completed(false));
-                        return;
-                    };
                     if let Err(e) = rt.prompt(None, &rewritten, None, Vec::new()).await {
+                        rt.send(prompt_failed(e.message));
+                    }
+                }
+                crate::rpc::slash::Outcome::NotSlash if !text.starts_with('/') => {
+                    // An `input` handler rewrote the command into plain text.
+                    if let Err(e) = rt.prompt(None, &text, None, Vec::new()).await {
                         rt.send(prompt_failed(e.message));
                     }
                 }

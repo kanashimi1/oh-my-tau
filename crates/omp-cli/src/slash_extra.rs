@@ -259,6 +259,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
             };
             match rt.new_session(dir).await {
                 Ok(()) => output(rt, "New session started."),
+                Err(e) if crate::runtime::is_switch_cancelled(&e) => {}
                 Err(e) => output(rt, &format!("Failed to start a new session: {e:#}")),
             }
             Some(Outcome::Handled {

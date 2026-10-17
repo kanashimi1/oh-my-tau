@@ -43,6 +43,14 @@ TOOLS_SCRIPT = [
     ("glob", {"path": "*.txt"}),
 ]
 
+# `guards`: calls the user's tool_call gates must refuse (each is harmless if a gate fails to block:
+# pgrep only lists, `find ~` walks the throwaway HOME, the herdr binary is a PATH shim), then a reply.
+GUARDS_SCRIPT = [
+    ("bash", {"command": "pgrep -f bun"}),
+    ("bash", {"command": "find ~ -name zzz-nothing"}),
+    ("bash", {"command": "herdr server stop"}),
+]
+
 # The `fail` model rejects only prompts carrying this marker, so a follow-up
 # prompt succeeds and the pinned error banner's dismissal is observable.
 FAIL_MARKER = "will fail"
@@ -80,6 +88,14 @@ def script(model: str, messages: list[dict]) -> tuple[list[dict], str]:
                     "function": {"name": name, "arguments": json.dumps(args)}}
             return [{"role": "assistant", "content": "", "tool_calls": [call]}], "tool_calls"
         return [{"role": "assistant", "content": "E2E-TOOLS-DONE"}], "stop"
+    if model == "guards":
+        done = sum(1 for m in messages if m.get("role") == "tool")
+        if done < len(GUARDS_SCRIPT):
+            name, args = GUARDS_SCRIPT[done]
+            call = {"index": 0, "id": f"call_{name}_{done}", "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)}}
+            return [{"role": "assistant", "content": "", "tool_calls": [call]}], "tool_calls"
+        return [{"role": "assistant", "content": "E2E-GUARDS-DONE"}], "stop"
     if model == "slow":
         n = int(os.environ.get("E2E_SLOW_WORDS", "1"))  # words per chunk (burstiness)
         words = [f"w{i:03d} " for i in range(150)]
@@ -106,7 +122,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.rstrip("/").endswith("/models"):
-            ids = ["text", "tool", "tools", "fail"]
+            ids = ["text", "tool", "tools", "guards", "fail"]
             self._json(200, {"object": "list", "data": [
                 {"id": f"mock/{i}", "object": "model", "created": 0, "owned_by": "mock"} for i in ids]})
         else:

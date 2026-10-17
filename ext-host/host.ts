@@ -164,6 +164,7 @@ const sm = () => ({
   getSessionName: () => state.sessionName,
 });
 
+const orUndefined = (v: unknown) => (typeof v === "string" ? v : undefined);
 function makeCtx() {
   const noop = () => {};
   const unsupported = (what: string) => async () => {
@@ -201,9 +202,9 @@ function makeCtx() {
       getAllThemes: () => Promise.resolve([]),
       getTheme: () => Promise.resolve(undefined),
       setTheme: () => Promise.resolve({ success: false as const, error: "UI not available" }),
-      select: async () => undefined,
-      input: async () => undefined,
-      editor: async () => undefined,
+      select: async (title: string, options: string[]) => orUndefined(await request("ui_select", { title, options }).catch(() => null)),
+      input: async (title: string, placeholder?: string) => orUndefined(await request("ui_input", { title, placeholder }).catch(() => null)),
+      editor: async (title: string, prefill?: string) => orUndefined(await request("ui_editor", { title, prefill }).catch(() => null)),
     },
     mode: state.mode ?? "rpc",
     get hasUI() {

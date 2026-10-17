@@ -151,9 +151,15 @@ pub struct Runtime {
     pending_rewind_report: Mutex<Option<String>>,
     /// Sinks every applied session-name change (ext bridge `set_session_name`).
     on_session_name: Mutex<Option<NameListener>>,
+    /// `session_before_switch` gate.
+    switch_gate: Mutex<Option<SwitchGate>>,
     /// Sinks every completed session switch (`new_session`/`load_session`/fork):
     /// the ext bridge's ctx refresh + `session_switch` event.
     on_session_switch: Mutex<Option<SwitchListener>>,
+    /// Extension compaction bridge (`session_before_compact` / `session_compact`).
+    compaction_hooks: Mutex<Option<Arc<dyn CompactionHooks>>>,
+    /// Extension `before_agent_start` hook run at every prompt admission.
+    before_start: Mutex<Option<BeforeStartHook>>,
     /// Native Herdr agent-state reporter (`HERDR_ENV=1` only; `None` elsewhere).
     herdr: Option<std::sync::Arc<crate::herdr::Herdr>>,
     /// `ask`-tool runs currently waiting on the user: >0 means Blocked.
@@ -164,6 +170,70 @@ pub struct Runtime {
 
 /// Sink for applied session-name changes (the ext bridge's `set_session_name`).
 pub type NameListener = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Extension bridge around one compaction (TS `session_before_compact` / `session_compact`).
+pub trait CompactionHooks: Send + Sync {
+    /// Before summarizing: `true` = an extension cancelled. `branch_entries` is the active branch.
+    fn before<'a>(
+        &'a self,
+        preparation: Value,
+        branch_entries: Vec<Value>,
+        custom_instructions: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
+    /// After the `compaction` entry is committed.
+    fn after<'a>(
+        &'a self,
+        compaction_entry: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+}
+
+/// Adapts [`CompactionHooks`] to the per-compaction [`crate::compact::CompactHook`] (adds the branch).
+struct HookWithBranch<'a> {
+    hooks: &'a dyn CompactionHooks,
+    branch: Vec<Value>,
+}
+
+impl crate::compact::CompactHook for HookWithBranch<'_> {
+    fn before<'a>(
+        &'a self,
+        preparation: Value,
+        custom_instructions: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        self.hooks.before(preparation, self.branch.clone(), custom_instructions)
+    }
+}
+
+/// Hook run right before a prompt starts a run: `(prompt text, images JSON)`; returns the
+/// messages extensions inject after the user message.
+pub type BeforeStartHook = Arc<
+    dyn Fn(String, Option<Value>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Gate run before a session switch (`session_before_switch`): `true` cancels it.
+pub type SwitchGate = Arc<
+    dyn Fn(&'static str, Option<PathBuf>) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// A `session_before_switch` handler cancelled the switch (TS `{cancelled: true}`).
+#[derive(Debug)]
+pub struct SwitchCancelled;
+
+impl std::fmt::Display for SwitchCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Session switch cancelled")
+    }
+}
+
+impl std::error::Error for SwitchCancelled {}
+
+/// Whether `e` is a [`SwitchCancelled`].
+pub fn is_switch_cancelled(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<SwitchCancelled>().is_some()
+}
 
 /// Sink for completed session switches: `(reason, previous session file)`,
 /// reason being the TS `session_switch` reason (`new` | `resume` | `fork`).
@@ -368,6 +438,9 @@ impl Runtime {
             pending_rewind_report: Mutex::new(None),
             on_session_name: Mutex::new(None),
             on_session_switch: Mutex::new(None),
+            switch_gate: Mutex::new(None),
+            before_start: Mutex::new(None),
+            compaction_hooks: Mutex::new(None),
             herdr,
             ask_blocked: std::sync::atomic::AtomicU64::new(0),
             title_task: Mutex::new(None),
@@ -1341,10 +1414,15 @@ impl Runtime {
             });
             starts
         };
-        let input = pa_agent::agent::AgentPromptInput::Text {
-            text: message.to_string(),
-            images,
-        };
+        let hook = lock(&self.before_start).clone();
+        let mut injected = Vec::new();
+        if let Some(hook) = hook {
+            let images_json = (!images.is_empty())
+                .then(|| serde_json::to_value(&images).ok())
+                .flatten();
+            injected = hook(message.to_string(), images_json).await;
+        }
+        let input = prompt_input(message, images, injected);
         let pua = self.agent.prompt_until_accepted(input).await;
         if let Err(e) = pua {
             lock(&self.prompts)
@@ -1517,6 +1595,20 @@ impl Runtime {
         Value::Object(out)
     }
 
+    /// TS `ctx.getContextUsage()`: `{tokens, contextWindow, percent}` (None without a window).
+    pub async fn context_usage_value(&self) -> Option<Value> {
+        let (s, _) = self.agent.status().await;
+        let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
+        let window = s.model.context_window;
+        self.agent.with_messages(|m| context_usage(m.iter(), window, base)).await
+    }
+
+    /// Whether steering/follow-up messages are queued (TS `ctx.hasPendingMessages()`).
+    pub fn has_pending_messages(&self) -> bool {
+        let (steer, follow) = self.queued();
+        !steer.is_empty() || !follow.is_empty()
+    }
+
     /// The `context_usage` frame the TUI status line renders: active model
     /// (selector + display name), context tokens/percent/window and the
     /// auto-compaction gauge boundaries (TS `getContextUsage` +
@@ -1686,6 +1778,7 @@ impl Runtime {
 
     /// Clear the conversation and start a fresh session file.
     pub async fn new_session(&self, dir: Option<&Path>) -> Result<()> {
+        self.check_switch("new", None).await?;
         let previous = self.persist.file();
         self.cancel_retry_and_wait().await;
         self.agent.abort();
@@ -1728,6 +1821,7 @@ impl Runtime {
     /// on demand from the raw lines. Non-compacted sessions never build the
     /// entry DOM at all: messages deserialize straight from the line text.
     async fn load_session_as(&self, path: &Path, dir: Option<&Path>, fork: bool) -> Result<()> {
+        self.check_switch(if fork { "fork" } else { "resume" }, Some(path.to_path_buf())).await?;
         let previous = self.persist.file();
         self.cancel_retry_and_wait().await;
         // `--no-session` must never write into the resumed file: seed a scratch copy instead.
@@ -1877,10 +1971,35 @@ impl Runtime {
         Ok(())
     }
 
+    async fn check_switch(&self, reason: &'static str, target: Option<PathBuf>) -> Result<()> {
+        let gate = lock(&self.switch_gate).clone();
+        if let Some(g) = gate {
+            if g(reason, target).await {
+                return Err(SwitchCancelled.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Install the `session_before_switch` gate.
+    pub fn set_switch_gate(&self, g: Option<SwitchGate>) {
+        *lock(&self.switch_gate) = g;
+    }
+
     fn notify_session_switch(&self, reason: &'static str, previous: Option<PathBuf>) {
         if let Some(f) = lock(&self.on_session_switch).clone() {
             f(reason, previous);
         }
+    }
+
+    /// Install the extension compaction bridge (see [`CompactionHooks`]).
+    pub fn set_compaction_hooks(&self, h: Option<Arc<dyn CompactionHooks>>) {
+        *lock(&self.compaction_hooks) = h;
+    }
+
+    /// Install the extension `before_agent_start` hook (see [`BeforeStartHook`]).
+    pub fn set_before_start_hook(&self, f: Option<BeforeStartHook>) {
+        *lock(&self.before_start) = f;
     }
 
     /// Sink completed session switches (the ext bridge's `session_switch`).
@@ -2297,12 +2416,31 @@ impl Runtime {
             )
         };
         let settings = lock(&self.compaction).clone();
+        let hooks = lock(&self.compaction_hooks).clone();
+        let bridge = hooks.as_deref().map(|h| HookWithBranch {
+            hooks: h,
+            branch: self
+                .entries()
+                .ok()
+                .map(|entries| {
+                    omp_session::tree::leaf_id(&entries)
+                        .map(|leaf| {
+                            omp_session::tree::branch_path(&entries, leaf)
+                                .into_iter()
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default(),
+        });
         let params = crate::compact::CompactParams {
             settings: &settings,
             model_id: &model_id,
             context_window: Some(self.live_window()).filter(|w| *w > 0),
             custom_instructions,
             non_message_tokens,
+            hook: bridge.as_ref().map(|b| b as &dyn crate::compact::CompactHook),
         };
         if trace {
             turn_trace!("[turn-trace] compact-planned rss={}kB", rss_kb());
@@ -2327,6 +2465,14 @@ impl Runtime {
         }
         self.agent
             .set_compaction_epoch(self.agent.compaction_epoch() + 1);
+        if let Some(h) = hooks.as_deref() {
+            // TS `session_compact`: the committed `compaction` entry (last journal entry).
+            if let Some(entry) = self.entries().ok().and_then(|e| {
+                e.into_iter().rev().find(|e| e.get("type").and_then(Value::as_str) == Some("compaction"))
+            }) {
+                h.after(entry).await;
+            }
+        }
         Ok(data)
     }
 
@@ -2372,6 +2518,10 @@ impl Runtime {
             Ok(result) => {
                 json!({"type": "auto_compaction_end", "action": ACTION, "result": result, "aborted": false, "willRetry": false})
             }
+            // An extension `session_before_compact` cancel is an abort, not a failure.
+            Err(e) if e.message == "Compaction cancelled" => json!({
+                "type": "auto_compaction_end", "action": ACTION, "aborted": true, "willRetry": false,
+            }),
             Err(e) => json!({
                 "type": "auto_compaction_end", "action": ACTION, "aborted": false, "willRetry": false,
                 "errorMessage": format!("Auto-compaction failed: {}", e.message),
@@ -2895,6 +3045,29 @@ fn has_incomplete_tasks(phases: &Value) -> bool {
                     .is_some_and(|s| s == "pending" || s == "in_progress")
             })
     })
+}
+
+/// The prompt as the agent takes it: the user message, then any extension-injected messages.
+pub fn prompt_input(
+    text: &str,
+    images: Vec<pa_agent::types::ImageContent>,
+    injected: Vec<AgentMessage>,
+) -> pa_agent::agent::AgentPromptInput {
+    if injected.is_empty() {
+        return pa_agent::agent::AgentPromptInput::Text { text: text.to_string(), images };
+    }
+    let mut content = vec![pa_agent::types::UserPart::Text(pa_agent::types::TextContent {
+        text: text.to_string(),
+        text_signature: None,
+    })];
+    content.extend(images.into_iter().map(pa_agent::types::UserPart::Image));
+    let user = AgentMessage::Standard(Message::User(pa_agent::types::UserMessage {
+        content: UserContent::Parts(content),
+        timestamp: pa_agent::now_ms(),
+    }));
+    let mut all = vec![user];
+    all.extend(injected);
+    pa_agent::agent::AgentPromptInput::Messages(all)
 }
 
 fn user_message(text: &str) -> AgentMessage {

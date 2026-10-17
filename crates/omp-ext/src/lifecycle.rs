@@ -715,6 +715,18 @@ pub trait HostResponder: Send + Sync {
     fn ui_confirm<'a>(&'a self, _title: &'a str, _message: &'a str) -> BoxFuture<'a, bool> {
         Box::pin(async { false })
     }
+    /// `ctx.ui.select(title, options)`; no UI yields `None`.
+    fn ui_select<'a>(&'a self, _title: &'a str, _options: Vec<String>) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    /// `ctx.ui.input(title, placeholder)`; no UI yields `None`.
+    fn ui_input<'a>(&'a self, _title: &'a str, _placeholder: Option<&'a str>) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+    /// `ctx.ui.editor(title, prefill)`; no UI yields `None`.
+    fn ui_editor<'a>(&'a self, _title: &'a str, _prefill: Option<&'a str>) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
     /// `ctx.compact(options)`; the default runner action is a no-op.
     fn compact(&self, _options: Value) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async { Ok(()) })
@@ -759,6 +771,22 @@ pub async fn answer(
     let s = |k: &str| params.get(k).and_then(Value::as_str).unwrap_or_default();
     match method {
         "ui_confirm" => Ok(json!(responder.ui_confirm(s("title"), s("message")).await)),
+        "ui_select" => {
+            let options = params
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default();
+            Ok(responder.ui_select(s("title"), options).await.map_or(Value::Null, Value::String))
+        }
+        "ui_input" => Ok(responder
+            .ui_input(s("title"), params.get("placeholder").and_then(Value::as_str))
+            .await
+            .map_or(Value::Null, Value::String)),
+        "ui_editor" => Ok(responder
+            .ui_editor(s("title"), params.get("prefill").and_then(Value::as_str))
+            .await
+            .map_or(Value::Null, Value::String)),
         "compact" => responder
             .compact(params.get("options").cloned().unwrap_or(Value::Null))
             .await

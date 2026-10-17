@@ -191,11 +191,17 @@ struct Incoming {
 }
 
 /// Connection to a running extension host.
+/// Supplies the live ctx for an emit of the given event type (see [`ExtHost::set_ctx_provider`]).
+pub type CtxProvider = std::sync::Arc<dyn Fn(&str) -> Option<Value> + Send + Sync>;
+
 pub struct ExtHost {
     /// Event types with at least one handler across all loaded extensions,
     /// learned from `load` (mirrors the TS runner's `hasHandlers` gate).
     /// `None` = not loaded yet / unknown: send everything.
     subscribed: Mutex<Option<HashSet<String>>>,
+    /// Live session state merged into the host ctx of every emit/tool call that carries no
+    /// explicit `ctx` (branch, leafId, contextUsage, idle, pending, ...).
+    ctx_provider: Mutex<Option<CtxProvider>>,
     /// Current connection: queue feeding the writer task (child stdin or
     /// shared-daemon socket) and the waiters of requests sent on it.
     conn: Mutex<Conn>,
@@ -263,8 +269,10 @@ fn private_command(cfg: &HostConfig) -> Command {
     {
         cmd.arg("--smol");
     }
+    // `OMP_RS_HOOK_TRACE=1` opts back in (extension conformance harness diffs the trace against omp).
+    let hook_trace = std::env::var("OMP_RS_HOOK_TRACE").unwrap_or_else(|_| "0".into());
     cmd.arg(&cfg.host_script)
-        .env("HOOK_TRACE", "0")
+        .env("HOOK_TRACE", hook_trace)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -331,6 +339,7 @@ impl ExtHost {
         let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
+            ctx_provider: Mutex::new(None),
             conn: Mutex::new(conn),
             child: tokio::sync::Mutex::new(Some(child)),
             next_id: AtomicU64::new(1),
@@ -481,6 +490,28 @@ impl ExtHost {
         Ok(result)
     }
 
+    /// Install the live-ctx provider: its value rides every emit / tool call that has no explicit
+    /// `ctx`, so handlers see the TS-live `ctx` (branch, context usage, idle state, ...). It never
+    /// forces an emit that `has_handlers` would skip.
+    pub fn set_ctx_provider(&self, f: Option<CtxProvider>) {
+        *self
+            .ctx_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = f;
+    }
+
+    fn provided_ctx(&self, ctx: Option<Value>, event_type: &str) -> Option<Value> {
+        if ctx.is_some() {
+            return ctx;
+        }
+        let f = self
+            .ctx_provider
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        f.and_then(|f| f(event_type))
+    }
+
     /// Emit an omp event (`{"type": ..., ...}`); `ctx` merges into the host's session state
     /// (`sessionId`, `sessionFile`, `branch`, `leafId`, `model`, `contextUsage`, `hasUI`, ...).
     ///
@@ -491,6 +522,7 @@ impl ExtHost {
             return Ok(EmitResult::default());
         }
         let mut p = json!({ "event": event });
+        let ctx = self.provided_ctx(ctx, event.get("type").and_then(Value::as_str).unwrap_or(""));
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
@@ -540,6 +572,7 @@ impl ExtHost {
             return Ok(());
         }
         let mut p = json!({ "event": event, "nowait": true });
+        let ctx = self.provided_ctx(ctx, event.get("type").and_then(Value::as_str).unwrap_or(""));
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
@@ -574,6 +607,7 @@ impl ExtHost {
         params: Value,
         ctx: Option<Value>,
     ) -> Result<Value> {
+        let ctx = self.provided_ctx(ctx, "call_tool");
         self.request(
             "call_tool",
             json!({"name": name, "toolCallId": tool_call_id, "params": params, "ctx": ctx}),
@@ -663,6 +697,7 @@ impl ExtHost {
         let (generation, _) = watch::channel(0usize);
         let host = Arc::new(Self {
             subscribed: Mutex::new(None),
+            ctx_provider: Mutex::new(None),
             conn: Mutex::new(conn),
             child: tokio::sync::Mutex::new(None),
             next_id: AtomicU64::new(1),

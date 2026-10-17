@@ -20,10 +20,9 @@ use pa_agent::types::{
 use serde_json::{json, Value};
 
 use omp_ext::hooks::ExtHooks;
-use omp_ext::lifecycle::{self, HeadlessResponder, InputSource, LifecycleEvent, SwitchReason};
+use omp_ext::lifecycle::{self, InputSource, LifecycleEvent, SwitchReason};
 use omp_ext::{ExtHost, HostConfig, HostMessage, ToolInfo};
 
-use crate::adapter::json_round_trip;
 use crate::events::{message_value, ExtUpdateEncoder};
 use crate::runtime::Runtime;
 
@@ -130,10 +129,204 @@ pub enum PromptGate {
 struct SessionCtx {
     session_id: String,
     session_file: Option<PathBuf>,
+    #[allow(dead_code)] // ctx.model is the live Model object (see `Live`), not this ref
     model: String,
     session_name: Option<String>,
-    /// TS `ctx.hasUI`: true for the interactive main session.
+    /// TS `ctx.hasUI` (see [`ExtMode::has_ui`]).
     has_ui: bool,
+    /// TS `ctx.mode`.
+    mode: &'static str,
+}
+
+/// Which TS mode the host serves (`ctx.mode`, and `hasUI`: TS `hasUI()` is true exactly when a UI
+/// context was provided — interactive and non-headless rpc — and false for print/json).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtMode {
+    Print,
+    Json,
+    Rpc,
+    Tui,
+}
+
+impl ExtMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Print => "print",
+            Self::Json => "json",
+            Self::Rpc => "rpc",
+            Self::Tui => "tui",
+        }
+    }
+    fn has_ui(self) -> bool {
+        matches!(self, Self::Rpc | Self::Tui)
+    }
+}
+
+/// `HostResponder` backed by the runtime: dialogs travel as `extension_ui_request` frames (the TUI
+/// renders them; an rpc client answers them), `ctx.compact` / `navigateTree` run on the session.
+struct RuntimeResponder {
+    rt: std::sync::Weak<Runtime>,
+    mode: ExtMode,
+}
+
+impl RuntimeResponder {
+    /// Send one dialog and await the answer object (`None` = cancelled / no UI).
+    async fn dialog(&self, method: &str, mut frame: serde_json::Map<String, Value>) -> Option<Value> {
+        if !self.mode.has_ui() {
+            return None;
+        }
+        let rt = self.rt.upgrade()?;
+        let id = format!(
+            "ext-ui-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
+        frame.insert("type".into(), json!("extension_ui_request"));
+        frame.insert("id".into(), json!(id));
+        frame.insert("method".into(), json!(method));
+        let waiter = crate::rpc::register_pending_ui_request(&id);
+        rt.send(Value::Object(frame));
+        let answer = waiter.await.ok()?;
+        (answer.get("cancelled").and_then(Value::as_bool) != Some(true)).then_some(answer)
+    }
+
+    fn text(answer: Option<Value>) -> Option<String> {
+        answer?.get("value").and_then(Value::as_str).map(str::to_owned)
+    }
+}
+
+impl omp_ext::lifecycle::HostResponder for RuntimeResponder {
+    fn ui_confirm<'a>(&'a self, title: &'a str, message: &'a str) -> omp_ext::lifecycle::BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let mut f = serde_json::Map::new();
+            f.insert("title".into(), json!(title));
+            f.insert("message".into(), json!(message));
+            // TUI answers `{value: bool}`, an rpc client `{confirmed: bool}` (TS `RpcExtensionUIContext`).
+            self.dialog("confirm", f).await.is_some_and(|a| {
+                a.get("confirmed").and_then(Value::as_bool) == Some(true)
+                    || a.get("value").and_then(Value::as_bool) == Some(true)
+            })
+        })
+    }
+
+    fn ui_select<'a>(
+        &'a self,
+        title: &'a str,
+        options: Vec<String>,
+    ) -> omp_ext::lifecycle::BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let mut f = serde_json::Map::new();
+            f.insert("title".into(), json!(title));
+            f.insert("options".into(), json!(options));
+            Self::text(self.dialog("select", f).await)
+        })
+    }
+
+    fn ui_input<'a>(
+        &'a self,
+        title: &'a str,
+        placeholder: Option<&'a str>,
+    ) -> omp_ext::lifecycle::BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let mut f = serde_json::Map::new();
+            f.insert("title".into(), json!(title));
+            f.insert("placeholder".into(), json!(placeholder));
+            Self::text(self.dialog("input", f).await)
+        })
+    }
+
+    fn ui_editor<'a>(
+        &'a self,
+        title: &'a str,
+        prefill: Option<&'a str>,
+    ) -> omp_ext::lifecycle::BoxFuture<'a, Option<String>> {
+        Box::pin(async move {
+            let mut f = serde_json::Map::new();
+            f.insert("title".into(), json!(title));
+            f.insert("prefill".into(), json!(prefill));
+            Self::text(self.dialog("editor", f).await)
+        })
+    }
+
+    fn compact(&self, options: Value) -> omp_ext::lifecycle::BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            let Some(rt) = self.rt.upgrade() else {
+                return Ok(());
+            };
+            let instructions = match &options {
+                Value::String(s) => Some(s.clone()),
+                Value::Object(o) => o.get("customInstructions").and_then(Value::as_str).map(str::to_owned),
+                _ => None,
+            };
+            rt.compact(instructions.as_deref()).await.map(|_| ()).map_err(|e| e.message)
+        })
+    }
+
+    fn navigate_tree<'a>(
+        &'a self,
+        target: &'a str,
+        options: Value,
+    ) -> omp_ext::lifecycle::BoxFuture<'a, Result<Value, String>> {
+        Box::pin(async move {
+            // TS: only command contexts (interactive / rpc) carry a real handler.
+            let (true, Some(rt)) = (matches!(self.mode, ExtMode::Tui | ExtMode::Rpc), self.rt.upgrade()) else {
+                return Ok(json!({"cancelled": false}));
+            };
+            crate::tree::navigate_tree(&rt, target, &options, None)
+                .await
+                .map(|v| v.unwrap_or_else(|| json!({"cancelled": false})))
+                .map_err(|e| e.message)
+        })
+    }
+}
+
+/// TS `normalizeCustomMessagePayload` + the `#promptAgent` wrapper: a `before_agent_start` message
+/// payload becomes a `role: "custom"` message (attribution `user` unless the payload sets one).
+fn injected_message(payload: &Value) -> Option<AgentMessage> {
+    let (custom_type, content, display, details, attribution) = match payload {
+        Value::String(text) => ("message".to_string(), json!(text), true, None, None),
+        Value::Object(o) => (
+            o.get("customType").and_then(Value::as_str).unwrap_or("message").to_string(),
+            o.get("content").cloned().unwrap_or_else(|| json!("")),
+            o.get("display").and_then(Value::as_bool).unwrap_or(false),
+            o.get("details").cloned(),
+            o.get("attribution").and_then(Value::as_str).filter(|a| matches!(*a, "user" | "agent")),
+        ),
+        _ => return None,
+    };
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
+    let mut payload = json!({
+        "customType": custom_type,
+        "content": content,
+        "display": display,
+        "attribution": attribution.unwrap_or("user"),
+        "timestamp": timestamp,
+    });
+    if let Some(d) = details {
+        payload["details"] = d;
+    }
+    Some(AgentMessage::Custom(pa_agent::types::CustomAgentMessage {
+        role: "custom".to_string(),
+        payload,
+    }))
+}
+
+/// Live session facts the host ctx exposes synchronously (TS `ctx.isIdle()`,
+/// `getContextUsage()`, `hasPendingMessages()`, `sessionManager.getBranch()`, ...). Refreshed by
+/// [`Extensions::refresh_live`] at event boundaries; the host-side provider
+/// ([`omp_ext::ExtHost::set_ctx_provider`]) rides it on every emit.
+#[derive(Default)]
+struct Live {
+    snap: Mutex<serde_json::Map<String, Value>>,
+    /// Branch entries (root -> leaf) not yet sent to the host.
+    branch: Mutex<Option<Value>>,
+    /// Session file len the cached branch was computed at.
+    branch_len: Mutex<Option<(PathBuf, u64)>>,
+    /// Some loaded extension reads the branch (`getBranch`/`getEntry`/`getLeafId`/`getEntries`).
+    needs_branch: std::sync::atomic::AtomicBool,
 }
 
 /// Live extension host and its agent-facing hooks.
@@ -153,8 +346,100 @@ pub struct Extensions {
     dir: Option<String>,
     /// Last session ctx sent to the host.
     ctx: Mutex<SessionCtx>,
+    mode: Mutex<ExtMode>,
+    /// `(base prompt, override applied)` of the last `before_agent_start` system-prompt override.
+    prompt_override: Mutex<Option<(String, String)>>,
+    /// Live per-event ctx facts (see [`Live`]).
+    live: Arc<Live>,
     /// Runtime attached via [`Extensions::attach`]; re-served on reconnect.
     rt: Mutex<Option<Arc<Runtime>>>,
+}
+
+/// `session_before_compact` / `session_compact` emission around runtime compactions.
+struct CompactBridge {
+    host: Arc<ExtHost>,
+}
+
+impl crate::runtime::CompactionHooks for CompactBridge {
+    fn before<'a>(
+        &'a self,
+        preparation: Value,
+        branch_entries: Vec<Value>,
+        custom_instructions: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            if !self.host.has_handlers("session_before_compact") {
+                return false;
+            }
+            match self
+                .host
+                .emit_session_before_compact(
+                    preparation,
+                    branch_entries,
+                    custom_instructions.map(str::to_owned),
+                    None,
+                )
+                .await
+            {
+                Ok(outcome) => outcome.cancel,
+                Err(e) => {
+                    eprintln!("omp-rs: extension session_before_compact: {e:#}");
+                    false
+                }
+            }
+        })
+    }
+
+    fn after<'a>(
+        &'a self,
+        compaction_entry: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            emit_silent(self.host.emit_session_compact(compaction_entry, false, None).await);
+        })
+    }
+}
+
+impl Live {
+    /// ctx merged into the host on each emit: the cheap snapshot, plus the branch once per change.
+    fn provide(&self) -> Option<Value> {
+        let mut out = self
+            .snap
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(b) = self
+            .branch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            out.insert("leafId".into(), b.as_array().and_then(|a| a.last()).and_then(|e| e.get("id")).cloned().unwrap_or(Value::Null));
+            out.insert("branch".into(), b);
+        }
+        (!out.is_empty()).then_some(Value::Object(out))
+    }
+}
+
+/// Whether any extension source reads the session branch (so the core must feed it).
+fn sources_read_branch(dir: Option<&str>, extra: &[PathBuf]) -> bool {
+    fn scan(p: &Path, depth: usize) -> bool {
+        if p.is_dir() {
+            if depth == 0 {
+                return false;
+            }
+            return std::fs::read_dir(p).is_ok_and(|rd| {
+                rd.flatten()
+                    .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                    .any(|e| scan(&e.path(), depth - 1))
+            });
+        }
+        p.extension().is_some_and(|e| e == "ts" || e == "js")
+            && std::fs::read_to_string(p).is_ok_and(|t| {
+                ["getBranch", "getEntries", "getEntry(", "getLeafId"].iter().any(|k| t.contains(k))
+            })
+    }
+    dir.is_some_and(|d| scan(Path::new(d), 3)) || extra.iter().any(|p| scan(p, 3))
 }
 
 impl Extensions {
@@ -206,8 +491,19 @@ impl Extensions {
             extra: extra.to_vec(),
             dir,
             ctx: Mutex::new(SessionCtx::default()),
+            mode: Mutex::new(ExtMode::Print),
+            prompt_override: Mutex::new(None),
+            live: Arc::new(Live::default()),
             rt: Mutex::new(None),
         });
+        ext.live.needs_branch.store(
+            sources_read_branch(ext.dir.as_deref(), &ext.extra),
+            Ordering::Relaxed,
+        );
+        {
+            let live = ext.live.clone();
+            ext.host.set_ctx_provider(Some(Arc::new(move |_ty: &str| live.provide())));
+        }
         if ext.host.may_reconnect() {
             // Shared-daemon supervisor: on daemon death the host transparently
             // falls back to a private host; re-load extensions, re-send the
@@ -300,9 +596,9 @@ impl Extensions {
             json!({
                 "sessionId": ctx.session_id,
                 "sessionFile": ctx.session_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
-                "model": ctx.model,
                 "sessionName": ctx.session_name,
                 "hasUI": ctx.has_ui,
+                "mode": ctx.mode,
             })
         };
         self.host.set_ctx(body).await
@@ -313,38 +609,57 @@ impl Extensions {
         emit_silent(self.host.emit_session_start(None).await);
     }
 
-    /// Pre-prompt lifecycle: `before_agent_start` (system prompt/messages
-    /// merge), then `input` (rewrite or handle).
+    /// TS `before_agent_start` (agent-session `#promptAgent`, every mode): handlers may
+    /// replace the system prompt and inject messages ahead of the prompt.
     ///
     /// # Errors
     /// Transport failure; handler outcomes are applied best-effort.
-    pub async fn before_prompt(
-        self: &Arc<Self>,
+    pub async fn before_agent_start(
+        &self,
         agent: &Agent,
         prompt: &str,
-    ) -> Result<PromptGate> {
-        let system_prompts = vec![agent.system_prompt().await];
+        images: Option<Value>,
+    ) -> Result<Vec<AgentMessage>> {
+        // TS keeps the override per turn (`setTurnSystemPromptOverride`, cleared on the next
+        // prompt): start every prompt from the base prompt, never from the last override.
+        let mut base = agent.system_prompt().await;
+        let restore = {
+            let mut applied = self
+                .prompt_override
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            applied.take().filter(|(_, set)| base == *set).map(|(orig, _)| orig)
+        };
+        if let Some(orig) = restore {
+            agent.set_system_prompt(orig.clone()).await;
+            base = orig;
+        }
         let outcome = self
             .host
-            .emit_before_agent_start(prompt.to_string(), None, system_prompts, None)
+            .emit_before_agent_start(prompt.to_string(), images, vec![base.clone()], None)
             .await?;
         if let Some(list) = outcome.system_prompt {
-            agent.set_system_prompt(list.join("\n\n")).await;
+            let joined = list.join("\n\n");
+            *self
+                .prompt_override
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((base, joined.clone()));
+            agent.set_system_prompt(joined).await;
         }
-        if !outcome.messages.is_empty() {
-            let injected: Vec<AgentMessage> = outcome
-                .messages
-                .iter()
-                .filter_map(json_round_trip)
-                .collect();
-            if !injected.is_empty() {
-                agent.append_messages(injected).await;
-            }
-        }
+        // Injected messages ride the prompt (TS `#promptAgent`: `[user, ...injected]`), so they get
+        // message events and are persisted like any prompt message.
+        Ok(outcome.messages.iter().filter_map(injected_message).collect())
+    }
 
+    /// TS `input` gate (interactive input-controller / rpc ordered-input dispatch; never print
+    /// mode): handlers may rewrite the text or consume the input.
+    ///
+    /// # Errors
+    /// Transport failure.
+    pub async fn input_gate(&self, prompt: &str, source: InputSource) -> Result<PromptGate> {
         let input = self
             .host
-            .emit_input(prompt.to_string(), None, InputSource::Interactive, None)
+            .emit_input(prompt.to_string(), None, source, None)
             .await?;
         if input.handled {
             return Ok(PromptGate::Handled);
@@ -362,8 +677,27 @@ impl Extensions {
     pub fn attach(self: &Arc<Self>, rt: Arc<Runtime>) {
         *self.rt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rt.clone());
         self.serve_incoming(&rt);
+        rt.set_compaction_hooks(Some(Arc::new(CompactBridge {
+            host: self.host.clone(),
+        })));
+        // `before_agent_start` runs inside every prompt admission, like TS `#promptAgent`.
+        let ext = self.clone();
+        let weak = Arc::downgrade(&rt);
+        rt.set_before_start_hook(Some(Arc::new(move |prompt: String, images: Option<Value>| {
+            let (ext, weak) = (ext.clone(), weak.clone());
+            Box::pin(async move {
+                let Some(rt) = weak.upgrade() else { return Vec::new() };
+                ext.before_agent_start(&rt.agent, &prompt, images)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("omp-rs: extension before_agent_start: {e:#}");
+                        Vec::new()
+                    })
+            })
+        })));
         let ext = self.clone();
         tokio::spawn(async move {
+            ext.refresh_live(&rt, true).await;
             let sub = ext.subscribe_lifecycle(rt).await;
             *ext.sub
                 .lock()
@@ -377,11 +711,25 @@ impl Extensions {
     /// Called by [`Self::attach`] and again on every reconnect (the fallback
     /// host has a fresh channel; the previous consumer's task ends when its
     /// sender drops).
+    fn responder(&self, rt: &Arc<Runtime>) -> Arc<dyn omp_ext::lifecycle::HostResponder> {
+        let mode = *self.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::new(RuntimeResponder { rt: Arc::downgrade(rt), mode })
+    }
+
+    /// Declare the serving mode before [`Self::attach`]: sets `ctx.mode` / `hasUI` like TS
+    /// (`print`/`json`: no UI; `rpc` and `tui`: a UI context exists).
+    pub fn set_mode(&self, mode: ExtMode) {
+        *self.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
+        let mut ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        ctx.has_ui = mode.has_ui();
+        ctx.mode = mode.name();
+    }
+
     fn serve_incoming(self: &Arc<Self>, rt: &Arc<Runtime>) {
         if let Some(incoming) = self.host.take_incoming() {
             let host = self.host.clone();
             let runtime = rt.clone();
-            let mut notifications = lifecycle::serve(&host, incoming, Arc::new(HeadlessResponder));
+            let mut notifications = lifecycle::serve(&host, incoming, self.responder(rt));
             tokio::spawn(async move {
                 while let Some(msg) = notifications.recv().await {
                     handle_notification(&runtime, msg);
@@ -435,6 +783,11 @@ impl Extensions {
             );
         }
         self.send_ctx().await?;
+        *self
+            .live
+            .branch_len
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         emit_silent(self.host.emit_session_start(None).await);
         if let Some(rt) = self
             .rt
@@ -447,18 +800,16 @@ impl Extensions {
         Ok(())
     }
 
-    /// Interactive TUI wiring on top of [`Self::attach`]: `hasUI=true` (TS
-    /// interactive mode), slash-command registration, and a switch listener that
-    /// refreshes the ext ctx (id/file/model/name) and emits `session_switch`
-    /// for `/new`, `/resume` and `/fork`. Pushes the initial ctx and emits
-    /// `session_start`, so call it once the startup resume (if any) is loaded.
-    pub async fn attach_interactive(self: &Arc<Self>, rt: Arc<Runtime>) {
-        self.ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .has_ui = true;
+    /// Full per-mode wiring on top of [`Self::attach`]: `ctx.mode`/`hasUI` (TS: UI present in tui
+    /// and non-headless rpc), slash-command registration, a switch listener that refreshes the ext
+    /// ctx (id/file/model/name) and emits `session_switch` for `/new`, `/resume` and `/fork`, the
+    /// title listener, then the initial ctx push and `session_start`. Call it once the startup
+    /// resume (if any) is loaded.
+    pub async fn attach_session(self: &Arc<Self>, rt: Arc<Runtime>, mode: ExtMode) {
+        self.set_mode(mode);
         self.attach(rt.clone());
         crate::rpc::slash::set_extensions(self.clone());
+        rt.set_name_listener(Some(self.name_listener()));
         let ext = self.clone();
         let weak = Arc::downgrade(&rt);
         rt.set_switch_listener(Some(Arc::new(move |reason, previous| {
@@ -475,12 +826,92 @@ impl Extensions {
                 emit_silent(ext.host.emit_session_switch(reason, previous, None).await);
             });
         })));
+        let host = self.host.clone();
+        rt.set_switch_gate(Some(Arc::new(move |reason, target| {
+            let host = host.clone();
+            Box::pin(async move {
+                if !host.has_handlers("session_before_switch") {
+                    return false;
+                }
+                let reason = match reason {
+                    "new" => SwitchReason::New,
+                    "fork" => SwitchReason::Fork,
+                    _ => SwitchReason::Resume,
+                };
+                let target = target.map(|p| p.to_string_lossy().into_owned());
+                match host.emit_session_before_switch(reason, target, None).await {
+                    Ok(o) => o.cancel,
+                    Err(e) => {
+                        eprintln!("omp-rs: extension session_before_switch: {e:#}");
+                        false
+                    }
+                }
+            })
+        })));
         self.push_session_ctx(&rt).await;
         self.session_start().await;
     }
 
+    /// Refresh the live ctx facts from the runtime. `with_branch` also re-reads the session
+    /// branch (only when an extension reads it, and only when the journal grew).
+    async fn refresh_live(&self, rt: &Runtime, with_branch: bool) {
+        let usage = rt.context_usage_value().await;
+        let streaming = rt.agent.is_streaming().await;
+        {
+            let mut snap = self
+                .live
+                .snap
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            snap.insert("idle".into(), json!(!streaming));
+            snap.insert("pending".into(), json!(rt.has_pending_messages()));
+            snap.insert("contextUsage".into(), usage.unwrap_or(Value::Null));
+            snap.insert("model".into(), rt.model_info());
+        }
+        if with_branch && self.live.needs_branch.load(Ordering::Relaxed) {
+            self.refresh_branch(rt);
+        }
+    }
+
+    fn refresh_branch(&self, rt: &Runtime) {
+        let path = rt.session_file();
+        let len = std::fs::metadata(&path).map_or(0, |m| m.len());
+        {
+            let mut seen = self
+                .live
+                .branch_len
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if seen.as_ref().is_some_and(|(p, l)| *p == path && *l == len) {
+                return;
+            }
+            *seen = Some((path, len));
+        }
+        let Ok(entries) = rt.entries() else { return };
+        let branch = omp_session::tree::leaf_id(&entries)
+            .map(|leaf| {
+                omp_session::tree::branch_path(&entries, leaf)
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<Value>>()
+            })
+            .unwrap_or_default();
+        *self
+            .live
+            .branch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Value::Array(branch));
+    }
+
     /// Send the runtime's current session id/file/model/name to the host.
     async fn push_session_ctx(&self, rt: &Runtime) {
+        // A new session invalidates the cached branch.
+        *self
+            .live
+            .branch_len
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.refresh_live(rt, true).await;
         let model = rt.agent.model().await;
         let model_ref = format!("{}/{}", model.provider, model.id);
         if let Err(e) = self
@@ -510,7 +941,9 @@ impl Extensions {
     /// `rpc::run_with` `OnStart` hook form of [`Self::attach`].
     pub fn rpc_on_start(self: &Arc<Self>) -> crate::rpc::OnStart {
         let ext = self.clone();
-        Box::new(move |rt: Arc<Runtime>| ext.attach(rt))
+        Box::new(move |rt: Arc<Runtime>| {
+            Box::pin(async move { ext.attach_session(rt, ExtMode::Rpc).await })
+        })
     }
 
     /// Emit `session_shutdown` and stop the host.
@@ -615,13 +1048,32 @@ impl Extensions {
         // listener in order, and `forward_event` enqueues each emit while
         // holding the encoder, so encode order == wire order.
         let updates = Arc::new(Mutex::new(ExtUpdateEncoder::default()));
+        let ext = self.clone();
+        let weak = Arc::downgrade(&rt);
         rt.agent
             .subscribe(move |event, _| {
+                let (ext, weak) = (ext.clone(), weak.clone());
                 let host = host.clone();
                 let turn = turn.clone();
                 let stop = stop.clone();
                 let updates = updates.clone();
                 Box::pin(async move {
+                    if let Some(rt) = weak.upgrade() {
+                        let boundary = matches!(
+                            event,
+                            AgentEvent::AgentStart | AgentEvent::TurnStart | AgentEvent::AgentEnd { .. }
+                        );
+                        if boundary
+                            || matches!(
+                                event,
+                                AgentEvent::MessageEnd { .. }
+                                    | AgentEvent::TurnEnd { .. }
+                                    | AgentEvent::ToolExecutionEnd { .. }
+                            )
+                        {
+                            ext.refresh_live(&rt, boundary).await;
+                        }
+                    }
                     forward_event(&host, &turn, &stop, &updates, &event);
                     Ok(())
                 })
@@ -1132,5 +1584,35 @@ mod tests {
         assert!(err.to_string().contains("cancelled"), "{err:#}");
         assert!(marker.exists(), "host never received cancel_tool");
         host.shutdown().await.unwrap();
+    }
+
+    #[test]
+    fn injected_message_follows_ts_custom_message_normalization() {
+        // Object payload: role custom, explicit fields kept, attribution defaults to "user".
+        let m = injected_message(&json!({"customType": "memory-recall", "content": "hi", "display": false}))
+            .expect("object payload");
+        let AgentMessage::Custom(c) = m else { panic!("custom message") };
+        assert_eq!(c.role, "custom");
+        assert_eq!(c.payload["customType"], "memory-recall");
+        assert_eq!(c.payload["content"], "hi");
+        assert_eq!(c.payload["display"], false);
+        assert_eq!(c.payload["attribution"], "user");
+        // Explicit attribution wins; array content stays an array.
+        let m = injected_message(&json!({"customType": "x", "content": [{"type": "text", "text": "t"}], "attribution": "agent"}))
+            .expect("explicit attribution");
+        let AgentMessage::Custom(c) = m else { panic!("custom message") };
+        assert_eq!(c.payload["attribution"], "agent");
+        assert!(c.payload["content"].is_array());
+        // A bare string becomes a displayed default-type message; other shapes are dropped.
+        assert!(injected_message(&json!("note")).is_some());
+        assert!(injected_message(&json!(7)).is_none());
+    }
+
+    #[test]
+    fn extension_mode_matches_ts_has_ui() {
+        // TS `hasUI()` is true exactly when a UI context was provided: tui and non-headless rpc.
+        assert!(ExtMode::Tui.has_ui() && ExtMode::Rpc.has_ui());
+        assert!(!ExtMode::Print.has_ui() && !ExtMode::Json.has_ui());
+        assert_eq!(ExtMode::Tui.name(), "tui");
     }
 }

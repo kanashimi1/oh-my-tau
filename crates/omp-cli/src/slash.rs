@@ -73,7 +73,7 @@ pub fn set_extensions(ext: Arc<Ext>) {
     let _ = EXTENSIONS.set(ext);
 }
 
-fn extensions() -> Option<&'static Arc<Ext>> {
+pub fn extensions() -> Option<&'static Arc<Ext>> {
     EXTENSIONS.get()
 }
 
@@ -468,6 +468,7 @@ pub async fn dispatch_builtin(
             }
             match rt.new_session(None).await {
                 Ok(()) => output(rt, "New session started."),
+                Err(e) if crate::runtime::is_switch_cancelled(&e) => {}
                 Err(e) => return Some(usage(rt, &format!("Failed to start a new session: {e:#}"))),
             }
             Some(Handled { agent_invoked: false })

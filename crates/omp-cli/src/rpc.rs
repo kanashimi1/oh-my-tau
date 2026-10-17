@@ -521,6 +521,22 @@ pub async fn handle(rt: &Arc<Runtime>, cmd: &Value) -> Value {
 // fails the HRTB lifetime check (`&mut SettingsView<'_>`), so clippy's replacement
 // does not compile.
 #[allow(clippy::redundant_closure, clippy::redundant_closure_for_method_calls)]
+/// TS rpc `emitInput(..., "rpc")`: `None` when an extension consumed the input, else the
+/// (possibly rewritten) text. No extension host / host failure passes the text through.
+async fn input_gate(text: &str) -> Option<String> {
+    let Some(ext) = slash::extensions() else {
+        return Some(text.to_string());
+    };
+    match ext.input_gate(text, omp_ext::lifecycle::InputSource::Rpc).await {
+        Ok(crate::ext::PromptGate::Run(t)) => Some(t),
+        Ok(crate::ext::PromptGate::Handled) => None,
+        Err(e) => {
+            eprintln!("omp-rs: extension input: {e:#}");
+            Some(text.to_string())
+        }
+    }
+}
+
 async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
     match kind {
         "negotiate_protocol" => match cmd.get("protocolVersion").and_then(Value::as_i64) {
@@ -532,7 +548,14 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         },
         "prompt" => {
             let message = str_field(cmd, "message")?;
-            match slash::try_dispatch(rt, message).await {
+            // TS rpc ordered-input dispatch: `input` handlers run before the prompt/slash handling.
+            let gated = input_gate(message).await;
+            let outcome = match &gated {
+                Some(text) => slash::try_dispatch(rt, text).await,
+                None => slash::Outcome::ExtensionHandled,
+            };
+            let message = gated.as_deref().unwrap_or(message);
+            match outcome {
                 slash::Outcome::Handled { agent_invoked } => ok(json!({"agentInvoked": agent_invoked})),
                 slash::Outcome::ExtensionHandled => {
                     // TS: the extension consumed the prompt inside session.prompt;
@@ -571,10 +594,12 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "steer" | "follow_up" => {
             let message = str_field(cmd, "message")?;
-            if kind == "steer" {
-                rt.steer(message);
-            } else {
-                rt.follow_up(message);
+            if let Some(message) = input_gate(message).await {
+                if kind == "steer" {
+                    rt.steer(&message);
+                } else {
+                    rt.follow_up(&message);
+                }
             }
             none()
         }
@@ -597,6 +622,9 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         "abort_and_prompt" => {
             let message = str_field(cmd, "message")?.to_string();
             let images = images(cmd);
+            let Some(message) = input_gate(&message).await else {
+                return none();
+            };
             rt.abort().await;
             let task_rt = rt.clone();
             let id = cmd.get("id").cloned();
@@ -617,10 +645,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             });
             none()
         }
-        "new_session" => {
-            rt.new_session(None).await?;
-            ok(json!({"cancelled": false}))
-        }
+        "new_session" => match rt.new_session(None).await {
+            Err(e) if crate::runtime::is_switch_cancelled(&e) => ok(json!({"cancelled": true})),
+            other => {
+                other?;
+                ok(json!({"cancelled": false}))
+            }
+        },
         "switch_session" => {
             let path = PathBuf::from(str_field(cmd, "sessionPath")?);
             if !path.is_file() {
@@ -629,8 +660,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                     path.display()
                 )));
             }
-            rt.load_session(&path, None).await?;
-            ok(json!({"cancelled": false}))
+            match rt.load_session(&path, None).await {
+                Err(e) if crate::runtime::is_switch_cancelled(&e) => ok(json!({"cancelled": true})),
+                other => {
+                    other?;
+                    ok(json!({"cancelled": false}))
+                }
+            }
         }
         "open_session" => {
             let dir = PathBuf::from(str_field(cmd, "sessionDir")?);
@@ -1247,7 +1283,9 @@ impl FrameEncoder {
 }
 
 /// Hook run once the runtime exists, before the `ready` frame (extension host start-up).
-pub type OnStart = Box<dyn FnOnce(Arc<Runtime>) + Send>;
+pub type OnStart = Box<
+    dyn FnOnce(Arc<Runtime>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send,
+>;
 
 /// Run the RPC loop until stdin closes.
 ///
@@ -1299,7 +1337,7 @@ pub async fn run_with(
     });
 
     if let Some(hook) = on_start {
-        hook(rt.clone());
+        hook(rt.clone()).await;
     }
     rt.send(json!({
         "type": "ready",
