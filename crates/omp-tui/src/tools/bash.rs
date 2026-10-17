@@ -224,11 +224,11 @@ pub fn format_background_notice(job_id: &str, timeout_sec: Option<u64>) -> Strin
     let deadline = match timeout_sec {
         None => " (no deadline)".to_owned(),
         Some(sec) => {
-            format!(" (killed once it has run {sec}s in total; `timeout: 0` disables the deadline)")
+            format!(" (deadline {sec}s)")
         }
     };
     format!(
-        "Backgrounded as job {job_id}{deadline}; its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken."
+        "Backgrounded as job {job_id}{deadline}; output auto-delivers on finish; don't poll, keep working or end the turn."
     )
 }
 
@@ -1506,13 +1506,12 @@ mod tests {
     fn background_notice_mentions_job_and_deadline() {
         let notice = format_background_notice("job-7", Some(30));
         assert!(
-            notice.starts_with("Backgrounded as job job-7 (killed once it has run 30s in total")
+            notice.starts_with("Backgrounded as job job-7 (deadline 30s)")
         );
-        assert!(notice.contains("Do NOT poll for it"));
         let no_deadline = format_background_notice("job-7", None);
         assert!(no_deadline.starts_with("Backgrounded as job job-7 (no deadline)"));
         assert!(is_background_notice(
-            "Backgrounded as job job-7; its output is injected",
+            "Backgrounded as job job-7; output auto-delivers",
             "job-7"
         ));
         assert!(!is_background_notice(

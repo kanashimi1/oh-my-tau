@@ -242,11 +242,11 @@ pub fn background_notice(job_id: &str, timeout_secs: Option<f64>) -> String {
     let deadline = match timeout_secs {
         None => " (no deadline)".to_string(),
         Some(t) => {
-            format!(" (killed once it has run {t}s in total; `timeout: 0` disables the deadline)")
+            format!(" (deadline {t}s)")
         }
     };
     format!(
-        "Backgrounded as job {job_id}{deadline}; its output is injected into the conversation as a follow-up the moment it finishes. Do NOT poll for it (no `sleep`, `ps`, `pgrep`, `top`, `pidwait`, log tailing): every poll is a wasted turn. Do other work, or end your reply and wait to be woken."
+        "Backgrounded as job {job_id}{deadline}; output auto-delivers on finish; don't poll, keep working or end the turn."
     )
 }
 
@@ -388,10 +388,9 @@ mod tests {
     fn notice_matches_omp_text() {
         let n = background_notice("bg_1", Some(300.0));
         assert!(
-            n.starts_with("Backgrounded as job bg_1 (killed once it has run 300s in total"),
+            n.starts_with("Backgrounded as job bg_1 (deadline 300s)"),
             "{n}"
         );
-        assert!(n.contains("Do NOT poll for it"), "{n}");
         assert!(
             background_notice("bg_2", None).starts_with("Backgrounded as job bg_2 (no deadline)")
         );

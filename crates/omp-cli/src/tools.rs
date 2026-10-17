@@ -263,9 +263,13 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
 
 /// TS `isToolAllowed` setting gates for the plain built-ins: a tool whose
 /// `<id>.enabled` setting is off is not advertised (`astGrep`/`checkpoint`
-/// default off, the rest on).
+/// default off, the rest on). `find.enabled` is an enum: `off` hides it;
+/// `auto` stays on (TS narrows `auto` to native-judge models).
 #[must_use]
 pub fn enabled_by_settings(settings: &omp_settings::Settings, name: &str) -> bool {
+    if name == "find" {
+        return settings.get_string("find.enabled").as_deref() != Some("off");
+    }
     let id = match name {
         "bash" => "bash.enabled",
         "glob" => "glob.enabled",
@@ -374,8 +378,9 @@ mod tests {
         for on in ["read", "bash", "ast_edit", "lsp", "todo"] {
             assert!(defaults.iter().any(|n| n == on), "{on} off by default");
         }
-        let custom = names("lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\n");
-        assert!(!custom.iter().any(|n| n == "lsp"));
+        let custom = names("lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\nfind:\n  enabled: \"off\"\n");
+        assert!(!custom.iter().any(|n| n == "lsp" || n == "find"));
+        assert!(defaults.iter().any(|n| n == "find"), "find.enabled auto keeps find");
         for on in ["ast_grep", "checkpoint", "rewind"] {
             assert!(custom.iter().any(|n| n == on), "{on} not enabled by config");
         }

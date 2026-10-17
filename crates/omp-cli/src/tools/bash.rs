@@ -805,10 +805,9 @@ mod tests {
         .unwrap();
         let t = text_of(&r);
         assert!(
-            t.starts_with("Backgrounded as job bg_1 (killed once it has run 300s in total"),
+            t.starts_with("Backgrounded as job bg_1 (deadline 300s)"),
             "{t}"
         );
-        assert!(t.contains("Do NOT poll for it"), "{t}");
 
         // proc:// lists the running job.
         let listing = super::super::jobs::read_proc(&env, "").unwrap();
