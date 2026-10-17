@@ -1,6 +1,6 @@
 //! `omp-rs <subcommand>` — standalone subcommands operating on data omp-rs
 //! already has (model catalog, session usage stats, settings, on-disk session
-//! maintenance, session HTML export), mirroring the TS `omp
+//! maintenance, session HTML export, provider login/logout), mirroring the TS `omp
 //! models|stats|config|gc` CLI surface and the `omp --export <file>` launch
 //! flag.
 
@@ -8,6 +8,7 @@ pub mod config;
 pub mod export;
 pub mod gc;
 pub mod judge_sessions;
+pub mod login;
 pub mod models;
 pub mod stats;
 pub mod stats_judge;
@@ -15,7 +16,7 @@ pub mod stats_judge;
 /// Subcommands this module implements.
 #[must_use]
 pub fn known(name: &str) -> bool {
-    matches!(name, "models" | "stats" | "config" | "gc" | "export" | "judge-sessions")
+    matches!(name, "models" | "stats" | "config" | "gc" | "export" | "judge-sessions" | "login" | "logout")
 }
 
 /// Dispatch `omp-rs <name> <args>`; `args` excludes the subcommand token.
@@ -31,6 +32,8 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "gc" => gc::run(args),
         "export" => export::run(args),
         "judge-sessions" => judge_sessions::run(args),
+        "login" => login::run_login(args),
+        "logout" => login::run_logout(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),
     }
 }

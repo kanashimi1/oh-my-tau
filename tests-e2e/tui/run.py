@@ -223,6 +223,42 @@ def sc_slash(t: Term, r: Result) -> None:
     r.check("slash: no error", re.search(r"(?i)unknown command|not ported|error", added) is None)
 
 
+def sc_login(t: Term, r: Result) -> None:
+    """/login opens the provider picker (TS `OAuthSelectorComponent`); a provider argument goes
+    straight to its prompt; Esc cancels either without storing anything."""
+    ready(t)
+    submit(t, "/login")
+    r.check("login: picker opens", t.wait_for(r"Select provider to login", 20, in_transcript=False))
+    r.screens["login-picker"] = t.text()
+    r.check("login: picker lists providers", "Anthropic" in t.text())
+    t.key("esc")
+    t.settle(0.8, 10)
+    r.check("login: Esc closes the picker", "Select provider to login" not in t.text())
+    submit(t, "/login exa")
+    r.check("login: provider argument asks for the key", t.wait_for(r"Paste your Exa API key", 20, in_transcript=False))
+    r.screens["login-prompt"] = t.text()
+    t.key("esc")
+    t.settle(0.8, 10)
+    r.check("login: Esc closes the prompt", "Paste your Exa API key" not in t.text())
+    submit(t, "/logout")
+    t.settle(1.0, 15)
+    r.check("logout: nothing stored is reported", re.search(r"(?i)no stored provider credentials", t.transcript()) is not None)
+    # Full round trip: paste a key (no probe for Exa), then log that account out again.
+    submit(t, "/login exa")
+    t.wait_for(r"Paste your Exa API key", 20, in_transcript=False)
+    submit(t, "e2e-login-key")
+    r.check("login: success line", t.wait_for(r"Successfully logged in to exa", 30))
+    t.settle(0.8, 10)
+    r.check("login: credential location line", re.search(r"Credentials saved to .*agent\.db", t.transcript()) is not None)
+    submit(t, "/logout")
+    r.check("logout: provider picker", t.wait_for(r"Select provider to logout", 20, in_transcript=False))
+    t.key("enter")
+    r.check("logout: account picker", t.wait_for(r"account to log out", 20, in_transcript=False))
+    t.key("enter")
+    r.check("logout: success line", t.wait_for(r"Successfully logged out .* from exa", 30))
+    r.screens["logout-done"] = t.transcript()
+
+
 def sc_exit(t: Term, r: Result) -> None:
     ready(t)
     t.key("ctrl-c")
@@ -583,6 +619,7 @@ SCENARIOS = {
     "tools": ("tools", sc_tools),
     "usage": ("tool", sc_usage, "display:\n  showTokenUsage: true\n"),
     "slash": ("text", sc_slash),
+    "login": ("text", sc_login),
     "exit": ("text", sc_exit),
     "model": ("text", sc_model),
     "overlay_model": ("text", fullscreen_overlay("/model")),

@@ -86,6 +86,7 @@ pub async fn run(
         (format!("{}/{}", m.provider, m.id), m.name.clone())
     };
     rt.enable_context_usage_frames();
+    crate::slash_extra::mark_interactive_ui();
     rt.publish_context_usage();
     let port = Port { rt };
     omp_tui::run(

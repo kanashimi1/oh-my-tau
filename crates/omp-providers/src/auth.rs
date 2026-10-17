@@ -59,7 +59,7 @@ pub struct Hosts {
 }
 
 impl Hosts {
-    fn from_env() -> Self {
+    pub(crate) fn from_env() -> Self {
         let kimi = ["KIMI_CODE_OAUTH_HOST", "KIMI_OAUTH_HOST"]
             .iter()
             .find_map(|k| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()));

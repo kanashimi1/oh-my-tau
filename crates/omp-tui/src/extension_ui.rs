@@ -464,7 +464,12 @@ impl ExtensionUi {
             .as_ref()
             .and_then(|a| a.deadline)
             .is_some_and(|d| d <= now);
-        let Some(dialog) = self.active.take().filter(|_| due) else {
+        // Only a due dialog leaves: taking first would drop every dialog that has no
+        // deadline (or is not yet due) on the next tick, leaving it drawn but deaf to keys.
+        if !due {
+            return Vec::new();
+        }
+        let Some(dialog) = self.active.take() else {
             return Vec::new();
         };
         self.active_req = None;
@@ -1212,6 +1217,18 @@ mod tests {
         assert!(expired[0].1.get("timedOut").and_then(Value::as_bool) == Some(true));
         // The next queued dialog is now active.
         assert_eq!(ui.head().map(|r| r.id.as_str()), Some("t2"));
+    }
+
+    #[test]
+    fn a_dialog_without_deadline_survives_deadline_polls_and_keeps_taking_keys() {
+        let mut ui = ExtensionUi::new();
+        ui.push(&json!({"type":"extension_ui_request","id":"i1","method":"input","title":"Key"}));
+        assert!(ui.poll_deadlines(Instant::now() + Duration::from_secs(60)).is_empty());
+        assert!(ui.is_active(), "an unexpired poll must not drop the active dialog");
+        let port = FakePort::default();
+        assert!(ui.handle_key(key(KeyCode::Char('x')), &port));
+        ui.handle_key(key(KeyCode::Enter), &port);
+        assert!(port.log.lock()[0].contains(r#""value":"x""#));
     }
 
     #[test]

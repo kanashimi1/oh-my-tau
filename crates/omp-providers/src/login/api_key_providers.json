@@ -1,0 +1,701 @@
+[
+ {
+  "id": "zai",
+  "name": "Z.AI (GLM Coding Plan)",
+  "auth_url": "https://z.ai/manage-apikey/apikey-list",
+  "instructions": "Copy your API key from the dashboard",
+  "prompt": "Paste your Z.AI API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "Z.AI",
+   "base_url": "https://api.z.ai/api/coding/paas/v4",
+   "model": "glm-5.2"
+  }
+ },
+ {
+  "id": "xai",
+  "name": "xAI API",
+  "auth_url": "https://console.x.ai/team/default/api-keys",
+  "instructions": "Create or copy your API key from the xAI Console",
+  "prompt": "Paste your xAI API key",
+  "placeholder": "xai-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "xAI",
+   "url": "https://api.x.ai/v1/models"
+  }
+ },
+ {
+  "id": "aiand",
+  "name": "ai&",
+  "auth_url": "https://console.aiand.com/api-keys",
+  "instructions": "Copy your API key from the ai& console",
+  "prompt": "Paste your ai& API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "ai&",
+   "url": "https://api.aiand.com/v1/models"
+  }
+ },
+ {
+  "id": "abliteration",
+  "name": "Abliteration",
+  "auth_url": "https://abliteration.ai/console",
+  "instructions": "Copy your API key from the Abliteration console",
+  "prompt": "Paste your Abliteration API key",
+  "placeholder": "ak_...",
+  "validate": {
+   "kind": "models-endpoint",
+   "url": "https://api.abliteration.ai/v1/models"
+  }
+ },
+ {
+  "id": "zhipu-coding-plan",
+  "name": "Zhipu Coding Plan (智谱)",
+  "auth_url": "https://bigmodel.cn/coding-plan/personal/overview",
+  "instructions": "Copy your API key from the Coding Plan dashboard",
+  "prompt": "Paste your Zhipu API key",
+  "placeholder": "<id>.<secret>",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "Zhipu",
+   "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+   "model": "glm-5.1"
+  }
+ },
+ {
+  "id": "umans",
+  "name": "Umans AI Coding Plan",
+  "auth_url": "https://app.umans.ai/billing",
+  "instructions": "Create or copy your Umans API key from Dashboard → API Keys.",
+  "prompt": "Paste your Umans API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "anthropic-messages",
+   "base_url": "https://api.code.umans.ai",
+   "model": "umans-coder"
+  }
+ },
+ {
+  "id": "qwen-portal",
+  "name": "Qwen Portal",
+  "auth_url": "https://chat.qwen.ai",
+  "instructions": "Copy your Qwen OAuth token or API key",
+  "prompt": "Paste your Qwen OAuth token or API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "qwen-portal",
+   "base_url": "https://portal.qwen.ai/v1",
+   "model": "coder-model"
+  }
+ },
+ {
+  "id": "sakana",
+  "name": "Sakana AI",
+  "auth_url": "https://console.sakana.ai/api-keys",
+  "instructions": "Copy your API key from the Sakana AI console",
+  "prompt": "Paste your Sakana AI API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "url": "https://api.sakana.ai/v1/models"
+  }
+ },
+ {
+  "id": "minimax-code",
+  "name": "MiniMax Token Plan (International)",
+  "auth_url": "https://platform.minimax.io/subscribe/token-plan",
+  "instructions": "Subscribe to Token Plan and copy your API key",
+  "prompt": "Paste your MiniMax Token Plan API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "MiniMax Token Plan",
+   "base_url": "https://api.minimax.io/v1",
+   "model": "MiniMax-M3"
+  }
+ },
+ {
+  "id": "minimax-code-cn",
+  "name": "MiniMax Token Plan (China)",
+  "auth_url": "https://platform.minimaxi.com/subscribe/token-plan",
+  "instructions": "Subscribe to Token Plan and copy your API key",
+  "prompt": "Paste your MiniMax Token Plan API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "chat-completions",
+   "base_url": "https://api.minimaxi.com/v1",
+   "model": "MiniMax-M3"
+  }
+ },
+ {
+  "id": "xiaomi-token-plan-sgp",
+  "name": "Xiaomi Token Plan (Singapore)",
+  "auth_url": "https://platform.xiaomimimo.com/console/plan-manage",
+  "instructions": "Copy your token-plan API key for the Singapore region",
+  "prompt": "Paste your Xiaomi Token Plan Singapore API key (tp-...)",
+  "placeholder": "tp-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "xiaomi",
+   "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
+   "model": "mimo-v2.5"
+  }
+ },
+ {
+  "id": "xiaomi-token-plan-ams",
+  "name": "Xiaomi Token Plan (Europe)",
+  "auth_url": "https://platform.xiaomimimo.com/console/plan-manage",
+  "instructions": "Copy your token-plan API key for the Europe region",
+  "prompt": "Paste your Xiaomi Token Plan Europe API key (tp-...)",
+  "placeholder": "tp-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "xiaomi",
+   "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+   "model": "mimo-v2.5"
+  }
+ },
+ {
+  "id": "xiaomi-token-plan-cn",
+  "name": "Xiaomi Token Plan (China)",
+  "auth_url": "https://platform.xiaomimimo.com/console/plan-manage",
+  "instructions": "Copy your token-plan API key for the China region",
+  "prompt": "Paste your Xiaomi Token Plan China API key (tp-...)",
+  "placeholder": "tp-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "xiaomi",
+   "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+   "model": "mimo-v2.5"
+  }
+ },
+ {
+  "id": "firepass",
+  "name": "Fire Pass (Fireworks subscription)",
+  "auth_url": "https://app.fireworks.ai/settings/users/api-keys",
+  "instructions": "Create a dedicated Fire Pass API key in the Fireworks dashboard",
+  "prompt": "Paste your Fire Pass API key",
+  "placeholder": "fpk_...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "Fire Pass",
+   "base_url": "https://api.fireworks.ai/inference/v1",
+   "model": "accounts/fireworks/routers/glm-5p2-fast"
+  }
+ },
+ {
+  "id": "cline-pass",
+  "name": "ClinePass",
+  "auth_url": "https://app.cline.bot/dashboard/account",
+  "instructions": "Create an API key in the Cline dashboard under Settings → API Keys",
+  "prompt": "Paste your Cline API key",
+  "placeholder": "sk_...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "ClinePass",
+   "url": "https://api.cline.bot/api/v1/users/me",
+   "headers_hook": "cline-pass-client"
+  }
+ },
+ {
+  "id": "commandcode",
+  "name": "Command Code",
+  "auth_url": "https://commandcode.ai/studio",
+  "instructions": "Create or copy a Provider API key from Command Code Studio",
+  "prompt": "Paste your Command Code API key",
+  "placeholder": "user_...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "Command Code",
+   "url": "https://api.commandcode.ai/alpha/whoami",
+   "optional": true,
+   "trust_forbidden": true
+  }
+ },
+ {
+  "id": "charm-hyper",
+  "name": "Charm Hyper",
+  "auth_url": "https://hyper.charm.land/",
+  "instructions": "Create or copy an API key from the Charm Hyper dashboard",
+  "prompt": "Paste your Charm Hyper API key",
+  "placeholder": "sk-hyper-...",
+  "normalize": "strip-bearer",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "Charm Hyper",
+   "url": "https://hyper.charm.land/v1/credits"
+  }
+ },
+ {
+  "id": "deepseek",
+  "name": "DeepSeek",
+  "auth_url": "https://platform.deepseek.com/api_keys",
+  "instructions": "Create or copy your API key from the DeepSeek dashboard",
+  "prompt": "Paste your DeepSeek API key",
+  "placeholder": "sk-...",
+  "normalize": "strip-bearer",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "deepseek",
+   "url": "https://api.deepseek.com/v1/models"
+  }
+ },
+ {
+  "id": "stepfun",
+  "name": "StepFun",
+  "auth_url": "https://platform.stepfun.ai/interface-key",
+  "instructions": "Copy your API key from the StepFun Open Platform",
+  "prompt": "Paste your StepFun API key",
+  "placeholder": "...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "StepFun",
+   "base_url": "https://api.stepfun.ai/v1",
+   "model": "step-5-preview",
+   "optional": true
+  }
+ },
+ {
+  "id": "meta",
+  "name": "Meta Model API",
+  "auth_url": "https://developer.meta.com/ai/",
+  "instructions": "Create or copy your key from the Meta Model API dashboard",
+  "prompt": "Paste your Meta Model API key",
+  "placeholder": "Model API key",
+  "validate": {
+   "kind": "models-endpoint",
+   "url": "https://api.meta.ai/v1/models"
+  }
+ },
+ {
+  "id": "moonshot",
+  "name": "Moonshot (Kimi API)",
+  "auth_url": "https://platform.moonshot.ai/console/api-keys",
+  "instructions": "Copy your API key from the Moonshot dashboard",
+  "prompt": "Paste your Moonshot API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "moonshot",
+   "url": "https://api.moonshot.ai/v1/models",
+   "base_url_env": "MOONSHOT_BASE_URL"
+  }
+ },
+ {
+  "id": "cerebras",
+  "name": "Cerebras",
+  "auth_url": "https://cloud.cerebras.ai/platform/",
+  "instructions": "Copy your API key from the Cerebras dashboard",
+  "prompt": "Paste your Cerebras API key",
+  "placeholder": "csk-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "Cerebras",
+   "base_url": "https://api.cerebras.ai/v1",
+   "model": "gpt-oss-120b"
+  }
+ },
+ {
+  "id": "baseten",
+  "name": "Baseten",
+  "auth_url": "https://app.baseten.co/settings/api_keys",
+  "instructions": "Copy your API key from the Baseten dashboard",
+  "prompt": "Paste your Baseten API key",
+  "placeholder": "bt_...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "Baseten",
+   "url": "https://inference.baseten.co/v1/models"
+  }
+ },
+ {
+  "id": "helmcode",
+  "name": "Helmcode",
+  "auth_url": "https://cloud.helmcode.com",
+  "instructions": "Copy your API key from the Helmcode dashboard",
+  "prompt": "Paste your Helmcode API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "Helmcode",
+   "url": "https://api.helmcode.com/v1/models"
+  }
+ },
+ {
+  "id": "fireworks",
+  "name": "Fireworks",
+  "auth_url": "https://app.fireworks.ai/settings/users/api-keys",
+  "instructions": "Create or copy your Fireworks API key",
+  "prompt": "Paste your Fireworks API key",
+  "placeholder": "fw_...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "Fireworks",
+   "url": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless%3Dtrue&pageSize=1"
+  }
+ },
+ {
+  "id": "together",
+  "name": "Together",
+  "auth_url": "https://api.together.xyz/settings/api-keys",
+  "instructions": "Copy your API key from the Together dashboard",
+  "prompt": "Paste your Together API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "together",
+   "url": "https://api.together.xyz/v1/models"
+  }
+ },
+ {
+  "id": "nvidia",
+  "name": "NVIDIA",
+  "auth_url": "https://org.ngc.nvidia.com/setup/personal-keys",
+  "instructions": "Copy your API key from NVIDIA NGC Personal Keys",
+  "prompt": "Paste your NVIDIA API key",
+  "placeholder": "nvapi-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "nvidia",
+   "base_url": "https://integrate.api.nvidia.com/v1",
+   "model": "nvidia/llama-3.1-nemotron-70b-instruct",
+   "optional": true
+  }
+ },
+ {
+  "id": "novita",
+  "name": "Novita",
+  "auth_url": "https://novita.ai/settings/key-management",
+  "instructions": "Create or copy your API key from the Novita dashboard",
+  "prompt": "Paste your Novita API key",
+  "placeholder": "sk_...",
+  "validate": {
+   "kind": "chat-completions",
+   "base_url": "https://api.novita.ai/openai/v1",
+   "model": "moonshotai/kimi-k2.7-code"
+  }
+ },
+ {
+  "id": "deepinfra",
+  "name": "DeepInfra",
+  "auth_url": "https://deepinfra.com/dash/api_keys",
+  "instructions": "Create or copy your API key from the DeepInfra dashboard",
+  "prompt": "Paste your DeepInfra API key",
+  "placeholder": "...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "DeepInfra",
+   "base_url": "https://api.deepinfra.com/v1/openai",
+   "model": "deepseek-ai/DeepSeek-V4-Flash-0731"
+  }
+ },
+ {
+  "id": "huggingface",
+  "name": "Hugging Face Inference",
+  "auth_url": "https://huggingface.co/settings/tokens/new?ownUserPermissions=inference.serverless.write&tokenType=fineGrained",
+  "instructions": "Create/copy a token with Make calls to Inference Providers permission (usable as HUGGINGFACE_HUB_TOKEN or HF_TOKEN)",
+  "prompt": "Paste your Hugging Face token (HUGGINGFACE_HUB_TOKEN / HF_TOKEN)",
+  "placeholder": "hf_...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "Hugging Face",
+   "base_url": "https://router.huggingface.co/v1",
+   "model": "openai/gpt-oss-120b"
+  }
+ },
+ {
+  "id": "qianfan",
+  "name": "Qianfan",
+  "auth_url": "https://console.bce.baidu.com/qianfan/ais/console/apiKey",
+  "instructions": "Copy your Qianfan API key from the console",
+  "prompt": "Paste your Qianfan API key",
+  "placeholder": "bce-v3/ALTAK-...",
+  "validate": {
+   "kind": "chat-completions",
+   "label": "qianfan",
+   "base_url": "https://qianfan.baidubce.com/v2",
+   "model": "deepseek-v3.2",
+   "tolerate_model_denied": true
+  }
+ },
+ {
+  "id": "venice",
+  "name": "Venice",
+  "auth_url": "https://venice.ai/settings/api",
+  "instructions": "Copy your API key from the Venice dashboard",
+  "prompt": "Paste your Venice API key",
+  "placeholder": "vapi_...",
+  "validate": {
+   "kind": "chat-completions",
+   "base_url": "https://api.venice.ai/api/v1",
+   "model": "qwen3-4b"
+  }
+ },
+ {
+  "id": "siliconflow",
+  "name": "SiliconFlow",
+  "auth_url": "https://cloud.siliconflow.com/account/ak",
+  "instructions": "Create or copy your API key from the SiliconFlow console",
+  "prompt": "Paste your SiliconFlow API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "siliconflow",
+   "url": "https://api.siliconflow.com/v1/models"
+  }
+ },
+ {
+  "id": "siliconflow-cn",
+  "name": "SiliconFlow (China)",
+  "auth_url": "https://cloud.siliconflow.cn/account/ak",
+  "instructions": "Create or copy your API key from the SiliconFlow console",
+  "prompt": "Paste your SiliconFlow API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "siliconflow-cn",
+   "url": "https://api.siliconflow.cn/v1/models"
+  }
+ },
+ {
+  "id": "synthetic",
+  "name": "Synthetic",
+  "auth_url": "https://dev.synthetic.new/docs/api/overview",
+  "instructions": "Copy your API key from the Synthetic dashboard",
+  "prompt": "Paste your Synthetic API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "url": "https://api.synthetic.new/openai/v1/models"
+  }
+ },
+ {
+  "id": "nanogpt",
+  "name": "NanoGPT",
+  "auth_url": "https://nano-gpt.com/api",
+  "instructions": "Create or copy your NanoGPT API key",
+  "prompt": "Paste your NanoGPT API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "url": "https://nano-gpt.com/api/v1/models"
+  }
+ },
+ {
+  "id": "wafer-serverless",
+  "name": "Wafer Serverless (pay-as-you-go)",
+  "auth_url": "https://app.wafer.ai/usage",
+  "instructions": "Create or copy your Wafer Serverless API key from the Wafer dashboard",
+  "prompt": "Paste your Wafer Serverless API key",
+  "placeholder": "wfr_...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "Wafer Serverless",
+   "url": "https://pass.wafer.ai/v1/models"
+  }
+ },
+ {
+  "id": "coreweave",
+  "name": "CoreWeave Serverless Inference",
+  "auth_url": "https://wandb.ai/settings",
+  "instructions": "Create or select a CoreWeave Serverless Inference project, add export COREWEAVE_PROJECT=<team>/<project> to your shell startup file (for example ~/.zshrc, ~/.bashrc, or your shell's profile/rc file) for the OpenAI-Project header, then copy your API key from account settings",
+  "prompt": "Paste your CoreWeave Serverless Inference API key",
+  "placeholder": "api-key",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "CoreWeave Serverless Inference",
+   "url": "https://api.inference.wandb.ai/v1/models",
+   "headers_hook": "coreweave-project"
+  }
+ },
+ {
+  "id": "vercel-ai-gateway",
+  "name": "Vercel AI Gateway",
+  "auth_url": "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Fapi-keys&title=AI+Gateway+API+Keys",
+  "instructions": "Copy your Vercel AI Gateway API key from the Vercel dashboard",
+  "prompt": "Paste your Vercel AI Gateway API key",
+  "placeholder": "vck_..."
+ },
+ {
+  "id": "litellm",
+  "name": "LiteLLM",
+  "auth_url": "https://docs.litellm.ai/docs/proxy/deploy",
+  "instructions": "Run LiteLLM proxy (default http://localhost:4000/v1; set LITELLM_BASE_URL to customize it), then copy your master key or virtual key",
+  "prompt": "Paste your LiteLLM API key (master key or virtual key)",
+  "placeholder": "sk-..."
+ },
+ {
+  "id": "zenmux",
+  "name": "ZenMux",
+  "auth_url": "https://zenmux.ai/settings/keys",
+  "instructions": "Create or copy your ZenMux API key",
+  "prompt": "Paste your ZenMux API key",
+  "placeholder": "sk-...",
+  "validate": {
+   "kind": "models-endpoint",
+   "url": "https://zenmux.ai/api/v1/models"
+  }
+ },
+ {
+  "id": "opencode-zen",
+  "name": "OpenCode Zen",
+  "auth_url": "https://opencode.ai/auth",
+  "instructions": "Log in to the OpenCode Zen console and copy your OpenCode Zen API key",
+  "prompt": "Paste your OpenCode Zen API key",
+  "placeholder": "sk-..."
+ },
+ {
+  "id": "opencode-go",
+  "name": "OpenCode Go",
+  "auth_url": "https://opencode.ai/auth",
+  "instructions": "Log in to the OpenCode Zen console and copy your OpenCode Go API key",
+  "prompt": "Paste your OpenCode Go API key",
+  "placeholder": "sk-..."
+ },
+ {
+  "id": "yolo-auto",
+  "name": "Yolo-Auto",
+  "auth_url": "https://yolo-auto.com/app",
+  "instructions": "Create or copy your Yolo-Auto API key (yolo_...)",
+  "prompt": "Paste your Yolo-Auto API key",
+  "placeholder": "yolo_...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "Yolo-Auto",
+   "url": "https://yolo-auto.com/v1/models"
+  }
+ },
+ {
+  "id": "tavily",
+  "name": "Tavily",
+  "auth_url": "https://app.tavily.com/home",
+  "instructions": "Copy your Tavily API key from the API Keys page.",
+  "prompt": "Paste your Tavily API key",
+  "placeholder": "tvly-..."
+ },
+ {
+  "id": "kagi",
+  "name": "Kagi",
+  "auth_url": "https://kagi.com/settings/api",
+  "instructions": "Copy your Kagi Search API key from Kagi API settings. Search API access is beta-only; if unavailable, email support@kagi.com.",
+  "prompt": "Paste your Kagi API key",
+  "placeholder": "KG_..."
+ },
+ {
+  "id": "exa",
+  "name": "Exa",
+  "auth_url": "https://dashboard.exa.ai/api-keys",
+  "instructions": "Create or copy your API key from the Exa dashboard.",
+  "prompt": "Paste your Exa API key",
+  "placeholder": "API key"
+ },
+ {
+  "id": "parallel",
+  "name": "Parallel",
+  "auth_url": "https://platform.parallel.ai/settings?tab=api-keys",
+  "instructions": "Copy your Parallel API key from the Parallel settings page.",
+  "prompt": "Paste your Parallel API key",
+  "placeholder": "sk_..."
+ },
+ {
+  "id": "typesafe",
+  "name": "TypeSafe",
+  "auth_url": "https://console.typesafe.ai/",
+  "instructions": "Create or copy your API key from the TypeSafe console.",
+  "prompt": "Paste your TypeSafe API key",
+  "placeholder": "API key",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "TypeSafe",
+   "url": "https://api.typesafe.ai/v1/models",
+   "base_url_env": "TYPESAFE_BASE_URL"
+  }
+ },
+ {
+  "id": "ollama",
+  "name": "Ollama (Local OpenAI-compatible)",
+  "auth_url": "https://github.com/ollama/ollama/blob/main/docs/api.md",
+  "instructions": "Optional: paste an Ollama API key/token for authenticated hosts. Leave empty for local no-auth mode.",
+  "prompt": "Paste your Ollama API key/token (optional)",
+  "placeholder": "ollama-local",
+  "empty_fallback": ""
+ },
+ {
+  "id": "ollama-cloud",
+  "name": "Ollama Cloud",
+  "auth_url": "https://ollama.com/settings/keys",
+  "instructions": "Create an Ollama Cloud API key, then paste it here.",
+  "prompt": "Paste your Ollama Cloud API key",
+  "placeholder": "ollama-cloud-api-key"
+ },
+ {
+  "id": "lm-studio",
+  "name": "LM Studio (Local OpenAI-compatible)",
+  "prompt": "Optional: Paste LM Studio API key (to customize endpoint URL, set LM_STUDIO_BASE_URL env var)",
+  "placeholder": "lm-studio-local",
+  "empty_fallback": "lm-studio-local"
+ },
+ {
+  "id": "llama.cpp",
+  "name": "llama.cpp (Local OpenAI-compatible)",
+  "auth_url": "https://github.com/ggml-org/llama.cpp#quick-start",
+  "instructions": "Paste your llama.cpp API key if your server requires auth. Leave empty for local no-auth mode (default base URL: http://127.0.0.1:8080; set LLAMA_CPP_BASE_URL to customize).",
+  "prompt": "Paste your llama.cpp API key (optional for local no-auth)",
+  "placeholder": "llama-cpp-local",
+  "empty_fallback": "llama-cpp-local"
+ },
+ {
+  "id": "vllm",
+  "name": "vLLM (Local OpenAI-compatible)",
+  "auth_url": "https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html",
+  "instructions": "Paste your vLLM API key if your server requires auth. Leave empty for local no-auth mode (default base URL: http://127.0.0.1:8000/v1).",
+  "prompt": "Paste your vLLM API key (optional for local no-auth)",
+  "placeholder": "vllm-local",
+  "empty_fallback": "vllm-local"
+ },
+ {
+  "id": "gmi-cloud",
+  "name": "GMI Cloud",
+  "auth_url": "https://console.gmicloud.ai",
+  "instructions": "Create or copy your GMI Cloud API key",
+  "prompt": "Paste your GMI Cloud API key",
+  "placeholder": "eyJ...",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "GMI Cloud",
+   "url": "https://api.gmi-serving.com/v1/models"
+  }
+ },
+ {
+  "id": "singularityapi-dev",
+  "name": "SingularityAPI",
+  "auth_url": "https://app.singularityapi.dev",
+  "instructions": "Create an API key from the SingularityAPI dashboard, then paste it here",
+  "prompt": "Paste your SingularityAPI API key",
+  "placeholder": "sk-sapi-...",
+  "normalize": "strip-bearer",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "SingularityAPI",
+   "url": "https://api.singularityapi.dev/v1/models"
+  }
+ },
+ {
+  "id": "singularityapi-tech",
+  "name": "SingularityAPI Reserved Lanes",
+  "auth_url": "https://app.singularityapi.tech/compute/billing",
+  "instructions": "Create a key from the SingularityAPI lanes dashboard, then paste it here",
+  "prompt": "Paste your SingularityAPI lanes key",
+  "placeholder": "sk-...",
+  "normalize": "strip-bearer",
+  "validate": {
+   "kind": "models-endpoint",
+   "label": "SingularityAPI Reserved Lanes",
+   "url": "https://api.singularityapi.tech/v1/models"
+  }
+ }
+]

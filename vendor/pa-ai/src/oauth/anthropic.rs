@@ -37,6 +37,14 @@ pub struct AnthropicCredentials {
     pub refresh: String,
     /// Wall-clock epoch milliseconds.
     pub expires: i64,
+    /// `account.uuid` of the token response (login only; TS `credential.account-id`).
+    pub account_id: Option<String>,
+    /// `account.email_address`.
+    pub email: Option<String>,
+    /// `organization.uuid`.
+    pub org_id: Option<String>,
+    /// `organization.name`.
+    pub org_name: Option<String>,
 }
 
 /// Race the browser callback against the manual paste, exchange the
@@ -244,6 +252,10 @@ struct TokenResponse {
     access: String,
     refresh: String,
     expires_in: i64,
+    account_id: Option<String>,
+    email: Option<String>,
+    org_id: Option<String>,
+    org_name: Option<String>,
 }
 
 fn credentials_from(token: TokenResponse) -> AnthropicCredentials {
@@ -254,6 +266,10 @@ fn credentials_from(token: TokenResponse) -> AnthropicCredentials {
         expires: now_ms()
             .saturating_add(token.expires_in.saturating_mul(1000))
             .saturating_sub(EXPIRY_SKEW_MS),
+        account_id: token.account_id,
+        email: token.email,
+        org_id: token.org_id,
+        org_name: token.org_name,
     }
 }
 
@@ -338,10 +354,21 @@ async fn json_token_request(
     // The wire's expires_in is an integer second count read through JSON f64; the i64 truncation is the port's convention.
     #[allow(clippy::cast_possible_truncation)]
     let expires_in_seconds = expires_in as i64;
+    let nested = |object: &str, field: &str| {
+        json.get(object)
+            .and_then(|o| o.get(field))
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
     Ok(TokenResponse {
         access,
         refresh,
         expires_in: expires_in_seconds,
+        account_id: nested("account", "uuid"),
+        email: nested("account", "email_address"),
+        org_id: nested("organization", "uuid"),
+        org_name: nested("organization", "name"),
     })
 }
 
