@@ -984,33 +984,36 @@ impl Runtime {
             if !rt.agent.has_queued_messages() {
                 return;
             }
-            if interrupted {
-                // The drain run inherits the user interrupt (TS: the queued
-                // turn runs under the still-aborted session signal). Abort on
-                // its first assistant message so the stream takes the graceful
-                // aborted-message path (`content: []`) and the queued
-                // follow-up is never polled.
+            // The drain run inherits the user interrupt (TS: the queued turn
+            // runs under the still-aborted session signal). Abort on its first
+            // assistant message so the stream takes the graceful aborted-message
+            // path (`content: []`) and the queued follow-up is never polled.
+            // The listener is removed once that run settles: `Subscription` has
+            // no `Drop`, and a leaked listener aborted every later turn.
+            let sub = if interrupted {
                 let agent = rt.agent.clone();
-                let sub = agent
-                    .clone()
-                    .subscribe(move |event, _| {
-                        if matches!(
-                            &event,
-                            AgentEvent::MessageStart { message }
-                                if message.role() == "assistant"
-                        ) {
-                            agent.abort();
-                        }
-                        Box::pin(async { Ok(()) })
-                    })
-                    .await;
-                let agent = rt.agent.clone();
-                tokio::spawn(async move {
-                    agent.wait_for_idle().await;
-                    drop(sub);
-                });
-            }
-            if rt.agent.continue_run_until_accepted().await.is_err() {
+                Some(
+                    agent
+                        .clone()
+                        .subscribe(move |event, _| {
+                            if matches!(
+                                &event,
+                                AgentEvent::MessageStart { message }
+                                    if message.role() == "assistant"
+                            ) {
+                                agent.abort();
+                            }
+                            Box::pin(async { Ok(()) })
+                        })
+                        .await,
+                )
+            } else {
+                None
+            };
+            let _ = rt.agent.continue_run_until_accepted().await;
+            if let Some(sub) = sub {
+                rt.agent.wait_for_idle().await;
+                sub.unsubscribe().await;
             }
         });
     }
