@@ -420,7 +420,10 @@ pub(crate) fn build_headers(
         set_if_absent(name, session_id);
     }
 
-    headers.insert(0, ("Authorization".into(), format!("Bearer {api_key}")));
+    // Keyless providers (`auth: none`) carry an empty key: TS sends no `Authorization` header.
+    if !api_key.is_empty() {
+        headers.insert(0, ("Authorization".into(), format!("Bearer {api_key}")));
+    }
     headers
 }
 

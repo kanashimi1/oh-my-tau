@@ -336,20 +336,27 @@ struct Refreshed {
     enterprise_url: Option<String>,
 }
 
-static MINTS: LazyLock<Mutex<HashMap<i64, (String, Instant)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// Tokens this process minted, keyed by (credential store path, row id): row ids are only unique
+/// within one `agent.db`.
+type MintKey = (String, i64);
+static MINTS: LazyLock<Mutex<HashMap<MintKey, (String, Instant)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-fn remember_mint(id: i64, access: &str) {
+fn remember_mint(db: &str, id: i64, access: &str) {
     let mut mints = MINTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     mints.retain(|_, (_, at)| at.elapsed() < REMINT_COOLDOWN);
-    mints.insert(id, (access.to_string(), Instant::now()));
+    mints.insert((db.to_string(), id), (access.to_string(), Instant::now()));
 }
 
-fn recent_mint(id: i64, access: &str) -> bool {
+fn recent_mint(db: &str, id: i64, access: &str) -> bool {
     MINTS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&id)
+        .get(&(db.to_string(), id))
         .is_some_and(|(a, at)| a == access && at.elapsed() < REMINT_COOLDOWN)
+}
+
+fn db_key(db: &Path) -> String {
+    db.to_string_lossy().into_owned()
 }
 
 fn form_encode(pairs: &[(&str, &str)]) -> String {
@@ -528,7 +535,7 @@ async fn refresh_local_row(
     if !leased {
         bail!("timed out waiting for the OAuth refresh lease of credential {}", row.id);
     }
-    let result = refresh_leased(&conn, provider, row, forced, hosts, &owner).await;
+    let result = refresh_leased(&conn, db, provider, row, forced, hosts, &owner).await;
     let _ = conn.execute(
         "DELETE FROM auth_credential_refresh_leases WHERE credential_id = ?1 AND owner = ?2",
         rusqlite::params![row.id, owner],
@@ -538,6 +545,7 @@ async fn refresh_local_row(
 
 async fn refresh_leased(
     conn: &rusqlite::Connection,
+    db: &Path,
     provider: &str,
     row: &Row,
     forced: bool,
@@ -578,7 +586,7 @@ async fn refresh_leased(
         }
         bail!("credential {} changed during refresh", row.id);
     }
-    remember_mint(row.id, &refreshed.access);
+    remember_mint(&db_key(db), row.id, &refreshed.access);
     Ok(Some(Credential { key: refreshed.access, id: row.id }))
 }
 
@@ -604,7 +612,7 @@ async fn local_resolve(
             "oauth" => {
                 let Some(access) = access_of(&data) else { continue };
                 let forced = force == Some(row.id);
-                if forced && recent_mint(row.id, access) {
+                if forced && recent_mint(&db_key(db), row.id, access) {
                     // TS `reuseRecentMint`: re-minting a token the provider just rejected only churns
                     // the refresh token; the caller sees the same bearer and does not retry.
                     return Ok(Some(Credential { key: access.to_string(), id: row.id }));

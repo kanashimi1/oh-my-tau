@@ -397,9 +397,14 @@ impl Config {
     }
 
     /// `apiKey` from models.yml: `!command` stdout, an env var name if that var is set, else the literal.
+    /// A keyless provider (`auth: none`, TS `ProviderConfig.auth`) without `apiKey` yields an empty
+    /// key: requests go out without an `Authorization` header, like TS.
     fn provider_key(&self, p: &str) -> Option<String> {
-        let raw = self.provider(p)?.get("apiKey")?.as_str()?;
-        resolve_config_value(raw)
+        let pc = self.provider(p)?;
+        match pc.get("apiKey").and_then(Value::as_str) {
+            Some(raw) => resolve_config_value(raw),
+            None => (pc.get("auth").and_then(Value::as_str) == Some("none")).then(String::new),
+        }
     }
 }
 
@@ -960,6 +965,19 @@ mod tests {
         let m = resolve_in(&dir, "zz/m1").unwrap();
         assert_eq!(m.api_key.as_deref(), Some("cmd-key"));
         assert_eq!(m.headers, vec![("X-T".to_string(), "hv".to_string())]);
+    }
+
+    #[test]
+    fn auth_none_provider_resolves_keyless() {
+        let (_t, dir) = fixture();
+        std::fs::write(
+            dir.0.join("models.yml"),
+            "providers:\n  kl:\n    baseUrl: http://127.0.0.1:1/v1\n    api: openai-completions\n    auth: none\n    models:\n      - id: m1\n",
+        )
+        .unwrap();
+        let m = resolve_in(&dir, "kl/m1").unwrap();
+        assert_eq!(m.api_key.as_deref(), Some(""));
+        assert_eq!(m.credential_id, None);
     }
 
     #[test]
