@@ -24,8 +24,23 @@ use super::util::{
 };
 use super::Env;
 
+/// `read.defaultLimit` schema default.
 const DEFAULT_LIMIT: usize = 300;
 const MAX_LINES: usize = 3000;
+
+/// Live `read.defaultLimit`, clamped to `[1, MAX_LINES]` (TS `#defaultLimit`);
+/// [`DEFAULT_LIMIT`] when unset or not a finite number.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)] // clamped to 1..=3000 before the cast
+fn default_limit(cwd: &Path) -> usize {
+    omp_settings::Settings::load(cwd)
+        .get_number("read.defaultLimit")
+        .filter(|v| v.is_finite())
+        .map_or(DEFAULT_LIMIT, |v| v.clamp(1.0, MAX_LINES as f64) as usize)
+}
 const LEADING_CONTEXT: usize = 1;
 const TRAILING_CONTEXT: usize = 3;
 const MAX_COLUMNS: usize = 768;
@@ -344,8 +359,9 @@ fn format_read_output(
     let mut empty_window = false;
     let first_start = ranges.first().map_or(1, |r| r.start);
     let multi = ranges.len() > 1;
+    let default_lines = default_limit(&env.cwd);
     let windows: Vec<(usize, usize)> = if ranges.is_empty() {
-        vec![(0, DEFAULT_LIMIT.min(MAX_LINES))]
+        vec![(0, default_lines)]
     } else {
         ranges
             .iter()
@@ -364,7 +380,7 @@ fn format_read_output(
                 } else {
                     0
                 };
-                let limit = r.end.map_or(DEFAULT_LIMIT, |e| e - r.start + 1);
+                let limit = r.end.map_or(default_lines, |e| e - r.start + 1);
                 (
                     requested_start - lead,
                     (limit + lead + trail).min(MAX_LINES),
@@ -476,11 +492,25 @@ pub(crate) fn url_registry() -> &'static Registry {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test session file for [`url_ctx`]: the process-global one is also
+    /// set by every test that builds a `Runtime`, which races URL tests.
+    pub(crate) static TEST_SESSION_FILE: std::cell::RefCell<Option<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Per-call provider context pinned to the caller's session (TS
 /// `sessionResolveContext`).
 pub(crate) fn url_ctx(env: &Env) -> UrlCtx {
+    #[cfg(test)]
+    let session_file = TEST_SESSION_FILE
+        .with(|f| f.borrow().clone())
+        .or_else(omp_urls::global_session_file);
+    #[cfg(not(test))]
+    let session_file = omp_urls::global_session_file();
     UrlCtx {
-        session_file: omp_urls::global_session_file(),
+        session_file,
         cwd: Some(env.cwd.clone()),
         skip_directory_listing: false,
     }
@@ -817,18 +847,19 @@ fn read_directory(absolute: &Path, sel: &Selector) -> Result<AgentToolResult> {
 mod tests {
     use super::*;
     use crate::tools::Env;
+    // Shared with every test that installs the process-global session file.
+    use super::super::util::SESSION_FILE_TEST_LOCK as URL_TEST_LOCK;
 
     /// Install a fake session store (`<tmp>/sess.jsonl` + artifacts dir
     /// `<tmp>/sess/`) and return the tempdir guard. URL tests share the
     /// process-global session file, so they take this lock to avoid races.
-    static URL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn session_store() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let session_file = dir.path().join("sess.jsonl");
         std::fs::write(&session_file, "{\"type\":\"session\",\"version\":3,\"id\":\"sess\"}\n").unwrap();
         std::fs::create_dir_all(dir.path().join("sess")).unwrap();
-        omp_urls::set_global_session_file(Some(session_file));
+        omp_urls::set_global_session_file(Some(session_file.clone()));
+        super::TEST_SESSION_FILE.with(|f| *f.borrow_mut() = Some(session_file));
         dir
     }
 
@@ -1025,7 +1056,9 @@ mod tests {
     }
     #[test]
     fn reads_artifact_url_with_selector() {
-        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _lock = URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1039,7 +1072,9 @@ mod tests {
 
     #[test]
     fn reads_agent_url_markdown() {
-        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _lock = URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1051,7 +1086,9 @@ mod tests {
 
     #[test]
     fn reads_history_index_and_local_file() {
-        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _lock = URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1073,7 +1110,9 @@ mod tests {
 
     #[test]
     fn invalid_url_selector_names_the_url() {
-        let _lock = URL_TEST_LOCK.lock().unwrap();
+        let _lock = URL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");

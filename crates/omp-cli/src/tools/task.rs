@@ -160,8 +160,6 @@ fn agent_summary(description: &str) -> String {
 /// (`~/.omp/agent/agents` + `.omp/agents`), one summary line per agent.
 #[must_use]
 pub fn description(cwd: &Path) -> String {
-    let mut out = String::from(DESCRIPTION_HEADER);
-    out.push_str("\n\n# Available Agents\n");
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     let mut agents: Vec<_> = discover_user_agents(&home)
         .agents
@@ -169,7 +167,21 @@ pub fn description(cwd: &Path) -> String {
         .chain(discover_project_agents(cwd).agents)
         .collect();
     agents.sort_by(|a, b| a.fields.name.cmp(&b.fields.name));
-    for agent in &agents {
+    let mut out = String::from(DESCRIPTION_HEADER);
+    out.push_str("\n\n# Available Agents\n");
+    push_agent_list(&mut out, &agents);
+    out
+}
+
+/// One summary line per `listed` agent; agents with `listed: false` stay
+/// spawnable but are only named on a trailing `Also:` line.
+fn push_agent_list(out: &mut String, agents: &[omp_task::agent::AgentDefinition]) {
+    let mut unlisted: Vec<&str> = Vec::new();
+    for agent in agents {
+        if !agent.fields.listed {
+            unlisted.push(&agent.fields.name);
+            continue;
+        }
         out.push_str("- `");
         out.push_str(&agent.fields.name);
         out.push('`');
@@ -183,7 +195,11 @@ pub fn description(cwd: &Path) -> String {
         out.push_str(&agent_summary(&agent.fields.description));
         out.push('\n');
     }
-    out
+    if !unlisted.is_empty() {
+        out.push_str("Also: ");
+        out.push_str(&unlisted.join(", "));
+        out.push_str(" (definitions: ~/.omp/agent/agents/<name>.md)\n");
+    }
 }
 
 /// One `tasks[]` item as the wire delivers it (`solutionSpace` required by
@@ -440,6 +456,36 @@ mod tests {
         let s = agent_summary(&long);
         assert!(s.chars().count() <= AGENT_SUMMARY_MAX);
         assert!(long.starts_with(&s) && s.ends_with("слово"));
+    }
+
+    #[test]
+    fn unlisted_agents_move_to_also_line() {
+        use omp_task::agent::{parse_agent, AgentSource};
+        let def = |name: &str, extra: &str| {
+            parse_agent(
+                format!("{name}.md"),
+                &format!("---\nname: {name}\ndescription: Does {name}.\n{extra}---\nbody\n"),
+                AgentSource::User,
+            )
+            .unwrap()
+        };
+        let agents = [
+            def("alpha", ""),
+            def("beta", "listed: false\n"),
+            def("gamma", "listed: true\n"),
+            def("delta", "listed: false\n"),
+        ];
+        let mut out = String::new();
+        push_agent_list(&mut out, &agents);
+        assert_eq!(
+            out,
+            "- `alpha`: Does alpha\n- `gamma`: Does gamma\n\
+             Also: beta, delta (definitions: ~/.omp/agent/agents/<name>.md)\n"
+        );
+        // No unlisted agents: no `Also:` line.
+        let mut out = String::new();
+        push_agent_list(&mut out, &agents[..1]);
+        assert_eq!(out, "- `alpha`: Does alpha\n");
     }
 
     #[test]

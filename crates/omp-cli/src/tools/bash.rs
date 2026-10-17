@@ -25,14 +25,13 @@ use tokio::sync::oneshot;
 
 use super::jobs::{self, JobRegistry, JobStatus, Service, ServiceState};
 use super::util::{
-    format_bytes, resolve_to_cwd, str_arg, truncate_head, truncate_tail, DEFAULT_MAX_BYTES,
+    enforce_inline_byte_cap, notice_with_artifact, resolve_to_cwd, save_artifact, sink_window,
+    str_arg, truncate_tail, SpillConfig, DEFAULT_MAX_BYTES,
 };
 
 const DEFAULT_TIMEOUT_SECS: f64 = 300.0;
 const MIN_TIMEOUT_SECS: f64 = 1.0;
 const MAX_TIMEOUT_SECS: f64 = 3600.0;
-const HEAD_BYTES: usize = 20 * 1024;
-const TAIL_BYTES: usize = 20 * 1024;
 /// Bytes held in memory while the command runs (the rest is dropped from the middle).
 const RETAIN_BYTES: usize = 8 * DEFAULT_MAX_BYTES;
 
@@ -42,36 +41,34 @@ pub fn wall_time_notice(elapsed: Duration) -> String {
     format!("Wall time: {:.2} seconds", elapsed.as_secs_f64())
 }
 
-/// Middle elision of over-long output (omp `truncateMiddle` with the default
-/// 20KB head + 20KB tail budget); returns the text and, when cut, the notice.
-#[must_use]
-pub fn elide_middle(output: &str) -> (String, Option<String>) {
-    if output.len() <= DEFAULT_MAX_BYTES {
-        return (output.to_string(), None);
-    }
-    let head = truncate_head(output, HEAD_BYTES);
-    let tail = truncate_tail(output, TAIL_BYTES);
-    let total = head.total_lines;
-    let elided_lines = total.saturating_sub(head.output_lines + tail.output_lines);
-    let elided_bytes = output
-        .len()
-        .saturating_sub(head.content.len() + tail.content.len());
-    let marker = if elided_lines <= 1 {
-        format!("[…{elided_bytes}B elided…]")
-    } else {
-        format!("[…{elided_lines}ln elided…]")
+/// Bound over-long output the way omp's bash does: the `OutputSink` stream
+/// window (middle elision past `DEFAULT_MAX_BYTES`, head per
+/// `tools.artifactHeadBytes`), then `enforceInlineByteCap` at
+/// `tools.artifactSpillThreshold` + slack. Anything cut is saved as an
+/// artifact through `save` (returns its `artifact://` URL); returns the
+/// inline body and, when only the stream window cut, its notice.
+fn bound_output(
+    output: &str,
+    cfg: &SpillConfig,
+    save: impl Fn(&str) -> Option<String>,
+) -> (String, Option<String>) {
+    let (body, notice, mut artifact) = match sink_window(output, cfg) {
+        Some(e) => {
+            let url = save(output);
+            let notice = notice_with_artifact(&e.notice, url.as_deref());
+            (e.content, Some(notice), url)
+        }
+        None => (output.to_string(), None, None),
     };
-    let tail_start = total - tail.output_lines + 1;
-    let notice = format!(
-        "Showing lines 1-{} and {tail_start}-{total} of {total}; {elided_lines} middle line{} ({}) elided",
-        head.output_lines,
-        if elided_lines == 1 { "" } else { "s" },
-        format_bytes(elided_bytes)
-    );
-    (
-        format!("{}\n{marker}\n{}", head.content, tail.content),
-        Some(notice),
-    )
+    if body.len() <= cfg.inline_cap() {
+        return (body, notice);
+    }
+    // The cap's marker and `[raw output: …]` footer replace the stream
+    // notice, whose line ranges no longer describe the shown text.
+    let capped = enforce_inline_byte_cap(&body, cfg.inline_cap(), || {
+        artifact.take().or_else(|| save(output))
+    });
+    (capped, None)
 }
 
 fn timeout_arg(args: &Value) -> Option<f64> {
@@ -203,9 +200,10 @@ fn finished_text(
     outcome: Option<&str>,
     timeout: Option<f64>,
     code: Option<i32>,
+    cfg: &SpillConfig,
 ) -> String {
     use std::fmt::Write as _;
-    let (shown, elision) = elide_middle(output.trim_end_matches('\n'));
+    let (shown, elision) = bound_output(output.trim_end_matches('\n'), cfg, save_artifact);
     let body = if shown.is_empty() {
         "(no output)".to_string()
     } else {
@@ -386,13 +384,14 @@ pub async fn bash(
         // Nothing can honour ready without a service to attach it to (omp).
         notices.push("Ignored ready: service-only, and no service name was given.".to_string());
     }
+    let spill = SpillConfig::load(&cwd);
     if async_requested {
         return Ok(start_background(
-            &env.jobs, dir, command, timeout, notices, &signal,
+            &env.jobs, dir, command, timeout, notices, spill, &signal,
         ));
     }
     let (output, code, elapsed, outcome) = run(&dir, &command, timeout, &signal, None).await?;
-    let mut text = finished_text(&output, elapsed, outcome, timeout, code);
+    let mut text = finished_text(&output, elapsed, outcome, timeout, code, &spill);
     if !notices.is_empty() {
         text = format!("{}\n{text}", notices.join("\n"));
     }
@@ -647,6 +646,7 @@ fn start_background(
     command: String,
     timeout: Option<f64>,
     notices: Vec<String>,
+    spill: SpillConfig,
     _signal: &AbortSignal,
 ) -> AgentToolResult {
     let output: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -667,7 +667,7 @@ fn start_background(
         let raw = run(&dir, &command, timeout, &controller.signal(), Some(output)).await;
         let (status, result, error) = match &raw {
             Ok((output, code, elapsed, outcome)) => {
-                let text = finished_text(output, *elapsed, *outcome, timeout, *code);
+                let text = finished_text(output, *elapsed, *outcome, timeout, *code, &spill);
                 let status = if outcome.is_none() && *code == Some(0) {
                     JobStatus::Completed
                 } else {
@@ -1103,11 +1103,64 @@ mod tests {
             use std::fmt::Write as _;
             let _ = writeln!(long, "line number {i}");
         }
-        let (shown, notice) = elide_middle(long.trim_end());
+        let (shown, notice) = bound_output(long.trim_end(), &SpillConfig::default(), |_| None);
         assert!(shown.len() < long.len());
         assert!(shown.starts_with("line number 1\n"));
         assert!(shown.ends_with("line number 5000"));
         assert!(shown.contains("ln elided…]"));
         assert!(notice.unwrap().contains("middle lines"));
+    }
+
+    /// `tools.artifactSpillThreshold: 8` (project settings layer) caps a
+    /// 100 KB command output near 8 KB (head + tail around a marker) and
+    /// points at the artifact holding the full output. The artifact sink is
+    /// injected, so the test never touches the process-global session file.
+    #[test]
+    fn lowered_spill_threshold_caps_bash_output_with_artifact_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".omp")).unwrap();
+        // Project layer pins every key so the user's global config cannot leak in.
+        std::fs::write(
+            dir.path().join(".omp/config.yml"),
+            "tools:\n  artifactSpillThreshold: 8\n  artifactHeadBytes: 20\n  artifactTailBytes: 20\n  artifactTailLines: 500\n",
+        )
+        .unwrap();
+        let cfg = SpillConfig::load(dir.path());
+        assert_eq!(cfg.threshold, 8 * 1024);
+        // 1000 lines of 99 digits + newline = 100 000 bytes.
+        let cmd = "for i in $(seq 1 1000); do printf '%099d\\n' \"$i\"; done";
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (output, code, _, outcome) = rt
+            .block_on(run(dir.path(), cmd, Some(60.0), &sig(), None))
+            .unwrap();
+        assert_eq!((code, outcome), (Some(0), None));
+        let saved = std::cell::RefCell::new(Vec::<String>::new());
+        let save = |text: &str| {
+            let mut saved = saved.borrow_mut();
+            saved.push(text.to_string());
+            Some(format!("artifact://{}", saved.len() - 1))
+        };
+        let (body, notice) = bound_output(output.trim_end_matches('\n'), &cfg, save);
+        assert!(notice.is_none(), "{notice:?}");
+        assert!(body.len() < 9 * 1024, "inline body is {} bytes", body.len());
+        assert!(body.starts_with(&format!("{:099}\n", 1)), "{body}");
+        assert!(body.contains("B elided…]\n"), "{body}");
+        let shown = body
+            .strip_suffix("[raw output: artifact://0]")
+            .expect("artifact pointer footer");
+        assert!(
+            shown.trim_end().ends_with(&format!("{:099}", 1000)),
+            "{body}"
+        );
+        let saved = saved.into_inner();
+        assert_eq!(saved.len(), 1, "one artifact for the whole output");
+        assert_eq!(
+            saved[0].len(),
+            99_999,
+            "artifact holds the full (trimmed) output"
+        );
     }
 }

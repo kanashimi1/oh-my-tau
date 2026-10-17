@@ -1,32 +1,19 @@
-Single file string replacement; fuzzy whitespace matching.
+Single-file string replacement; fuzzy whitespace matching.
 
 <instruction>
-- MUST use smallest `old_string` uniquely identifying change.
-- Nonunique `old_string` → MUST add context or use `replace_all: true` for all occurrences.
-- Rename a string across file → use `replace_all: true`.
-- SHOULD edit existing files, not create new.
+- MUST use the smallest `old_string` uniquely identifying the change.
+- Nonunique `old_string` → MUST add context, or `replace_all: true` to change every occurrence (also for renames across the file).
+- SHOULD edit existing files, not create new ones.
 </instruction>
 
 <output>
-Success/failure status.
-Success: file modified in place; replacement applied.
-Failure — e.g., `old_string` absent or multiple matches without `replace_all: true`: error describes issue.
+Success: file modified in place. Failure (e.g. `old_string` absent, or multiple matches without `replace_all`): error describes the issue.
 </output>
 
 <critical>
-- MUST read file at least once in conversation before editing. Tool errors on edit before read.
+MUST read the file at least once in the conversation before editing; otherwise the tool errors.
 </critical>
 
 <bash-alternatives>
-Replace content-addressed — identify change by text.
-
-Pattern-addressed bulk changes: bash more efficient:
-
-|Operation|Command|
-|---|---|
-|Regex replace|`sed -E -i 's/pattern/replacement/g' file`|
-|Same replace in several files|`sed -E -i 's/pattern/replacement/g' a.ts b.ts`|
-
-Use Replace when content identifies location; `ast_edit` for structure-aware codemods.
-For in-place edits prefer Replace or `write` — diff preview and fuzzy matching.
+Replace is content-addressed (locate by text). Pattern-addressed bulk changes: bash is cheaper, e.g. `sed -E -i 's/pattern/replacement/g' a.ts b.ts`. Structure-aware codemods: `ast_edit`. In-place edits: prefer Replace or `write` (diff preview, fuzzy matching).
 </bash-alternatives>

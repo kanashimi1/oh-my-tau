@@ -29,7 +29,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use super::eval_bridge::{EvalBridge, OpCtx};
 use super::eval_journal::{self, Lang};
-use super::util::DEFAULT_MAX_BYTES;
+use super::util::{notice_with_artifact, save_artifact, sink_window, spill_window, SpillConfig};
 use super::Env;
 
 #[cfg(test)]
@@ -192,55 +192,35 @@ fn run_opts(bridge: &EvalBridge, timeout: Option<Duration>, cancel: CancelToken)
     ExecOptions { timeout, idle_timeout: true, bridge: Some(bridge), cancel: Some(cancel) }
 }
 
-/// Spill `text` to the session artifacts dir as the next free `<id>.log`
-/// (omp `session.allocateOutputArtifact`); returns the `artifact://<id>`
-/// reference. `None` without a session — the caller then keeps full text.
-fn spill_artifact(text: &str) -> Option<String> {
-    let dir = omp_urls::global_session_file()
-        .as_ref()
-        .and_then(|p| omp_urls::artifacts_directory_for(p))?;
-    std::fs::create_dir_all(&dir).ok()?;
-    let used: Vec<u64> = std::fs::read_dir(&dir)
-        .ok()?
-        .flatten()
-        .filter_map(|e| {
-            e.file_name()
-                .to_str()
-                .and_then(|n| n.split('.').next())
-                .and_then(|p| p.parse().ok())
-        })
-        .collect();
-    let id = (0u64..).find(|i| !used.contains(i))?;
-    std::fs::write(dir.join(format!("{id}.log")), text).ok()?;
-    Some(format!("artifact://{id}"))
+/// Bound the rendered output the way omp's eval does. The `OutputSink`
+/// stream window (middle elision past `DEFAULT_MAX_BYTES`, head per
+/// `tools.artifactHeadBytes`) always applies; output that fits it but tops
+/// `tools.artifactSpillThreshold` gets the session-level spill
+/// (`spillLargeResultToArtifact`: `artifactHeadBytes` + `artifactTailBytes`
+/// within `2 × artifactTailLines` lines). The full text goes to an artifact;
+/// the notice links it only when the save succeeded.
+fn cap_output_with(text: &str, cfg: &SpillConfig) -> String {
+    let elided = match sink_window(text, cfg) {
+        Some(e) => e,
+        // The session-level spill needs a session to hold the artifact.
+        None if omp_urls::global_session_file().is_none() => return text.to_owned(),
+        None => match spill_window(text, cfg) {
+            Some(e) => e,
+            None => return text.to_owned(),
+        },
+    };
+    let url = save_artifact(text);
+    format!(
+        "{}\n\n[{}]",
+        elided.content,
+        notice_with_artifact(&elided.notice, url.as_deref())
+    )
 }
 
-/// Cap the rendered output at the TS streaming-output budget (the same
-/// `DEFAULT_MAX_BYTES` inline budget the bash tool uses), spilling the full
-/// text to an artifact as the recovery pointer (TS `OutputSink` +
-/// `formatOutputNotice`). Without a session artifacts dir the full text is
-/// kept: `details` must never point at an artifact that does not exist.
+/// [`cap_output_with`] at the schema-default limits.
+#[cfg(test)]
 fn cap_output(text: &str) -> String {
-    if text.len() <= DEFAULT_MAX_BYTES {
-        return text.to_owned();
-    }
-    let (elided, elide_notice) = super::bash::elide_middle(text);
-    let mut out = String::new();
-    if let Some(notice) = elide_notice {
-        out.push_str(&notice);
-        out.push('\n');
-    }
-    match spill_artifact(text) {
-        Some(ref_) => {
-            out.push_str(&elided);
-            out.push_str(&format!("\nFull output ({} bytes): {ref_}", text.len()));
-        }
-        None => {
-            // No artifacts dir: keep the full value rather than lose data.
-            return text.to_owned();
-        }
-    }
-    out
+    cap_output_with(text, &SpillConfig::default())
 }
 
 /// True per TS eval error semantics: raised cells, timeouts (interrupted or
@@ -438,7 +418,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             state.py = None;
         }
     }
-    let text = cap_output(&text);
+    let text = cap_output_with(&text, &SpillConfig::load(&cwd));
     Ok(AgentToolResult {
         content: vec![pa_agent::types::ToolResultContent::text(text)],
         details: cell_details(result, replayed),

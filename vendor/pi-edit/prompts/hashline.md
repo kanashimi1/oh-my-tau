@@ -1,31 +1,21 @@
-Hashline patches existing files; new files: `write`. Each file: `[PATH#TAG]`, `TAG` required 4-hex snapshot from latest `read`/`search`. Numbers: original `LINE:TEXT`, never hunk-shifted.
+Hashline patches existing files (new: `write`). Per file `[PATH#TAG]`; required TAG = 4-hex from latest `read`/`search`; numbers: original `LINE:TEXT`, never hunk-shifted.
 
-<ops>
-`PUT N.=M:` replace inclusive N–M with `+` body (`N.=N` for one line); `PUT N*:` replace block N.
-`PUT <N:`/`PUT >N:` insert before/after N (`<1` head, `>$` tail). `PUT >N*:` insert after block N at sibling depth; inside, use `PUT >M:` at closer.
-`CUT N.=M`/`CUT N*` delete and capture, optionally as `@name`.
-`PUT <N @name`/`PUT >N @name` paste at gap (omit name for anonymous CUT); `PUT N.=M @name`/`PUT N* @name` paste over range/block (name REQUIRED). Register pastes have NO body; named registers persist across calls.
+`PUT N.=M:` replace N–M (`N.=N`: one line); `PUT N*:` block N.
+`PUT <N:`/`>N:` insert before/after N (`<1` head, `>$` tail); `>N*:` after block N, sibling depth (inside: `>M:` at closer).
+`CUT N.=M`/`N*` delete+capture (opt. `@name`).
+Paste (NO body): `PUT <N`/`>N [@name]` at gap (bare: anonymous CUT); `PUT N.=M @name`/`N* @name` over range/block (name REQUIRED). Named registers persist across calls.
 `REM` delete file; `MV DEST` rename after prior edits (quote spaced paths).
-</ops>
 
-<rules>
-- `:` ops only: body rows `+TEXT` verbatim incl. indent; lone `+` blank. Literal `- item`/`+ item` → `+- item`/`++ item`. NEVER `-`/bare context. Body length independent of range; delete with CUT, not empty PUT.
-- Touch displayed changed lines only; `…`, `..`, collapsed `N-M:` and out-of-window lines UNSEEN. Re-read first. Tight ranges: split nonadjacent changes; NEVER include keepers or start/end mid-expression/block. Pure addition uses gap PUT.
-- `*` requires multi-line opener, NEVER closer/last/inner statement; use range/gap for one statement. Anchor first decorator/attribute/doc-comment to include it; standalone comments need explicit range.
-- Markdown heading blocks run through deeper headings until next same/higher; after section `PUT >N*:`, end body with blank line.
-- NEVER restyle unrelated code. After EVERY edit tag/numbers change: use edit response or fresh `read`; stale tag/surprise → STOP, re-read.
-</rules>
+`:` ops: body rows `+TEXT` verbatim incl. indent; lone `+` blank; `- x`/`+ x` → `+- x`/`++ x`. NEVER `-`/bare context. Any length; delete via CUT, not empty PUT.
+Ranges cover only displayed changed lines (`…`/`..`/collapsed `N-M:`/off-window: UNSEEN, re-read). Split nonadjacent changes; NEVER start/end mid-expression/block; additions: gap PUT.
+`*` needs multi-line opener, NEVER closer/last/inner line (one statement: range/gap). Anchor first decorator/attribute/doc-comment to include it; standalone comments: explicit range.
+Markdown heading block = section incl. deeper headings; `PUT >N*:` after one: end body with lone `+`.
+NEVER restyle unrelated code. Edits change tag/numbers: use edit response or fresh `read`; stale/surprise → STOP, re-read.
 
-<example>
+Example:
 ```
-[greet.py#A1B2]
+[a.py#A1B2]
 PUT 1*:
-+@cache
-+def greet(name):
-+    print(name)
-[PLAN.md#3C4D]
-PUT >2:
-+- task
++def f():
++    pass
 ```
-Cross-file move: `CUT 1* @fn` in source, then `PUT <1 @fn` in destination section.
-</example>

@@ -93,6 +93,10 @@ pub struct ParsedAgentFields {
     pub prewalk: Option<PrewalkAdvisor>,
     /// `true` = advise with the default advisor-role model; string = custom.
     pub advisor: Option<PrewalkAdvisor>,
+    /// `listed: false` hides the agent from the `task` tool's summary list
+    /// (it is only named in a compact `Also:` line); it stays spawnable.
+    /// Defaults to `true`.
+    pub listed: bool,
 }
 
 /// Spawn-permission field: unrestricted (`*`) or an explicit agent list.
@@ -287,6 +291,7 @@ fn parse_agent_fields(frontmatter: &Value) -> Option<ParsedAgentFields> {
         }),
         read_summarize: parse_bool(obj.get("readSummarize")),
         prewalk,
+        listed: parse_bool(obj.get("listed")).unwrap_or(true),
         advisor,
     })
 }

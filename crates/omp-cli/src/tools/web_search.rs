@@ -81,10 +81,7 @@ pub fn schema() -> Value {
         "properties": {
             "query": {"type": "string"},
             "recency": {"type": "string", "enum": ["day", "week", "month", "year"]},
-            "limit": {"type": "number"},
-            "max_tokens": {"type": "number"},
-            "temperature": {"type": "number"},
-            "num_search_results": {"type": "number"}
+            "limit": {"type": "number"}
         },
         "required": ["query"],
         "additionalProperties": false
@@ -1300,15 +1297,12 @@ struct AnthropicServerToolUse {
 }
 
 /// Call Anthropic's Claude `web_search_20250305` tool.
-#[allow(clippy::too_many_arguments)] // provider call mirrors omp's searchAnthropic signature
 async fn search_anthropic(
     client: &reqwest::Client,
     base_url: &str,
     api_key: &str,
     model: &str,
     plan: &AnthropicQueryPlan,
-    max_tokens: u32,
-    temperature: Option<f32>,
     signal: &AbortSignal,
 ) -> Result<AnthropicApiResponse> {
     let url = format!("{base_url}/v1/messages?beta=true");
@@ -1328,16 +1322,13 @@ async fn search_anthropic(
 
     let mut body = serde_json::Map::new();
     body.insert("model".to_string(), json!(model));
-    body.insert("max_tokens".to_string(), json!(max_tokens));
+    body.insert("max_tokens".to_string(), json!(DEFAULT_MAX_TOKENS));
     body.insert(
         "messages".to_string(),
         json!([{"role": "user", "content": &plan.query}]),
     );
     body.insert("tools".to_string(), json!([tool_obj]));
     body.insert("system".to_string(), json!(SYSTEM_PROMPT));
-    if let Some(t) = temperature {
-        body.insert("temperature".to_string(), json!(t));
-    }
 
     let body_val = serde_json::Value::Object(body);
 
@@ -1677,12 +1668,6 @@ struct WebSearchParams {
     recency: Option<String>,
     #[serde(default)]
     limit: Option<u32>,
-    #[serde(default, rename = "max_tokens")]
-    max_tokens: Option<u32>,
-    #[serde(default)]
-    temperature: Option<f32>,
-    #[serde(default, rename = "num_search_results")]
-    num_search_results: Option<u32>,
 }
 
 /// Convert recency string to an `after:` ISO date (days ago).
@@ -1752,8 +1737,6 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
         &api_key,
         "claude-opus-5-5",
         &plan,
-        parsed.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-        parsed.temperature,
         &signal,
     )
     .await?;
@@ -1775,8 +1758,7 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
     }
 
     // Limit sources.
-    let num_results = parsed.num_search_results.or(parsed.limit);
-    if let Some(n) = num_results {
+    if let Some(n) = parsed.limit {
         if response.sources.len() > n as usize {
             response.sources.truncate(n as usize);
         }
@@ -1816,7 +1798,8 @@ mod tests {
     fn schema_matches_ts_reference() {
         let s = schema();
         let props = s["properties"].as_object().unwrap();
-        assert_eq!(props.len(), 6);
+        assert_eq!(props.len(), 3);
+        assert_eq!(props["limit"]["type"], "number");
         assert_eq!(props["query"]["type"], "string");
         assert_eq!(
             props["recency"],
@@ -2004,8 +1987,6 @@ mod tests {
             "test-key",
             "claude-opus-5-5",
             &plan,
-            DEFAULT_MAX_TOKENS,
-            None,
             &controller.signal(),
         )
         .await
@@ -2058,8 +2039,6 @@ mod tests {
             "bad-key",
             "claude-opus-5-5",
             &plan,
-            DEFAULT_MAX_TOKENS,
-            None,
             &controller.signal(),
         )
         .await;

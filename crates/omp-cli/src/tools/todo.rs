@@ -784,14 +784,14 @@ pub fn tool() -> Arc<dyn AgentTool> {
 pub fn schema() -> Value {
     json!({"type":"object","properties":{
         "op":{"type":"string","enum":["init","start","done","rm","drop","block","unblock","append","view"]},
-        "list":{"type":"array","description":"phases for init","items":{"type":"object","properties":{
+        "list":{"type":"array","description":"init phases","items":{"type":"object","properties":{
             "phase":{"type":"string"},
             "items":{"type":"array","items":{"type":"string"},"minItems":1}
         },"required":["phase","items"]}},
-        "task":{"type":"string","description":"verbatim task content"},
+        "task":{"type":"string","description":"exact task text"},
         "phase":{"type":"string"},
-        "items":{"type":"array","description":"tasks for flat init or append","items":{"type":"string"}},
-        "reason":{"type":"string","description":"blocker note for block"}
+        "items":{"type":"array","description":"flat init/append tasks","items":{"type":"string"}},
+        "reason":{"type":"string","description":"block reason"}
     },"required":["op"]})
 }
 #[cfg(test)]
