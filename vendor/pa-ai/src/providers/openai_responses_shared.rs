@@ -60,24 +60,10 @@ fn parse_text_signature(signature: Option<&str>) -> Option<ParsedTextSignature> 
 
 /// Providers whose tool-call IDs may carry the `call_id|item_id` Responses encoding natively.
 pub const OPENAI_TOOL_CALL_PROVIDERS: [&str; 3] = ["openai", "openai-codex", "opencode"];
-pub const AZURE_TOOL_CALL_PROVIDERS: [&str; 4] = [
-    "openai",
-    "openai-codex",
-    "opencode",
-    "azure-openai-responses",
-];
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ConvertResponsesMessagesOptions {
     pub include_system_prompt: bool,
-}
-
-impl ConvertResponsesMessagesOptions {
-    pub fn include_system_prompt() -> Self {
-        Self {
-            include_system_prompt: true,
-        }
-    }
 }
 
 fn normalize_id_part(part: &str) -> String {

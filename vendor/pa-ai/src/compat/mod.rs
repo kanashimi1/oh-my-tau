@@ -11,6 +11,7 @@ pub mod model;
 pub mod resolve;
 pub mod revision;
 pub mod taxonomy;
+pub mod view;
 
 #[cfg(test)]
 mod oracle;
@@ -20,6 +21,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 pub use model::{compat_overrides, materialize, model_from_catalog_row, resolve_for_model};
+pub use view::ModelView;
 pub use resolve::{resolve_model_policy, ModelSpec, ResolveError, ResolvedModelPolicy};
 
 /// The compiled rule tree (the parts the resolver reads).

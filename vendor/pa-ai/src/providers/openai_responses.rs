@@ -2,24 +2,21 @@
 //! reasoning params with encrypted-content include, service-tier pricing, and the shared Responses
 //! stream processor.
 
-use serde_json::{json, Map, Value};
+use serde_json::Map;
 
 use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
     AssistantMessageEventWriter,
 };
-use crate::models::{clamp_thinking_level, supports_thinking};
 use crate::providers::openai_responses_shared::{
-    apply_service_tier_pricing, convert_responses_messages, convert_responses_tools,
-    ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ReasoningSummary,
-    ResponsesStreamHooks, OPENAI_TOOL_CALL_PROVIDERS,
+    apply_service_tier_pricing,
+    ResponsesStreamHooks,
 };
-use crate::providers::simple_options::build_base_options;
+use crate::providers::responses_request::{build_body, responses_headers, Flavor, ResponsesOptions};
 use crate::registry::Provider;
 use crate::types::{
-    done_reason, error_reason, AssistantMessage, CacheRetention, Context, Model, ModelExt,
-    ModelThinkingLevel, ServiceTier, SimpleStreamOptions, StopReason, StreamOptions, Usage,
+    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
@@ -33,70 +30,8 @@ use crate::utils_inner::stream_failure::{
 
 pub const API_OPENAI_RESPONSES: &str = "openai-responses";
 
-fn resolve_cache_retention(cache_retention: Option<CacheRetention>) -> CacheRetention {
-    if let Some(retention) = cache_retention {
-        return retention;
-    }
-    if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
-        return CacheRetention::Long;
-    }
-    CacheRetention::Short
-}
-
-/// Resolved compat (`Required<OpenAIResponsesCompat>`).
-pub struct ResolvedResponsesCompat {
-    pub send_session_id_header: bool,
-    pub supports_long_cache_retention: bool,
-}
-
-pub fn get_responses_compat(model: &Model) -> ResolvedResponsesCompat {
-    // `sendSessionIdHeader` is an authored override only; the long-retention capability is the
-    // resolved record's (TS `resolveOpenAIResponsesPolicy`: `supportsLongPromptCacheRetention`,
-    // an official-OpenAI-endpoint capability).
-    let send_session_id_header = model
-        .compat
-        .as_ref()
-        .and_then(|c| c.raw.get("sendSessionIdHeader"))
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
-    let supports_long_cache_retention = crate::compat::resolve_for_model(model)
-        .ok()
-        .and_then(|p| p.compat)
-        .and_then(|c| c.get("supportsLongPromptCacheRetention").and_then(serde_json::Value::as_bool))
-        .unwrap_or(false);
-    ResolvedResponsesCompat { send_session_id_header, supports_long_cache_retention }
-}
-
-fn get_prompt_cache_retention(
-    compat: &ResolvedResponsesCompat,
-    cache_retention: CacheRetention,
-) -> Option<&'static str> {
-    if cache_retention == CacheRetention::Long && compat.supports_long_cache_retention {
-        Some("24h")
-    } else {
-        None
-    }
-}
-
-/// Provider-native options.
-#[derive(Clone, Default)]
-pub struct OpenAIResponsesOptions {
-    pub base: StreamOptions,
-    pub reasoning_effort: Option<ModelThinkingLevel>,
-    pub reasoning_summary: Option<ReasoningSummary>,
-    pub service_tier: Option<ServiceTier>,
-}
-
-impl OpenAIResponsesOptions {
-    pub fn from_base(base: StreamOptions) -> Self {
-        Self {
-            base,
-            reasoning_effort: None,
-            reasoning_summary: None,
-            service_tier: None,
-        }
-    }
-}
+/// Provider-native options (see [`ResponsesOptions`]).
+pub type OpenAIResponsesOptions = ResponsesOptions;
 
 pub fn stream_openai_responses(
     model: &Model,
@@ -159,119 +94,6 @@ pub fn stream_openai_responses(
     reader
 }
 
-fn build_headers(
-    model: &Model,
-    api_key: &str,
-    options: &OpenAIResponsesOptions,
-    cache_session_id: Option<&str>,
-) -> Vec<(String, String)> {
-    let compat = get_responses_compat(model);
-    let mut headers: Vec<(String, String)> = Vec::new();
-    for (name, value) in model.headers.iter().flatten() {
-        headers.push((name.clone(), value.clone()));
-    }
-    if let Some(cache_session_id) = cache_session_id {
-        if compat.send_session_id_header {
-            headers.push(("session_id".into(), cache_session_id.to_string()));
-        }
-        headers.push(("x-client-request-id".into(), cache_session_id.to_string()));
-    }
-    if let Some(options_headers) = &options.base.headers {
-        for (name, value) in options_headers {
-            headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
-            headers.push((name.clone(), value.clone()));
-        }
-    }
-    headers.push(("Authorization".into(), format!("Bearer {api_key}")));
-    headers
-}
-
-fn build_params(model: &Model, context: &Context, options: &OpenAIResponsesOptions) -> Value {
-    let messages = convert_responses_messages(
-        model,
-        context,
-        &OPENAI_TOOL_CALL_PROVIDERS,
-        ConvertResponsesMessagesOptions::include_system_prompt(),
-    );
-
-    let cache_retention = resolve_cache_retention(options.base.cache_retention);
-    let compat = get_responses_compat(model);
-    let mut params = Map::new();
-    params.insert("model".into(), json!(model.id));
-    params.insert("input".into(), json!(messages));
-    params.insert("stream".into(), json!(true));
-    if cache_retention != CacheRetention::None {
-        if let Some(session_id) = &options.base.session_id {
-            params.insert("prompt_cache_key".into(), json!(session_id));
-        }
-    }
-    if let Some(retention) = get_prompt_cache_retention(&compat, cache_retention) {
-        params.insert("prompt_cache_retention".into(), json!(retention));
-    }
-    params.insert("store".into(), json!(false));
-
-    if let Some(max_tokens) = options.base.max_tokens {
-        params.insert("max_output_tokens".into(), json!(max_tokens));
-    }
-    if let Some(temperature) = options.base.temperature {
-        params.insert("temperature".into(), json!(temperature));
-    }
-    // GitHub Copilot rejects the service_tier FIELD itself (400) for every value.
-    if options.service_tier.is_some() && model.provider != "github-copilot" {
-        params.insert(
-            "service_tier".into(),
-            serde_json::to_value(options.service_tier).unwrap_or(Value::Null),
-        );
-    }
-    if let Some(tools) = &context.tools {
-        if !tools.is_empty() {
-            params.insert(
-                "tools".into(),
-                json!(convert_responses_tools(
-                    tools,
-                    ConvertResponsesToolsOptions { strict: None }
-                )),
-            );
-        }
-    }
-    if supports_thinking(model) {
-        if options.reasoning_effort.is_some() || options.reasoning_summary.is_some() {
-            let effort = match options.reasoning_effort {
-                Some(effort) => model
-                    .thinking_level_map_value(effort)
-                    .and_then(Option::<&String>::cloned)
-                    .unwrap_or_else(|| effort.wire_name().to_string()),
-                None => "medium".to_string(),
-            };
-            let summary = options.reasoning_summary.map_or(
-                "auto",
-                super::openai_responses_hooks::ReasoningSummary::as_str,
-            );
-            params.insert(
-                "reasoning".into(),
-                json!({ "effort": effort, "summary": summary }),
-            );
-            params.insert("include".into(), json!(["reasoning.encrypted_content"]));
-        } else if model.provider != "github-copilot" {
-            let off_null = model
-                .thinking_level_map_value(ModelThinkingLevel::Off)
-                .is_some_and(|value| value.is_none());
-            if !off_null {
-                let off_value = model
-                    .thinking_level_map_value(ModelThinkingLevel::Off)
-                    .and_then(Option::<&String>::cloned)
-                    .unwrap_or_else(|| "none".to_string());
-                params.insert("reasoning".into(), json!({ "effort": off_value }));
-            }
-        }
-        if model.provider == "xai" {
-            params.insert("include".into(), json!(["reasoning.encrypted_content"]));
-        }
-    }
-
-    Value::Object(params)
-}
-
 // Long by design: mirrors the provider's stream shape.
 #[allow(clippy::too_many_lines)]
 async fn run_stream(
@@ -288,14 +110,8 @@ async fn run_stream(
         .clone()
         .or_else(|| get_env_api_key(&model.provider))
         .unwrap_or_default();
-    let cache_retention = resolve_cache_retention(options.base.cache_retention);
-    let cache_session_id = if cache_retention == CacheRetention::None {
-        None
-    } else {
-        options.base.session_id.clone()
-    };
-
-    let mut params = build_params(model, context, &options);
+    let view = crate::compat::ModelView::of(model);
+    let mut params = build_body(model, &view, context, &options, &Flavor::OpenAi).map_err(ProviderError::Message)?;
     if let Some(on_payload) = &options.base.on_payload {
         if let Some(next) = on_payload(params.clone(), model) {
             params = next;
@@ -303,7 +119,7 @@ async fn run_stream(
     }
 
     let url = format!("{}/responses", model.base_url.trim_end_matches('/'));
-    let headers = build_headers(model, &api_key, &options, cache_session_id.as_deref());
+    let headers = responses_headers(model, &view, &api_key, options.base.headers.as_ref(), options.base.session_id.as_deref());
     let body = params.to_string();
     // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
     let request_dump = RawHttpRequestDump {
@@ -351,7 +167,7 @@ async fn run_stream(
 
     let model_id = model.id.clone();
     let hooks = ResponsesStreamHooks {
-        request_service_tier: options.service_tier,
+        request_service_tier: options.base.service_tier,
         resolve_service_tier: None,
         apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
             apply_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
@@ -430,46 +246,7 @@ pub fn stream_simple_openai_responses(
     context: &Context,
     options: Option<&SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
-    let api_key = options
-        .and_then(|options| options.base.api_key.clone())
-        .or_else(|| get_env_api_key(&model.provider));
-    let Some(api_key) = api_key else {
-        let (writer, reader) = create_assistant_message_event_stream();
-        let message = AssistantMessage {
-            content: Vec::new(),
-            api: model.api.clone(),
-            provider: model.provider.clone(),
-            model: model.id.clone(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: Usage::default(),
-            stop_reason: StopReason::Error,
-            stop_reason_raw: None,
-            error_status: None,
-            error_message: Some(format!("No API key for provider: {}", model.provider)),
-            timestamp: now_ms(),
-            rest: Map::default(),
-        };
-        writer.push(AssistantMessageEvent::Error {
-            reason: crate::types::ErrorStopReason::Error,
-            error: message.clone(),
-        });
-        writer.end(Some(message));
-        return reader;
-    };
-    let base = build_base_options(model, options, Some(&api_key));
-    let clamped_reasoning = options
-        .and_then(|options| options.reasoning)
-        .map(|reasoning| clamp_thinking_level(model, reasoning));
-    let reasoning_effort = clamped_reasoning.filter(|level| *level != ModelThinkingLevel::Off);
-    let stream_options = OpenAIResponsesOptions {
-        base,
-        reasoning_effort,
-        reasoning_summary: None,
-        service_tier: None,
-    };
-    stream_openai_responses(model, context, Some(&stream_options))
+    crate::transport::stream_simple_for_api(model, context, options)
 }
 
 /// Registry provider for the `openai-responses` API.
@@ -500,81 +277,3 @@ impl Provider for OpenAIResponsesProvider {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A responses-served model with a wire `compat` object (the whole model need not be
-    /// responses-shaped for the compat resolution).
-    // Test-only helper; adapting its signature and call sites would churn test fixtures.
-    #[allow(clippy::needless_pass_by_value)]
-    fn compat_model(raw: serde_json::Value) -> Model {
-        serde_json::from_value(serde_json::json!({
-            "id": "m", "name": "m", "api": "openai-responses", "provider": "xai",
-            "baseUrl": "https://api.x.ai/v1", "reasoning": true, "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1000, "maxTokens": 100,
-            "compat": raw,
-        }))
-        .unwrap()
-    }
-
-    #[test]
-    fn the_shared_key_only_compat_decodes_for_responses_models() {
-        // A shared-key-only override object decodes for responses models; the long-retention
-        // capability is the resolver's (`supportsLongPromptCacheRetention`: first-party OpenAI
-        // endpoints only, so false on xAI).
-        let model = compat_model(serde_json::json!({ "supportsReasoningEffort": false }));
-        let compat = get_responses_compat(&model);
-        assert!(!compat.supports_long_cache_retention);
-        assert!(
-            compat.send_session_id_header,
-            "the absent header flag defaults on"
-        );
-    }
-
-    #[test]
-    fn the_responses_shaped_compat_keeps_its_values() {
-        let model = compat_model(
-            serde_json::json!({ "sendSessionIdHeader": false, "supportsLongPromptCacheRetention": true }),
-        );
-        let compat = get_responses_compat(&model);
-        assert!(!compat.send_session_id_header);
-        assert!(compat.supports_long_cache_retention);
-        // Absent compat on the first-party OpenAI endpoint: both on.
-        let plain = serde_json::from_value::<Model>(serde_json::json!({
-            "id": "m", "name": "m", "api": "openai-responses", "provider": "openai",
-            "baseUrl": "https://api.openai.com/v1", "reasoning": false, "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 1000, "maxTokens": 100
-        }))
-        .unwrap();
-        let compat = get_responses_compat(&plain);
-        assert!(compat.send_session_id_header);
-        assert!(compat.supports_long_cache_retention);
-    }
-
-    /// A `reasoning: false` model whose map addresses levels (the live catalog's
-    /// `gpt-5.3-chat-latest` shape, served over the Responses API) is thinking-capable: the
-    /// requested effort reaches the request with the map's value. The flag alone must not veto a
-    /// route that declares addressable levels.
-    #[test]
-    fn a_map_addressable_model_sends_the_reasoning_effort_without_the_flag() {
-        let model = serde_json::from_value::<Model>(json!({
-            "id": "gpt-5.3-chat-latest", "name": "GPT-5.3 Chat (latest)",
-            "api": "openai-responses", "provider": "openai",
-            "baseUrl": "https://api.openai.com/v1", "reasoning": false,
-            "thinkingLevelMap": { "off": null, "xhigh": "xhigh" }, "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 128_000, "maxTokens": 16_384
-        }))
-        .unwrap();
-        let mut options = OpenAIResponsesOptions::from_base(StreamOptions::default());
-        options.reasoning_effort = Some(ModelThinkingLevel::Xhigh);
-        let params = build_params(&model, &Context::default(), &options);
-        assert_eq!(
-            params.get("reasoning"),
-            Some(&json!({ "effort": "xhigh", "summary": "auto" }))
-        );
-    }
-}

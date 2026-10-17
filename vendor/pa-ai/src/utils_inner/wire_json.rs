@@ -397,6 +397,18 @@ pub(crate) fn request_body(
     }
 }
 
+/// [`request_body`] for an owned payload.
+pub(crate) fn request_body_value(
+    payload: Value,
+    on_payload: Option<&crate::types::OnPayloadHook>,
+    model: &crate::types::Model,
+) -> String {
+    match on_payload {
+        None => payload.to_string(),
+        Some(hook) => hook(payload.clone(), model).unwrap_or(payload).to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

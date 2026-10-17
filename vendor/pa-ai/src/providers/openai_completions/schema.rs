@@ -853,7 +853,7 @@ fn drop_foreign_type_keywords(schema: &mut Map<String, Value>, ty: &str) {
     }
 }
 
-fn spill_to_description(node: &mut Map<String, Value>, spill: &[(String, Value)]) {
+pub(crate) fn spill_to_description(node: &mut Map<String, Value>, spill: &[(String, Value)]) {
     if spill.is_empty() {
         return;
     }

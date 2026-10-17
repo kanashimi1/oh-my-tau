@@ -13,10 +13,9 @@ use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventWriter,
 };
 use crate::models::{calculate_cost, CostOverrides};
-use crate::providers::anthropic::convert::{map_stop_reason, transform_for_request};
-use crate::providers::anthropic::params::build_params;
+use crate::providers::anthropic::convert::map_stop_reason;
 use crate::providers::anthropic::{
-    build_request_headers, from_claude_code_name, get_cache_control,
+    build_request_headers,
     should_use_fine_grained_tool_streaming_beta, AnthropicOptions,
 };
 use crate::types::{
@@ -26,7 +25,6 @@ use crate::types::{
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
 use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
-use crate::utils_inner::wire_json::request_body;
 use crate::utils_inner::json_parse::{
     parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
 };
@@ -216,30 +214,30 @@ async fn run_stream(
         base_options.session_id.as_deref(),
     );
 
-    let (_retention, cache_control) = get_cache_control(model, base_options.cache_retention);
+    let view = options.and_then(|o| o.view.clone()).unwrap_or_else(|| crate::compat::ModelView::of(model));
+    let cache_control = crate::providers::anthropic::request::cache_control_value(&view, base_options.cache_retention, is_oauth);
+    let cache_ttl_1h = cache_control.as_ref().is_some_and(|c| c.get("ttl").is_some());
     let uses_anthropic_cache_pricing = has_standard_anthropic_cache_pricing(model);
     let mut cache_write_cost: Option<f64> = match (&cache_control, uses_anthropic_cache_pricing) {
-        (Some(cache_control), true) => Some(get_anthropic_cache_write_cost(
+        (Some(_), true) => Some(get_anthropic_cache_write_cost(
             model.cost.input.as_f64(),
-            cache_control.duration(),
+            if cache_ttl_1h { "1h" } else { "5m" },
             None,
         )),
         _ => None,
     };
 
-    // The body is serialized straight from the transformed history; neither the history copy nor
-    // the params tree outlives this block (the response stream never needs them).
     let body = {
-        let transformed = transform_for_request(context, model);
-        let params = build_params(
+        let default_options = AnthropicOptions::default();
+        let params = crate::providers::anthropic::build_request_body(
             model,
+            &view,
             context,
-            &transformed,
-            is_oauth,
-            options,
-            cache_control.as_ref(),
-        );
-        request_body(&params, base_options.on_payload.as_ref(), model)
+            options.unwrap_or(&default_options),
+            &api_key,
+        )
+        .map_err(ProviderError::Message)?;
+        crate::utils_inner::wire_json::request_body_value(params, base_options.on_payload.as_ref(), model)
     };
 
     let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
@@ -341,7 +339,7 @@ async fn run_stream(
                                     });
                                 cache_write_cost = Some(get_anthropic_cache_write_cost(
                                     model.cost.input.as_f64(),
-                                    cache_control.as_ref().expect("checked").duration(),
+                                    if cache_ttl_1h { "1h" } else { "5m" },
                                     creation.as_ref(),
                                 ));
                             }
@@ -424,21 +422,11 @@ async fn run_stream(
                                         .and_then(|value| value.as_str())
                                         .unwrap_or_default()
                                         .to_string(),
-                                    name: if is_oauth {
-                                        from_claude_code_name(
-                                            content_block
-                                                .get("name")
-                                                .and_then(|value| value.as_str())
-                                                .unwrap_or_default(),
-                                            context.tools.as_deref(),
-                                        )
-                                    } else {
-                                        content_block
-                                            .get("name")
-                                            .and_then(|value| value.as_str())
-                                            .unwrap_or_default()
-                                            .to_string()
-                                    },
+                                    name: crate::providers::anthropic::request::decode_tool_name(
+                                        content_block.get("name").and_then(|value| value.as_str()).unwrap_or_default(),
+                                        is_oauth,
+                                        view.is("escapeBuiltinToolNames"),
+                                    ),
                                     arguments: content_block
                                         .get("input")
                                         .and_then(|value| value.as_object())
@@ -638,7 +626,7 @@ async fn run_stream(
                                     };
                                     cache_write_cost = Some(get_anthropic_cache_write_cost(
                                         model.cost.input.as_f64(),
-                                        cache_control.as_ref().expect("checked").duration(),
+                                        if cache_ttl_1h { "1h" } else { "5m" },
                                         Some(&creation),
                                     ));
                                 }

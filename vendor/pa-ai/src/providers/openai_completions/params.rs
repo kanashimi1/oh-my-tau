@@ -86,13 +86,21 @@ fn prompt_cache_key(options: &OpenAICompletionsOptions, cache_retention: CacheRe
         return None;
     }
     let value = options.base.session_id.as_deref().filter(|v| !v.is_empty())?;
-    if value.chars().count() <= 64 {
+    normalize_stable_id(value, 64, "pc_")
+}
+
+/// TS `normalizeOpenAIStableId`: identities past the wire limit hash down to `{prefix}{base36}`.
+pub(crate) fn normalize_stable_id(value: &str, max_len: usize, hash_prefix: &str) -> Option<String> {
+    if value.is_empty() {
+        return None;
+    }
+    if value.chars().count() <= max_len {
         return Some(value.to_string());
     }
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(value.as_bytes());
     let n = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"));
-    Some(format!("pc_{}", to_base36(n)))
+    Some(format!("{hash_prefix}{}", to_base36(n)))
 }
 
 fn to_base36(mut n: u64) -> String {

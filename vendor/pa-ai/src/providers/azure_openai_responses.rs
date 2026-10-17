@@ -4,23 +4,18 @@
 
 use std::collections::HashMap;
 
-use serde_json::{json, Map, Value};
+use serde_json::Map;
 
 use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
     AssistantMessageEventWriter,
 };
-use crate::models::{clamp_thinking_level, supports_thinking};
-use crate::providers::openai_responses_shared::{
-    convert_responses_messages, convert_responses_tools, ConvertResponsesMessagesOptions,
-    ConvertResponsesToolsOptions, ResponsesStreamHooks, AZURE_TOOL_CALL_PROVIDERS,
-};
-use crate::providers::simple_options::build_base_options;
+use crate::providers::openai_responses_shared::ResponsesStreamHooks;
+use crate::providers::responses_request::{build_body, Flavor, ResponsesOptions};
 use crate::registry::Provider;
 use crate::types::{
-    done_reason, error_reason, AssistantMessage, CacheRetention, Context, Model, ModelExt,
-    ModelThinkingLevel, SimpleStreamOptions, StopReason, StreamOptions, Usage,
+    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
@@ -72,12 +67,10 @@ fn resolve_deployment_name(model: &Model, options: Option<&AzureOpenAIResponsesO
     mapped.unwrap_or_else(|| model.id.clone())
 }
 
-/// Provider-native options.
+/// Provider-native options: the shared Responses options plus the Azure endpoint overrides.
 #[derive(Clone, Default)]
 pub struct AzureOpenAIResponsesOptions {
-    pub base: StreamOptions,
-    pub reasoning_effort: Option<ModelThinkingLevel>,
-    pub reasoning_summary: Option<crate::providers::openai_responses_shared::ReasoningSummary>,
+    pub responses: ResponsesOptions,
     pub azure_api_version: Option<String>,
     pub azure_resource_name: Option<String>,
     pub azure_base_url: Option<String>,
@@ -86,15 +79,12 @@ pub struct AzureOpenAIResponsesOptions {
 
 impl AzureOpenAIResponsesOptions {
     pub fn from_base(base: StreamOptions) -> Self {
-        Self {
-            base,
-            reasoning_effort: None,
-            reasoning_summary: None,
-            azure_api_version: None,
-            azure_resource_name: None,
-            azure_base_url: None,
-            azure_deployment_name: None,
-        }
+        Self { responses: ResponsesOptions::from_base(base), ..Self::default() }
+    }
+
+    /// The options the transport table mapped, pinned to the resolved deployment.
+    pub(crate) fn from_responses(responses: ResponsesOptions, deployment: String) -> Self {
+        Self { responses, azure_deployment_name: Some(deployment), ..Self::default() }
     }
 }
 
@@ -163,82 +153,6 @@ fn resolve_azure_config(
     };
 
     Ok((normalize_azure_base_url(&resolved_base_url)?, api_version))
-}
-
-fn build_params(
-    model: &Model,
-    context: &Context,
-    options: &AzureOpenAIResponsesOptions,
-    deployment_name: &str,
-) -> Value {
-    let messages = convert_responses_messages(
-        model,
-        context,
-        &AZURE_TOOL_CALL_PROVIDERS,
-        ConvertResponsesMessagesOptions::include_system_prompt(),
-    );
-    let mut params = Map::new();
-    params.insert("model".into(), json!(deployment_name));
-    params.insert("input".into(), json!(messages));
-    params.insert("stream".into(), json!(true));
-    // TS #2948: Azure stores responses server-side by default — pin `store: false`, and drop
-    // `prompt_cache_key` when the caller pinned cacheRetention to none; Azure does not send
-    // `prompt_cache_retention` (support unclear) — that stays as-is.
-    if options.base.cache_retention != Some(CacheRetention::None) {
-        if let Some(session_id) = &options.base.session_id {
-            params.insert("prompt_cache_key".into(), json!(session_id));
-        }
-    }
-    params.insert("store".into(), json!(false));
-    if let Some(max_tokens) = options.base.max_tokens {
-        params.insert("max_output_tokens".into(), json!(max_tokens));
-    }
-    if let Some(temperature) = options.base.temperature {
-        params.insert("temperature".into(), json!(temperature));
-    }
-    if let Some(tools) = &context.tools {
-        if !tools.is_empty() {
-            params.insert(
-                "tools".into(),
-                json!(convert_responses_tools(
-                    tools,
-                    ConvertResponsesToolsOptions { strict: None }
-                )),
-            );
-        }
-    }
-    if supports_thinking(model) {
-        if options.reasoning_effort.is_some() || options.reasoning_summary.is_some() {
-            let effort = match options.reasoning_effort {
-                Some(effort) => model
-                    .thinking_level_map_value(effort)
-                    .and_then(Option::<&String>::cloned)
-                    .unwrap_or_else(|| effort.wire_name().to_string()),
-                None => "medium".to_string(),
-            };
-            let summary = options.reasoning_summary.map_or(
-                "auto",
-                super::openai_responses_hooks::ReasoningSummary::as_str,
-            );
-            params.insert(
-                "reasoning".into(),
-                json!({ "effort": effort, "summary": summary }),
-            );
-            params.insert("include".into(), json!(["reasoning.encrypted_content"]));
-        } else {
-            let off_null = model
-                .thinking_level_map_value(ModelThinkingLevel::Off)
-                .is_some_and(|value| value.is_none());
-            if !off_null {
-                let off_value = model
-                    .thinking_level_map_value(ModelThinkingLevel::Off)
-                    .and_then(Option::<&String>::cloned)
-                    .unwrap_or_else(|| "none".to_string());
-                params.insert("reasoning".into(), json!({ "effort": off_value }));
-            }
-        }
-    }
-    Value::Object(params)
 }
 
 pub fn stream_azure_openai_responses(
@@ -315,7 +229,7 @@ async fn run_stream(
     let deployment_name = resolve_deployment_name(model, Some(&options));
 
     let api_key = options
-        .base
+        .responses.base
         .api_key
         .clone()
         .or_else(|| get_env_api_key(&model.provider))
@@ -323,8 +237,10 @@ async fn run_stream(
     let (base_url, api_version) =
         resolve_azure_config(model, Some(&options)).map_err(ProviderError::Message)?;
 
-    let mut params = build_params(model, context, &options, &deployment_name);
-    if let Some(on_payload) = &options.base.on_payload {
+    let view = crate::compat::ModelView::of(model);
+    let mut params = build_body(model, &view, context, &options.responses, &Flavor::Azure { deployment: deployment_name.clone() })
+        .map_err(ProviderError::Message)?;
+    if let Some(on_payload) = &options.responses.base.on_payload {
         if let Some(next) = on_payload(params.clone(), model) {
             params = next;
         }
@@ -338,7 +254,7 @@ async fn run_stream(
     for (name, value) in model.headers.iter().flatten() {
         headers.push((name.clone(), value.clone()));
     }
-    if let Some(options_headers) = &options.base.headers {
+    if let Some(options_headers) = &options.responses.base.headers {
         for (name, value) in options_headers {
             headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
             headers.push((name.clone(), value.clone()));
@@ -362,14 +278,14 @@ async fn run_stream(
         url,
         headers,
         body: Some(body),
-        signal: options.base.signal.clone(),
-        timeout_ms: options.base.timeout_ms,
+        signal: options.responses.base.signal.clone(),
+        timeout_ms: options.responses.base.timeout_ms,
         connection: crate::utils_inner::stream_failure::ConnectionErrorProfile::Sdk,
         transport: crate::utils_inner::http::Transport::Http1,
     })
     .await?;
 
-    if let Some(on_response) = &options.base.on_response {
+    if let Some(on_response) = &options.responses.base.on_response {
         on_response(
             crate::types::ProviderResponse {
                 status: response.status,
@@ -429,7 +345,7 @@ async fn run_stream(
             }
             processor.finish()?;
             if options
-                .base
+                .responses.base
                 .signal
                 .as_ref()
                 .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
@@ -464,49 +380,7 @@ pub fn stream_simple_azure_openai_responses(
     context: &Context,
     options: Option<&SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
-    let api_key = options
-        .and_then(|options| options.base.api_key.clone())
-        .or_else(|| get_env_api_key(&model.provider));
-    let Some(api_key) = api_key else {
-        let (writer, reader) = create_assistant_message_event_stream();
-        let message = AssistantMessage {
-            content: Vec::new(),
-            api: API_AZURE_OPENAI_RESPONSES.to_string(),
-            provider: model.provider.clone(),
-            model: model.id.clone(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: Usage::default(),
-            stop_reason: StopReason::Error,
-            stop_reason_raw: None,
-            error_status: None,
-            error_message: Some(format!("No API key for provider: {}", model.provider)),
-            timestamp: now_ms(),
-            rest: Map::default(),
-        };
-        writer.push(AssistantMessageEvent::Error {
-            reason: crate::types::ErrorStopReason::Error,
-            error: message.clone(),
-        });
-        writer.end(Some(message));
-        return reader;
-    };
-    let base = build_base_options(model, options, Some(&api_key));
-    let clamped_reasoning = options
-        .and_then(|options| options.reasoning)
-        .map(|reasoning| clamp_thinking_level(model, reasoning));
-    let reasoning_effort = clamped_reasoning.filter(|level| *level != ModelThinkingLevel::Off);
-    let stream_options = AzureOpenAIResponsesOptions {
-        base,
-        reasoning_effort,
-        reasoning_summary: None,
-        azure_api_version: None,
-        azure_resource_name: None,
-        azure_base_url: None,
-        azure_deployment_name: None,
-    };
-    stream_azure_openai_responses(model, context, Some(&stream_options))
+    crate::transport::stream_simple_for_api(model, context, options)
 }
 
 /// Registry provider for the `azure-openai-responses` API.
@@ -537,57 +411,3 @@ impl Provider for AzureOpenAIResponsesProvider {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A `reasoning: false` model whose map addresses levels (the live catalog's
-    /// `gpt-5.3-chat-latest` azure shape) is thinking-capable: the requested effort reaches the
-    /// request with the map's value. The flag alone must not veto a route that declares addressable
-    /// levels.
-    #[test]
-    fn a_map_addressable_model_sends_the_reasoning_effort_without_the_flag() {
-        let model = serde_json::from_value::<Model>(json!({
-            "id": "gpt-5.3-chat-latest", "name": "GPT-5.3 Chat (latest)",
-            "api": "azure-openai-responses", "provider": "azure-openai-responses",
-            "baseUrl": "", "reasoning": false,
-            "thinkingLevelMap": { "off": null, "xhigh": "xhigh" }, "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 128_000, "maxTokens": 16_384
-        }))
-        .unwrap();
-        let mut options = AzureOpenAIResponsesOptions::from_base(StreamOptions::default());
-        options.reasoning_effort = Some(ModelThinkingLevel::Xhigh);
-        let params = build_params(&model, &Context::default(), &options, "deploy");
-        assert_eq!(
-            params.get("reasoning"),
-            Some(&json!({ "effort": "xhigh", "summary": "auto" }))
-        );
-    }
-
-    /// The request pins `store: false` (Azure stores responses server-side by default) and drops
-    /// `prompt_cache_key` when the caller set cacheRetention to none; the key still ships by
-    /// default.
-    #[test]
-    fn pins_store_false_and_gates_prompt_cache_key_on_cache_retention() {
-        let model = serde_json::from_value::<Model>(json!({
-            "id": "gpt-4o-mini", "name": "GPT-4o mini",
-            "api": "azure-openai-responses", "provider": "azure-openai-responses",
-            "baseUrl": "", "reasoning": false, "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 128_000, "maxTokens": 16_384
-        }))
-        .unwrap();
-        let mut options = AzureOpenAIResponsesOptions::from_base(StreamOptions::default());
-        options.base.session_id = Some("session-1".into());
-
-        let params = build_params(&model, &Context::default(), &options, "deploy");
-        assert_eq!(params.get("store"), Some(&json!(false)));
-        assert_eq!(params.get("prompt_cache_key"), Some(&json!("session-1")));
-
-        options.base.cache_retention = Some(CacheRetention::None);
-        let params = build_params(&model, &Context::default(), &options, "deploy");
-        assert_eq!(params.get("store"), Some(&json!(false)));
-        assert_eq!(params.get("prompt_cache_key"), None);
-    }
-}

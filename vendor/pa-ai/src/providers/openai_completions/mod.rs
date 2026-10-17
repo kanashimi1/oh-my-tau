@@ -16,17 +16,18 @@ use crate::types::{
     ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage, UsageCost,
 };
 
-mod compat;
+pub(crate) mod compat;
 mod convert;
 mod errors;
-mod params;
-mod schema;
+pub(crate) mod params;
+pub(crate) mod schema;
 mod stream;
 
 #[cfg(test)]
 mod body_parity_tests;
 
 pub(crate) use compat::resolve_compat;
+pub(crate) use params::normalize_stable_id;
 pub use stream::stream_openai_completions;
 
 pub const API_OPENAI_COMPLETIONS: &str = "openai-completions";
@@ -245,4 +246,15 @@ impl Provider for OpenAICompletionsProvider {
     ) -> AssistantMessageEventStream {
         stream_simple_openai_completions(model, context, options)
     }
+}
+
+/// The request body the chat-completions transport sends for `options`.
+///
+/// # Errors
+/// The model's compat cannot be resolved.
+pub(crate) fn build_request_body(model: &Model, context: &Context, options: &OpenAICompletionsOptions) -> Result<Value, String> {
+    let compat = resolve_compat(model).map_err(|e| format!("{e:?}"))?;
+    let retention = resolve_cache_retention(options.base.cache_retention);
+    let transformed = convert::transform_for_request(model, context, &compat);
+    Ok(params::build_params(model, context, &transformed, Some(options), &compat, retention).to_value())
 }

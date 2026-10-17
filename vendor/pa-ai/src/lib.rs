@@ -18,9 +18,12 @@ pub mod types;
 mod event_stream;
 mod providers;
 mod stream;
+pub mod transport;
 
 #[cfg(test)]
 mod prime_inference_differential_test;
+#[cfg(test)]
+mod transport_parity_tests;
 
 pub use event_stream::{AssistantMessageEventExt, AssistantMessageEventStream};
 pub use providers::faux;

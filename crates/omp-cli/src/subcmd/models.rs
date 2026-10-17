@@ -813,4 +813,38 @@ mod tests {
             Value::Number(serde_json::Number::from_f64(0.5).unwrap())
         );
     }
+
+    /// Every model the listing shows must resolve for `--model` and `/model`, including cache rows
+    /// known only by id (`contextWindow`/`maxTokens: null`, e.g. `anthropic/claude-haiku-5-5`).
+    #[test]
+    fn every_listed_model_resolves() {
+        let t = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open(t.path().join("models.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_cache (provider_id TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at INTEGER NOT NULL, authoritative INTEGER NOT NULL DEFAULT 0, static_fingerprint TEXT NOT NULL DEFAULT '', models TEXT NOT NULL);",
+        )
+        .unwrap();
+        let row = json!([{
+            "id": "claude-haiku-9-9", "name": "Claude Haiku 9.9", "api": "anthropic-messages",
+            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": false,
+            "input": ["text"], "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": null, "maxTokens": null,
+        }]);
+        conn.execute(
+            "INSERT INTO model_cache (provider_id, version, updated_at, authoritative, models) VALUES ('anthropic', 1, 1, 0, ?1)",
+            [row.to_string()],
+        )
+        .unwrap();
+        drop(conn);
+        let dir = omp_providers::AgentDir(t.path().to_path_buf());
+        let (listed, _) = collect_all(&dir);
+        assert!(listed.contains_key(&("anthropic".to_string(), "claude-haiku-9-9".to_string())));
+        let failures: Vec<String> = listed
+            .keys()
+            .filter_map(|(p, id)| {
+                omp_providers::resolve_in(&dir, &format!("{p}/{id}")).err().map(|e| format!("{p}/{id}: {e}"))
+            })
+            .collect();
+        assert!(failures.is_empty(), "{} listed models do not resolve: {:#?}", failures.len(), failures);
+    }
 }

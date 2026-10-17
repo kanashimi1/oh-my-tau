@@ -84,7 +84,7 @@ fn user_content_block_chars(blocks: &[crate::types::UserOrToolContent]) -> u64 {
 /// The TS facade never clamps; this is a deliberate Rust-side guard. Budget-folding thinking
 /// providers (Anthropic, Bedrock) add their budget after this clamp and cap it at
 /// `model.max_tokens`.
-fn clamp_output_budget(model: &Model, context: &Context, options: Option<&mut StreamOptions>) {
+pub(crate) fn clamp_output_budget(model: &Model, context: &Context, options: Option<&mut StreamOptions>) {
     let Some(options) = options else {
         return;
     };
@@ -147,8 +147,14 @@ pub fn stream_simple(
     context: &Context,
     options: Option<SimpleStreamOptions>,
 ) -> Result<AssistantMessageEventStream, ProviderError> {
+    let simple = crate::transport::prepare_options(model, options.as_ref(), &crate::providers::anthropic::request::uuid_v4);
+    let env = crate::transport::TransportEnv::from_process();
+    if let Some(stream) = crate::transport::dispatch(model, context, &simple, &env).map_err(ProviderError::Message)? {
+        return Ok(stream);
+    }
+    // The api streams through its registered provider; the facade keeps its output-budget guard.
     let provider = resolve_provider(&model.api)?;
-    let mut options = options;
+    let mut options = Some(simple);
     // A `None` caller still gets the default output budget downstream
     // (`build_base_options` fills the per-model default: an explicit
     // `maxTokens` unchanged, a catalog value `min(model.maxTokens, 32000)`),

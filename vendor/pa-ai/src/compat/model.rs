@@ -110,6 +110,15 @@ pub fn model_from_catalog_row(mut row: Value) -> Option<(Model, Option<Value>)> 
     if let Some(config) = config {
         obj.insert("compat".into(), config);
     }
+    // TS rows may carry `contextWindow`/`maxTokens: null` (model known by id only). The Rust
+    // `Model` models "unknown" as 0, which every consumer already treats like TS `?? 0` /
+    // `?? UNKNOWN_MODEL_MAX_OUTPUT_TOKENS`.
+    let obj = row.as_object_mut()?;
+    for key in ["contextWindow", "maxTokens"] {
+        if obj.get(key).is_some_and(Value::is_null) {
+            obj.insert(key.into(), Value::from(0u64));
+        }
+    }
     let model: Model = serde_json::from_value(row).ok()?;
     Some((model, thinking))
 }

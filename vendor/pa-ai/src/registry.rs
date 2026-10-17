@@ -113,6 +113,7 @@ pub fn register_builtin_api_providers() {
         Arc::new(crate::providers::anthropic::AnthropicMessagesProvider),
         Arc::new(crate::providers::openai_completions::OpenAICompletionsProvider),
         Arc::new(crate::providers::openai_responses::OpenAIResponsesProvider),
+        Arc::new(crate::providers::openrouter::OpenRouterProvider),
         Arc::new(crate::providers::azure_openai_responses::AzureOpenAIResponsesProvider),
         Arc::new(crate::providers::google::GoogleGenerativeAiProvider),
         Arc::new(crate::providers::google_vertex::GoogleVertexProvider),

@@ -5,23 +5,18 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
 };
-use crate::models::clamp_thinking_level;
-use crate::providers::simple_options::{adjust_max_tokens_for_thinking, build_base_options};
 use crate::registry::Provider;
 use crate::types::{
-    AssistantMessage, CacheRetention, Context, Model, ModelExt, ModelThinkingLevel,
-    SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Tool, Usage,
+    AssistantMessage, Context, Model, ModelThinkingLevel,
+    SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
 
-#[cfg(test)]
-mod body_equivalence_tests;
 mod convert;
-mod params;
+pub(crate) mod request;
 mod stream;
 
 pub use stream::stream_anthropic;
@@ -38,45 +33,6 @@ const CLAUDE_CODE_VERSION: &str = "2.1.281";
 const FINE_GRAINED_TOOL_STREAMING_BETA: &str = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 
-const CLAUDE_CODE_TOOLS: [&str; 17] = [
-    "Read",
-    "Write",
-    "Edit",
-    "Bash",
-    "Grep",
-    "Glob",
-    "AskUserQuestion",
-    "EnterPlanMode",
-    "ExitPlanMode",
-    "KillShell",
-    "NotebookEdit",
-    "Skill",
-    "Task",
-    "TaskOutput",
-    "TodoWrite",
-    "WebFetch",
-    "WebSearch",
-];
-
-pub(crate) fn to_claude_code_name(name: &str) -> String {
-    CLAUDE_CODE_TOOLS
-        .iter()
-        .find(|tool| tool.eq_ignore_ascii_case(name))
-        .map_or_else(|| name.to_string(), std::string::ToString::to_string)
-}
-
-pub(crate) fn from_claude_code_name(name: &str, tools: Option<&[Tool]>) -> String {
-    if let Some(tools) = tools {
-        if let Some(matched) = tools
-            .iter()
-            .find(|tool| tool.name.eq_ignore_ascii_case(name))
-        {
-            return matched.name.clone();
-        }
-    }
-    name.to_string()
-}
-
 /// Effort levels for adaptive thinking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnthropicEffort {
@@ -85,6 +41,8 @@ pub enum AnthropicEffort {
     High,
     Xhigh,
     Max,
+    /// `thinking.type: "adaptive"` without `output_config.effort` (MiniMax's binary tag).
+    Adaptive,
 }
 
 impl AnthropicEffort {
@@ -95,6 +53,7 @@ impl AnthropicEffort {
             AnthropicEffort::High => "high",
             AnthropicEffort::Xhigh => "xhigh",
             AnthropicEffort::Max => "max",
+            AnthropicEffort::Adaptive => "adaptive",
         }
     }
 }
@@ -126,17 +85,6 @@ pub enum AnthropicToolChoice {
     Tool { name: String },
 }
 
-impl AnthropicToolChoice {
-    fn to_json(&self) -> Value {
-        match self {
-            AnthropicToolChoice::Auto => json!({ "type": "auto" }),
-            AnthropicToolChoice::Any => json!({ "type": "any" }),
-            AnthropicToolChoice::None => json!({ "type": "none" }),
-            AnthropicToolChoice::Tool { name } => json!({ "type": "tool", "name": name }),
-        }
-    }
-}
-
 /// Provider-native options.
 #[derive(Clone, Default)]
 pub struct AnthropicOptions {
@@ -147,91 +95,13 @@ pub struct AnthropicOptions {
     pub thinking_display: Option<AnthropicThinkingDisplay>,
     pub interleaved_thinking: Option<bool>,
     pub tool_choice: Option<AnthropicToolChoice>,
-}
-
-/// Resolved anthropic compat (`Required<AnthropicMessagesCompat>`).
-pub struct ResolvedAnthropicCompat {
-    pub supports_eager_tool_input_streaming: bool,
-    pub supports_long_cache_retention: bool,
-}
-
-pub fn get_anthropic_compat(model: &Model) -> ResolvedAnthropicCompat {
-    // The resolved record (TS `resolveAnthropicPolicy`): eager tool-input streaming and the 1h
-    // cache TTL are first-party-endpoint capabilities, off for every proxy unless authored.
-    let record = crate::compat::resolve_for_model(model).ok().and_then(|p| p.compat);
-    let flag = |key: &str| {
-        record
-            .as_ref()
-            .and_then(|c| c.get(key))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-    };
-    ResolvedAnthropicCompat {
-        supports_eager_tool_input_streaming: flag("supportsEagerToolInputStreaming"),
-        supports_long_cache_retention: flag("supportsLongCacheRetention"),
-    }
-}
-
-pub(crate) fn resolve_cache_retention(cache_retention: Option<CacheRetention>) -> CacheRetention {
-    if let Some(retention) = cache_retention {
-        return retention;
-    }
-    if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
-        return CacheRetention::Long;
-    }
-    CacheRetention::Short
-}
-
-/// `cache_control` payload derived from the retention preference.
-pub struct CacheControl {
-    pub ttl: Option<&'static str>,
-}
-
-impl CacheControl {
-    fn to_json(&self) -> Value {
-        let mut map = Map::new();
-        map.insert("type".into(), json!("ephemeral"));
-        if let Some(ttl) = self.ttl {
-            map.insert("ttl".into(), json!(ttl));
-        }
-        Value::Object(map)
-    }
-
-    fn duration(&self) -> &'static str {
-        if self.ttl == Some("1h") {
-            "1h"
-        } else {
-            "5m"
-        }
-    }
-}
-
-pub(crate) fn get_cache_control(
-    model: &Model,
-    cache_retention: Option<CacheRetention>,
-) -> (CacheRetention, Option<CacheControl>) {
-    let retention = resolve_cache_retention(cache_retention);
-    if retention == CacheRetention::None {
-        return (retention, None);
-    }
-    let ttl = if retention == CacheRetention::Long
-        && get_anthropic_compat(model).supports_long_cache_retention
-    {
-        Some("1h")
-    } else {
-        None
-    };
-    (retention, Some(CacheControl { ttl }))
-}
-
-/// Fable/Mythos models — and Claude Opus 5.5 — think every turn and reject an explicit `thinking:
-/// {type: "disabled"}` (and any sampling params) with a 400.
-pub(crate) fn is_always_on_adaptive_thinking_model(model_id: &str) -> bool {
-    model_id.contains("fable-5")
-        || model_id.contains("mythos-5")
-        || model_id.contains("mythos-preview")
-        || model_id.contains("opus-5-5")
-        || model_id.contains("opus-5.5")
+    /// Reasoning level fallback when `effort` is unset (TS `AnthropicOptions.reasoning`).
+    pub reasoning: Option<ModelThinkingLevel>,
+    /// Upstream wire model id override (TS `requestModelId`).
+    pub request_model_id: Option<String>,
+    /// The policy view the options were mapped against (a rebuilt model such as the Kimi shim
+    /// carries an authored thinking config a fresh resolution would not reproduce).
+    pub view: Option<crate::compat::ModelView>,
 }
 
 /// Check if a model supports adaptive thinking (Opus 4.6+, Sonnet 4.6+).
@@ -251,34 +121,6 @@ pub(crate) fn supports_adaptive_thinking(model_id: &str) -> bool {
         || model_id.contains("mythos-preview")
 }
 
-fn map_thinking_level_to_effort(
-    model: &Model,
-    level: Option<ModelThinkingLevel>,
-) -> AnthropicEffort {
-    let effective = level.map(|level| clamp_thinking_level(model, level));
-    let mapped = effective.and_then(|level| {
-        model
-            .thinking_level_map_value(level)
-            .and_then(Option::<&String>::cloned)
-    });
-    if let Some(mapped) = mapped {
-        return match mapped.as_str() {
-            "low" => AnthropicEffort::Low,
-            "medium" => AnthropicEffort::Medium,
-            "xhigh" => AnthropicEffort::Xhigh,
-            "max" => AnthropicEffort::Max,
-            _ => AnthropicEffort::High,
-        };
-    }
-    match effective {
-        Some(ModelThinkingLevel::Minimal | ModelThinkingLevel::Low) => AnthropicEffort::Low,
-        Some(ModelThinkingLevel::Medium) => AnthropicEffort::Medium,
-        Some(ModelThinkingLevel::Xhigh) => AnthropicEffort::Xhigh,
-        Some(ModelThinkingLevel::Max) => AnthropicEffort::Max,
-        _ => AnthropicEffort::High,
-    }
-}
-
 pub(crate) fn is_oauth_token(api_key: &str) -> bool {
     api_key.contains("sk-ant-oat")
 }
@@ -291,7 +133,7 @@ pub(crate) fn should_use_fine_grained_tool_streaming_beta(
         .tools
         .as_ref()
         .is_some_and(|tools| !tools.is_empty())
-        && !get_anthropic_compat(model).supports_eager_tool_input_streaming
+        && !crate::compat::ModelView::of(model).is("supportsEagerToolInputStreaming")
 }
 
 pub(crate) fn merge_headers(sources: &[Option<Map<String, Value>>]) -> Map<String, Value> {
@@ -430,108 +272,197 @@ pub(crate) fn build_request_headers(
     (pairs, is_oauth)
 }
 
+/// Thinking budgets per effort when the caller sets none (TS `ANTHROPIC_THINKING`).
+pub(crate) fn thinking_budget_for(options: &SimpleStreamOptions, level: ModelThinkingLevel) -> u64 {
+    let custom = options.thinking_budgets.as_ref().and_then(|b| match level {
+        ModelThinkingLevel::Minimal => b.minimal,
+        ModelThinkingLevel::Low => b.low,
+        ModelThinkingLevel::Medium => b.medium,
+        ModelThinkingLevel::High => b.high,
+        _ => None,
+    });
+    custom.unwrap_or(match level {
+        ModelThinkingLevel::Minimal => 1024,
+        ModelThinkingLevel::Low => 4096,
+        ModelThinkingLevel::Medium => 8192,
+        ModelThinkingLevel::High => 16384,
+        _ => 32768,
+    })
+}
+
+impl AnthropicEffort {
+    pub(crate) fn from_wire(name: &str) -> Option<Self> {
+        Some(match name {
+            "low" => Self::Low,
+            "medium" => Self::Medium,
+            "high" => Self::High,
+            "xhigh" => Self::Xhigh,
+            "max" => Self::Max,
+            "adaptive" => Self::Adaptive,
+            _ => return None,
+        })
+    }
+}
+
+/// TS `mapAnthropicToolChoice`.
+pub(crate) fn map_tool_choice(choice: Option<&SimpleToolChoice>) -> Option<AnthropicToolChoice> {
+    Some(match choice? {
+        SimpleToolChoice::Auto => AnthropicToolChoice::Auto,
+        SimpleToolChoice::None => AnthropicToolChoice::None,
+        // The anthropic wire has no "required": a forced call is `any`.
+        SimpleToolChoice::Any | SimpleToolChoice::Required => AnthropicToolChoice::Any,
+        SimpleToolChoice::Function { name } if !name.is_empty() => AnthropicToolChoice::Tool { name: name.clone() },
+        SimpleToolChoice::Function { .. } => return None,
+    })
+}
+
+/// TS `normalizeMandatoryReasoningOptions`: mandatory-reasoning endpoints reject disabled thinking,
+/// so a request without an effort clamps to the lowest supported one.
+pub(crate) fn normalize_mandatory_reasoning(
+    model: &Model,
+    view: &crate::compat::ModelView,
+    options: &SimpleStreamOptions,
+) -> SimpleStreamOptions {
+    let explicit = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off).is_some() && !options.disable_reasoning;
+    if !model.reasoning
+        || view.thinking_flag("requiresEffort") != Some(true)
+        || view.thinking_flag("suppressWhenOff") == Some(true)
+        || explicit
+    {
+        return options.clone();
+    }
+    let efforts = view.efforts();
+    let floor = ["minimal", "low", "medium", "high", "xhigh", "max"].into_iter().find(|e| efforts.contains(e));
+    let Some(floor) = floor.and_then(crate::models::thinking_level_from_str) else { return options.clone() };
+    let mut next = options.clone();
+    next.reasoning = Some(floor);
+    next.disable_reasoning = false;
+    next
+}
+
+/// TS `mapOptionsForApi` for `anthropic-messages`: simple options -> provider-native options.
+///
+/// # Errors
+/// The requested effort is not supported by the model, or the thinking budget leaves no room.
+pub(crate) fn map_simple_options(
+    model: &Model,
+    view: &crate::compat::ModelView,
+    raw: &SimpleStreamOptions,
+) -> Result<AnthropicOptions, String> {
+    let options = normalize_mandatory_reasoning(model, view, raw);
+    let model_max = (model.max_tokens > 0).then_some(model.max_tokens);
+    let mut base = options.base.clone();
+    base.max_tokens = options.base.max_tokens.or(model_max);
+    let tool_choice = map_tool_choice(options.tool_choice.as_ref());
+    let wire_id = |effort: Option<ModelThinkingLevel>| -> Option<String> {
+        view.effort_routing(effort.map(ModelThinkingLevel::wire_name)).map(str::to_string)
+    };
+    let off = |base: StreamOptions| {
+        let mut o = AnthropicOptions::from_base(base);
+        o.request_model_id = wire_id(None);
+        o.thinking_enabled = Some(false);
+        o.tool_choice = tool_choice.clone();
+        o
+    };
+    let reasoning = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off);
+    let Some(reasoning) = reasoning.filter(|_| model.reasoning && !options.disable_reasoning) else {
+        return Ok(off(base));
+    };
+    let mut budget = thinking_budget_for(&options, reasoning) as i64;
+    if budget <= 0 {
+        return Ok(off(base));
+    }
+    let mode = view.thinking_str("mode");
+    let effort = if matches!(mode, Some("anthropic-adaptive" | "anthropic-budget-effort")) {
+        AnthropicEffort::from_wire(&request::map_effort_to_adaptive(model, view, reasoning.wire_name())?)
+    } else {
+        None
+    };
+    let cap = |uncapped: u64| model_max.map_or(uncapped, |m| uncapped.min(m));
+    let with_thinking = |max: u64, budget: i64| cap(max.saturating_add(budget.max(0) as u64));
+    let max_with_thinking = base.max_tokens.map(|m| with_thinking(m, budget));
+    let finish = |mut base: StreamOptions, max: Option<u64>, budget_tokens: Option<u64>| {
+        base.max_tokens = max;
+        let mut o = AnthropicOptions::from_base(base);
+        o.request_model_id = wire_id(Some(reasoning));
+        o.thinking_enabled = Some(true);
+        o.thinking_budget_tokens = budget_tokens;
+        o.effort = effort;
+        o.tool_choice = tool_choice.clone();
+        o
+    };
+    if mode == Some("anthropic-adaptive") {
+        return Ok(finish(base, max_with_thinking, None));
+    }
+    if std::env::var("PI_NO_INTERLEAVED_THINKING").as_deref() != Ok("1") {
+        if let Some(m) = model_max {
+            if (m as i64) < budget + request::OUTPUT_FALLBACK_BUFFER as i64 {
+                budget = m as i64 - request::OUTPUT_FALLBACK_BUFFER as i64;
+            }
+        }
+        if budget >= 1024 {
+            return Ok(finish(base, max_with_thinking, Some(budget as u64)));
+        }
+    }
+    let max_tokens = match base.max_tokens {
+        None => cap(64_000),
+        Some(m) => with_thinking(m, budget),
+    };
+    if (max_tokens as i64) < budget + request::OUTPUT_FALLBACK_BUFFER as i64 {
+        budget = max_tokens as i64 - request::OUTPUT_FALLBACK_BUFFER as i64;
+    }
+    if budget < 1024 {
+        return Ok(off(base));
+    }
+    Ok(finish(base, Some(max_tokens), Some(budget as u64)))
+}
+
+/// The request body the anthropic transport sends for `options` (`api_key` decides OAuth mode).
+///
+/// # Errors
+/// The options cannot form a valid request (unsupported effort, impossible thinking budget).
+pub(crate) fn build_request_body(
+    model: &Model,
+    view: &crate::compat::ModelView,
+    context: &Context,
+    options: &AnthropicOptions,
+    api_key: &str,
+) -> Result<Value, String> {
+    request::build_body(&request::BodyInput { model, view, context, is_oauth: is_oauth_token(api_key), options })
+}
+
+pub(crate) fn error_stream_for(model: &Model, message: String) -> AssistantMessageEventStream {
+    let (writer, reader) = create_assistant_message_event_stream();
+    let message = AssistantMessage {
+        content: Vec::new(),
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: Usage::default(),
+        stop_reason: StopReason::Error,
+        stop_reason_raw: None,
+        error_status: None,
+        error_message: Some(message),
+        timestamp: now_ms(),
+        rest: Map::default(),
+    };
+    writer.push(AssistantMessageEvent::Error {
+        reason: crate::types::ErrorStopReason::Error,
+        error: message.clone(),
+    });
+    writer.end(Some(message));
+    reader
+}
+
 pub fn stream_simple_anthropic(
     model: &Model,
     context: &Context,
     options: Option<&SimpleStreamOptions>,
 ) -> AssistantMessageEventStream {
-    let api_key = options
-        .and_then(|options| options.base.api_key.clone())
-        .or_else(|| get_env_api_key(&model.provider));
-    let Some(api_key) = api_key else {
-        let (writer, reader) = create_assistant_message_event_stream();
-        let message = AssistantMessage {
-            content: Vec::new(),
-            api: model.api.clone(),
-            provider: model.provider.clone(),
-            model: model.id.clone(),
-            response_model: None,
-            response_id: None,
-            diagnostics: None,
-            usage: Usage::default(),
-            stop_reason: StopReason::Error,
-            stop_reason_raw: None,
-            error_status: None,
-            error_message: Some(format!("No API key for provider: {}", model.provider)),
-            timestamp: now_ms(),
-            rest: Map::default(),
-        };
-        writer.push(AssistantMessageEvent::Error {
-            reason: crate::types::ErrorStopReason::Error,
-            error: message.clone(),
-        });
-        writer.end(Some(message));
-        return reader;
-    };
-
-    let base = build_base_options(model, options, Some(&api_key));
-    let reasoning = options.and_then(|options| options.reasoning);
-    // TS `disableReasoning` wins over `reasoning`: thinking goes off regardless of the model.
-    let disable_reasoning = options.is_some_and(|options| options.disable_reasoning);
-    let tool_choice = options.and_then(|options| options.tool_choice.as_ref()).map(|choice| match choice {
-        SimpleToolChoice::Auto => AnthropicToolChoice::Auto,
-        SimpleToolChoice::None => AnthropicToolChoice::None,
-        // The anthropic wire has no "required": a forced call is `any`.
-        SimpleToolChoice::Any | SimpleToolChoice::Required => AnthropicToolChoice::Any,
-        SimpleToolChoice::Function { name } => AnthropicToolChoice::Tool { name: name.clone() },
-    });
-    if disable_reasoning || reasoning.is_none() || reasoning == Some(ModelThinkingLevel::Off) {
-        let mut anthropic_options = AnthropicOptions::from_base(base);
-        anthropic_options.thinking_enabled = Some(false);
-        anthropic_options.tool_choice = tool_choice;
-        return stream_anthropic(model, context, Some(&anthropic_options));
-    }
-
-    // Adaptive thinking models use effort; older models use budgets.
-    if supports_adaptive_thinking(&model.id) {
-        let effort = map_thinking_level_to_effort(model, reasoning);
-        let mut anthropic_options = AnthropicOptions::from_base(base);
-        anthropic_options.thinking_enabled = Some(true);
-        anthropic_options.effort = Some(effort);
-        anthropic_options.tool_choice = tool_choice;
-        return stream_anthropic(model, context, Some(&anthropic_options));
-    }
-
-    let budgets = options.and_then(|options| options.thinking_budgets.as_ref());
-    let adjusted = match adjust_max_tokens_for_thinking(
-        base.max_tokens.unwrap_or(0),
-        model.max_tokens,
-        reasoning.expect("checked above"),
-        budgets,
-    ) {
-        Ok(adjusted) => adjusted,
-        Err(message) => {
-            let (writer, reader) = create_assistant_message_event_stream();
-            let message = AssistantMessage {
-                content: Vec::new(),
-                api: model.api.clone(),
-                provider: model.provider.clone(),
-                model: model.id.clone(),
-                response_model: None,
-                response_id: None,
-                diagnostics: None,
-                usage: Usage::default(),
-                stop_reason: StopReason::Error,
-                stop_reason_raw: None,
-                error_status: None,
-                error_message: Some(message),
-                timestamp: now_ms(),
-                rest: Map::default(),
-            };
-            writer.push(AssistantMessageEvent::Error {
-                reason: crate::types::ErrorStopReason::Error,
-                error: message.clone(),
-            });
-            writer.end(Some(message));
-            return reader;
-        }
-    };
-    let mut anthropic_options = AnthropicOptions::from_base(base);
-    anthropic_options.base.max_tokens = Some(adjusted.0);
-    anthropic_options.thinking_enabled = Some(true);
-    anthropic_options.thinking_budget_tokens = Some(adjusted.1);
-    anthropic_options.tool_choice = tool_choice;
-    stream_anthropic(model, context, Some(&anthropic_options))
+    crate::transport::stream_simple_for_api(model, context, options)
 }
 
 impl AnthropicOptions {
@@ -544,6 +475,9 @@ impl AnthropicOptions {
             thinking_display: None,
             interleaved_thinking: None,
             tool_choice: None,
+            reasoning: None,
+            request_model_id: None,
+            view: None,
         }
     }
 }
@@ -573,27 +507,6 @@ impl Provider for AnthropicMessagesProvider {
         options: Option<&SimpleStreamOptions>,
     ) -> AssistantMessageEventStream {
         stream_simple_anthropic(model, context, options)
-    }
-}
-
-#[cfg(test)]
-mod always_on_adaptive_thinking_tests {
-    use super::is_always_on_adaptive_thinking_model;
-
-    #[test]
-    fn always_on_models_reject_thinking_disabled_and_sampling_params() {
-        assert!(is_always_on_adaptive_thinking_model("claude-fable-5"));
-        assert!(is_always_on_adaptive_thinking_model("claude-mythos-5"));
-        assert!(is_always_on_adaptive_thinking_model("claude-opus-5-5"));
-        assert!(is_always_on_adaptive_thinking_model(
-            "anthropic/claude-opus-5.5"
-        ));
-    }
-
-    #[test]
-    fn optional_thinking_models_still_accept_disabled() {
-        assert!(!is_always_on_adaptive_thinking_model("claude-opus-5"));
-        assert!(!is_always_on_adaptive_thinking_model("claude-sonnet-5"));
     }
 }
 

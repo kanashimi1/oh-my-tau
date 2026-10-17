@@ -175,10 +175,8 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     };
     let selector = role_selector(&cfg, model_ref);
     let fallbacks = cfg.fallback(&dir.0).candidates(&selector, role.as_deref());
-    // omp "pseudo apis" that are plain OpenAI-compatible chat endpoints.
-    if model.api == "openrouter" {
-        model.api = "openai-completions".to_string();
-    }
+    // `api: "openrouter"` stays as is: the pa-ai transport table streams it through the Responses
+    // API (or chat completions with `PI_OPENROUTER_RESPONSES=0`), exactly as TS does.
     let (api_key, credential_id) = match cfg.provider_key(&provider).or_else(|| env_key(&provider)) {
         Some(key) => (Some(key), None),
         None => match db_credential(&dir.0.join("agent.db"), &provider) {
@@ -430,9 +428,9 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
         .and_then(|a| a.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(id)))
     {
         let mut model = custom_model(provider, pcfg.expect("checked"), entry)?;
-        let thinking = entry.get("thinking").cloned();
-        finish_model(cfg, provider, &mut model, thinking.as_ref())?;
-        return Ok((model, thinking));
+        let authored = entry.get("thinking").cloned();
+        let resolved = finish_model(cfg, provider, &mut model, authored.as_ref())?;
+        return Ok((model, resolved));
     }
     // 2. omp's dynamic catalog cache, 3. pa-ai compiled catalog
     let (mut model, meta) = match cache_model(&dir.join("models.db"), provider, id) {
@@ -460,14 +458,17 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
             model.api = a.to_string();
         }
     }
-    finish_model(cfg, provider, &mut model, meta.as_ref())?;
-    Ok((model, meta))
+    let resolved = finish_model(cfg, provider, &mut model, meta.as_ref())?;
+    Ok((model, resolved))
 }
 
 /// Every model source ends here (TS `buildModel`): `modelOverrides` first (they feed the policy
 /// input), then the one-time policy resolution — thinking ladder, `reasoning` correction and
 /// catalog assignments — through the shared resolver in `pa_ai::compat`.
-fn finish_model(cfg: &Config, provider: &str, model: &mut Model, thinking: Option<&Value>) -> Result<()> {
+///
+/// Returns the resolved thinking config (TS `model.thinking`): the ladder every effort clamp and
+/// request builder reads, whatever stale `thinking` a cached row stored.
+fn finish_model(cfg: &Config, provider: &str, model: &mut Model, thinking: Option<&Value>) -> Result<Option<Value>> {
     // TS `mergeCompat(model.compatConfig, providerOverride.compat)`: the provider-level `compat:`
     // block (and `disableStrictTools`) layers over the model's authored overrides.
     if let Some(p) = cfg.provider(provider) {
@@ -482,7 +483,7 @@ fn finish_model(cfg: &Config, provider: &str, model: &mut Model, thinking: Optio
     }
     apply_overrides(cfg, provider, model);
     pa_ai::compat::materialize(model, thinking)
-        .map(drop)
+        .map(|policy| policy.thinking)
         .map_err(|e| anyhow!("model policy for {provider}/{}: {e}", model.id))
 }
 
@@ -1053,9 +1054,11 @@ mod tests {
         (t, dir)
     }
 
-    /// Request body over a real socket: system prompt rides `role: system`, never `developer`.
+    /// Request over a real socket: a model whose resolved compat names `kimiApiFormat: "anthropic"`
+    /// (the whole kimi-code catalog) streams through `/v1/messages` with the Anthropic body and the
+    /// Kimi device headers, as TS `streamKimi` does — never chat completions.
     #[tokio::test]
-    async fn kimi_code_request_body_uses_system_role() {
+    async fn kimi_code_anthropic_format_streams_through_the_messages_endpoint() {
         use futures::StreamExt as _;
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         for source in ["cache", "yml-custom", "synthesized"] {
@@ -1064,12 +1067,14 @@ mod tests {
             let server = tokio::spawn(async move {
                 let (mut sock, _) = listener.accept().await.unwrap();
                 let mut buf = Vec::new();
+                let mut head_text = String::new();
                 let body = loop {
                     let mut chunk = [0u8; 4096];
                     let n = sock.read(&mut chunk).await.unwrap();
                     buf.extend_from_slice(&chunk[..n]);
                     let text = String::from_utf8_lossy(&buf).to_string();
                     if let Some((head, rest)) = text.split_once("\r\n\r\n") {
+                        head_text = head.to_string();
                         let len = head
                             .lines()
                             .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
@@ -1085,7 +1090,7 @@ mod tests {
                 let sse = "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
                 let resp = format!("HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{sse}", sse.len());
                 sock.write_all(resp.as_bytes()).await.unwrap();
-                body
+                (head_text, body)
             });
             let (_t, dir) = kimi_dir(source, &base);
             let m = resolve_in(&dir, "kimi-code/kimi-for-coding").unwrap();
@@ -1096,16 +1101,18 @@ mod tests {
             .unwrap();
             let mut s = stream(&m, ctx, None).await.unwrap();
             while s.next().await.is_some() {}
-            let body: Value = serde_json::from_str(&server.await.unwrap()).unwrap();
-            let roles: Vec<&str> = body["messages"].as_array().unwrap().iter().map(|m| m["role"].as_str().unwrap()).collect();
-            assert_eq!(roles, ["system", "user"], "{source}: {body}");
+            let (head, body) = server.await.unwrap();
+            let body: Value = serde_json::from_str(&body).unwrap();
+            assert!(head.starts_with("POST /coding/v1/messages "), "{source}: {head}");
+            assert!(head.to_ascii_lowercase().contains("x-msh-platform: kimi_cli"), "{source}: {head}");
+            assert_eq!(body["system"][0]["text"], "SYS PROMPT", "{source}: {body}");
+            assert_eq!(body["messages"][0]["role"], "user", "{source}: {body}");
             assert!(body.get("max_tokens").is_some(), "{source}: {body}");
-            assert!(body.get("max_completion_tokens").is_none(), "{source}");
+            assert!(body.get("store").is_none(), "{source}");
             if source != "synthesized" {
-                // Synthesized models are non-reasoning (as in TS); the others send the kimi dialect.
-                assert_eq!(body["thinking"]["type"], "enabled", "{source}: {body}");
+                // Synthesized models are non-reasoning (as in TS); the others enable thinking.
+                assert!(matches!(body["thinking"]["type"].as_str(), Some("enabled" | "adaptive")), "{source}: {body}");
             }
-            assert!(body.get("store").is_none() || body["store"] == json!(false), "{source}");
         }
     }
 
@@ -1194,5 +1201,31 @@ mod tests {
         assert_eq!(resolved_flag(&m, "thinkingFormat"), Some(json!("qwen")));
         // The resolved ladder is materialized onto the model (qwen: reasoning effort ladder).
         assert!(m.model.thinking_level_map.is_some());
+    }
+    /// A `models.db` row known only by id (`contextWindow`/`maxTokens: null`, no thinking — what TS
+    /// caches for `anthropic/claude-haiku-5-5`) resolves with "unknown" (0) limits, like TS `?? 0`.
+    #[test]
+    fn cached_row_with_null_limits_resolves() {
+        let t = tempfile::tempdir().unwrap();
+        let conn = rusqlite::Connection::open(t.path().join("models.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE model_cache (provider_id TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at INTEGER NOT NULL, authoritative INTEGER NOT NULL DEFAULT 0, static_fingerprint TEXT NOT NULL DEFAULT '', models TEXT NOT NULL);",
+        )
+        .unwrap();
+        let row = json!([{
+            "id": "claude-haiku-9-9", "name": "Claude Haiku 9.9", "api": "anthropic-messages",
+            "provider": "anthropic", "baseUrl": "https://api.anthropic.com", "reasoning": false,
+            "input": ["text"], "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": null, "maxTokens": null,
+        }]);
+        conn.execute(
+            "INSERT INTO model_cache (provider_id, version, updated_at, authoritative, models) VALUES ('anthropic', 1, 1, 0, ?1)",
+            [row.to_string()],
+        )
+        .unwrap();
+        drop(conn);
+        let dir = AgentDir(t.path().to_path_buf());
+        let m = resolve_in(&dir, "anthropic/claude-haiku-9-9").unwrap();
+        assert_eq!((m.api.as_str(), m.context_window, m.max_tokens, m.reasoning), ("anthropic-messages", 0, 0, false));
     }
 }
