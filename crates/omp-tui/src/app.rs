@@ -321,6 +321,12 @@ pub struct App {
     clipboard_rx: Option<std::sync::mpsc::Receiver<crate::clipboard::ClipboardOutcome>>,
     /// Paste staged behind the open large-paste menu (`paste.largeMenuThreshold`).
     pending_large_paste: Option<(String, usize)>,
+    /// Word-completion engine host, spawned once by
+    /// [`App::start_word_completion`] and reused across setting flips.
+    word_host: Option<std::sync::Arc<crate::word_completion::host::WordHost>>,
+    /// Set by [`App::start_word_completion`]; tests and embedders that never
+    /// call it never spawn an engine (or touch the agent dir).
+    word_started: bool,
 }
 
 impl App {
@@ -366,6 +372,41 @@ impl App {
             cwd: cwd.to_path_buf(),
             clipboard_rx: None,
             pending_large_paste: None,
+            word_host: None,
+            word_started: false,
+        }
+    }
+
+    /// Turn on ghost-text word completion per `spelling.autocomplete`: the
+    /// engine loads on a background thread, so the first frame never waits on it.
+    pub fn start_word_completion(&mut self) {
+        self.word_started = true;
+        let settings = omp_settings::Settings::load(&self.cwd);
+        self.apply_word_completion(&settings);
+    }
+
+    /// Flush the word-completion engine's learned state (called on exit).
+    pub fn persist_word_completion(&self) {
+        if let Some(host) = &self.word_host {
+            host.persist();
+        }
+    }
+
+    fn apply_word_completion(&mut self, settings: &omp_settings::Settings) {
+        if !self.word_started {
+            return;
+        }
+        let value = settings.get_string("spelling.autocomplete").unwrap_or_else(|| "auto".to_owned());
+        let Some(method) = crate::word_completion::host::method_for_setting(&value) else {
+            self.editor.set_word_completion(None);
+            return;
+        };
+        if self.word_host.is_none() {
+            let Some(dir) = crate::word_completion::host::agent_dir() else { return };
+            self.word_host = Some(crate::word_completion::host::WordHost::spawn(&dir, method));
+        }
+        if !self.editor.word_completion_enabled() {
+            self.editor.set_word_completion(self.word_host.clone());
         }
     }
 
@@ -551,6 +592,7 @@ impl App {
         self.editor.set_vim_mode(settings.get_bool("tui.vimMode").unwrap_or(false));
         self.status.vim_text_display =
             settings.get_string("tui.vimModeDisplay").is_none_or(|mode| mode == "text");
+        self.apply_word_completion(settings);
         if let Some(max) = settings.get("autocompleteMaxVisible").as_u64() {
             self.autocomplete.max_visible = usize::try_from(max).unwrap_or(8).clamp(3, 20);
         }
@@ -1075,6 +1117,17 @@ impl App {
             return Some(self.esc_ladder(now, port));
         }
 
+        // Tab accepts the ghost word completion plus a space; the popup branch
+        // above already owns Tab while a slash/@ menu is open.
+        if key.code == KeyCode::Tab
+            && key.modifiers.is_empty()
+            && !self.autocomplete.open
+            && self.editor.accept_word_completion(true)
+        {
+            self.refresh_autocomplete();
+            return Some(true);
+        }
+
         match self.editor.handle_key(key) {
             EditorOutcome::Submit => self.submit_editor(port),
             EditorOutcome::Interrupt => Some(true), // app.clear handled above
@@ -1089,6 +1142,7 @@ impl App {
     fn submit_editor(&mut self, port: &impl RuntimePort) -> Option<bool> {
         self.autocomplete.close();
         let text = self.editor.take();
+        self.editor.observe_prompt(&text);
         if !self.submit_pipeline(text, port) || self.quit_requested {
             self.quit_requested = false;
             return None;
@@ -1631,6 +1685,7 @@ impl App {
             | "statusLine.rightSegments"
             | "tui.vimMode"
             | "tui.vimModeDisplay"
+            | "spelling.autocomplete"
             | "autocompleteMaxVisible" => {
                 let settings = omp_settings::Settings::load(&self.cwd);
                 self.reload_composer(&settings);

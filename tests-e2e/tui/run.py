@@ -611,6 +611,60 @@ def sc_paste_clipboard(t: Term, r: Result) -> None:
     r.check("ctrl+shift+v: stub clipboard text pasted raw", "stub-clipboard-text" in comp)
 
 
+def seed_history(agent: Path) -> None:
+    """A history.db (TS schema) of distinct prompts that repeat two words, so
+    both clients' n-gram engines learn `refactor` and `parser` from it."""
+    import sqlite3
+    db = sqlite3.connect(agent / "history.db")
+    db.executescript(
+        "CREATE TABLE history (id INTEGER PRIMARY KEY AUTOINCREMENT, prompt TEXT NOT NULL UNIQUE,"
+        " created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),"
+        " cwd TEXT, session_id TEXT, use_count INTEGER NOT NULL DEFAULT 1);"
+    )
+    tails = ("carefully", "again", "today", "slowly", "before merging", "with tests")
+    for i in range(80):
+        db.execute("INSERT INTO history(prompt) VALUES (?)",
+                   (f"please refactor the parser {tails[i % len(tails)]} step {i}",))
+    db.commit()
+    db.close()
+
+
+GHOST_RE = r"please refac\s?tor"
+
+
+def sc_word_complete(t: Term, r: Result) -> None:
+    """Word autocomplete (`spelling.autocomplete`, default auto): a dim ghost
+    suffix learned from history.db; Right accepts as typed, Tab accepts plus a
+    space, typing past it just types."""
+    ready(t)
+    t.type("please refac", per_char=0.02)
+    ok = t.wait_for(GHOST_RE, 40, in_transcript=False)
+    r.screens["ghost"] = t.text()
+    r.check("word complete: ghost suffix shown", ok)
+    t.key("tab")
+    t.settle(0.6, 10)
+    comp = t.text()
+    r.screens["tab-accepted"] = comp
+    r.check("word complete: tab accepted the word", re.search(r"please refactor\s*$", comp.rstrip(), re.M) is not None
+            or "please refactor " in comp)
+    r.check("word complete: ghost gone after accept", re.search(r"please refac\s+tor", comp) is None)
+    t.type("the pars", per_char=0.02)
+    ok = t.wait_for(r"the pars\s?er", 20, in_transcript=False)
+    r.check("word complete: ghost for the next word", ok)
+    t.key("right")
+    t.settle(0.6, 10)
+    comp = t.text()
+    r.screens["right-accepted"] = comp
+    r.check("word complete: right accepted without a space",
+            re.search(r"the parser\s*$", comp.rstrip(), re.M) is not None)
+    t.key("ctrl-u")
+    t.settle(0.4, 5)
+    t.type("refx", per_char=0.02)
+    t.settle(0.8, 10)
+    r.check("word complete: typing past the ghost leaves plain text",
+            re.search(r"refx\s?\w", t.text()) is None and "refx" in t.text())
+
+
 SCENARIOS = {
     "startup": ("text", sc_startup),
     "two_prompts": ("text", sc_two_prompts),
@@ -627,6 +681,7 @@ SCENARIOS = {
     "settings_edit": ("text", overlay_settings_edit()),
     "composer_shape": ("text", sc_composer_shape),
     "effort": ("think", sc_effort),
+    "word_complete": ("text", sc_word_complete, "", {}, seed_history),
     "paste_small": ("text", sc_paste_small),
     "paste_large": ("text", sc_paste_large),
     "paste_clipboard": ("text", sc_paste_clipboard, "",
@@ -662,9 +717,11 @@ def reap_home_processes(root: Path) -> list[str]:
 
 
 def run_client(binary: str, model: str, fn, port: int, keep: Path, extra_config: str = "",
-               extra_env: dict[str, str] | None = None) -> Result:
+               extra_env: dict[str, str] | None = None, prepare=None) -> Result:
     root = Path(tempfile.mkdtemp(prefix="e2e-home-"))
     env = make_home(root, port, extra_config)
+    if prepare:
+        prepare(root / ".omp" / "agent")
     if extra_env:
         env.update(extra_env)
     r = Result()
@@ -730,11 +787,12 @@ def main() -> int:
         model, fn, *extra = SCENARIOS[name]
         extra_config = extra[0] if extra else ""
         extra_env = extra[1] if len(extra) > 1 else {}
+        prepare = extra[2] if len(extra) > 2 else None
         for tag, binary in clients.items():
             print(f"[{tag}] {name} …", flush=True)
             keep = out / name / tag
             keep.mkdir(parents=True, exist_ok=True)
-            res = run_client(binary, model, fn, port, keep, extra_config, extra_env)
+            res = run_client(binary, model, fn, port, keep, extra_config, extra_env, prepare)
             results.setdefault(name, {})[tag] = res
             for screen, text in res.screens.items():
                 (keep / f"{screen}.txt").write_text(text)

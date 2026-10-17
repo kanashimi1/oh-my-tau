@@ -108,6 +108,7 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     app.configure(cfg.models, cfg.session_sources);
     app.set_model_name(cfg.model_name);
     app.set_welcome(&cfg.version);
+    app.start_word_completion();
     commit_retired(&mut app, shell).context("commit welcome")?;
 
     shell.draw_live(|f| app.render(f)).context("initial draw")?;
@@ -184,6 +185,7 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     }
     // Teardown the terminal title (stops the spinner thread) before the
     // shell restores the screen; the app's `Drop` is the panic-path backup.
+    app.persist_word_completion();
     app.dispose_title();
     Ok(())
 }

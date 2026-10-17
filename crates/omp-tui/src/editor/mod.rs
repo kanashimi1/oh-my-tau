@@ -93,6 +93,8 @@ pub struct Editor {
     last_action: LastAction,
     yank_span: Option<(usize, usize, usize)>,
     vim: Option<vim::VimState>,
+    /// Ghost-text word completion (`spelling.autocomplete`); `None` = off.
+    word: Option<crate::word_completion::WordCompletion>,
 }
 
 impl Default for Editor {
@@ -124,6 +126,7 @@ impl Editor {
             last_action: LastAction::Other,
             yank_span: None,
             vim: None,
+            word: None,
         }
     }
 
@@ -181,9 +184,113 @@ impl Editor {
             let draft = self.history_nav.exit_draft();
             self.buffer.set_text(&draft);
         }
+        // The space a Tab word accept added is provisional until the next
+        // keystroke: a typed space is swallowed, closing punctuation or a
+        // hyphen replaces it, anything else keeps it.
+        let provisional = self.has_provisional_space();
+        if provisional && c == ' ' {
+            self.note_action(LastAction::Other);
+            return;
+        }
         self.record_undo();
+        self.report_typed_past_word_completion(c);
+        if provisional && matches!(c, '-' | '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}') {
+            self.buffer.delete_backward();
+        }
         self.buffer.insert_char(c);
         self.note_action(LastAction::Other);
+    }
+
+    // -- ghost-text word completion (TS `WordCompletionProvider`) -------------
+
+    /// Install (or clear) the word-completion engine host behind the ghost text.
+    pub fn set_word_completion(
+        &mut self,
+        host: Option<std::sync::Arc<crate::word_completion::host::WordHost>>,
+    ) {
+        self.word = host.map(crate::word_completion::WordCompletion::new);
+    }
+
+    /// Whether ghost-text word completion is on.
+    #[must_use]
+    pub fn word_completion_enabled(&self) -> bool {
+        self.word.is_some()
+    }
+
+    /// Learn a submitted prompt (no-op while completion is off).
+    pub fn observe_prompt(&self, prompt: &str) {
+        if let Some(word) = &self.word {
+            word.observe(prompt);
+        }
+    }
+
+    /// Flush the engine's learned state (no-op while completion is off).
+    pub fn persist_word_completion(&self) {
+        if let Some(word) = &self.word {
+            word.host().persist();
+        }
+    }
+
+    /// The ghost suffix painted after the cursor: only at the end of a line
+    /// (the only place ghost text renders), never while browsing history.
+    #[must_use]
+    pub fn word_ghost(&self) -> Option<String> {
+        let word = self.word.as_ref()?;
+        if self.history_nav.browsing() {
+            return None;
+        }
+        let cursor = self.buffer.cursor();
+        let lines = self.buffer.lines();
+        if cursor.col < lines.get(cursor.line)?.len() {
+            return None;
+        }
+        word.ghost(lines, cursor.line, cursor.col)
+    }
+
+    /// Insert the shown ghost completion at the cursor, if any. Tab passes
+    /// `space: true` for a trailing space that stays provisional until the
+    /// next keystroke; Right passes `false` so a suffix can follow the word.
+    pub fn accept_word_completion(&mut self, space: bool) -> bool {
+        let Some(ghost) = self.word_ghost() else { return false };
+        let cursor = self.buffer.cursor();
+        if let Some(word) = &self.word {
+            word.feedback(self.buffer.lines(), cursor.line, cursor.col, &ghost, true);
+        }
+        self.record_undo();
+        self.buffer.insert_str(&ghost);
+        if space {
+            self.buffer.insert_char(' ');
+        }
+        self.note_action(if space { LastAction::AcceptWord } else { LastAction::Other });
+        true
+    }
+
+    /// Typing `typed` where it diverges from the shown ghost rejects it.
+    fn report_typed_past_word_completion(&self, typed: char) {
+        let Some(ghost) = self.word_ghost() else { return };
+        let first = ghost.chars().next().into_iter().flat_map(char::to_lowercase);
+        if first.eq(typed.to_lowercase()) {
+            return;
+        }
+        if let Some(word) = &self.word {
+            let cursor = self.buffer.cursor();
+            word.feedback(self.buffer.lines(), cursor.line, cursor.col, &ghost, false);
+        }
+    }
+
+    fn has_provisional_space(&self) -> bool {
+        if self.last_action != LastAction::AcceptWord {
+            return false;
+        }
+        let cursor = self.buffer.cursor();
+        self.buffer.lines()[cursor.line][..cursor.col].ends_with(' ')
+    }
+
+    /// A newline drops the provisional space a Tab accept added.
+    pub(crate) fn drop_provisional_space(&mut self) {
+        if self.has_provisional_space() {
+            self.buffer.delete_backward();
+        }
     }
 
     /// Insert a string at the cursor (may contain newlines).

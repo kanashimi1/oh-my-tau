@@ -28,6 +28,8 @@ KEYS = {
     "tab": b"\t",
     "up": b"\x1b[A",
     "down": b"\x1b[B",
+    "right": b"\x1b[C",
+    "ctrl-u": b"\x15",
     "backspace": b"\x7f",
     "ctrl-shift-v": b"\x1b[118;6u",
 }

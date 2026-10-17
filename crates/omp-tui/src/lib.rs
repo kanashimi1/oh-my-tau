@@ -43,6 +43,7 @@ pub mod render;
 pub mod status_line;
 pub mod theme;
 pub mod tools;
+pub mod word_completion;
 
 use std::path::PathBuf;
 

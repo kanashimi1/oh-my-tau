@@ -249,6 +249,19 @@ impl Component for Editor {
         let before = rows
             .get(vis_row)
             .map_or("", |r| &r.text[..col_in_row.min(r.text.len())]);
+        if let Some(ghost) = self.word_ghost() {
+            let at_row_end = rows.get(vis_row).is_some_and(|r| col_in_row == r.text.len());
+            if at_row_end && vis_row >= offset && vis_row - offset < visible_count {
+                Self::draw_ghost(
+                    frame.buffer_mut(),
+                    cursor_area,
+                    vis_row - offset,
+                    display_width(before),
+                    &ghost,
+                    theme,
+                );
+            }
+        }
         Self::draw_cursor(
             frame.buffer_mut(),
             cursor_area,
@@ -288,6 +301,37 @@ impl Component for Editor {
 
 impl Editor {
     /// Invert the cursor cell (styled cursor, `#getStyledInputCursor`).
+    /// Dim ghost text starting at the end-of-line cursor cell (TS `hintTail`
+    /// follows the zero-width cursor marker, so the cursor sits on the ghost's
+    /// first character), truncated to the free cells of the row. Call before
+    /// [`Self::draw_cursor`], which restyles the first cell.
+    fn draw_ghost(
+        buf: &mut Buffer,
+        inner: Rect,
+        vis_row: usize,
+        text_cells: usize,
+        ghost: &str,
+        theme: &Theme,
+    ) {
+        let y = inner.y + u16::try_from(vis_row).unwrap_or(0);
+        let style = Style::default().fg(theme.color("text_muted")).add_modifier(Modifier::DIM);
+        let mut x = inner.x + u16::try_from(text_cells).unwrap_or(inner.width);
+        let end = inner.x + inner.width;
+        for c in ghost.chars() {
+            let w = u16::try_from(unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).unwrap_or(0);
+            if w == 0 {
+                continue;
+            }
+            if x + w > end {
+                break;
+            }
+            let cell = &mut buf[(x, y)];
+            cell.set_symbol(c.encode_utf8(&mut [0; 4]));
+            cell.set_style(style);
+            x += w;
+        }
+    }
+
     fn draw_cursor(
         buf: &mut Buffer,
         inner: Rect,

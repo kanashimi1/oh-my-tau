@@ -10,6 +10,7 @@ members = [
     "vendor/pi-diff",
     "vendor/pi-walker",
     "vendor/pi-vfs",
+    "vendor/pi-predict",
     "crates/*",
 ]
 

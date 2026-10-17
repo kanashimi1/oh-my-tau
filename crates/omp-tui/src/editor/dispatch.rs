@@ -30,6 +30,9 @@ pub(crate) enum LastAction {
     },
     /// A yank or yank-pop: the next `alt+y` replaces the yanked span.
     Yank,
+    /// A Tab word-completion accept: the trailing space it added is
+    /// provisional until the next keystroke (see [`Editor::insert_char`]).
+    AcceptWord,
 }
 
 impl Editor {
@@ -193,6 +196,7 @@ impl Editor {
 
     pub(crate) fn newline(&mut self) {
         self.record_undo();
+        self.drop_provisional_space();
         self.buffer.insert_char('\n');
         self.note_action(LastAction::Other);
     }
@@ -289,8 +293,11 @@ impl Editor {
     }
 
     fn accept_or_move_right(&mut self) {
-        // Right-arrow accepts a ghost word completion in the full editor;
-        // no ghost engine in MVP, so this is plain movement.
+        // Right walks over the ghost word completion as if it were typed: no
+        // trailing space (TS `#acceptWordCompletion({ space: false })`).
+        if self.accept_word_completion(false) {
+            return;
+        }
         self.move_right();
     }
 

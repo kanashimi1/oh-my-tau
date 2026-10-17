@@ -22,6 +22,9 @@ unicode-segmentation = "1.12"
 unicode-width = "0.2"
 pi-edit = { path = "../../vendor/pi-edit" }
 pi-ast = { path = "../../vendor/pi-ast" }
+pi-predict = { path = "../../vendor/pi-predict" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+regex = "1"
 tree-sitter = "0.25"
 
 [target.'cfg(unix)'.dependencies]
