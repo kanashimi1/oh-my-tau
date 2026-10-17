@@ -186,6 +186,18 @@ fn kernel_env() -> Vec<(String, String)> {
     vars
 }
 
+/// Python kernels also carry TS's `PI_TOOL_BRIDGE_SESSION` (`python:<namespace>`,
+/// `eval/py/index.ts` `PYTHON_SESSION_PREFIX`). User kernel customizations key off
+/// it (e.g. a `usercustomize.py` that installs a REPL prelude only inside omp
+/// python kernels), so without it they silently never load under omp-rs.
+fn python_kernel_env(cwd: &std::path::Path) -> Vec<(String, String)> {
+    let mut vars = kernel_env();
+    let namespace = omp_urls::global_session_file()
+        .map_or_else(|| format!("session:{}", cwd.display()), |f| f.to_string_lossy().into_owned());
+    vars.push(("PI_TOOL_BRIDGE_SESSION".to_owned(), format!("python:{namespace}")));
+    vars
+}
+
 /// Cell options: the bridge lives in the blocking task next to the cell it
 /// serves; TS idle-timeout semantics (host calls pause the deadline).
 fn run_opts(bridge: &EvalBridge, timeout: Option<Duration>, cancel: CancelToken) -> ExecOptions<'_> {
@@ -361,7 +373,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             let fresh = Arc::new(PythonKernel::start_with_env(
                 omp_eval::default_interpreter(),
                 &cwd,
-                &kernel_env(),
+                &python_kernel_env(&cwd),
             )?);
             state.py = Some(Arc::clone(&fresh));
             kernel_loss_notice = eval_journal::kernel_started(&cwd, lang);
@@ -450,4 +462,20 @@ fn cell_details(result: &CellResult, replayed: bool) -> Value {
         "isError": cell_is_error(result),
         "replayed": replayed.then_some(true),
     })
+}
+
+#[cfg(test)]
+mod bridge_session_env_tests {
+    /// User `usercustomize.py` preludes (fleet `rlm()` / `P()` / `ask_session()`) load only
+    /// when `PI_TOOL_BRIDGE_SESSION` starts with `python:` (TS kernel contract).
+    #[test]
+    fn python_kernels_carry_the_ts_bridge_session_prefix() {
+        let vars = super::python_kernel_env(std::path::Path::new("/tmp/x"));
+        let v = vars
+            .iter()
+            .find(|(k, _)| k == "PI_TOOL_BRIDGE_SESSION")
+            .map(|(_, v)| v.clone())
+            .expect("PI_TOOL_BRIDGE_SESSION set");
+        assert!(v.starts_with("python:"), "{v}");
+    }
 }
