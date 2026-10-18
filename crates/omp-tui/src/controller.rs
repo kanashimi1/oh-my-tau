@@ -220,6 +220,13 @@ fn paint(app: &mut App, shell: &mut StdShell) -> Result<()> {
         let lines = take_scrollback(app, shell.width(), Rebuild::Yes);
         shell.commit(&lines).context("rebuild scrollback")?;
     }
+    if app.take_clear_scrollback() {
+        // `/new`: erase what the old session pushed into the terminal's
+        // scrollback, then re-commit the header for the fresh transcript.
+        shell.clear_history().context("clear scrollback")?;
+        let lines = take_scrollback(app, shell.width(), Rebuild::Yes);
+        shell.commit(&lines).context("rebuild scrollback")?;
+    }
     // Key/resize paths also retire rows (e.g. the echoed user prompt on
     // submit is a settle point) — the drain is watermark-based and cheap.
     commit_retired(app, shell).context("commit scrollback")?;

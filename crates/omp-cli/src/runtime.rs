@@ -1815,6 +1815,13 @@ impl Runtime {
         }
         lock(&self.prompts).open.clear();
         self.record_model_state().await;
+        // Interactive TUI: drop the rendered transcript and the terminal
+        // scrollback (TS `#runNewSessionFlow`: `resetTranscript()` +
+        // `requestRender(true, { clearScrollback: true })`). RPC clients never
+        // see this frame.
+        if self.ui_context_frames.load(std::sync::atomic::Ordering::Relaxed) {
+            self.send(json!({"type": "session_reset"}));
+        }
         self.notify_session_switch("new", previous);
         Ok(())
     }

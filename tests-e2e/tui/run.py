@@ -214,6 +214,21 @@ def sc_tools(t: Term, r: Result) -> None:
     r.check("tools: no tool error", re.search(ERROR_RE, tr) is None)
 
 
+def sc_new_clears(t: Term, r: Result) -> None:
+    ready(t)
+    submit(t, "first e2e prompt")
+    r.check("new: reply shown", t.wait_for(r"E2E-REPLY-1", 90))
+    t.wait_for(READY_RE, 30, in_transcript=False)
+    t.settle(1.0, 30)
+    submit(t, "/new")
+    r.check("new: confirmation shown", t.wait_for(r"New session started", 30))
+    t.settle(1.0, 30)
+    tr = t.transcript()
+    r.screens["after-new"] = tr
+    r.check("new: old prompt gone (screen + scrollback)", "first e2e prompt" not in tr)
+    r.check("new: old reply gone (screen + scrollback)", "E2E-REPLY-1" not in tr)
+
+
 def sc_slash(t: Term, r: Result) -> None:
     ready(t)
     before = t.transcript()
@@ -768,6 +783,7 @@ SCENARIOS = {
     "tools": ("tools", sc_tools),
     "usage": ("tool", sc_usage, "display:\n  showTokenUsage: true\n"),
     "slash": ("text", sc_slash),
+    "new_clears": ("text", sc_new_clears),
     "login": ("text", sc_login),
     "exit": ("text", sc_exit),
     "model": ("text", sc_model),

@@ -93,6 +93,10 @@ pub enum AppEvent {
         messages: Vec<Value>,
         name: Option<String>,
     },
+    /// `{"type":"session_reset"}` — `/new` / `/clear` started a fresh session:
+    /// the transcript and the terminal scrollback are dropped (TS
+    /// `resetTranscript()` + `requestRender(true, { clearScrollback: true })`).
+    SessionReset,
     /// `{"type":"context_usage", "model", "modelName", "tokens", "percent",
     /// "contextWindow", "thresholdPercent"?, "speculationPercent"?}` — the
     /// status line's model identity and context gauge inputs (omp-cli
@@ -179,6 +183,7 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
                 .unwrap_or_default(),
             name: session_loaded_name(frame),
         },
+        "session_reset" => AppEvent::SessionReset,
         "session_info" => AppEvent::SessionInfo(
             crate::overlays::session_info::SessionInfoLine::parse_frame(frame),
         ),

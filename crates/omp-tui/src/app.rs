@@ -312,6 +312,9 @@ pub struct App {
     /// `{type:"message",id,parentId,message}`) feeding the rewind column /
     /// tree overlay; reset when a session is resumed.
     journal: Vec<Value>,
+    /// Set by `session_reset`: the controller erases the terminal scrollback
+    /// and re-commits the (now empty) transcript before the next paint.
+    clear_scrollback: bool,
     /// Session stores for the `/resume` embedded picker (native first).
     session_sources: Vec<SessionSource>,
     /// Terminal appearance from the startup OSC 11 / COLORFGBG probe:
@@ -373,6 +376,7 @@ impl App {
             session_name: None,
             last_stop_reason: None,
             journal: Vec::new(),
+            clear_scrollback: false,
             session_sources: Vec::new(),
             appearance: crate::theme::Appearance::Dark,
             cwd: cwd.to_path_buf(),
@@ -875,6 +879,12 @@ impl App {
                     self.session_name = Some(name.clone()).filter(|n| !n.is_empty());
                 }
                 self.title.set_state(TitleState::Idle, Some(&self.title_label));
+            }
+            AppEvent::SessionReset => {
+                self.journal.clear();
+                self.status.streaming = false;
+                self.messages.rebuild(&[]);
+                self.clear_scrollback = true;
             }
             AppEvent::SessionInfo(lines) => self.overlays.open_session_info(lines.clone()),
             _ => {}
@@ -1864,6 +1874,11 @@ impl App {
     /// and are no longer drawn by [`Self::render_chat`]. With `rebuild =
     /// /// true` (width-change resize) returns the FULL transcript re-rendered
     /// at `width` and resets the watermark.
+    /// Consume a pending scrollback erase (see [`AppEvent::SessionReset`]).
+    pub fn take_clear_scrollback(&mut self) -> bool {
+        std::mem::take(&mut self.clear_scrollback)
+    }
+
     pub fn take_scrollback_lines(&mut self, width: u16, rebuild: bool) -> Vec<Line<'static>> {
         let mut rows = Vec::new();
         if let Some(w) = self.welcome.as_mut().filter(|w| rebuild || !w.emitted) {
@@ -3253,6 +3268,33 @@ mod tests {
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect();
         assert!(joined.contains("old answer"), "{joined}");
+    }
+
+    /// Regression: `/new` left the old conversation on screen. `session_reset`
+    /// empties the transcript and asks the controller to erase scrollback once.
+    #[test]
+    fn session_reset_clears_transcript_and_requests_scrollback_erase() {
+        let mut app = app();
+        app.apply_event(&parse_frame(&json!({
+            "type": "session_loaded",
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "old question"}]},
+                {"role": "assistant", "content": [{"type": "text", "text": "old answer"}],
+                 "stopReason": "stop"},
+            ],
+        })));
+        let _ = app.take_scrollback_lines(80, false);
+        assert!(!app.take_clear_scrollback());
+        app.apply_event(&parse_frame(&json!({"type": "session_reset"})));
+        assert!(app.messages.entries().is_empty(), "transcript must be empty after /new");
+        assert!(app.take_clear_scrollback(), "scrollback erase requested");
+        assert!(!app.take_clear_scrollback(), "erase is one-shot");
+        let joined: String = app
+            .take_scrollback_lines(80, true)
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect();
+        assert!(!joined.contains("old answer"), "{joined}");
     }
 
     #[test]
