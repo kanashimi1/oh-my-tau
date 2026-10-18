@@ -18,6 +18,60 @@ const nodeOs = require("node:os");
 const nativeHomedir: () => string = nodeOs.homedir;
 nodeOs.homedir = () => process.env.HOME || nativeHomedir();
 
+// Child processes: Bun spawns children with the NATIVE (daemon) environment,
+// which is empty, and the daemon's cwd, not the Worker's `process.env`.
+// Extensions shelling out (`herdr`, `git`, `fleet-envelope`, ...) then ran
+// without HOME/PATH/HERDR_* and could hang the session. Default every spawn
+// to this session's env and cwd unless the caller passes its own; the cwd
+// follows host.ts's session state once it is loaded.
+type SpawnOpts = Record<string, unknown>;
+type SpawnFn = (...args: unknown[]) => unknown;
+let hostCwd: (() => string) | null = null;
+const nativeCwd = process.cwd.bind(process);
+process.cwd = () => hostCwd?.() || process.env.PWD || nativeCwd();
+function isOpts(o: unknown): o is SpawnOpts {
+  return o !== null && typeof o === "object" && !Array.isArray(o);
+}
+function withSessionDefaults(o: SpawnOpts | undefined): SpawnOpts {
+  const r: SpawnOpts = { ...o };
+  if (r.env === undefined) r.env = process.env;
+  if (r.cwd === undefined) r.cwd = process.cwd();
+  return r;
+}
+// node:child_process is a mutable CJS object; extensions are imported later
+// (dynamic import of host.ts), so their named imports bind to these wrappers.
+const cp = require("node:child_process") as Record<string, SpawnFn>;
+for (const [name, hasArgs] of [
+  ["spawn", true],
+  ["spawnSync", true],
+  ["execFile", true],
+  ["execFileSync", true],
+  ["fork", true],
+  ["exec", false],
+  ["execSync", false],
+] as const) {
+  const orig = cp[name];
+  cp[name] = function (this: unknown, ...a: unknown[]) {
+    const i = hasArgs && Array.isArray(a[1]) ? 2 : 1;
+    const slot = a[i];
+    if (isOpts(slot)) a[i] = withSessionDefaults(slot);
+    else if (slot === undefined) a[i] = withSessionDefaults(undefined);
+    else a.splice(i, 0, withSessionDefaults(undefined)); // callback sits in the options slot
+    return orig.apply(this, a);
+  };
+}
+// Bun.spawn / Bun.spawnSync: `(cmd[], opts?)` or `({ cmd, ... })`.
+const bunSpawners = Bun as unknown as Record<"spawn" | "spawnSync", SpawnFn>;
+for (const name of ["spawn", "spawnSync"] as const) {
+  const orig = bunSpawners[name];
+  bunSpawners[name] = (...a: unknown[]) => {
+    const [first, second] = a;
+    if (Array.isArray(first)) a[1] = withSessionDefaults(isOpts(second) ? second : undefined);
+    else if (isOpts(first)) a[0] = withSessionDefaults(first);
+    return orig.apply(Bun, a);
+  };
+}
+
 let feed: ((chunk: string) => void) | null = null;
 const early: string[] = [];
 let buf = "";
@@ -34,7 +88,8 @@ self.onmessage = (ev: MessageEvent<string>) => {
   }
 };
 
-const { startSession } = await import("./host.ts");
+const { startSession, sessionCwd } = await import("./host.ts");
+hostCwd = sessionCwd;
 startSession({
   send(line: string) {
     postMessage(line);

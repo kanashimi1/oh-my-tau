@@ -48,6 +48,27 @@ interface SessionState {
   /** Bytes received before the env handshake line completed. */
   pre: string;
   open: boolean;
+  /** Bytes the kernel did not accept yet, flushed on `drain` in order. */
+  out: Uint8Array[];
+}
+
+/**
+ * Bun's `socket.write` is non-buffering: under backpressure it writes a prefix
+ * and returns its length, dropping the rest unless the caller keeps it. A
+ * large frame (a `context` event with a long history, a big tool result) was
+ * truncated mid-line and the client waited forever for its newline.
+ */
+function flush(socket: { write(b: Uint8Array): number }, st: SessionState): void {
+  while (st.out.length > 0) {
+    const head = st.out[0];
+    const n = socket.write(head);
+    if (n >= head.byteLength) {
+      st.out.shift();
+      continue;
+    }
+    if (n > 0) st.out[0] = head.subarray(n);
+    return;
+  }
 }
 
 /** First line of every connection: `{"env": {...}}`, the client's environment. */
@@ -77,7 +98,8 @@ function startWorker(socket: any, state: SessionState, env: Record<string, strin
       return;
     }
     try {
-      socket.write(data);
+      state.out.push(Buffer.from(data));
+      flush(socket, state);
     } catch {
       cleanup();
     }
@@ -109,7 +131,10 @@ const server = Bun.listen({
         clearTimeout(idleTimer);
         idleTimer = null;
       }
-      socket.data = { worker: null, pre: "", open: true } satisfies SessionState;
+      socket.data = { worker: null, pre: "", open: true, out: [] } satisfies SessionState;
+    },
+    drain(socket) {
+      flush(socket, socket.data as SessionState);
     },
     data(socket, data) {
       const st = socket.data as SessionState;

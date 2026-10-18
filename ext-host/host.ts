@@ -965,6 +965,12 @@ export interface SessionTransport {
   close?(): void;
 }
 
+/** The session's cwd as last pushed by the core (shared-daemon Workers route
+ *  `process.cwd()` and child-process defaults through it). */
+export function sessionCwd(): string {
+  return String(state.cwd);
+}
+
 /**
  * Start serving one session on `t`. Each call creates no explicit state -- the
  * module-level state above belongs to the importing isolate, so a fresh Worker

@@ -647,3 +647,61 @@ export default function (pi: any): void {
         h.shutdown().await.unwrap();
     }
 }
+
+/// Shared daemon regressions behind hung omp-rs panes:
+/// - a frame larger than the socket buffer (here a 3 MB tool result; live it
+///   was a `context` event of a long session) used to be truncated by
+///   `shard.ts` (Bun `socket.write` writes a prefix under backpressure) and
+///   the client waited forever for the rest of the line;
+/// - child processes spawned by an extension ran with the daemon's EMPTY env
+///   and the daemon's cwd instead of the session's.
+#[tokio::test]
+async fn shared_daemon_delivers_big_frames_and_spawns_with_session_env() {
+    let dir = std::env::temp_dir().join(format!("omp-ext-shared-big-{}", std::process::id()));
+    let work = dir.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let sock = dir.join("ext.sock");
+    let ext = dir.join("bigext.ts");
+    std::fs::write(
+        &ext,
+        r#"import { execSync } from "node:child_process";
+export default function (pi: any): void {
+  pi.registerTool({
+    name: "fx_big", label: "Big", description: "big",
+    parameters: {},
+    async execute() {
+      return { content: [{ type: "text", text: "x".repeat(3_000_000) }] };
+    },
+  });
+  pi.registerTool({
+    name: "fx_child", label: "Child", description: "child env",
+    parameters: {},
+    async execute() {
+      const out = execSync('printf "%s|%s|" "$FX_MARK" "$HOME"; pwd').toString().trim();
+      return { content: [{ type: "text", text: out }] };
+    },
+  });
+}
+"#,
+    )
+    .unwrap();
+    let mut cfg = config();
+    cfg.shared_socket = Some(sock.clone());
+    cfg.env = vec![("FX_MARK".into(), "m".into()), ("HOME".into(), "/tmp/fx-home-big".into())];
+    let host = ExtHost::spawn(&cfg).await.unwrap();
+    host.load(Some(&[ext]), None, work.to_str().unwrap(), None).await.unwrap();
+
+    let big = tokio::time::timeout(Duration::from_secs(20), host.call_tool("fx_big", "b", json!({}), None))
+        .await
+        .expect("3 MB frame must arrive whole, not hang on a truncated line")
+        .unwrap();
+    assert_eq!(big["content"][0]["text"].as_str().map(str::len), Some(3_000_000));
+
+    let child = host.call_tool("fx_child", "c", json!({}), None).await.unwrap();
+    assert_eq!(
+        child["content"][0]["text"],
+        format!("m|/tmp/fx-home-big|{}", work.display()),
+        "extension child processes inherit the session env and cwd"
+    );
+    host.shutdown().await.unwrap();
+}
