@@ -57,6 +57,10 @@ impl Conn {
     }
 }
 
+/// Transparent reconnects to the shared daemon per host before falling back
+/// to a private stdio host (guards against a crash-looping daemon).
+const MAX_SHARED_RECONNECTS: usize = 5;
+
 /// How to start the host process.
 #[derive(Debug, Clone)]
 pub struct HostConfig {
@@ -221,6 +225,9 @@ pub struct ExtHost {
     /// connection was transparently replaced (shared daemon death → private
     /// fallback). `watch` so late subscribers still see the latest generation.
     generation: watch::Sender<usize>,
+    /// Set by [`Self::shutdown`]: the daemon closing our socket is then the
+    /// expected end of the session, not a death to recover from.
+    closing: std::sync::atomic::AtomicBool,
 }
 
 /// Writer task: coalesces every queued line into one buffered write and
@@ -257,6 +264,11 @@ type BoxedWriter = Box<dyn tokio::io::AsyncWrite + Send + Unpin>;
 /// Build the per-session stdio host command (`bun ext-host/host.ts`). Shared
 /// by [`ExtHost::spawn`] and the shared-daemon-death fallback, which respawns
 /// the same private host on the existing `Arc<ExtHost>`.
+/// `HOOK_TRACE` value for the host: `OMP_RS_HOOK_TRACE`, default off.
+fn hook_trace_env() -> String {
+    std::env::var("OMP_RS_HOOK_TRACE").unwrap_or_else(|_| "0".into())
+}
+
 fn private_command(cfg: &HostConfig) -> Command {
     let mut cmd = Command::new(&cfg.bun);
     // `--smol` trades more frequent GC for a smaller heap footprint
@@ -270,7 +282,7 @@ fn private_command(cfg: &HostConfig) -> Command {
         cmd.arg("--smol");
     }
     // `OMP_RS_HOOK_TRACE=1` opts back in (extension conformance harness diffs the trace against omp).
-    let hook_trace = std::env::var("OMP_RS_HOOK_TRACE").unwrap_or_else(|_| "0".into());
+    let hook_trace = hook_trace_env();
     cmd.arg(&cfg.host_script)
         .env("HOOK_TRACE", hook_trace)
         .stdin(Stdio::piped())
@@ -352,6 +364,7 @@ impl ExtHost {
             handler_timeout_ms: cfg.handler_timeout_ms,
             config: cfg.clone(),
             generation,
+            closing: std::sync::atomic::AtomicBool::new(false),
         });
 
         // Host gone: the reader fails everything still waiting.
@@ -658,6 +671,7 @@ impl ExtHost {
     /// # Errors
     /// Only on kill failure.
     pub async fn shutdown(&self) -> Result<()> {
+        self.closing.store(true, Ordering::SeqCst);
         let _ =
             tokio::time::timeout(Duration::from_secs(2), self.request("shutdown", json!({}))).await;
         let mut child = self.child.lock().await;
@@ -710,27 +724,11 @@ impl ExtHost {
             handler_timeout_ms: cfg.handler_timeout_ms,
             config: cfg.clone(),
             generation,
+            closing: std::sync::atomic::AtomicBool::new(false),
         });
 
-        let weak = Arc::downgrade(&host);
-        // Daemon died (e.g. kill -9): the reader fails everything still
-        // waiting so in-flight emits/tool calls get a clean error, not a hang.
-        let reader = spawn_reader(read_half, pending, weak.clone());
-        tokio::spawn(async move {
-            let _ = reader.await;
-            // Transparent fallback: respawn a private stdio host on the same
-            // `Arc<ExtHost>` so every consumer (hooks, tools, lifecycle
-            // forwarding) keeps working; `reconnections()` subscribers (the
-            // omp-cli supervisor) re-load extensions and re-emit session ctx.
-            if let Some(host) = weak.upgrade() {
-                match host.reconnect_after_daemon_death().await {
-                    Ok(()) => eprintln!(
-                        "omp-rs: shared extension-host daemon lost; fell back to a private host"
-                    ),
-                    Err(e) => eprintln!("omp-rs: shared extension-host daemon lost: {e:#}"),
-                }
-            }
-        });
+        let reader = spawn_reader(read_half, pending, Arc::downgrade(&host));
+        Self::watch_daemon(&host, reader);
         Ok(host)
     }
 
@@ -758,24 +756,66 @@ impl ExtHost {
         self.config.shared_socket.is_some()
     }
 
-    /// Respawn a private stdio host on this same `Arc<ExtHost>` after the
-    /// shared daemon's connection ended. Swaps the writer/child, resets the
-    /// `hasHandlers` gate and the incoming channel (the old consumer's
-    /// receiver ends when its sender drops), restarts the reader task, and
-    /// bumps the generation so supervisors can re-load extensions and re-send
-    /// the session ctx.
+    /// Daemon died (e.g. kill -9): the reader fails everything still waiting
+    /// so in-flight emits/tool calls get a clean error, not a hang. Then
+    /// recover transparently on the same `Arc<ExtHost>` so every consumer
+    /// (hooks, tools, lifecycle forwarding) keeps working; `reconnections()`
+    /// subscribers (the omp-cli supervisor) re-load extensions and re-emit
+    /// session ctx.
+    fn watch_daemon(host: &Arc<Self>, reader: tokio::task::JoinHandle<()>) {
+        let weak = Arc::downgrade(host);
+        tokio::spawn(async move {
+            let _ = reader.await;
+            if let Some(host) = weak.upgrade().filter(|h| !h.closing.load(Ordering::SeqCst)) {
+                match host.reconnect_after_daemon_death().await {
+                    Ok(true) => eprintln!(
+                        "omp-rs: shared extension-host daemon lost; reconnected to a fresh daemon"
+                    ),
+                    Ok(false) => eprintln!(
+                        "omp-rs: shared extension-host daemon lost; fell back to a private host"
+                    ),
+                    Err(e) => eprintln!("omp-rs: shared extension-host daemon lost: {e:#}"),
+                }
+            }
+        });
+    }
+
+    /// Re-establish the connection after the shared daemon's connection
+    /// ended. First tries the shared daemon again (restarting it under the
+    /// start lock if nobody else did; at most [`MAX_SHARED_RECONNECTS`] times
+    /// per host so a crash-looping daemon cannot spin), else spawns a private
+    /// stdio host. Swaps the writer/child, resets the `hasHandlers` gate and
+    /// the incoming channel (the old consumer's receiver ends when its sender
+    /// drops), restarts the reader task, and bumps the generation so
+    /// supervisors can re-load extensions and re-send the session ctx.
+    ///
+    /// Returns `true` when reconnected to the shared daemon, `false` for the
+    /// private fallback.
     ///
     /// # Errors
     /// Spawn failure; the host stays unusable (writes fail cleanly).
-    async fn reconnect_after_daemon_death(self: &Arc<Self>) -> Result<()> {
-        let mut child = private_command(&self.config)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "reconnect: spawn {} {}",
-                    self.config.bun, self.config.host_script.display()
-                )
-            })?;
+    async fn reconnect_after_daemon_death(self: &Arc<Self>) -> Result<bool> {
+        if let Some(sock) = &self.config.shared_socket {
+            if self.generation() < MAX_SHARED_RECONNECTS {
+                match Self::connect_daemon(&self.config, sock).await {
+                    Ok(stream) => {
+                        let (r, w) = stream.into_split();
+                        let reader = self.install(Box::new(w), r, None).await;
+                        Self::watch_daemon(self, reader);
+                        self.generation.send_modify(|g| *g += 1);
+                        return Ok(true);
+                    }
+                    Err(e) => eprintln!("omp-rs: shared extension-host daemon unavailable: {e:#}"),
+                }
+            }
+        }
+        let mut child = private_command(&self.config).spawn().with_context(|| {
+            format!(
+                "reconnect: spawn {} {}",
+                self.config.bun,
+                self.config.host_script.display()
+            )
+        })?;
         let stdin = child.stdin.take().context("reconnect: host stdin")?;
         let stdout = child.stdout.take().context("reconnect: host stdout")?;
         let stderr = child.stderr.take().context("reconnect: host stderr")?;
@@ -783,7 +823,7 @@ impl ExtHost {
         spawn_stderr(stderr);
         // Publish last, after the new connection is fully usable.
         self.generation.send_modify(|g| *g += 1);
-        Ok(())
+        Ok(false)
     }
 
     /// Swap in a fresh connection: new writer and waiter table (the old
@@ -795,7 +835,7 @@ impl ExtHost {
         writer: BoxedWriter,
         reader: impl AsyncRead + Send + Unpin + 'static,
         child: Option<Child>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let conn = Conn::new(writer);
         let pending = conn.pending.clone();
         *lock(&self.conn) = conn;
@@ -807,54 +847,123 @@ impl ExtHost {
             tx,
             rx: Some(rx),
         };
-        spawn_reader(reader, pending, Arc::downgrade(self));
+        spawn_reader(reader, pending, Arc::downgrade(self))
     }
 
-    /// Connect to the daemon's socket, spawning it on the first attempt.
-    /// Another racing spawner may win the bind; our daemon then exits and we
-    /// connect to the winner. A leftover socket file with no listener is
-    /// removed once before retrying.
+    /// Connect to the daemon's socket, starting it when nothing listens.
+    /// Starting is serialised across processes by an exclusive `flock` on
+    /// `<sock>.lock`, held until the new daemon accepts connections, so
+    /// concurrent first clients never race to bind. Under the lock a leftover
+    /// socket file with no listener (crashed daemon) is removed before
+    /// spawning.
     async fn connect_daemon(cfg: &HostConfig, sock: &Path) -> Result<UnixStream> {
+        let mut stream = Self::connect_daemon_raw(cfg, sock).await?;
+        // Handshake: the daemon's own env belongs to whichever session started
+        // it, so the session's real environment is sent as the first line and
+        // becomes the `process.env` of this session's Worker.
+        let mut env: serde_json::Map<String, Value> = std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, json!(v.into_string().ok()?))))
+            .collect();
+        env.insert("HOOK_TRACE".into(), json!(hook_trace_env()));
+        if let Some(t) = &cfg.trace {
+            env.insert("OMP_EXT_TRACE".into(), json!(t));
+        }
+        if let Some(ms) = cfg.handler_timeout_ms {
+            env.insert("OMP_EXT_TIMEOUT_MS".into(), json!(ms.to_string()));
+        }
+        for (k, v) in &cfg.env {
+            env.insert(k.clone(), json!(v));
+        }
+        let line = format!(
+            "{}\n",
+            json!({"jsonrpc": "2.0", "method": "omp-rs-env", "params": {"env": env}})
+        );
+        stream.write_all(line.as_bytes()).await.context("shared ext host: env handshake")?;
+        Ok(stream)
+    }
+
+    async fn connect_daemon_raw(cfg: &HostConfig, sock: &Path) -> Result<UnixStream> {
+        if let Ok(stream) = UnixStream::connect(sock).await {
+            return Ok(stream);
+        }
         let shard = cfg
             .host_script
             .parent()
             .context("shared ext host: host script has no parent dir")?
             .join("shard.ts");
-        let mut spawned = false;
-        let mut cleaned_stale = false;
-        for attempt in 0..100 {
-            match UnixStream::connect(sock).await {
-                Ok(stream) => return Ok(stream),
-                Err(_) => {
-                    if !spawned {
-                        Self::start_daemon(cfg, &shard, sock)?;
-                        spawned = true;
-                    } else if attempt >= 3 && !cleaned_stale && sock.exists() {
-                        // Daemon is up but nothing listens: stale socket file
-                        // (e.g. daemon crashed). Remove it and respawn once.
-                        let _ = std::fs::remove_file(sock);
-                        cleaned_stale = true;
-                        spawned = false;
-                    }
+        if let Some(dir) = sock.parent() {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .with_context(|| format!("create {}", dir.display()))?;
+        }
+        let mut lock_path = sock.as_os_str().to_owned();
+        lock_path.push(".lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| format!("open {}", Path::new(&lock_path).display()))?;
+        let mut waited = 0;
+        loop {
+            match lock_file.try_lock() {
+                Ok(()) => break,
+                Err(std::fs::TryLockError::WouldBlock) if waited < 300 => {
+                    waited += 1;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
+                Err(e) => bail!("shared ext host: start lock {}: {e}", Path::new(&lock_path).display()),
+            }
+        }
+        // Another client may have started it while we waited for the lock.
+        if let Ok(stream) = UnixStream::connect(sock).await {
+            return Ok(stream);
+        }
+        let _ = std::fs::remove_file(sock);
+        Self::start_daemon(cfg, &shard, sock)?;
+        for _ in 0..100 {
+            if let Ok(stream) = UnixStream::connect(sock).await {
+                return Ok(stream); // lock released on drop
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        bail!(
-            "shared ext host: no daemon on {} after 10 s (spawned: {spawned})",
-            sock.display()
-        )
+        bail!("shared ext host: no daemon on {} after 10 s", sock.display())
     }
 
     fn start_daemon(cfg: &HostConfig, shard: &std::path::Path, sock: &Path) -> Result<()> {
-        let mut cmd = Command::new(&cfg.bun);
+        // The cleared env below has no PATH, so resolve `bun` here.
+        let bun = if cfg.bun.contains('/') {
+            PathBuf::from(&cfg.bun)
+        } else {
+            std::env::var_os("PATH")
+                .and_then(|p| {
+                    std::env::split_paths(&p)
+                        .map(|d| d.join(&cfg.bun))
+                        .find(|c| c.is_file())
+                })
+                .unwrap_or_else(|| PathBuf::from(&cfg.bun))
+        };
+        let mut cmd = Command::new(bun);
         if std::env::var_os("OMP_EXT_NO_SMOL").is_none() {
             cmd.arg("--smol");
+        }
+        // Clean daemon env: a bun Worker cannot override env keys that exist
+        // in the daemon process, so the daemon must hold none of the starting
+        // session's variables (each session's env arrives in its handshake).
+        // Only bun's own `BUN_*` knobs and the idle timeout carry over.
+        cmd.env_clear();
+        for (k, v) in std::env::vars_os() {
+            let keep = k.to_str().is_some_and(|k| k.starts_with("BUN_") || k == "OMP_RS_EXT_SHARED_IDLE_MS");
+            if keep {
+                cmd.env(k, v);
+            }
         }
         let mut child = cmd
             .arg(shard)
             .env("OMP_RS_EXT_SOCKET", sock)
-            .env("HOOK_TRACE", "0")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())

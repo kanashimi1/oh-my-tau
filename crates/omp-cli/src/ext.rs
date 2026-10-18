@@ -98,20 +98,78 @@ pub fn host_script() -> Option<PathBuf> {
     None
 }
 
-/// `OMP_RS_EXT_SHARED=1` socket path: `$OMP_RS_EXT_SOCKET`, else
-/// `$OMP_AGENT_DIR/ext-shared.sock`, else `~/.omp/agent/ext-shared.sock`.
-/// Returns `None` (per-session stdio host) when the flag is unset or "0".
-fn shared_socket_path() -> Option<PathBuf> {
-    if std::env::var_os("OMP_RS_EXT_SHARED").is_none_or(|v| v == "0") {
+/// FNV-1a: a hash that stays stable across Rust versions (socket names must
+/// match between differently built omp-rs binaries sharing one daemon).
+fn fnv1a(parts: &[&[u8]]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for b in *part {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        h ^= 0xff;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// Shared extension-host daemon socket (the default mode; one bun process per
+/// user serves every omp-rs session, each in its own Worker). `None` selects
+/// the per-process private host: `OMP_RS_EXT_HOST=private` (or the legacy
+/// `OMP_RS_EXT_SHARED=0`).
+///
+/// Path: `$OMP_RS_EXT_SOCKET` verbatim, else
+/// `$XDG_RUNTIME_DIR/omp-rs/ext-<key>.sock`, else
+/// `~/.omp-rs/run/ext-<key>.sock`. `<key>` hashes the host version, the host
+/// script path/size/mtime (a changed host never talks to an old daemon) and
+/// the explicit extension paths, so different extension sets or builds get
+/// their own daemon.
+fn shared_socket_path(script: &Path, extra: &[PathBuf]) -> Option<PathBuf> {
+    if std::env::var("OMP_RS_EXT_HOST").is_ok_and(|v| v == "private")
+        || std::env::var_os("OMP_RS_EXT_SHARED").is_some_and(|v| v == "0")
+    {
         return None;
     }
     if let Ok(p) = std::env::var("OMP_RS_EXT_SOCKET") {
         return Some(PathBuf::from(p));
     }
-    let base = std::env::var_os("OMP_AGENT_DIR").map(PathBuf::from).or_else(|| {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".omp").join("agent"))
-    })?;
-    Some(base.join("ext-shared.sock"))
+    let dir = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        Some(x) => PathBuf::from(x).join("omp-rs"),
+        None => PathBuf::from(std::env::var_os("HOME")?)
+            .join(".omp-rs")
+            .join("run"),
+    };
+    let stamp = |p: &Path| {
+        std::fs::metadata(p)
+            .map(|m| {
+                let t = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                format!("{}:{t}", m.len())
+            })
+            .unwrap_or_default()
+    };
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let script = canon(script);
+    let mut sets: Vec<String> = extra
+        .iter()
+        .map(|p| canon(p).to_string_lossy().into_owned())
+        .collect();
+    sets.sort();
+    let mut parts: Vec<Vec<u8>> = vec![
+        env!("CARGO_PKG_VERSION").into(),
+        script.to_string_lossy().as_bytes().to_vec(),
+        stamp(&script).into_bytes(),
+    ];
+    if let Some(parent) = script.parent() {
+        parts.push(stamp(&parent.join("shard.ts")).into_bytes());
+        parts.push(stamp(&parent.join("session.worker.ts")).into_bytes());
+    }
+    parts.extend(sets.into_iter().map(String::into_bytes));
+    let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+    Some(dir.join(format!("ext-{:016x}.sock", fnv1a(&refs))))
 }
 
 /// Gate decision from the `input` event before a prompt is admitted.
@@ -459,10 +517,11 @@ impl Extensions {
         let script = host_script().context("ext-host/host.ts not found (set OMP_RS_EXT_HOST)")?;
         let mut cfg = HostConfig::new(script);
         cfg.trace = std::env::var_os("OMP_EXT_TRACE").map(Into::into);
-        // Opt-in shared host (`OMP_RS_EXT_SHARED=1`): one bun daemon per user
-        // serves all sessions; each session still runs its extensions in an
-        // isolated bun Worker (fresh module graph == per-process state).
-        cfg.shared_socket = shared_socket_path();
+        // Shared host by default: one bun daemon per user serves all sessions;
+        // each session still runs its extensions in an isolated bun Worker
+        // (fresh module graph == per-process state). `OMP_RS_EXT_HOST=private`
+        // keeps the per-process host.
+        cfg.shared_socket = shared_socket_path(&cfg.host_script, extra);
         let host = ExtHost::spawn(&cfg).await?;
         let hooks = ExtHooks::new(host.clone());
 

@@ -32,6 +32,7 @@ exit 0
 
 # Documented, accepted differences (substring of the diff line -> reason).
 EXPLAINED: dict[str, str] = {
+    "pane process-info": "omp-rs herdr reporter probes once whether the pane is owned by TS omp (herdr:omp) and stays silent there (fixes the rejected pane.report_agent storm, e01e205); TS omp has no such probe.",
     # TS passes the live AbortSignal on session_stop; it has no JSON form on the host wire.
     "session_before_compact keys=": "AbortSignal `signal` key (not serializable across the host boundary)",
     "session_stop keys=": "AbortSignal `signal` key (not serializable across the host boundary)",

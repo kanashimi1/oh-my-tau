@@ -169,6 +169,8 @@ async fn shared_daemon_sessions_are_isolated() {
     let (ta, tb) = (spawn_session("a"), spawn_session("b"));
     let (a, b) = (ta.await.unwrap(), tb.await.unwrap());
 
+    assert_eq!(daemon_pids(&sock).len(), 1, "two sessions share exactly one bun daemon");
+
     let n = |v: &Value| v["details"]["n"].as_u64().unwrap();
     let a1 = a.call_tool("fx_echo", "a1", json!({"text":"x"}), None).await.unwrap();
     let a2 = a.call_tool("fx_echo", "a2", json!({"text":"x"}), None).await.unwrap();
@@ -200,8 +202,15 @@ async fn shared_daemon_sessions_are_isolated() {
 /// Find the shared-daemon pid by its `OMP_RS_EXT_SOCKET` env var (the daemon's
 /// cmdline is just `bun .../shard.ts`, shared with any other test daemon).
 fn daemon_pid(sock: &std::path::Path) -> Option<u32> {
+    daemon_pids(sock).into_iter().next()
+}
+
+/// All live daemon pids serving `sock`.
+fn daemon_pids(sock: &std::path::Path) -> Vec<u32> {
+    let mut out = Vec::new();
     let needle = format!("OMP_RS_EXT_SOCKET={}", sock.display());
-    for entry in std::fs::read_dir("/proc").ok()? {
+    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    for entry in rd {
         let Ok(entry) = entry else { continue };
         let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
             continue;
@@ -213,14 +222,15 @@ fn daemon_pid(sock: &std::path::Path) -> Option<u32> {
             .windows(needle.len())
             .any(|w| w == needle.as_bytes())
         {
-            return Some(pid);
+            out.push(pid);
         }
     }
-    None
+    out
 }
 
 /// `kill -9` on the shared daemon mid-session: in-flight RPCs fail cleanly,
-/// the session transparently falls back to a private host (generation bump),
+/// the session transparently reconnects to a freshly started shared daemon
+/// (generation bump, new pid; private host only if that fails),
 /// extensions re-load, and emits/hooks fire again — the next prompt works.
 #[tokio::test]
 async fn shared_daemon_death_falls_back_to_private_host() {
@@ -323,6 +333,8 @@ async fn shared_daemon_death_falls_back_to_private_host() {
     let r = host.call_tool("fx_echo", "e2", json!({"text":"z"}), None).await.unwrap();
     assert_eq!(r["content"][0]["text"], "echo:z");
     assert_eq!(r["details"]["n"], 1, "fallback host has fresh extension state");
+    let new_pid = daemon_pid(&sock).expect("shared daemon restarted");
+    assert_ne!(new_pid, pid, "reconnected to a new shared daemon, not a private host");
 
     host.shutdown().await.unwrap();
 }
@@ -566,4 +578,72 @@ async fn blocked_nowait_handler_wakes_every_parked_emit() {
         }
     }
     host.shutdown().await.unwrap();
+}
+
+/// Many clients racing to be first start exactly one daemon (start lock).
+#[tokio::test]
+async fn concurrent_first_clients_start_one_daemon() {
+    let dir = std::env::temp_dir().join(format!("omp-ext-shared-race-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("ext.sock");
+    let mut cfg = config();
+    cfg.shared_socket = Some(sock.clone());
+    let tasks: Vec<_> = (0..4)
+        .map(|_| {
+            let cfg = cfg.clone();
+            tokio::spawn(async move { ExtHost::spawn(&cfg).await.unwrap() })
+        })
+        .collect();
+    let mut hosts = Vec::new();
+    for t in tasks {
+        hosts.push(t.await.unwrap());
+    }
+    assert_eq!(daemon_pids(&sock).len(), 1, "racing first clients must share one daemon");
+    for h in hosts {
+        h.shutdown().await.unwrap();
+    }
+}
+
+/// Each session's Worker sees ITS client's environment (`process.env`,
+/// `os.homedir()`), not the env of the process that happened to start the
+/// shared daemon.
+#[tokio::test]
+async fn shared_daemon_sessions_get_their_own_env() {
+    let dir = std::env::temp_dir().join(format!("omp-ext-shared-env-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let sock = dir.join("ext.sock");
+    let ext = dir.join("envext.ts");
+    std::fs::write(
+        &ext,
+        r#"import { homedir } from "node:os";
+export default function (pi: any): void {
+  pi.registerTool({
+    name: "fx_env", label: "Env", description: "env",
+    parameters: {},
+    async execute() {
+      return { content: [{ type: "text", text: `${process.env.FX_MARK}|${homedir()}|${process.env.HOOK_TRACE}` }] };
+    },
+  });
+}
+"#,
+    )
+    .unwrap();
+    let paths = [ext];
+    let mut hosts = Vec::new();
+    for (mark, home) in [("a", "/tmp/fx-home-a"), ("b", "/tmp/fx-home-b")] {
+        let mut cfg = config();
+        cfg.shared_socket = Some(sock.clone());
+        cfg.env = vec![("FX_MARK".into(), mark.into()), ("HOME".into(), home.into())];
+        let host = ExtHost::spawn(&cfg).await.unwrap();
+        host.load(Some(&paths), None, "/tmp", None).await.unwrap();
+        hosts.push((mark, home, host));
+    }
+    assert_eq!(daemon_pids(&sock).len(), 1);
+    for (mark, home, host) in &hosts {
+        let r = host.call_tool("fx_env", "e", json!({}), None).await.unwrap();
+        assert_eq!(r["content"][0]["text"], format!("{mark}|{home}|0"));
+    }
+    for (_, _, h) in hosts {
+        h.shutdown().await.unwrap();
+    }
 }

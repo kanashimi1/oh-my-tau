@@ -43,6 +43,63 @@ function armIdleExit(): void {
   idleTimer.unref?.();
 }
 
+interface SessionState {
+  worker: Worker | null;
+  /** Bytes received before the env handshake line completed. */
+  pre: string;
+  open: boolean;
+}
+
+/** First line of every connection: `{"env": {...}}`, the client's environment. */
+const ENV_HANDSHAKE = "omp-rs-env";
+
+function startWorker(socket: any, state: SessionState, env: Record<string, string>, rest: string): void {
+  // The Worker gets the CLIENT's environment (HOME, OMP_*, HOOK_TRACE, pane
+  // ids, ...): the daemon's own env belongs to whichever session started it.
+  const worker = new Worker(new URL("./session.worker.ts", import.meta.url), { env });
+  state.worker = worker;
+  const cleanup = () => {
+    if (!state.open) return;
+    state.open = false;
+    try {
+      socket.end();
+    } catch {}
+    try {
+      worker.terminate();
+    } catch {}
+    closeSession();
+  };
+  worker.onmessage = (ev: MessageEvent<string>) => {
+    const data = String(ev.data ?? "");
+    if (data === CLOSE) {
+      // Session host answered the shutdown RPC: end only this session.
+      setTimeout(cleanup, 10);
+      return;
+    }
+    try {
+      socket.write(data);
+    } catch {
+      cleanup();
+    }
+  };
+  worker.onerror = (e) => {
+    process.stderr.write(`shard: session worker error: ${e?.message ?? e}\n`);
+    cleanup();
+  };
+  // Worker gone (crash or close): drop the connection.
+  worker.addEventListener("close", cleanup);
+  if (rest) worker.postMessage(rest);
+}
+
+function endSession(st: SessionState): void {
+  if (!st.open) return;
+  st.open = false;
+  try {
+    st.worker?.terminate();
+  } catch {}
+  closeSession();
+}
+
 const server = Bun.listen({
   unix: SOCKET,
   socket: {
@@ -52,77 +109,34 @@ const server = Bun.listen({
         clearTimeout(idleTimer);
         idleTimer = null;
       }
-      const worker = new Worker(new URL("./session.worker.ts", import.meta.url));
-      const state = { worker, socket, open: true };
-      worker.onmessage = (ev: MessageEvent<string>) => {
-        const data = String(ev.data ?? "");
-        if (data === CLOSE) {
-          // Session host answered the shutdown RPC: end only this session.
-          setTimeout(() => {
-            state.open = false;
-            try {
-              socket.end();
-            } catch {}
-            try {
-              worker.terminate();
-            } catch {}
-            closeSession();
-          }, 10);
-          return;
-        }
-        try {
-          socket.write(data);
-        } catch {
-          cleanup();
-        }
-      };
-      worker.onerror = (e) => {
-        process.stderr.write(`shard: session worker error: ${e?.message ?? e}\n`);
-        cleanup();
-      };
-      worker.addEventListener("close", () => {
-        // Worker gone (crash or close): drop the connection.
-        cleanup();
-      });
-      const cleanup = () => {
-        if (!state.open) return;
-        state.open = false;
-        try {
-          socket.end();
-        } catch {}
-        try {
-          worker.terminate();
-        } catch {}
-        closeSession();
-      };
-      // socket handlers
-      socket.data = state;
+      socket.data = { worker: null, pre: "", open: true } satisfies SessionState;
     },
     data(socket, data) {
-      const st = socket.data as { worker: Worker; open: boolean };
+      const st = socket.data as SessionState;
       if (!st.open) return;
-      // Forward raw bytes; the Worker re-assembles newline framing.
-      st.worker.postMessage(data.toString());
+      if (st.worker) {
+        // Forward raw bytes; the Worker re-assembles newline framing.
+        st.worker.postMessage(data.toString());
+        return;
+      }
+      st.pre += data.toString();
+      const nl = st.pre.indexOf("\n");
+      if (nl < 0) return;
+      let env: Record<string, string> = {};
+      try {
+        const hs = JSON.parse(st.pre.slice(0, nl));
+        if (hs?.method === ENV_HANDSHAKE && hs.params?.env) env = hs.params.env;
+      } catch {}
+      const rest = st.pre.slice(nl + 1);
+      st.pre = "";
+      startWorker(socket, st, env, rest);
     },
     close(socket) {
-      const st = socket.data as { worker: Worker; open: boolean };
-      if (!st.open) return;
-      st.open = false;
-      try {
-        st.worker.terminate();
-      } catch {}
-      closeSession();
+      endSession(socket.data as SessionState);
     },
     error(socket, error) {
       process.stderr.write(`shard: socket error: ${error}\n`);
-      const st = socket.data as { worker: Worker; open: boolean };
-      if (st.open) {
-        st.open = false;
-        try {
-          st.worker.terminate();
-        } catch {}
-        closeSession();
-      }
+      endSession(socket.data as SessionState);
     },
   },
 });
