@@ -29,6 +29,37 @@ fn output(rt: &Runtime, text: &str) {
 /// `/rlm <question> @file | -- text` (opt-in RLM phase 1, design §3.3): loads
 /// the context into the Python eval kernel as `context`, resets the sub-call
 /// ledger and hands the RLM loop prompt to the model.
+/// The conversation as plain text for `/rlm <question>` without a context
+/// source: one `[role]` header per message, text and tool output bodies.
+fn session_transcript(messages: &[Value]) -> String {
+    let mut out = String::new();
+    for m in messages {
+        let role = m.get("role").and_then(Value::as_str).unwrap_or("?");
+        let body = match m.get("content") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Array(parts)) => parts
+                .iter()
+                .filter_map(|p| match p.get("type").and_then(Value::as_str) {
+                    Some("text") => p.get("text").and_then(Value::as_str).map(str::to_owned),
+                    Some("toolCall") => Some(format!(
+                        "<call {}> {}",
+                        p.get("name").and_then(Value::as_str).unwrap_or(""),
+                        p.get("arguments").map(Value::to_string).unwrap_or_default()
+                    )),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+        if body.trim().is_empty() {
+            continue;
+        }
+        out.push_str(&format!("[{role}]\n{body}\n\n"));
+    }
+    out
+}
+
 async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     use crate::tools::rlm;
     let trimmed = args.trim();
@@ -50,6 +81,15 @@ async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     };
     let context = match parsed.context {
         rlm::ContextSource::Text(text) => text,
+        rlm::ContextSource::Session => {
+            let text = session_transcript(&rt.messages().await);
+            if text.trim().is_empty() {
+                output(rt, &format!("/rlm: this session has no conversation yet; pass a context with @<file> or -- <text>.\n{}", rlm::USAGE));
+                return Outcome::Handled { agent_invoked: false };
+            }
+            output(rt, &format!("/rlm: context = this session's conversation ({} chars)", text.chars().count()));
+            text
+        }
         rlm::ContextSource::File(path) => {
             let full = if Path::new(&path).is_absolute() { path.clone().into() } else { rt.cwd.join(&path) };
             match std::fs::read_to_string(&full) {
@@ -499,5 +539,27 @@ mod tests {
     fn test_unhandled_command_returns_false() {
         assert!(!is_extra_command("nonexistent_command"));
         assert!(!is_extra_command("help"));
+    }
+}
+
+#[cfg(test)]
+mod rlm_session_context_tests {
+    use super::*;
+
+    #[test]
+    fn session_transcript_keeps_roles_text_and_calls() {
+        let t = session_transcript(&[
+            json!({"role": "user", "content": [{"type": "text", "text": "the code is ZEBRA-42"}]}),
+            json!({"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "hidden"},
+                {"type": "toolCall", "name": "bash", "arguments": {"command": "ls"}},
+            ]}),
+            json!({"role": "toolResult", "content": [{"type": "text", "text": "a.txt"}]}),
+            json!({"role": "assistant", "content": []}),
+        ]);
+        assert!(t.contains("[user]\nthe code is ZEBRA-42"), "{t}");
+        assert!(t.contains("<call bash>"), "{t}");
+        assert!(t.contains("[toolResult]\na.txt"), "{t}");
+        assert!(!t.contains("hidden"), "{t}");
     }
 }

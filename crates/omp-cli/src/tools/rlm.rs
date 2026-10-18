@@ -859,9 +859,11 @@ pub struct RlmArgs {
 pub enum ContextSource {
     File(String),
     Text(String),
+    /// No `@file` / `-- text`: the current conversation is the context.
+    Session,
 }
 
-pub const USAGE: &str = "Usage: /rlm [--max-depth=N] [--max-calls=N] [--max-tokens=N] <question> @<file>\n       /rlm [flags] <question> -- <context text>\n\
+pub const USAGE: &str = "Usage: /rlm [--max-depth=N] [--max-calls=N] [--max-tokens=N] <question> @<file>\n       /rlm [flags] <question> -- <context text>\n       /rlm [flags] <question>   (context = this session's conversation)\n\
 Loads the file/text into the eval kernel as `context` and lets the model inspect it with code, delegating chunks to `llm_query` (smol model by default). `/rlm stats` prints sub-call accounting.";
 
 /// Parse `/rlm` arguments: leading `--max-*=N` flags, then the question, then
@@ -896,7 +898,7 @@ pub fn parse_args(args: &str) -> Result<RlmArgs, String> {
         }
         (rest[..at].trim(), ContextSource::File(path.to_string()))
     } else {
-        return Err(USAGE.to_string());
+        (rest, ContextSource::Session)
     };
     if question.is_empty() {
         return Err(USAGE.to_string());
@@ -1142,7 +1144,9 @@ mod tests {
         assert_eq!(a.question, "find it");
         assert_eq!(a.context, ContextSource::Text("some text here".into()));
         assert_eq!((a.max_calls, a.max_tokens, a.max_depth), (Some(5), Some(900), None));
-        assert!(parse_args("no context at all").is_err());
+        // No @file / `-- text`: the session conversation is the context.
+        assert_eq!(parse_args("what did we decide?").unwrap().context, ContextSource::Session);
+        assert!(parse_args("").is_err());
         assert!(parse_args("@only.txt").is_err());
         assert!(parse_args("--max-calls=x q @f").is_err());
     }
