@@ -131,7 +131,7 @@ const server = Bun.listen({
         clearTimeout(idleTimer);
         idleTimer = null;
       }
-      socket.data = { worker: null, pre: "", open: true, out: [] } satisfies SessionState;
+      socket.data = { worker: null, pre: "", decoder: new TextDecoder(), open: true, out: [] } satisfies SessionState;
     },
     drain(socket) {
       flush(socket, socket.data as SessionState);
@@ -141,10 +141,10 @@ const server = Bun.listen({
       if (!st.open) return;
       if (st.worker) {
         // Forward raw bytes; the Worker re-assembles newline framing.
-        st.worker.postMessage(data.toString());
+        st.worker.postMessage(st.decoder.decode(data, { stream: true }));
         return;
       }
-      st.pre += data.toString();
+      st.pre += st.decoder.decode(data, { stream: true });
       const nl = st.pre.indexOf("\n");
       if (nl < 0) return;
       let env: Record<string, string> = {};
