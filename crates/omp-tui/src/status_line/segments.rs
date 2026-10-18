@@ -202,7 +202,10 @@ fn mode(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Option<Vec<Piece>> {
             }
             (t, false)
         }
-        Some(Mode::Vibe) => ("👥 Vibe".to_string(), false),
+        Some(Mode::Vibe) => (
+            format!("{} Vibe", style::icon(theme, "icon.agents", "👥")),
+            false,
+        ),
         Some(Mode::Loop { label }) => (
             format!("{} {label}", style::icon(theme, "icon.loop", "↻")),
             false,

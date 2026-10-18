@@ -893,7 +893,7 @@ mod tests {
             }
         });
         let rows = plain(grep_lines(&call, false, &theme));
-        assert_eq!(rows[0], " 🔍 Grep: beta 1 match · 1 file · in .");
+        assert_eq!(rows[0], " ⌕ Grep: beta 1 match · 1 file · in .");
         assert_eq!(rows[1], " └─ # e2e-new.txt#0063");
         assert_eq!(rows[2], "    *2│beta");
         assert_eq!(rows.len(), 3, "context row compacted away: {rows:?}");
@@ -910,18 +910,18 @@ mod tests {
             }}
         });
         let rows = plain(glob_lines(&call, false, &theme));
-        assert_eq!(rows[0], " 🔍 Glob: *.txt 2 files · in .");
-        assert_eq!(rows[1], " ├─ 🗒 e2e-new.txt");
-        assert_eq!(rows[2], " └─ 🗒 e2e-read-me.txt");
+        assert_eq!(rows[0], " ⌕ Glob: *.txt 2 files · in .");
+        assert_eq!(rows[1], " ├─ ◦ e2e-new.txt");
+        assert_eq!(rows[2], " └─ ◦ e2e-read-me.txt");
     }
 
     #[test]
     fn pending_calls_show_hourglass_header() {
         let theme = Theme::default();
         let call = serde_json::json!({"name":"grep","arguments":{"pattern":"x","path":"src"}});
-        assert_eq!(plain(grep_lines(&call, false, &theme))[0], " ⏳ Grep: x in src");
+        assert_eq!(plain(grep_lines(&call, false, &theme))[0], " ◷ Grep: x in src");
         let call = serde_json::json!({"name":"glob","arguments":{}});
-        assert_eq!(plain(glob_lines(&call, false, &theme))[0], " ⏳ Glob: *");
+        assert_eq!(plain(glob_lines(&call, false, &theme))[0], " ◷ Glob: *");
     }
 
     #[test]
@@ -962,7 +962,7 @@ mod tests {
     fn glob_empty_shows_warning() {
         let call = serde_json::json!({"name":"glob","arguments":{"pattern":"*.zzz"},"result":{"text":"No files found"}});
         let out = render_lines(&Glob, &call, 80, 10);
-        assert!(out.iter().any(|l| l.contains("\u{26a0} No files found")));
+        assert!(out.iter().any(|l| l.contains("▲ No files found")));
     }
 
     #[test]

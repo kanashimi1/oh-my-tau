@@ -295,7 +295,7 @@ mod tests {
         let theme = Theme::default();
         let t = rows(build_card_lines(&call, Some(&result), false, 60, &theme));
         assert!(
-            t[0].starts_with("╭─── ✎ Write: 🗒 e2e-new.txt · 3 lines "),
+            t[0].starts_with("╭─── ✎ Write: ◦ e2e-new.txt · 3 lines "),
             "{:?}",
             t[0]
         );
@@ -349,6 +349,6 @@ mod tests {
         let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
         assert!(text.contains("permission denied"), "got:\n{text}");
         assert!(!text.contains("Error: permission denied"), "prefix stripped:\n{text}");
-        assert!(text.starts_with("╭─── ✘ Write: "), "got:\n{text}");
+        assert!(text.starts_with("╭─── ✗ Write: "), "got:\n{text}");
     }
 }

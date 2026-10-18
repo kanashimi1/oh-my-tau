@@ -46,7 +46,7 @@ impl ToolRenderer for Mcp {
         let icon = if is_error(call) {
             theme.glyph("failure")
         } else if settled {
-            "⚙"
+            theme.symbol("cmd.gear")
         } else {
             "⧗"
         };
@@ -90,7 +90,7 @@ impl ToolRenderer for Mcp {
         let icon = if error {
             theme.glyph("failure")
         } else if settled {
-            "⚙"
+            theme.symbol("cmd.gear")
         } else {
             "⧗"
         };

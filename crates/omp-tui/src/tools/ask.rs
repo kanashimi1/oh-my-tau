@@ -239,7 +239,7 @@ pub fn result_lines(
                 let any = selected.map_or(0, Vec::len) + usize::from(custom.is_some());
                 if timed_out && any == 0 {
                     lines.push(Line::from(Span::styled(
-                        "    ⚠ timed out — no answer".to_owned(),
+                        format!("    {} timed out — no answer", theme.symbol("status.warning")),
                         Style::new().fg(theme.color("warning")),
                     )));
                     continue;
@@ -272,7 +272,8 @@ pub fn result_lines(
 fn answer_row(theme: &Theme, question: &str, width: usize) -> Line<'static> {
     Line::from(Span::styled(
         format!(
-            "  ✔ {}",
+            "  {} {}",
+            theme.symbol("status.success"),
             truncate_str(&sanitize(question), width.saturating_sub(8))
         ),
         Style::new().fg(theme.color("text")),
@@ -372,7 +373,7 @@ mod tests {
             {"id": "q1", "question": "Deploy now?", "selectedOptions": ["Yes"], "multi": false}
         ]}});
         let text = text_of(&result_lines(&call, &result, &t, false, 100));
-        assert!(text[1].contains("✔ Deploy now?"));
+        assert!(text[1].contains("✓ Deploy now?"));
         assert_eq!(text[2], "    → Yes");
     }
 

@@ -38,9 +38,9 @@ impl ToolRenderer for Wait {
         let icon = if is_error(call) {
             theme.glyph("failure")
         } else if jobs_of(call).iter().any(|j| status(j) == "failed") {
-            "⚠"
+            theme.symbol("status.warning")
         } else if jobs_of(call).iter().any(|j| status(j) == "running") {
-            "ℹ"
+            theme.symbol("status.info")
         } else {
             theme.glyph("success")
         };
@@ -92,9 +92,9 @@ impl ToolRenderer for Wait {
         {
             theme.glyph("failure")
         } else if jobs_of(frame).iter().any(|j| status(j) == "failed") {
-            "⚠"
+            theme.symbol("status.warning")
         } else if jobs_of(frame).iter().any(|j| status(j) == "running") {
-            "ℹ"
+            theme.symbol("status.info")
         } else {
             theme.glyph("success")
         };

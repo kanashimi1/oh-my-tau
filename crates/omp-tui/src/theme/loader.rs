@@ -21,6 +21,7 @@ mod color;
 mod schema;
 mod session_accent;
 mod symbols_data;
+mod symbols_mono;
 
 pub use builtin_index::BUILTIN;
 pub use color::{parse_hex, Rgb};
@@ -168,6 +169,22 @@ pub fn symbol_preset(preset: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
+/// Effective glyph for `key` in `preset`: the `unicode` preset swaps the TS
+/// table's color emoji for monochrome glyphs ([`symbols_mono::UNICODE_MONO`]).
+#[must_use]
+pub fn symbol_lookup(preset: &str, key: &str) -> Option<&'static str> {
+    let find = |table: &'static [(&'static str, &'static str)]| {
+        table.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
+    };
+    let table = symbol_preset(preset);
+    if std::ptr::eq(table, UNICODE) {
+        if let Some(v) = find(symbols_mono::UNICODE_MONO) {
+            return Some(v);
+        }
+    }
+    find(table)
+}
+
 /// Spinner frames for a preset and kind (`"status"` / `"activity"`).
 #[must_use]
 pub fn spinner_frames(preset: &str, kind: &str) -> &'static [&'static str] {
@@ -234,10 +251,7 @@ impl LoadedTheme {
                 return v.clone();
             }
         }
-        symbol_preset(self.symbol_preset)
-            .iter()
-            .find(|(k, _)| *k == name)
-            .map_or_else(|| "?".to_owned(), |(_, v)| (*v).to_owned())
+        symbol_lookup(self.symbol_preset, name).map_or_else(|| "?".to_owned(), ToOwned::to_owned)
     }
 
     /// Resolved hex for a token; `None` for default-terminal (`""`) colors.
@@ -624,7 +638,7 @@ mod tests {
         assert_eq!(spinner_frames("ascii", "status").len(), 4);
         assert_eq!(spinner_frames("unicode", "activity").len(), 10);
         let t = load_loaded("dark").unwrap();
-        assert_eq!(t.symbol("status.success"), "✔");
+        assert_eq!(t.symbol("status.success"), "✓");
         assert_eq!(t.frames_for("status").len(), 8);
     }
 

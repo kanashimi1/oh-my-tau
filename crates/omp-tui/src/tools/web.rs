@@ -298,7 +298,7 @@ fn fetch_result_lines(
     }
     let truncated = d.get("truncated").and_then(Value::as_bool).unwrap_or(false);
     if truncated {
-        meta_rows.push("⚠ Output truncated".to_owned());
+        meta_rows.push(format!("{} Output truncated", theme.symbol("status.warning")));
     }
     if !meta_rows.is_empty() {
         lines.push(label_line(theme, "Metadata:"));
@@ -553,7 +553,7 @@ mod tests {
             })
             .collect();
         assert!(text.iter().any(|l| l.contains("Content-Type: text/plain")));
-        assert!(text.iter().any(|l| l.contains("⚠ Output truncated")));
+        assert!(text.iter().any(|l| l.contains("▲ Output truncated")));
         assert!(text.iter().any(|l| l.contains("three")));
         assert!(!text.iter().any(|l| l.contains("four")));
         assert!(text

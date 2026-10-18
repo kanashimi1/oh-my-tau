@@ -72,7 +72,7 @@ impl ToolRenderer for Ast {
             Some(text) => {
                 let body: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
                 if body.is_empty() || body.iter().any(|l| l.contains("No matches found")) {
-                    lines.push(Line::from(styled(theme, "warning", "⚠ No matches found")));
+                    lines.push(Line::from(styled(theme, "warning", format!("{} No matches found", theme.symbol("status.warning")))));
                 } else {
                     let cap = COLLAPSED_MATCH_LIMIT.min(body.len());
                     for line in &body[..cap] {

@@ -78,10 +78,7 @@ impl Theme {
             "nerd" | "nerdfont" => "nerd",
             _ => "unicode",
         };
-        loader::symbol_preset(preset)
-            .iter()
-            .find(|(k, _)| *k == key)
-            .map_or("", |(_, v)| *v)
+        loader::symbol_lookup(preset, key).unwrap_or("")
     }
 }
 

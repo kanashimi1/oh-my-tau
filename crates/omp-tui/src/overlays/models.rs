@@ -1460,7 +1460,7 @@ impl ModelPicker {
         ));
         lines.push(self.kind_tabs_line(st, bw));
         // Search row.
-        let icon = "🔍";
+        let icon = theme.symbol("icon.search");
         let mut search = vec![
             sp(" ", st.text),
             sp(icon, st.accent),

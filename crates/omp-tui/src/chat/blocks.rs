@@ -172,7 +172,7 @@ pub fn revealed_rows(
 // ─── User bubble (chat.md §4) ──────────────────────────────────────────────
 
 /// Collapse composer attachments into chips: image markdown becomes a
-/// `🖼 label` chip (TS `UserMessageComponent` image/mention chips).
+/// `▨ label` chip (TS `UserMessageComponent` image/mention chips).
 #[must_use]
 pub fn collapse_chips(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -190,7 +190,7 @@ pub fn collapse_chips(text: &str) -> String {
             return out;
         };
         let label = if alt.is_empty() { "image" } else { alt };
-        out.push_str(&format!("[🖼 {label}]"));
+        out.push_str(&format!("[▨ {label}]"));
         rest = &rest[after + end + 1..];
     }
     out.push_str(rest);
@@ -1170,7 +1170,7 @@ mod tests {
         let rows = rows(&error_banner_lines(message, 100, &theme()));
         assert_eq!(rows[0], "");
         assert_eq!(rows[1], "─".repeat(100));
-        assert_eq!(rows[2], " ✘ 400 E2E-PROVIDER-FAILURE");
+        assert_eq!(rows[2], " ✗ 400 E2E-PROVIDER-FAILURE");
         assert_eq!(rows[3], "   E2E-PROVIDER-FAILURE (type=invalid_request_error param=e2e_failure)");
         assert_eq!(rows[4], "   raw-http-request=/tmp/h/.omp/logs/http-400-requests/1-x.json");
         assert_eq!(rows[5], " Dismissed when you send your next message.");
@@ -1207,14 +1207,14 @@ mod tests {
         };
         assert_eq!(
             usage_metrics(&usage, &theme()),
-            "Δ 6.2s  ⤵ 1.1K  ⤴ 480  💾 100  ⏱ 0.4s  ⚡ 40.0/s"
+            "Δ 6.2s  ⤵ 1.1K  ⤴ 480  ≋ 100  ◷ 0.4s  ↯ 40.0/s"
         );
         let block = rows(&usage_block_lines(&usage, 120, &theme()));
         assert_eq!(block[0], "");
         assert!(block[1].starts_with(" Δ 6.2s  ⤵ 1.1K"), "{block:?}");
         // Instant responses carry no rate.
         let quick = Usage { duration_ms: Some(40), turn_elapsed_ms: None, ..usage };
-        assert_eq!(usage_metrics(&quick, &theme()), "⤵ 1.1K  ⤴ 480  💾 100  ⏱ 0.4s");
+        assert_eq!(usage_metrics(&quick, &theme()), "⤵ 1.1K  ⤴ 480  ≋ 100  ◷ 0.4s");
     }
 
     #[test]
@@ -1268,7 +1268,7 @@ mod tests {
                 " • Read (2)".to_owned(),
                 "   ├─ a.rs".to_owned(),
                 "   │  ⤵ 100  ⤴ 7".to_owned(),
-                "   └─ ✘ b.rs".to_owned(),
+                "   └─ ✗ b.rs".to_owned(),
             ]
         );
     }
@@ -1285,7 +1285,7 @@ mod tests {
         );
         let lines = entry_lines(&entry, false, 60, &theme());
         let joined = rows(&lines).join("\n");
-        assert!(joined.contains("🖼 shot"), "{joined}");
+        assert!(joined.contains("▨ shot"), "{joined}");
         // Flush-left bubble on the `userMessageBg` fill: padding rows above
         // and below, one-space indent, rows padded to the full width.
         assert!(lines.iter().all(|l| {

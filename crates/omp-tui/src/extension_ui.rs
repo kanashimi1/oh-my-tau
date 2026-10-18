@@ -129,7 +129,7 @@ const RECOMMENDED_SUFFIX: &str = " (Recommended)";
 /// omp's custom-answer row (`tools/ask.rs` `OTHER_OPTION_LABEL`).
 const OTHER_OPTION_LABEL: &str = "Other (type your own)";
 /// omp's multi-select commit row (`tools/ask.rs` `DONE_SELECTING_LABEL`).
-const DONE_SELECTING_LABEL: &str = "✔ Done selecting";
+const DONE_SELECTING_LABEL: &str = "✓ Done selecting";
 /// Per-widget line cap (`extension-ui-controller.ts` `MAX_WIDGET_LINES`).
 const MAX_WIDGET_LINES: usize = 10;
 
@@ -768,7 +768,7 @@ impl ExtensionUi {
             KeyCode::Enter => {
                 if question.multi {
                     if *cursor == labels.len() {
-                        // "✔ Done selecting": commit the checked options.
+                        // "✓ Done selecting": commit the checked options.
                         let selected = checked
                             .iter()
                             .filter_map(|i| labels.get(*i).cloned())
@@ -1185,7 +1185,7 @@ mod tests {
                 "options":[{"label":"a"},{"label":"b"},{"label":"c"}]}]}),
         );
         let rows = snapshot(&ui);
-        assert!(rows.iter().any(|r| r.contains("✔ Done selecting")));
+        assert!(rows.iter().any(|r| r.contains("✓ Done selecting")));
         let port = FakePort::default();
         ui.handle_key(key(KeyCode::Char(' ')), &port); // toggle a
         ui.handle_key(key(KeyCode::Down), &port);

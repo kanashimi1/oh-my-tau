@@ -47,9 +47,14 @@ pub fn bg(theme: &Theme) -> Color {
     }
 }
 
-/// Unicode-preset icon (`symbols.ts:389+`), overridable via `Theme::glyph`.
+/// Icon from the theme's symbol preset (`symbols.ts:389+`), then the legacy
+/// `Theme::glyph` table, then `default`.
 #[must_use]
 pub fn icon(theme: &Theme, name: &str, default: &'static str) -> &'static str {
+    let s = theme.symbol(name);
+    if !s.is_empty() {
+        return s;
+    }
     let g = theme.glyph(name);
     if g == "?" {
         default

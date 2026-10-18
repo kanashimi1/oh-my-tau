@@ -205,12 +205,13 @@ def sc_tools(t: Term, r: Result) -> None:
     r.check("tools: Bash card Output section bar", has(r"^├─── Output ─+┤$"))
     r.check("tools: Bash card wall/timeout line", has(r"^│ ⟦Wall: \d+\.\d\ds \| Timeout: 300s⟧\s+│$"))
     r.check("tools: Bash card no model-facing wall notice", not has(r"Wall time: [\d.]+ seconds"))
-    r.check("tools: Write card title row", has(r"^╭─── ✎ Write: 🗒 e2e-new\.txt · 3 lines ─+╮$"))
+    # Icon glyphs: TS draws color emoji (🗒 🔍); omp-rs draws monochrome (◦ ⌕).
+    r.check("tools: Write card title row", has(r"^╭─── ✎ Write: [🗒◦] e2e-new\.txt · 3 lines ─+╮$"))
     r.check("tools: Write card content rows", has(r"^│ +1 alpha\s+│$") and has(r"^│ +2 beta\s+│$"))
-    r.check("tools: Grep title row", has(r"^ 🔍 Grep: beta 1 match · 1 file · in \.\s*$"))
+    r.check("tools: Grep title row", has(r"^ [🔍⌕] Grep: beta 1 match · 1 file · in \.\s*$"))
     r.check("tools: Grep hashline result rows", has(r"^ └─ # e2e-new\.txt#[0-9a-f]+\s*$") and has(r"^\s+\*2│beta\s*$"))
-    r.check("tools: Glob title row", has(r"^ 🔍 Glob: \*\.txt 2 files · in \.\s*$"))
-    r.check("tools: Glob file rows", has(r"^ ├─ 🗒 e2e-new\.txt\s*$") and has(r"^ └─ 🗒 e2e-read-me\.txt\s*$"))
+    r.check("tools: Glob title row", has(r"^ [🔍⌕] Glob: \*\.txt 2 files · in \.\s*$"))
+    r.check("tools: Glob file rows", has(r"^ ├─ [🗒◦] e2e-new\.txt\s*$") and has(r"^ └─ [🗒◦] e2e-read-me\.txt\s*$"))
     r.check("tools: no tool error", re.search(ERROR_RE, tr) is None)
 
 

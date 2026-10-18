@@ -50,7 +50,7 @@ pub fn render(id: SegmentId, ctx: &Ctx<'_>, theme: &Theme) -> Option<Vec<Piece>>
         SegmentId::Cost => cost(ctx),
         SegmentId::ContextPct => context_pct(ctx, theme),
         SegmentId::ContextTotal => context_total(ctx, theme),
-        SegmentId::Usage => usage(ctx),
+        SegmentId::Usage => usage(ctx, theme),
         _ => None,
     }
 }
@@ -242,7 +242,7 @@ pub struct QuotaWindow {
 }
 
 /// `usage` — provider quota display, joined with ` · `.
-fn usage(ctx: &Ctx<'_>) -> Option<Vec<Piece>> {
+fn usage(ctx: &Ctx<'_>, theme: &Theme) -> Option<Vec<Piece>> {
     if ctx.st.usage_windows.is_empty() {
         return None;
     }
@@ -270,6 +270,6 @@ fn usage(ctx: &Ctx<'_>) -> Option<Vec<Piece>> {
             format!("{} {pct}% ({reset})", w.label)
         })
         .collect::<Vec<_>>();
-    let text = format!("⏱ {}", parts.join(" · "));
+    let text = format!("{} {}", style::icon(theme, "icon.time", "⏱"), parts.join(" · "));
     Some(vec![ctx.maybe_accent("accent", text)])
 }

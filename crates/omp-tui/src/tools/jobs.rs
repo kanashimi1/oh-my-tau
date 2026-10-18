@@ -30,7 +30,7 @@ impl ToolRenderer for Jobs {
             .iter()
             .any(|j| j.get("status").and_then(Value::as_str) == Some("failed"))
         {
-            "⚠"
+            theme.symbol("status.warning")
         } else {
             theme.glyph("success")
         };

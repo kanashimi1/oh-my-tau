@@ -33,6 +33,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use serde_json::Value;
+use unicode_width::UnicodeWidthStr;
 
 use crate::component::{Component, EventOutcome};
 use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
@@ -90,20 +91,20 @@ impl Tab {
         }
     }
 
-    /// Tab icon (TS `TAB_METADATA` symbol keys, unicode preset).
-    fn icon(self) -> &'static str {
-        match self {
-            Self::Appearance => "🎨",
-            Self::Model => "🤖",
-            Self::Interaction => "⌨",
-            Self::Context => "📋",
-            Self::Memory => "🧠",
-            Self::Files => "📁",
-            Self::Shell => "💻",
-            Self::Tools => "🔧",
-            Self::Tasks => "📦",
-            Self::Providers => "🌐",
-        }
+    /// Tab icon from the theme's symbol preset (TS `TAB_METADATA` keys).
+    fn icon(self, theme: &Theme) -> &'static str {
+        theme.symbol(match self {
+            Self::Appearance => "tab.appearance",
+            Self::Model => "tab.model",
+            Self::Interaction => "tab.interaction",
+            Self::Context => "tab.context",
+            Self::Memory => "tab.memory",
+            Self::Files => "tab.files",
+            Self::Shell => "tab.shell",
+            Self::Tools => "tab.tools",
+            Self::Tasks => "tab.tasks",
+            Self::Providers => "tab.providers",
+        })
     }
 
     /// Section order inside the tab (TS `TAB_GROUPS`).
@@ -1533,13 +1534,14 @@ impl Component for SettingsOverlay {
             let sep = "    ";
             let sep_w = sep.len() as u16;
             // Drop labels from the tail until the bar fits (TS short tabs).
-            // Cell widths: icons are double-wide glyphs (+2), labels and
-            // separators count chars (they are ASCII).
+            // Cell widths: icon (measured; emoji presets are double-wide) +
+            // space; labels and separators count chars (they are ASCII).
+            let icon_w = |tab: Tab| UnicodeWidthStr::width(tab.icon(theme)) as u16;
             let mut show_label: Vec<bool> = vec![true; Tab::ALL.len()];
             loop {
                 let mut total: u16 = 2;
                 for (idx, tab) in Tab::ALL.iter().enumerate() {
-                    total += 3; // icon (2 cells) + space
+                    total += icon_w(*tab) + 1;
                     if show_label[idx] {
                         total += tab.label().len() as u16;
                     }
@@ -1558,9 +1560,9 @@ impl Component for SettingsOverlay {
             for (idx, tab) in Tab::ALL.iter().enumerate() {
                 let start = col;
                 let label = if show_label[idx] {
-                    format!("{} {}", tab.icon(), tab.label())
+                    format!("{} {}", tab.icon(theme), tab.label())
                 } else {
-                    tab.icon().to_string()
+                    tab.icon(theme).to_string()
                 };
                 let style = if idx == active_tab {
                     accent.add_modifier(Modifier::BOLD)
@@ -1570,9 +1572,9 @@ impl Component for SettingsOverlay {
                     text
                 };
                 let width = if show_label[idx] {
-                    3 + tab.label().len() as u16
+                    icon_w(*tab) + 1 + tab.label().len() as u16
                 } else {
-                    2
+                    icon_w(*tab)
                 };
                 spans.push(Span::styled(label, style));
                 col += width;
@@ -1586,7 +1588,7 @@ impl Component for SettingsOverlay {
             // (its overflow affordance), then the bar's trailing padding.
             if show_label.iter().any(|show| !*show) {
                 spans.push(Span::styled(
-                    format!("{}     ", Tab::Tasks.icon()),
+                    format!("{}     ", Tab::Tasks.icon(theme)),
                     Style::default().fg(theme.color("text")),
                 ));
             }
@@ -2309,9 +2311,8 @@ mod tests {
         let overlay = SettingsOverlay::new();
         let s = render_screen(&overlay, 120, 40);
         assert!(s.contains("Settings"), "{s}");
-        // Wide glyphs pad a cell in TestBackend: assert icon and label
-        // separately.
-        assert!(s.contains('🎨'), "{s}");
+        // Assert icon and label separately.
+        assert!(s.contains('◐'), "{s}");
         assert!(s.contains("Appearance"), "{s}");
         assert!(s.contains("Theme"), "{s}");
         assert!(s.contains("Dark Theme"), "{s}");
