@@ -1505,6 +1505,9 @@ async fn trace_command(rt: &Runtime) -> Outcome {
     }
     // TS `/trace`: bare `startServer()` (default port + hostname); not the
     // `/stats` launcher, so no browser open and no cached handle.
+    // TS fetchUsageData resolves the broker on every call, so the `/trace`
+    // dashboard shows broker-backed provider windows too.
+    crate::subcmd::usage_broker::register();
     let started = tokio::task::spawn_blocking(|| {
         omp_stats::server::start_server(
             omp_stats::server::DEFAULT_PORT,

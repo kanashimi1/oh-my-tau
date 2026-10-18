@@ -6,7 +6,8 @@
 //! smoke-test (`smokeTestSyncWorker` is intentionally not ported).
 //!
 //! Subscription windows (`usage-windows.ts`) are served by
-//! [`get_provider_window_stats`] from the agent.db `usage_history` snapshots.
+//! [`get_provider_window_stats`] from the broker when one is installed, else
+//! the agent.db `usage_history` snapshots (see [`crate::usage_windows`]).
 
 mod lock;
 mod sync;
@@ -215,8 +216,10 @@ pub fn get_provider_dashboard_stats(range: Option<&str>) -> Result<ProviderDashb
 /// every provider window in range, plus utilization series for `provider` only
 /// (all series can number in the thousands).
 ///
-/// Token estimates use the broker's fleet tokens when present; the Rust port
-/// has no broker client, so they always come from local message stats.
+/// Token estimates use the broker's fleet tokens when a broker is installed
+/// (the window fractions cover every install sharing the broker's
+/// credentials, so dividing them into local-only tokens would undercount);
+/// otherwise they come from local message stats.
 ///
 /// # Errors
 /// DB failure.

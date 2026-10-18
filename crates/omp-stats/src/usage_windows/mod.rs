@@ -6,18 +6,21 @@
 //! per-window insights (window-equivalents consumed, estimated tokens per
 //! window, peak concurrent utilization and the account count it implies).
 //!
-//! Broker mode is not ported: the Rust tree has no auth-broker HTTP client (only
-//! the `auth.broker.*` settings), so [`fetch_usage_data`] always takes the TS
-//! fallback path for an unavailable broker: the local agent.db read with no
-//! fleet-wide token totals. The TS `sumFleetTokens` helper is therefore not
-//! ported either: its only input is the broker's client usage summary.
+//! Where the data comes from (TS `fetchUsageData`): when the host installs a
+//! [`broker::UsageBroker`] — a configured auth broker performs every upstream
+//! usage fetch, so the local `usage_history` stays frozen — rows and the
+//! fleet-wide token totals come from the broker; broker errors degrade to the
+//! local agent.db read with no fleet tokens, like TS. `omp-stats` registers no
+//! broker itself (it holds no HTTP client); omp-cli does.
 //!
 //! `localeCompare` ordering (used by the TS sorts) is approximated by
 //! [`locale_compare`]; see its docs for the exact scope.
 
+mod broker;
 mod cache;
 mod collate;
 
+pub use broker::{set_usage_broker, sum_fleet_tokens, ClientProviderUsage, ClientUsageClientSummary, UsageBroker};
 pub use cache::cached_usage_data;
 #[cfg(test)]
 mod tests;
@@ -71,8 +74,9 @@ pub struct UsageWindowStats {
     pub window_insights: Vec<ProviderWindowInsight>,
 }
 
-/// TS `UsageDataSnapshot`. `fleet_tokens_by_provider` is always `None` here
-/// (no broker client); callers then use local message-stat tokens.
+/// TS `UsageDataSnapshot`. `fleet_tokens_by_provider` is `Some` only in broker
+/// mode (an installed [`UsageBroker`] whose summary fetch succeeded); callers
+/// then use local message-stat tokens instead.
 #[derive(Debug, Clone, Default)]
 pub struct UsageDataSnapshot {
     pub rows: Vec<UsageSnapshotRow>,
@@ -119,10 +123,22 @@ fn query_usage_snapshots(since_ms: i64, db_path: &Path) -> rusqlite::Result<Vec<
     rows.collect()
 }
 
-/// TS `fetchUsageData` with no reachable broker: the local agent.db snapshots
-/// and no fleet tokens.
+/// TS `fetchUsageData`: snapshots and, in broker mode, fleet-wide token burn
+/// per provider from the installed [`UsageBroker`]; a broker fetch failure
+/// (or no broker) falls back to the local agent.db read with no fleet tokens.
 #[must_use]
 pub fn fetch_usage_data(since_ms: i64) -> UsageDataSnapshot {
+    if let Some(broker) = broker::installed_broker() {
+        match broker.usage_history(since_ms) {
+            Ok(rows) => {
+                let fleet_tokens_by_provider = broker::fetch_fleet_tokens(&broker, since_ms);
+                return UsageDataSnapshot { rows, fleet_tokens_by_provider };
+            }
+            Err(err) => {
+                tracing::debug!(error = %err, "broker usage history unavailable, falling back to local");
+            }
+        }
+    }
     UsageDataSnapshot {
         rows: read_usage_snapshots(since_ms, &agent_db_path()),
         fleet_tokens_by_provider: None,

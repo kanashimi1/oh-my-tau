@@ -25,7 +25,10 @@ use pa_ai::oauth::{
 };
 use serde_json::{Map, Value};
 
-pub use store::{Credential, LocalStore, StoredRow};
+pub use store::{
+    broker_client_usage_summary, broker_usage_history, BrokerClientUsageClientSummary, BrokerClientProviderUsage,
+    BrokerUsageHistoryEntry, Credential, LocalStore, StoredRow,
+};
 
 use crate::auth::{resolve_broker_config, BrokerConfig, Hosts};
 use crate::AgentDir;

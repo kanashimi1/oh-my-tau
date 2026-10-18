@@ -12,6 +12,7 @@ pub mod login;
 pub mod models;
 pub mod stats;
 pub mod stats_judge;
+pub mod usage_broker;
 
 /// Subcommands this module implements.
 #[must_use]

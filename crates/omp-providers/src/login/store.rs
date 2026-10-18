@@ -10,6 +10,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context as _, Result};
 use base64::Engine as _;
 use rusqlite::{params, Connection, OpenFlags, TransactionBehavior};
+use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::auth::BrokerConfig;
@@ -528,6 +529,86 @@ pub async fn broker_upload(cfg: &BrokerConfig, provider: &str, credential: &Cred
     Ok(())
 }
 
+// ------------------------------------------------------- broker usage reads
+
+/// One `/v1/usage/history` entry (TS `UsageHistoryEntry`); only the fields the
+/// stats dashboard's window analytics consume.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerUsageHistoryEntry {
+    pub recorded_at: i64,
+    pub provider: String,
+    pub account_key: String,
+    pub email: Option<String>,
+    pub account_id: Option<String>,
+    pub limit_id: String,
+    pub label: String,
+    pub window_label: Option<String>,
+    pub used_fraction: Option<f64>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageHistoryResponse {
+    entries: Vec<BrokerUsageHistoryEntry>,
+}
+
+/// Per-provider aggregate of one client's recorded usage (TS
+/// `ClientProviderUsage`); only the token fields `sumFleetTokens` folds.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerClientProviderUsage {
+    pub provider: String,
+    pub input_tokens: f64,
+    pub output_tokens: f64,
+    pub cache_read_tokens: f64,
+    pub cache_write_tokens: f64,
+}
+
+/// One known client with its usage aggregates over the queried window (TS
+/// `ClientUsageClientSummary`); only the fields the fleet-token fold uses.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerClientUsageClientSummary {
+    pub install_id: String,
+    pub providers: Vec<BrokerClientProviderUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClientUsageSummaryResponse {
+    clients: Vec<BrokerClientUsageClientSummary>,
+}
+
+/// Broker `GET /v1/usage/history?sinceMs=`: recorded usage-limit snapshots
+/// from the broker host's durable history, oldest first. The TS client's
+/// default 10 s timeout applies (`BROKER_TIMEOUT`).
+///
+/// # Errors
+/// Transport, HTTP or schema failure.
+pub async fn broker_usage_history(cfg: &BrokerConfig, since_ms: i64) -> Result<Vec<BrokerUsageHistoryEntry>> {
+    let body =
+        broker_call(cfg, reqwest::Method::GET, &format!("/v1/usage/history?sinceMs={since_ms}"), None).await?;
+    let response: UsageHistoryResponse =
+        serde_json::from_value(body).map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"))?;
+    Ok(response.entries)
+}
+
+/// Broker `GET /v1/usage/clients?sinceMs=`: per-client token burn aggregates
+/// over the window. The TS client's default 10 s timeout applies.
+///
+/// # Errors
+/// Transport, HTTP or schema failure.
+pub async fn broker_client_usage_summary(
+    cfg: &BrokerConfig,
+    since_ms: i64,
+) -> Result<Vec<BrokerClientUsageClientSummary>> {
+    let body =
+        broker_call(cfg, reqwest::Method::GET, &format!("/v1/usage/clients?sinceMs={since_ms}"), None).await?;
+    let response: ClientUsageSummaryResponse =
+        serde_json::from_value(body).map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"))?;
+    Ok(response.clients)
+}
+
 /// Broker `GET /v1/snapshot` rows (secrets redacted by the broker), by id.
 ///
 /// # Errors
@@ -564,4 +645,120 @@ pub async fn broker_disable(cfg: &BrokerConfig, id: i64, cause: &str) -> Result<
     let body = json!({"cause": cause});
     broker_call(cfg, reqwest::Method::POST, &format!("/v1/credential/{id}/disable"), Some(&body)).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// Canned HTTP/1.1 server (the `auth/tests.rs` pattern): records the
+    /// request line and headers of every request, replies from `reply`.
+    fn serve(reply: impl Fn(&str) -> (u16, String) + Send + 'static) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 4096];
+                loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                    if n == 0 {
+                        break;
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).to_string();
+                let line = text.lines().next().unwrap_or_default().to_string();
+                log.lock().unwrap().push(text);
+                let (status, body) = reply(&line);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (url, seen)
+    }
+
+    fn cfg(url: &str) -> BrokerConfig {
+        BrokerConfig { url: url.to_string(), token: "tok".to_string() }
+    }
+
+    #[tokio::test]
+    async fn usage_history_gets_since_ms_and_parses_entries() {
+        let (url, seen) = serve(|line| {
+            assert_eq!(line, "GET /v1/usage/history?sinceMs=1728000000000 HTTP/1.1");
+            (
+                200,
+                r#"{"generatedAt":1728000001,"entries":[
+                    {"recordedAt":1728000001000,"provider":"google-antigravity","accountKey":"k1","email":"a@b.c",
+                     "accountId":"acc1","limitId":"daily","label":"Usage","windowLabel":"Daily",
+                     "usedFraction":0.5,"status":"ok"},
+                    {"recordedAt":1728000002000,"provider":"kimi","accountKey":"k2","limitId":"weekly","label":"L"}
+                ]}"#
+                .to_string(),
+            )
+        });
+        let entries = broker_usage_history(&cfg(&url), 1_728_000_000_000).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].provider, "google-antigravity");
+        assert_eq!(entries[0].recorded_at, 1_728_000_001_000);
+        assert_eq!(entries[0].email.as_deref(), Some("a@b.c"));
+        assert_eq!(entries[0].used_fraction, Some(0.5));
+        assert_eq!(entries[0].status.as_deref(), Some("ok"));
+        // Absent optionals are None (TS `?? null`).
+        assert_eq!(entries[1].email, None);
+        assert_eq!(entries[1].account_id, None);
+        assert_eq!(entries[1].window_label, None);
+        assert_eq!(entries[1].used_fraction, None);
+        assert_eq!(entries[1].status, None);
+        let request = seen.lock().unwrap().join("\n");
+        assert!(request.contains("authorization: Bearer tok"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn client_usage_summary_gets_since_ms_and_parses_clients() {
+        let (url, seen) = serve(|line| {
+            assert_eq!(line, "GET /v1/usage/clients?sinceMs=42 HTTP/1.1");
+            (
+                200,
+                r#"{"generatedAt":1728000001,"clients":[
+                    {"installId":"i1","firstSeen":1727990000,"lastSeen":1728000000,"providers":[
+                        {"provider":"google-antigravity","inputTokens":10,"outputTokens":5,
+                         "cacheReadTokens":2,"cacheWriteTokens":1},
+                        {"provider":"kimi","inputTokens":1,"outputTokens":1,"cacheReadTokens":0,"cacheWriteTokens":0}
+                    ]},
+                    {"installId":"i2","firstSeen":1727990000,"lastSeen":1728000000,"providers":[]}
+                ]}"#
+                .to_string(),
+            )
+        });
+        let clients = broker_client_usage_summary(&cfg(&url), 42).await.unwrap();
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients[0].install_id, "i1");
+        assert_eq!(clients[0].providers.len(), 2);
+        assert_eq!(clients[0].providers[0].provider, "google-antigravity");
+        assert_eq!(clients[0].providers[0].cache_write_tokens, 1.0);
+        assert!(clients[1].providers.is_empty());
+        let request = seen.lock().unwrap().join("\n");
+        assert!(request.contains("authorization: Bearer tok"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn usage_history_http_error_bails() {
+        let (url, _seen) = serve(|_| (500, r#"{"error":"boom"}"#.to_string()));
+        let err = broker_usage_history(&cfg(&url), 0).await.unwrap_err().to_string();
+        assert!(err.contains("500"), "{err}");
+    }
 }

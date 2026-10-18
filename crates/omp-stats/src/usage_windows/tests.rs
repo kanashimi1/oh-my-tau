@@ -136,3 +136,163 @@ fn window_label_suffix_rules() {
     assert_eq!(window_display_label(&row("Usage", Some(""))), "Usage");
     assert_eq!(window_display_label(&row("Usage", None)), "Usage");
 }
+
+// ----------------------------------------------------------- broker mode
+
+use crate::testutil::TestHome;
+
+use super::broker::{set_usage_broker, sum_fleet_tokens, ClientProviderUsage, ClientUsageClientSummary, UsageBroker};
+
+fn client(install: &str, providers: &[(&str, f64, f64, f64, f64)]) -> ClientUsageClientSummary {
+    ClientUsageClientSummary {
+        install_id: install.to_string(),
+        providers: providers
+            .iter()
+            .map(|(provider, input, output, cache_read, cache_write)| ClientProviderUsage {
+                provider: provider.to_string(),
+                input_tokens: *input,
+                output_tokens: *output,
+                cache_read_tokens: *cache_read,
+                cache_write_tokens: *cache_write,
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn sum_fleet_tokens_folds_all_token_kinds_per_provider() {
+    let clients = vec![
+        client("a", &[("google-antigravity", 10.0, 5.0, 2.0, 1.0), ("kimi", 3.0, 1.0, 0.0, 0.0)]),
+        client("b", &[("google-antigravity", 1.0, 1.0, 1.0, 1.0)]),
+        client("c", &[]),
+    ];
+    let tokens = sum_fleet_tokens(&clients).expect("fleet tokens");
+    assert_eq!(tokens["google-antigravity"], 22.0);
+    assert_eq!(tokens["kimi"], 4.0);
+}
+
+#[test]
+fn sum_fleet_tokens_empty_is_none_not_zero() {
+    assert_eq!(sum_fleet_tokens(&[]), None);
+    // A client that reported nothing contributes no entry.
+    assert_eq!(sum_fleet_tokens(&[client("a", &[])]), None);
+}
+
+/// Scripted broker: `history`/`summary` are Results consumed per call.
+struct FakeBroker {
+    history: std::sync::Mutex<Vec<anyhow::Result<Vec<UsageSnapshotRow>>>>,
+    summary: std::sync::Mutex<Vec<anyhow::Result<Vec<ClientUsageClientSummary>>>>,
+}
+
+impl FakeBroker {
+    fn ok(rows: Vec<UsageSnapshotRow>, clients: Vec<ClientUsageClientSummary>) -> Self {
+        Self {
+            history: std::sync::Mutex::new(vec![Ok(rows)]),
+            summary: std::sync::Mutex::new(vec![Ok(clients)]),
+        }
+    }
+}
+
+impl UsageBroker for FakeBroker {
+    fn usage_history(&self, _since_ms: i64) -> anyhow::Result<Vec<UsageSnapshotRow>> {
+        self.history.lock().unwrap().pop().unwrap_or_else(|| Err(anyhow::anyhow!("no scripted history")))
+    }
+
+    fn client_usage_summary(&self, _since_ms: i64) -> anyhow::Result<Vec<ClientUsageClientSummary>> {
+        self.summary.lock().unwrap().pop().unwrap_or_else(|| Err(anyhow::anyhow!("no scripted summary")))
+    }
+}
+
+fn broker_row(provider: &str, fraction: f64) -> UsageSnapshotRow {
+    UsageSnapshotRow {
+        recorded_at: 1_728_000_000_000,
+        provider: provider.to_string(),
+        account_key: "broker-key".to_string(),
+        email: None,
+        account_id: None,
+        limit_id: "broker-limit".to_string(),
+        label: "Broker".to_string(),
+        window_label: None,
+        used_fraction: Some(fraction),
+        status: None,
+    }
+}
+
+/// Temp HOME with one local `usage_history` row under `.omp/agent/agent.db`.
+struct LocalHome {
+    _home: TestHome,
+}
+
+impl LocalHome {
+    fn with_local_row(provider: &str) -> Self {
+        let home = TestHome::new();
+        let agent = home.path().join(".omp").join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let conn = rusqlite::Connection::open(agent.join("agent.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE usage_history (recorded_at INTEGER, provider TEXT, account_key TEXT, email TEXT, account_id TEXT, limit_id TEXT, label TEXT, window_label TEXT, used_fraction REAL, status TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO usage_history VALUES (1728000000000, ?1, 'local-key', NULL, NULL, 'local-limit', 'Local', NULL, 0.25, NULL)",
+            [provider],
+        )
+        .unwrap();
+        Self { _home: home }
+    }
+}
+
+#[test]
+fn fetch_usage_data_uses_broker_rows_and_fleet_tokens() {
+    let _local = LocalHome::with_local_row("local-provider");
+    set_usage_broker(Some(std::sync::Arc::new(FakeBroker::ok(
+        vec![broker_row("google-antigravity", 0.5)],
+        vec![client("a", &[("google-antigravity", 10.0, 5.0, 2.0, 1.0)])],
+    ))));
+    let data = fetch_usage_data(0);
+    set_usage_broker(None);
+    assert_eq!(data.rows.len(), 1);
+    assert_eq!(data.rows[0].provider, "google-antigravity");
+    let fleet = data.fleet_tokens_by_provider.expect("fleet tokens");
+    assert_eq!(fleet["google-antigravity"], 18.0);
+}
+
+#[test]
+fn fetch_usage_data_history_error_falls_back_to_local() {
+    let _local = LocalHome::with_local_row("local-provider");
+    let broker = FakeBroker {
+        history: std::sync::Mutex::new(vec![Err(anyhow::anyhow!("broker down"))]),
+        summary: std::sync::Mutex::new(vec![]),
+    };
+    set_usage_broker(Some(std::sync::Arc::new(broker)));
+    let data = fetch_usage_data(0);
+    set_usage_broker(None);
+    assert_eq!(data.rows.len(), 1);
+    assert_eq!(data.rows[0].provider, "local-provider");
+    assert_eq!(data.fleet_tokens_by_provider, None);
+}
+
+#[test]
+fn fetch_usage_data_summary_error_leaves_fleet_none_but_keeps_broker_rows() {
+    let _local = LocalHome::with_local_row("local-provider");
+    let broker = FakeBroker {
+        history: std::sync::Mutex::new(vec![Ok(vec![broker_row("google-antigravity", 0.5)])]),
+        summary: std::sync::Mutex::new(vec![Err(anyhow::anyhow!("summary unavailable"))]),
+    };
+    set_usage_broker(Some(std::sync::Arc::new(broker)));
+    let data = fetch_usage_data(0);
+    set_usage_broker(None);
+    assert_eq!(data.rows.len(), 1);
+    assert_eq!(data.rows[0].provider, "google-antigravity");
+    assert_eq!(data.fleet_tokens_by_provider, None);
+}
+
+#[test]
+fn fetch_usage_data_without_broker_reads_local_db() {
+    let _local = LocalHome::with_local_row("local-provider");
+    set_usage_broker(None);
+    let data = fetch_usage_data(0);
+    assert_eq!(data.rows.len(), 1);
+    assert_eq!(data.rows[0].provider, "local-provider");
+    assert_eq!(data.fleet_tokens_by_provider, None);
+}
