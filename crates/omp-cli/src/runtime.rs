@@ -1270,7 +1270,7 @@ impl Runtime {
             .and_then(|(_, tail)| parse_level(tail))
             .unwrap_or(current_level);
         let from_thinking = level_name(current_level).to_string();
-        self.swap_model(resolved, Some(EPHEMERAL_ROLE), true).await;
+        self.swap_model(resolved, Some(EPHEMERAL_ROLE), true, true).await;
         let applied = self.apply_thinking(requested).await;
         let applied_name = level_name(applied).to_string();
         let role = {
@@ -1303,7 +1303,7 @@ impl Runtime {
         let restored_level = plan.thinking.as_deref().and_then(parse_level);
         // Ownership ends before the swap so observers never see the primary tagged as a fallback.
         lock(&self.recovery).state_mut().clear_active();
-        self.swap_model(&resolved, Some(EPHEMERAL_ROLE), false)
+        self.swap_model(&resolved, Some(EPHEMERAL_ROLE), false, true)
             .await;
         if let Some(l) = restored_level {
             self.apply_thinking(l).await;
@@ -1992,6 +1992,16 @@ impl Runtime {
         .await;
         self.agent.set_messages(messages).await;
         rss_trace!("messages-set");
+        // TS restores the session's model and thinking selector on resume and
+        // on every session switch; explicit `--model` / `--thinking` win only
+        // for the startup load.
+        let saved = session_model_state(&index, path, &branch)?;
+        if !MODEL_PINNED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            self.restore_session_model(&saved).await;
+        }
+        if !THINKING_PINNED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            self.restore_session_thinking(&saved).await;
+        }
         self.herdr_session("resume");
         lock(&self.prompts).open.clear();
         self.restore_title_from(&index);
@@ -2006,6 +2016,76 @@ impl Runtime {
             previous,
         );
         Ok(())
+    }
+
+    /// TS `getRestorableSessionModels` + registry lookup: the last-used role's
+    /// model, then the session default; the first one that resolves with
+    /// credentials becomes live (no `model_change` is written, as in TS).
+    async fn restore_session_model(&self, saved: &SessionModelState) {
+        let mut candidates: Vec<&str> = Vec::new();
+        let default = saved.models.get("default").map(String::as_str);
+        match saved.last_role.as_deref() {
+            None | Some("default" | EPHEMERAL_ROLE) => candidates.extend(default),
+            Some(role) => match saved.models.get(role).map(String::as_str) {
+                None => candidates.extend(default),
+                Some(r) => {
+                    candidates.push(r);
+                    if let Some(d) = default.filter(|d| *d != r) {
+                        candidates.push(d);
+                    }
+                }
+            },
+        }
+        for reference in candidates {
+            let Some((provider, id)) = reference.split_once('/') else {
+                continue;
+            };
+            if self
+                .live_provider_id()
+                .is_some_and(|(p, i)| p == provider && i == id)
+            {
+                return;
+            }
+            let Ok(resolved) = (self.resolver)(reference.to_owned()).await else {
+                continue;
+            };
+            if resolved.provider != provider || resolved.id != id || resolved.api_key.is_none() {
+                continue;
+            }
+            lock(&self.recovery).reconfigure(RecoveryConfig::from_resolved(&resolved));
+            self.swap_model(&resolved, None, false, false).await;
+            return;
+        }
+    }
+
+    /// TS `restoreThinkingLevel`: the branch's last `thinking_level_change`
+    /// (its configured selector, so `auto` stays auto), clamped to the live
+    /// model; not journaled.
+    async fn restore_session_thinking(&self, saved: &SessionModelState) {
+        let Some((level, configured)) = saved.thinking.as_ref() else {
+            return;
+        };
+        let auto = configured.as_deref() == Some("auto");
+        let Some(requested) = parse_level(level) else {
+            return;
+        };
+        let model = self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|t| t.model.clone());
+        let effective = model.map_or(requested, |m| crate::model::clamp_level(&m, requested));
+        self.auto_thinking.store(auto, std::sync::atomic::Ordering::Relaxed);
+        if self.agent.thinking_level().await != effective {
+            self.agent.set_thinking_level(effective).await;
+        }
+        let name = level_name(effective);
+        self.emit_event(json!({
+            "type": "thinking_level_changed",
+            "thinkingLevel": name,
+            "configured": if auto { "auto" } else { name },
+        }));
     }
 
     async fn check_switch(&self, reason: &'static str, target: Option<PathBuf>) -> Result<()> {
@@ -2636,7 +2716,7 @@ impl Runtime {
             rec.reconfigure(RecoveryConfig::from_resolved(&resolved));
             rec.clear_cooldown(&reference);
         }
-        self.swap_model(&resolved, role, false).await;
+        self.swap_model(&resolved, role, false, true).await;
         // Re-apply thinking for the new model: the catalog's `thinking.defaultLevel`, else the current level.
         let catalog_default = crate::model::catalog_extras(provider, model_id)
             .into_iter()
@@ -2662,6 +2742,7 @@ impl Runtime {
         resolved: &omp_providers::ResolvedModel,
         role: Option<&str>,
         is_fallback: bool,
+        journal: bool,
     ) {
         let agent_model: Option<pa_agent::types::Model> = json_round_trip(&resolved.model);
         let Some(agent_model) = agent_model else {
@@ -2710,10 +2791,12 @@ impl Runtime {
                 self.send(usage);
             }
         }
-        let selector = format!("{}/{}", resolved.provider, resolved.id);
-        let _ = self
-            .persist
-            .append_model_change(&selector, role, is_fallback);
+        if journal {
+            let selector = format!("{}/{}", resolved.provider, resolved.id);
+            let _ = self
+                .persist
+                .append_model_change(&selector, role, is_fallback);
+        }
     }
 
     /// `ModelControls.setThinkingLevel`: clamp to the live model; journal and announce only a change.
@@ -3287,6 +3370,97 @@ struct MessageEnvelope {
 
 /// Head-only view of a `message` entry: enough for the context rebuild's
 /// default-model inference (`role`/`provider`/`model`) without the payload.
+/// Set by `main` when `--model`/`--provider` (resp. `--thinking`) was given:
+/// the startup resume keeps the explicit choice instead of the session's
+/// (TS `hasExplicitModel`); cleared by the first `load_session`.
+pub static MODEL_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static THINKING_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Model/thinking bookkeeping of a session branch (TS `buildSessionContext`
+/// `models` + `getLastModelChangeRole` + thinking fields).
+#[derive(Debug, Default, PartialEq)]
+struct SessionModelState {
+    models: std::collections::BTreeMap<String, String>,
+    last_role: Option<String>,
+    /// `(thinkingLevel, configured)` of the last `thinking_level_change`.
+    thinking: Option<(String, Option<String>)>,
+}
+
+#[derive(serde::Deserialize)]
+struct BookkeepingHead {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    role: Option<String>,
+    #[serde(rename = "thinkingLevel", default)]
+    thinking_level: Option<String>,
+    #[serde(default)]
+    configured: Option<String>,
+}
+
+/// Read only the branch's `model_change` / `thinking_level_change` entries
+/// and, when no explicit default model exists, the last assistant message's
+/// `provider/model` (TS infers `models.default` from assistant messages
+/// until an explicit default is recorded).
+fn session_model_state(
+    index: &omp_session::index::SessionIndex,
+    path: &Path,
+    branch: &[u32],
+) -> Result<SessionModelState> {
+    use omp_session::index::EntryKind;
+    let picks: Vec<u32> = branch
+        .iter()
+        .copied()
+        .filter(|&i| {
+            matches!(
+                index.refs[i as usize].kind,
+                EntryKind::ModelChange | EntryKind::ThinkingLevelChange
+            )
+        })
+        .collect();
+    let mut st = SessionModelState::default();
+    index.for_each_line(path, &picks, |r, raw| {
+        let Ok(h) = serde_json::from_str::<BookkeepingHead>(raw) else {
+            return Ok(());
+        };
+        if r.kind == EntryKind::ModelChange {
+            let role = h.role.unwrap_or_else(|| "default".to_owned());
+            if let Some(m) = h.model.filter(|m| !m.is_empty()) {
+                st.models.insert(role.clone(), m);
+            }
+            st.last_role = Some(role);
+        } else {
+            st.thinking = Some((h.thinking_level.unwrap_or_else(|| "off".to_owned()), h.configured));
+        }
+        Ok(())
+    })?;
+    if !st.models.contains_key("default") {
+        for &i in branch.iter().rev() {
+            if index.refs[i as usize].kind != EntryKind::Message {
+                continue;
+            }
+            let mut found = None;
+            index.for_each_line(path, &[i], |_, raw| {
+                if let Ok(MessageHead { message: Some(m) }) = serde_json::from_str::<MessageHead>(raw) {
+                    if m.role.as_deref() == Some("assistant") {
+                        found = Some(format!(
+                            "{}/{}",
+                            m.provider.as_deref().unwrap_or("undefined"),
+                            m.model.as_deref().unwrap_or("undefined")
+                        ));
+                    }
+                }
+                Ok(())
+            })?;
+            if let Some(m) = found {
+                st.models.insert("default".to_owned(), m);
+                break;
+            }
+        }
+    }
+    Ok(st)
+}
+
 #[derive(serde::Deserialize)]
 struct MessageHead {
     #[serde(default)]
@@ -3981,5 +4155,52 @@ mod turn_outcome_tests {
         let error = outcome.error.expect("error payload");
         assert!(error.get("httpStatus").is_none());
         assert_eq!(error["message"], json!("Provider request failed"));
+    }
+}
+
+#[cfg(test)]
+mod session_model_state_tests {
+    use super::*;
+
+    fn state_of(lines: &[&str]) -> SessionModelState {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let index = omp_session::index::SessionIndex::load(&path).expect("index");
+        session_model_state(&index, &path, &index.branch()).expect("state")
+    }
+
+    const HEAD: &str = r#"{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp"}"#;
+
+    /// Regression: resume must see the model the session last switched to
+    /// (here kimi after a glm start), not fall back to the config default.
+    #[test]
+    fn last_model_change_and_thinking_are_read() {
+        let st = state_of(&[
+            HEAD,
+            r#"{"type":"model_change","id":"a","parentId":null,"timestamp":"t","model":"zai/glm-5.3-flash"}"#,
+            r#"{"type":"thinking_level_change","id":"b","parentId":"a","timestamp":"t","thinkingLevel":"high","configured":"high"}"#,
+            r#"{"type":"message","id":"c","parentId":"b","timestamp":"t","message":{"role":"assistant","provider":"zai","model":"glm-5.3-flash","content":[]}}"#,
+            r#"{"type":"model_change","id":"d","parentId":"c","timestamp":"t","model":"kimi-code/kimi-for-coding","role":"default"}"#,
+            r#"{"type":"thinking_level_change","id":"e","parentId":"d","timestamp":"t","thinkingLevel":"medium","configured":"max"}"#,
+        ]);
+        assert_eq!(st.models.get("default").map(String::as_str), Some("kimi-code/kimi-for-coding"));
+        assert_eq!(st.last_role.as_deref(), Some("default"));
+        assert_eq!(st.thinking, Some(("medium".into(), Some("max".into()))));
+    }
+
+    /// No model_change at all (old journals): the default is inferred from the
+    /// last assistant message, as TS `buildSessionContext` does.
+    #[test]
+    fn default_inferred_from_last_assistant() {
+        let st = state_of(&[
+            HEAD,
+            r#"{"type":"message","id":"a","parentId":null,"timestamp":"t","message":{"role":"assistant","provider":"zai","model":"glm-5.3-flash","content":[]}}"#,
+            r#"{"type":"message","id":"b","parentId":"a","timestamp":"t","message":{"role":"assistant","provider":"anthropic","model":"claude-opus-5-5","content":[]}}"#,
+            r#"{"type":"message","id":"c","parentId":"b","timestamp":"t","message":{"role":"user","content":"hi"}}"#,
+        ]);
+        assert_eq!(st.models.get("default").map(String::as_str), Some("anthropic/claude-opus-5-5"));
+        assert_eq!(st.last_role, None);
+        assert_eq!(st.thinking, None);
     }
 }

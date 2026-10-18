@@ -350,6 +350,12 @@ async fn main() -> Result<()> {
         (None, Some(p)) => Some(p.clone()),
         (None, None) => None,
     };
+    if reference.is_some() {
+        runtime::MODEL_PINNED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    if args.thinking.is_some() {
+        runtime::THINKING_PINNED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
     let mut selected = model::select(reference.as_deref()).await?;
     if let Some(key) = args.api_key.clone() {
         selected.api_key = Some(key);
@@ -449,6 +455,12 @@ async fn main() -> Result<()> {
         }
         target
     };
+    // Explicit --model/--thinking only outrank the session's own model for the
+    // startup resume; without one, later /resume and switch_session restore.
+    if resume_target.is_none() {
+        runtime::MODEL_PINNED.store(false, std::sync::atomic::Ordering::Relaxed);
+        runtime::THINKING_PINNED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 
     if args.mode.as_deref() == Some("rpc") {
         let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
