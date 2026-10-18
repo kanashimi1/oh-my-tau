@@ -564,6 +564,7 @@ async fn main() -> Result<()> {
             }
             println!("{text}");
         }
+        None if PRINTED_COMMAND_OUTPUT.load(std::sync::atomic::Ordering::Relaxed) => {}
         None => {
             shutdown_lsp();
             bail!("no assistant response");
@@ -631,6 +632,10 @@ fn exit(code: i32) -> ! {
 /// Print-mode run: extension lifecycle hook points, optional session resume
 /// (`--resume`/`--continue`/`--fork`), then the single prompt.
 #[allow(clippy::too_many_arguments)] // print-mode run context; mirrors omp's runPrint signature
+/// Set when print mode answered a handled slash command with its output
+/// (no model turn ran, so "no assistant response" is not an error).
+static PRINTED_COMMAND_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 async fn run_print(
     agent: pa_agent::agent::Agent,
     target: agent::Target,
@@ -677,8 +682,7 @@ async fn run_print(
         eprintln!("session: {}", f.display());
     }
     let agent = std::sync::Arc::new(agent);
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    drop(rx);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     let rt = runtime::Runtime::start(agent.clone(), target, cwd, persist, tx).await;
     if let Some(path) = resume {
         // `--resume`/`--continue` keep appending to the same session file; `--fork`
@@ -698,10 +702,30 @@ async fn run_print(
     match crate::rpc::slash::try_dispatch(&rt, &prompt).await {
         crate::rpc::slash::Outcome::Handled { .. } | crate::rpc::slash::Outcome::ExtensionHandled => {
             prompt = String::new();
+            // A handled command reports through `command_output` frames, which
+            // in print mode have no UI to land in: print them, so e.g.
+            // `omp-rs -p "/rlm stats"` shows its result instead of
+            // "no assistant response".
+            let mut printed = false;
+            while let Ok(frame) = rx.try_recv() {
+                if frame.get("type").and_then(serde_json::Value::as_str) == Some("command_output") {
+                    if let Some(text) = frame.get("text").and_then(serde_json::Value::as_str) {
+                        println!("{text}");
+                        printed = true;
+                    }
+                }
+            }
+            if printed && images.is_empty() {
+                rt.wait_settled().await;
+                PRINTED_COMMAND_OUTPUT.store(true, std::sync::atomic::Ordering::Relaxed);
+                return Ok(agent.messages_snapshot().await.into_vec());
+            }
         }
         crate::rpc::slash::Outcome::Prompt(expanded) => prompt = expanded,
         crate::rpc::slash::Outcome::NotSlash => {}
     }
+    // Nothing else reads the UI frame stream in print mode.
+    drop(rx);
     if !prompt.is_empty() || !images.is_empty() {
         rt.prompt(None, &prompt, None, images)
             .await
