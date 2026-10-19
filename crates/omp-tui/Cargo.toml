@@ -28,7 +28,7 @@ regex = "1"
 tree-sitter = "0.25"
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["event"] }
+rustix = { version = "1", features = ["event", "termios"] }
 
 [lints]
 workspace = true

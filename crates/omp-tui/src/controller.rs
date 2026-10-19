@@ -114,6 +114,12 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
 
     let mut signals = TermSignals::new();
     let mut frame_deadline: Option<Instant> = None;
+    // Raw-mode watchdog: anything sharing our controlling terminal (a tool's
+    // child that opens /dev/tty, `stty`, an interop .exe) can flip the tty
+    // back to cooked mode; keys then sit in the line buffer and the TUI looks
+    // frozen. Check once a second and re-assert raw mode when it was lost.
+    let mut raw_guard = tokio::time::interval(RAW_GUARD_TICK);
+    raw_guard.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let now = Instant::now();
         // Keep the animation clock running only while something animates;
@@ -170,6 +176,11 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
                     commit_retired(&mut app, shell).context("commit scrollback")?;
                 }
             }
+            _ = raw_guard.tick() => {
+                if restore_raw_mode_if_lost() {
+                    tracing::warn!("terminal left raw mode (cooked tty); raw mode re-applied");
+                }
+            }
             () = async { match paste_tick.as_mut() { Some(t) => t.as_mut().await, None => std::future::pending().await } } => {
                 app.poll_paste_results();
             }
@@ -187,6 +198,24 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     app.persist_word_completion();
     app.dispose_title();
     Ok(())
+}
+
+const RAW_GUARD_TICK: Duration = Duration::from_secs(1);
+
+/// `true` when stdin is a tty in canonical (cooked) mode — raw mode the TUI
+/// set was undone behind its back — and raw mode was re-applied.
+fn restore_raw_mode_if_lost() -> bool {
+    let stdin = std::io::stdin();
+    let Ok(t) = rustix::termios::tcgetattr(&stdin) else {
+        return false;
+    };
+    if !t.local_modes.contains(rustix::termios::LocalModes::ICANON) {
+        return false;
+    }
+    // crossterm no-ops `enable_raw_mode` while it believes raw mode is on:
+    // drop its saved state first, then set raw mode again.
+    let _ = crossterm::terminal::disable_raw_mode();
+    crossterm::terminal::enable_raw_mode().is_ok()
 }
 
 /// One paint after a state change — the TS `tui.ts` render-pass

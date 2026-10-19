@@ -171,7 +171,20 @@ impl StdioTransport {
         let command = self.config.command.clone().ok_or_else(|| {
             McpError::Config(format!("stdio MCP server \"{}\" has no command", self.server_name))
         })?;
-        let mut cmd = Command::new(&command);
+        // TS `detached: true` on Linux (setsid): the server tree has no
+        // controlling terminal, so job-control signals cannot stop it and it
+        // cannot touch the TUI's tty. util-linux `setsid` execs in place.
+        let setsid = ["/usr/bin/setsid", "/bin/setsid"]
+            .into_iter()
+            .find(|p| cfg!(target_os = "linux") && std::path::Path::new(p).is_file());
+        let mut cmd = match setsid {
+            Some(setsid) => {
+                let mut c = Command::new(setsid);
+                c.arg("--wait").arg(&command);
+                c
+            }
+            None => Command::new(&command),
+        };
         cmd.args(self.config.args.clone().unwrap_or_default())
             .envs(self.config.env.clone().unwrap_or_default())
             .current_dir(self.config.cwd.clone().map_or_else(|| self.cwd.as_ref().clone(), PathBuf::from))

@@ -97,6 +97,29 @@ fn timeout_arg(args: &Value) -> Option<f64> {
 
 /// Run a command and return `(output, exit code, wall time, outcome)`.
 ///
+/// `bash` in its own session (TS: brush runs every external command under
+/// `setsid`): the command has no controlling terminal, so nothing it starts
+/// can open `/dev/tty` and flip the TUI's raw mode, steal the foreground
+/// group, or be stopped by SIGTTIN. The workspace forbids `unsafe`
+/// (`pre_exec`), so util-linux `setsid` does it; the spawned child is not a
+/// group leader, so `setsid` execs bash in place (same pid, kill works).
+fn detached_bash() -> tokio::process::Command {
+    static SETSID: std::sync::LazyLock<Option<std::path::PathBuf>> = std::sync::LazyLock::new(|| {
+        ["/usr/bin/setsid", "/bin/setsid"]
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .find(|p| p.is_file())
+    });
+    match SETSID.as_deref() {
+        Some(setsid) => {
+            let mut cmd = tokio::process::Command::new(setsid);
+            cmd.arg("--wait").arg("bash");
+            cmd
+        }
+        None => tokio::process::Command::new("bash"),
+    }
+}
+
 /// `tap`, when given, receives every output chunk as it arrives (the
 /// background-job surface shows it via `read proc://<id>` while running).
 async fn run(
@@ -108,7 +131,7 @@ async fn run(
 ) -> Result<(String, Option<i32>, Duration, Option<&'static str>)> {
     let script = format!("exec 2>&1\n{command}");
     let started = Instant::now();
-    let mut child = tokio::process::Command::new("bash")
+    let mut child = detached_bash()
         .arg("-c")
         .arg(script)
         .current_dir(cwd)
@@ -491,7 +514,7 @@ async fn start_service(
     signal: &AbortSignal,
 ) -> Result<ServiceOutcome> {
     let script = format!("exec 2>&1\n{command}");
-    let mut child = tokio::process::Command::new("bash")
+    let mut child = detached_bash()
         .arg("-c")
         .arg(&script)
         .current_dir(dir)
@@ -743,6 +766,25 @@ mod tests {
 
     fn test_env() -> std::sync::Arc<super::super::Env> {
         std::sync::Arc::new(super::super::Env::new(&std::env::temp_dir(), false))
+    }
+
+    /// Regression (hung TUI menus): a tool command must not reach the TUI's
+    /// controlling terminal — it runs in its own session, so `/dev/tty` is
+    /// unavailable and `stty`/interop programs cannot drop raw mode.
+    #[tokio::test]
+    async fn commands_have_no_controlling_terminal() {
+        let r = bash(
+            test_env(),
+            serde_json::json!({"command": "if (: </dev/tty) 2>/dev/null; then echo HAS_TTY; else echo NO_TTY; fi; ps -o sid= -p $$ | tr -d ' '; echo $$"}),
+            sig(),
+        )
+        .await
+        .unwrap();
+        let t = text_of(&r);
+        assert!(t.contains("NO_TTY"), "{t}");
+        let mut lines = t.lines().skip(1);
+        let (sid, pid) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
+        assert_eq!(sid, pid, "bash is its own session leader: {t}");
     }
 
     #[tokio::test]

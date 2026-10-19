@@ -417,14 +417,32 @@ impl KernelProcess {
         cwd: &std::path::Path,
         env: &[(String, String)],
     ) -> io::Result<Self> {
-        let mut child = Command::new(program)
+        // Own session (TS `shouldDetachKernel`: Bun `detached` = setsid): the
+        // runner leads its own process group, so the host can kill it plus
+        // anything it spawned (kill(-pgid)) without touching its own group,
+        // and user code has no controlling terminal to grab (`tcsetpgrp`,
+        // raw-mode resets, SIGTTIN). `unsafe` is forbidden (no `pre_exec`):
+        // util-linux `setsid` execs the runner in place (it is not a group
+        // leader yet, so no fork; pid stays the runner's). Fallback: own group.
+        let setsid = ["/usr/bin/setsid", "/bin/setsid"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).is_file());
+        let mut command = match setsid {
+            Some(setsid) => {
+                let mut c = Command::new(setsid);
+                c.arg("--wait").arg(program);
+                c
+            }
+            None => {
+                let mut c = Command::new(program);
+                c.process_group(0);
+                c
+            }
+        };
+        let mut child = command
             .args(args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-            // Own process group: the host can kill the runner plus any
-            // subprocesses it spawned (kill(-pgid)) without touching the
-            // host's own group.
-            .process_group(0)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

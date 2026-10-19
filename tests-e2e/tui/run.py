@@ -586,10 +586,13 @@ def sc_effort(t: Term, r: Result) -> None:
 
 def _selected_label(t: Term) -> str:
     """The label of the ❯-selected settings row on the current screen."""
+    # The tab bar can carry a `❯` glyph of its own (the Shell tab in the
+    # monochrome symbol preset): only a cursor right after a frame border
+    # (`│ ❯ label`) is the selected row.
     for line in t.screen():
-        idx = line.find("❯ ")
+        idx = line.find("│ ❯ ")
         if idx >= 0:
-            return line[idx + 2:].strip()
+            return line[idx + 4:].strip()
     return ""
 
 
