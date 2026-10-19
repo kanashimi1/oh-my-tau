@@ -318,10 +318,12 @@ pub fn clean_welcome_lines(
     let accent = Style::default().fg(theme.color("accent")).add_modifier(Modifier::BOLD);
 
     let mut beside: Vec<Vec<Span<'static>>> = vec![Vec::new(); mascot::height()];
+    // Text column (wordmark … tip, 11 rows) centred beside the sprite.
+    let top = mascot::height().saturating_sub(11) / 2;
     // Wordmark rows 2..=4, gradient left → right.
     for (i, row) in WORDMARK.iter().enumerate() {
         let n = WORDMARK_WIDTH.max(1) as f64;
-        beside[2 + i] = row
+        beside[top + i] = row
             .chars()
             .enumerate()
             .map(|(x, c)| {
@@ -333,21 +335,21 @@ pub fn clean_welcome_lines(
             })
             .collect();
     }
-    beside[2].push(Span::styled("  rs", muted));
-    beside[5] = vec![Span::styled(format!("v{version}"), muted)];
-    beside[7] = vec![
+    beside[top].push(Span::styled("  rs", muted));
+    beside[top + 3] = vec![Span::styled(format!("v{version}"), muted)];
+    beside[top + 5] = vec![
         Span::styled("Omi", accent),
         Span::styled(" · hi! ready when you are.", text),
     ];
     let cwd_text = super::super::tools::truncate(cwd, side);
-    beside[8] = vec![Span::styled(cwd_text, muted)];
+    beside[top + 6] = vec![Span::styled(cwd_text, muted)];
     if !tip.is_empty() {
         let body = expand_tip(tip.trim_end().trim_end_matches("[NEW]").trim_end());
         let wrapped = wrap(&format!("Tip: {body}"), side.min(TIP_MEASURE));
         let label = Style::default().fg(theme.color("accent")).add_modifier(Modifier::ITALIC);
         let body_style = muted.add_modifier(Modifier::ITALIC);
         for (i, line) in wrapped.iter().take(3).enumerate() {
-            let row = &mut beside[10 + i];
+            let row = &mut beside[top + 8 + i];
             match line.strip_prefix("Tip: ").filter(|_| i == 0) {
                 Some(rest) => {
                     row.push(Span::styled("Tip: ", label));

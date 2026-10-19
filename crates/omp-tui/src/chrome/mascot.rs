@@ -2,64 +2,85 @@
 //! half-blocks (two pixels per cell: `▀` with fg = top pixel, bg = bottom
 //! pixel), plus one-line kaomoji moods for the working indicator.
 //!
-//! The sprite is pixel art on a 26×26 grid (13 terminal rows). `.` is
+//! The sprite is pixel art on a 36×40 grid (20 terminal rows). `.` is
 //! transparent; every other character is a palette key.
 
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// Sprite width in cells.
-pub const WIDTH: usize = 26;
+pub const WIDTH: usize = 36;
 
-/// Pixel rows (two per terminal row).
-const SPRITE: [&str; 26] = [
-    "............hh............",
-    "...........hHh............",
-    "..........hhhhhh..........",
-    ".......hhhHHHHHHhhh.......",
-    ".....hhHHHLLLHHHHHHhh.....",
-    "....hHHHHLLHHHHHHHRHHh....",
-    "...hHHHHHHHHHHHHHRYRHHh...",
-    "..hHHHHHHHHHHHHHHHRHHHHh..",
-    "..hHHHHhHHHHHHhHHHHHHHHh..",
-    ".hHHHHhSHHHHHhSSHHHHhHHHh.",
-    ".hHHHhSSShHHhSSSShHHhSHHh.",
-    ".hHHhKKKKKSSSSSSKKKKKhHHh.",
-    ".hHHhKweeeSSSSSSweeeKhHHh.",
-    ".hHHhSeKKeSSSSSSeKKeShHHh.",
-    ".hHHhSEKKESSSSSSEKKEShHHh.",
-    ".hHHhSlEElSSSSSSlEElShHHh.",
-    ".hHhSBBSSSSSSSSSSSSBBShHh.",
-    ".hHhSSSSSSSSMMSSSSSSSShHh.",
-    ".hHHhSSSSSSSSSSSSSSSShHHh.",
-    ".hHHHhssSSSSSSSSSSsshHHHh.",
-    ".hHHHHhh.sSSSSSSs.hhHHHHh.",
-    ".hHHHHh..CCsSSsCC..hHHHHh.",
-    "..hHHh..OCCCCCCCCO..hHHh..",
-    "..hHh..OOOCCRRCCOOO..hHh..",
-    "..hh..OOOOOORROOOOOO..hh..",
-    "..h..OOOOOOORROOOOOOO..h..",
+/// Pixel rows (two per terminal row): pink hair, cat-ear headphones with
+/// cyan cups, navy hoodie. Outline pixels are darker shades of their fill.
+const SPRITE: [&str; 40] = [
+    "........a..................a........",
+    "........aa................aa........",
+    "........aaa..............aaa........",
+    "........abaa....aaaa....aaba........",
+    "........abbaaaaa....aaaaabba........",
+    ".......aaaaaa.cccccccc.aaaaaa.......",
+    ".......a.aacccddddddddcccaa.a.......",
+    "........a.cddddddddddddddc.a........",
+    ".......a.cddddddddddddddddc.a.......",
+    "........edddddfffddddffdddde........",
+    "......acddddffdddddddddffdddca......",
+    "......cddddffddddddddddfdddddc......",
+    ".....aeddddddddddddddddddddddea.....",
+    ".....cddddddddddddddddddddddddc.....",
+    ".....cddddddddddddddddddddddddc.....",
+    ".....edddddddddddddddddddddddde.....",
+    ".....edddddddddddddddddddddddde.....",
+    "...aaaaddddddddddddddddddddddaaaa...",
+    "...abbadddddddddgddgdddddddddabba...",
+    "...abbaddddgdggggddggggdgddddabba...",
+    "...abbaddddgdggggddggggdgddddabba...",
+    "...abbaddhghhhhgggggghhhhghddabba...",
+    "...abbaddhhhhhhhgggghhhhhhhddabba...",
+    "...abbadddijjiiiggggijjiiidddabba...",
+    "...abbadddijhhiiggggijhhiidddabba...",
+    "...aaaadddkkhhkkggggkkhhkkdddaaaa...",
+    ".....cddddkkhhkkggggkkhhkkddddc.....",
+    ".....cddddllllmlggggllllmlddddc.....",
+    ".....cddddnllllggggggllllnddddc.....",
+    ".....cddooonggggggggggggnoooddc.....",
+    ".....cdddnnnnggggppggggnnnndddc.....",
+    ".....cdddnnnnnngggggqnnnnnndddc.....",
+    "....cndddnnnnnnnrrrs.cnnnnndddnc....",
+    "....cnnddnnnnnnnrrrs.cnnnnnddnnc....",
+    "....cnndnnnnnnnnrrrs.cnnnnnndnnc....",
+    "....cnndnnnnttnnrrrs.cttnnnndnnc....",
+    "....cnnnnuuuuttuuuuuvttuuuunnnnc....",
+    "....cnnnuuuuuuttuuuuttuuuuuunnnc....",
+    "....cnnnuuuuuuuttuuttuuuuuuunnnc....",
+    ".....cnuuuuuuuuutbbtuuuuuuuuunc.....",
 ];
 
 /// Pixel color for a palette key (`None` = transparent).
 fn color(key: char) -> Option<Color> {
     let (r, g, b) = match key {
-        'H' => (236, 112, 214),
-        'h' => (150, 70, 170),
-        'L' => (255, 196, 240),
-        'S' => (255, 231, 220),
-        's' => (232, 186, 182),
-        'E' => (40, 200, 226),
-        'e' => (20, 110, 160),
-        'w' => (255, 255, 255),
-        'B' => (255, 150, 175),
-        'M' => (205, 80, 115),
-        'O' => (44, 48, 92),
-        'C' => (238, 240, 250),
-        'R' => (0, 219, 228),
-        'l' => (150, 240, 250),
-        'K' => (40, 20, 52),
-        'Y' => (255, 224, 120),
+        'a' => (60, 60, 80), // p
+        'b' => (0, 219, 228), // a
+        'c' => (110, 40, 120), // h (outline)
+        'd' => (236, 112, 214), // H
+        'e' => (150, 60, 150), // H (outline)
+        'f' => (255, 196, 240), // L
+        'g' => (255, 233, 222), // S
+        'h' => (36, 18, 48), // K
+        'i' => (30, 90, 170), // E1
+        'j' => (255, 255, 255), // w
+        'k' => (40, 170, 226), // E2
+        'l' => (140, 235, 250), // E3
+        'm' => (220, 250, 255), // w2
+        'n' => (170, 72, 170), // h
+        'o' => (255, 160, 180), // B
+        'p' => (200, 70, 110), // M
+        'q' => (214, 170, 170), // S (outline)
+        'r' => (238, 196, 190), // S2
+        's' => (190, 150, 150), // S2 (outline)
+        't' => (232, 236, 250), // c2
+        'u' => (44, 48, 92), // c
+        'v' => (26, 28, 60), // c (outline)
         _ => return None,
     };
     Some(Color::Rgb(r, g, b))
@@ -136,12 +157,12 @@ mod tests {
     #[test]
     fn half_block_rows_are_width_cells() {
         let rows = lines();
-        assert_eq!(rows.len(), 13);
+        assert_eq!(rows.len(), 20);
         for row in &rows {
             let w: usize = row.spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
             assert_eq!(w, WIDTH);
         }
         // Both pixels set → upper half block with a background.
-        assert!(rows[6].spans.iter().any(|s| s.content == "▀" && s.style.bg.is_some()));
+        assert!(rows[10].spans.iter().any(|s| s.content == "▀" && s.style.bg.is_some()));
     }
 }
