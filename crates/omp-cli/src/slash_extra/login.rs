@@ -29,6 +29,28 @@ fn output(rt: &Runtime, text: &str) {
     rt.send(json!({"type": "command_output", "text": text}));
 }
 
+/// Withdraws a dialog whose round trip was dropped before the answer came (the browser callback
+/// beat the paste prompt, or the login ended): the TUI closes it (`cancelDialog`) instead of
+/// leaving a prompt nobody reads.
+struct Withdraw<'a> {
+    rt: &'a Runtime,
+    id: String,
+    answered: bool,
+}
+
+impl Drop for Withdraw<'_> {
+    fn drop(&mut self) {
+        if !self.answered {
+            crate::rpc::forget_pending_ui_request(&self.id);
+            self.rt.send(json!({
+                "type": "extension_ui_request",
+                "method": "cancelDialog",
+                "params": {"id": self.id},
+            }));
+        }
+    }
+}
+
 /// One dialog round trip. `None` = cancelled (Esc) or the answer never came.
 async fn dialog(rt: &Runtime, method: &str, fields: Value) -> Option<Value> {
     let id = format!("ui-login-{}", DIALOG_SEQ.fetch_add(1, Ordering::SeqCst));
@@ -38,16 +60,20 @@ async fn dialog(rt: &Runtime, method: &str, fields: Value) -> Option<Value> {
     frame["id"] = json!(id);
     frame["method"] = json!(method);
     rt.send(frame);
-    let answer = rx.await.ok()?;
+    let mut guard = Withdraw { rt, id, answered: false };
+    let answer = rx.await.ok();
+    guard.answered = true;
+    let answer = answer?;
     if answer.get("cancelled").and_then(Value::as_bool) == Some(true) {
         return None;
     }
     Some(answer)
 }
 
-/// A `select` dialog over `labels`; the chosen index.
+/// A full-screen, type-to-search `select` dialog over `labels` (TS `OAuthSelectorComponent`);
+/// the chosen index.
 async fn select(rt: &Runtime, title: &str, labels: &[String]) -> Option<usize> {
-    let answer = dialog(rt, "select", json!({"title": title, "options": labels})).await?;
+    let answer = dialog(rt, "select", json!({"title": title, "options": labels, "fullscreen": true})).await?;
     let value = answer.get("value")?.as_str()?;
     labels.iter().position(|l| l == value)
 }
@@ -80,8 +106,18 @@ impl OAuthLoginUi for TuiUi {
         output(&self.rt, message);
     }
 
+    /// The paste racing the browser callback (TS: `/login <redirect URL>` into the editor): an
+    /// input dialog over the transcript's URL block. Esc cancels the login and frees the callback
+    /// port; a callback that wins first withdraws the dialog.
     fn on_manual_code_input(&self) -> Option<Pin<Box<dyn Future<Output = Option<String>> + Send + '_>>> {
-        None
+        let fields = json!({
+            "title": "Paste the authorization code or full redirect URL (or finish in the browser)",
+            "placeholder": "waiting for the browser callback… esc cancels the login",
+        });
+        Some(Box::pin(async move {
+            let answer = dialog(&self.rt, "input", fields).await?;
+            Some(answer.get("value").and_then(Value::as_str).unwrap_or_default().to_string())
+        }))
     }
 }
 

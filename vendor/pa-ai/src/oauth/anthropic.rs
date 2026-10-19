@@ -62,25 +62,38 @@ pub async fn login_anthropic(
         return Err(LOGIN_CANCELLED.to_string());
     }
     let (verifier, challenge) = generate_pkce();
-    let server = AnthropicCallbackServer::start(&verifier)?;
-    login_with_server(http, ui, &server, &verifier, &challenge).await
+    let server = AnthropicCallbackServer::start(&verifier);
+    login_with_server(http, ui, server, &verifier, &challenge).await
 }
 
 /// The flow after the bind: present the URL, race the callback against
 /// the paste, exchange the code. `server` listens with `verifier` as
-/// its state.
+/// its state. A failed bind (another login holds the registered port)
+/// is the login's hard error unless the surface takes a manual paste:
+/// then the paste of the browser's redirect URL alone completes it.
 async fn login_with_server(
     http: &dyn ProviderHttp,
     ui: &dyn OAuthLoginUi,
-    server: &AnthropicCallbackServer,
+    server: Result<AnthropicCallbackServer, String>,
     verifier: &str,
     challenge: &str,
 ) -> Result<AnthropicCredentials, String> {
+    let manual = ui.on_manual_code_input();
+    let server = match server {
+        Ok(server) => Some(server),
+        Err(error) if manual.is_some() => {
+            ui.on_progress(&format!(
+                "Callback server unavailable ({error}); paste the redirect URL from the browser."
+            ));
+            None
+        }
+        Err(error) => return Err(error),
+    };
     ui.on_auth(
         &authorization_url(challenge, verifier),
         Some(AUTH_INSTRUCTIONS),
     );
-    let code = wait_for_code(server, ui, verifier).await?;
+    let code = wait_for_code(server.as_ref(), ui, manual, verifier).await?;
     if ui.is_cancelled() {
         return Err(LOGIN_CANCELLED.to_string());
     }
@@ -133,11 +146,11 @@ fn authorization_url(challenge: &str, verifier: &str) -> String {
 }
 
 async fn wait_for_code(
-    server: &AnthropicCallbackServer,
+    server: Option<&AnthropicCallbackServer>,
     ui: &dyn OAuthLoginUi,
+    manual: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + '_>>>,
     verifier: &str,
 ) -> Result<CallbackCode, String> {
-    let manual = ui.on_manual_code_input();
     let manual_available = manual.is_some();
     let manual_answer = async {
         match manual {
@@ -148,7 +161,12 @@ async fn wait_for_code(
     tokio::pin!(manual_answer);
     // The browser redirect wins over a late manual paste: the manual
     // answer only cancels the server's wait (TS `server.cancelWait`).
-    let wait = server.wait_for_code();
+    let wait = async {
+        match server {
+            Some(server) => server.wait_for_code().await,
+            None => std::future::pending::<Option<CallbackCode>>().await,
+        }
+    };
     tokio::pin!(wait);
     let mut tick = tokio::time::interval(CANCEL_POLL_INTERVAL);
     let raced = loop {
@@ -583,7 +601,7 @@ mod tests {
         let (verifier, challenge) = generate_pkce();
         let server = AnthropicCallbackServer::bind("127.0.0.1", 0, &verifier)
             .expect("a free loopback port binds");
-        login_with_server(http, ui, &server, &verifier, &challenge).await
+        login_with_server(http, ui, Ok(server), &verifier, &challenge).await
     }
 
     #[tokio::test]
@@ -718,6 +736,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_busy_callback_port_falls_back_to_the_paste() {
+        let http = token_http();
+        let (verifier, challenge) = generate_pkce();
+        let ui = ScriptedUi::new(
+            Some(ScriptedAnswer::value(&format!(
+                "http://localhost:53692/callback?code=pasted&state={verifier}"
+            ))),
+            None,
+        );
+        let busy = Err("port 53692: Address already in use (os error 98)".to_string());
+        login_with_server(&http, &ui, busy, &verifier, &challenge).await.unwrap();
+        let json: serde_json::Value = serde_json::from_str(&http.first_body(TOKEN_URL)).unwrap();
+        assert_eq!(json["code"], "pasted");
+        assert!(ui.progress.lock().unwrap().iter().any(|p| p.contains("Callback server unavailable")));
+    }
+
+    #[tokio::test]
+    async fn a_busy_callback_port_without_a_paste_surface_fails() {
+        let http = token_http();
+        let (verifier, challenge) = generate_pkce();
+        let ui = ScriptedUi::new(None, None);
+        let busy = Err("port 53692: Address already in use (os error 98)".to_string());
+        let error = login_with_server(&http, &ui, busy, &verifier, &challenge).await.unwrap_err();
+        assert!(error.contains("Address already in use"), "{error}");
+        assert!(ui.auth_url.lock().unwrap().is_none(), "no URL is shown for a login that cannot finish");
+    }
+
+    #[tokio::test]
     async fn a_cancelled_paste_ends_the_login() {
         let http = token_http();
         let ui = ScriptedUi::new(Some(ScriptedAnswer::ready()), None);
@@ -763,7 +809,7 @@ mod tests {
                 login_with_server(
                     flow_http.as_ref(),
                     flow_ui.as_ref(),
-                    &server,
+                    Ok(server),
                     &verifier,
                     &challenge,
                 )

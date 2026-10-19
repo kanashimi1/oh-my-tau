@@ -58,6 +58,11 @@ pub fn register_pending_ui_request(id: &str) -> tokio::sync::oneshot::Receiver<V
     rx
 }
 
+/// Drop the waiter for frame `id` (its dialog was withdrawn unanswered).
+pub fn forget_pending_ui_request(id: &str) {
+    lock(&PENDING_UI_REQUESTS).remove(id);
+}
+
 /// Pending RPC ask-UI dialogs (`extension_ui_request` id → waiter).
 static PENDING_UI_REQUESTS: LazyLock<Mutex<HashMap<String, tokio::sync::oneshot::Sender<Value>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));

@@ -1992,13 +1992,13 @@ impl App {
         }
     }
 
-    /// Whether an open overlay is full-screen and the shell renderer must
+    /// Whether an open overlay (or a `fullscreen` extension dialog) is full-screen and the shell renderer must
     /// hold the alternate screen (ShellRender contract); while true the
     /// controller paints [`Self::render_fullscreen`] instead of the live
     /// region.
     #[must_use]
     pub fn has_fullscreen_overlay(&self) -> bool {
-        self.overlays.needs_alt_screen()
+        self.overlays.needs_alt_screen() || self.extension_ui.wants_fullscreen()
     }
 
     /// Paint the alternate-screen frame: the topmost full-screen overlay

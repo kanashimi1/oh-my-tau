@@ -1,7 +1,8 @@
 //! The Anthropic login's localhost callback server on the registered
 //! redirect port. Only a matching redirect settles the login; error
 //! responses, missing parameters, and unknown routes answer their
-//! page and keep waiting. A bind failure is a hard error.
+//! page and keep waiting. A bind failure fails the login unless the
+//! surface takes a manual paste (`anthropic::login_with_server`).
 
 use std::net::ToSocketAddrs;
 use std::sync::Arc;

@@ -218,7 +218,10 @@ impl CodexLoginUi for CodexUi {
         self.0.on_auth(url, Some(instructions));
     }
     fn on_manual_code_input(&self) -> Option<Pin<Box<dyn Future<Output = Option<String>> + Send>>> {
-        None
+        // Probe synchronously so a surface without a paste keeps Codex's callback-only wait.
+        drop(self.0.on_manual_code_input()?);
+        let ui = self.0.clone();
+        Some(Box::pin(async move { ui.on_manual_code_input()?.await }))
     }
     fn on_prompt(&self, message: &str) -> Pin<Box<dyn Future<Output = Option<String>> + Send>> {
         let ui = self.0.clone();

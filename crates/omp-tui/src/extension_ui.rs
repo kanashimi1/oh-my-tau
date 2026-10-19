@@ -185,7 +185,15 @@ enum DialogKind {
     Select {
         title: String,
         options: Vec<DialogOption>,
+        /// Row within [`select_matches`] of `query` (the filtered view).
         cursor: usize,
+        /// Type-to-search filter (only typed into when `searchable`).
+        query: String,
+        /// Printable keys edit `query` instead of `j`/`k`/digit navigation.
+        searchable: bool,
+        /// Drawn over the whole alternate screen (frame `fullscreen: true`,
+        /// e.g. `/login`'s provider picker) instead of a centered popup.
+        fullscreen: bool,
     },
     /// Yes/no modal.
     Confirm { title: String, message: String },
@@ -257,6 +265,49 @@ fn select_options(params: &Value) -> Vec<DialogOption> {
         .collect()
 }
 
+/// Indices of the `options` a type-to-search `query` keeps: every whitespace-separated term
+/// must occur (case-insensitively) in the label or description. An empty query keeps all.
+fn select_matches(options: &[DialogOption], query: &str) -> Vec<usize> {
+    let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    options
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| {
+            let hay = format!("{} {}", o.label, o.description.as_deref().unwrap_or_default()).to_lowercase();
+            terms.iter().all(|t| hay.contains(t.as_str()))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The slice of option rows that fits `avail` screen rows with the cursor row visible, roughly
+/// centred (`heights[i]` = rows option `i` occupies). Returns `start..end` over `heights`.
+fn select_window(heights: &[usize], cursor: usize, avail: usize) -> std::ops::Range<usize> {
+    if heights.is_empty() {
+        return 0..0;
+    }
+    let cursor = cursor.min(heights.len() - 1);
+    let avail = avail.max(heights[cursor]);
+    let (mut start, mut end, mut used) = (cursor, cursor + 1, heights[cursor]);
+    // Up to half the space above the cursor, then fill below, then give any rest to the top.
+    while start > 0 && used + heights[start - 1] <= avail / 2 + 1 {
+        start -= 1;
+        used += heights[start];
+    }
+    while end < heights.len() && used + heights[end] <= avail {
+        used += heights[end];
+        end += 1;
+    }
+    while start > 0 && used + heights[start - 1] <= avail {
+        start -= 1;
+        used += heights[start];
+    }
+    start..end
+}
+
+/// PageUp/PageDown step in a select list.
+const SELECT_PAGE: usize = 10;
+
 impl ActiveDialog {
     fn new(req: &PendingRequest) -> Self {
         let params = &req.params;
@@ -276,19 +327,26 @@ impl ActiveDialog {
                     custom: None,
                 }
             }
-            "select" => DialogKind::Select {
-                title: params
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                options: select_options(params),
-                cursor: params
-                    .get("initialIndex")
-                    .and_then(Value::as_u64)
-                    .and_then(|i| usize::try_from(i).ok())
-                    .unwrap_or(0),
-            },
+            "select" => {
+                let flag = |k: &str| params.get(k).and_then(Value::as_bool) == Some(true);
+                let fullscreen = flag("fullscreen");
+                DialogKind::Select {
+                    title: params
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    options: select_options(params),
+                    cursor: params
+                        .get("initialIndex")
+                        .and_then(Value::as_u64)
+                        .and_then(|i| usize::try_from(i).ok())
+                        .unwrap_or(0),
+                    query: String::new(),
+                    searchable: fullscreen || flag("searchable"),
+                    fullscreen,
+                }
+            }
             "confirm" => DialogKind::Confirm {
                 title: params
                     .get("title")
@@ -414,6 +472,16 @@ impl ExtensionUi {
         self.active.is_some()
     }
 
+    /// Whether the active dialog is a full-screen picker (frame `fullscreen: true`): the shell
+    /// holds the alternate screen for it like a full-screen overlay.
+    #[must_use]
+    pub fn wants_fullscreen(&self) -> bool {
+        matches!(
+            self.active.as_ref().map(|d| &d.kind),
+            Some(DialogKind::Select { fullscreen: true, .. })
+        )
+    }
+
     /// Number of unanswered dialogs (active + queued).
     #[must_use]
     pub fn pending_len(&self) -> usize {
@@ -486,6 +554,14 @@ impl ExtensionUi {
     /// Apply a side-effect notification (frames without an `id`).
     fn apply_side_effect(&mut self, method: &str, params: &Value) {
         match method {
+            // The host withdrew a dialog it no longer waits for (e.g. `/login`'s paste prompt
+            // once the browser callback won): drop it unanswered.
+            "cancelDialog" | "cancel_dialog" => {
+                if let Some(id) = params.get("id").and_then(Value::as_str) {
+                    let id = id.to_owned();
+                    self.complete(&id);
+                }
+            }
             "ui_notify" | "notify" => {
                 let kind = params
                     .get("type")
@@ -667,35 +743,50 @@ impl ExtensionUi {
 
     fn key_select(dialog: &mut ActiveDialog, key: KeyEvent) -> KeyResult {
         let DialogKind::Select {
-            options, cursor, ..
+            options,
+            cursor,
+            query,
+            searchable,
+            ..
         } = &mut dialog.kind
         else {
             return KeyResult::Consumed;
         };
-        let len = options.len();
+        let matches = select_matches(options, query);
+        let last = matches.len().saturating_sub(1);
+        let typing = *searchable && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
-            KeyCode::Esc => KeyResult::Cancel,
-            KeyCode::Up | KeyCode::Char('k') => {
-                *cursor = cursor.saturating_sub(1).min(len.saturating_sub(1));
-                KeyResult::Consumed
+            KeyCode::Esc => return KeyResult::Cancel,
+            KeyCode::Enter => {
+                return matches.get(*cursor).map_or(KeyResult::Consumed, |&i| {
+                    KeyResult::Answer(serde_json::json!({"value": options[i].label.clone()}))
+                });
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                *cursor = (*cursor + 1).min(len.saturating_sub(1));
-                KeyResult::Consumed
+            KeyCode::Up => *cursor = cursor.saturating_sub(1).min(last),
+            KeyCode::Down => *cursor = (*cursor + 1).min(last),
+            KeyCode::PageUp => *cursor = cursor.saturating_sub(SELECT_PAGE).min(last),
+            KeyCode::PageDown => *cursor = (*cursor + SELECT_PAGE).min(last),
+            KeyCode::Home => *cursor = 0,
+            KeyCode::End => *cursor = last,
+            KeyCode::Backspace if *searchable => {
+                query.pop();
+                *cursor = 0;
             }
+            KeyCode::Char(c) if typing => {
+                query.push(c);
+                *cursor = 0;
+            }
+            KeyCode::Char('k') => *cursor = cursor.saturating_sub(1).min(last),
+            KeyCode::Char('j') => *cursor = (*cursor + 1).min(last),
             KeyCode::Char(c) if c.is_ascii_digit() => {
                 let i = c.to_digit(10).expect("ascii digit") as usize;
-                if (1..=len).contains(&i) {
+                if (1..=matches.len()).contains(&i) {
                     *cursor = i - 1;
                 }
-                KeyResult::Consumed
             }
-            KeyCode::Enter if !options.is_empty() => {
-                let label = options[*cursor].label.clone();
-                KeyResult::Answer(serde_json::json!({"value": label}))
-            }
-            _ => KeyResult::Consumed,
+            _ => {}
         }
+        KeyResult::Consumed
     }
 
     fn key_ask(dialog: &mut ActiveDialog, key: KeyEvent) -> KeyResult {
@@ -842,7 +933,12 @@ impl ExtensionUi {
         let Some(dialog) = &self.active else {
             return;
         };
-        let popup = crate::overlays::centered(area, 70, 60);
+        let fullscreen = self.wants_fullscreen();
+        let popup = if fullscreen {
+            area
+        } else {
+            crate::overlays::centered(area, 70, 60)
+        };
         frame.render_widget(Clear, popup);
         let title = match dialog.remaining_secs() {
             Some(secs) => format!("{} ({secs}s)", self.dialog_title()),
@@ -850,14 +946,20 @@ impl ExtensionUi {
         };
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(if fullscreen {
+                ratatui::widgets::BorderType::Rounded
+            } else {
+                ratatui::widgets::BorderType::Plain
+            })
             .border_style(ratatui::style::Style::default().fg(theme.color("border")))
             .title(Span::styled(
-                title,
+                if fullscreen { format!(" {title} ") } else { title },
                 ratatui::style::Style::default().fg(theme.color("accent")),
             ));
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        let lines = self.dialog_lines(theme);
+        // The last inner row is the hint.
+        let lines = self.dialog_lines(theme, usize::from(inner.height.saturating_sub(1)));
         frame.render_widget(Paragraph::new(lines), inner);
         let hint = Paragraph::new(Span::styled(
             self.dialog_hint(),
@@ -896,6 +998,9 @@ impl ExtensionUi {
             Some(DialogKind::Confirm { .. }) => "enter yes  ·  esc no",
             Some(DialogKind::Input { .. }) => "enter submit  ·  esc cancel",
             Some(DialogKind::Editor { .. }) => "ctrl+enter submit  ·  enter newline  ·  esc cancel",
+            Some(DialogKind::Select {
+                searchable: true, ..
+            }) => "type to search  ·  ↑/↓ navigate  ·  enter select  ·  esc cancel",
             Some(DialogKind::Select { .. }) => "↑/↓ navigate  ·  enter select  ·  esc cancel",
             Some(DialogKind::Ask {
                 questions,
@@ -916,7 +1021,7 @@ impl ExtensionUi {
 
     /// Body lines of the active dialog.
     #[allow(clippy::too_many_lines)] // one style branch per dialog kind
-    fn dialog_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+    fn dialog_lines(&self, theme: &Theme, body_rows: usize) -> Vec<Line<'static>> {
         use ratatui::style::Style;
         let Some(dialog) = &self.active else {
             return Vec::new();
@@ -950,6 +1055,9 @@ impl ExtensionUi {
                 title,
                 options,
                 cursor,
+                query,
+                searchable,
+                ..
             } => {
                 // The header shows the first title line; the rest (e.g. the tool approval
                 // prompt's `Command: ...` details) is body text above the options.
@@ -961,17 +1069,46 @@ impl ExtensionUi {
                     }
                     lines.push(Line::default());
                 }
-                for (i, option) in options.iter().enumerate() {
-                    let marker = if i == *cursor {
+                if *searchable {
+                    lines.push(if query.is_empty() {
+                        Line::styled("Type to search", muted)
+                    } else {
+                        Line::styled(format!("Search: {query}▏"), text)
+                    });
+                }
+                let matches = select_matches(options, query);
+                if matches.is_empty() {
+                    lines.push(Line::styled("  No matches", muted));
+                    return lines;
+                }
+                let heights: Vec<usize> = matches
+                    .iter()
+                    .map(|&i| 1 + usize::from(options[i].description.is_some()))
+                    .collect();
+                let rows = body_rows.saturating_sub(lines.len());
+                let mut window = select_window(&heights, *cursor, rows);
+                if window.len() < matches.len() {
+                    // Room for the `(n/N)` position row under a scrolled list.
+                    window = select_window(&heights, *cursor, rows.saturating_sub(1));
+                }
+                for row in window.clone() {
+                    let option = &options[matches[row]];
+                    let marker = if row == *cursor {
                         theme.glyph("prompt")
                     } else {
                         " "
                     };
-                    let style = if i == *cursor { accent } else { text };
+                    let style = if row == *cursor { accent } else { text };
                     lines.push(Line::styled(format!("{marker} {}", option.label), style));
                     if let Some(description) = &option.description {
                         lines.push(Line::styled(format!("  {description}"), muted));
                     }
+                }
+                if window.len() < matches.len() {
+                    lines.push(Line::styled(
+                        format!("  ({}/{})", (*cursor).min(matches.len() - 1) + 1, matches.len()),
+                        muted,
+                    ));
                 }
             }
             DialogKind::Ask {
@@ -1113,6 +1250,49 @@ mod tests {
         assert!(log[0].starts_with("extension_ui_response(sel-2, "));
         assert!(log[0].contains(r#""cancelled":true"#));
         assert!(!log[0].contains(r#""timedOut":true"#));
+    }
+
+    #[test]
+    fn fullscreen_select_searches_and_answers_the_filtered_label() {
+        let mut ui = ExtensionUi::new();
+        ui.push(&json!({"type":"extension_ui_request","id":"login","method":"select",
+            "title":"Select provider to login","fullscreen":true,
+            "options":["ChatGPT Plus/Pro","Anthropic (Claude Pro/Max)","Kimi Code","Moonshot (Kimi API)"]}));
+        assert!(ui.wants_fullscreen());
+        let port = FakePort::default();
+        for c in "kimi api".chars() {
+            ui.handle_key(key(KeyCode::Char(c)), &port); // j/k/digits type, not navigate
+        }
+        let screen = snapshot(&ui).join("\n");
+        assert!(screen.contains("Search: kimi api"), "{screen}");
+        assert!(screen.contains("Moonshot (Kimi API)") && !screen.contains("Kimi Code"), "{screen}");
+        ui.handle_key(key(KeyCode::Enter), &port);
+        assert!(port.log.lock()[0].contains(r#""value":"Moonshot (Kimi API)""#));
+        assert!(!ui.wants_fullscreen());
+    }
+
+    #[test]
+    fn long_select_scrolls_to_keep_the_cursor_visible() {
+        let options: Vec<String> = (1..=80).map(|i| format!("provider-{i:02}")).collect();
+        let mut ui = ExtensionUi::new();
+        ui.push(&json!({"type":"extension_ui_request","id":"s","method":"select","title":"Pick","options":options}));
+        let port = FakePort::default();
+        for _ in 0..59 {
+            ui.handle_key(key(KeyCode::Down), &port);
+        }
+        let screen = snapshot(&ui).join("\n");
+        assert!(screen.contains("provider-60") && !screen.contains("provider-01"), "{screen}");
+        assert!(screen.contains("(60/80)"), "{screen}");
+    }
+
+    #[test]
+    fn cancel_dialog_withdraws_it_unanswered() {
+        let mut ui = ExtensionUi::new();
+        ui.push(&json!({"type":"extension_ui_request","id":"paste","method":"input","title":"Paste"}));
+        ui.push(&json!({"type":"extension_ui_request","id":"next","method":"confirm","title":"B","message":"b?"}));
+        ui.push(&json!({"type":"extension_ui_request","method":"cancelDialog","params":{"id":"paste"}}));
+        assert_eq!(ui.head().map(|r| r.id.as_str()), Some("next"));
+        assert_eq!(ui.pending_len(), 1);
     }
 
     #[test]
