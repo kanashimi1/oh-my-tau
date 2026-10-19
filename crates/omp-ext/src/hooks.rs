@@ -90,17 +90,34 @@ pub async fn context_owned(
     messages: Vec<AgentMessage>,
     ctx: Option<Value>,
 ) -> Result<Vec<AgentMessage>> {
+    context_owned_skipping(host, messages, ctx, &[]).await
+}
+
+/// [`context_owned`] with the handlers of the extensions named in `skip` left
+/// out for this emit (`skipExtensions`).
+///
+/// # Errors
+/// Transport failure or messages that do not round-trip into [`AgentMessage`].
+pub async fn context_owned_skipping(
+    host: &ExtHost,
+    messages: Vec<AgentMessage>,
+    ctx: Option<Value>,
+    skip: &[String],
+) -> Result<Vec<AgentMessage>> {
     if ctx.is_none() && !host.has_handlers("context") {
         return Ok(messages);
     }
     let r = host
-        .emit(json!({"type":"context","messages":&messages}), ctx)
+        .emit_skipping(json!({"type":"context","messages":&messages}), ctx, skip)
         .await?;
     match r.result.get("messages") {
         Some(m) if !m.is_null() => Ok(serde_json::from_value(m.clone())?),
         _ => Ok(messages),
     }
 }
+
+/// Names of the extensions whose handlers skip the next `context` emit.
+pub type SkipFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
 /// Hook factory bound to a host.
 #[derive(Clone)]
@@ -118,14 +135,22 @@ impl ExtHooks {
     /// aborts; host failures surface as errors.
     #[must_use]
     pub fn transform_context(&self) -> TransformContextFn {
+        self.transform_context_skipping(Arc::new(Vec::new))
+    }
+
+    /// [`transform_context`](Self::transform_context) that asks `skip` per
+    /// request which extensions stand aside for that `context` emit.
+    #[must_use]
+    pub fn transform_context_skipping(&self, skip: SkipFn) -> TransformContextFn {
         let host = self.host.clone();
         Arc::new(move |messages, signal: AbortSignal| {
             let host = host.clone();
+            let skip = skip();
             Box::pin(async move {
                 if signal.is_aborted() {
                     return Ok(messages);
                 }
-                context_owned(&host, messages, None).await
+                context_owned_skipping(&host, messages, None, &skip).await
             })
         })
     }

@@ -256,6 +256,7 @@ pub static SETTINGS: &[SettingDef] = &[
     SettingDef { id: "magicKeywords.enabled", ty: crate::SettingType::Boolean, env: None, default_yaml: Some("true") , credential: false },
     SettingDef { id: "magicKeywords.jevify", ty: crate::SettingType::Boolean, env: None, default_yaml: Some("true") , credential: false },
     SettingDef { id: "magicKeywords.orchestrate", ty: crate::SettingType::Boolean, env: None, default_yaml: Some("true") , credential: false },
+    SettingDef { id: "magicKeywords.ultracode", ty: crate::SettingType::Boolean, env: None, default_yaml: Some("true") , credential: false },
     SettingDef { id: "magicKeywords.ultrathink", ty: crate::SettingType::Boolean, env: None, default_yaml: Some("true") , credential: false },
     SettingDef { id: "magicKeywords.workflow", ty: crate::SettingType::Boolean, env: None, default_yaml: Some("true") , credential: false },
     SettingDef { id: "marketplace.autoUpdate", ty: crate::SettingType::Enum(&["off", "notify", "auto"]), env: None, default_yaml: Some("\"notify\"") , credential: false },

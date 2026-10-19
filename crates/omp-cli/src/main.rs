@@ -13,6 +13,7 @@ mod ext;
 mod herdr;
 mod images;
 mod model;
+mod notices;
 mod paging;
 mod persist;
 mod rpc;
@@ -673,7 +674,7 @@ async fn run_print(
         }
         if !prompt.is_empty() {
             agent
-                .prompt(runtime::prompt_input(&prompt, Vec::new(), injected))
+                .prompt(runtime::prompt_input(&prompt, Vec::new(), Vec::new(), injected))
                 .await?;
         }
         return Ok(agent.messages_snapshot().await.into_vec());

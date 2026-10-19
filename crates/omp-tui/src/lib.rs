@@ -35,6 +35,8 @@ pub mod events;
 pub mod extension_ui;
 pub mod images;
 pub mod keys;
+pub mod magic;
+pub mod magic_paint;
 pub mod keybindings;
 pub mod mouse;
 pub mod overlays;

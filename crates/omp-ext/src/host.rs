@@ -531,11 +531,21 @@ impl ExtHost {
     /// # Errors
     /// Transport failure. Handler failures are reported in [`EmitResult::handlers`]/`errors`.
     pub async fn emit(&self, event: Value, ctx: Option<Value>) -> Result<EmitResult> {
+        self.emit_skipping(event, ctx, &[]).await
+    }
+
+    /// [`emit`](Self::emit) whose handlers of the extensions named in `skip`
+    /// (host `ext.name`: file stem, or the directory of an `index.ts`) do not
+    /// run for this one event (`skipExtensions`; omitted when empty).
+    ///
+    /// # Errors
+    /// Transport failure.
+    pub async fn emit_skipping(&self, event: Value, ctx: Option<Value>, skip: &[String]) -> Result<EmitResult> {
         if self.skip_emit(&event, ctx.is_some()) {
             return Ok(EmitResult::default());
         }
-        let mut p = json!({ "event": event });
         let ctx = self.provided_ctx(ctx, event.get("type").and_then(Value::as_str).unwrap_or(""));
+        let mut p = emit_payload(&event, skip);
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
@@ -1056,6 +1066,15 @@ fn route(msg: &Value, pending: &Pending, host: Option<Arc<ExtHost>>) {
         }
         (None, None) => {}
     }
+}
+
+/// `emit` request params: `{event, skipExtensions?}`.
+fn emit_payload(event: &Value, skip: &[String]) -> Value {
+    let mut p = json!({ "event": event });
+    if !skip.is_empty() {
+        p["skipExtensions"] = json!(skip);
+    }
+    p
 }
 
 #[cfg(test)]

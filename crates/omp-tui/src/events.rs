@@ -111,6 +111,14 @@ pub enum AppEvent {
     /// `{"type":"session_info", "lines": [...]}` — the `/session` report
     /// (omp-cli `session_info_frame`), shown in the session info overlay.
     SessionInfo(Vec<crate::overlays::session_info::SessionInfoLine>),
+    /// `{"type":"notice","level":"info"|"warning"|"error","message":...}` —
+    /// a runtime notice (e.g. an ultra mode switching the context strategy).
+    Notice {
+        /// `info` / `warning` / `error`.
+        level: String,
+        /// Notice text.
+        message: String,
+    },
     /// Any frame without a dedicated variant; kept verbatim.
     Unknown(Value),
 }
@@ -159,6 +167,10 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
         | "retry_fallback_applied"
         | "retry_fallback_succeeded" => AppEvent::Retry(frame.clone()),
         "available_commands_update" => AppEvent::AvailableCommands(frame.clone()),
+        "notice" => AppEvent::Notice {
+            level: frame.get("level").and_then(Value::as_str).unwrap_or("info").to_owned(),
+            message: frame.get("message").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        },
         "command_output" => AppEvent::CommandOutput(
             frame
                 .get("text")
@@ -270,6 +282,14 @@ fn string_list(frame: &Value, key: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn notice_frames_become_notices() {
+        assert_eq!(
+            parse_frame(&json!({"type":"notice","level":"warning","message":"cache resets"})),
+            AppEvent::Notice { level: "warning".into(), message: "cache resets".into() }
+        );
+    }
 
     #[test]
     fn classifies_core_frames() {

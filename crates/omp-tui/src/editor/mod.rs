@@ -95,6 +95,8 @@ pub struct Editor {
     vim: Option<vim::VimState>,
     /// Ghost-text word completion (`spelling.autocomplete`); `None` = off.
     word: Option<crate::word_completion::WordCompletion>,
+    /// Magic-keyword shimmer phase for the next render (`0` = static).
+    pub(crate) magic_phase: f64,
 }
 
 impl Default for Editor {
@@ -127,7 +129,14 @@ impl Editor {
             yank_span: None,
             vim: None,
             word: None,
+            magic_phase: 0.0,
         }
+    }
+
+    /// Set the magic-keyword gradient phase the next render paints with
+    /// (the app passes a clock-derived value while a keyword shimmers).
+    pub fn set_magic_phase(&mut self, phase: f64) {
+        self.magic_phase = phase;
     }
 
     // -- text model passthroughs (pi-tui EditorComponent API) --------------

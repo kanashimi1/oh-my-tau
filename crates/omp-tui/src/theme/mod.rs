@@ -65,6 +65,9 @@ pub struct Theme {
     pub glyph_set: String,
     /// Presentation style (rides on the theme so every renderer sees it).
     pub ui: UiStyle,
+    /// Magic keywords switched off by settings (`magicKeywords.*`), as a
+    /// [`crate::magic::disabled_mask`] bitmask; `0` paints every keyword.
+    pub magic_off: u32,
 }
 
 impl Theme {
@@ -123,6 +126,7 @@ impl Default for Theme {
             tokens: BTreeMap::new(),
             glyph_set: "unicode".into(),
             ui: UiStyle::Classic,
+            magic_off: 0,
         };
         t.set_token("accent", ThemeValue::Color(Color::Cyan));
         t.set_token("text", ThemeValue::Color(Color::White));

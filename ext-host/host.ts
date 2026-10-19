@@ -617,7 +617,10 @@ async function emit(p: Json) {
   }
   const timeoutMs = Number(p.timeoutMs) || TIMEOUT_MS;
   const rec: HandlerRecord[] = [];
-  const handlersFor = (e: Ext) => e.handlers.get(type) ?? [];
+  // `skipExtensions`: extensions (by `ext.name`) whose handlers sit out this one emit
+  // (e.g. `context-slim` while the core runs its own CLM context strategy).
+  const skip = Array.isArray(p.skipExtensions) ? new Set((p.skipExtensions as unknown[]).map(String)) : undefined;
+  const handlersFor = (e: Ext) => (skip?.has(e.name) ? [] : (e.handlers.get(type) ?? []));
   let result: unknown;
 
   if (type === "session_shutdown") {

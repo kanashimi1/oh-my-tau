@@ -3,6 +3,9 @@
 //! wordmark with the version under it, and one rotating `Tip:` line, both
 //! centered in the terminal width. It is the first transcript block and
 //! retires into scrollback with the rest of the history.
+//!
+//! The clean style (omp-rs default) shows the OMRS τ logo instead
+//! ([`clean_welcome_lines`]), shimmering for [`SHIMMER_MS`] after startup.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -295,61 +298,158 @@ pub fn welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme) -> V
     lines
 }
 
-/// Clean style welcome: Omi (the pixel mascot) on the left; the gradient
-/// wordmark, version, greeting, working directory and the tip beside her.
-/// Falls back to the classic lockup when the terminal is too narrow.
-#[must_use]
-pub fn clean_welcome_lines(
-    version: &str,
-    tip: &str,
-    cwd: &str,
-    width: usize,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    use super::mascot;
-    const MARGIN: usize = 2;
-    const GAP: usize = 3;
-    let side = width.saturating_sub(MARGIN + mascot::WIDTH + GAP + 1);
-    if side < 24 {
-        return welcome_lines(version, tip, width, theme);
-    }
-    let muted = Style::default().fg(theme.color("text_muted"));
-    let text = Style::default().fg(theme.color("text"));
-    let accent = Style::default().fg(theme.color("accent")).add_modifier(Modifier::BOLD);
+/// The OMRS τ glyph, 10 × 8 pixels (`#` lit), drawn as 4 half-block rows.
+const TAU: [&str; 8] = [
+    "##########",
+    "##########",
+    "   ###    ",
+    "   ###    ",
+    "   ###    ",
+    "   ###    ",
+    "    ###   ",
+    "     #####",
+];
+const TAU_WIDTH: usize = 10;
+/// OMRS gradient ends (also the idle τ of the clean status line).
+pub const PINK: (u8, u8, u8) = (255, 92, 168);
+/// See [`PINK`].
+pub const CYAN: (u8, u8, u8) = (80, 220, 255);
+const KATAKANA: &str = "オー・マイ・アールエス";
+/// Startup shimmer length: the logo animates this long, then freezes.
+pub const SHIMMER_MS: u64 = 1500;
+/// One colour cycle of the shimmer; [`SHIMMER_MS`] is a whole number of
+/// cycles, so the last frame lands on the static palette.
+const SHIMMER_CYCLE_MS: u64 = 750;
+/// Narrowest terminal that gets the logo block (else the one-line form).
+const CLEAN_MIN_COLUMNS: usize = 60;
+const CLEAN_MARGIN: usize = 2;
+const CLEAN_GAP: usize = 3;
 
-    let mut beside: Vec<Vec<Span<'static>>> = vec![Vec::new(); mascot::height()];
-    // Text column (wordmark … tip, 11 rows) centred beside the sprite.
-    let top = mascot::height().saturating_sub(11) / 2;
-    // Wordmark rows 2..=4, gradient left → right.
-    for (i, row) in WORDMARK.iter().enumerate() {
-        let n = WORDMARK_WIDTH.max(1) as f64;
-        beside[top + i] = row
-            .chars()
-            .enumerate()
-            .map(|(x, c)| {
-                if c == ' ' {
-                    Span::raw(" ")
-                } else {
-                    Span::styled(c.to_string(), Style::default().fg(gradient(x as f64 / n)))
-                }
-            })
-            .collect();
+/// Shimmer phase in `[0, 1)` at `elapsed` since startup, or `None` once
+/// the shimmer is over and the welcome shows its static palette.
+#[must_use]
+#[allow(clippy::cast_precision_loss)]
+pub fn shimmer_phase(elapsed: std::time::Duration) -> Option<f64> {
+    let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    (ms < SHIMMER_MS).then(|| (ms % SHIMMER_CYCLE_MS) as f64 / SHIMMER_CYCLE_MS as f64)
+}
+
+/// `s` cut to `width` cells, with `…` when anything was dropped.
+fn fit(s: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(s) <= width {
+        return s.to_owned();
     }
-    beside[top].push(Span::styled("  rs", muted));
-    beside[top + 3] = vec![Span::styled(format!("v{version}"), muted)];
-    beside[top + 5] = vec![
-        Span::styled("Omi", accent),
-        Span::styled(" · hi! ready when you are.", text),
-    ];
-    let cwd_text = super::super::tools::truncate(cwd, side);
-    beside[top + 6] = vec![Span::styled(cwd_text, muted)];
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w + 1 > width {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
+fn rgb((r, g, b): (u8, u8, u8)) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+/// Sunset stripe colour of pixel row `row` (0..8). Phase 0 is the static
+/// palette (row `r` = stop `r`); the phase rotates the stops cyclically.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+fn stripe(row: usize, phase: f64) -> Color {
+    use crate::magic::SUNSET;
+    let n = SUNSET.len();
+    let x = (row as f64 + phase * n as f64).rem_euclid(n as f64);
+    let i = x.floor() as usize % n;
+    let f = x - x.floor();
+    rgb(crate::magic::gradient_at(&[SUNSET[i], SUNSET[(i + 1) % n]], f))
+}
+
+/// Gradient position of `OMRS` char `i`, ping-ponged by the phase so the
+/// sweep runs out and back and phase 0 / 1 are the static spread.
+#[allow(clippy::cast_precision_loss)]
+fn omrs_color(i: usize, phase: f64) -> Color {
+    let t = i as f64 / 3.0 + 2.0 * phase;
+    let f = t.rem_euclid(2.0);
+    rgb(crate::magic::gradient_at(&[PINK, CYAN], if f > 1.0 { 2.0 - f } else { f }))
+}
+
+fn omrs_spans(phase: f64) -> Vec<Span<'static>> {
+    "OMRS"
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            Span::styled(
+                c.to_string(),
+                Style::default().fg(omrs_color(i, phase)).add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
+/// The τ glyph as 4 rows of [`TAU_WIDTH`] half-block cells (`▀` fg = top
+/// pixel, bg = bottom pixel; unlit cells are plain spaces).
+fn tau_rows(phase: f64) -> Vec<Vec<Span<'static>>> {
+    let lit = |row: usize, x: usize| TAU[row].as_bytes().get(x) == Some(&b'#');
+    (0..TAU.len() / 2)
+        .map(|y| {
+            let (top, bottom) = (2 * y, 2 * y + 1);
+            (0..TAU_WIDTH)
+                .map(|x| match (lit(top, x), lit(bottom, x)) {
+                    (false, false) => Span::raw(" "),
+                    (true, false) => Span::styled("▀", Style::default().fg(stripe(top, phase))),
+                    (false, true) => Span::styled("▄", Style::default().fg(stripe(bottom, phase))),
+                    (true, true) => Span::styled(
+                        "▀",
+                        Style::default().fg(stripe(top, phase)).bg(stripe(bottom, phase)),
+                    ),
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Clean style welcome: the OMRS τ logo (sunset half-block stripes) with
+/// the `OMRS` wordmark, version + katakana reading and the tip beside it;
+/// one line (`τ OMRS v…`) on narrow terminals. `phase` 0 is the static
+/// palette, other values come from [`shimmer_phase`].
+#[must_use]
+pub fn clean_welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme, phase: f64) -> Vec<Line<'static>> {
+    let side = width.saturating_sub(CLEAN_MARGIN + TAU_WIDTH + CLEAN_GAP + 1);
+    let muted = Style::default().fg(theme.color("text_muted"));
+    if side < 24 || width < CLEAN_MIN_COLUMNS {
+        let mut spans = vec![
+            Span::raw(" ".repeat(CLEAN_MARGIN)),
+            Span::styled("τ", Style::default().fg(rgb(PINK)).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+        ];
+        spans.extend(omrs_spans(phase));
+        spans.push(Span::styled(format!(" v{version}"), muted));
+        return vec![Line::from(spans)];
+    }
+    let mut beside: Vec<Vec<Span<'static>>> = vec![Vec::new(); TAU.len() / 2];
+    beside[0] = omrs_spans(phase);
+    beside[1] = vec![Span::styled(
+        fit(&format!("v{version} · {KATAKANA}"), side),
+        muted,
+    )];
     if !tip.is_empty() {
         let body = expand_tip(tip.trim_end().trim_end_matches("[NEW]").trim_end());
-        let wrapped = wrap(&format!("Tip: {body}"), side.min(TIP_MEASURE));
+        let measure = side.min(TIP_MEASURE);
+        let mut wrapped = wrap(&format!("Tip: {body}"), measure);
+        if wrapped.len() > 2 {
+            wrapped.truncate(2);
+            let last = &mut wrapped[1];
+            *last = fit(&format!("{last} …"), measure);
+        }
         let label = Style::default().fg(theme.color("accent")).add_modifier(Modifier::ITALIC);
         let body_style = muted.add_modifier(Modifier::ITALIC);
-        for (i, line) in wrapped.iter().take(3).enumerate() {
-            let row = &mut beside[top + 8 + i];
+        for (i, line) in wrapped.iter().enumerate() {
+            let row = &mut beside[2 + i];
             match line.strip_prefix("Tip: ").filter(|_| i == 0) {
                 Some(rest) => {
                     row.push(Span::styled("Tip: ", label));
@@ -360,11 +460,11 @@ pub fn clean_welcome_lines(
         }
     }
     let mut lines = vec![Line::default()];
-    for (row, art) in mascot::lines().into_iter().enumerate() {
-        let mut spans = vec![Span::raw(" ".repeat(MARGIN))];
-        spans.extend(art.spans);
+    for (row, art) in tau_rows(phase).into_iter().enumerate() {
+        let mut spans = vec![Span::raw(" ".repeat(CLEAN_MARGIN))];
+        spans.extend(art);
         if !beside[row].is_empty() {
-            spans.push(Span::raw(" ".repeat(GAP)));
+            spans.push(Span::raw(" ".repeat(CLEAN_GAP)));
             spans.extend(std::mem::take(&mut beside[row]));
         }
         lines.push(Line::from(spans));
@@ -377,20 +477,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clean_welcome_puts_text_beside_the_mascot() {
-        let rows = clean_welcome_lines("0.10.0", "Type `/` for commands", "/w/proj", 100, &Theme::default());
-        let text: Vec<String> = rows
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect();
-        assert_eq!(rows.len(), 1 + super::super::mascot::height());
-        assert!(text.iter().any(|r| r.contains("v0.10.0")));
-        assert!(text.iter().any(|r| r.contains("Omi · hi!")));
-        assert!(text.iter().any(|r| r.contains("/w/proj")));
-        assert!(text.iter().any(|r| r.contains("Tip: Type `/` for commands")));
-        // Too narrow for the side column: classic lockup.
-        let narrow = clean_welcome_lines("0.10.0", "", "/w", 40, &Theme::default());
-        assert_eq!(narrow, welcome_lines("0.10.0", "", 40, &Theme::default()));
+    fn clean_welcome_is_the_omrs_logo_with_text_beside() {
+        let theme = Theme::default();
+        let rows = clean_welcome_lines("0.10.0", "Type `/` for commands", 100, &theme, 0.0);
+        let t: Vec<String> = rows.iter().map(text).collect();
+        assert_eq!(rows.len(), 5, "{t:#?}");
+        assert!(t[0].is_empty());
+        assert_eq!(t[1], "  ▀▀▀▀▀▀▀▀▀▀   OMRS");
+        assert_eq!(t[2], "     ▀▀▀       v0.10.0 · オー・マイ・アールエス");
+        assert_eq!(t[3], "     ▀▀▀       Tip: Type `/` for commands");
+        assert_eq!(t[4], "      ▀▀▀▄▄▄");
+        assert!(t.iter().all(|r| !r.contains("Omi") && !r.contains("/w")));
+        // Pixel row r carries sunset stop r: row 0 = fg stop 0 / bg stop 1.
+        let first = &rows[1].spans[1];
+        assert_eq!(first.style.fg, Some(rgb(crate::magic::SUNSET[0])));
+        assert_eq!(first.style.bg, Some(rgb(crate::magic::SUNSET[1])));
+        // OMRS: bold pink → cyan.
+        let o = rows[1].spans.iter().find(|s| s.content == "O").unwrap();
+        assert_eq!(o.style.fg, Some(rgb(PINK)));
+        assert!(o.style.add_modifier.contains(Modifier::BOLD));
+        let s = rows[1].spans.iter().find(|s| s.content == "S").unwrap();
+        assert_eq!(s.style.fg, Some(rgb(CYAN)));
+    }
+
+    #[test]
+    fn clean_welcome_wraps_tip_to_two_rows_and_narrow_is_one_line() {
+        let theme = Theme::default();
+        let long = "word ".repeat(40);
+        let rows = clean_welcome_lines("1.2.3", &long, 70, &theme, 0.0);
+        assert_eq!(rows.len(), 5);
+        let t: Vec<String> = rows.iter().map(text).collect();
+        assert!(t[3].contains("Tip: word"), "{t:#?}");
+        assert!(t[4].trim_end().ends_with('…'), "{t:#?}");
+        assert!(t.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 70));
+        let narrow = clean_welcome_lines("1.2.3", "tip", 50, &theme, 0.0);
+        assert_eq!(narrow.len(), 1);
+        assert_eq!(text(&narrow[0]), "  τ OMRS v1.2.3");
+        assert_eq!(narrow[0].spans[1].style.fg, Some(rgb(PINK)));
+    }
+
+    #[test]
+    fn shimmer_runs_then_freezes_on_the_static_rows() {
+        use std::time::Duration;
+        let theme = Theme::default();
+        assert_eq!(shimmer_phase(Duration::ZERO), Some(0.0));
+        let mid = shimmer_phase(Duration::from_millis(375)).unwrap();
+        assert!((mid - 0.5).abs() < 1e-9);
+        assert_eq!(shimmer_phase(Duration::from_millis(SHIMMER_MS)), None);
+        assert_eq!(shimmer_phase(Duration::from_mins(1)), None);
+        let static_rows = clean_welcome_lines("1.0.0", "tip", 100, &theme, 0.0);
+        let moving = clean_welcome_lines("1.0.0", "tip", 100, &theme, mid);
+        assert_ne!(moving, static_rows);
+        // The phase only recolours: same text.
+        assert_eq!(moving.iter().map(text).collect::<Vec<_>>(), static_rows.iter().map(text).collect::<Vec<_>>());
+        // After 1.5 s the rows are the static rows.
+        let done = shimmer_phase(Duration::from_millis(1600)).unwrap_or(0.0);
+        assert_eq!(clean_welcome_lines("1.0.0", "tip", 100, &theme, done), static_rows);
+        // Just before the end the cycle is nearly closed (no jump at freeze).
+        let late = shimmer_phase(Duration::from_millis(SHIMMER_MS - 1)).unwrap();
+        assert!(late > 0.99);
+        assert_eq!(stripe(3, 0.0), rgb(crate::magic::SUNSET[3]));
+        assert_eq!(stripe(3, 1.0), stripe(3, 0.0));
+        assert_eq!(omrs_color(2, 1.0), omrs_color(2, 0.0));
     }
 
     fn text(l: &Line<'_>) -> String {

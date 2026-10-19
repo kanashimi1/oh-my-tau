@@ -200,25 +200,24 @@ pub fn build_agent(
             messages: None,
         },
         convert_to_llm: Some({
+            // The context strategy is read per request: an ultra mode can
+            // switch `clm-host` on and off mid-session (`context::set_live`).
+            // With none live (`append`) the messages pass through untouched.
+            crate::context::set_live(ctx, false);
             let dedup = crate::dedup::dedup_enabled();
-            if dedup || ctx.is_some() {
-                let base = convert_to_llm();
-                Arc::new(move |messages: Vec<AgentMessage>| {
-                    let base = Arc::clone(&base);
-                    let ctx = ctx.clone();
-                    Box::pin(async move {
-                        let messages = match &ctx {
-                            Some(c) => c.wire(messages),
-                            None => messages,
-                        };
-                        let messages =
-                            if dedup { crate::dedup::dedup_tool_results(messages) } else { messages };
-                        base(messages).await
-                    })
+            let base = convert_to_llm();
+            Arc::new(move |messages: Vec<AgentMessage>| {
+                let base = Arc::clone(&base);
+                Box::pin(async move {
+                    let messages = match crate::context::live() {
+                        Some(c) => c.wire(messages),
+                        None => messages,
+                    };
+                    let messages =
+                        if dedup { crate::dedup::dedup_tool_results(messages) } else { messages };
+                    base(messages).await
                 })
-            } else {
-                convert_to_llm()
-            }
+            })
         }),
         stream_fn: Some(switchable_stream_fn(target.clone())),
         transform_context,

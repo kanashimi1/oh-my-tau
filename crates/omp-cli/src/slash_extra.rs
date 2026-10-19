@@ -112,6 +112,58 @@ async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     Outcome::Prompt(rlm::loop_prompt(&parsed.question, context_chars, rlm::Limits::effective()))
 }
 
+/// `/ultra` usage text.
+pub const ULTRA_USAGE: &str = concat!(
+    "Usage: /ultra [code|deep|long|hyper|off]\n",
+    "  code   ultracode: max thinking + workflow (eval workpool) by default on every substantial task\n",
+    "  deep   ultradeep: ultracode + RLM (llm_query, λ-RLM, SERA rubrics) for huge inputs\n",
+    "  long   ultralong: ultracode + CLM (clm-host context strategy) for long sessions\n",
+    "  hyper  hypercode: ultracode + RLM + CLM\n",
+    "  off    leave ultra mode (thinking level stays)",
+);
+
+/// What an `/ultra` argument asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UltraArg {
+    /// No argument: show the mode and usage.
+    Show,
+    /// Enter (`Some`) or leave (`None`) an ultra mode.
+    Set(Option<omp_tui::magic::Ultra>),
+}
+
+/// Parse an `/ultra` argument (`code|deep|long|hyper|off`, full mode names too).
+///
+/// # Errors
+/// Usage error for anything else.
+pub fn parse_ultra_arg(args: &str) -> Result<UltraArg, String> {
+    match args.trim() {
+        "" => Ok(UltraArg::Show),
+        "off" => Ok(UltraArg::Set(None)),
+        other => omp_tui::magic::Ultra::parse(other)
+            .map(|u| UltraArg::Set(Some(u)))
+            .ok_or_else(|| format!("/ultra: unknown mode {other:?}\n{ULTRA_USAGE}")),
+    }
+}
+
+async fn ultra_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
+    match parse_ultra_arg(args) {
+        Ok(UltraArg::Show) => {
+            let current = rt.ultra().map_or("off", omp_tui::magic::Ultra::name);
+            output(rt, &format!("Ultra mode: {current}\n{ULTRA_USAGE}"));
+        }
+        Ok(UltraArg::Set(None)) if rt.ultra().is_none() => output(rt, "Ultra mode is already off."),
+        Ok(UltraArg::Set(mode)) => {
+            rt.set_ultra(mode).await;
+            match mode {
+                Some(m) => output(rt, &format!("Ultra mode: {}", m.name())),
+                None => output(rt, "Ultra mode off."),
+            }
+        }
+        Err(message) => output(rt, &message),
+    }
+    Outcome::Handled { agent_invoked: false }
+}
+
 /// Check whether `name` is one of the extra builtin commands or their aliases
 /// (only the catalog⊆handlers test needs it; dispatch matches directly).
 #[cfg(test)]
@@ -140,6 +192,7 @@ pub fn is_extra_command(name: &str) -> bool {
             | "restart"
             | "btw"
             | "rlm"
+            | "ultra"
     )
 }
 
@@ -272,6 +325,14 @@ pub fn extra_catalog() -> Vec<Value> {
             },
             "source": "builtin",
         }),
+        json!({
+            "name": "ultra",
+            "description": "Ultra mode: max thinking + workflow by default (code), with RLM (deep), CLM (long) or both (hyper)",
+            "input": {
+                "hint": "[code|deep|long|hyper|off]"
+            },
+            "source": "builtin",
+        }),
     ]
 }
 
@@ -282,6 +343,7 @@ pub fn extra_catalog() -> Vec<Value> {
 pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option<Outcome> {
     match name {
         "rlm" => Some(rlm_command(rt, args).await),
+        "ultra" => Some(ultra_command(rt, args).await),
         "new" => {
             if rt.state().await.get("isStreaming").and_then(Value::as_bool) == Some(true) {
                 output(
@@ -507,7 +569,7 @@ mod tests {
     #[test]
     fn test_extra_catalog_names_all_handled() {
         let catalog = extra_catalog();
-        assert_eq!(catalog.len(), 18, "expected 18 extra commands in catalog");
+        assert_eq!(catalog.len(), 19, "expected 19 extra commands in catalog");
         for cmd in &catalog {
             let name = cmd["name"].as_str().expect("command must have name");
             assert!(
@@ -533,6 +595,22 @@ mod tests {
             assert!(cmd.get("description").is_some());
             assert_eq!(cmd.get("source").and_then(Value::as_str), Some("builtin"));
         }
+    }
+
+    #[test]
+    fn ultra_args_parse() {
+        use omp_tui::magic::Ultra;
+        assert_eq!(parse_ultra_arg(""), Ok(UltraArg::Show));
+        assert_eq!(parse_ultra_arg("  "), Ok(UltraArg::Show));
+        assert_eq!(parse_ultra_arg("off"), Ok(UltraArg::Set(None)));
+        assert_eq!(parse_ultra_arg("code"), Ok(UltraArg::Set(Some(Ultra::Code))));
+        assert_eq!(parse_ultra_arg("deep"), Ok(UltraArg::Set(Some(Ultra::Deep))));
+        assert_eq!(parse_ultra_arg(" long "), Ok(UltraArg::Set(Some(Ultra::Long))));
+        assert_eq!(parse_ultra_arg("hyper"), Ok(UltraArg::Set(Some(Ultra::Hyper))));
+        assert_eq!(parse_ultra_arg("hypercode"), Ok(UltraArg::Set(Some(Ultra::Hyper))));
+        let err = parse_ultra_arg("max").unwrap_err();
+        assert!(err.contains("unknown mode") && err.contains("Usage: /ultra"), "{err}");
+        assert!(extra_catalog().iter().any(|c| c["name"] == "ultra" && c["input"]["hint"] == "[code|deep|long|hyper|off]"));
     }
 
     #[test]

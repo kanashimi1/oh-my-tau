@@ -46,6 +46,68 @@ pub fn active() -> Kind {
     ACTIVE.get().copied().unwrap_or_default()
 }
 
+/// The strategy `convert_to_llm` routes through right now: the startup one
+/// (`--context-strategy` / `context.strategy`) or, while an ultra mode with
+/// CLM runs, the one it switched on. `None` = `append` (wire untouched).
+struct Live {
+    shared: Arc<Shared>,
+    /// Switched on by an ultra mode (`ultralong` / `hypercode`), not at startup.
+    by_ultra: bool,
+}
+
+static LIVE: std::sync::RwLock<Option<Live>> = std::sync::RwLock::new(None);
+
+/// Install (or clear) the live strategy `convert_to_llm` reads per request.
+pub fn set_live(shared: Option<Arc<Shared>>, by_ultra: bool) {
+    *LIVE.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        shared.map(|shared| Live { shared, by_ultra });
+}
+
+/// The live strategy, `None` for `append`.
+#[must_use]
+pub fn live() -> Option<Arc<Shared>> {
+    LIVE.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map(|l| l.shared.clone())
+}
+
+/// CLM is on because an ultra mode switched it on: extensions that slim the
+/// context themselves (`context-slim`) must stand aside.
+#[must_use]
+pub fn ultra_owned() -> bool {
+    LIVE.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .is_some_and(|l| l.by_ultra)
+}
+
+/// Extensions skipped on the core's `context` event while [`ultra_owned`].
+#[must_use]
+pub fn skip_extensions() -> Vec<String> {
+    if ultra_owned() {
+        vec!["context-slim".to_owned()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The `clm-host` strategy an ultra mode switches on: `rule` policy with the
+/// `context.policy.*` thresholds (or their defaults), whatever policy kind the
+/// settings name.
+#[must_use]
+pub fn ultra_shared(settings: &omp_settings::Settings) -> Arc<Shared> {
+    let env = |k: &str| {
+        if k == "OMP_CONTEXT_POLICY" {
+            Some("rule".to_owned())
+        } else {
+            std::env::var(k).ok()
+        }
+    };
+    let policy = crate::context_policy::Policy::resolve(settings, &env).ok().flatten();
+    Shared::with_policy(Kind::ClmHost, Limits::from_settings(settings), policy)
+}
+
 /// Session-file entry recording a non-default strategy (`None` for `append`, so default
 /// session files stay byte-identical).
 #[must_use]

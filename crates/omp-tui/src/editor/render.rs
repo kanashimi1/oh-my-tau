@@ -172,6 +172,26 @@ impl Component for Editor {
         } else {
             rows.len().saturating_sub(offset).min(content_height)
         };
+        // Magic keywords: ranges over the whole draft (prose masking needs
+        // the full text), painted per visual row by global byte offset.
+        let magic_hits = if !empty && crate::magic_paint::any_keyword(self.buffer.lines(), theme.magic_off) {
+            crate::magic::enabled_ranges(&self.buffer.lines().join("\n"), theme.magic_off)
+        } else {
+            Vec::new()
+        };
+        let line_offsets: Vec<usize> = if magic_hits.is_empty() {
+            Vec::new()
+        } else {
+            self.buffer
+                .lines()
+                .iter()
+                .scan(0usize, |off, l| {
+                    let start = *off;
+                    *off += l.len() + 1;
+                    Some(start)
+                })
+                .collect()
+        };
         let gutter_first = gutter.map(|g| Span::styled(g.to_owned(), gutter_style));
         let gutter_rest = gutter.map(|_| Span::raw(" ".repeat(gutter_w)));
         for vis in 0..visible_count {
@@ -198,7 +218,17 @@ impl Component for Editor {
             } else {
                 let row = &rows[offset + vis];
                 let cells = display_width(&row.text);
-                (vec![Span::raw(row.text.clone())], cells)
+                let spans = match line_offsets.get(row.line) {
+                    Some(line_off) => crate::magic_paint::paint_segment(
+                        &row.text,
+                        line_off + row.start,
+                        &magic_hits,
+                        Style::default(),
+                        self.magic_phase,
+                    ),
+                    None => vec![Span::raw(row.text.clone())],
+                };
+                (spans, cells)
             };
             let row = crate::composer::Row {
                 text,

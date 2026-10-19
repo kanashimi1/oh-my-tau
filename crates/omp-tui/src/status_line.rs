@@ -140,6 +140,33 @@ impl StatusLayout {
     }
 }
 
+/// Run state of the clean status line's leading `τ` segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Brand {
+    /// Waiting for the user's next prompt (pink).
+    #[default]
+    Idle,
+    /// Agent running: streaming or tools (cyan).
+    Running,
+    /// Blocked on the user: ask / extension dialog / approval (yellow).
+    Blocked,
+    /// The last turn ended with a pinned error (red).
+    Error,
+}
+
+impl Brand {
+    /// The `τ` colour for this state.
+    #[must_use]
+    pub const fn color(self) -> Color {
+        match self {
+            Self::Idle => Color::Rgb(255, 92, 168),
+            Self::Running => Color::Rgb(80, 220, 255),
+            Self::Blocked => Color::Rgb(255, 224, 102),
+            Self::Error => Color::Rgb(255, 80, 80),
+        }
+    }
+}
+
 /// What the status line knows about the session right now.
 #[allow(clippy::struct_excessive_bools)] // mirrors the TS SegmentContext aggregate
 #[derive(Debug, Clone)]
@@ -222,6 +249,11 @@ pub struct StatusLine {
     pub thinking: Option<String>,
     /// Auto-thinking is on.
     pub auto_thinking: bool,
+    /// Active omp-rs ultra mode (runtime `ultra`); replaces the thinking
+    /// level display.
+    pub ultra: Option<crate::magic::Ultra>,
+    /// Run state painted by the clean status line's leading `τ`.
+    pub brand: Brand,
     /// Fast mode is active.
     pub fast_mode: bool,
 
@@ -308,6 +340,8 @@ impl StatusLine {
             vim_text_display: false,
             thinking: None,
             auto_thinking: false,
+            ultra: None,
+            brand: Brand::Idle,
             fast_mode: false,
             subagents: 0,
             jobs: 0,
@@ -765,6 +799,9 @@ fn layout_clean(ctx: &Ctx<'_>, theme: &Theme, width: usize, kind: StatusLayout) 
     loop {
         left = render_side(&left_ids, ctx, theme, path_max);
         right = render_side(&right_ids, ctx, theme, path_max);
+        if kind != StatusLayout::PlainRight {
+            left.insert(0, vec![Piece::from_rgb(vec![("τ".to_owned(), ctx.st.brand.color())])]);
+        }
         if jobs_badge {
             right.insert(
                 0,
@@ -785,7 +822,7 @@ fn layout_clean(ctx: &Ctx<'_>, theme: &Theme, width: usize, kind: StatusLayout) 
         let name_piece = right
             .iter_mut()
             .flatten()
-            .find(|p| !name.is_empty() && p.runs.is_empty() && p.text.contains(name));
+            .find(|p| !name.is_empty() && p.runs.is_empty() && p.rgb.is_empty() && p.text.contains(name));
         let name_w = if let Some(piece) = name_piece {
             if name_floor != usize::MAX {
                 piece.text = clamp_cells(&piece.text, name_floor);
@@ -864,7 +901,11 @@ fn paint_clean_group(pieces: &[Piece], theme: &Theme) -> Group {
             spans.push(Span::styled(" · ", dim));
             width += 3;
         }
-        if piece.runs.is_empty() {
+        if !piece.rgb.is_empty() {
+            for (text, color) in &piece.rgb {
+                spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+            }
+        } else if piece.runs.is_empty() {
             let body = Style::default().fg(style::clean_color(theme, piece.token));
             for (text, icon) in icon_runs(&piece.text) {
                 spans.push(Span::styled(text.to_string(), if icon { dim } else { body }));
@@ -1207,5 +1248,72 @@ mod tests {
         ]);
         assert_eq!(icon_runs("#12 ⤴"), vec![("#12 ", false), ("⤴", true)]);
         assert_eq!(icon_runs("$0.12"), vec![("$0.12", false)]);
+    }
+
+    fn x_of(row: &str, needle: &str) -> u16 {
+        u16::try_from(row[..row.find(needle).unwrap()].chars().count()).unwrap()
+    }
+
+    #[test]
+    fn clean_row_leads_with_tau_coloured_by_run_state() {
+        let theme = clean_theme();
+        for (brand, rgb) in [
+            (Brand::Idle, (255, 92, 168)),
+            (Brand::Running, (80, 220, 255)),
+            (Brand::Blocked, (255, 224, 102)),
+            (Brand::Error, (255, 80, 80)),
+        ] {
+            let mut status = clean_status();
+            status.brand = brand;
+            let buf = draw_buf(&status, 120, &theme);
+            let row = row_of(&buf);
+            assert!(row.starts_with(" τ · "), "{row:?}");
+            assert_eq!(buf[(1, 0)].fg, Color::Rgb(rgb.0, rgb.1, rgb.2));
+        }
+        // Classic keeps its π segment and has no τ.
+        let row = draw(&clean_status(), 120);
+        assert!(row.contains('π') && !row.contains('τ'), "{row:?}");
+    }
+
+    #[test]
+    fn clean_ultra_paints_name_and_tau_wave_in_its_gradient() {
+        use crate::magic::{Ultra, SUNSET};
+        let theme = clean_theme();
+        let mut status = clean_status();
+        status.ultra = Some(Ultra::Code);
+        let buf = draw_buf(&status, 140, &theme);
+        let row = row_of(&buf);
+        assert!(row.contains("sonnet-4.5 τ∿ · ◉ ultracode · "), "{row:?}");
+        assert!(!row.contains("◑"), "the effort glyph is replaced: {row:?}");
+        let name = x_of(&row, "◉ ultracode");
+        assert_eq!(buf[(name, 0)].fg, Color::Rgb(255, 224, 102));
+        assert_eq!(buf[(name + 10, 0)].fg, Color::Rgb(170, 90, 240));
+        // Middle char ("t" of ultracode, i = 5 of 0..=10) is the pink stop.
+        assert_eq!(buf[(name + 5, 0)].fg, Color::Rgb(255, 92, 168));
+        let wave = x_of(&row, "τ∿");
+        assert_eq!(buf[(wave, 0)].fg, Color::Rgb(255, 224, 102));
+        assert_eq!(buf[(wave + 1, 0)].fg, Color::Rgb(170, 90, 240));
+        for (ultra, first, last) in [
+            (Ultra::Deep, (170, 90, 240), (80, 120, 250)),
+            (Ultra::Long, (255, 92, 168), (255, 224, 102)),
+            (Ultra::Hyper, SUNSET[0], SUNSET[7]),
+        ] {
+            status.ultra = Some(ultra);
+            let buf = draw_buf(&status, 140, &theme);
+            let row = row_of(&buf);
+            let label = format!("◉ {}", ultra.name());
+            let x = x_of(&row, &label);
+            assert_eq!(buf[(x, 0)].fg, Color::Rgb(first.0, first.1, first.2), "{row:?}");
+            assert_eq!(buf[(x + 10, 0)].fg, Color::Rgb(last.0, last.1, last.2), "{row:?}");
+        }
+    }
+
+    #[test]
+    fn classic_ultra_is_a_plain_level_label() {
+        let mut status = clean_status();
+        status.ultra = Some(crate::magic::Ultra::Long);
+        let row = draw(&status, 160);
+        assert!(row.contains("◉ ultralong"), "{row:?}");
+        assert!(!row.contains('∿') && !row.contains('τ'), "{row:?}");
     }
 }

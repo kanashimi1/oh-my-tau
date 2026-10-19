@@ -104,6 +104,10 @@ struct Welcome {
     tip: String,
     /// Rows already committed to scrollback.
     emitted: bool,
+    /// First paint of the welcome: the clean welcome shimmers for
+    /// [`welcome::SHIMMER_MS`] from here, held in the live region (`None`
+    /// until drawn, so a slow startup does not eat the animation).
+    started: Option<Instant>,
 }
 
 /// Maintenance the runtime advertised as esc-to-cancel (§6 step 4).
@@ -338,6 +342,9 @@ pub struct App {
     /// Set by [`App::start_word_completion`]; tests and embedders that never
     /// call it never spawn an engine (or touch the agent dir).
     word_started: bool,
+    /// Magic keywords disabled by `magicKeywords.*` (read at startup and on
+    /// settings edits, never per keystroke); layered onto every theme.
+    magic_off: u32,
 }
 
 impl App {
@@ -389,6 +396,7 @@ impl App {
             pending_large_paste: None,
             word_host: None,
             word_started: false,
+            magic_off: 0,
         }
     }
 
@@ -432,6 +440,7 @@ impl App {
             version: version.to_owned(),
             tip: welcome::random_tip(),
             emitted: false,
+            started: None,
         });
     }
 
@@ -453,9 +462,18 @@ impl App {
         if let Some(level) = frame.get("thinkingLevel").and_then(Value::as_str) {
             self.set_thinking_display(level);
         }
+        self.apply_ultra(frame);
         if self.thinking_levels.is_empty() {
             self.status.thinking = None;
             self.status.auto_thinking = false;
+        }
+    }
+
+    /// Mirror the runtime's ultra mode (`"ultra": "<name>" | null`, wire
+    /// contract 1); frames without the key leave it unchanged.
+    fn apply_ultra(&mut self, frame: &Value) {
+        if let Some(ultra) = frame.get("ultra") {
+            self.status.ultra = ultra.as_str().and_then(crate::magic::Ultra::parse);
         }
     }
 
@@ -464,7 +482,8 @@ impl App {
     }
 
     /// Selector values for the active model in cycle order
-    /// (`getAvailableEffortSelectors`): `off`, `auto`, then the efforts.
+    /// (`getAvailableEffortSelectors`): `off`, `auto`, then the efforts, then
+    /// the omp-rs `ultracode` mode.
     fn effort_selectors(&self) -> Vec<String> {
         if self.thinking_levels.is_empty() {
             return Vec::new();
@@ -473,21 +492,26 @@ impl App {
             .iter()
             .map(|s| (*s).to_owned())
             .chain(self.thinking_levels.iter().cloned())
+            .chain(std::iter::once(crate::magic::Ultra::Code.name().to_owned()))
             .collect()
     }
 
-    /// The configured selector (`configuredThinkingLevel`): `auto` while auto
-    /// thinking is on, else the effective level.
+    /// The configured selector (`configuredThinkingLevel`): the ultra mode
+    /// while one is active, `auto` while auto thinking is on, else the
+    /// effective level. Any ultra mode (incl. the hybrids, which are not in
+    /// the cycle) is followed by `off`.
     fn current_effort_selector(&self) -> String {
-        if self.status.auto_thinking {
+        if let Some(ultra) = self.status.ultra {
+            ultra.name().to_owned()
+        } else if self.status.auto_thinking {
             "auto".to_owned()
         } else {
             self.status.thinking.clone().unwrap_or_else(|| "off".to_owned())
         }
     }
 
-    /// Shift+Tab (`app.thinking.cycle`): off → auto → minimal..max → off
-    /// (TS `cycleThinkingLevel`).
+    /// Shift+Tab (`app.thinking.cycle`): off → auto → minimal..max →
+    /// ultracode → off (TS `cycleThinkingLevel` + omp-rs ultra).
     fn cycle_thinking_level(&mut self, port: &impl RuntimePort) {
         let levels = self.effort_selectors();
         if levels.is_empty() {
@@ -566,6 +590,12 @@ impl App {
             theme.glyph_set.clone_from(glyphs);
             theme.ui = *ui;
         }
+        theme.magic_off = self.magic_off;
+        self.title.set_brand(if theme.clean() {
+            crate::chrome::title::CLEAN_TERMINAL_TITLE
+        } else {
+            crate::chrome::title::DEFAULT_TERMINAL_TITLE
+        });
         self.messages.set_theme(theme.clone());
         self.theme = theme;
     }
@@ -586,6 +616,7 @@ impl App {
             .unwrap_or_else(|| "unicode".to_owned());
         let ui = crate::theme::UiStyle::resolve(settings.get_string("tui.style").as_deref());
         self.presentation = Some((glyphs, ui));
+        self.magic_off = crate::magic::disabled_mask(&settings);
         let theme = crate::theme::load_configured(
             settings.get_string("theme.dark").as_deref(),
             settings.get_string("theme.light").as_deref(),
@@ -777,13 +808,70 @@ impl App {
     /// loader row is visible (TS `SPINNER_ADVANCE_MS`).
     #[must_use]
     pub fn animation_interval(&self) -> Option<Duration> {
-        if self.messages.reveal_animating() {
+        if self.messages.reveal_animating() || self.welcome_shimmer(Instant::now()).is_some() {
             Some(Duration::from_millis(crate::chat::reveal::FRAME_MS))
+        } else if self.editor_shimmers() {
+            Some(Duration::from_millis(crate::magic_paint::SHIMMER_FRAME_MS))
         } else if self.show_loader() {
             Some(Duration::from_millis(SPINNER_ADVANCE_MS))
         } else {
             None
         }
+    }
+
+    /// Startup shimmer phase of the clean welcome while it is still held in
+    /// the live region (not yet committed), `None` once it froze.
+    fn welcome_shimmer(&self, now: Instant) -> Option<f64> {
+        let w = self.welcome.as_ref().filter(|w| !w.emitted && self.theme.clean())?;
+        welcome::shimmer_phase(w.started.map_or(Duration::ZERO, |s| now.saturating_duration_since(s)))
+    }
+
+    /// Welcome block rows at `width` (clean: OMRS logo at `phase`).
+    fn welcome_rows(&self, width: u16, phase: f64) -> Vec<Line<'static>> {
+        let Some(w) = &self.welcome else { return Vec::new() };
+        if self.theme.clean() {
+            welcome::clean_welcome_lines(&w.version, &w.tip, usize::from(width), &self.theme, phase)
+        } else {
+            welcome::welcome_lines(&w.version, &w.tip, usize::from(width), &self.theme)
+        }
+    }
+
+    /// Whether the editor's magic keywords shimmer (TS: focused editor with
+    /// a keyword on screen); no keyword → no animation timer.
+    fn editor_shimmers(&self) -> bool {
+        self.overlays.open().is_none()
+            && !self.extension_ui.is_active()
+            && crate::magic_paint::any_keyword(self.editor.buffer.lines(), self.theme.magic_off)
+    }
+
+    /// The clean status line's τ state: blocked on the user (dialog / ask)
+    /// beats running, which beats a pinned turn error, else idle.
+    fn brand_state(&self) -> crate::status_line::Brand {
+        use crate::status_line::Brand;
+        let asking = self.messages.live_tail().iter().any(|e| {
+            matches!(&e.kind, crate::chat::ChatKind::Tool(card) if card.name == "ask" && !card.status.settled())
+        });
+        if self.extension_ui.pending_len() > 0 || asking {
+            Brand::Blocked
+        } else if self.status.streaming || self.pending_submission {
+            Brand::Running
+        } else if self.messages.pinned_error().is_some() {
+            Brand::Error
+        } else {
+            Brand::Idle
+        }
+    }
+
+    /// Per-frame live state the status line and editor render from.
+    fn sync_frame_state(&mut self) {
+        self.status.tick(now_millis());
+        self.status.brand = self.brand_state();
+        let phase = if self.editor_shimmers() {
+            crate::magic_paint::shimmer_phase(now_millis())
+        } else {
+            0.0
+        };
+        self.editor.set_magic_phase(phase);
     }
 
     /// Apply one classified runtime event directly (tests + compat path).
@@ -865,6 +953,7 @@ impl App {
                 if let Some(level) = frame.get("thinkingLevel").and_then(Value::as_str) {
                     self.set_thinking_display(level);
                 }
+                self.apply_ultra(frame);
             }
             AppEvent::QueueUpdate {
                 steering,
@@ -913,6 +1002,14 @@ impl App {
                 self.autocomplete.set_commands(commands);
             }
             AppEvent::CommandOutput(text) => self.push_system(text.clone()),
+            AppEvent::Notice { level, message } => {
+                let glyph = match level.as_str() {
+                    "warning" => self.theme.symbol("status.warning"),
+                    "error" => self.theme.symbol("status.error"),
+                    _ => self.theme.symbol("status.info"),
+                };
+                self.push_system(format!("{glyph} {message}"));
+            }
             AppEvent::SessionLoaded { messages, name } => {
                 // The resumed history replaces the transcript; rows already
                 // in terminal scrollback stay, the history is appended below.
@@ -1761,6 +1858,11 @@ impl App {
             "display.showTokenUsage" | "display.showTurnTime" | "read.toolResultPreview" | "tui.mouse" => {
                 self.reload_display_prefs();
             }
+            id if id.starts_with("magicKeywords.") => {
+                self.magic_off = crate::magic::disabled_mask(&omp_settings::Settings::load(&self.cwd));
+                let theme = self.theme.clone();
+                self.set_theme(theme);
+            }
             "composer.shape"
             | "statusLine.preset"
             | "statusLine.separator"
@@ -1919,29 +2021,31 @@ impl App {
         std::mem::take(&mut self.clear_scrollback)
     }
 
+    /// Drain rows for terminal scrollback (see the doc above
+    /// [`Self::take_clear_scrollback`]: incremental, or the whole transcript
+    /// when `rebuild`).
+    ///
+    /// The clean welcome is held back (drawn live by [`Self::render`]) while
+    /// its startup shimmer runs; it commits with its static rows once the
+    /// shimmer ends, or as soon as anything else retires or a rebuild runs.
     pub fn take_scrollback_lines(&mut self, width: u16, rebuild: bool) -> Vec<Line<'static>> {
+        let transcript = if rebuild {
+            self.messages.all_rows(width)
+        } else {
+            self.messages.take_committed_rows(width)
+        };
+        let hold = !rebuild && transcript.is_empty() && self.welcome_shimmer(Instant::now()).is_some();
         let mut rows = Vec::new();
-        if let Some(w) = self.welcome.as_mut().filter(|w| rebuild || !w.emitted) {
-            rows = if self.theme.clean() {
-                let cwd = self.cwd.display().to_string();
-                let cwd = match std::env::var("HOME") {
-                    Ok(home) if !home.is_empty() && cwd.starts_with(&home) => format!("~{}", &cwd[home.len()..]),
-                    _ => cwd,
-                };
-                welcome::clean_welcome_lines(&w.version, &w.tip, &cwd, usize::from(width), &self.theme)
-            } else {
-                welcome::welcome_lines(&w.version, &w.tip, usize::from(width), &self.theme)
-            };
+        if !hold && self.welcome.as_ref().is_some_and(|w| rebuild || !w.emitted) {
+            rows = self.welcome_rows(width, 0.0);
             if !rows.is_empty() {
                 rows.push(Line::default());
             }
-            w.emitted = true;
+            if let Some(w) = self.welcome.as_mut() {
+                w.emitted = true;
+            }
         }
-        if rebuild {
-            rows.extend(self.messages.all_rows(width));
-        } else {
-            rows.extend(self.messages.take_committed_rows(width));
-        }
+        rows.extend(transcript);
         rows
     }
 
@@ -1949,7 +2053,7 @@ impl App {
     /// `area`; `ShellRender` calls this each frame inside the inline
     /// viewport, below the committed scrollback rows.
     pub fn render_live(&mut self, frame: &mut Frame<'_>, area: Rect) {
-        self.status.tick(now_millis());
+        self.sync_frame_state();
         self.editor.set_hint(self.composer_hint());
         self.sync_vim_status();
         self.sync_composer_chrome(area.width);
@@ -1984,7 +2088,7 @@ impl App {
     /// inline shell renderer replaces it; the fallback never commits, so
     /// the watermark stays 0 and the whole transcript renders).
     pub fn render(&mut self, frame: &mut Frame<'_>) {
-        self.status.tick(now_millis());
+        self.sync_frame_state();
         self.editor.set_hint(self.composer_hint());
         let area = frame.area();
         self.sync_composer_chrome(area.width);
@@ -2136,6 +2240,20 @@ impl App {
         // The transcript renderer's theme is synced by `set_theme` only
         // (startup load + `/theme` hot-swap), not per frame.
         self.messages.tick_reveal();
+        let mut area = area;
+        let now = Instant::now();
+        if let Some(w) = self.welcome.as_mut().filter(|w| !w.emitted && w.started.is_none()) {
+            w.started = Some(now);
+        }
+        if let Some(phase) = self.welcome_shimmer(now) {
+            // Startup shimmer: the welcome sits at the top of the live
+            // region — exactly where its rows land when they commit.
+            let rows = self.welcome_rows(area.width, phase);
+            let h = u16::try_from(rows.len()).unwrap_or(u16::MAX).min(area.height);
+            frame.render_widget(Paragraph::new(rows), Rect { height: h, ..area });
+            area.y += h;
+            area.height -= h;
+        }
         let height = area.height as usize;
         let width = usize::from(area.width).max(8);
         // Bottom-anchored: the last `height + scroll` rows of the tail.
@@ -2751,7 +2869,8 @@ mod tests {
         restore_home(old_home);
     }
 
-    /// Shift+Tab cycles off → auto → efforts → off and updates the status line.
+    /// Shift+Tab cycles off → auto → efforts → ultracode → off and updates
+    /// the status line.
     #[test]
     fn shift_tab_cycles_thinking_effort() {
         let mut app = app();
@@ -2768,20 +2887,22 @@ mod tests {
         })));
         assert_eq!(app.status.thinking.as_deref(), Some("high"));
         let mut seen = Vec::new();
-        for _ in 0..6 {
+        for _ in 0..7 {
             assert!(press(&mut app, &port, shift_tab));
             let last = log(&port).last().cloned().unwrap();
             let level = last.trim_start_matches("set_thinking_level(").trim_end_matches(')').to_owned();
-            // The runtime echoes the change.
+            // The runtime echoes the change (ultra keeps the effort level).
             let configured = if level == "auto" { json!("auto") } else { json!(level) };
+            let ultra = (level == "ultracode").then_some("ultracode");
             app.apply_event(&AppEvent::ThinkingLevelChanged(json!({
                 "type": "thinking_level_changed",
-                "thinkingLevel": if level == "auto" { "medium" } else { level.as_str() },
+                "thinkingLevel": match level.as_str() { "auto" => "medium", "ultracode" => "high", l => l },
                 "configured": configured,
+                "ultra": ultra,
             })));
             seen.push(level);
         }
-        assert_eq!(seen, ["off", "auto", "minimal", "low", "medium", "high"]);
+        assert_eq!(seen, ["ultracode", "off", "auto", "minimal", "low", "medium", "high"]);
         assert_eq!(app.status.thinking.as_deref(), Some("high"));
     }
 
@@ -3629,6 +3750,236 @@ mod tests {
             "type": "message_end",
             "message": message,
         })));
+    }
+
+    // ---- omp-rs: OMRS welcome, τ, ultra, magic keywords -------------------
+
+    fn clean_app() -> App {
+        let mut app = app();
+        let mut theme = Theme::default();
+        theme.ui = crate::theme::UiStyle::Clean;
+        app.set_theme(theme);
+        app
+    }
+
+    fn reasoning(app: &mut App, ultra: &Value) {
+        app.apply_event(&AppEvent::ContextUsage(json!({
+            "type": "context_usage", "model": "p/m", "thinkingLevel": "high",
+            "thinkingLevels": ["minimal", "low", "medium", "high"], "autoThinking": false,
+            "contextWindow": 1000, "ultra": ultra,
+        })));
+    }
+
+    /// Any ultra mode (hybrids too) is followed by `off`; snapshots carry
+    /// `ultra` and `null` clears it.
+    #[test]
+    fn ultra_state_mirrors_frames_and_cycles_to_off() {
+        let mut app = app();
+        let port = port();
+        reasoning(&mut app, &json!("ultradeep"));
+        assert_eq!(app.status.ultra, Some(crate::magic::Ultra::Deep));
+        assert_eq!(app.current_effort_selector(), "ultradeep");
+        assert!(press(&mut app, &port, KeyEvent::new(CtKeyCode::BackTab, CtMods::SHIFT)));
+        assert_eq!(log(&port).last().map(String::as_str), Some("set_thinking_level(off)"));
+        // Frames without the key leave it; `null` clears it.
+        app.apply_event(&AppEvent::ThinkingLevelChanged(json!({
+            "type": "thinking_level_changed", "thinkingLevel": "high"
+        })));
+        assert_eq!(app.status.ultra, Some(crate::magic::Ultra::Deep));
+        app.apply_event(&AppEvent::ThinkingLevelChanged(json!({
+            "type": "thinking_level_changed", "thinkingLevel": "off", "ultra": null
+        })));
+        assert_eq!(app.status.ultra, None);
+        // A model that cannot think offers no ultracode either.
+        let mut plain = self::app();
+        plain.apply_event(&AppEvent::ContextUsage(json!({
+            "type": "context_usage", "model": "p/m", "thinkingLevels": []
+        })));
+        assert!(plain.effort_selectors().is_empty());
+        assert_eq!(app.effort_selectors().last().map(String::as_str), Some("ultracode"));
+    }
+
+    /// `/ultra …` is a runtime slash command once the catalog lists it.
+    #[test]
+    fn slash_ultra_reaches_the_runtime() {
+        let mut app = app();
+        let port = port();
+        app.apply_event(&AppEvent::AvailableCommands(json!({
+            "commands": [{"name": "ultra", "description": "Ultra mode", "source": "builtin"}]
+        })));
+        assert!(app.autocomplete.commands().iter().any(|c| c.name == "ultra"));
+        type_text(&mut app, &port, "/ultra deep");
+        app.autocomplete.close();
+        assert!(enter(&mut app, &port));
+        assert!(log(&port).iter().any(|l| l == "run_slash(ultra, \"deep\")"), "{:?}", log(&port));
+    }
+
+    /// Clean style renders the ultra mode in the status line.
+    #[test]
+    fn clean_status_shows_ultra_and_tau() {
+        let mut app = clean_app();
+        reasoning(&mut app, &json!("ultracode"));
+        let s = screen(&mut app, 120, 12);
+        assert!(s.contains("◉ ultracode"), "{s}");
+        assert!(s.contains("τ∿"), "{s}");
+        assert!(s.lines().any(|l| l.trim_start().starts_with("τ ·")), "{s}");
+    }
+
+    /// τ colour follows the run state: idle, running, blocked, error.
+    #[test]
+    fn brand_state_tracks_run_dialogs_and_errors() {
+        use crate::status_line::Brand;
+        let mut app = clean_app();
+        assert_eq!(app.brand_state(), Brand::Idle);
+        app.apply_event(&AppEvent::AgentStart);
+        assert_eq!(app.brand_state(), Brand::Running);
+        app.apply_event(&AppEvent::ExtensionUiRequest(json!({
+            "type": "extension_ui_request", "id": "q1", "method": "confirm",
+            "title": "Allow?", "message": "run it?"
+        })));
+        assert_eq!(app.brand_state(), Brand::Blocked);
+        app.extension_ui.complete("q1");
+        app.apply_event(&AppEvent::MessageEnd(json!({
+            "type": "message_end",
+            "message": {"role": "assistant", "content": [], "stopReason": "error", "errorMessage": "boom"}
+        })));
+        app.apply_event(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
+        assert_eq!(app.brand_state(), Brand::Error);
+        app.apply_event(&AppEvent::AgentStart);
+        assert_eq!(app.brand_state(), Brand::Running);
+        app.apply_event(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
+        assert_eq!(app.brand_state(), Brand::Idle);
+        // Painted into the status line on the next frame.
+        let _ = screen(&mut app, 100, 10);
+        assert_eq!(app.status.brand, Brand::Idle);
+    }
+
+    /// The clean welcome stays live while it shimmers, then commits its
+    /// static rows; anything retiring earlier commits it immediately.
+    #[test]
+    fn clean_welcome_shimmers_live_then_commits_static_rows() {
+        let mut app = clean_app();
+        app.set_welcome("9.9.9");
+        assert!(app.take_scrollback_lines(100, false).is_empty(), "held while shimmering");
+        assert_eq!(app.animation_interval(), Some(Duration::from_millis(crate::chat::reveal::FRAME_MS)));
+        let s = screen(&mut app, 100, 14);
+        assert!(s.lines().nth(1).is_some_and(|l| l.contains("OMRS")), "drawn at the top of the live region:\n{s}");
+        // Time is up: the static rows commit, the live region drops them.
+        let w = app.welcome.as_mut().unwrap();
+        w.started = w.started.map(|s| s - Duration::from_millis(welcome::SHIMMER_MS));
+        assert!(w.started.is_some(), "the clock starts at the first paint");
+        assert_eq!(app.animation_interval(), None);
+        let rows = app.take_scrollback_lines(100, false);
+        let tip = app.welcome.as_ref().unwrap().tip.clone();
+        let mut expected = welcome::clean_welcome_lines("9.9.9", &tip, 100, &app.theme, 0.0);
+        expected.push(Line::default());
+        assert_eq!(rows, expected);
+        assert!(!screen(&mut app, 100, 14).contains("OMRS"));
+        assert!(app.take_scrollback_lines(100, false).is_empty());
+
+        // A prompt retiring mid-shimmer commits the welcome first.
+        let mut app = clean_app();
+        let port = port();
+        app.set_welcome("9.9.9");
+        type_text(&mut app, &port, "hello");
+        assert!(enter(&mut app, &port));
+        let text: Vec<String> = app
+            .take_scrollback_lines(100, false)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(text.iter().any(|r| r.contains("OMRS")), "{text:#?}");
+        let omrs = text.iter().position(|r| r.contains("OMRS")).unwrap();
+        let hello = text.iter().position(|r| r.contains("hello")).unwrap();
+        assert!(omrs < hello);
+
+        // `/new` (session_reset) rebuild re-commits the static welcome.
+        let mut app = clean_app();
+        app.set_welcome("9.9.9");
+        app.apply_event(&AppEvent::SessionReset);
+        assert!(app.take_clear_scrollback());
+        let rows = app.take_scrollback_lines(100, true);
+        assert!(rows.iter().any(|l| l.spans.iter().any(|s| s.content == "O")));
+    }
+
+    /// Classic keeps committing the TS lockup at once (no shimmer).
+    #[test]
+    fn classic_welcome_commits_immediately() {
+        let mut app = app();
+        app.set_welcome("1.0.0");
+        assert!(!app.take_scrollback_lines(120, false).is_empty());
+        assert_eq!(app.animation_interval(), None);
+    }
+
+    /// Clean style brands the terminal title with τ, classic with π.
+    #[test]
+    fn title_brand_follows_the_style() {
+        let app = clean_app();
+        assert!(app.title().current_title().is_some_and(|t| t.starts_with("τ > ")), "{:?}", app.title().current_title());
+        let classic = self::app();
+        assert!(classic.title().current_title().is_some_and(|t| t.starts_with("π > ")));
+    }
+
+    /// The editor paints magic keywords and shimmers only while one is typed.
+    #[test]
+    fn editor_paints_magic_keywords_and_shimmers_only_with_one() {
+        let mut app = app();
+        let port = port();
+        type_text(&mut app, &port, "plain text");
+        assert_eq!(app.animation_interval(), None, "no keyword, no timer");
+        app.set_editor_text("please ultrathink now");
+        assert_eq!(
+            app.animation_interval(),
+            Some(Duration::from_millis(crate::magic_paint::SHIMMER_FRAME_MS))
+        );
+        let mut t = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        t.draw(|f| app.render(f)).unwrap();
+        let buf = t.backend().buffer().clone();
+        let (x, y) = (0..10u16)
+            .find_map(|y| {
+                let row: String = (0..60u16).map(|x| buf[(x, y)].symbol()).collect();
+                row.find("ultrathink").map(|b| (u16::try_from(row[..b].chars().count()).unwrap(), y))
+            })
+            .expect("keyword on screen");
+        assert!(matches!(buf[(x, y)].fg, ratatui::style::Color::Rgb(..)));
+        assert!(matches!(buf[(x + 9, y)].fg, ratatui::style::Color::Rgb(..)));
+        assert!(!matches!(buf[(x - 2, y)].fg, ratatui::style::Color::Rgb(..)));
+        // Disabled by settings: no paint, no timer.
+        app.magic_off = 1;
+        let theme = app.theme.clone();
+        app.set_theme(theme);
+        assert_eq!(app.animation_interval(), None);
+    }
+
+    /// Hidden notices (`display: false`) never render, live or rebuilt.
+    #[test]
+    fn hidden_custom_notices_never_render() {
+        let notice = json!({
+            "role": "custom", "customType": "ultracode-notice",
+            "content": [{"type": "text", "text": "SECRET-NOTICE"}],
+            "display": false, "attribution": "user", "timestamp": 1
+        });
+        let mut app = app();
+        app.apply_event(&AppEvent::MessageStart(json!({"type": "message_start", "message": notice})));
+        app.apply_event(&AppEvent::MessageEnd(json!({"type": "message_end", "message": notice})));
+        let live: Vec<String> = app
+            .take_scrollback_lines(80, true)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(live.iter().all(|r| !r.contains("SECRET") && !r.contains("ultracode-notice")), "{live:#?}");
+        assert!(!screen(&mut app, 80, 12).contains("SECRET"));
+        app.apply_event(&AppEvent::SessionLoaded {
+            messages: vec![json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}), notice],
+            name: None,
+        });
+        let rebuilt: Vec<String> = app
+            .take_scrollback_lines(80, true)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(rebuilt.iter().any(|r| r.contains("hi")));
+        assert!(rebuilt.iter().all(|r| !r.contains("SECRET") && !r.contains("ultracode-notice")), "{rebuilt:#?}");
     }
 }
 

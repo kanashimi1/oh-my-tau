@@ -24,6 +24,9 @@ pub struct Piece {
     /// Clean style: explicit multi-color runs `(text, token)` that replace
     /// the single-token paint (`text` holds their concatenation).
     pub runs: Vec<(String, &'static str)>,
+    /// Clean style: literal-colour runs (gradients, the `τ` state mark);
+    /// win over `runs` and `token` (`text` holds their concatenation).
+    pub rgb: Vec<(String, Color)>,
 }
 
 impl Piece {
@@ -32,6 +35,17 @@ impl Piece {
             text: text.into(),
             token,
             runs: Vec::new(),
+            rgb: Vec::new(),
+        }
+    }
+
+    /// A piece painted with literal colours (clean gradients, `τ`).
+    pub(crate) fn from_rgb(rgb: Vec<(String, Color)>) -> Self {
+        Self {
+            text: rgb.iter().map(|(t, _)| t.as_str()).collect(),
+            token: "text",
+            runs: Vec::new(),
+            rgb,
         }
     }
 
@@ -42,6 +56,7 @@ impl Piece {
             text,
             token: runs.first().map_or("dim", |(_, token)| *token),
             runs,
+            rgb: Vec::new(),
         }
     }
 }
@@ -153,10 +168,13 @@ fn model(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Vec<Piece> {
         .unwrap_or(&ctx.st.model)
         .trim_start_matches("Claude ")
         .to_string();
+    if let (Some(ultra), true) = (ctx.st.ultra, theme.clean()) {
+        return ultra_model(ctx, theme, &name, ultra);
+    }
     let display = thinking_display(ctx.st, theme);
     // Compact mode swaps the model icon for the thinking-level glyph and
-    // drops the ` · <level>` tail.
-    let compact = ctx.st.compact_thinking && display.is_some();
+    // drops the ` · <level>` tail; an ultra mode always shows its name.
+    let compact = ctx.st.compact_thinking && display.is_some() && ctx.st.ultra.is_none();
     let icon = match (&display, compact) {
         (Some(display), true) => display.split(' ').next().unwrap_or_default().to_owned(),
         _ => style::icon(theme, "icon.model", "⬢").to_owned(),
@@ -173,11 +191,52 @@ fn model(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Vec<Piece> {
     vec![Piece::new(ctx.tok("statusLineModel"), text)]
 }
 
+/// Characters of `text` painted along `stops` (first char = first stop,
+/// last char = last stop).
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn gradient_runs(text: &str, stops: &[(u8, u8, u8)]) -> Vec<(String, Color)> {
+    let last = text.chars().count().saturating_sub(1).max(1) as f64;
+    text.chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let (red, green, blue) = crate::magic::gradient_at(stops, i as f64 / last);
+            (c.to_string(), Color::Rgb(red, green, blue))
+        })
+        .collect()
+}
+
+/// Clean `model` with an ultra mode: `⬢ name τ∿` (the τ-wave in the mode's
+/// gradient) and the thinking slot as `◉ <mode>` in the same gradient.
+fn ultra_model(ctx: &Ctx<'_>, theme: &crate::theme::Theme, name: &str, ultra: crate::magic::Ultra) -> Vec<Piece> {
+    let stops = ultra.gradient();
+    let dim = style::dim(theme);
+    let mut rgb = vec![
+        (style::icon(theme, "icon.model", "⬢").to_owned(), dim),
+        (format!(" {name}"), style::clean_color(theme, ctx.tok("statusLineModel"))),
+    ];
+    if ctx.st.fast_mode {
+        rgb.push((format!(" {}", style::icon(theme, "icon.fast", "⚡")), dim));
+    }
+    rgb.push((" ".to_owned(), dim));
+    rgb.extend(gradient_runs("τ∿", stops));
+    vec![
+        Piece::from_rgb(rgb),
+        Piece::from_rgb(gradient_runs(&format!("◉ {}", ultra.name()), stops)),
+    ]
+}
+
 /// Thinking-level display (`modelThinkingDisplay`): `◒ high`, `⦸ off`,
 /// `⟳ auto` while auto thinking has no classified level; `None` when the
-/// model has no thinking.
+/// model has no thinking. An ultra mode shows its name as the level label
+/// behind the `max` glyph (`◉ ultracode`).
 fn thinking_display(st: &super::StatusLine, theme: &crate::theme::Theme) -> Option<String> {
     let level = st.thinking.as_deref()?;
+    if let Some(ultra) = st.ultra {
+        return Some(match theme.symbol("thinking.max").split_once(' ') {
+            Some((glyph, _)) => format!("{glyph} {}", ultra.name()),
+            None => ultra.name().to_owned(),
+        });
+    }
     if st.auto_thinking {
         return Some(format!("{} auto", theme.symbol("thinking.autoPending")));
     }

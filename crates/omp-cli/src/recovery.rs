@@ -1253,7 +1253,7 @@ mod tests {
         );
         assert_eq!(
             frames[1],
-            json!({"type": "thinking_level_changed", "thinkingLevel": "high"})
+            json!({"type": "thinking_level_changed", "thinkingLevel": "high", "ultra": null})
         );
         let entries = session_entries(&h.session_file);
         let shapes: Vec<_> = entries

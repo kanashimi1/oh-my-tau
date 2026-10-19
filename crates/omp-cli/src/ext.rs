@@ -606,7 +606,10 @@ impl Extensions {
             }
             inner_after(ctx, signal)
         });
-        (self.hooks.transform_context(), before, after)
+        // While an ultra mode runs CLM, `context-slim` stands aside: the core
+        // owns context maintenance then.
+        let transform = self.hooks.transform_context_skipping(Arc::new(crate::context::skip_extensions));
+        (transform, before, after)
     }
 
     /// Extension tools as `AgentTool` wrappers (`list_tools` -> `call_tool`).

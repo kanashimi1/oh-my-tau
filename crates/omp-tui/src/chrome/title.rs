@@ -23,6 +23,9 @@ use std::time::Duration;
 /// coverage).
 pub const DEFAULT_TERMINAL_TITLE: &str = "π";
 
+/// Brand of the omp-rs clean style (`τ > label`).
+pub const CLEAN_TERMINAL_TITLE: &str = "τ";
+
 /// Tick rate for the working-state spinner (spec §8.2).
 const SPINNER_ADVANCE: Duration = Duration::from_millis(80);
 
@@ -111,9 +114,16 @@ pub fn is_wsl() -> bool {
 /// basename. No label → `π <separator>` (trailing space kept, as TS).
 #[must_use]
 pub fn build_terminal_title_with_state(separator: &str, label: Option<&str>) -> String {
+    build_branded_title(DEFAULT_TERMINAL_TITLE, separator, label)
+}
+
+/// [`build_terminal_title_with_state`] with an explicit brand (`π` classic,
+/// `τ` clean).
+#[must_use]
+pub fn build_branded_title(brand: &str, separator: &str, label: Option<&str>) -> String {
     match label {
-        Some(l) if !l.is_empty() => format!("{DEFAULT_TERMINAL_TITLE} {separator} {l}"),
-        _ => format!("{DEFAULT_TERMINAL_TITLE} {separator}"),
+        Some(l) if !l.is_empty() => format!("{brand} {separator} {l}"),
+        _ => format!("{brand} {separator}"),
     }
 }
 
@@ -126,6 +136,16 @@ struct Shared {
     last: parking_lot::Mutex<Option<String>>,
     /// Current working-frame tick (bumped by the spinner thread).
     tick: parking_lot::Mutex<usize>,
+    /// Title brand (`π` / `τ`); read by the spinner thread every frame.
+    brand: parking_lot::Mutex<Option<&'static str>>,
+    /// Last state + sanitized label, re-emitted when the brand changes.
+    current: parking_lot::Mutex<Option<(TitleState, Option<String>)>>,
+}
+
+impl Shared {
+    fn brand(&self) -> &'static str {
+        self.brand.lock().unwrap_or(DEFAULT_TERMINAL_TITLE)
+    }
 }
 
 /// Owner of the terminal title run-state. Cloned handles share one spinner
@@ -188,6 +208,7 @@ impl TerminalTitle {
     /// Starts/stops the 80 ms spinner thread as needed.
     pub fn set_state(&self, state: TitleState, label: Option<&str>) {
         let sanitized = label.map(sanitize_title).filter(|l| !l.trim().is_empty());
+        *self.shared.current.lock() = Some((state, sanitized.clone()));
         let spinner_wanted = state == TitleState::Working && !self.static_working;
         if spinner_wanted {
             self.start_spinner(sanitized.clone());
@@ -195,10 +216,24 @@ impl TerminalTitle {
             self.stop_spinner();
         }
         let separator = self.separator_for(state);
-        self.emit(&build_terminal_title_with_state(
+        self.emit(&build_branded_title(
+            self.shared.brand(),
             separator,
             sanitized.as_deref(),
         ));
+    }
+
+    /// Switch the brand (`π` classic, `τ` clean) and re-emit the current
+    /// state with it.
+    pub fn set_brand(&self, brand: &'static str) {
+        if self.shared.brand() == brand {
+            return;
+        }
+        *self.shared.brand.lock() = Some(brand);
+        let current = self.shared.current.lock().clone();
+        if let Some((state, label)) = current {
+            self.set_state(state, label.as_deref());
+        }
     }
 
     /// Static title (`π: <name|basename>`); used for authoritative session
@@ -206,9 +241,10 @@ impl TerminalTitle {
     /// omp-cli's; this emits the same OSC).
     pub fn set_static(&self, label: Option<&str>) {
         self.stop_spinner();
+        let brand = self.shared.brand();
         let title = match label.map(sanitize_title).filter(|l| !l.is_empty()) {
-            Some(l) => format!("{DEFAULT_TERMINAL_TITLE}: {l}"),
-            None => DEFAULT_TERMINAL_TITLE.to_string(),
+            Some(l) => format!("{brand}: {l}"),
+            None => brand.to_string(),
         };
         self.emit(&title);
     }
@@ -254,7 +290,7 @@ impl TerminalTitle {
             *tick += 1;
             let frame = style.lock().frame_at(*tick);
             drop(tick);
-            let title = build_terminal_title_with_state(frame, label.as_deref());
+            let title = build_branded_title(shared.brand(), frame, label.as_deref());
             write_title(&shared, &title);
         }));
     }
@@ -314,6 +350,24 @@ mod tests {
             build_terminal_title_with_state("⠋", Some("omp-rs")),
             "π ⠋ omp-rs"
         );
+    }
+
+    #[test]
+    fn clean_titles_use_tau() {
+        assert_eq!(build_branded_title(CLEAN_TERMINAL_TITLE, ">", Some("omp-rs")), "τ > omp-rs");
+        assert_eq!(build_branded_title(CLEAN_TERMINAL_TITLE, "⠋", Some("x")), "τ ⠋ x");
+        assert_eq!(build_branded_title(CLEAN_TERMINAL_TITLE, "!", None), "τ !");
+        let title = TerminalTitle::new();
+        title.init(TitleState::Idle, Some("proj"));
+        assert_eq!(title.current_title().as_deref(), Some("π > proj"));
+        // Switching the brand re-emits the current state.
+        title.set_brand(CLEAN_TERMINAL_TITLE);
+        assert_eq!(title.current_title().as_deref(), Some("τ > proj"));
+        title.set_state(TitleState::Attention, Some("proj"));
+        assert_eq!(title.current_title().as_deref(), Some("τ ! proj"));
+        title.set_static(Some("proj"));
+        assert_eq!(title.current_title().as_deref(), Some("τ: proj"));
+        title.dispose();
     }
 
     #[test]

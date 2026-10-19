@@ -372,6 +372,30 @@ async fn tools_and_commands() {
     host.shutdown().await.unwrap();
 }
 
+/// `skipExtensions` leaves the named extension's handlers out of that one
+/// emit; the others still run, and the next emit without it runs everything.
+#[tokio::test]
+async fn context_emit_skips_listed_extensions() {
+    use pa_agent::types::AgentMessage;
+    let host = ExtHost::spawn(&config()).await.unwrap();
+    let r = host
+        .load(Some(&[fixture("fixture.ts"), fixture("context-slim.ts")]), None, "/tmp", Some(json!({"sessionId": "s1"})))
+        .await
+        .unwrap();
+    assert_eq!(r.loaded.len(), 2, "{r:?}");
+    let msgs: Vec<AgentMessage> = vec![AgentMessage::user("hi")];
+    let texts = |m: &[AgentMessage]| m.iter().map(|m| serde_json::to_value(m).unwrap()["content"].clone()).collect::<Vec<_>>();
+    let slimmed = hooks::context_owned(&host, msgs.clone(), None).await.unwrap();
+    assert_eq!(slimmed.len(), 2, "context-slim ran: {:?}", texts(&slimmed));
+    let skipped = hooks::context_owned_skipping(&host, msgs.clone(), None, &["context-slim".to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(skipped.len(), 1, "context-slim skipped: {:?}", texts(&skipped));
+    // Per emit only: the next plain emit runs it again.
+    assert_eq!(hooks::context_owned(&host, msgs, None).await.unwrap().len(), 2);
+    host.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn hook_points_map_to_pa_agent() {
     use pa_agent::abort::AbortSignal;

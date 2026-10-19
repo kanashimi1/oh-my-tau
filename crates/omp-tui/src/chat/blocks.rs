@@ -224,8 +224,17 @@ fn user_lines(
         Line::default()
     };
     lines.push(pad_row(top, width, fill));
+    // Magic keywords glow with their static gradient on prose (TS
+    // `userBubbleColor`): hits come from the masked source and replay onto
+    // the rendered spans in order, so code spans/fences stay plain.
+    let mut magic = if synthetic {
+        None
+    } else {
+        crate::magic_paint::RenderedHits::new(&chipped, theme.magic_off)
+    };
     for line in &mut text.lines {
-        for span in &mut line.spans {
+        let mut painted: Vec<Span<'static>> = Vec::with_capacity(line.spans.len());
+        for mut span in line.spans.drain(..) {
             let mut style = span.style;
             style.bg = Some(bg);
             if synthetic {
@@ -233,10 +242,15 @@ fn user_lines(
             } else if style.fg.is_none() && fg != ratatui::style::Color::Reset {
                 style.fg = Some(fg);
             }
-            span.style = style;
+            if let Some(glow) = magic.as_mut().and_then(|m| m.paint_span(&span.content, style, 0.0)) {
+                painted.extend(glow);
+            } else {
+                span.style = style;
+                painted.push(span);
+            }
         }
         let mut spans = vec![Span::styled(" ", fill)];
-        spans.append(&mut line.spans);
+        spans.append(&mut painted);
         lines.push(pad_row(Line::from(spans), width, fill));
     }
     lines.push(pad_row(Line::default(), width, fill));
@@ -1228,6 +1242,31 @@ mod tests {
 
     fn rows(lines: &[Line<'static>]) -> Vec<String> {
         lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    #[test]
+    fn user_bubble_paints_magic_keywords_statically() {
+        let t = theme();
+        let entry = ChatEntry::new_for_test(
+            ChatRole::User,
+            ChatKind::User { text: "go ultrathink, not `ultrathink`".into(), synthetic: false, live_steered: false },
+        );
+        let rows = entry_lines(&entry, false, 60, &t);
+        let spans: Vec<&Span<'_>> = rows.iter().flat_map(|l| l.spans.iter()).collect();
+        let (red, green, blue) = crate::magic::keyword_rgb(&crate::magic::KEYWORDS[0], 0, 10, 0.0);
+        let first = spans.iter().position(|s| s.content == "u").expect("keyword split per char");
+        assert_eq!(spans[first].style.fg, Some(ratatui::style::Color::Rgb(red, green, blue)));
+        assert_eq!(spans[first].style.bg, Some(t.color("userMessageBg")));
+        let painted = spans.iter().filter(|s| matches!(s.style.fg, Some(ratatui::style::Color::Rgb(..)))).count();
+        assert_eq!(painted, 10, "only the prose hit is painted");
+        // Disabled keyword: nothing painted.
+        let mut off = t.clone();
+        off.magic_off = 1;
+        let rows = entry_lines(&entry, false, 60, &off);
+        assert!(rows
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .all(|s| !matches!(s.style.fg, Some(ratatui::style::Color::Rgb(..)))));
     }
 
     #[test]

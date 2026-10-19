@@ -23,6 +23,7 @@ use crate::agent::Target;
 use crate::events::Framer;
 use crate::persist::Persistence;
 use crate::tools::edit_mode_for;
+use omp_tui::magic::Ultra;
 
 // Declared here (not in main.rs, which another agent owns); same file `src/recovery.rs`.
 #[path = "recovery.rs"]
@@ -146,6 +147,10 @@ pub struct Runtime {
     /// session runs a provisional concrete level and the status line shows
     /// `auto` until a level is classified.
     auto_thinking: std::sync::atomic::AtomicBool,
+    /// Active ultra mode (`/ultra`, Shift+Tab past `max`): thinking at the
+    /// model's highest level plus the ultracode notice on every prompt, and
+    /// for `ultralong`/`hypercode` the `clm-host` context strategy.
+    ultra: Mutex<Option<Ultra>>,
     /// Report stashed by a successful `rewind` tool result, consumed by the
     /// `TurnEnd` hook that truncates the context (TS `#pendingRewindReport`).
     pending_rewind_report: Mutex<Option<String>>,
@@ -298,6 +303,13 @@ pub fn level_name(level: ThinkingLevel) -> &'static str {
     }
 }
 
+/// An ultra mode by its wire name (`ultracode`, `ultradeep`, `ultralong`,
+/// `hypercode`); thinking-level selectors and `/ultra` short forms are not.
+#[must_use]
+pub fn parse_ultra_name(s: &str) -> Option<Ultra> {
+    Ultra::ALL.into_iter().find(|u| u.name() == s)
+}
+
 pub fn parse_level(s: &str) -> Option<ThinkingLevel> {
     Some(match s {
         "off" => ThinkingLevel::Off,
@@ -439,6 +451,7 @@ impl Runtime {
             user_interrupt: std::sync::atomic::AtomicBool::new(false),
             ui_context_frames: std::sync::atomic::AtomicBool::new(false),
             auto_thinking: std::sync::atomic::AtomicBool::new(false),
+            ultra: Mutex::new(None),
             pending_rewind_report: Mutex::new(None),
             on_session_name: Mutex::new(None),
             on_session_switch: Mutex::new(None),
@@ -492,9 +505,12 @@ impl Runtime {
         let m = self.agent.model().await;
         let model = format!("{}/{}", m.provider, m.id);
         let _ = self.persist.append_model_change(&model, None, false);
-        let _ = self
-            .persist
-            .append_thinking_level_change(Some(level_name(self.agent.thinking_level().await)), None);
+        let ultra = self.ultra().map(Ultra::name);
+        let _ = self.persist.append_thinking_level_change(
+            Some(level_name(self.agent.thinking_level().await)),
+            None,
+            ultra,
+        );
     }
 
     // ------------------------------------------------------------- events
@@ -1390,14 +1406,27 @@ impl Runtime {
     ) -> Result<(), CmdError> {
         self.spawn_auto_title(message);
         if self.agent.is_streaming().await {
-            match behavior {
-                Some("steer") => self.agent.steer(user_message(message)),
-                Some("followUp") => self.agent.follow_up(user_message(message)),
+            let steer = match behavior {
+                Some("steer") => true,
+                Some("followUp") => false,
                 _ => {
                     return Err(CmdError::new(
                         "Agent is already processing a prompt. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
                     ))
                 }
+            };
+            // Queued prompts carry their notices in the same batch, ahead of the message.
+            let mut batch = self.prompt_notices(message, false).await;
+            let queued = if batch.is_empty() {
+                pa_agent::agent::AgentMessageBatch::Single(user_message(message))
+            } else {
+                batch.push(user_message(message));
+                pa_agent::agent::AgentMessageBatch::Batch(batch)
+            };
+            if steer {
+                self.agent.steer(queued);
+            } else {
+                self.agent.follow_up(queued);
             }
             lock(&self.prompts).open.push(Ticket {
                 id,
@@ -1436,7 +1465,8 @@ impl Runtime {
                 .flatten();
             injected = hook(message.to_string(), images_json).await;
         }
-        let input = prompt_input(message, images, injected);
+        let notices = self.prompt_notices(message, true).await;
+        let input = prompt_input(message, images, notices, injected);
         let pua = self.agent.prompt_until_accepted(input).await;
         if let Err(e) = pua {
             lock(&self.prompts)
@@ -1445,6 +1475,50 @@ impl Runtime {
             return Err(CmdError::new(format!("{e:#}")));
         }
         Ok(())
+    }
+
+    /// Hidden notices for a prompt (magic keywords, ultra mode). For a prompt
+    /// that starts a turn (`starts_turn`), `ultrathink` under `auto` thinking
+    /// also lifts the turn to the model's highest level (TS
+    /// `applyAutoThinkingLevel`); queued messages leave the level alone.
+    async fn prompt_notices(&self, message: &str, starts_turn: bool) -> Vec<AgentMessage> {
+        let present = omp_tui::magic::present(message);
+        let mode = self.ultra();
+        if present.is_empty() && mode.is_none() {
+            return Vec::new();
+        }
+        let settings = omp_settings::Settings::load(&self.cwd);
+        if starts_turn
+            && self.auto_thinking.load(std::sync::atomic::Ordering::Relaxed)
+            && present.iter().any(|k| k.id == "ultrathink")
+            && omp_tui::magic::enabled(&settings, "ultrathink")
+        {
+            self.ultrathink_auto().await;
+        }
+        let tools = self.agent.tools().await.iter().map(|t| t.name().to_owned()).collect();
+        let ctx = crate::notices::Context::new(tools, &settings);
+        crate::notices::build(message, &settings, &ctx, mode, pa_agent::now_ms())
+    }
+
+    /// `ultrathink` under `auto`: resolve this turn to the highest supported
+    /// effort, journaled as an auto resolution.
+    async fn ultrathink_auto(&self) {
+        let Some(model) = self.live_model().filter(|m| m.reasoning) else {
+            return;
+        };
+        let effective = crate::model::clamp_level(&model, ThinkingLevel::Max);
+        let name = level_name(effective);
+        if self.agent.thinking_level().await != effective {
+            self.agent.set_thinking_level(effective).await;
+            let _ = self.persist.append_thinking_level_change(Some(name), Some("auto"), None);
+        }
+        self.emit_event(json!({
+            "type": "thinking_level_changed",
+            "thinkingLevel": name,
+            "configured": "auto",
+            "resolved": name,
+            "ultra": null,
+        }));
     }
 
     /// Cancel a pending retry backoff and wait for its saga task to finish reporting, so nothing
@@ -1602,6 +1676,7 @@ impl Runtime {
         let mut out = Map::new();
         out.insert("model".into(), self.model_info());
         out.insert("thinkingLevel".into(), json!(level_name(s.thinking_level)));
+        out.insert("ultra".into(), json!(self.ultra().map(Ultra::name)));
         if let Some(obj) = v.as_object() {
             out.extend(obj.clone());
         }
@@ -1644,6 +1719,7 @@ impl Runtime {
             "thinkingLevel": level_name(s.thinking_level),
             "thinkingLevels": self.supported_efforts(),
             "autoThinking": self.auto_thinking.load(std::sync::atomic::Ordering::Relaxed),
+            "ultra": self.ultra().map(Ultra::name),
         });
         if let Some(Value::Object(u)) = usage {
             for (k, v) in u {
@@ -2070,8 +2146,31 @@ impl Runtime {
     /// model; not journaled.
     async fn restore_session_thinking(&self, saved: &SessionModelState) {
         let Some((level, configured)) = saved.thinking.as_ref() else {
+            // No thinking record on this branch: an ultra mode does not leak in.
+            self.leave_ultra().await;
             return;
         };
+        if let Some(mode) = saved.ultra.as_deref().and_then(parse_ultra_name) {
+            // The mode comes back with its effects (max thinking, CLM), not journaled.
+            let prev = lock(&self.ultra).replace(mode);
+            self.auto_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+            let effective = self
+                .live_model()
+                .map_or(ThinkingLevel::Max, |m| crate::model::clamp_level(&m, ThinkingLevel::Max));
+            if self.agent.thinking_level().await != effective {
+                self.agent.set_thinking_level(effective).await;
+            }
+            let name = level_name(effective);
+            self.emit_event(json!({
+                "type": "thinking_level_changed",
+                "thinkingLevel": name,
+                "configured": name,
+                "ultra": mode.name(),
+            }));
+            self.sync_clm(prev, Some(mode)).await;
+            return;
+        }
+        self.leave_ultra().await;
         let auto = configured.as_deref() == Some("auto");
         let Some(requested) = parse_level(level) else {
             return;
@@ -2092,6 +2191,7 @@ impl Runtime {
             "type": "thinking_level_changed",
             "thinkingLevel": name,
             "configured": if auto { "auto" } else { name },
+            "ultra": null,
         }));
     }
 
@@ -2734,7 +2834,9 @@ impl Runtime {
                     .and_then(Value::as_str)
                     .and_then(parse_level)
             });
+        // An ultra mode keeps thinking at the highest level the new model supports.
         let preferred = match catalog_default {
+            _ if self.ultra().is_some() => ThinkingLevel::Max,
             Some(l) => l,
             None => self.agent.thinking_level().await,
         };
@@ -2788,6 +2890,14 @@ impl Runtime {
                 let hidden =
                     crate::tools::hidden_tools(&settings, Some(&resolved.model), false, false);
                 tools.extend(hidden);
+                // The live context strategy keeps its `context_edit` tool.
+                if let Some(shared) = crate::context::live() {
+                    let tool = crate::context::tool(shared);
+                    tools.extend(match crate::approval::Gate::get() {
+                        Some(gate) => gate.wrap_tools(vec![tool]),
+                        None => vec![tool],
+                    });
+                }
                 self.agent.set_tools(tools).await;
             }
         }
@@ -2820,23 +2930,125 @@ impl Runtime {
         if current != effective {
             self.agent.set_thinking_level(effective).await;
             let name = level_name(effective);
+            let ultra = self.ultra().map(Ultra::name);
             let _ = self
                 .persist
-                .append_thinking_level_change(Some(name), Some(name));
-            self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name}));
+                .append_thinking_level_change(Some(name), Some(name), ultra);
+            self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "ultra": ultra}));
         }
         effective
     }
 
     pub async fn set_thinking_level(&self, level: ThinkingLevel) {
-        // Pinning a concrete level leaves `auto` (TS `setThinkingLevel`).
+        // Pinning a concrete level leaves `auto` (TS `setThinkingLevel`) and any ultra mode.
         self.auto_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
-        self.apply_thinking(level).await;
+        let left_ultra = self.leave_ultra().await;
+        let before = self.agent.thinking_level().await;
+        let effective = self.apply_thinking(level).await;
+        if left_ultra && effective == before {
+            // Same level, but the mode is gone: journal and announce that.
+            let name = level_name(effective);
+            let _ = self.persist.append_thinking_level_change(Some(name), Some(name), None);
+            self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "ultra": null}));
+        }
+    }
+
+    /// The active ultra mode.
+    #[must_use]
+    pub fn ultra(&self) -> Option<Ultra> {
+        *lock(&self.ultra)
+    }
+
+    /// Enter (`Some`) or leave (`None`, `/ultra off`) an ultra mode.
+    ///
+    /// Entering pins thinking to the highest level the live model supports
+    /// (leaving `auto`); leaving keeps the current level. Either way one
+    /// `thinking_level_change` is journaled (`ultra` only while a mode is on)
+    /// and `thinking_level_changed` announced; `ultralong`/`hypercode` switch
+    /// the `clm-host` context strategy on, other modes / off switch it back.
+    pub async fn set_ultra(&self, mode: Option<Ultra>) {
+        let prev = std::mem::replace(&mut *lock(&self.ultra), mode);
+        if prev.is_none() && mode.is_none() {
+            return;
+        }
+        let name = match mode {
+            Some(_) => {
+                self.auto_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                let effective = self.live_model().map_or(ThinkingLevel::Max, |m| {
+                    crate::model::clamp_level(&m, ThinkingLevel::Max)
+                });
+                if self.agent.thinking_level().await != effective {
+                    self.agent.set_thinking_level(effective).await;
+                }
+                level_name(effective)
+            }
+            None => level_name(self.agent.thinking_level().await),
+        };
+        let ultra = mode.map(Ultra::name);
+        let _ = self.persist.append_thinking_level_change(Some(name), Some(name), ultra);
+        self.emit_event(json!({
+            "type": "thinking_level_changed",
+            "thinkingLevel": name,
+            "configured": name,
+            "ultra": ultra,
+        }));
+        self.sync_clm(prev, mode).await;
+    }
+
+    /// Drop the ultra mode without journaling (the caller records the new
+    /// level); `true` when one was active.
+    async fn leave_ultra(&self) -> bool {
+        let prev = lock(&self.ultra).take();
+        self.sync_clm(prev, None).await;
+        prev.is_some()
+    }
+
+    fn live_model(&self) -> Option<pa_types::ai::Model> {
+        self.target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|t| t.model.clone())
+    }
+
+    /// Switch the `clm-host` strategy (and its `context_edit` tool) on or off
+    /// when the ultra mode's CLM leg changes. A session started with
+    /// `clm`/`clm-host` keeps its strategy: ultra never touches it.
+    async fn sync_clm(&self, prev: Option<Ultra>, next: Option<Ultra>) {
+        let (had, want) = (prev.is_some_and(Ultra::clm), next.is_some_and(Ultra::clm));
+        if had == want || crate::context::active() != crate::context::Kind::Append {
+            return;
+        }
+        let mut tools = self.agent.tools().await;
+        tools.retain(|t| t.name() != crate::context::TOOL_NAME);
+        if want {
+            let settings = omp_settings::Settings::load(&self.cwd);
+            let shared = crate::context::ultra_shared(&settings);
+            let tool = crate::context::tool(shared.clone());
+            tools.extend(match crate::approval::Gate::get() {
+                Some(gate) => gate.wrap_tools(vec![tool]),
+                None => vec![tool],
+            });
+            crate::context::set_live(Some(shared), true);
+        } else {
+            crate::context::set_live(None, false);
+        }
+        self.agent.set_tools(tools).await;
+        let message = if want {
+            format!(
+                "Context strategy changed to clm-host ({}); the prompt cache resets once.",
+                next.map_or("ultra", Ultra::name)
+            )
+        } else {
+            "Context strategy changed back to append; the prompt cache resets once.".to_owned()
+        };
+        self.emit_notice("warning", &message, None);
     }
 
     /// `setThinkingLevel("auto")`: run a provisional concrete level and flag
     /// the session as auto (the status line shows `auto` until classified).
     pub async fn set_auto_thinking(&self) {
+        self.leave_ultra().await;
         let provisional = self
             .target
             .read()
@@ -2845,9 +3057,9 @@ impl Runtime {
             .map_or(ThinkingLevel::Medium, |t| crate::model::clamp_level(&t.model, ThinkingLevel::Medium));
         self.apply_thinking(provisional).await;
         let name = level_name(provisional);
-        let _ = self.persist.append_thinking_level_change(Some(name), Some("auto"));
+        let _ = self.persist.append_thinking_level_change(Some(name), Some("auto"), None);
         self.auto_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "configured": "auto"}));
+        self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "configured": "auto", "ultra": null}));
     }
 
     /// Efforts the live model supports, least to most intensive, without
@@ -3203,12 +3415,15 @@ fn has_incomplete_tasks(phases: &Value) -> bool {
 }
 
 /// The prompt as the agent takes it: the user message, then any extension-injected messages.
+/// The prompt's agent input: `prepend` (hidden notices, TS `prependMessages`)
+/// ahead of the user message, extension-`injected` messages after it.
 pub fn prompt_input(
     text: &str,
     images: Vec<pa_agent::types::ImageContent>,
+    prepend: Vec<AgentMessage>,
     injected: Vec<AgentMessage>,
 ) -> pa_agent::agent::AgentPromptInput {
-    if injected.is_empty() {
+    if prepend.is_empty() && injected.is_empty() {
         return pa_agent::agent::AgentPromptInput::Text { text: text.to_string(), images };
     }
     let mut content = vec![pa_agent::types::UserPart::Text(pa_agent::types::TextContent {
@@ -3220,7 +3435,8 @@ pub fn prompt_input(
         content: UserContent::Parts(content),
         timestamp: pa_agent::now_ms(),
     }));
-    let mut all = vec![user];
+    let mut all = prepend;
+    all.push(user);
     all.extend(injected);
     pa_agent::agent::AgentPromptInput::Messages(all)
 }
@@ -3391,6 +3607,8 @@ struct SessionModelState {
     last_role: Option<String>,
     /// `(thinkingLevel, configured)` of the last `thinking_level_change`.
     thinking: Option<(String, Option<String>)>,
+    /// `ultra` of that same entry (omp-rs ultra mode; absent in TS files).
+    ultra: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -3403,6 +3621,8 @@ struct BookkeepingHead {
     thinking_level: Option<String>,
     #[serde(default)]
     configured: Option<String>,
+    #[serde(default)]
+    ultra: Option<String>,
 }
 
 /// Read only the branch's `model_change` / `thinking_level_change` entries
@@ -3438,6 +3658,7 @@ fn session_model_state(
             st.last_role = Some(role);
         } else {
             st.thinking = Some((h.thinking_level.unwrap_or_else(|| "off".to_owned()), h.configured));
+            st.ultra = h.ultra;
         }
         Ok(())
     })?;
@@ -4209,5 +4430,317 @@ mod session_model_state_tests {
         assert_eq!(st.models.get("default").map(String::as_str), Some("anthropic/claude-opus-5-5"));
         assert_eq!(st.last_role, None);
         assert_eq!(st.thinking, None);
+    }
+}
+
+#[cfg(test)]
+mod ultra_tests {
+    use std::time::Duration;
+
+    use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
+    use pa_agent::scripted::ScriptedProvider;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    use super::*;
+    use crate::adapter::ProviderTarget;
+
+    /// Tests that switch the process-wide live context strategy run one at a time.
+    static CLM_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct Named(&'static str);
+
+    impl pa_agent::types::AgentTool for Named {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            "test tool"
+        }
+        fn parameters(&self) -> &Value {
+            static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+            SCHEMA.get_or_init(|| json!({"type": "object", "properties": {}}))
+        }
+        fn execute(
+            self: Arc<Self>,
+            _id: String,
+            _params: Value,
+            _signal: pa_agent::abort::AbortSignal,
+            _on_update: pa_agent::types::AgentToolUpdateCallback,
+        ) -> pa_agent::BoxFut<'static, anyhow::Result<pa_agent::types::AgentToolResult>> {
+            Box::pin(async { Ok(pa_agent::types::AgentToolResult::text("ok")) })
+        }
+    }
+
+    fn model() -> pa_types::ai::Model {
+        serde_json::from_value(json!({
+            "id": "a", "name": "a", "api": "openai-completions", "provider": "p",
+            "baseUrl": "http://127.0.0.1:9", "reasoning": true, "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 100_000, "maxTokens": 4096
+        }))
+        .expect("model json")
+    }
+
+    struct Harness {
+        rt: Arc<Runtime>,
+        rx: UnboundedReceiver<Value>,
+        provider: Arc<ScriptedProvider>,
+        _cwd: tempfile::TempDir,
+    }
+
+    /// A runtime over a scripted provider, the CLI's `convert_to_llm` (custom
+    /// notices reach the wire as developer messages) and tools named `tools`.
+    /// `config` is the project `.omp/config.yml`; `dir` a real session directory.
+    async fn harness(tools: &[&'static str], config: &str, dir: Option<&Path>) -> Harness {
+        let model = model();
+        let provider = Arc::new(ScriptedProvider::new(json_round_trip(&model).expect("agent model")));
+        for i in 0..4 {
+            provider.push_text_turn(&format!("answer {i}"));
+        }
+        let agent = Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                system_prompt: Some("test".into()),
+                model: json_round_trip(&model),
+                thinking_level: Some(ThinkingLevel::Medium),
+                tools: Some(tools.iter().map(|n| Arc::new(Named(n)) as Arc<dyn pa_agent::types::AgentTool>).collect()),
+                messages: None,
+            },
+            convert_to_llm: Some(crate::agent::convert_to_llm()),
+            stream_fn: Some(provider.stream_fn()),
+            ..AgentOptions::default()
+        });
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cwd.path().join(".omp")).unwrap();
+        std::fs::write(cwd.path().join(".omp/config.yml"), config).unwrap();
+        let persist = match dir {
+            Some(d) => crate::persist::attach_in(&agent, cwd.path(), d, None, crate::persist::uuid_v7()).await,
+            None => crate::persist::attach_with(&agent, cwd.path(), true).await,
+        }
+        .expect("session");
+        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+            api_key: Some("k".into()),
+            model,
+            service_tier: None,
+            headers: None,
+            credential_id: None,
+        })));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let rt = Runtime::start(Arc::new(agent), target, cwd.path().to_path_buf(), persist, tx).await;
+        Harness { rt, rx, provider, _cwd: cwd }
+    }
+
+    async fn until_settled(rx: &mut UnboundedReceiver<Value>) -> Vec<Value> {
+        let mut out = Vec::new();
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .expect("frame in time")
+                .expect("open");
+            let done = f["type"] == "session_settled";
+            out.push(f);
+            if done {
+                return out;
+            }
+        }
+    }
+
+    fn drain(rx: &mut UnboundedReceiver<Value>) -> Vec<Value> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn of_type<'a>(frames: &'a [Value], kind: &str) -> Vec<&'a Value> {
+        frames.iter().filter(|f| f["type"] == kind).collect()
+    }
+
+    fn thinking_entries(path: &Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|v| v["type"] == "thinking_level_change")
+            .collect()
+    }
+
+    /// `(role, customType or text)` of the last request's messages.
+    fn last_wire(provider: &ScriptedProvider) -> Vec<(String, String)> {
+        let calls = provider.calls();
+        let ctx = calls.last().expect("a provider call");
+        ctx.messages
+            .iter()
+            .map(|m| {
+                let v = serde_json::to_value(m).unwrap();
+                let text = match &v["content"] {
+                    Value::String(s) => s.clone(),
+                    Value::Array(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join(""),
+                    _ => String::new(),
+                };
+                (v["role"].as_str().unwrap_or_default().to_owned(), text)
+            })
+            .collect()
+    }
+
+    async fn prompt(h: &mut Harness, text: &str) -> Vec<Value> {
+        h.rt.prompt(None, text, None, Vec::new()).await.expect("prompt");
+        until_settled(&mut h.rx).await
+    }
+
+    /// Journal + restore round trip: the session line carries `ultra` next to a
+    /// TS-readable `thinkingLevel`, and loading the session brings the mode back.
+    #[tokio::test]
+    async fn set_ultra_journals_and_restores() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(&["task", "eval"], "", Some(dir.path())).await;
+        prompt(&mut h, "first").await;
+        h.rt.set_ultra(Some(Ultra::Code)).await;
+        let frames = drain(&mut h.rx);
+        let changed = of_type(&frames, "thinking_level_changed");
+        assert_eq!(changed.len(), 1, "{frames:?}");
+        assert_eq!(changed[0]["ultra"], "ultracode");
+        let level = h.rt.agent.thinking_level().await;
+        assert_eq!(level, crate::model::clamp_level(&model(), ThinkingLevel::Max));
+        assert_eq!(changed[0]["thinkingLevel"], level_name(level));
+        assert_eq!(h.rt.state().await["ultra"], "ultracode");
+        assert_eq!(h.rt.context_usage_frame().await["ultra"], "ultracode");
+        prompt(&mut h, "second").await;
+
+        let file = h.rt.session_file();
+        let entries = thinking_entries(&file);
+        let last = entries.last().expect("thinking entry");
+        assert_eq!(last["ultra"], "ultracode", "{last}");
+        assert!(parse_level(last["thinkingLevel"].as_str().unwrap()).is_some(), "TS-readable level: {last}");
+        assert_eq!(last["configured"], last["thinkingLevel"]);
+        // Entries without a mode stay TS-shaped (no `ultra` key at all).
+        assert!(entries[0].get("ultra").is_none(), "{}", entries[0]);
+
+        let mut second = harness(&["task", "eval"], "", Some(dir.path())).await;
+        assert_eq!(second.rt.ultra(), None);
+        second.rt.load_session(&file, None).await.expect("resume");
+        assert_eq!(second.rt.ultra(), Some(Ultra::Code));
+        assert_eq!(second.rt.state().await["ultra"], "ultracode");
+        let frames = drain(&mut second.rx);
+        assert!(
+            of_type(&frames, "thinking_level_changed").iter().any(|f| f["ultra"] == "ultracode"),
+            "{frames:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_thinking_level_clears_ultra() {
+        let mut h = harness(&[], "", None).await;
+        h.rt.set_ultra(Some(Ultra::Deep)).await;
+        let level = h.rt.agent.thinking_level().await;
+        drain(&mut h.rx);
+        // Same level as ultra pinned: the mode still ends, announced and journaled.
+        h.rt.set_thinking_level(level).await;
+        assert_eq!(h.rt.ultra(), None);
+        let frames = drain(&mut h.rx);
+        let changed = of_type(&frames, "thinking_level_changed");
+        assert_eq!(changed.len(), 1, "{frames:?}");
+        assert_eq!(changed[0]["ultra"], Value::Null);
+        assert_eq!(h.rt.state().await["ultra"], Value::Null);
+        // `auto` clears it too; `/ultra off` keeps the level.
+        h.rt.set_ultra(Some(Ultra::Code)).await;
+        h.rt.set_auto_thinking().await;
+        assert_eq!(h.rt.ultra(), None);
+        assert!(of_type(&drain(&mut h.rx), "thinking_level_changed").iter().all(|f| f.get("ultra").is_some()));
+        h.rt.set_ultra(Some(Ultra::Code)).await;
+        let level = h.rt.agent.thinking_level().await;
+        h.rt.set_ultra(None).await;
+        assert_eq!(h.rt.ultra(), None);
+        assert_eq!(h.rt.agent.thinking_level().await, level);
+        let frames = drain(&mut h.rx);
+        assert_eq!(of_type(&frames, "thinking_level_changed").last().unwrap()["ultra"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn ultra_notice_prepended_on_every_prompt() {
+        let mut h = harness(&["task", "eval"], "", None).await;
+        prompt(&mut h, "plain question").await;
+        assert!(last_wire(&h.provider).iter().all(|(role, _)| role != "developer"), "no notice without a mode");
+        h.rt.set_ultra(Some(Ultra::Code)).await;
+        for text in ["fix the parser", "ultracode it"] {
+            prompt(&mut h, text).await;
+            let wire = last_wire(&h.provider);
+            let n = wire.len();
+            assert_eq!(wire[n - 1].0, "user", "{wire:?}");
+            assert_eq!(wire[n - 2].0, "developer", "notice right before the user message: {wire:?}");
+            assert!(wire[n - 2].1.contains("Ultra mode **ultracode** is active"), "{}", wire[n - 2].1);
+            assert!(!wire[n - 3].1.contains("ultracode"), "exactly one notice: {wire:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn keyword_notices_prepended_skipped_when_disabled_or_tool_missing() {
+        let mut h = harness(&["task", "eval"], "", None).await;
+        prompt(&mut h, "please jevify these files").await;
+        let wire = last_wire(&h.provider);
+        let n = wire.len();
+        assert_eq!(wire[n - 2].0, "developer", "{wire:?}");
+        assert!(wire[n - 2].1.contains("**jevify**"), "{}", wire[n - 2].1);
+        assert_eq!(wire[n - 1], ("user".to_owned(), "please jevify these files".to_owned()));
+        // Persisted as a hidden custom message.
+        let notice = h.rt.messages().await.into_iter().find(|m| m["customType"] == "jevify-notice").expect("journaled");
+        assert_eq!(notice["display"], false);
+        assert_eq!(notice["attribution"], "user");
+
+        // Required tool missing.
+        let mut h = harness(&["task"], "", None).await;
+        prompt(&mut h, "please jevify these files").await;
+        assert!(last_wire(&h.provider).iter().all(|(role, _)| role != "developer"));
+
+        // Disabled by setting.
+        let mut h = harness(&["task", "eval"], "magicKeywords:\n  jevify: false\n", None).await;
+        prompt(&mut h, "please jevify these files").await;
+        assert!(last_wire(&h.provider).iter().all(|(role, _)| role != "developer"));
+    }
+
+    #[tokio::test]
+    async fn clm_switch_adds_and_removes_context_edit() {
+        let _g = CLM_LOCK.lock().await;
+        let mut h = harness(&["task", "eval"], "", None).await;
+        let names = |rt: &Arc<Runtime>| {
+            let rt = rt.clone();
+            async move { rt.agent.tools().await.iter().map(|t| t.name().to_owned()).collect::<Vec<_>>() }
+        };
+        h.rt.set_ultra(Some(Ultra::Code)).await;
+        assert!(!names(&h.rt).await.iter().any(|n| n == crate::context::TOOL_NAME));
+        assert!(crate::context::live().is_none());
+        drain(&mut h.rx);
+
+        h.rt.set_ultra(Some(Ultra::Long)).await;
+        assert!(names(&h.rt).await.iter().any(|n| n == crate::context::TOOL_NAME));
+        let live = crate::context::live().expect("clm live");
+        assert_eq!(live.kind, crate::context::Kind::ClmHost);
+        assert_eq!(crate::context::skip_extensions(), ["context-slim"]);
+        let frames = drain(&mut h.rx);
+        let notices = of_type(&frames, "notice");
+        assert_eq!(notices.len(), 1, "{frames:?}");
+        assert_eq!(notices[0]["level"], "warning");
+        assert!(notices[0]["message"].as_str().unwrap().contains("prompt cache"));
+
+        // Long -> Hyper keeps CLM: no second switch.
+        h.rt.set_ultra(Some(Ultra::Hyper)).await;
+        assert!(of_type(&drain(&mut h.rx), "notice").is_empty());
+        assert_eq!(names(&h.rt).await.iter().filter(|n| *n == crate::context::TOOL_NAME).count(), 1);
+
+        // Leaving CLM (here via a plain thinking level) removes the tool again.
+        h.rt.set_thinking_level(ThinkingLevel::High).await;
+        assert!(!names(&h.rt).await.iter().any(|n| n == crate::context::TOOL_NAME));
+        assert!(crate::context::live().is_none());
+        assert!(crate::context::skip_extensions().is_empty());
+        assert_eq!(of_type(&drain(&mut h.rx), "notice").len(), 1);
+        assert_eq!(names(&h.rt).await, ["task", "eval"]);
+    }
+
+    /// Ultra is a mode, not a thinking level: no default / CLI flag / model
+    /// suffix carries it (subagents never inherit it).
+    #[test]
+    fn ultra_is_not_a_thinking_level() {
+        for u in Ultra::ALL {
+            assert_eq!(parse_level(u.name()), None);
+            assert_eq!(parse_ultra_name(u.name()), Some(u));
+        }
+        assert_eq!(parse_ultra_name("code"), None);
+        assert_eq!(parse_ultra_name("max"), None);
     }
 }

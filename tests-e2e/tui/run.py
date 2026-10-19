@@ -555,14 +555,15 @@ def sc_composer_shape(t: Term, r: Result) -> None:
 
 
 def sc_effort(t: Term, r: Result) -> None:
-    """Shift+Tab cycles the thinking effort (off → auto → minimal … xhigh) and
+    """Shift+Tab cycles the thinking effort (off → auto → minimal … xhigh, then
+    omp-rs's ultracode) and
     the status line's level glyph follows; the editor hint advertises the
     chord; a bare /effort opens the Thinking Level selector."""
     ready(t)
     r.check("effort: editor hint", "⇧⇥ to change thinking effort" in t.text())
     start = _model_glyph(t, "think")
     glyphs = []
-    for _ in range(8):
+    for _ in range(10):  # TS cycle + omp-rs ultracode wraps within 10 presses
         t.send(b"\x1b[Z")
         t.settle(0.5, 6)
         glyphs.append(_model_glyph(t, "think"))

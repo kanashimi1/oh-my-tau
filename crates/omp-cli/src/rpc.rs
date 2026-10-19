@@ -429,7 +429,8 @@ async fn cycle_model(rt: &Runtime) -> CmdResult {
     let next = &models[(idx + 1) % models.len()];
     let model = rt.cycle_to(&next.provider, &next.id).await?;
     let level = rt.agent.thinking_level().await;
-    ok(json!({"model": model, "thinkingLevel": level_name(level), "isScoped": false}))
+    let ultra = rt.ultra().map(omp_tui::magic::Ultra::name);
+    ok(json!({"model": model, "thinkingLevel": level_name(level), "ultra": ultra, "isScoped": false}))
 }
 
 fn branch_messages(entries: &[Value]) -> Vec<Value> {
@@ -865,6 +866,10 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "set_thinking_level" => {
             let level = str_field(cmd, "level")?;
+            if let Some(mode) = crate::runtime::parse_ultra_name(level) {
+                rt.set_ultra(Some(mode)).await;
+                return none();
+            }
             let parsed = parse_level(level)
                 .or_else(|| (level == "inherit").then_some(ThinkingLevel::Medium));
             let Some(parsed) = parsed else {

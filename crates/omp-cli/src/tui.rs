@@ -488,6 +488,9 @@ impl omp_tui::RuntimePort for Port {
         tokio::spawn(async move {
             if level == "auto" {
                 rt.set_auto_thinking().await;
+            } else if let Some(mode) = crate::runtime::parse_ultra_name(&level) {
+                // Shift+Tab past `max` (or the selector) picks an ultra mode.
+                rt.set_ultra(Some(mode)).await;
             } else if let Some(level) = crate::runtime::parse_level(&level) {
                 rt.set_thinking_level(level).await;
             }

@@ -160,7 +160,10 @@ impl Persistence {
             .map(|_| ())
     }
 
-    /// `thinking_level_change {thinkingLevel, configured}` (`appendThinkingLevelChange`).
+    /// `thinking_level_change {thinkingLevel, configured}` (`appendThinkingLevelChange`),
+    /// plus the omp-rs `ultra` mode name while one is active. TS readers take
+    /// `thinkingLevel` and ignore the extra field; without `ultra` the line is
+    /// exactly TS's.
     ///
     /// # Errors
     /// Fails on serialization or I/O errors.
@@ -168,12 +171,18 @@ impl Persistence {
         &self,
         level: Option<&str>,
         configured: Option<&str>,
+        ultra: Option<&str>,
     ) -> Result<()> {
-        self.writer
-            .lock()
-            .unwrap()
-            .append_thinking_level_change(level, configured, &now_iso())
-            .map(|_| ())
+        let mut w = self.writer.lock().unwrap();
+        match ultra {
+            None => w.append_thinking_level_change(level, configured, &now_iso()),
+            Some(u) => w.append_entry(
+                "thinking_level_change",
+                serde_json::json!({"thinkingLevel": level, "configured": configured, "ultra": u}),
+                &now_iso(),
+            ),
+        }
+        .map(|_| ())
     }
 
     /// `title_change` audit entry.
