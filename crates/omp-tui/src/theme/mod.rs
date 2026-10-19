@@ -30,6 +30,32 @@ pub enum ThemeValue {
     Token(&'static str),
 }
 
+/// Transcript/chrome presentation style.
+///
+/// `Classic` mirrors the TS `omp` layout (boxed tool cards, powerline status
+/// line, icon settings tabs). `Clean` is the omp-rs look: rail tool rows,
+/// dot-separated status line, text tabs. Resolved by [`UiStyle::resolve`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiStyle {
+    /// TS-parity layout (the renderer default; tests rely on it).
+    #[default]
+    Classic,
+    /// Rail cards, dimmed chrome, text tabs.
+    Clean,
+}
+
+impl UiStyle {
+    /// `OMP_TUI_STYLE` env, else the `tui.style` setting, else `Clean`.
+    #[must_use]
+    pub fn resolve(setting: Option<&str>) -> Self {
+        let env = std::env::var("OMP_TUI_STYLE").ok();
+        match env.as_deref().or(setting) {
+            Some("classic") => Self::Classic,
+            _ => Self::Clean,
+        }
+    }
+}
+
 /// A complete theme: token table plus glyph overrides.
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -37,9 +63,17 @@ pub struct Theme {
     /// ASCII/Unicode glyph set in use (`pi-tui/src/theme/symbols.ts`):
     /// `"ascii"`, `"unicode"`, `"nerdfont"`, ...
     pub glyph_set: String,
+    /// Presentation style (rides on the theme so every renderer sees it).
+    pub ui: UiStyle,
 }
 
 impl Theme {
+    /// Whether the omp-rs clean presentation is active.
+    #[must_use]
+    pub fn clean(&self) -> bool {
+        self.ui == UiStyle::Clean
+    }
+
     /// Resolve a token to a concrete terminal color.
     ///
     /// Falls back to [`Color::Reset`] for unknown tokens; never panics —
@@ -88,6 +122,7 @@ impl Default for Theme {
         let mut t = Self {
             tokens: BTreeMap::new(),
             glyph_set: "unicode".into(),
+            ui: UiStyle::Classic,
         };
         t.set_token("accent", ThemeValue::Color(Color::Cyan));
         t.set_token("text", ThemeValue::Color(Color::White));

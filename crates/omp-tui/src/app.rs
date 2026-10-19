@@ -322,6 +322,10 @@ pub struct App {
     appearance: crate::theme::Appearance,
     /// Working directory the session runs in (settings re-reads on edits).
     cwd: PathBuf,
+    /// Presentation prefs layered onto every theme set after
+    /// [`App::load_settings_theme`] (`symbolPreset`, `tui.style`); `None`
+    /// keeps each theme's own (tests, `/theme` before startup).
+    presentation: Option<(String, crate::theme::UiStyle)>,
     /// In-flight clipboard read (paste chord → worker thread → drained in
     /// [`App::poll_deadlines`]); the read shells out and must not block the
     /// render loop (TS spawns off the event loop, clipboard.ts `spawnCapture`).
@@ -380,6 +384,7 @@ impl App {
             session_sources: Vec::new(),
             appearance: crate::theme::Appearance::Dark,
             cwd: cwd.to_path_buf(),
+            presentation: None,
             clipboard_rx: None,
             pending_large_paste: None,
             word_host: None,
@@ -556,9 +561,48 @@ impl App {
     /// Replace the app-wide theme (ThemeLoader startup + hot-swap). The
     /// transcript renderer is synced here — not per frame — so a hot-swap
     /// lands everywhere on the next paint (tui-ChatRenderWire caveat).
-    pub fn set_theme(&mut self, theme: Theme) {
+    pub fn set_theme(&mut self, mut theme: Theme) {
+        if let Some((glyphs, ui)) = &self.presentation {
+            theme.glyph_set.clone_from(glyphs);
+            theme.ui = *ui;
+        }
         self.messages.set_theme(theme.clone());
         self.theme = theme;
+    }
+
+    /// Load the configured theme for the current appearance (`theme.dark` /
+    /// `theme.light`) with the `symbolPreset` and `tui.style` settings
+    /// applied (TS `symbolPresetOverride`: the setting beats the theme
+    /// file's `symbols.preset`).
+    ///
+    /// # Errors
+    ///
+    /// The configured theme failed to load; the current theme is kept.
+    pub fn load_settings_theme(&mut self) -> Result<(), crate::theme::ThemeError> {
+        let settings = omp_settings::Settings::load(&self.cwd);
+        let glyphs = settings
+            .get_string("symbolPreset")
+            .filter(|p| crate::theme::loader::is_valid_symbol_preset(p))
+            .unwrap_or_else(|| "unicode".to_owned());
+        let ui = crate::theme::UiStyle::resolve(settings.get_string("tui.style").as_deref());
+        self.presentation = Some((glyphs, ui));
+        let theme = crate::theme::load_configured(
+            settings.get_string("theme.dark").as_deref(),
+            settings.get_string("theme.light").as_deref(),
+            self.appearance,
+        );
+        match theme {
+            Ok(theme) => {
+                self.set_theme(theme);
+                Ok(())
+            }
+            Err(e) => {
+                // Keep the current palette but still apply the presentation.
+                let current = self.theme.clone();
+                self.set_theme(current);
+                Err(e)
+            }
+        }
     }
 
     /// Seed the `/model` picker catalogue + the embedded `/resume` session
@@ -747,6 +791,7 @@ impl App {
         match &event {
             AppEvent::AgentStart => {
                 self.last_stop_reason = None;
+                self.spinner_start = Instant::now();
                 self.status.streaming = true;
                 self.pending_submission = false;
                 self.title.set_state(TitleState::Working, Some(&self.title_label));
@@ -1039,6 +1084,11 @@ impl App {
         }
         if self.keys.matches_event(&key, "app.tools.expand") {
             self.messages.toggle_expanded(); // app.tools.expand (chat.md)
+            if self.theme.clean() {
+                // Clean rows collapse in scrollback too: re-commit the whole
+                // transcript in the new state.
+                self.clear_scrollback = true;
+            }
             return Some(true);
         }
 
@@ -1695,21 +1745,11 @@ impl App {
     /// the next runtime read and flagged "no live effect" in the overlay).
     fn apply_setting_live(&mut self, id: &str, value: &Value, port: &impl RuntimePort) {
         match id {
-            "theme.dark" | "theme.light" => {
+            "theme.dark" | "theme.light" | "symbolPreset" | "tui.style" => {
                 // Re-read the layered settings and hot-swap the theme for
                 // the terminal's current appearance.
-                let settings = omp_settings::Settings::load(&self.cwd);
-                let dark = settings.get_string("theme.dark");
-                let light = settings.get_string("theme.light");
-                match crate::theme::load_configured(
-                    dark.as_deref(),
-                    light.as_deref(),
-                    self.appearance,
-                ) {
-                    Ok(theme) => {
-                        self.set_theme(theme);
-                        self.push_system(format!("{id} applied"));
-                    }
+                match self.load_settings_theme() {
+                    Ok(()) => self.push_system(format!("{id} applied")),
                     Err(e) => self.push_system(format!("{id} saved, but theme reload failed: {e}")),
                 }
             }
@@ -1882,7 +1922,16 @@ impl App {
     pub fn take_scrollback_lines(&mut self, width: u16, rebuild: bool) -> Vec<Line<'static>> {
         let mut rows = Vec::new();
         if let Some(w) = self.welcome.as_mut().filter(|w| rebuild || !w.emitted) {
-            rows = welcome::welcome_lines(&w.version, &w.tip, usize::from(width), &self.theme);
+            rows = if self.theme.clean() {
+                let cwd = self.cwd.display().to_string();
+                let cwd = match std::env::var("HOME") {
+                    Ok(home) if !home.is_empty() && cwd.starts_with(&home) => format!("~{}", &cwd[home.len()..]),
+                    _ => cwd,
+                };
+                welcome::clean_welcome_lines(&w.version, &w.tip, &cwd, usize::from(width), &self.theme)
+            } else {
+                welcome::welcome_lines(&w.version, &w.tip, usize::from(width), &self.theme)
+            };
             if !rows.is_empty() {
                 rows.push(Line::default());
             }
@@ -2036,11 +2085,45 @@ impl App {
             Some(Maintenance::Retry) => " retrying… (esc to cancel)",
             None => " Working…",
         };
+        if self.theme.clean() && self.maintenance.is_none() {
+            frame.render_widget(Paragraph::new(self.clean_loader_line(frame_idx)), area);
+            return;
+        }
         let line = Line::from(Span::styled(
             format!("{} {label}", SPINNER[frame_idx]),
             Style::default().fg(self.theme.color("accent")),
         ));
         frame.render_widget(Paragraph::new(line), area);
+    }
+
+    /// Clean loader: spinner, what is happening, Omi's face, elapsed time.
+    fn clean_loader_line(&self, frame_idx: usize) -> Line<'static> {
+        use crate::chrome::mascot::{face, Mood};
+        let tool_running = self.messages.live_tail().iter().any(|e| match &e.kind {
+            crate::chat::ChatKind::Tool(card) => !card.status.settled(),
+            crate::chat::ChatKind::Bash(x) | crate::chat::ChatKind::Python(x) => {
+                x.status == crate::chat::ExecStatus::Running
+            }
+            crate::chat::ChatKind::ReadGroup(g) => g.reads.iter().any(|r| !r.status.settled()),
+            _ => false,
+        });
+        let (mood, label) = if tool_running {
+            (Mood::Working, "Working…")
+        } else {
+            (Mood::Thinking, "Thinking…")
+        };
+        let elapsed = self.spinner_start.elapsed();
+        let tick = (elapsed.as_millis() / 700) as u64;
+        let accent = Style::default().fg(self.theme.color("accent"));
+        let dim = Style::default().fg(self.theme.color("dim"));
+        let pink = Style::default().fg(ratatui::style::Color::Rgb(236, 112, 214));
+        Line::from(vec![
+            Span::styled(format!("{} ", SPINNER[frame_idx]), accent),
+            Span::styled(label.to_owned(), accent.add_modifier(ratatui::style::Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(face(mood, tick).to_owned(), pink),
+            Span::styled(format!("  {}s · esc to interrupt", elapsed.as_secs()), dim),
+        ])
     }
 
     /// The uncommitted chat tail: entries at/after the commit watermark

@@ -295,9 +295,101 @@ pub fn welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme) -> V
     lines
 }
 
+/// Clean style welcome: Omi (the pixel mascot) on the left; the gradient
+/// wordmark, version, greeting, working directory and the tip beside her.
+/// Falls back to the classic lockup when the terminal is too narrow.
+#[must_use]
+pub fn clean_welcome_lines(
+    version: &str,
+    tip: &str,
+    cwd: &str,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    use super::mascot;
+    const MARGIN: usize = 2;
+    const GAP: usize = 3;
+    let side = width.saturating_sub(MARGIN + mascot::WIDTH + GAP + 1);
+    if side < 24 {
+        return welcome_lines(version, tip, width, theme);
+    }
+    let muted = Style::default().fg(theme.color("text_muted"));
+    let text = Style::default().fg(theme.color("text"));
+    let accent = Style::default().fg(theme.color("accent")).add_modifier(Modifier::BOLD);
+
+    let mut beside: Vec<Vec<Span<'static>>> = vec![Vec::new(); mascot::height()];
+    // Wordmark rows 2..=4, gradient left → right.
+    for (i, row) in WORDMARK.iter().enumerate() {
+        let n = WORDMARK_WIDTH.max(1) as f64;
+        beside[2 + i] = row
+            .chars()
+            .enumerate()
+            .map(|(x, c)| {
+                if c == ' ' {
+                    Span::raw(" ")
+                } else {
+                    Span::styled(c.to_string(), Style::default().fg(gradient(x as f64 / n)))
+                }
+            })
+            .collect();
+    }
+    beside[2].push(Span::styled("  rs", muted));
+    beside[5] = vec![Span::styled(format!("v{version}"), muted)];
+    beside[7] = vec![
+        Span::styled("Omi", accent),
+        Span::styled(" · hi! ready when you are.", text),
+    ];
+    let cwd_text = super::super::tools::truncate(cwd, side);
+    beside[8] = vec![Span::styled(cwd_text, muted)];
+    if !tip.is_empty() {
+        let body = expand_tip(tip.trim_end().trim_end_matches("[NEW]").trim_end());
+        let wrapped = wrap(&format!("Tip: {body}"), side.min(TIP_MEASURE));
+        let label = Style::default().fg(theme.color("accent")).add_modifier(Modifier::ITALIC);
+        let body_style = muted.add_modifier(Modifier::ITALIC);
+        for (i, line) in wrapped.iter().take(3).enumerate() {
+            let row = &mut beside[10 + i];
+            match line.strip_prefix("Tip: ").filter(|_| i == 0) {
+                Some(rest) => {
+                    row.push(Span::styled("Tip: ", label));
+                    row.push(Span::styled(rest.to_owned(), body_style));
+                }
+                None => row.push(Span::styled(line.clone(), body_style)),
+            }
+        }
+    }
+    let mut lines = vec![Line::default()];
+    for (row, art) in mascot::lines().into_iter().enumerate() {
+        let mut spans = vec![Span::raw(" ".repeat(MARGIN))];
+        spans.extend(art.spans);
+        if !beside[row].is_empty() {
+            spans.push(Span::raw(" ".repeat(GAP)));
+            spans.extend(std::mem::take(&mut beside[row]));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_welcome_puts_text_beside_the_mascot() {
+        let rows = clean_welcome_lines("0.10.0", "Type `/` for commands", "/w/proj", 100, &Theme::default());
+        let text: Vec<String> = rows
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rows.len(), 1 + super::super::mascot::height());
+        assert!(text.iter().any(|r| r.contains("v0.10.0")));
+        assert!(text.iter().any(|r| r.contains("Omi · hi!")));
+        assert!(text.iter().any(|r| r.contains("/w/proj")));
+        assert!(text.iter().any(|r| r.contains("Tip: Type `/` for commands")));
+        // Too narrow for the side column: classic lockup.
+        let narrow = clean_welcome_lines("0.10.0", "", "/w", 40, &Theme::default());
+        assert_eq!(narrow, welcome_lines("0.10.0", "", 40, &Theme::default()));
+    }
 
     fn text(l: &Line<'_>) -> String {
         l.spans.iter().map(|s| s.content.as_ref()).collect()

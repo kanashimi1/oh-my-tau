@@ -21,6 +21,9 @@ pub struct Piece {
     /// Theme token for the fg color (`"accent"`, `"warning"`,
     /// `"statusLineModel"`, ...).
     pub token: &'static str,
+    /// Clean style: explicit multi-color runs `(text, token)` that replace
+    /// the single-token paint (`text` holds their concatenation).
+    pub runs: Vec<(String, &'static str)>,
 }
 
 impl Piece {
@@ -28,6 +31,17 @@ impl Piece {
         Self {
             text: text.into(),
             token,
+            runs: Vec::new(),
+        }
+    }
+
+    /// A piece painted as several colored runs (clean context bar).
+    pub(crate) fn from_runs(runs: Vec<(String, &'static str)>) -> Self {
+        let text = runs.iter().map(|(t, _)| t.as_str()).collect();
+        Self {
+            text,
+            token: runs.first().map_or("dim", |(_, token)| *token),
+            runs,
         }
     }
 }
@@ -222,6 +236,18 @@ fn mode(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Option<Vec<Piece>> {
 
 /// `path` — project dir display, `~` shortening, clamp (`segments.ts:566-599`).
 fn path(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Vec<Piece> {
+    if theme.clean() {
+        // Clean: the last path component only, no folder icon.
+        let trimmed = ctx.st.cwd.trim_end_matches(['/', '\\']);
+        let base = trimmed.rsplit(['/', '\\']).next().unwrap_or_default();
+        let base = if base.is_empty() { ctx.st.cwd.as_str() } else { base };
+        let shown = fmt::clamp_path_length(base, ctx.path_max);
+        if ctx.st.worktree {
+            let icon = style::icon(theme, "icon.worktree", "🌳");
+            return vec![Piece::new("statusLinePath", format!("{icon} {shown}"))];
+        }
+        return vec![Piece::new("statusLinePath", shown)];
+    }
     if ctx.st.worktree {
         let shown = fmt::clamp_path_length(&ctx.st.cwd, ctx.path_max);
         let icon = style::icon(theme, "icon.worktree", "🌳");

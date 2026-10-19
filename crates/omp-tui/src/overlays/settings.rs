@@ -1526,7 +1526,43 @@ impl Component for SettingsOverlay {
         let active_tab = self.active_tab();
         let hover_tab = *self.hover_tab.borrow();
         let tabs_line = inner.y;
-        {
+        if theme.clean() {
+            // Clean: text-only labels, 3-space gaps; non-active labels
+            // shorten to 3 chars from the tail until the bar fits.
+            let muted = clean_dim(theme);
+            let labels = clean_tab_labels(active_tab, inner.width.saturating_sub(2));
+            let mut spans: Vec<Span<'_>> = vec![Span::raw("  ")];
+            let mut col = inner.x + 2;
+            map.tabs.clear();
+            for (idx, label) in labels.iter().enumerate() {
+                if idx > 0 {
+                    spans.push(Span::raw(CLEAN_TAB_SEP));
+                    col = col.saturating_add(CLEAN_TAB_SEP_W);
+                }
+                let style = if idx == active_tab {
+                    accent.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else if Some(idx) == hover_tab {
+                    accent
+                } else {
+                    muted
+                };
+                let start = col;
+                col = col.saturating_add(
+                    u16::try_from(UnicodeWidthStr::width(*label)).unwrap_or(u16::MAX),
+                );
+                map.tabs.push((start, col));
+                spans.push(Span::styled(*label, style));
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect {
+                    x: inner.x,
+                    y: tabs_line,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+        } else {
             let mut spans: Vec<Span<'_>> = Vec::new();
             // TS insets the tab bar by a further space (border + 2).
             spans.push(Span::styled("  ", Style::default()));
@@ -2130,6 +2166,45 @@ fn tab_at(map: &MouseMap, col: u16) -> Option<usize> {
         .position(|(start, end)| col >= *start && col < *end)
 }
 
+/// Gap between clean-style tab labels.
+const CLEAN_TAB_SEP: &str = "   ";
+/// Cell width of [`CLEAN_TAB_SEP`].
+const CLEAN_TAB_SEP_W: u16 = 3;
+
+/// Clean-style tab labels that fit in `width` cells: non-active labels are
+/// cut to their first 3 chars from the tail until the joined bar fits; the
+/// active label is never shortened.
+fn clean_tab_labels(active: usize, width: u16) -> Vec<&'static str> {
+    let mut labels: Vec<&'static str> = Tab::ALL.iter().map(|tab| tab.label()).collect();
+    let total = |labels: &[&str]| -> usize {
+        labels.iter().map(|l| UnicodeWidthStr::width(*l)).sum::<usize>()
+            + CLEAN_TAB_SEP.len() * labels.len().saturating_sub(1)
+    };
+    for idx in (0..labels.len()).rev() {
+        if total(&labels) <= usize::from(width) {
+            break;
+        }
+        if idx == active {
+            continue;
+        }
+        let label = labels[idx];
+        let cut = label.char_indices().nth(3).map_or(label.len(), |(i, _)| i);
+        labels[idx] = &label[..cut];
+    }
+    labels
+}
+
+/// Clean-style muted chrome: `dim`, falling back to `text_muted`.
+fn clean_dim(theme: &Theme) -> Style {
+    let dim = theme.color("dim");
+    let color = if dim == ratatui::style::Color::Reset {
+        theme.color("text_muted")
+    } else {
+        dim
+    };
+    Style::default().fg(color)
+}
+
 /// Word-wrap `text` to `width` columns (TS `wrapTextWithAnsi` equivalent for
 /// plain text); empty input yields no lines.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -2494,5 +2569,74 @@ mod tests {
         let current = overlay.selected;
         wheel(&mut overlay, 2, map.content.0 + 2, 1);
         assert_eq!(overlay.selected, current);
+    }
+
+    fn clean_buffer(overlay: &SettingsOverlay, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut theme = crate::theme::Theme::default();
+        theme.ui = crate::theme::UiStyle::Clean;
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| {
+            let area = f.area();
+            overlay.render(f, area, &theme);
+        })
+        .unwrap();
+        t.backend().buffer().clone()
+    }
+
+    fn cells(buf: &ratatui::buffer::Buffer, y: u16, from: u16, to: u16) -> String {
+        (from..to).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn clean_tab_bar_is_text_only_with_underlined_active_tab() {
+        let overlay = SettingsOverlay::new();
+        let buf = clean_buffer(&overlay, 120, 40);
+        let map = overlay.mouse.borrow().clone();
+        let row = cells(&buf, map.tab_row, 0, 120);
+        assert!(row.contains("Appearance   Model   Interaction"), "{row:?}");
+        let theme = crate::theme::Theme::default();
+        for tab in Tab::ALL {
+            let icon = tab.icon(&theme);
+            assert!(icon.is_empty() || !row.contains(icon), "icon {icon:?} in {row:?}");
+        }
+        let (start, end) = map.tabs[0];
+        assert_eq!(cells(&buf, map.tab_row, start, end), "Appearance");
+        let active = buf[(start, map.tab_row)].style();
+        assert!(active.add_modifier.contains(Modifier::UNDERLINED));
+        assert!(active.add_modifier.contains(Modifier::BOLD));
+        let (other, _) = map.tabs[1];
+        let inactive = buf[(other, map.tab_row)].style();
+        assert!(!inactive.add_modifier.contains(Modifier::UNDERLINED));
+        for (idx, (start, end)) in map.tabs.iter().enumerate() {
+            assert_eq!(cells(&buf, map.tab_row, *start, *end), Tab::ALL[idx].label());
+        }
+    }
+
+    #[test]
+    fn clean_tab_bar_shortens_inactive_labels_and_keeps_mouse_ranges() {
+        let mut overlay = SettingsOverlay::new();
+        overlay.tab = 2; // Interaction stays full-length.
+        let buf = clean_buffer(&overlay, 70, 30);
+        let map = overlay.mouse.borrow().clone();
+        let row = cells(&buf, map.tab_row, 0, 70);
+        assert!(row.contains("Interaction"), "{row:?}");
+        assert!(row.contains("Pro"), "{row:?}");
+        assert!(!row.contains("Providers"), "{row:?}");
+        let labels = clean_tab_labels(2, 70 - 2 - 2);
+        assert_eq!(map.tabs.len(), labels.len());
+        let mut shortened = 0;
+        for (idx, (start, end)) in map.tabs.iter().enumerate() {
+            assert_eq!(cells(&buf, map.tab_row, *start, *end), labels[idx]);
+            if labels[idx] != Tab::ALL[idx].label() {
+                assert_eq!(labels[idx].len(), 3);
+                shortened += 1;
+            }
+        }
+        assert!(shortened > 0);
+        assert!(*map.tabs.last().map(|(_, end)| end).unwrap() <= 69);
+        // A click on a shortened label selects that tab.
+        let (start, _) = map.tabs[9];
+        click(&mut overlay, start, map.tab_row);
+        assert_eq!(overlay.tab, 9);
     }
 }

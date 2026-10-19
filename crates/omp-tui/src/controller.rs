@@ -98,9 +98,8 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
     //   overlays.
     let appearance = crate::theme::detect_appearance(cfg.osc11_bg);
     app.set_appearance(appearance);
-    match crate::theme::load_configured(None, None, appearance) {
-        Ok(theme) => app.set_theme(theme),
-        Err(e) => tracing::warn!("theme load failed, keeping default: {e}"),
+    if let Err(e) = app.load_settings_theme() {
+        tracing::warn!("theme load failed, keeping default: {e}");
     }
     if let Some(warning) = app.load_user_keybindings() {
         tracing::warn!("{warning}");

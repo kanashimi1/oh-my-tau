@@ -6,6 +6,7 @@
 
 pub mod banner;
 pub mod hud;
+pub mod mascot;
 pub mod notify;
 pub mod osc11;
 pub mod startup;

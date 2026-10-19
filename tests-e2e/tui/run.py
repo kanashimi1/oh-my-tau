@@ -71,6 +71,9 @@ def make_home(root: Path, port: int, extra_config: str = "") -> dict[str, str]:
         "OMP_NO_UPDATE_CHECK": "1",
         "PI_SKIP_VERSION_CHECK": "1",
         "E2E_WORK": str(work),
+        # Parity runs compare against TS: omp-rs draws its TS-parity layout
+        # unless E2E_TUI_STYLE=clean asks for the omp-rs look.
+        "OMP_TUI_STYLE": os.environ.get("E2E_TUI_STYLE", "classic"),
     }
 
 

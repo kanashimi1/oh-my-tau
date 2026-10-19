@@ -63,6 +63,29 @@ pub fn icon(theme: &Theme, name: &str, default: &'static str) -> &'static str {
     }
 }
 
+/// Clean-style muted chrome color: `dim`, then `text_muted`, then the
+/// dark-theme fallback.
+#[must_use]
+pub fn dim(theme: &Theme) -> Color {
+    for token in ["dim", "text_muted"] {
+        let c = theme.color(token);
+        if c != Color::Reset {
+            return c;
+        }
+    }
+    fallback("dim", theme)
+}
+
+/// Clean-style token resolution: `dim` routes through [`dim`].
+#[must_use]
+pub fn clean_color(theme: &Theme, token: &str) -> Color {
+    if token == "dim" {
+        dim(theme)
+    } else {
+        color(theme, token)
+    }
+}
+
 /// Braille activity spinner frame for `now_ms` (`segments.ts:235`,
 /// `SPINNER_ADVANCE_MS` = 80).
 #[must_use]

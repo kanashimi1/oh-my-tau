@@ -24,6 +24,7 @@ use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 use serde_json::{json, Value};
 
 use crate::chat::markdown;
+use crate::chat::rail::{self, RailStatus};
 use crate::chat::reveal::RevealBlock;
 use crate::chat::thinking::{ThinkingBlockView, ThinkingDisplay};
 use crate::chat::{
@@ -61,8 +62,8 @@ pub fn entry_lines(
         ChatKind::Assistant(a) => assistant_lines(a, expanded, width, theme),
         ChatKind::Tool(card) => tool_card_lines(card, expanded, width, theme),
         ChatKind::ReadGroup(group) => read_group_lines(group, expanded, width, theme),
-        ChatKind::Bash(exec) => exec_lines(exec, "bash", width, theme),
-        ChatKind::Python(exec) => exec_lines(exec, "eval", width, theme),
+        ChatKind::Bash(exec) => exec_lines(exec, "bash", expanded, width, theme),
+        ChatKind::Python(exec) => exec_lines(exec, "eval", expanded, width, theme),
         ChatKind::Compaction(c) => compaction_lines(c, expanded, width, theme),
         ChatKind::Branch { summary } => branch_lines(summary, expanded, width, theme),
         ChatKind::Custom(c) => custom_lines(c, theme),
@@ -650,6 +651,15 @@ fn tool_card_lines(
 ) -> Vec<Line<'static>> {
     let call = tool_call_value(card, expanded);
     let lines = tool_card_body(card, &call, expanded, width, theme);
+    if theme.clean() && !lines.is_empty() {
+        let status = match card.status {
+            ToolStatus::Pending | ToolStatus::Running => RailStatus::Running,
+            ToolStatus::Ok => RailStatus::Ok,
+            ToolStatus::Error => RailStatus::Error,
+        };
+        let rows = rail::restyle(&lines, status, &card.name, expanded, width, theme);
+        return std::iter::once(Line::default()).chain(rows).collect();
+    }
     // TS `ToolExecutionComponent` opens with a one-row Spacer (read cards
     // keep their own grouping, see `read_group_lines`).
     if card.name == "read" || lines.is_empty() {
@@ -677,7 +687,28 @@ fn tool_card_body(
         "glob" => tools::search::glob_lines(call, expanded, theme),
         "find" => tools::find::find_lines(call, expanded, theme),
         "write" => tools::write::build_card_lines(call, call.get("result"), expanded, width, theme),
-        _ => family_frame_lines(&card.name, &call, width, theme),
+        _ if theme.clean() => {
+            // The families' transcript seam (`render_frame`) carries the rich
+            // settled view (todo checklist, ask answers, …); the scratch-frame
+            // path below only draws their one-line summary.
+            let frame = json!({
+                "toolCallId": card.call_id,
+                "toolName": card.name,
+                "args": card.args,
+                "result": call.get("result").map(|r| json!({
+                    "content": [{"type": "text", "text": r["text"]}],
+                    "isError": r["isError"],
+                    "details": r["details"],
+                })),
+            });
+            let lines = tools::family(&card.name).render_frame(&frame, expanded, theme);
+            if lines.len() > 1 {
+                lines
+            } else {
+                family_frame_lines(&card.name, call, width, theme)
+            }
+        }
+        _ => family_frame_lines(&card.name, call, width, theme),
     }
 }
 
@@ -752,7 +783,128 @@ fn read_group_lines(
     if group.preview {
         return read_group_preview_lines(group, expanded, theme);
     }
+    if theme.clean() {
+        return explore_group_lines(group, expanded, width, theme);
+    }
     read_group_summary_lines(group, width, theme)
+}
+
+/// Family header of a folded search call (`beta 1 match · 1 file · in .`).
+fn explore_item_desc(item: &crate::chat::ReadItem, theme: &Theme) -> Vec<Span<'static>> {
+    let mut call = json!({ "name": item.tool, "arguments": item.args });
+    if let Some(text) = &item.preview {
+        call["result"] = json!({
+            "text": text,
+            "isError": item.status == ToolStatus::Error,
+            "details": item.details,
+        });
+    }
+    let lines = match item.tool.as_str() {
+        "glob" => tools::search::glob_lines(&call, false, theme),
+        "find" => tools::find::find_lines(&call, false, theme),
+        _ => tools::search::grep_lines(&call, false, theme),
+    };
+    rail::header_parts(&lines).1
+}
+
+/// Clean style: consecutive reads/searches as one "Explored" rail row.
+/// Settled + collapsed: a single line naming every item; live or ctrl+O:
+/// one row per item under the `⎿` elbow.
+fn explore_group_lines(
+    group: &ReadGroup,
+    expanded: bool,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(theme.color("dim"));
+    let text = Style::default().fg(theme.color("text"));
+    let settled = !group.open && group.reads.iter().all(|r| r.status.settled());
+    let failed = group.reads.iter().any(|r| r.status == ToolStatus::Error);
+    let status = if !settled {
+        RailStatus::Running
+    } else if failed {
+        RailStatus::Error
+    } else {
+        RailStatus::Ok
+    };
+    let reads_only = group.reads.iter().all(|r| r.tool == "read");
+    let title = match (reads_only, settled) {
+        (true, _) => "Read",
+        (false, true) => "Explored",
+        (false, false) => "Exploring",
+    };
+    let label = |r: &crate::chat::ReadItem| -> String {
+        if r.tool == "read" {
+            let p = read_display_path(&r.path);
+            let name = p.rsplit('/').next().unwrap_or(&p).to_owned();
+            if reads_only {
+                name
+            } else {
+                format!("read {name}")
+            }
+        } else {
+            format!("{} {}", r.tool, r.path)
+        }
+    };
+    let collapsed = settled && !expanded;
+    let mut lines = vec![Line::default()];
+    if collapsed {
+        let joined = group.reads.iter().map(label).collect::<Vec<_>>().join(", ");
+        let budget = width.saturating_sub(title.len() + 4);
+        let desc = tools::truncate(&joined, budget);
+        lines.push(rail::header_line(status, title, vec![Span::styled(desc, text)], theme));
+        return lines;
+    }
+    let counts = {
+        let reads = group.reads.iter().filter(|r| r.tool == "read").count();
+        let searches = group.reads.len() - reads;
+        let mut parts = Vec::new();
+        if reads > 0 {
+            parts.push(format!("{reads} file{}", if reads == 1 { "" } else { "s" }));
+        }
+        if searches > 0 {
+            parts.push(format!("{searches} search{}", if searches == 1 { "" } else { "es" }));
+        }
+        parts.join(" · ")
+    };
+    lines.push(rail::header_line(status, title, vec![Span::styled(counts, dim)], theme));
+    for (i, item) in group.reads.iter().enumerate() {
+        let prefix = if i == 0 { rail::ELBOW } else { rail::BODY_INDENT };
+        let mut spans = vec![Span::styled(prefix, dim)];
+        match item.status {
+            ToolStatus::Error => spans.push(Span::styled(
+                format!("{} ", theme.symbol("status.error")),
+                Style::default().fg(theme.color("error")),
+            )),
+            ToolStatus::Pending | ToolStatus::Running => spans.push(Span::styled(
+                format!("{} ", theme.symbol("status.pending")),
+                dim,
+            )),
+            ToolStatus::Ok => {}
+        }
+        if item.tool == "read" {
+            if !reads_only {
+                spans.push(Span::styled("Read ", text.add_modifier(Modifier::BOLD)));
+            }
+            spans.push(Span::styled(read_display_path(&item.path), text));
+        } else {
+            spans.push(Span::styled(
+                format!("{} ", rail::pretty_name(&item.tool)),
+                text.add_modifier(Modifier::BOLD),
+            ));
+            spans.extend(explore_item_desc(item, theme));
+        }
+        lines.push(tools::frame::clip_line(&Line::from(spans), width));
+        for (anchor, usage) in &group.usages {
+            if anchor == &item.call_id {
+                lines.push(Line::from(Span::styled(
+                    format!("{}{}", rail::BODY_INDENT, usage_metrics(usage, theme)),
+                    dim,
+                )));
+            }
+        }
+    }
+    lines
 }
 
 /// TS `ReadToolGroupComponent#updateDisplay` without content previews: one
@@ -925,7 +1077,13 @@ fn read_group_preview_lines(group: &ReadGroup, expanded: bool, theme: &Theme) ->
 
 // ─── Bash/python executions (chat.md §7.2) ─────────────────────────────────
 
-fn exec_lines(exec: &Execution, tool: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+fn exec_lines(
+    exec: &Execution,
+    tool: &str,
+    expanded: bool,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
     let mut call = json!({
         "name": tool,
         "arguments": {
@@ -954,6 +1112,14 @@ fn exec_lines(exec: &Execution, tool: &str, width: usize, theme: &Theme) -> Vec<
     } else {
         family_frame_lines(tool, &call, width, theme)
     };
+    if theme.clean() {
+        let status = match exec.status {
+            ExecStatus::Running => RailStatus::Running,
+            ExecStatus::Complete => RailStatus::Ok,
+            ExecStatus::Cancelled | ExecStatus::Error => RailStatus::Error,
+        };
+        lines = rail::restyle(&lines, status, tool, expanded, width, theme);
+    }
     // `BashExecutionComponent` opens with a one-row Spacer as well.
     lines.insert(0, Line::default());
     if exec.excluded {
@@ -1241,6 +1407,9 @@ mod tests {
                         path: (*path).into(),
                         status: *status,
                         preview: Some("body".into()),
+                        tool: "read".into(),
+                        args: Value::Null,
+                        details: Value::Null,
                     })
                     .collect(),
                 usages,

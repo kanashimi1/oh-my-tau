@@ -11,6 +11,7 @@ pub mod code;
 pub mod local_time;
 pub mod markdown;
 pub mod messages;
+pub mod rail;
 pub mod reveal;
 pub mod thinking;
 

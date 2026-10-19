@@ -228,6 +228,45 @@ pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> 
     spans
 }
 
+/// Cells in the clean-style context bar.
+pub const CLEAN_BAR_CELLS: usize = 10;
+
+/// Clean-style fill token: `accent` below 70%, `warning` up to 90%,
+/// `error` above.
+#[must_use]
+pub fn clean_fill_token(percent: f64) -> &'static str {
+    if percent < 70.0 {
+        "accent"
+    } else if percent <= 90.0 {
+        "warning"
+    } else {
+        "error"
+    }
+}
+
+/// The clean-style context segment: a fixed 10-cell `━`/`─` bar plus
+/// ` N%`; `None` when neither the percent nor the window is known.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+pub fn clean_bar(percent: Option<f64>, window: Option<u64>) -> Option<super::segments::Piece> {
+    if percent.is_none() && window.unwrap_or(0) == 0 {
+        return None;
+    }
+    let pct = percent.unwrap_or(0.0).max(0.0);
+    let filled = ((pct / 100.0 * CLEAN_BAR_CELLS as f64).round() as usize).min(CLEAN_BAR_CELLS);
+    let fill = clean_fill_token(pct);
+    let label_token = if fill == "accent" { "dim" } else { fill };
+    let mut runs = Vec::new();
+    if filled > 0 {
+        runs.push(("━".repeat(filled), fill));
+    }
+    if filled < CLEAN_BAR_CELLS {
+        runs.push(("─".repeat(CLEAN_BAR_CELLS - filled), "dim"));
+    }
+    runs.push((format!(" {}", percent_label(pct)), label_token));
+    Some(super::segments::Piece::from_runs(runs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,5 +309,22 @@ mod tests {
         assert!(embedded_min_width(&i) > 1);
         i.embed = false;
         assert_eq!(embedded_min_width(&i), 1);
+    }
+
+    #[test]
+    fn clean_bar_thresholds_and_cells() {
+        assert_eq!(clean_fill_token(0.0), "accent");
+        assert_eq!(clean_fill_token(69.9), "accent");
+        assert_eq!(clean_fill_token(70.0), "warning");
+        assert_eq!(clean_fill_token(90.0), "warning");
+        assert_eq!(clean_fill_token(90.5), "error");
+        let bar = clean_bar(Some(95.0), Some(200_000)).unwrap();
+        assert_eq!(bar.text, "━━━━━━━━━━ 95%");
+        assert_eq!(bar.runs[0].1, "error");
+        let bar = clean_bar(Some(30.0), None).unwrap();
+        assert_eq!(bar.text, "━━━─────── 30%");
+        assert_eq!(bar.runs[1].1, "dim");
+        assert_eq!(clean_bar(None, Some(128_000)).unwrap().text, "────────── 0%");
+        assert!(clean_bar(None, None).is_none());
     }
 }

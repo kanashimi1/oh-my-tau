@@ -192,6 +192,23 @@ pub const CUSTOM_RIGHT: &[SegmentId] = &[
     SegmentId::ContextPct,
 ];
 
+/// Clean-style segments for the `default` preset (omp-rs only).
+pub const CLEAN_DEFAULT_LEFT: &[SegmentId] = &[
+    SegmentId::Model,
+    SegmentId::Mode,
+    SegmentId::Path,
+    SegmentId::Git,
+    SegmentId::Pr,
+    SegmentId::Subagents,
+];
+
+/// See [`CLEAN_DEFAULT_LEFT`].
+pub const CLEAN_DEFAULT_RIGHT: &[SegmentId] = &[
+    SegmentId::SessionName,
+    SegmentId::Cost,
+    SegmentId::ContextPct,
+];
+
 /// How segment groups are joined (`separators.ts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(missing_docs)]

@@ -575,6 +575,9 @@ fn layout(
     gauge_input: &gauge::GaugeInput,
     kind: StatusLayout,
 ) -> Line<'static> {
+    if theme.clean() {
+        return layout_clean(ctx, theme, width, kind);
+    }
     let plain = kind.is_plain();
     let (mut left_ids, mut right_ids) = match ctx.st.config.preset {
         presets::Preset::Custom => (
@@ -717,6 +720,201 @@ fn layout(
     }
     spans.extend(right_group.spans);
     Line::from(spans)
+}
+
+/// The clean layout (omp-rs only): dim ` · ` separators, dim icons, no
+/// powerline caps or background, the context as a fixed 10-cell bar in the
+/// last right slot, and plain air between the groups. Overflow shrinks the
+/// session name, drops right segments from the end, the jobs badge, shrinks
+/// the path, then drops left segments (never `path` first).
+#[allow(clippy::too_many_lines)] // one ordered overflow pass, like `layout`
+fn layout_clean(ctx: &Ctx<'_>, theme: &Theme, width: usize, kind: StatusLayout) -> Line<'static> {
+    let config = &ctx.st.config;
+    let (mut left_ids, mut right_ids) = match config.preset {
+        presets::Preset::Default => (
+            presets::CLEAN_DEFAULT_LEFT.to_vec(),
+            presets::CLEAN_DEFAULT_RIGHT.to_vec(),
+        ),
+        presets::Preset::Custom => (
+            config.left_segments.clone().unwrap_or_else(|| presets::CUSTOM_LEFT.to_vec()),
+            config.right_segments.clone().unwrap_or_else(|| presets::CUSTOM_RIGHT.to_vec()),
+        ),
+        p => p.segments(),
+    };
+    match kind {
+        StatusLayout::PlainRight => left_ids.clear(),
+        StatusLayout::PlainLeft => right_ids.clear(),
+        _ => {}
+    }
+    let has_context = left_ids.iter().chain(right_ids.iter()).any(|id| *id == SegmentId::ContextPct);
+    left_ids.retain(|id| !matches!(id, SegmentId::Pi | SegmentId::ContextPct));
+    right_ids.retain(|id| !matches!(id, SegmentId::Pi | SegmentId::ContextPct));
+    let mut bar = if has_context && config.context_line != presets::ContextLineMode::Off {
+        gauge::clean_bar(ctx.st.context_percent, ctx.st.context_window)
+    } else {
+        None
+    };
+    // The bar rides on the left only when the layout has no right group.
+    let bar_left = kind == StatusLayout::PlainLeft;
+    let mut jobs_badge = ctx.st.jobs > 0 && kind != StatusLayout::PlainLeft;
+
+    let mut path_max = ctx.path_max;
+    let mut name_floor = usize::MAX;
+    let mut left: Vec<Vec<Piece>>;
+    let mut right: Vec<Vec<Piece>>;
+    loop {
+        left = render_side(&left_ids, ctx, theme, path_max);
+        right = render_side(&right_ids, ctx, theme, path_max);
+        if jobs_badge {
+            right.insert(
+                0,
+                vec![Piece::new(
+                    "muted",
+                    format!("{} {}", style::icon(theme, "icon.job", "⚙"), ctx.st.jobs),
+                )],
+            );
+        }
+        if let Some(bar) = &bar {
+            if bar_left {
+                left.push(vec![bar.clone()]);
+            } else {
+                right.push(vec![bar.clone()]);
+            }
+        }
+        let name = ctx.st.session_name.as_deref().unwrap_or("");
+        let name_piece = right
+            .iter_mut()
+            .flatten()
+            .find(|p| !name.is_empty() && p.runs.is_empty() && p.text.contains(name));
+        let name_w = if let Some(piece) = name_piece {
+            if name_floor != usize::MAX {
+                piece.text = clamp_cells(&piece.text, name_floor);
+            }
+            str_width(&piece.text)
+        } else {
+            0
+        };
+        let left_w = paint_clean_group(&flatten(&left), theme).width;
+        let right_w = paint_clean_group(&flatten(&right), theme).width;
+        if left_w + right_w + usize::from(left_w > 0 && right_w > 0) <= width {
+            break;
+        }
+        // 1. Shrink the session name toward its 8-cell floor.
+        if name_w > 8 {
+            name_floor = name_w.saturating_sub(8).max(8);
+            continue;
+        }
+        // 2. Drop right segments from the end (the bar stays).
+        if right_ids.pop().is_some() {
+            continue;
+        }
+        if jobs_badge {
+            jobs_badge = false;
+            continue;
+        }
+        // 3. Shrink `path` (min 8 cells, maxLength ≥ 4).
+        let path_w = left
+            .iter()
+            .flatten()
+            .find(|p| p.token == "statusLinePath")
+            .map_or(0, |p| str_width(&p.text));
+        if path_w > 8 && path_max > 4 {
+            path_max = path_max.saturating_sub(4).max(4);
+            continue;
+        }
+        // 4. Drop left segments right-to-left, never `path` first.
+        if drop_left(&mut left_ids) {
+            continue;
+        }
+        // 5. Last resort: the context bar.
+        if bar.take().is_some() {
+            continue;
+        }
+        break;
+    }
+
+    let left_group = paint_clean_group(&flatten(&left), theme);
+    let right_group = paint_clean_group(&flatten(&right), theme);
+    let mut spans = left_group.spans;
+    if right_group.width > 0 {
+        let gap = width
+            .saturating_sub(left_group.width + right_group.width)
+            .max(usize::from(left_group.width > 0));
+        if gap > 0 {
+            spans.push(Span::raw(" ".repeat(gap)));
+        }
+        spans.extend(right_group.spans);
+    }
+    Line::from(spans)
+}
+
+/// Paint one clean group: ` piece · piece ` with dim separators and dim
+/// icons, no background or caps.
+fn paint_clean_group(pieces: &[Piece], theme: &Theme) -> Group {
+    let dim = Style::default().fg(style::dim(theme));
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut width = 0usize;
+    if pieces.is_empty() {
+        return Group { spans, width };
+    }
+    spans.push(Span::raw(" "));
+    width += 1;
+    for (i, piece) in pieces.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", dim));
+            width += 3;
+        }
+        if piece.runs.is_empty() {
+            let body = Style::default().fg(style::clean_color(theme, piece.token));
+            for (text, icon) in icon_runs(&piece.text) {
+                spans.push(Span::styled(text.to_string(), if icon { dim } else { body }));
+            }
+        } else {
+            for (text, token) in &piece.runs {
+                spans.push(Span::styled(
+                    text.clone(),
+                    Style::default().fg(style::clean_color(theme, token)),
+                ));
+            }
+        }
+        width += str_width(&piece.text);
+    }
+    spans.push(Span::raw(" "));
+    width += 1;
+    Group { spans, width }
+}
+
+/// Split a segment's text into runs flagged `true` for icons. An icon is a
+/// space-delimited word made only of non-ASCII, non-alphanumeric glyphs
+/// (`⬢`, `⑂`, `◑`, `⤴`, the ` · ` thinking joiner); spaces stay with the body.
+fn icon_runs(text: &str) -> Vec<(&str, bool)> {
+    let is_icon = |word: &str| {
+        !word.is_empty() && word.chars().all(|c| !c.is_ascii() && !c.is_alphanumeric())
+    };
+    let mut runs: Vec<(&str, bool)> = Vec::new();
+    let mut run_start = 0usize;
+    let mut run_icon = false;
+    let mut offset = 0usize;
+    for word in text.split(' ') {
+        let icon = is_icon(word);
+        if icon != run_icon && offset > run_start {
+            runs.push((&text[run_start..offset], run_icon));
+            run_start = offset;
+        }
+        run_icon = icon;
+        let end = offset + word.len();
+        if icon && end < text.len() {
+            // The space after an icon belongs to the body run.
+            runs.push((&text[run_start..end], true));
+            run_start = end;
+            run_icon = false;
+        }
+        offset = end + 1;
+    }
+    if run_start < text.len() {
+        runs.push((&text[run_start..], run_icon));
+    }
+    runs
 }
 
 /// Render each segment id to its pieces (`None` → omitted).
@@ -903,5 +1101,111 @@ mod tests {
         let buf = terminal.backend().buffer();
         let row: String = (0..60).map(|x| buf[(x, 1)].symbol()).collect();
         assert!(row.contains("running tests"));
+    }
+
+    fn clean_theme() -> Theme {
+        let mut t = Theme::default();
+        t.ui = crate::theme::UiStyle::Clean;
+        t
+    }
+
+    fn draw_buf(status: &StatusLine, width: u16, theme: &Theme) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal.draw(|f| status.render(f, f.area(), theme)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_of(buf: &ratatui::buffer::Buffer) -> String {
+        (0..buf.area.width).map(|x| buf[(x, 0)].symbol()).collect()
+    }
+
+    fn clean_status() -> StatusLine {
+        let mut status = StatusLine::new("anthropic/claude-sonnet-4.5".into(), "/home/u/work");
+        status.model_name = Some("sonnet-4.5".into());
+        status.thinking = Some("medium".into());
+        status.git = Some(GitInfo {
+            branch: Some("main".into()),
+            ..GitInfo::default()
+        });
+        status.session_name = Some("ses-name".into());
+        status.tokens.cost = 0.12;
+        status.context_percent = Some(5.0);
+        status.context_window = Some(128_000);
+        status
+    }
+
+    #[test]
+    fn clean_default_row_is_dot_separated_with_trailing_bar() {
+        let theme = clean_theme();
+        let buf = draw_buf(&clean_status(), 120, &theme);
+        let row = row_of(&buf);
+        assert!(row.contains(" · "), "{row:?}");
+        assert!(!row.contains('π'), "{row:?}");
+        assert!(!row.contains('>') && !row.contains('▶') && !row.contains('╎'), "{row:?}");
+        assert!(!row.contains("128K"), "{row:?}");
+        assert!(row.contains("sonnet-4.5") && row.contains("main"), "{row:?}");
+        assert!(row.contains(" work ") && !row.contains("/home"), "{row:?}");
+        assert!(row.contains("ses-name · $0.12 · "), "{row:?}");
+        assert!(row.trim_end().ends_with("━───────── 5%"), "{row:?}");
+        // Colors: dim separators and icons, accent fill, dim empty cells.
+        let dim = style::dim(&theme);
+        let at = |needle: &str| row.find(needle).map(|byte| row[..byte].chars().count());
+        let cell = |x: usize| &buf[(u16::try_from(x).unwrap(), 0)];
+        assert_eq!(cell(at("·").unwrap()).fg, dim);
+        assert_eq!(cell(at("◑").unwrap()).fg, dim);
+        assert_ne!(cell(at("sonnet").unwrap()).fg, dim);
+        assert_eq!(cell(at("━").unwrap()).fg, theme.color("accent"));
+        assert_eq!(cell(at("─").unwrap()).fg, dim);
+    }
+
+    #[test]
+    fn clean_bar_color_follows_thresholds() {
+        let theme = clean_theme();
+        for (pct, token) in [(50.0, "accent"), (80.0, "warning"), (95.0, "error")] {
+            let mut status = clean_status();
+            status.context_percent = Some(pct);
+            let buf = draw_buf(&status, 120, &theme);
+            let row = row_of(&buf);
+            let x = row[..row.find('━').unwrap()].chars().count();
+            assert_eq!(buf[(u16::try_from(x).unwrap(), 0)].fg, theme.color(token), "{pct}");
+        }
+    }
+
+    #[test]
+    fn clean_explicit_preset_keeps_segments_and_bar() {
+        let mut status = clean_status();
+        status.config.preset = presets::Preset::Full;
+        status.tokens.input = 12_000;
+        let row = row_of(&draw_buf(&status, 160, &clean_theme()));
+        assert!(!row.contains('π'), "{row:?}");
+        assert!(row.contains(" · "), "{row:?}");
+        assert!(row.contains("12"), "token_in kept: {row:?}");
+        assert!(row.trim_end().ends_with("━───────── 5%"), "{row:?}");
+    }
+
+    #[test]
+    fn clean_overflow_drops_segments_and_keeps_one_row() {
+        let mut status = clean_status();
+        status.cwd = "/very/long/project/some-really-long-directory-name".into();
+        status.session_name = Some("a-rather-long-session-name".into());
+        let row = row_of(&draw_buf(&status, 50, &clean_theme()));
+        assert_eq!(row.chars().count(), 50);
+        assert!(row.trim_end().ends_with(" 5%"), "{row:?}");
+        assert!(row.contains("some-r") || row.contains("name"), "path kept: {row:?}");
+        assert!(!row.contains("$0.12"), "cost dropped: {row:?}");
+    }
+
+    #[test]
+    fn clean_icon_runs_split_glyph_words() {
+        assert_eq!(icon_runs("⬢ sonnet · ◑ med"), vec![
+            ("⬢", true),
+            (" sonnet ", false),
+            ("·", true),
+            (" ", false),
+            ("◑", true),
+            (" med", false),
+        ]);
+        assert_eq!(icon_runs("#12 ⤴"), vec![("#12 ", false), ("⤴", true)]);
+        assert_eq!(icon_runs("$0.12"), vec![("$0.12", false)]);
     }
 }

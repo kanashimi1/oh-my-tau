@@ -115,6 +115,18 @@ pub struct ReadItem {
     pub status: ToolStatus,
     /// Optional content preview.
     pub preview: Option<String>,
+    /// Tool name: `read`, or a search tool folded in by the clean style
+    /// (`grep`/`search`/`glob`/`find`; `path` then holds its pattern).
+    pub tool: String,
+    /// Call arguments (search tools: re-rendered for the row summary).
+    pub args: Value,
+    /// Result `details` once settled.
+    pub details: Value,
+}
+
+/// Search tools the clean style folds into the exploration group.
+pub(crate) fn is_explore_tool(name: &str) -> bool {
+    matches!(name, "grep" | "search" | "glob" | "find")
 }
 
 /// Consecutive filesystem reads folded into one compact group (§7.1).
@@ -672,6 +684,11 @@ impl Messages {
 
     /// Apply one runtime event (live path).
     pub fn apply(&mut self, event: &AppEvent) {
+        self.apply_event(event);
+        self.close_displaced_groups();
+    }
+
+    fn apply_event(&mut self, event: &AppEvent) {
         match event {
             AppEvent::AgentStart => {
                 self.streaming = true;
@@ -680,7 +697,7 @@ impl Messages {
             AppEvent::TurnStart => self.streaming = true,
             AppEvent::AgentEnd(_) | AppEvent::TurnEnd(_) | AppEvent::SessionSettled => {
                 self.streaming = false;
-                self.seal_turn();
+                self.seal_turn(matches!(event, AppEvent::TurnEnd(_)));
             }
             AppEvent::MessageStart(frame) => {
                 if let Some(message) = frame.get("message") {
@@ -762,7 +779,7 @@ impl Messages {
                 }
             }
         }
-        self.seal_turn();
+        self.seal_turn(false);
     }
 
     /// Record a purely local UI notice (app-level echo, not a runtime
@@ -1191,18 +1208,20 @@ impl Messages {
     /// Create the pending entry for a tool call (shared by the live
     /// `tool_execution_start` path and the persisted-history rebuild).
     fn start_tool_entry(&mut self, call_id: String, name: String, args: Value) {
-        if name == "read" {
-            let path = arg_str(&args, "path")
-                .or_else(|| arg_str(&args, "file_path"))
-                .unwrap_or("")
-                .to_owned();
+        let explore = self.theme.clean() && !self.prefs.read_preview && is_explore_tool(&name);
+        if name == "read" || explore {
+            let path = item_label(&name, &args).unwrap_or("").to_owned();
             let item = ReadItem {
                 call_id: call_id.clone(),
                 path,
                 status: ToolStatus::Pending,
                 preview: None,
+                tool: name.clone(),
+                args: args.clone(),
+                details: Value::Null,
             };
-            let idx = match self.open_group {
+            let open = self.open_group.or_else(|| self.reusable_group());
+            let idx = match open {
                 Some(idx) => match &mut self.entries[idx].kind {
                     ChatKind::ReadGroup(g) if g.open => {
                         g.reads.push(item);
@@ -1259,6 +1278,23 @@ impl Messages {
         self.pending.insert(call_id, idx);
     }
 
+    /// Clean style: the still-open exploration group behind entries that
+    /// draw nothing (an assistant message that only carried tool calls), so
+    /// tool calls spread over several messages fold into one row.
+    fn reusable_group(&self) -> Option<usize> {
+        if !self.theme.clean() {
+            return None;
+        }
+        for (idx, entry) in self.entries.iter().enumerate().rev() {
+            match &entry.kind {
+                ChatKind::ReadGroup(g) if g.open && !g.preview => return Some(idx),
+                _ if !entry_visible(entry) => {}
+                _ => return None,
+            }
+        }
+        None
+    }
+
     fn push_read_group(&mut self, item: ReadItem) -> usize {
         let text = format!("read {}", item.path);
         self.push(ChatEntry::new(
@@ -1281,6 +1317,14 @@ impl Messages {
         };
         if let Some(args) = frame.get("args") {
             self.with_tool_card(idx, |card| card.args = args.clone());
+            if let Some(ChatKind::ReadGroup(g)) = self.entries.get_mut(idx).map(|e| &mut e.kind) {
+                if let Some(item) = g.reads.iter_mut().find(|r| r.call_id == call_id) {
+                    if let Some(p) = item_label(&item.tool, args) {
+                        item.path = p.to_owned();
+                    }
+                    item.args = args.clone();
+                }
+            }
         }
         if let Some(partial) = frame.get("partialResult") {
             let text = result_text(partial);
@@ -1384,6 +1428,7 @@ impl Messages {
                     if let Some(item) = g.reads.iter_mut().find(|r| r.call_id == call_id) {
                         item.status = status;
                         item.preview = Some(text.clone());
+                        item.details = details.clone();
                     }
                     let summary = if g.reads.len() == 1 {
                         format!("read {}", g.reads[0].path)
@@ -1432,7 +1477,12 @@ impl Messages {
 
     /// Turn settled: close the live assistant, seal abandoned pending tools
     /// and flush the deferred usage row (§2 `#flushPendingUsage`).
-    fn seal_turn(&mut self) {
+    /// `soft` (a turn inside a running agent loop): the clean style keeps a
+    /// settled exploration group open so the next turn's reads/searches fold
+    /// into it; [`Self::close_displaced_groups`] closes it once anything
+    /// visible lands after it.
+    fn seal_turn(&mut self, soft: bool) {
+        let keep_open = soft && self.theme.clean();
         // Before the read groups close: a reads-only message's row nests.
         self.flush_usage();
         self.split_skip = 0;
@@ -1452,6 +1502,9 @@ impl Messages {
                     entry.finished = true;
                 }
                 ChatKind::ReadGroup(g) if g.open => {
+                    if keep_open && !g.preview {
+                        continue;
+                    }
                     g.open = false;
                     entry.finished = true;
                 }
@@ -1459,9 +1512,69 @@ impl Messages {
             }
         }
     }
+
+    /// Clean style: close exploration groups that something visible now
+    /// follows (they can no longer fold, and must not hold back the
+    /// scrollback commit).
+    fn close_displaced_groups(&mut self) {
+        if !self.theme.clean() {
+            return;
+        }
+        let mut visible_after = false;
+        for entry in self.entries.iter_mut().rev() {
+            match &mut entry.kind {
+                ChatKind::ReadGroup(g) if g.open => {
+                    if visible_after {
+                        g.open = false;
+                        if g.reads.iter().all(|r| r.status.settled()) {
+                            entry.finished = true;
+                        }
+                    }
+                    visible_after = true;
+                }
+                _ => {
+                    if entry_visible(entry) {
+                        visible_after = true;
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ---- payload helpers (TS wire shapes, spec section 1) -----------------------
+
+/// Row label of a grouped call: the read path, or a search's pattern
+/// (`glob` takes its pattern as `path`).
+fn item_label<'v>(tool: &str, args: &'v Value) -> Option<&'v str> {
+    if tool == "read" {
+        arg_str(args, "path").or_else(|| arg_str(args, "file_path"))
+    } else {
+        arg_str(args, "pattern")
+            .or_else(|| arg_str(args, "query"))
+            .or_else(|| arg_str(args, "path"))
+    }
+}
+
+/// Whether an entry draws anything (an assistant message that only carried
+/// tool calls draws nothing; usage rows are chrome).
+fn entry_visible(entry: &ChatEntry) -> bool {
+    match &entry.kind {
+        ChatKind::Assistant(a) => {
+            a.error_message.is_some()
+                || a.segments.iter().any(|s| match s {
+                    AssistantSegment::Text { text } | AssistantSegment::Thinking { text } => {
+                        !text.trim().is_empty()
+                    }
+                    #[allow(unreachable_patterns)]
+                    _ => true,
+                })
+        }
+        ChatKind::Usage(_) => false,
+        ChatKind::ReadGroup(_) => true,
+        _ => true,
+    }
+}
 
 fn str_field<'v>(value: &'v Value, key: &str) -> Option<&'v str> {
     value.get(key).and_then(Value::as_str)
@@ -1941,6 +2054,55 @@ mod tests {
             "args": {"path": "c.rs"}
         })));
         assert_eq!(m.entries().len(), 3);
+    }
+
+    #[test]
+    fn clean_style_folds_searches_across_turns_into_one_group() {
+        let mut m = Messages::new();
+        let mut theme = Theme::default();
+        theme.ui = crate::theme::UiStyle::Clean;
+        m.set_theme(theme);
+        m.apply(&AppEvent::AgentStart);
+        let call = |m: &mut Messages, id: &str, name: &str, args: Value| {
+            m.apply(&AppEvent::ToolExecutionStart(json!({
+                "type": "tool_execution_start", "toolCallId": id, "toolName": name, "args": args
+            })));
+            m.apply(&AppEvent::ToolExecutionEnd(json!({
+                "type": "tool_execution_end", "toolCallId": id, "toolName": name,
+                "result": {"content": [{"type": "text", "text": "ok"}], "details": {"matchCount": 1, "fileCount": 1}}
+            })));
+        };
+        call(&mut m, "g1", "grep", json!({"pattern": "beta"}));
+        m.apply(&AppEvent::TurnEnd(json!({})));
+        // The next turn's tool-call-only assistant message draws nothing.
+        m.apply(&AppEvent::MessageStart(json!({"message": {"role": "assistant", "content": []}})));
+        call(&mut m, "g2", "glob", json!({"pattern": "*.txt"}));
+        call(&mut m, "r1", "read", json!({"path": "a.rs"}));
+        let groups: Vec<&ReadGroup> = m
+            .entries()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ChatKind::ReadGroup(g) => Some(g),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups.len(), 1, "{:?}", m.entries().iter().map(|e| &e.text).collect::<Vec<_>>());
+        let tools: Vec<&str> = groups[0].reads.iter().map(|r| r.tool.as_str()).collect();
+        assert_eq!(tools, ["grep", "glob", "read"]);
+        assert_eq!(groups[0].reads[1].path, "*.txt");
+        assert!(groups[0].open, "kept open across the soft turn end");
+        // Visible text after the group closes it (and lets it commit).
+        m.apply(&AppEvent::MessageUpdate(json!({"message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}})));
+        let group = m.entries().iter().find(|e| matches!(e.kind, ChatKind::ReadGroup(_))).unwrap();
+        assert!(group.is_finished());
+        // Collapsed render: one rail row naming every item.
+        let rows: Vec<String> = blocks::entry_lines(group, false, 80, m.theme())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(rows, ["", "● Explored grep beta, glob *.txt, read a.rs"]);
+        let rows = blocks::entry_lines(group, true, 80, m.theme());
+        assert_eq!(rows.len(), 5, "header + one row per item");
     }
 
     #[test]
