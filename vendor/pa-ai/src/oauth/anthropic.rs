@@ -17,13 +17,15 @@ use super::types::{OAuthLoginUi, OAuthPrompt};
 /// value.
 pub const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
-const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
+// api.anthropic.com answers platform.claude.com's refresh calls with rate_limit_error
+// while the account is warm (several providers share the client id); the API host accepts them.
+const TOKEN_URL: &str = "https://api.anthropic.com/v1/oauth/token";
 const SCOPES: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 pub const DEFAULT_TOKEN_TIMEOUT_MS: u64 = 30_000;
 const EXPIRY_SKEW_MS: i64 = 5 * 60 * 1000;
-/// The refresh runs under the auth store's file lock, which a peer declares stale after 10 seconds;
-/// the request must fit inside that window.
-pub const REFRESH_TIMEOUT_MS: u64 = 8_000;
+/// The refresh runs under the auth store's refresh lease, which a peer declares stale
+/// after `LEASE_TTL_MS` (15 s); keep the request inside that window with margin.
+pub const REFRESH_TIMEOUT_MS: u64 = 12_000;
 const AUTH_INSTRUCTIONS: &str =
     "Complete login in your browser. If the browser is on another machine, paste the final redirect URL here.";
 const PROMPT_MESSAGE: &str = "Paste the authorization code or full redirect URL:";
