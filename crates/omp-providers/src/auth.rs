@@ -19,6 +19,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context as _, Result};
+use rusqlite::OptionalExtension as _;
 use serde_json::{Map, Value};
 
 use crate::{now_ms, AgentDir};
@@ -43,6 +44,23 @@ const REMOTE_REFRESH_SENTINEL: &str = "__remote__";
 pub struct Credential {
     pub key: String,
     pub id: i64,
+}
+
+/// Every usable credential of one provider, in store order (the row id order the
+/// credential store iterates). `current` is [`credential`]'s pick; `alternates` are the
+/// other rows (skip lists `current` by row id).
+#[derive(Debug, Clone)]
+pub struct CredentialPool {
+    pub current: Credential,
+    pub alternates: Vec<Credential>,
+}
+
+impl CredentialPool {
+    /// Whether another account can take over when `current` is rate-limited.
+    #[must_use]
+    pub fn has_alternates(&self) -> bool {
+        !self.alternates.is_empty()
+    }
 }
 
 /// Broker connection (TS `AuthBrokerClientConfig`).
@@ -252,38 +270,78 @@ fn is_fresh(credential: &Value, now: i64) -> bool {
 async fn broker_resolve(cfg: &BrokerConfig, provider: &str, force: Option<i64>) -> Result<Option<Credential>> {
     let now = now_ms() as i64;
     for entry in broker_snapshot(cfg).await?.into_iter().filter(|e| e.provider == provider) {
-        match entry.credential.get("type").and_then(Value::as_str) {
-            Some("api_key") => {
-                if let Some(key) = entry.credential.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()) {
-                    return Ok(Some(Credential { key: key.to_string(), id: entry.id }));
-                }
-            }
-            Some("oauth") => {
-                let forced = force == Some(entry.id);
-                let mut credential = entry.credential.clone();
-                if forced || !is_fresh(&credential, now) {
-                    match broker_refresh(cfg, entry.id, forced).await {
-                        Ok(refreshed) => credential = refreshed,
-                        Err(e) if !forced && expires_of(&credential).is_none_or(|x| x > now) => {
-                            tracing::warn!("auth broker refresh of credential {} failed: {e:#}", entry.id);
-                        }
-                        Err(e) => {
-                            tracing::warn!("auth broker refresh of credential {} failed: {e:#}", entry.id);
-                            if forced {
-                                return Ok(None);
-                            }
-                            continue;
-                        }
-                    }
-                }
-                if let Some(access) = access_of(&credential).filter(|_| expires_of(&credential).is_none_or(|x| x > now)) {
-                    return Ok(Some(Credential { key: access.to_string(), id: entry.id }));
-                }
-            }
-            _ => {}
+        if let Some((c, _)) = broker_entry_credential(cfg, entry, now, force).await? {
+            return Ok(Some(c));
         }
     }
     Ok(None)
+}
+async fn broker_resolve_row(cfg: &BrokerConfig, provider: &str, force: Option<i64>) -> Result<Option<(Credential, Value)>> {
+    let now = now_ms() as i64;
+    for entry in broker_snapshot(cfg).await?.into_iter().filter(|e| e.provider == provider) {
+        if let Some(pair) = broker_entry_credential(cfg, entry, now, force).await? {
+            return Ok(Some(pair));
+        }
+    }
+    Ok(None)
+}
+
+
+/// One broker snapshot entry reduced to a usable `Credential`, or `None` when it cannot serve
+/// a request (a forced refresh that fails or re-mints the same token yields `None` when
+/// `force` targets this entry — the caller has nothing new to retry with).
+async fn broker_entry_credential(
+    cfg: &BrokerConfig,
+    entry: SnapshotEntry,
+    now: i64,
+    force: Option<i64>,
+) -> Result<Option<(Credential, Value)>> {
+    match entry.credential.get("type").and_then(Value::as_str) {
+        Some("api_key") => Ok(entry
+            .credential
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|k| !k.is_empty())
+            .map(|key| (Credential { key: key.to_string(), id: entry.id }, entry.credential.clone()))),
+        Some("oauth") => {
+            let forced = force == Some(entry.id);
+            let mut credential = entry.credential.clone();
+            if forced || !is_fresh(&credential, now) {
+                match broker_refresh(cfg, entry.id, forced).await {
+                    Ok(refreshed) => credential = refreshed,
+                    Err(e) if !forced && expires_of(&credential).is_none_or(|x| x > now) => {
+                        tracing::warn!("auth broker refresh of credential {} failed: {e:#}", entry.id);
+                    }
+                    Err(e) => {
+                        tracing::warn!("auth broker refresh of credential {} failed: {e:#}", entry.id);
+                        return Ok(None);
+                    }
+                }
+            }
+            let Some(access) = access_of(&credential) else { return Ok(None) };
+            if expires_of(&credential).is_some_and(|x| x <= now) {
+                return Ok(None);
+            }
+            Ok(Some((Credential { key: access.to_string(), id: entry.id }, credential)))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Every usable credential of `provider` from the broker snapshot: the first pick
+/// ([`broker_resolve`]'s ordering) plus every other entry that yields a bearer.
+async fn broker_pool(cfg: &BrokerConfig, provider: &str) -> Result<Option<CredentialPool>> {
+    let now = now_ms() as i64;
+    let mut usable: Vec<Credential> = Vec::new();
+    for entry in broker_snapshot(cfg).await?.into_iter().filter(|e| e.provider == provider) {
+        if let Some((c, _)) = broker_entry_credential(cfg, entry, now, None).await? {
+            if usable.iter().all(|u| u.id != c.id) {
+                usable.push(c);
+            }
+        }
+    }
+    let Some(first) = usable.first().cloned() else { return Ok(None) };
+    Ok(Some(CredentialPool { alternates: usable.into_iter().skip(1).collect(), current: first }))
 }
 
 // ------------------------------------------------------------ local store
@@ -590,6 +648,8 @@ async fn refresh_leased(
     Ok(Some(Credential { key: refreshed.access, id: row.id }))
 }
 
+/// The first usable credential of `rows`, refreshing an expired OAuth row. Iterates rows in
+/// store order and stops at the first usable one (provider order, TS `localResolve`).
 async fn local_resolve(
     db: &Path,
     provider: &str,
@@ -602,38 +662,92 @@ async fn local_resolve(
     };
     let now = now_ms() as i64;
     for row in rows {
-        let Ok(data) = serde_json::from_str::<Value>(&row.data) else { continue };
-        match row.kind.as_str() {
-            "api_key" => {
-                if let Some(k) = data.get("key").and_then(Value::as_str).filter(|k| !k.is_empty()) {
-                    return Ok(Some(Credential { key: k.to_string(), id: row.id }));
-                }
-            }
-            "oauth" => {
-                let Some(access) = access_of(&data) else { continue };
-                let forced = force == Some(row.id);
-                if forced && recent_mint(&db_key(db), row.id, access) {
-                    // TS `reuseRecentMint`: re-minting a token the provider just rejected only churns
-                    // the refresh token; the caller sees the same bearer and does not retry.
-                    return Ok(Some(Credential { key: access.to_string(), id: row.id }));
-                }
-                if !forced && is_fresh(&data, now) {
-                    return Ok(Some(Credential { key: access.to_string(), id: row.id }));
-                }
-                match refresh_local_row(db, provider, &row, forced, hosts).await {
-                    Ok(Some(c)) => return Ok(Some(c)),
-                    Ok(None) | Err(_) if forced => return Ok(None),
-                    Ok(None) => {}
-                    Err(e) => tracing::warn!("OAuth refresh of {provider} credential {} failed: {e:#}", row.id),
-                }
-                if expires_of(&data).is_none_or(|x| x > now) {
-                    return Ok(Some(Credential { key: access.to_string(), id: row.id }));
-                }
-            }
-            _ => {}
+        if let Some((c, _)) = local_row_credential(db, provider, &row, now, force, hosts).await {
+            return Ok(Some(c));
         }
     }
     Ok(None)
+}
+async fn local_resolve_row(
+    db: &Path,
+    provider: &str,
+    force: Option<i64>,
+    hosts: &Hosts,
+) -> Result<Option<(Credential, Value)>> {
+    let rows = match read_rows(db, provider) {
+        Ok(rows) => rows,
+        Err(_) => return Ok(None),
+    };
+    let now = now_ms() as i64;
+    for row in rows {
+        if let Some(pair) = local_row_credential(db, provider, &row, now, force, hosts).await {
+            return Ok(Some(pair));
+        }
+    }
+    Ok(None)
+}
+
+
+/// One credential row reduced to a usable `Credential`, or `None` when the row cannot serve a
+/// request. `force` targets one row (auth recovery): it alone is consulted, and a re-minted
+/// bearer is not re-used (`reuseRecentMint`).
+async fn local_row_credential(
+    db: &Path,
+    provider: &str,
+    row: &Row,
+    now: i64,
+    force: Option<i64>,
+    hosts: &Hosts,
+) -> Option<(Credential, Value)> {
+    let data: Value = serde_json::from_str(&row.data).ok()?;
+    match row.kind.as_str() {
+        "api_key" => data
+            .get("key")
+            .and_then(Value::as_str)
+            .filter(|k| !k.is_empty())
+            .map(|k| (Credential { key: k.to_string(), id: row.id }, data.clone())),
+        "oauth" => {
+            let access = access_of(&data)?;
+            let forced = force == Some(row.id);
+            if forced && recent_mint(&db_key(db), row.id, access) {
+                return Some((Credential { key: access.to_string(), id: row.id }, data));
+            }
+            if !forced && is_fresh(&data, now) {
+                return Some((Credential { key: access.to_string(), id: row.id }, data));
+            }
+            match refresh_local_row(db, provider, row, forced, hosts).await {
+                Ok(Some(c)) => Some((c, data)),
+                Ok(None) | Err(_) if forced => None,
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!("OAuth refresh of {provider} credential {} failed: {e:#}", row.id);
+                    if expires_of(&data).is_none_or(|x| x > now) {
+                        Some((Credential { key: access.to_string(), id: row.id }, data))
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Every usable credential of `provider`: the first pick ([`local_resolve`]'s ordering) plus
+/// every other row that yields a bearer. Stale OAuth rows are refreshed on the way (best
+/// effort); rows that fail to resolve are left out rather than failing the pool.
+async fn local_pool(db: &Path, provider: &str, rows: Vec<Row>, hosts: &Hosts) -> Result<Option<CredentialPool>> {
+    let now = now_ms() as i64;
+    let mut usable: Vec<Credential> = Vec::new();
+    for row in &rows {
+        if let Some((c, _)) = local_row_credential(db, provider, row, now, None, hosts).await {
+            if usable.iter().all(|u| u.id != c.id) {
+                usable.push(c);
+            }
+        }
+    }
+    let Some(first) = usable.first().cloned() else { return Ok(None) };
+    Ok(Some(CredentialPool { alternates: usable.into_iter().skip(1).collect(), current: first }))
 }
 
 // ------------------------------------------------------------ entry points
@@ -671,6 +785,68 @@ async fn resolve_with(
         None => local_resolve(&dir.0.join("agent.db"), provider, force, hosts).await,
     }
 }
+async fn resolve_with_row(
+    dir: &AgentDir,
+    provider: &str,
+    broker: Option<&BrokerConfig>,
+    force: Option<i64>,
+    hosts: &Hosts,
+) -> Result<Option<(Credential, Value)>> {
+    match broker {
+        Some(cfg) => broker_resolve_row(cfg, provider, force).await,
+        None => local_resolve_row(&dir.0.join("agent.db"), provider, force, hosts).await,
+    }
+}
+
+
+/// One specific `auth_credentials` row / broker snapshot entry by id: what a pinned
+/// (`credential_id`) target re-resolves through, so a rotated account does not drift back to
+/// the store's first row on the next request. OAuth rows refresh on expiry like [`resolve_with`].
+async fn resolve_by_id_with(
+    dir: &AgentDir,
+    provider: &str,
+    id: i64,
+    broker: Option<&BrokerConfig>,
+    hosts: &Hosts,
+) -> Result<Option<Credential>> {
+    match broker {
+        Some(cfg) => {
+            let now = now_ms() as i64;
+            for entry in broker_snapshot(cfg)
+                .await?
+                .into_iter()
+                .filter(|e| e.provider == provider && e.id == id)
+            {
+                if let Some((c, _)) = broker_entry_credential(cfg, entry, now, None).await? {
+                    return Ok(Some(c));
+                }
+            }
+            Ok(None)
+        }
+        None => {
+            let db = dir.0.join("agent.db");
+            let row = read_row_by_id(&db, provider, id)?;
+            let Some(row) = row else { return Ok(None) };
+            let now = now_ms() as i64;
+            Ok(local_row_credential(&db, provider, &row, now, None, hosts).await.map(|(c, _)| c))
+        }
+    }
+}
+
+fn read_row_by_id(db: &Path, provider: &str, id: i64) -> Result<Option<Row>> {
+    let conn = rusqlite::Connection::open_with_flags(
+        db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    let mut stmt = conn.prepare(
+        "SELECT credential_type, data FROM auth_credentials WHERE id = ?1 AND provider = ?2 AND disabled_cause IS NULL",
+    )?;
+    let row = stmt
+        .query_row(rusqlite::params![id, provider], |r| Ok(Row { id, kind: r.get(0)?, data: r.get(1)? }))
+        .optional()?;
+    Ok(row)
+}
 
 fn resolve_blocking(dir: &AgentDir, provider: &str, force: Option<i64>) -> Option<Credential> {
     let broker = match resolve_broker_config(dir, &process_env) {
@@ -698,11 +874,105 @@ pub fn credential(dir: &AgentDir, provider: &str) -> Option<Credential> {
     resolve_blocking(dir, provider, None)
 }
 
+/// The bearer of one specific credential row (`broker snapshot entry`), refreshing an expired
+/// OAuth token first. `None` when the row is gone, disabled or unusable.
+#[must_use]
+pub fn credential_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<Credential> {
+    let broker = match resolve_broker_config(dir, &process_env) {
+        Ok(broker) => broker,
+        Err(e) => {
+            tracing::warn!("auth broker unavailable: {e:#}");
+            return None;
+        }
+    };
+    let hosts = Hosts::from_env();
+    match block_on(|| resolve_by_id_with(dir, provider, id, broker.as_ref(), &hosts)) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("credential lookup for {provider}/{id} failed: {e:#}");
+            None
+        }
+    }
+}
+
 /// Local-store lookup only (no broker): the seam tests use so the process env cannot redirect them.
 #[cfg(test)]
 pub(crate) fn local_credential(db: &Path, provider: &str) -> Option<Credential> {
     let hosts = Hosts::default();
     block_on(|| local_resolve(db, provider, None, &hosts)).ok().flatten()
+}
+
+/// [`credential`] plus every other usable credential of the provider — the account-rotation
+/// pool. Without a broker this is one `read_rows` sweep; with a broker it is `current` plus
+/// the other snapshot credentials of the same provider.
+#[must_use]
+pub fn credential_pool(dir: &AgentDir, provider: &str) -> Option<CredentialPool> {
+    let broker = match resolve_broker_config(dir, &process_env) {
+        Ok(broker) => broker,
+        Err(e) => {
+            tracing::warn!("auth broker unavailable: {e:#}");
+            return None;
+        }
+    };
+    match broker {
+        Some(cfg) => block_on(|| broker_pool(&cfg, provider)).ok().flatten(),
+        None => {
+            let hosts = Hosts::from_env();
+            let db = dir.0.join("agent.db");
+            let rows = read_rows(&db, provider).unwrap_or_default();
+            block_on(|| local_pool(&db, provider, rows, &hosts)).ok().flatten()
+        }
+    }
+}
+
+/// [`credential_pool`] off the async executor.
+pub async fn credential_pool_async(dir: AgentDir, provider: String) -> Option<CredentialPool> {
+    tokio::task::spawn_blocking(move || credential_pool(&dir, &provider)).await.ok().flatten()
+}
+
+/// The TS `getOAuthApiKey` structured credential format for `google-antigravity`: the raw
+/// `auth_credentials` row payload serialized as `{"apiEndpoint","token","enterpriseUrl",
+/// "projectId","refreshToken","expiresAt","email","accountId"}`. The gemini-cli provider parses
+/// this JSON to recover the Cloud project (`_Kn` in the TS bundle); the bare access token alone
+/// would send `project: ""` and 404 on every endpoint. `None` when the row is not an OAuth
+/// payload with a project id.
+#[must_use]
+pub fn structured_key(dir: &AgentDir, provider: &str) -> Option<String> {
+    if provider != "google-antigravity" {
+        return None;
+    }
+    structured_key_by_id(dir, provider, credential(dir, provider)?.id)
+}
+
+/// [`structured_key`] for one pinned `auth_credentials` row (the per-request refresh path
+/// re-resolves a stored target through its row, not the provider-wide pick).
+#[must_use]
+pub fn structured_key_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<String> {
+    if provider != "google-antigravity" {
+        return None;
+    }
+    let row = read_row_by_id(&dir.0.join("agent.db"), provider, id).ok()??;
+    let data: Value = serde_json::from_str(&row.data).ok()?;
+    let token = data.get("access").and_then(Value::as_str)?.to_string();
+    let project_id = data
+        .get("projectId")
+        .or_else(|| data.get("project_id"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let pick = |key: &str| data.get(key).and_then(Value::as_str).map(std::string::ToString::to_string);
+    Some(
+        serde_json::to_string(&serde_json::json!({
+            "apiEndpoint": pick("apiEndpoint"),
+            "token": token,
+            "enterpriseUrl": pick("enterpriseUrl"),
+            "projectId": project_id,
+            "refreshToken": pick("refresh"),
+            "expiresAt": data.get("expires").and_then(|e| e.as_i64().or_else(|| e.as_f64().map(|f| f as i64))),
+            "email": pick("email"),
+            "accountId": pick("accountId"),
+        }))
+        .ok()?,
+    )
 }
 
 /// After a provider 401 for `failed`: force-refresh that credential and return the replacement,
@@ -715,6 +985,37 @@ pub fn recover(dir: &AgentDir, provider: &str, failed: &Credential) -> Option<Cr
 /// [`credential`] off the async executor.
 pub async fn credential_async(dir: AgentDir, provider: String) -> Option<Credential> {
     tokio::task::spawn_blocking(move || credential(&dir, &provider)).await.ok().flatten()
+}
+
+/// The resolved credential plus the parsed `auth_credentials.data` JSON of the row it came from
+/// (orgId/projectId/accountId/email/expires live there; usage probes need them). Refreshes an
+/// expired oauth row like [`credential_async`].
+pub async fn credential_row_async(dir: AgentDir, provider: String) -> Option<(Credential, Value)> {
+    tokio::task::spawn_blocking(move || {
+        let broker = match resolve_broker_config(&dir, &process_env) {
+            Ok(broker) => broker,
+            Err(e) => {
+                tracing::warn!("auth broker unavailable: {e:#}");
+                return None;
+            }
+        };
+        let hosts = Hosts::from_env();
+        block_on(|| resolve_with_row(&dir, &provider, broker.as_ref(), None, &hosts))
+            .ok()
+            .flatten()
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+
+/// [`credential_by_id`] off the async executor.
+pub async fn credential_by_id_async(dir: AgentDir, provider: String, id: i64) -> Option<Credential> {
+    tokio::task::spawn_blocking(move || credential_by_id(&dir, &provider, id))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// [`recover`] off the async executor.

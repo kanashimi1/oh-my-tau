@@ -1483,87 +1483,55 @@ async fn provider_usage_lines(rt: &Runtime) -> Vec<String> {
         .and_then(|p| p.as_str())
         .unwrap_or("")
         .to_string();
-    if provider != "anthropic" {
-        return vec![String::new(),
-            format!("Provider rate-limit usage for `{provider}` is not available (only anthropic has an oauth usage endpoint).")];
+    const SUPPORTED: [&str; 6] = [
+        "anthropic",
+        "kimi-code",
+        "zai",
+        "openai-codex",
+        "google-antigravity",
+        "google-gemini-cli",
+    ];
+    if provider.is_empty() || !SUPPORTED.contains(&provider.as_str()) {
+        return vec![String::new(), format!(
+            "Provider rate-limit usage for `{provider}` is not available (supported: anthropic, kimi-code, zai, openai-codex, google-antigravity, google-gemini-cli).",
+        )];
     }
-    let Some(credential) =
-        omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider).await
-    else {
-        return vec![String::new(), "Provider rate-limit usage unavailable: no anthropic credential.".to_string()];
+    let mut lines = vec![String::new(), format!("Provider rate-limit usage ({provider}):")];
+    let Some(cred) = omp_providers::auth::credential_row_async(omp_providers::AgentDir::default(), provider.clone()).await else {
+        lines.push("  unavailable: no credential".to_string());
+        return lines;
     };
-    let token = credential.key;
-    let mut lines = vec![String::new(), "Provider rate-limit usage (anthropic):".to_string()];
-    match omp_providers::usage::fetch_usage(&token, None).await {
+    let cred_input = omp_providers::usage::UsageCredential {
+        access_token: Some(&cred.0.key),
+        raw_key: Some(&cred.0.key),
+        data: Some(&cred.1),
+    };
+    match omp_providers::usage::fetch_provider_usage(&provider, &cred_input, None).await {
         Ok(report) => {
-            for (label, bucket) in &report.buckets {
-                let pct = bucket
-                    .utilization
-                    .map(|u| format!("{u:.0}%"))
-                    .unwrap_or_else(|| "?".to_string());
-                let reset = bucket
-                    .resets_at
-                    .map(fmt_reset)
-                    .unwrap_or_default();
-                lines.push(format!("  {label:<9} {pct}{reset}"));
-            }
-            for limit in &report.limits {
-                let name = limit.display_name.as_deref().unwrap_or("limit");
-                let pct = limit.percent.map(|u| format!("{u:.0}%")).unwrap_or_else(|| "?".into());
-                let reset = limit.resets_at.map(fmt_reset).unwrap_or_default();
-                let active = if limit.is_active { " (active)" } else { "" };
-                lines.push(format!("  {} {name}: {pct}{reset}{active}", limit.kind));
-            }
-            if let Some(extra) = &report.extra_usage {
-                if extra.is_enabled {
-                    lines.push(format!(
-                        "  extra usage: {}/{} credits{}",
-                        extra.used_credits.map(|u| u.to_string()).unwrap_or_else(|| "?".into()),
-                        extra.monthly_limit.map(|u| u.to_string()).unwrap_or_else(|| "?".into()),
-                        extra.currency.as_deref().map(|c| format!(" ({c})")).unwrap_or_default(),
-                    ));
+            for line in &report.lines {
+                let mut s = line.label.clone();
+                if let Some(p) = line.used_percent {
+                    s.push_str(&format!(": {p:.0}%"));
                 }
-            }
-            if let Some(spend) = &report.spend {
-                if spend.enabled {
-                    lines.push(format!(
-                        "  spend: {}/{} {}",
-                        spend.used_minor.map(|u| (u as f64 / 100.0).to_string()).unwrap_or_else(|| "?".into()),
-                        spend.limit_minor.map(|u| (u as f64 / 100.0).to_string()).unwrap_or_else(|| "?".into()),
-                        spend.currency.as_deref().unwrap_or(""),
-                    ));
+                if let Some(r) = line.remaining {
+                    s.push_str(&format!(", {r} left"));
                 }
+                if let Some(ms) = line.resets_at {
+                    s.push_str(&fmt_reset(ms));
+                }
+                if let Some(n) = &line.note {
+                    s.push_str(&format!(": {n}"));
+                }
+                lines.push(format!("  {s}"));
+            }
+            for n in &report.notes {
+                lines.push(format!("  note: {n}"));
             }
         }
         Err(e) => lines.push(format!("  unavailable: {e:#}")),
     }
-    match omp_providers::usage::list_reset_credits(&token, None).await {
-        Ok(Some(list)) if !list.credits.is_empty() => {
-            lines.push("  reset credits:".to_string());
-            for credit in &list.credits {
-                let state = if credit.usable && credit.remaining_count.is_none_or(|r| r > 0) {
-                    "usable"
-                } else if let Some(reason) = &credit.ineligible_reason {
-                    reason.as_str()
-                } else {
-                    "unavailable"
-                };
-                let remaining = credit
-                    .remaining_count
-                    .map(|r| format!(" x{r}"))
-                    .unwrap_or_default();
-                lines.push(format!("    {} ({state}{remaining})", credit.id));
-            }
-            lines.push(format!("  {} reset credit(s) available", list.available_count));
-        }
-        Ok(_) => {
-            lines.push("  reset credits: none discovered".to_string());
-        }
-        Err(e) => lines.push(format!("  reset credits unavailable: {e:#}")),
-    }
     lines
 }
-
 fn fmt_reset(ms: i64) -> String {
     let secs = ms / 1000;
     let days = secs.div_euclid(86_400);
@@ -1596,48 +1564,66 @@ async fn usage_reset(rt: &Runtime, rest: &str) -> Outcome {
     if !requested.is_empty() && requested != provider && requested != "active" {
         return usage(
             rt,
-            &format!("Saved rate-limit resets are only supported for anthropic, not `{requested}`."),
+            &format!("Saved rate-limit resets are not available for `{requested}` (active provider is `{provider}`)."),
         );
     }
-    if provider != "anthropic" {
+    if !omp_providers::usage::supports_reset_credits(&provider) {
         return usage(
             rt,
             &format!("Saved rate-limit resets are not supported for provider `{provider}`."),
         );
     }
     let Some(credential) =
-        omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider).await
+        omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider.clone()).await
     else {
-        return usage(rt, "No anthropic credential; login first (`/login`).");
+        return usage(rt, &format!("No credential for `{provider}`; login first (`/login`)."));
     };
     let token = credential.key;
-    let Ok(Some(list)) = omp_providers::usage::list_reset_credits(&token, None).await else {
-        return usage(rt, "Could not discover saved reset credits (discovery failed).");
+    let credit = if provider == "anthropic" {
+        let Ok(Some(list)) = omp_providers::usage::anthropic_reset_credits(&token, None).await else {
+            return usage(rt, "Could not discover saved reset credits (discovery failed).");
+        };
+        let selected = list
+            .next_credit_id
+            .as_ref()
+            .and_then(|id| list.credits.iter().find(|c| &c.id == id).cloned())
+            .or_else(|| {
+                list.credits
+                    .iter()
+                    .find(|c| c.usable && c.remaining_count.unwrap_or(0) > 0)
+                    .cloned()
+            });
+        let Some(credit) = selected else {
+            return usage(rt, "No usable reset credit discovered.");
+        };
+        credit
+    } else {
+        let Ok(Some(list)) = omp_providers::usage::codex_reset_credits(&token, None).await else {
+            return usage(rt, "Could not discover saved reset credits (discovery failed).");
+        };
+        let selected = list
+            .next_credit_id
+            .as_ref()
+            .and_then(|id| list.credits.iter().find(|c| &c.id == id).cloned())
+            .or_else(|| {
+                list.credits
+                    .iter()
+                    .find(|c| c.usable && c.remaining_count.unwrap_or(0) > 0)
+                    .cloned()
+            });
+        let Some(credit) = selected else {
+            return usage(rt, "No usable reset credit discovered.");
+        };
+        credit
     };
-    let selected = list
-        .next_credit_id
-        .as_ref()
-        .and_then(|id| list.credits.iter().find(|c| &c.id == id).cloned())
-        .or_else(|| {
-            list.credits
-                .iter()
-                .find(|c| c.usable && c.remaining_count.is_none_or(|r| r > 0))
-                .cloned()
-        });
-    let Some(credit) = selected else {
-        return usage(
-            rt,
-            &format!(
-                "No usable reset credit ({} discovered, {} available).",
-                list.credits.len(),
-                list.available_count
-            ),
-        );
+    let outcome = if provider == "anthropic" {
+        let Some(org_id) = omp_providers::usage::resolve_organization(&token, None).await else {
+            return usage(rt, "Could not resolve the account organization id from /api/oauth/profile.");
+        };
+        omp_providers::usage::consume_anthropic_reset_credit(&token, None, &org_id, &credit).await
+    } else {
+        omp_providers::usage::consume_codex_reset_credit(&token, None, &credit).await
     };
-    let Some(org_id) = omp_providers::usage::resolve_organization(&token, None).await else {
-        return usage(rt, "Could not resolve the account organization id from /api/oauth/profile.");
-    };
-    let outcome = omp_providers::usage::consume_reset_credit(&token, None, &org_id, &credit).await;
     let message = match outcome.code.as_str() {
         "reset" => format!(
             "Rate limit reset spent ({}): cleared {}{}",
