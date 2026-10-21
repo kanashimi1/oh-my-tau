@@ -1428,10 +1428,10 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
 // /usage, /stats, /trace, /changelog (builtin-session.ts)
 // =============================================================================
 
-/// `/usage [show|reset ...]` — TS renders oauth provider usage/limits, which
-/// omp-rs does not collect (no oauth usage polling). What omp-rs does have is
-/// the session token ledger (`session_stats`), shown here; `reset` needs the
-/// saved-reset-credits store, which is absent.
+/// `/usage [show|reset ...]` — session token ledger (`session_stats`) plus, for the
+/// anthropic provider, the OAuth rate-limit report polled from `/api/oauth/usage`
+/// (TS `usage/claude.ts`) and saved reset credits discovered via the cedar/juniper
+/// probes (`usage/claude-reset.ts`). `/usage reset` spends one server-selected credit.
 async fn usage_command(rt: &Runtime, args: &str) -> Outcome {
     let (verb, rest) = subcommand(args);
     match verb.as_str() {
@@ -1462,22 +1462,201 @@ async fn usage_command(rt: &Runtime, args: &str) -> Outcome {
             if let Some(window) = stats["contextUsage"]["contextWindow"].as_u64() {
                 lines.push(format!("  context window: {window} tokens"));
             }
-            lines.push(String::new());
-            lines.push(
-                "Provider rate-limit usage/limits are not available: omp-rs has no oauth usage polling. Saved rate-limit resets (`/usage reset`) are not supported.".to_string(),
-            );
+            lines.extend(provider_usage_lines(rt).await);
             output(rt, &lines.join("\n"));
             Handled { agent_invoked: false }
         }
-        "reset" => usage(
-            rt,
-            "No saved rate-limit resets: omp-rs does not track provider reset credits.",
-        ),
+        "reset" => usage_reset(rt, &rest).await,
         _ => usage(
             rt,
             "Usage: /usage [show|reset [provider/credential-id|provider/active]]",
         ),
     }
+}
+
+/// Render the anthropic OAuth usage report + reset-credit inventory, one line per
+/// window; empty when the active provider has no usage endpoint or credential.
+async fn provider_usage_lines(rt: &Runtime) -> Vec<String> {
+    let provider = rt
+        .model_info()
+        .get("provider")
+        .and_then(|p| p.as_str())
+        .unwrap_or("")
+        .to_string();
+    if provider != "anthropic" {
+        return vec![String::new(),
+            format!("Provider rate-limit usage for `{provider}` is not available (only anthropic has an oauth usage endpoint).")];
+    }
+    let Some(credential) =
+        omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider).await
+    else {
+        return vec![String::new(), "Provider rate-limit usage unavailable: no anthropic credential.".to_string()];
+    };
+    let token = credential.key;
+    let mut lines = vec![String::new(), "Provider rate-limit usage (anthropic):".to_string()];
+    match omp_providers::usage::fetch_usage(&token, None).await {
+        Ok(report) => {
+            for (label, bucket) in &report.buckets {
+                let pct = bucket
+                    .utilization
+                    .map(|u| format!("{u:.0}%"))
+                    .unwrap_or_else(|| "?".to_string());
+                let reset = bucket
+                    .resets_at
+                    .map(fmt_reset)
+                    .unwrap_or_default();
+                lines.push(format!("  {label:<9} {pct}{reset}"));
+            }
+            for limit in &report.limits {
+                let name = limit.display_name.as_deref().unwrap_or("limit");
+                let pct = limit.percent.map(|u| format!("{u:.0}%")).unwrap_or_else(|| "?".into());
+                let reset = limit.resets_at.map(fmt_reset).unwrap_or_default();
+                let active = if limit.is_active { " (active)" } else { "" };
+                lines.push(format!("  {} {name}: {pct}{reset}{active}", limit.kind));
+            }
+            if let Some(extra) = &report.extra_usage {
+                if extra.is_enabled {
+                    lines.push(format!(
+                        "  extra usage: {}/{} credits{}",
+                        extra.used_credits.map(|u| u.to_string()).unwrap_or_else(|| "?".into()),
+                        extra.monthly_limit.map(|u| u.to_string()).unwrap_or_else(|| "?".into()),
+                        extra.currency.as_deref().map(|c| format!(" ({c})")).unwrap_or_default(),
+                    ));
+                }
+            }
+            if let Some(spend) = &report.spend {
+                if spend.enabled {
+                    lines.push(format!(
+                        "  spend: {}/{} {}",
+                        spend.used_minor.map(|u| (u as f64 / 100.0).to_string()).unwrap_or_else(|| "?".into()),
+                        spend.limit_minor.map(|u| (u as f64 / 100.0).to_string()).unwrap_or_else(|| "?".into()),
+                        spend.currency.as_deref().unwrap_or(""),
+                    ));
+                }
+            }
+        }
+        Err(e) => lines.push(format!("  unavailable: {e:#}")),
+    }
+    match omp_providers::usage::list_reset_credits(&token, None).await {
+        Ok(Some(list)) if !list.credits.is_empty() => {
+            lines.push("  reset credits:".to_string());
+            for credit in &list.credits {
+                let state = if credit.usable && credit.remaining_count.is_none_or(|r| r > 0) {
+                    "usable"
+                } else if let Some(reason) = &credit.ineligible_reason {
+                    reason.as_str()
+                } else {
+                    "unavailable"
+                };
+                let remaining = credit
+                    .remaining_count
+                    .map(|r| format!(" x{r}"))
+                    .unwrap_or_default();
+                lines.push(format!("    {} ({state}{remaining})", credit.id));
+            }
+            lines.push(format!("  {} reset credit(s) available", list.available_count));
+        }
+        Ok(_) => {
+            lines.push("  reset credits: none discovered".to_string());
+        }
+        Err(e) => lines.push(format!("  reset credits unavailable: {e:#}")),
+    }
+    lines
+}
+
+fn fmt_reset(ms: i64) -> String {
+    let secs = ms / 1000;
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, m, _s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // days-from-civil inverse, enough for display purposes.
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (d, mo) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!(" (resets {y}-{mo:02}-{d:02} {h:02}:{m:02})")
+}
+
+/// `/usage reset [provider/...]` — spend the server-selected saved reset credit.
+async fn usage_reset(rt: &Runtime, rest: &str) -> Outcome {
+    let provider = rt
+        .model_info()
+        .get("provider")
+        .and_then(|p| p.as_str())
+        .unwrap_or("anthropic")
+        .to_string();
+    // The only argument form TS documents is a provider/credential selector; anything
+    // naming another provider means "not available there".
+    let requested = rest.split('/').next().unwrap_or("").trim().to_string();
+    if !requested.is_empty() && requested != provider && requested != "active" {
+        return usage(
+            rt,
+            &format!("Saved rate-limit resets are only supported for anthropic, not `{requested}`."),
+        );
+    }
+    if provider != "anthropic" {
+        return usage(
+            rt,
+            &format!("Saved rate-limit resets are not supported for provider `{provider}`."),
+        );
+    }
+    let Some(credential) =
+        omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider).await
+    else {
+        return usage(rt, "No anthropic credential; login first (`/login`).");
+    };
+    let token = credential.key;
+    let Ok(Some(list)) = omp_providers::usage::list_reset_credits(&token, None).await else {
+        return usage(rt, "Could not discover saved reset credits (discovery failed).");
+    };
+    let selected = list
+        .next_credit_id
+        .as_ref()
+        .and_then(|id| list.credits.iter().find(|c| &c.id == id).cloned())
+        .or_else(|| {
+            list.credits
+                .iter()
+                .find(|c| c.usable && c.remaining_count.is_none_or(|r| r > 0))
+                .cloned()
+        });
+    let Some(credit) = selected else {
+        return usage(
+            rt,
+            &format!(
+                "No usable reset credit ({} discovered, {} available).",
+                list.credits.len(),
+                list.available_count
+            ),
+        );
+    };
+    let Some(org_id) = omp_providers::usage::resolve_organization(&token, None).await else {
+        return usage(rt, "Could not resolve the account organization id from /api/oauth/profile.");
+    };
+    let outcome = omp_providers::usage::consume_reset_credit(&token, None, &org_id, &credit).await;
+    let message = match outcome.code.as_str() {
+        "reset" => format!(
+            "Rate limit reset spent ({}): cleared {}{}",
+            credit.id,
+            outcome.cleared.join(", "),
+            outcome
+                .reason
+                .as_deref()
+                .map(|r| format!(" — {r}"))
+                .unwrap_or_default()
+        ),
+        "already_redeemed" => "That reset credit was already redeemed.".to_string(),
+        "nothing_to_reset" => "No window is currently limited; nothing to reset.".to_string(),
+        "rate_limited" => "Reset endpoint rate-limited; try again in a minute.".to_string(),
+        "auth_error" => "Auth rejected by the reset endpoint; re-login.".to_string(),
+        other => format!("Reset failed ({other}).{}", outcome.reason.as_deref().map(|r| format!(" {r}")).unwrap_or_default()),
+    };
+    output(rt, &message);
+    Handled { agent_invoked: false }
 }
 
 /// `/stats [--port <port>] [--host <host>]` — start (or reuse) the in-process

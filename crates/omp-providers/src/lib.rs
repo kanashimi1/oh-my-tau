@@ -12,6 +12,7 @@
 
 pub mod auth;
 pub mod login;
+pub mod usage;
 mod command;
 mod fallback;
 mod judge;
@@ -58,6 +59,10 @@ pub enum ThinkingSource {
 }
 
 /// A model reference resolved to everything needed to call it.
+///
+/// `credential_id` pins the store row the key came from; when that row sits in a multi-account
+/// pool the runtime rotates through [`auth::CredentialPool::alternates`] on a provider rate
+/// limit instead of only backing off (same provider, same model, next account).
 #[derive(Debug, Clone)]
 pub struct ResolvedModel {
     pub provider: String,
@@ -189,7 +194,17 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     let (api_key, credential_id) = match cfg.provider_key(&provider).or_else(|| env_key(&provider)) {
         Some(key) => (Some(key), None),
         None => match auth::credential(dir, &provider) {
-            Some(auth::Credential { key, id }) => (Some(key), Some(id)),
+            Some(auth::Credential { key, id }) => {
+                // TS `getOAuthApiKey` structured format: antigravity's gemini-cli provider parses
+                // the OAuth row payload as JSON and needs `projectId`/`token` from it (`_Kn` in
+                // the TS bundle) — the bare access token alone yields `project: ""` and a 404.
+                let key = if provider == "google-antigravity" {
+                    auth::structured_key(dir, &provider).unwrap_or(key)
+                } else {
+                    key
+                };
+                (Some(key), Some(id))
+            }
             None => (None, None),
         },
     };
@@ -463,10 +478,17 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
     let mut model = model.ok_or_else(|| {
         anyhow!("model '{provider}/{id}' not found in models.yml, models.db cache or built-in catalog")
     })?;
-    // provider-level overrides apply to catalog models too
+    // provider-level overrides apply to catalog models too. A provider-level `baseUrl`
+    // may be a sandbox/relay override; model rows pinned to a googleapis CCA host keep
+    // their host (the antigravity provider rewrites daily->sandbox itself), while an
+    // explicit non-googleapis override (local mock, relay) always wins.
     if let Some(p) = pcfg {
         if let Some(u) = p.get("baseUrl").and_then(Value::as_str) {
-            model.base_url = u.to_string();
+            let model_is_cca = model.base_url.contains("googleapis.com");
+            let override_is_cca = u.contains("googleapis.com");
+            if !model_is_cca || !override_is_cca {
+                model.base_url = u.to_string();
+            }
         }
         if let Some(a) = p.get("api").and_then(Value::as_str) {
             model.api = a.to_string();
