@@ -340,24 +340,39 @@ async fn run_stream(
             break;
         };
         for sse in decoder.push_text(&chunk) {
-            if sse.data.trim().is_empty() {
+            if sse.data.trim().is_empty() || sse.data.trim() == "[DONE]" {
                 continue;
             }
+            // opencode-zen wraps chunks as {"response": <gemini chunk>}.
             let parsed = parse_json_with_repair(&sse.data).map_err(|error| {
-                ProviderError::Message(format!("Could not parse Gemini SSE chunk: {error}"))
+                ProviderError::Message(format!(
+                    "Could not parse Gemini SSE chunk: {error}; data={:?}",
+                    &sse.data[..sse.data.len().min(200)]
+                ))
             })?;
+            let parsed = match parsed.get("response").filter(|r| r.get("candidates").is_some()) {
+                Some(inner) => inner.clone(),
+                None => parsed,
+            };
             state
                 .handle_chunk(&parsed, model, output, writer)
                 .map_err(ProviderError::Message)?;
         }
     }
     for sse in decoder.finish() {
-        if sse.data.trim().is_empty() {
+        if sse.data.trim().is_empty() || sse.data.trim() == "[DONE]" {
             continue;
         }
         let parsed = parse_json_with_repair(&sse.data).map_err(|error| {
-            ProviderError::Message(format!("Could not parse Gemini SSE chunk: {error}"))
+            ProviderError::Message(format!(
+                "Could not parse Gemini SSE chunk: {error}; data={:?}",
+                &sse.data[..sse.data.len().min(200)]
+            ))
         })?;
+        let parsed = match parsed.get("response").filter(|r| r.get("candidates").is_some()) {
+            Some(inner) => inner.clone(),
+            None => parsed,
+        };
         state
             .handle_chunk(&parsed, model, output, writer)
             .map_err(ProviderError::Message)?;
