@@ -73,6 +73,11 @@ pub fn dedup_tool_results(messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
             let Some(text) = text_of(&tr.content) else {
                 return AgentMessage::Standard(Message::ToolResult(tr));
             };
+            // Conservative, per the module docs: error results carry the
+            // diagnostic the model needs to recover; never collapse them.
+            if tr.is_error {
+                return AgentMessage::Standard(Message::ToolResult(tr));
+            }
             if text.len() < MIN_DEDUP_BYTES {
                 return AgentMessage::Standard(Message::ToolResult(tr));
             }
@@ -123,6 +128,26 @@ mod tests {
     }
 
     #[test]
+    fn error_results_never_stubbed() {
+        let big = "x".repeat(1000);
+        let mut err = tool_result("call_e", &big);
+        let AgentMessage::Standard(Message::ToolResult(tr)) = &mut err else {
+            panic!("expected tool result");
+        };
+        tr.is_error = true;
+        let msgs = vec![
+            err,
+            tool_result("call_f", &big),
+            tool_result("call_g", &big),
+        ];
+        let out = dedup_tool_results(msgs);
+        assert_eq!(body_of(&out[0]), big, "error result keeps its body");
+        assert_eq!(body_of(&out[1]), big, "first non-error occurrence stays full");
+        assert!(body_of(&out[2]).contains("call_f"), "later duplicate stubs to the non-error first");
+        assert!(body_of(&out[2]).contains("1000 bytes"));
+    }
+
+    #[test]
     fn second_identical_result_becomes_stub() {
         let big = "x".repeat(1000);
         let msgs = vec![
@@ -169,5 +194,24 @@ mod tests {
         let a = build();
         let b = build();
         assert_eq!(a, b, "same history -> same wire bytes (prefix-cache safe)");
+    }
+
+    #[test]
+    fn wire_of_turn_n_is_a_prefix_of_turn_n_plus_one() {
+        // Cache contract: appending a message may only append wire bytes —
+        // never change what an earlier request already sent.
+        let big = "z".repeat(600);
+        let history = vec![
+            tool_result("call_a", &big),
+            tool_result("call_b", "small"),
+            tool_result("call_c", &big),
+            tool_result("call_d", &"w".repeat(600)),
+            tool_result("call_e", &big),
+        ];
+        for n in 1..history.len() {
+            let shorter = dedup_tool_results(history[..n].to_vec());
+            let longer = dedup_tool_results(history[..=n].to_vec());
+            assert_eq!(&longer[..n], &shorter[..], "turn {n}: earlier wire bytes changed");
+        }
     }
 }
