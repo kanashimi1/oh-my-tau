@@ -13,6 +13,7 @@
 //!    then `auto_retry_end{success:true}`;
 //! 3. every dead end closes the saga with `auto_retry_end{success:false}`.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -250,12 +251,27 @@ pub fn fallback_applied_frame(from: &str, to: &str, role: &str, reason: Option<&
     v
 }
 
+/// The account-rotation counterpart of [`fallback_applied_frame`]: same model, other account.
+#[must_use]
+pub fn account_rotated_frame(from: &str, to: &str, reason: Option<&str>) -> Value {
+    let mut v = json!({"type": "retry_account_rotated", "from": from, "to": to});
+    if let Some(r) = reason {
+        v["reason"] = json!(r);
+    }
+    v
+}
+
 #[must_use]
 pub fn fallback_succeeded_frame(model: &str, role: &str) -> Value {
     json!({"type": "retry_fallback_succeeded", "model": model, "role": role})
 }
 
 // ----------------------------------------------------------------- state
+
+/// The user-facing `provider/id` selector for a model (no thinking level suffix).
+pub fn model_selector(provider: &str, model_id: &str) -> String {
+    format!("{provider}/{model_id}")
+}
 
 /// One `handle_retryable_error` pass, before the fallback consult.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,9 +297,109 @@ pub enum Verdict {
     },
 }
 
+/// Account-rotation bookkeeping (TS: multi-account rate-limit rotation). One slot per
+/// `(provider, model)`: the account pool is per provider, but cooldowns and the failing
+/// row belong to the specific model that hit the limit (parallel panes share the pool
+/// state of a process).
+#[derive(Debug, Default)]
+pub struct AccountRotation {
+    /// Pool alternates of `(provider, model)` that recently 429'd — skipped while the
+    /// provider's cooldown runs.
+    cooling: HashMap<String, Vec<i64>>,
+    /// Every alternate that took a turn for `(provider, model)` this session: never again,
+    /// a rotation cycle must not loop back to an account that already failed.
+    burned: HashMap<String, Vec<i64>>,
+    /// The account each `(provider, model)` currently streams through (the promoted
+    /// alternate's row id, `None` until a rotation swaps the key). `next` starts after it,
+    /// so the serving account is not re-picked immediately and cycles back only after
+    /// every other account had its turn.
+    serving: HashMap<String, i64>,
+}
+
+impl AccountRotation {
+    fn slot(provider: &str, model: &str) -> String {
+        format!("{provider}/{model}")
+    }
+
+    /// The alternates `next` hands out, in store order. Pool factories exclude the store's
+    /// preferred row from `alternates`, so this is just the pool order; the serving account
+    /// is additionally filtered out in `next` (it is still present here after a promotion).
+    #[must_use]
+    fn window(pool: &omp_providers::auth::CredentialPool) -> Vec<omp_providers::auth::Credential> {
+        pool.alternates.clone()
+    }
+
+    /// The next untried account of `pool` for `model`, honouring the rotation cooldown.
+    #[must_use]
+    pub fn next(
+        &mut self,
+        provider: &str,
+        model: &str,
+        pool: &omp_providers::auth::CredentialPool,
+        cooldown_active: bool,
+    ) -> Option<omp_providers::auth::Credential> {
+        let slot = Self::slot(provider, model);
+        let burned = self.burned.entry(slot.clone()).or_default();
+        let cooling = self.cooling.entry(slot).or_default();
+        let mut window = Self::window(pool);
+        if let Some(serving) = self.serving.get(&Self::slot(provider, model)) {
+            // The serving account never re-enters the rotation window: it cycles back only
+            // after every other account burned out and a fresh pool re-arms the cycle.
+            window.retain(|c| c.id != *serving);
+        }
+        window
+            .into_iter()
+            .find(|c| !burned.contains(&c.id) && !(cooldown_active && cooling.contains(&c.id)))
+    }
+
+    /// `alternate` just took over `model` (switch applied): it becomes the serving account
+    /// and leaves the cooling/burned sets.
+    pub fn promote(&mut self, provider: &str, model: &str, alternate: i64) {
+        let slot = Self::slot(provider, model);
+        if let Some(v) = self.cooling.get_mut(&slot) {
+            v.retain(|id| *id != alternate);
+        }
+        if let Some(v) = self.burned.get_mut(&slot) {
+            v.retain(|id| *id != alternate);
+        }
+        self.serving.insert(slot, alternate);
+    }
+
+    /// `alternate` was tried for `model` and rate-limited: remember it in both sets.
+    pub fn burn(&mut self, provider: &str, model: &str, alternate: i64) {
+        let slot = Self::slot(provider, model);
+        for set in [&mut self.burned, &mut self.cooling] {
+            let v = set.entry(slot.clone()).or_default();
+            if !v.contains(&alternate) {
+                v.push(alternate);
+            }
+        }
+    }
+
+    /// The provider's cooldown expired: rotation may retry the cooled alternates once —
+    /// clear the cooling set (the burned set keeps them out of the next cycle).
+    pub fn clear_cooldown(&mut self, provider: &str, model: &str) {
+        if let Some(v) = self.cooling.get_mut(&Self::slot(provider, model)) {
+            v.clear();
+        }
+    }
+
+    #[cfg(test)]
+    fn burned_of(&self, provider: &str, model: &str) -> Vec<i64> {
+        self.burned.get(&Self::slot(provider, model)).cloned().unwrap_or_default()
+    }
+
+    #[cfg(test)]
+    fn cooling_of(&self, provider: &str, model: &str) -> Vec<i64> {
+        self.cooling.get(&Self::slot(provider, model)).cloned().unwrap_or_default()
+    }
+}
+
 pub struct TurnRecovery {
     cfg: RecoveryConfig,
     state: FallbackState,
+    /// Multi-account rotation state (per `(provider, model)` cooldown/burned sets).
+    accounts: AccountRotation,
     enabled: bool,
     attempt: u32,
     generation: u64,
@@ -302,6 +418,7 @@ impl TurnRecovery {
         Self {
             cfg,
             state,
+            accounts: AccountRotation::default(),
             enabled,
             attempt: 0,
             generation: 0,
@@ -345,6 +462,11 @@ impl TurnRecovery {
         self.attempt > 0
     }
 
+    /// Mut access to the multi-account rotation bookkeeping (runtime owns the swap logic).
+    pub fn accounts_mut(&mut self) -> &mut AccountRotation {
+        &mut self.accounts
+    }
+
     #[must_use]
     pub fn role(&self) -> &str {
         self.cfg.role()
@@ -358,6 +480,17 @@ impl TurnRecovery {
     #[must_use]
     pub fn is_retryable(&self, failed: &FailedTurn) -> bool {
         self.enabled && is_transient(failed.status, &failed.message)
+    }
+
+    /// This failure is a provider *rate limit* (not a generic transient): candidates for an
+    /// account rotation (same provider, same model, next account's credential).
+    #[must_use]
+    pub fn is_rate_limit(&self, failed: &FailedTurn) -> bool {
+        if !self.enabled || failed.status.is_some_and(|s| s != 429) {
+            return false;
+        }
+        let m = failed.message.to_ascii_lowercase();
+        m.contains("rate limit") || m.contains("rate_limit") || m.contains("too many requests") || m.contains("quota")
     }
 
     /// Open (or continue) a saga for `failed`: bump the attempt counter, compute the backoff.
@@ -614,6 +747,96 @@ mod tests {
             Some(120_000)
         );
         assert_eq!(parse_retry_after_ms("boom"), None);
+    }
+
+    #[test]
+    fn is_rate_limit_only_matches_real_429s() {
+        let mut r = TurnRecovery::new(cfg(&[]));
+        assert!(r.is_rate_limit(&FailedTurn {
+            message: "Provider rate limit exceeded (rate_limit_error, 429)".into(),
+            status: Some(429),
+            provider: "p".into(),
+            model: "m".into(),
+        }));
+        assert!(!r.is_rate_limit(&FailedTurn {
+            message: "503 overloaded".into(),
+            status: Some(503),
+            provider: "p".into(),
+            model: "m".into(),
+        }));
+        // A transient without an explicit 429 status is not a rotation trigger.
+        assert!(!r.is_rate_limit(&failed("please try again later")));
+    }
+
+    #[test]
+    fn account_rotation_walks_alternates_and_burns_failed() {
+        // The runtime keeps the pool's `current` in sync with the promoted account.
+        let mut pool = omp_providers::auth::CredentialPool {
+            current: omp_providers::auth::Credential { key: "k0".into(), id: 10 },
+            alternates: vec![
+                omp_providers::auth::Credential { key: "k1".into(), id: 11 },
+                omp_providers::auth::Credential { key: "k2".into(), id: 12 },
+            ],
+        };
+        let mut rot = AccountRotation::default();
+
+        let first = rot.next("p", "m", &pool, false).expect("first alternate");
+        assert_eq!(first.id, 11);
+        rot.promote("p", "m", first.id);
+        rot.burn("p", "m", 10);
+        pool.current = first.clone();
+        assert_eq!(rot.burned_of("p", "m"), vec![10]);
+
+        // 11 serves now (serving): 12 is the only unburned alternate.
+        let second = rot.next("p", "m", &pool, false).expect("second alternate");
+        assert_eq!(second.id, 12);
+        rot.promote("p", "m", second.id);
+        rot.burn("p", "m", 11);
+        pool.current = second;
+        assert_eq!(rot.burned_of("p", "m"), vec![10, 11]);
+
+        // 12 serves now; 11 is burned and serving filters 12 out — nothing left.
+        assert!(rot.next("p", "m", &pool, false).is_none());
+        assert!(rot.next("p", "m", &pool, true).is_none());
+    }
+
+    #[test]
+    fn account_rotation_never_cycles_promoted_back_immediately() {
+        let mut rot = AccountRotation::default();
+        let pool = omp_providers::auth::CredentialPool {
+            current: omp_providers::auth::Credential { key: "k0".into(), id: 10 },
+            alternates: vec![
+                omp_providers::auth::Credential { key: "k1".into(), id: 11 },
+                omp_providers::auth::Credential { key: "k2".into(), id: 12 },
+            ],
+        };
+        // Window after current=10: 11, 12.
+        let first = rot.next("p", "m", &pool, false).expect("first");
+        assert_eq!(first.id, 11);
+        rot.promote("p", "m", 11);
+        rot.burn("p", "m", 10);
+        // Static pool (current still 10): next must not re-pick the promoted 11.
+        let second = rot.next("p", "m", &pool, false).expect("second");
+        assert_eq!(second.id, 12);
+    }
+
+    #[test]
+    fn account_rotation_cooldown_skips_recently_failed() {
+        let pool = omp_providers::auth::CredentialPool {
+            current: omp_providers::auth::Credential { key: "k0".into(), id: 20 },
+            alternates: vec![
+                omp_providers::auth::Credential { key: "k1".into(), id: 21 },
+                omp_providers::auth::Credential { key: "k2".into(), id: 22 },
+            ],
+        };
+        let mut rot = AccountRotation::default();
+        rot.burn("p", "m", 21);
+        // While the provider cooldown runs, the burned alternate is skipped: 22 goes first.
+        assert_eq!(rot.next("p", "m", &pool, true).unwrap().id, 22);
+        // Cooldown cleared: the account is eligible again (burned list still skips 21 for a
+        // fresh cycle only after clear_cooldown — cooling is the short-term gate).
+        rot.clear_cooldown("p", "m");
+        assert_eq!(rot.next("p", "m", &pool, false).unwrap().id, 22);
     }
 
     #[test]

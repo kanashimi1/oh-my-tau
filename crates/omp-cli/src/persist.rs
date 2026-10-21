@@ -85,12 +85,23 @@ pub fn ts_sessions_dir(cwd: &Path) -> Option<PathBuf> {
 pub struct Persistence {
     writer: Arc<Mutex<SessionWriter>>,
     session_id: Mutex<String>,
+    /// Pending `/tree` leaf move: `Some(Some(id))` after `branch_to(Some(id))`,
+    /// `Some(None)` after a root reset, `None` when the writer's append point is
+    /// the last journaled entry (no navigation pending). `SessionWriter` keeps
+    /// the same information in its private `leaf` and exposes no getter, so the
+    /// compaction guard reads this mirror instead; every append (which advances
+    /// the writer onto the new entry) clears it.
+    nav_leaf: Arc<Mutex<Option<Option<String>>>>,
     ephemeral: bool,
     scratch: Option<PathBuf>,
     /// While set, an assistant error message is held back instead of written
     /// (omp persists a failed turn only once the retry saga gave up on it).
     defer_errors: Arc<AtomicBool>,
     deferred: Arc<Mutex<Option<(pa_types::session::AgentMessage, i64)>>>,
+    /// While set, an empty aborted assistant turn is not journaled: a manual
+    /// compaction's own abort of the live turn (TS detaches the session from the
+    /// agent around that abort, so the stub never reaches the journal).
+    drop_empty_aborted: Arc<AtomicBool>,
 }
 
 impl Drop for Persistence {
@@ -130,6 +141,7 @@ impl Persistence {
             .unwrap()
             .append_entry(kind, payload, &now_iso())
             .map(|_| ())
+            .inspect(|_| self.clear_nav())
     }
 
     /// A shareable sink appending non-message entries (`model_usage`, …) to
@@ -138,8 +150,15 @@ impl Persistence {
     #[must_use]
     pub fn entry_sink(&self) -> std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync> {
         let writer = std::sync::Arc::clone(&self.writer);
+        let nav_leaf = Arc::clone(&self.nav_leaf);
         std::sync::Arc::new(move |kind, payload| {
-            let _ = writer.lock().unwrap().append_entry(kind, payload, &now_iso());
+            let nav_leaf = Arc::clone(&nav_leaf);
+            let _ = writer
+                .lock()
+                .unwrap()
+                .append_entry(kind, payload, &now_iso());
+            // An append advances the writer onto the new entry.
+            nav_leaf.lock().unwrap().take();
         })
     }
 
@@ -158,6 +177,7 @@ impl Persistence {
             .unwrap()
             .append_model_change(model, role, resolved_model_is_fallback, &now_iso())
             .map(|_| ())
+            .inspect(|_| self.clear_nav())
     }
 
     /// `thinking_level_change {thinkingLevel, configured}` (`appendThinkingLevelChange`),
@@ -183,6 +203,7 @@ impl Persistence {
             ),
         }
         .map(|_| ())
+        .inspect(|_| self.clear_nav())
     }
 
     /// `title_change` audit entry.
@@ -200,6 +221,7 @@ impl Persistence {
             .unwrap()
             .append_title_change(title, source, previous, None, &now_iso())
             .map(|_| ())
+            .inspect(|_| self.clear_nav())
     }
 
     /// Append a finished conversation message.
@@ -216,6 +238,7 @@ impl Persistence {
             .unwrap()
             .append_message(message, &iso_from_ms(timestamp_ms))
             .map(|_| ())
+            .inspect(|_| self.clear_nav())
     }
 
     /// Append a `message` entry whose shape `pa_types` cannot model (e.g. a
@@ -230,11 +253,95 @@ impl Persistence {
             .unwrap()
             .append_omp_message(OmpMessage::Agent(message), &iso_from_ms(timestamp_ms))
             .map(|_| ())
+            .inspect(|_| self.clear_nav())
     }
 
     /// Run `f` on the live session writer (compaction entries need the writer's id chain).
+    ///
+    /// Note: `f` sees the raw writer, so a leaf move or append inside `f` is
+    /// invisible to the navigation mirror. Leaf moves go through
+    /// [`Self::branch_to`]; the compaction/seed appends have wrappers below.
     pub fn with_writer<R>(&self, f: impl FnOnce(&mut SessionWriter) -> R) -> R {
         f(&mut self.writer.lock().unwrap())
+    }
+
+    /// Move the append point to an earlier entry (`/tree` navigation, omp
+    /// `SessionManager.branch`): the next appended entry chains to `id` instead
+    /// of the last journaled one; `None` makes it a new root. In-memory until
+    /// the next append, like the writer's own leaf.
+    ///
+    /// # Errors
+    /// `id` is not an entry of this session file.
+    pub fn branch_to(&self, id: Option<String>) -> Result<()> {
+        self.writer.lock().unwrap().branch_to(id.clone())?;
+        *self.nav_leaf.lock().unwrap() = Some(id);
+        Ok(())
+    }
+
+    /// The pending [`Self::branch_to`] move: `Some(target)` / `Some(None)` /
+    /// `None` (no move pending — the append point is the last journaled entry).
+    #[must_use]
+    pub fn leaf_divergence(&self) -> Option<Option<String>> {
+        self.nav_leaf.lock().unwrap().clone()
+    }
+
+    fn clear_nav(&self) {
+        self.nav_leaf.lock().unwrap().take();
+    }
+
+    /// Mirror of an append done through the raw [`Self::with_writer`] escape
+    /// hatch (the seed DOM fallback): the writer landed on the new entry.
+    pub(crate) fn note_append(&self) {
+        self.clear_nav();
+    }
+
+    /// Append the `compaction` entry on the writer's id chain. An append: the
+    /// writer lands on the new entry, so a pending navigation move ends here.
+    ///
+    /// # Errors
+    /// Writer serialization/I/O failure.
+    pub fn append_compaction(
+        &self,
+        result: &omp_compact::summary::CompactionResult,
+        timestamp_iso: &str,
+        options: &omp_compact::apply::ApplyOptions,
+    ) -> Result<String> {
+        self.with_writer(|w| omp_compact::append_compaction(w, result, timestamp_iso, options))
+            .inspect(|_| self.clear_nav())
+    }
+
+    /// Append one seeded branch line (fresh id chained to the writer's leaf,
+    /// link fields remapped); falls back to the DOM path. An append.
+    ///
+    /// # Errors
+    /// The line cannot be rewritten or written.
+    pub fn append_seeded_line(
+        &self,
+        raw: &str,
+        remap: &std::collections::HashMap<String, String>,
+    ) -> Result<String> {
+        self.with_writer(|w| w.append_seeded_line(raw, remap))
+            .inspect(|_| self.clear_nav())
+    }
+
+    /// Append a `branch_summary` entry parented at `branch_from` and land the
+    /// writer on it (`/tree` navigation with a summary; an append, which ends a
+    /// pending leaf move).
+    ///
+    /// # Errors
+    /// `branch_from` is not an entry of this session file, or the write failed.
+    pub fn append_branch_summary(
+        &self,
+        branch_from: Option<&str>,
+        summary: &str,
+        details: Option<Value>,
+        from_extension: Option<bool>,
+        timestamp_iso: &str,
+    ) -> Result<String> {
+        self.with_writer(|w| {
+            w.append_branch_summary(branch_from, summary, details, from_extension, timestamp_iso)
+        })
+        .inspect(|_| self.clear_nav())
     }
 
     /// Test-only persistence rooted at `dir` (no agent subscription).
@@ -244,11 +351,18 @@ impl Persistence {
         Ok(Persistence {
             writer: Arc::new(Mutex::new(writer)),
             session_id: Mutex::new(uuid_v7()),
+            nav_leaf: Arc::new(Mutex::new(None)),
             ephemeral: false,
             scratch: None,
             defer_errors: Arc::new(AtomicBool::new(false)),
             deferred: Arc::new(Mutex::new(None)),
+            drop_empty_aborted: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// Skip (`true`) or journal (`false`) empty aborted assistant turns.
+    pub fn drop_empty_aborted(&self, on: bool) {
+        self.drop_empty_aborted.store(on, Ordering::SeqCst);
     }
 
     /// Hold back (`true`) or write straight through (`false`) assistant error turns.
@@ -302,6 +416,7 @@ impl Persistence {
             *self.writer.lock().unwrap() = fresh;
         }
         *self.session_id.lock().unwrap() = id;
+        self.nav_leaf.lock().unwrap().take();
         self.deferred.lock().unwrap().take();
         Ok(())
     }
@@ -321,6 +436,7 @@ impl Persistence {
         if let Some(id) = session_id {
             *self.session_id.lock().unwrap() = id.to_owned();
         }
+        self.nav_leaf.lock().unwrap().take();
         self.deferred.lock().unwrap().take();
         if old != path {
             discard_if_preamble_only(&old);
@@ -404,13 +520,20 @@ pub(crate) async fn attach_in(
     let writer = Arc::new(Mutex::new(writer));
     let defer_errors = Arc::new(AtomicBool::new(false));
     let deferred = Arc::new(Mutex::new(None));
+    let drop_empty_aborted = Arc::new(AtomicBool::new(false));
+    let nav_leaf: Arc<Mutex<Option<Option<String>>>> = Arc::new(Mutex::new(None));
     let sub = agent
         .subscribe({
             let writer = writer.clone();
             let defer_errors = defer_errors.clone();
+            let drop_empty_aborted = drop_empty_aborted.clone();
             let deferred = deferred.clone();
+            let nav_leaf = nav_leaf.clone();
             move |event, _| {
                 if let AgentEvent::MessageEnd { message } = &event {
+                    if drop_empty_aborted.load(Ordering::SeqCst) && is_empty_aborted(message) {
+                        return Box::pin(async { Ok(()) });
+                    }
                     let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
                     if trace {
                         crate::runtime::turn_trace!(
@@ -441,6 +564,9 @@ pub(crate) async fn attach_in(
                                 let ts = iso_from_ms(message.timestamp());
                                 if let Err(e) = writer.lock().unwrap().append_message(&m, &ts) {
                                     eprintln!("omp-rs: session write failed: {e:#}");
+                                } else {
+                                    // An append advances the writer onto the new entry.
+                                    nav_leaf.lock().unwrap().take();
                                 }
                             }
                         }
@@ -456,6 +582,9 @@ pub(crate) async fn attach_in(
                                         writer.lock().unwrap().append_omp_message(omp, &ts)
                                     {
                                         eprintln!("omp-rs: session write failed: {e2:#}");
+                                    } else {
+                                        // An append advances the writer onto the new entry.
+                                        nav_leaf.lock().unwrap().take();
                                     }
                                 }
                                 _ => eprintln!(
@@ -474,9 +603,19 @@ pub(crate) async fn attach_in(
     Ok(Persistence {
         writer,
         session_id: Mutex::new(session_id),
+        nav_leaf,
         ephemeral,
         scratch,
         defer_errors,
         deferred,
+        drop_empty_aborted,
     })
+}
+
+/// An aborted assistant turn that produced nothing (no tool call, thinking or text).
+pub(crate) fn is_empty_aborted(message: &pa_agent::types::AgentMessage) -> bool {
+    use pa_agent::types::{AgentMessage, AssistantContent, Message, StopReason};
+    matches!(message, AgentMessage::Standard(Message::Assistant(a))
+        if a.stop_reason == StopReason::Aborted
+            && a.content.iter().all(|c| matches!(c, AssistantContent::Text(t) if t.text.trim().is_empty())))
 }

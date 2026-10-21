@@ -9,6 +9,7 @@
 
 use std::future::Future;
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context as _, Result};
 use omp_compact::context::branch_path;
@@ -297,6 +298,9 @@ pub struct CompactParams<'a> {
     pub non_message_tokens: u64,
     /// Extension `session_before_compact` gate (see [`CompactHook`]).
     pub hook: Option<&'a dyn CompactHook>,
+    /// Session+generation snapshot the commit must still match (see
+    /// [`CommitGuard`]); `None` skips the commit gate (tests, offline replays).
+    pub guard: Option<&'a CommitGuard>,
 }
 
 /// `session_before_compact` bridge: receives the TS-shaped `preparation` (and the journal's
@@ -392,6 +396,186 @@ fn scan_boundary_entries(
     Ok(out)
 }
 
+/// The session state a compaction captured at its start and re-checked at
+/// commit time (TS session-maintenance: `sessionId() !== sourceSessionId ||
+/// getBranch().at(-1)?.id !== sourceLeafId` around every await).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionSnapshot {
+    /// Live session file identity (`Persistence::session_id`).
+    pub session_id: String,
+    /// Runtime switch generation (bumped by `new_session` / `load_session*`).
+    pub generation: u64,
+    /// Pending `/tree` leaf move (`Persistence::leaf_divergence`).
+    pub nav_leaf: Option<Option<String>>,
+    /// Last journaled entry id (the append point while no move is pending).
+    pub file_leaf: Option<String>,
+}
+
+/// Session+generation guard around one compaction (bug-hunt #2, TS
+/// `#compactionAbortController` + the `sourceSessionId`/`sourceLeafId`
+/// re-checks): captured when the compaction starts, consulted right before the
+/// `compaction` entry is appended. A `/new`, `/resume`, `/tree` move, a
+/// concurrent append or a cancel (Esc, a queued prompt) since capture discards
+/// the pass instead of writing the summary into the wrong session/branch.
+pub struct CommitGuard {
+    snapshot: CompactionSnapshot,
+    /// Live switch generation, read fresh at the commit check.
+    switch_generation: Arc<std::sync::atomic::AtomicU64>,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+impl CommitGuard {
+    /// Capture the session state of `persist` plus the runtime's current
+    /// switch generation.
+    ///
+    /// # Errors
+    /// The session index cannot be read (the commit check needs the same scan).
+    pub fn capture(
+        persist: &Persistence,
+        switch_generation: Arc<std::sync::atomic::AtomicU64>,
+    ) -> Result<Self> {
+        let snapshot = CompactionSnapshot::capture(
+            persist,
+            switch_generation.load(std::sync::atomic::Ordering::SeqCst),
+        )?;
+        Ok(Self {
+            snapshot,
+            switch_generation,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        })
+    }
+
+    /// Cancel the pass (TS `abortCompaction`): Esc, a queued prompt, `abort`.
+    pub fn cancel(&self) {
+        self.cancel.cancel();
+    }
+
+    /// Whether [`Self::cancel`] arrived.
+    #[cfg(test)]
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    /// The captured snapshot (tests, diagnostics).
+    #[cfg(test)]
+    #[must_use]
+    pub fn snapshot(&self) -> &CompactionSnapshot {
+        &self.snapshot
+    }
+
+    /// Whether the session identity survived since capture: only the session id
+    /// and the switch generation matter after a successful commit (the commit
+    /// itself advanced the journal tip and cleared a pending navigation move; a
+    /// cancel that lost the race to the commit does not roll the pass back,
+    /// matching TS).
+    #[must_use]
+    pub fn session_alive(&self) -> bool {
+        self.snapshot.generation
+            == self
+                .switch_generation
+                .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Resolves when [`Self::cancel`] fires (the select arm around the pass).
+    pub async fn cancelled(&self) {
+        self.cancel.cancelled().await
+    }
+
+    /// Re-derive the live session state and refuse to commit when anything the
+    /// plan was computed from moved since capture.
+    ///
+    /// # Errors
+    /// `"Compaction cancelled"` when the guard aborted or the live session no
+    /// longer matches the captured snapshot; the index scan failed.
+    pub fn check_commit(&self, persist: &Persistence) -> Result<()> {
+        if self.cancel.is_cancelled() {
+            return Err(anyhow!("Compaction cancelled"));
+        }
+        let generation = self
+            .switch_generation
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let live = CompactionSnapshot::capture(persist, generation)?;
+        if live != self.snapshot {
+            return Err(anyhow!("Compaction cancelled"));
+        }
+        Ok(())
+    }
+}
+
+impl CompactionSnapshot {
+    /// Capture the session state a compaction commit depends on.
+    ///
+    /// # Errors
+    /// The session index cannot be read.
+    pub fn capture(persist: &Persistence, generation: u64) -> Result<Self> {
+        let index = omp_session::index::SessionIndex::load(&persist.path())?;
+        Ok(Self {
+            session_id: persist.session_id(),
+            generation,
+            nav_leaf: persist.leaf_divergence(),
+            file_leaf: index
+                .branch()
+                .last()
+                .map(|&i| index.refs[i as usize].id.to_string()),
+        })
+    }
+}
+
+/// The branch a compaction must summarize: the writer's live append point (TS
+/// `getBranch()`, leaf-based), not the last journaled line — between a `/tree`
+/// move and the next append the two differ, and cutting the file-order branch
+/// would summarize the abandoned branch while the `compaction` entry lands on
+/// the navigated one (bug-hunt #4).
+fn compact_branch(
+    index: &omp_session::index::SessionIndex,
+    nav_leaf: Option<Option<&str>>,
+) -> Vec<u32> {
+    match nav_leaf {
+        None => index.branch(),
+        Some(None) => Vec::new(),
+        Some(Some(id)) => branch_from_leaf(index, id).unwrap_or_else(|| index.branch()),
+    }
+}
+
+/// `SessionEntryIndex.pathTo(leaf)` over the lazy index: walk `parentId` links
+/// from `leaf_id` back to the root; indices into `index.refs`. `None` when the
+/// id is not an entry of this file (the caller falls back to the file-order
+/// branch, the pre-#4 behaviour).
+fn branch_from_leaf(index: &omp_session::index::SessionIndex, leaf_id: &str) -> Option<Vec<u32>> {
+    let is_structural = |i: usize| {
+        let r = &index.refs[i];
+        r.kind == omp_session::index::EntryKind::Header
+            || (r.kind == omp_session::index::EntryKind::Title && i == 0)
+    };
+    let mut by_id: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::with_capacity(index.refs.len());
+    for (i, r) in index.refs.iter().enumerate() {
+        if !is_structural(i) && !r.id.is_empty() {
+            by_id.insert(&r.id, i as u32);
+        }
+    }
+    let mut cur = *by_id.get(leaf_id)?;
+    let mut path = Vec::new();
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    loop {
+        if !seen.insert(cur) {
+            break;
+        }
+        path.push(cur);
+        let parent = &index.refs[cur as usize].parent_id;
+        if parent.is_empty() {
+            break;
+        }
+        match by_id.get(parent.as_ref()) {
+            Some(&p) => cur = p,
+            None => break,
+        }
+    }
+    path.reverse();
+    Some(path)
+}
+
 /// Plan, summarize and commit one compaction of the live session; `Ok` carries the rpc `compact`
 /// result (`summary`, `shortSummary`, `firstKeptEntryId`, `tokensBefore`, `details`, `preserveData`)
 /// and the post-compaction rebuild view (`compaction` entry + kept tail) for [`rebuild_context`].
@@ -411,7 +595,13 @@ pub async fn compact_now(
 ) -> Result<(CompactionResult, Value, Vec<Value>)> {
     let index = omp_session::index::SessionIndex::load(path)
         .with_context(|| format!("index {}", path.display()))?;
-    let branch = index.branch();
+    // Summarize the branch the writer would append to (TS `getBranch()`), not
+    // the last journaled line: after a `/tree` move the two differ, and the
+    // file-order branch is the abandoned one (bug-hunt #4).
+    let branch = compact_branch(
+        &index,
+        persist.leaf_divergence().as_ref().map(|o| o.as_deref()),
+    );
     let heads = scan_boundary_entries(path, &index, &branch)?;
     let Some(mut boundary) = plan_boundary(&heads, params.settings) else {
         if heads.last().is_some_and(|h| h.entry_type == "compaction") {
@@ -481,6 +671,13 @@ pub async fn compact_now(
     summary_params.context_window = params.context_window;
     summary_params.custom_instructions = params.custom_instructions;
     let result = omp_compact::compact(completer, &prep, &summary_params).await?;
+    // Commit gate (TS `sessionId() !== sourceSessionId || getBranch().at(-1)?.id
+    // !== sourceLeafId`): a session switch, a `/tree` move, a concurrent append
+    // or an abort since the plan was captured discards the pass — the summary
+    // must not land in the wrong file or on the wrong branch.
+    if let Some(guard) = params.guard {
+        guard.check_commit(persist)?;
+    }
     let leaf_id = heads.last().map_or("", |h| h.id.as_str()).to_owned();
     let (ts, view, tokens_after) =
         build_rebuild_view(&leaf_id, &result, kept_entries, params.non_message_tokens, &tokenizer);
@@ -490,7 +687,7 @@ pub async fn compact_now(
         from_extension: Some(false),
     };
     persist
-        .with_writer(|w| omp_compact::append_compaction(w, &result, &ts, &options))
+        .append_compaction(&result, &ts, &options)
         .context("writing the compaction entry")?;
     let mut data = json!({
         "summary": result.summary,
@@ -619,7 +816,7 @@ pub fn seed_branch(persist: &Persistence, index: &omp_session::index::SessionInd
     index.for_each_line(path, &branch, |r, raw| {
         let old_id = r.id.to_string();
         let new_id = persist
-            .with_writer(|w| w.append_seeded_line(raw, &remap))
+            .append_seeded_line(raw, &remap)
             .or_else(|_| seed_entry_dom(persist, raw, &remap))?;
         remap.insert(old_id, new_id);
         Ok(())
@@ -661,7 +858,12 @@ fn seed_entry_dom(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    persist.with_writer(|w| w.append_entry(kind, Value::Object(fields), &ts))
+    // Rare DOM fallback (the raw rewriter rejected the line): the raw writer
+    // append is invisible to the navigation mirror, so note it like every
+    // other append.
+    persist
+        .with_writer(|w| w.append_entry(kind, Value::Object(fields), &ts))
+        .inspect(|_| persist.note_append())
 }
 
 #[cfg(test)]
@@ -1212,5 +1414,175 @@ mod tests {
         assert!(h.rt.messages().await[0]
             .to_string()
             .contains("AUTO SUMMARY"));
+    }
+
+    // ------------------------------------------------------- bug-hunt #4
+
+    /// A capturing summarizer: records every request context (conversation
+    /// text included) and answers with `text`.
+    fn capturing_summarizer(
+        text: &'static str,
+    ) -> (SummarizeFn, Arc<std::sync::Mutex<Vec<String>>>) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let f: SummarizeFn = Arc::new(move |req: SummaryRequest| {
+            let sink = sink.clone();
+            Box::pin(async move {
+                sink.lock()
+                    .unwrap()
+                    .push(serde_json::to_string(&req.context).unwrap_or_default());
+                Ok(reply(text))
+            })
+        });
+        (f, seen)
+    }
+
+    /// `/compact` right after a `/tree` navigation must summarize the branch
+    /// the writer would append to (the selected one), not the file-order tail
+    /// (the abandoned one), and the `compaction` entry must chain to the
+    /// navigated leaf (bug-hunt #4).
+    #[tokio::test]
+    async fn compact_after_tree_navigation_compacts_the_selected_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("branched.jsonl");
+        let msg = |id: &str, parent: &str, role: &str, text: &str| {
+            format!(
+                r#"{{"type":"message","id":"{id}","parentId":"{parent}","timestamp":"2026-09-11T00:33:0{id}.000Z","message":{{"role":"{role}","content":[{{"type":"text","text":"{text}"}}],"stopReason":"stop","timestamp":1}}}}"#
+            )
+        };
+        let long_x = "x".repeat(400);
+        let long_y = "y".repeat(400);
+        let body = [
+            r#"{"type":"session","version":3,"id":"branched","timestamp":"2026-09-11T00:31:09.193Z","cwd":"/tmp"}"#.to_string(),
+            msg("u1", "branched", "user", &format!("first request {long_x}")),
+            msg("a1", "u1", "assistant", &format!("first reply {long_y}")),
+            msg("u2", "a1", "user", &format!("second request {long_x}")),
+            msg("a2", "u2", "assistant", &format!("second reply {long_y}")),
+            msg("u3", "a2", "user", &format!("third request {long_x}")),
+            msg("a3", "u3", "assistant", &format!("third reply {long_y}")),
+        ]
+        .join("\n");
+        std::fs::write(&file, format!("{body}\n")).unwrap();
+
+        let mut h = harness_in(0, Some(dir.path())).await;
+        h.rt.load_session(&file, None).await.expect("resume");
+        // `/tree` navigate to a1 without a summary: an in-memory leaf move,
+        // nothing journaled — the file still ends on a3.
+        h.rt.branch_to(Some("a1".to_owned())).expect("branch_to a1");
+
+        let (fake, seen) = capturing_summarizer("SELECTED SUMMARY");
+        h.rt.set_summarizer(Some(fake));
+        h.rt.set_compaction_settings(small_keep());
+
+        h.rt.compact(None)
+            .await
+            .expect("compact the selected branch");
+
+        let entries = h.rt.entries().expect("entries");
+        let comp = entries
+            .iter()
+            .rev()
+            .find(|e| e["type"] == "compaction")
+            .expect("compaction entry");
+        assert_eq!(
+            comp["parentId"],
+            json!("a1"),
+            "entry chains to the navigated leaf: {comp}"
+        );
+
+        let requests = seen.lock().unwrap().join("\n");
+        assert!(
+            requests.contains("first request"),
+            "the selected branch is summarized: {requests:.600}"
+        );
+        assert!(
+            !requests.contains("second request") && !requests.contains("third request"),
+            "the abandoned branch is not summarized: {requests:.600}"
+        );
+    }
+
+    /// `compact_branch` targets the writer's navigation state (TS `getBranch()`
+    /// is leaf-based): a pending move selects the moved-to branch, a pending
+    /// root reset selects nothing, and an unknown id falls back to the
+    /// file-order branch.
+    #[test]
+    fn compact_branch_follows_the_writer_navigation_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("b.jsonl");
+        let entry = |id: &str, parent: &str| {
+            format!(
+                r#"{{"type":"message","id":"{id}","parentId":"{parent}","timestamp":"t","message":{{"role":"user","content":[{{"type":"text","text":"{id}"}}],"stopReason":"stop","timestamp":1}}}}"#
+            )
+        };
+        let body = [
+            r#"{"type":"session","version":3,"id":"s","timestamp":"t","cwd":"/tmp"}"#,
+            &entry("u1", "s"),
+            &entry("a1", "u1"),
+            &entry("u2", "a1"),
+            &entry("a2", "u2"),
+        ]
+        .join("\n")
+            + "\n";
+        std::fs::write(&file, body).unwrap();
+        let index = omp_session::index::SessionIndex::load(&file).unwrap();
+        assert_eq!(
+            index.branch(),
+            vec![1, 2, 3, 4],
+            "file order: u1 a1 u2 a2 (refs[0] is the header)"
+        );
+
+        // No pending move: the file-order branch.
+        assert_eq!(compact_branch(&index, None), vec![1, 2, 3, 4]);
+        // Pending move to a1: the selected branch only.
+        assert_eq!(compact_branch(&index, Some(Some("a1"))), vec![1, 2]);
+        // Pending root reset: nothing to compact (TS getBranch() on a
+        // before-root leaf is empty).
+        assert_eq!(compact_branch(&index, Some(None)), Vec::<u32>::new());
+        // Unknown id: fall back to the pre-#4 behaviour instead of guessing.
+        assert_eq!(compact_branch(&index, Some(Some("nope"))), vec![1, 2, 3, 4]);
+    }
+
+    /// The commit guard: a fresh snapshot commits; a `/tree` move, any append,
+    /// a session switch (generation bump) or a cancel discards the pass.
+    #[test]
+    fn commit_guard_discards_stale_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let persist = Persistence::for_test(dir.path()).expect("persist");
+        let gen = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let e1 = persist
+            .with_writer(|w| w.append_entry("custom", json!({}), "t"))
+            .expect("entry");
+
+        let guard = CommitGuard::capture(&persist, Arc::clone(&gen)).expect("capture");
+        assert!(
+            guard.check_commit(&persist).is_ok(),
+            "fresh snapshot commits"
+        );
+        assert!(guard.session_alive());
+
+        // A pending `/tree` move moves the append point: stale.
+        persist.branch_to(Some(e1.clone())).expect("branch_to");
+        assert!(guard.check_commit(&persist).is_err(), "navigation discards");
+
+        // Any append ends the pending move AND advances the tip: stale either way.
+        persist.append_entry("custom", json!({})).expect("append");
+        assert!(guard.check_commit(&persist).is_err(), "append discards");
+
+        // A session switch (generation bump) discards — and the post-commit
+        // apply check reports the session as gone.
+        let guard2 = CommitGuard::capture(&persist, Arc::clone(&gen)).expect("capture2");
+        assert!(guard2.check_commit(&persist).is_ok());
+        gen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            guard2.check_commit(&persist).is_err(),
+            "generation discards"
+        );
+        assert!(!guard2.session_alive(), "switched session is not alive");
+
+        // An explicit cancel (Esc / queued prompt) discards.
+        let guard3 = CommitGuard::capture(&persist, Arc::clone(&gen)).expect("capture3");
+        guard3.cancel();
+        assert!(guard3.is_cancelled());
+        assert!(guard3.check_commit(&persist).is_err(), "cancel discards");
     }
 }
