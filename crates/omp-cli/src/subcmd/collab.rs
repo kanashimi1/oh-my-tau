@@ -5,7 +5,7 @@
 
 use std::future::Future;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use serde_json::json;
 use omp_collab::registry::{
     CollabAccess, CollabLinkError, COLLAB_REGISTRY_VERSION, list_collab_hosts,
@@ -15,14 +15,22 @@ use omp_collab::registry::{
 const USAGE: &str =
     "Usage: omp-rs collab <list|link> ...\n  omp-rs collab list [--json]\n  omp-rs collab link <instanceId|pid> [--view] [--json]";
 
-/// Registry IPC is async; this subcommand surface is sync. Run one registry
-/// future on a throwaway current-thread runtime (`subcmd/stats.rs` flavor).
-fn block_on_registry<T>(fut: impl Future<Output = anyhow::Result<T>>) -> Result<T> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| anyhow::anyhow!("create tokio runtime: {e}"))?;
-    rt.block_on(fut)
+/// Registry IPC is async; this subcommand surface is sync — and `run` is
+/// called from inside the CLI's runtime, so `block_on` must happen off that
+/// runtime (dedicated thread, `subcmd/stats.rs` pattern).
+fn block_on_registry<T>(fut: impl Future<Output = anyhow::Result<T>> + Send + 'static) -> Result<T>
+where
+    T: Send + 'static,
+{
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| anyhow::anyhow!("create tokio runtime: {e}"))
+            .and_then(|rt| rt.block_on(fut))
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("collab registry thread panicked"))?
 }
 
 /// Minimal flag parse for `collab list` / `collab link`.
@@ -70,7 +78,8 @@ fn parse_link(args: &[String]) -> Result<(String, bool, bool)> {
 }
 
 fn print_list(json_out: bool) -> Result<()> {
-    let hosts = block_on_registry(list_collab_hosts(None)).context("list Collab hosts")?;
+    let hosts = block_on_registry(async { list_collab_hosts(None).await })
+        .context("list Collab hosts")?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&json!({"version": COLLAB_REGISTRY_VERSION, "hosts": hosts}))?);
         return Ok(());
@@ -105,9 +114,11 @@ fn print_list(json_out: bool) -> Result<()> {
     Ok(())
 }
 
-fn print_link(selector: &str, view: bool, json_out: bool) -> Result<()> {
+fn print_link(selector: &str, view: bool, json_out: bool) -> Result<i32> {
     let access = if view { CollabAccess::View } else { CollabAccess::Control };
-    match block_on_registry(resolve_collab_host_link(selector, access, None)) {
+    let selector = selector.to_string();
+    match block_on_registry(async move { resolve_collab_host_link(&selector, access, None).await })
+    {
         Ok(link) => {
             if json_out {
                 println!("{}", serde_json::to_string_pretty(&json!({
@@ -120,7 +131,7 @@ fn print_link(selector: &str, view: bool, json_out: bool) -> Result<()> {
             } else {
                 println!("{}", link.url);
             }
-            Ok(())
+            Ok(0)
         }
         Err(e) => {
             if let Some(lerr) = e.downcast_ref::<CollabLinkError>() {

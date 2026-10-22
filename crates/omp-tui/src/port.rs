@@ -101,6 +101,10 @@ pub trait RuntimePort: Send + Sync + 'static {
     /// Gather the `/session` info report; the runtime answers with a
     /// `{"type":"session_info","lines":[…]}` frame that opens the overlay.
     fn request_session_info(&self) {}
+
+    /// Gather the `/usage` report (session tokens + provider rate limits);
+    /// the runtime answers with a `session_info` frame titled "Usage".
+    fn request_usage(&self) {}
 }
 
 /// A recording fake for tests. Every call appends to [`Self::log`].
@@ -179,5 +183,8 @@ impl RuntimePort for FakePort {
     }
     fn request_session_info(&self) {
         self.record("request_session_info()".into());
+    }
+    fn request_usage(&self) {
+        self.record("request_usage()".into());
     }
 }

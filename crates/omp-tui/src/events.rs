@@ -108,9 +108,15 @@ pub enum AppEvent {
     ModelsChanged {
         models: Vec<crate::overlays::models::ModelEntry>,
     },
-    /// `{"type":"session_info", "lines": [...]}` — the `/session` report
-    /// (omp-cli `session_info_frame`), shown in the session info overlay.
-    SessionInfo(Vec<crate::overlays::session_info::SessionInfoLine>),
+    /// `{"type":"session_info", "title"?, "lines": [...]}` — the `/session`
+    /// report (omp-cli `session_info_frame`) or the `/usage` report
+    /// (`title: "Usage"`), shown in the session info overlay.
+    SessionInfo {
+        /// Panel title; `None` = "Session Info".
+        title: Option<String>,
+        /// Report lines.
+        lines: Vec<crate::overlays::session_info::SessionInfoLine>,
+    },
     /// `{"type":"notice","level":"info"|"warning"|"error","message":...}` —
     /// a runtime notice (e.g. an ultra mode switching the context strategy).
     Notice {
@@ -196,9 +202,10 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
             name: session_loaded_name(frame),
         },
         "session_reset" => AppEvent::SessionReset,
-        "session_info" => AppEvent::SessionInfo(
-            crate::overlays::session_info::SessionInfoLine::parse_frame(frame),
-        ),
+        "session_info" => AppEvent::SessionInfo {
+            title: frame.get("title").and_then(Value::as_str).map(str::to_owned),
+            lines: crate::overlays::session_info::SessionInfoLine::parse_frame(frame),
+        },
         "models_changed" => AppEvent::ModelsChanged {
             models: frame
                 .get("models")

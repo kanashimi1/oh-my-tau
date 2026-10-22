@@ -1028,7 +1028,9 @@ impl App {
                 self.messages.rebuild(&[]);
                 self.clear_scrollback = true;
             }
-            AppEvent::SessionInfo(lines) => self.overlays.open_session_info(lines.clone()),
+            AppEvent::SessionInfo { title, lines } => {
+                self.overlays.open_session_info(title.as_deref(), lines.clone());
+            }
             _ => {}
         }
         self.messages.apply(event);
@@ -1764,6 +1766,9 @@ impl App {
             // TS `/session` (bare or `info`) opens the session info panel;
             // other verbs (delete, pin, …) stay with the runtime.
             "session" if matches!(args.trim(), "" | "info") => port.request_session_info(),
+            // TS `/usage` (bare or `show`) opens the usage panel; `reset`
+            // stays with the runtime.
+            "usage" if matches!(args.trim(), "" | "show") => port.request_usage(),
             _ => self.dispatch(
                 Action::Slash {
                     name: name.to_owned(),
@@ -2561,6 +2566,31 @@ mod tests {
         assert!(app.has_fullscreen_overlay());
         let s = screen(&mut app, 120, 40);
         assert!(s.contains("Session Info") && s.contains("ID: abc"), "{s}");
+        assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
+        assert_eq!(app.overlays.open(), None);
+    }
+
+    #[test]
+    fn slash_usage_requests_report_and_opens_panel() {
+        let mut app = app();
+        let port = port();
+        app.apply_event(&AppEvent::AvailableCommands(json!({
+            "commands": [{"name": "usage", "source": "builtin"}]
+        })));
+        type_text(&mut app, &port, "/usage");
+        assert!(enter(&mut app, &port));
+        assert!(log(&port).contains(&"request_usage()".to_owned()), "{:?}", log(&port));
+        assert!(!log(&port).iter().any(|c| c.starts_with("run_slash")), "{:?}", log(&port));
+        type_text(&mut app, &port, "/usage reset");
+        assert!(enter(&mut app, &port));
+        assert!(log(&port).iter().any(|c| c.starts_with("run_slash(usage")), "{:?}", log(&port));
+        app.apply_event(&crate::events::parse_frame(&json!({
+            "type": "session_info", "title": "Usage",
+            "lines": [{"head": "Provider limits (anthropic)"}, {"k": "5h", "v": "6%"}]
+        })));
+        assert_eq!(app.overlays.open(), Some(OpenOverlay::SessionInfo));
+        let s = screen(&mut app, 120, 40);
+        assert!(s.contains("Usage") && !s.contains("Session Info") && s.contains("5h: 6%"), "{s}");
         assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
         assert_eq!(app.overlays.open(), None);
     }

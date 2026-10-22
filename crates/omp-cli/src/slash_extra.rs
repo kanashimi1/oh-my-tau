@@ -7,13 +7,17 @@
 //! dashboards) emit an informative notice explaining what is missing and return
 //! [`Outcome::Handled`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 mod login;
 pub use login::mark_interactive_ui;
 
 use serde_json::{json, Value};
+
+use omp_collab::controller::{CollabController, CollabStartOptions, SettingsGetter};
+use omp_collab::host::CollabHostBackend;
+use omp_collab::registry::{self, CollabAccess};
 
 use crate::rpc::slash::Outcome;
 use crate::runtime::Runtime;
@@ -193,6 +197,7 @@ pub fn is_extra_command(name: &str) -> bool {
             | "btw"
             | "rlm"
             | "ultra"
+            | "collab"
     )
 }
 
@@ -330,6 +335,14 @@ pub fn extra_catalog() -> Vec<Value> {
             "description": "Ultra mode: max thinking + workflow by default (code), with RLM (deep), CLM (long) or both (hyper)",
             "input": {
                 "hint": "[code|deep|long|hyper|off]"
+            },
+            "source": "builtin",
+        }),
+        json!({
+            "name": "collab",
+            "description": "Share this session live via a relay",
+            "input": {
+                "hint": "[start|view|list|stop|status] [relayUrl]"
             },
             "source": "builtin",
         }),
@@ -558,8 +571,213 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
+        "collab" => Some(collab_command(rt, args).await),
         _ => None,
     }
+}
+
+/// Process-wide collab controller — one per interactive process, mirroring TS
+/// `ctx.collabController` (built lazily on the first `/collab`).
+static COLLAB_CONTROLLER: std::sync::OnceLock<Arc<CollabController>> = std::sync::OnceLock::new();
+
+/// Settings getter wired the way the runtime reads config: reload per call
+/// (runtime.rs does `Settings::load(&self.cwd)` at every read site).
+fn collab_settings_getter(cwd: PathBuf) -> SettingsGetter {
+    Arc::new(move |id: &str| omp_settings::Settings::load(&cwd).get_string(id))
+}
+
+/// [`Runtime`] as a collab host backend: registry snapshot identity plus
+/// guest-prompt injection into the live session.
+struct RuntimeCollabBackend {
+    rt: Arc<Runtime>,
+    /// Handle of the CLI's runtime, captured at construction: guest prompts
+    /// must run there even though the host's relay event loop is driven on its
+    /// own thread (controller spawns `CollabHost::start` off-runtime).
+    prompt_runtime: tokio::runtime::Handle,
+}
+
+impl CollabHostBackend for RuntimeCollabBackend {
+    fn session_id(&self) -> String {
+        self.rt.session_id()
+    }
+
+    fn cwd(&self) -> String {
+        self.rt.cwd.display().to_string()
+    }
+
+    fn session_name(&self) -> Option<String> {
+        // settings.ts `collab.displayName` overrides the registry session name.
+        let name =
+            collab_settings_getter(self.rt.cwd.clone())("collab.displayName").unwrap_or_default();
+        (!name.trim().is_empty()).then_some(name)
+    }
+
+    fn inject_guest_prompt(&self, text: &str, images: Vec<Value>) -> anyhow::Result<()> {
+        let rt = Arc::clone(&self.rt);
+        let text = text.to_string();
+        let images: Vec<pa_agent::types::ImageContent> = images
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect();
+        // `Runtime::prompt` self-queues while streaming; `followUp` keeps a
+        // guest message from stealing the live turn (TS queued-message drain).
+        self.prompt_runtime.spawn(async move {
+            if let Err(err) = rt.prompt(None, &text, Some("followUp"), images).await {
+                rt.send(json!({
+                    "type": "command_output",
+                    "text": format!("collab: guest prompt failed: {}", err.message),
+                }));
+            }
+        });
+        Ok(())
+    }
+}
+
+/// The process collab controller, built on first use against this Runtime.
+fn collab_controller(rt: &Arc<Runtime>) -> Arc<CollabController> {
+    COLLAB_CONTROLLER
+        .get_or_init(|| {
+            Arc::new(CollabController::new(
+                Arc::new(RuntimeCollabBackend {
+                    rt: Arc::clone(rt),
+                    prompt_runtime: tokio::runtime::Handle::current(),
+                }),
+                collab_settings_getter(rt.cwd.clone()),
+            ))
+        })
+        .clone()
+}
+
+/// `/collab [start|view|list|stop|status] [relayUrl]` (TS
+/// `slash-commands/builtin-collaboration.ts` "collab", text-mode port).
+async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
+    let controller = collab_controller(rt);
+    let args = args.trim();
+    let (verb, rest) = match args.split_once(char::is_whitespace) {
+        Some((v, r)) => (v, r.trim()),
+        None => (args, ""),
+    };
+    match verb {
+        "stop" => {
+            controller.stop_host("host stopped").await;
+            output(rt, "Collab stopped");
+        }
+        "status" => match controller.current_host() {
+            Some(host) => {
+                let guests = host.participant_count().saturating_sub(1);
+                let link = if host.access() == CollabAccess::View {
+                    controller.web_view_link()
+                } else {
+                    controller.web_link()
+                };
+                output(
+                    rt,
+                    &format!(
+                        "Collab: {guests} guest{} — {}",
+                        if guests == 1 { "" } else { "s" },
+                        link.as_deref().unwrap_or("(link unavailable)"),
+                    ),
+                );
+            }
+            None => output(rt, "Not in a collab session"),
+        },
+        "list" => {
+            // Same registry as `omp collab list`: metadata only, never a link
+            // (TS: a link is a deliberate per-host act).
+            if !rest.is_empty() {
+                output(
+                    rt,
+                    "Usage: /collab list — for links use `omp-rs collab link <id|pid>`",
+                );
+                return Outcome::Handled { agent_invoked: false };
+            }
+            match registry::list_collab_hosts(None).await {
+                Ok(hosts) if hosts.is_empty() => output(rt, "No active Collab hosts"),
+                Ok(hosts) => {
+                    let mut lines = vec![format!(
+                        "{} active local Collab host{}",
+                        hosts.len(),
+                        if hosts.len() == 1 { "" } else { "s" }
+                    )];
+                    for h in &hosts {
+                        let guests = h.participants.saturating_sub(1);
+                        lines.push(format!(
+                            "  {} — pid {}, gen {}, {} guest{}, {}, {}",
+                            h.instance_id,
+                            h.pid,
+                            h.generation,
+                            guests,
+                            if guests == 1 { "" } else { "s" },
+                            h.access,
+                            if h.relay_connected {
+                                "relay connected"
+                            } else {
+                                "relay reconnecting"
+                            },
+                        ));
+                    }
+                    lines.push(
+                        "Get a link: omp-rs collab link <instanceId|pid> [--view]".to_string(),
+                    );
+                    output(rt, &lines.join("\n"));
+                }
+                Err(err) => output(rt, &format!("Failed to list collab hosts: {err:#}")),
+            }
+        }
+        _ => {
+            // `/collab`, `/collab start [relayUrl]`, `/collab view [relayUrl]`;
+            // a first token that is not a verb is a relay override (TS
+            // `knownStartVerb ? rest : args`).
+            let known_verb = matches!(verb, "start" | "view");
+            let view = verb == "view";
+            let relay_arg = if known_verb { rest } else { args };
+            let access = if view {
+                CollabAccess::View
+            } else {
+                CollabAccess::Control
+            };
+            let existing = controller.current_host();
+            match controller
+                .start_host(CollabStartOptions {
+                    access,
+                    relay: (!relay_arg.is_empty()).then(|| relay_arg.to_string()),
+                })
+                .await
+            {
+                Ok(host) => {
+                    let heading = if existing.as_ref().is_some_and(|e| {
+                        e.instance_id() == host.instance_id()
+                            && e.generation() == host.generation()
+                    }) {
+                        if view {
+                            "Read-only collab session active"
+                        } else {
+                            "Collab session active"
+                        }
+                    } else {
+                        "Collab session started!"
+                    };
+                    let mut lines = vec![heading.to_string()];
+                    if let Some(full) = controller.full_link() {
+                        lines.push(format!("  Control link: {full}"));
+                    }
+                    if let Some(view_link) = controller.view_link() {
+                        lines.push(format!("  View-only link: {view_link}"));
+                    }
+                    if let Some(web) = controller.web_link() {
+                        lines.push(format!("  Browser: {web}"));
+                    }
+                    lines.push(
+                        "Guests open the browser link; share the control link only with trusted guests."
+                            .to_string(),
+                    );
+                    output(rt, &lines.join("\n"));
+                }
+                Err(err) => output(rt, &format!("Failed to start collab session: {err:#}")),
+            }
+        }
+    }
+    Outcome::Handled { agent_invoked: false }
 }
 
 #[cfg(test)]
@@ -569,7 +787,7 @@ mod tests {
     #[test]
     fn test_extra_catalog_names_all_handled() {
         let catalog = extra_catalog();
-        assert_eq!(catalog.len(), 19, "expected 19 extra commands in catalog");
+        assert_eq!(catalog.len(), 20, "expected 20 extra commands in catalog");
         for cmd in &catalog {
             let name = cmd["name"].as_str().expect("command must have name");
             assert!(

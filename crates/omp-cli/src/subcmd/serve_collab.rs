@@ -84,23 +84,28 @@ pub fn run(args: &[String]) -> Result<i32> {
         bail!("serve-collab binds 127.0.0.1 only (got --host {host})");
     }
     let dir = dist_dir();
-    // The relay binds its listener inside a tokio runtime; use the
-    // `subcmd/stats.rs` runtime flavor and block this thread until Ctrl+C.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("create tokio runtime")?;
-    let relay = rt
-        .block_on(async { omp_collab::serve_collab_client(port, &dir) })
-        .context("failed to start the collab relay + web client")?;
-    println!("Collab relay + web client on http://127.0.0.1:{port}/");
-    println!("Relay socket: {}", relay.url);
-    println!("Hosts connect here; open a link (http://127.0.0.1:{port}/#<collab-link>) in a browser.");
-    println!("Press Ctrl+C to stop\n");
-    if let Err(e) = rt.block_on(async { tokio::signal::ctrl_c().await }) {
-        bail!("failed to await Ctrl+C: {e}");
-    }
-    relay.stop();
-    println!("\nShutting down.");
-    Ok(0)
+    // `run` is called from inside the CLI's runtime: the relay setup and the
+    // Ctrl+C wait must block on a dedicated thread (stats.rs pattern), not on
+    // a runtime worker.
+    std::thread::spawn(move || -> Result<i32> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create tokio runtime")?;
+        let relay = rt
+            .block_on(async { omp_collab::serve_collab_client(port, &dir) })
+            .context("failed to start the collab relay + web client")?;
+        println!("Collab relay + web client on http://127.0.0.1:{port}/");
+        println!("Relay socket: {}", relay.url);
+        println!("Hosts connect here; open a link (http://127.0.0.1:{port}/#<collab-link>) in a browser.");
+        println!("Press Ctrl+C to stop\n");
+        if let Err(e) = rt.block_on(tokio::signal::ctrl_c()) {
+            bail!("failed to await Ctrl+C: {e}");
+        }
+        relay.stop();
+        println!("\nShutting down.");
+        Ok(0)
+    })
+    .join()
+    .map_err(|_| anyhow::anyhow!("collab relay thread panicked"))?
 }

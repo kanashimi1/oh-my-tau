@@ -1474,40 +1474,63 @@ async fn usage_command(rt: &Runtime, args: &str) -> Outcome {
     }
 }
 
-/// Render the anthropic OAuth usage report + reset-credit inventory, one line per
-/// window; empty when the active provider has no usage endpoint or credential.
-async fn provider_usage_lines(rt: &Runtime) -> Vec<String> {
+const USAGE_PROVIDERS: [&str; 6] = [
+    "anthropic",
+    "kimi-code",
+    "zai",
+    "openai-codex",
+    "google-antigravity",
+    "google-gemini-cli",
+];
+
+/// Active provider plus its rate-limit report: `Ok(None)` = provider has no
+/// usage endpoint, `Err` = fetch/credential failure.
+async fn fetch_active_usage(
+    rt: &Runtime,
+) -> (String, Result<Option<omp_providers::usage::UsageReport>, String>) {
     let provider = rt
         .model_info()
         .get("provider")
         .and_then(|p| p.as_str())
         .unwrap_or("")
         .to_string();
-    const SUPPORTED: [&str; 6] = [
-        "anthropic",
-        "kimi-code",
-        "zai",
-        "openai-codex",
-        "google-antigravity",
-        "google-gemini-cli",
-    ];
-    if provider.is_empty() || !SUPPORTED.contains(&provider.as_str()) {
-        return vec![String::new(), format!(
-            "Provider rate-limit usage for `{provider}` is not available (supported: anthropic, kimi-code, zai, openai-codex, google-antigravity, google-gemini-cli).",
-        )];
+    if provider.is_empty() || !USAGE_PROVIDERS.contains(&provider.as_str()) {
+        return (provider, Ok(None));
     }
-    let mut lines = vec![String::new(), format!("Provider rate-limit usage ({provider}):")];
     let Some(cred) = omp_providers::auth::credential_row_async(omp_providers::AgentDir::default(), provider.clone()).await else {
-        lines.push("  unavailable: no credential".to_string());
-        return lines;
+        return (provider, Err("no credential".to_string()));
     };
     let cred_input = omp_providers::usage::UsageCredential {
         access_token: Some(&cred.0.key),
         raw_key: Some(&cred.0.key),
         data: Some(&cred.1),
     };
-    match omp_providers::usage::fetch_provider_usage(&provider, &cred_input, None).await {
-        Ok(report) => {
+    let report = omp_providers::usage::fetch_provider_usage(&provider, &cred_input, None)
+        .await
+        .map(Some)
+        .map_err(|e| format!("{e:#}"));
+    (provider, report)
+}
+
+fn unsupported_usage_note(provider: &str) -> String {
+    format!(
+        "Provider rate-limit usage for `{provider}` is not available (supported: {}).",
+        USAGE_PROVIDERS.join(", ")
+    )
+}
+
+/// Render the anthropic OAuth usage report + reset-credit inventory, one line per
+/// window; empty when the active provider has no usage endpoint or credential.
+async fn provider_usage_lines(rt: &Runtime) -> Vec<String> {
+    let (provider, report) = fetch_active_usage(rt).await;
+    let mut lines = vec![String::new()];
+    match report {
+        Ok(None) => {
+            lines.push(unsupported_usage_note(&provider));
+            return lines;
+        }
+        Ok(Some(report)) => {
+            lines.push(format!("Provider rate-limit usage ({provider}):"));
             for line in &report.lines {
                 let mut s = line.label.clone();
                 if let Some(p) = line.used_percent {
@@ -1528,9 +1551,74 @@ async fn provider_usage_lines(rt: &Runtime) -> Vec<String> {
                 lines.push(format!("  note: {n}"));
             }
         }
-        Err(e) => lines.push(format!("  unavailable: {e:#}")),
+        Err(e) => {
+            lines.push(format!("Provider rate-limit usage ({provider}):"));
+            lines.push(format!("  unavailable: {e}"));
+        }
     }
     lines
+}
+
+/// Interactive `/usage` panel: a `session_info` frame titled "Usage"
+/// (session tokens + per-window provider limits with a fill bar), opened by
+/// the TUI in its info overlay (TS `handleUsageCommand` → usage dashboard).
+pub(crate) async fn usage_panel_frame(rt: &Runtime) -> Value {
+    let kv = |k: &str, v: String| json!({"k": k, "v": v});
+    let stats = rt.session_stats().await;
+    let tokens = &stats["tokens"];
+    let n = |key: &str| tokens[key].as_u64().unwrap_or(0).to_string();
+    let mut lines = vec![
+        json!({"head": "Session tokens"}),
+        kv("Input", n("input")),
+        kv("Output", n("output")),
+        kv("Cache read", n("cacheRead")),
+        kv("Cache write", n("cacheWrite")),
+        kv("Total", n("total")),
+        kv("Cost", format!("${:.4}", stats["cost"].as_f64().unwrap_or(0.0))),
+    ];
+    if let Some(window) = stats["contextUsage"]["contextWindow"].as_u64() {
+        lines.push(kv("Context window", format!("{window} tokens")));
+    }
+    lines.push(json!({"text": ""}));
+    let (provider, report) = fetch_active_usage(rt).await;
+    match report {
+        Ok(None) => lines.push(json!({"text": unsupported_usage_note(&provider), "dim": true})),
+        Err(e) => {
+            lines.push(json!({"head": format!("Provider limits ({provider})")}));
+            lines.push(json!({"k": "Status", "vs": [{"t": format!("unavailable: {e}"), "c": "error"}]}));
+        }
+        Ok(Some(report)) => {
+            lines.push(json!({"head": format!("Provider limits ({provider})")}));
+            for line in &report.lines {
+                let mut spans = Vec::new();
+                if let Some(p) = line.used_percent {
+                    const BAR: usize = 20;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let filled = ((p.clamp(0.0, 100.0) / 100.0) * BAR as f64).round() as usize;
+                    let color = if p >= 90.0 { "error" } else if p >= 70.0 { "warning" } else { "success" };
+                    spans.push(json!({"t": "█".repeat(filled), "c": color}));
+                    spans.push(json!({"t": "░".repeat(BAR - filled), "c": "dim"}));
+                    spans.push(json!({"t": format!(" {p:.0}%")}));
+                }
+                if let Some(r) = line.remaining {
+                    spans.push(json!({"t": format!(" · {r} left")}));
+                }
+                if let Some(ms) = line.resets_at {
+                    spans.push(json!({"t": fmt_reset(ms), "c": "dim"}));
+                }
+                if let Some(note) = &line.note {
+                    spans.push(json!({"t": format!(" · {note}"), "c": "dim"}));
+                }
+                lines.push(json!({"k": line.label, "vs": spans}));
+            }
+            for note in &report.notes {
+                lines.push(json!({"text": format!("note: {note}"), "dim": true}));
+            }
+        }
+    }
+    lines.push(json!({"text": ""}));
+    lines.push(json!({"text": "/usage reset [provider/credential-id|provider/active] spends a saved reset", "dim": true}));
+    json!({"type": "session_info", "title": "Usage", "lines": lines})
 }
 fn fmt_reset(ms: i64) -> String {
     let secs = ms / 1000;

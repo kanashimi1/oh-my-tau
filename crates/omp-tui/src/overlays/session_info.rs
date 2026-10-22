@@ -220,6 +220,8 @@ fn thumb_range(height: usize, total: usize, offset: usize) -> (usize, usize) {
 /// The focused, dismissible `/session` information panel.
 #[derive(Debug, Clone, Default)]
 pub struct SessionInfoOverlay {
+    /// Panel title; empty = "Session Info" (the `/usage` report reuses the panel).
+    title: String,
     lines: Vec<SessionInfoLine>,
     scroll: usize,
     /// `(viewport rows, total rows)` from the last render, for key clamping.
@@ -232,6 +234,11 @@ impl SessionInfoOverlay {
         self.lines = lines;
         self.scroll = 0;
         self.viewport.set((0, 0));
+    }
+
+    /// Set the panel title (`None` = "Session Info").
+    pub fn set_title(&mut self, title: Option<&str>) {
+        self.title = title.unwrap_or_default().to_owned();
     }
 
     /// The report lines.
@@ -287,13 +294,16 @@ impl Component for SessionInfoOverlay {
 
         let mut out: Vec<Line<'static>> = Vec::with_capacity(height + 4);
         // Top border with the inset title (overlay-box `topBorder`).
-        let title = " Session Info ";
+        let title = format!(
+            " {} ",
+            if self.title.is_empty() { "Session Info" } else { self.title.as_str() }
+        );
         let title_w: usize = title.chars().map(char_width).sum();
         let fill = (width - 2).saturating_sub(1 + title_w);
         out.push(Line::from(vec![
             Span::styled(format!("{}{horizontal}", sym("boxRound.topLeft")), border),
             Span::styled(
-                title.to_owned(),
+                title,
                 Style::default().fg(theme.color("accent")).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("{}{}", horizontal.repeat(fill), sym("boxRound.topRight")), border),

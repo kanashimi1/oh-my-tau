@@ -204,8 +204,10 @@ impl Overlays {
     }
 
     /// Open the `/session` info panel with a fresh report (replacing an
-    /// open one, which moves back to the top of the stack).
-    pub fn open_session_info(&mut self, lines: Vec<session_info::SessionInfoLine>) {
+    /// open one, which moves back to the top of the stack). `title` names
+    /// the panel (`None` = "Session Info"; `/usage` passes "Usage").
+    pub fn open_session_info(&mut self, title: Option<&str>, lines: Vec<session_info::SessionInfoLine>) {
+        self.session_info.set_title(title);
         self.session_info.set_lines(lines);
         self.close(OpenOverlay::SessionInfo);
         self.stack.push(OpenOverlay::SessionInfo);
@@ -504,7 +506,7 @@ mod tests {
         assert!(!o.wants_mouse());
         o.pop();
         // /session borrows the alt screen without TS fullscreen mouse.
-        o.open_session_info(Vec::new());
+        o.open_session_info(None, Vec::new());
         assert!(o.needs_alt_screen());
         assert!(!o.wants_mouse());
         o.pop();
