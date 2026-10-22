@@ -4,6 +4,7 @@
 //! reasoning policy ([`resolve_policy`]); nothing here detects a host or model family.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
 
@@ -11,11 +12,46 @@ use crate::providers::openai_completions::compat::{
     apply_compat_policy, is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning, DisableReason,
     ResolvedCompat,
 };
-use crate::providers::openai_completions::convert::{convert_messages, convert_tools};
+use crate::providers::openai_completions::convert::{convert_message_range, convert_tools, push_system_messages};
 use crate::providers::openai_completions::has_tool_history;
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
 use crate::types::{CacheRetention, Context, Message, Model};
-use crate::utils_inner::wire_json::{obj, Wire, WireObject};
+use crate::utils_inner::wire_json::{obj, to_json_string, Wire, WireObject};
+
+/// How the `messages` array reaches the params tree in [`build_params_streaming`].
+pub(crate) enum MsgsInput {
+    /// Convert from `context`/`transformed` as usual.
+    Convert,
+    /// Wire-fragment cache hit: splice the pre-serialized array `prefix` (system blocks included,
+    /// covering `count` transformed messages) and convert only `transformed[count..]`, carried
+    /// from the prefix's `last_role`. Skips the Anthropic cache-control post-pass, which the
+    /// cache never stores fragments for.
+    Raw {
+        prefix: Arc<serde_json::value::RawValue>,
+        count: usize,
+        last_role: Option<&'static str>,
+    },
+}
+
+/// How the `tools` array reaches the params tree in [`build_params_streaming`].
+pub(crate) enum ToolsInput {
+    /// Convert from `context.tools` as usual (including the named-choice narrowing).
+    Convert,
+    /// Splice this pre-serialized array (`None` = the request carries no `tools` key at all).
+    Raw(Option<Arc<serde_json::value::RawValue>>),
+}
+
+/// Serialized fragments a [`build_params_streaming`] call built, for the wire-fragment cache to
+/// store verbatim and splice into later requests of the same session.
+pub(crate) struct BuiltFrags {
+    /// The serialized `messages` array (system blocks included).
+    pub messages: Arc<serde_json::value::RawValue>,
+    /// Message count the prefix covers; `last_role` after it (a continuation conversion's carry).
+    pub msg_count: usize,
+    pub last_role: Option<&'static str>,
+    /// The serialized `tools` array, or `None` when the request omits the key.
+    pub tools: Option<Arc<serde_json::value::RawValue>>,
+}
 
 /// TS `OPENAI_MAX_OUTPUT_TOKENS`.
 const OPENAI_MAX_OUTPUT_TOKENS: u64 = 64_000;
@@ -142,6 +178,25 @@ pub(crate) fn build_params<'a>(
     compat: &ResolvedCompat,
     cache_retention: CacheRetention,
 ) -> Wire<'a> {
+    build_params_streaming(model, context, transformed, options, compat, cache_retention, MsgsInput::Convert, ToolsInput::Convert, None)
+}
+
+/// [`build_params`] with the wire-fragment cache hooks the stream layer drives: `msgs_in` /
+/// `tools_in` replace the two conversions with verbatim splices on a cache hit, and `frags`, when
+/// given, receives the serialized fragments a conversion produced (the cache stores them). Every
+/// policy decision is made here exactly once, so cached and uncached requests emit identical
+/// bytes.
+pub(crate) fn build_params_streaming<'a>(
+    model: &Model,
+    context: &'a Context,
+    transformed: &'a [Message],
+    options: Option<&OpenAICompletionsOptions>,
+    compat: &ResolvedCompat,
+    cache_retention: CacheRetention,
+    msgs_in: MsgsInput,
+    tools_in: ToolsInput,
+    mut frags: Option<&mut BuiltFrags>,
+) -> Wire<'a> {
     let options = options.cloned().unwrap_or_default();
     let reasoning = options.reasoning_effort.map(|level| level.wire_name());
     // `reasoning_enabled == Some(false)` is the TS `disableReasoning` (an explicit off).
@@ -184,14 +239,21 @@ pub(crate) fn build_params<'a>(
         }
     }
 
+    // `Some(None)` = splice mode with no `tools` key; `Some(Some(_))` = splice the array verbatim.
+    let tools_raw_in = match &tools_in {
+        ToolsInput::Raw(raw) => Some(raw.clone()),
+        ToolsInput::Convert => None,
+    };
     let mut tools: Option<Vec<(&'a str, Wire<'a>)>> = None;
-    if let Some(context_tools) = context_tools {
-        tools = Some(convert_tools(context_tools, initial_compat).tools);
-    } else if context.tools.is_none() && has_tool_history(&context.messages) {
-        // Anthropic (via LiteLLM/proxy) requires the `tools` param when the conversation contains
-        // tool_calls/tool_results, even when no tools are offered this turn. An explicit empty
-        // list means the caller opted out of tools: emit nothing.
-        tools = Some(Vec::new());
+    if tools_raw_in.is_none() {
+        if let Some(context_tools) = context_tools {
+            tools = Some(convert_tools(context_tools, initial_compat).tools);
+        } else if context.tools.is_none() && has_tool_history(&context.messages) {
+            // Anthropic (via LiteLLM/proxy) requires the `tools` param when the conversation contains
+            // tool_calls/tool_results, even when no tools are offered this turn. An explicit empty
+            // list means the caller opted out of tools: emit nothing.
+            tools = Some(Vec::new());
+        }
     }
 
     let mut tool_choice: Option<ToolChoice> = None;
@@ -230,7 +292,13 @@ pub(crate) fn build_params<'a>(
         // Some thinking-required models reject forced `tool_choice` while still accepting tools.
         tool_choice = Some(ToolChoice::Auto);
     }
-    let tools_empty = tools.as_ref().is_none_or(Vec::is_empty);
+    // The named-choice narrowing below only runs under `ToolChoice::Function`, which the
+    // wire-fragment cache never splices (`tools_raw_in.is_some()` implies a non-Function choice),
+    // so it is a no-op in splice mode.
+    let tools_empty = match &tools_raw_in {
+        Some(raw) => raw.is_none(),
+        None => tools.as_ref().is_none_or(Vec::is_empty),
+    };
     if tools_empty && (matches!(tool_choice, Some(ToolChoice::None)) || is_forced(tool_choice.as_ref())) {
         // `tool_choice: "none"`/forced with no tools to gate is redundant (and trips LiteLLM → Bedrock).
         tool_choice = None;
@@ -245,13 +313,48 @@ pub(crate) fn build_params<'a>(
         tool_choice = None;
     }
 
-    let has_tools = tools.as_ref().is_some_and(|t| !t.is_empty());
+    let has_tools = match &tools_raw_in {
+        Some(raw) => raw.is_some(),
+        None => tools.as_ref().is_some_and(|t| !t.is_empty()),
+    };
     let final_policy = resolve_policy(model, compat, reasoning, disable_reasoning, tool_choice.as_ref(), has_tools);
     let final_compat = &final_policy.compat;
 
-    let mut messages = convert_messages(model, context.system_prompt.as_deref().as_slice(), transformed, final_compat);
-    maybe_add_anthropic_cache_control(final_compat, &mut messages);
-    params.insert("messages", Wire::Array(messages));
+    let messages_wire = match msgs_in {
+        MsgsInput::Raw { prefix, count, last_role } => {
+            if transformed.len() == count {
+                Wire::Raw(prefix)
+            } else {
+                let mut tail: Vec<Wire<'a>> = Vec::new();
+                convert_message_range(model, transformed, final_compat, count, last_role, &mut tail);
+                if tail.is_empty() {
+                    Wire::Raw(prefix)
+                } else {
+                    Wire::Raw(splice_messages_prefix(&prefix, &tail))
+                }
+            }
+        }
+        MsgsInput::Convert => {
+            let mut wires: Vec<Wire<'a>> = Vec::new();
+            push_system_messages(model, context.system_prompt.as_deref().as_slice(), final_compat, &mut wires);
+            let last_role = convert_message_range(model, transformed, final_compat, 0, None, &mut wires);
+            maybe_add_anthropic_cache_control(final_compat, &mut wires);
+            if let Some(f) = frags.as_mut() {
+                // The caller caches the fragment: report it and splice the bytes we already
+                // serialized (identical output, and the body write becomes a verbatim copy).
+                let raw = serde_json::value::RawValue::from_string(to_json_string(&wires))
+                    .map(Arc::<serde_json::value::RawValue>::from)
+                    .expect("serialized messages are valid JSON");
+                f.messages = raw.clone();
+                f.msg_count = transformed.len();
+                f.last_role = last_role;
+                Wire::Raw(raw)
+            } else {
+                Wire::Array(wires)
+            }
+        }
+    };
+    params.insert("messages", messages_wire);
 
     if let Some((field, value)) = output_token_param(model, final_compat, &options) {
         params.insert(field, json!(value));
@@ -266,8 +369,28 @@ pub(crate) fn build_params<'a>(
         params.insert("tool_stream", json!(true));
     }
 
-    if let Some(tools) = tools {
-        params.insert("tools", Wire::Array(tools.into_iter().map(|(_, w)| w).collect()));
+    match tools_raw_in {
+        Some(raw) => {
+            if let Some(raw) = raw {
+                params.insert("tools", Wire::Raw(raw));
+            }
+        }
+        None => {
+            if let Some(tools) = tools {
+                let array: Vec<Wire<'a>> = tools.into_iter().map(|(_, w)| w).collect();
+                if let Some(f) = frags.as_mut() {
+                    let raw = serde_json::value::RawValue::from_string(to_json_string(&array))
+                        .map(Arc::<serde_json::value::RawValue>::from)
+                        .expect("serialized tools are valid JSON");
+                    f.tools = Some(raw.clone());
+                    params.insert("tools", Wire::Raw(raw));
+                } else {
+                    params.insert("tools", Wire::Array(array));
+                }
+            } else if let Some(f) = frags.as_mut() {
+                f.tools = None;
+            }
+        }
     }
     if let Some(choice) = &tool_choice {
         params.insert("tool_choice", choice.to_json());
@@ -344,6 +467,28 @@ pub(crate) fn build_params<'a>(
     }
 
     Wire::Object(params)
+}
+
+/// `prefix` (a serialized JSON array) with `tail` appended as elements: `"[" + inner(prefix) +
+/// "," + inner(tail) + "]"`. The pieces come from `serde_json`, so the join is valid JSON; the
+/// one re-validation pass (`RawValue::from_string`) is far cheaper than re-serializing the prefix.
+fn splice_messages_prefix(
+    prefix: &serde_json::value::RawValue,
+    tail: &[Wire<'_>],
+) -> Arc<serde_json::value::RawValue> {
+    let prefix = prefix.get();
+    let inner = &prefix[1..prefix.len() - 1];
+    let tail_json = to_json_string(tail);
+    let tail_inner = &tail_json[1..tail_json.len() - 1];
+    let mut joined = String::with_capacity(inner.len() + tail_inner.len() + 3);
+    joined.push('[');
+    joined.push_str(inner);
+    joined.push(',');
+    joined.push_str(tail_inner);
+    joined.push(']');
+    serde_json::value::RawValue::from_string(joined)
+        .map(Arc::<serde_json::value::RawValue>::from)
+        .expect("spliced messages are valid JSON")
 }
 
 /// TS `maybeAddAnthropicCacheControl`: one `cache_control` breakpoint on the last non-empty text

@@ -17,7 +17,7 @@ use serde::ser::{Serialize, SerializeMap, SerializeSeq, Serializer};
 use serde_json::{Map, Value};
 
 /// One JSON value of a provider request, borrowing from the request's source messages.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) enum Wire<'a> {
     Null,
     Bool(bool),
@@ -34,6 +34,10 @@ pub(crate) enum Wire<'a> {
     RefMap(&'a Map<String, Value>),
     /// An owned JSON value (small scalars and option objects).
     Owned(Value),
+    /// Owned compact JSON text spliced into the output verbatim (the per-session wire-fragment
+    /// cache reuses the serialized tools/messages prefix byte-for-byte instead of re-walking the
+    /// tree). `serde_json::to_value` parses it back into a tree, so payload hooks keep working.
+    Raw(std::sync::Arc<serde_json::value::RawValue>),
     Array(Vec<Wire<'a>>),
     Object(WireObject<'a>),
 }
@@ -97,6 +101,25 @@ impl<'a> WireObject<'a> {
 /// `json!({ .. })` for [`Wire`]: an object from literal entries, in order.
 pub(crate) fn obj<'a, const N: usize>(entries: [(&'a str, Wire<'a>); N]) -> Wire<'a> {
     Wire::Object(WireObject::from_entries(entries))
+}
+
+impl PartialEq for Wire<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Wire::Null, Wire::Null) => true,
+            (Wire::Bool(a), Wire::Bool(b)) => a == b,
+            (Wire::Str(a), Wire::Str(b)) => a == b,
+            (Wire::Concat(a), Wire::Concat(b)) => a == b,
+            (Wire::JsonText(a), Wire::JsonText(b)) => a == b,
+            (Wire::Ref(a), Wire::Ref(b)) => a == b,
+            (Wire::RefMap(a), Wire::RefMap(b)) => a == b,
+            (Wire::Owned(a), Wire::Owned(b)) => a == b,
+            (Wire::Raw(a), Wire::Raw(b)) => a.get() == b.get(),
+            (Wire::Array(a), Wire::Array(b)) => a == b,
+            (Wire::Object(a), Wire::Object(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 impl<'a> Wire<'a> {
@@ -268,6 +291,7 @@ impl Serialize for Wire<'_> {
             Wire::Ref(value) => value.serialize(serializer),
             Wire::RefMap(map) => map.serialize(serializer),
             Wire::Owned(value) => value.serialize(serializer),
+            Wire::Raw(raw) => raw.serialize(serializer),
             Wire::Array(items) => {
                 let mut seq = serializer.serialize_seq(Some(items.len()))?;
                 for item in items {

@@ -22,6 +22,7 @@ mod errors;
 pub(crate) mod params;
 pub(crate) mod schema;
 mod stream;
+mod wire_cache;
 
 #[cfg(test)]
 mod body_parity_tests;

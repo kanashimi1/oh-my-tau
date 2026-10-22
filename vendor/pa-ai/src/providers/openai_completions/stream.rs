@@ -16,6 +16,7 @@ use crate::providers::openai_completions::convert::{
 };
 use crate::providers::openai_completions::errors::{openai_http_error, openrouter_raw_metadata};
 use crate::providers::openai_completions::params::{build_headers, build_params};
+use crate::providers::openai_completions::wire_cache;
 use crate::providers::openai_completions::{
     encode_reasoning_details, resolve_cache_retention, resolve_compat, OpenAICompletionsOptions,
     REASONING_FIELDS,
@@ -593,10 +594,16 @@ async fn run_stream(
     };
 
     // The body is serialized straight from the transformed history; neither the history copy nor
-    // the params tree outlives this block (the response stream never needs them).
+    // the params tree outlives this block (the response stream never needs them). The
+    // wire-fragment cache serves the tools/messages prefix from the previous turn of this
+    // session; a payload hook needs the materialized Value tree, so it takes the plain path.
     let body = {
         let transformed = transform_for_request(model, context, &compat);
-        let params = build_params(model, context, &transformed, options, &compat, cache_retention);
+        let params = if base_options.on_payload.is_none() {
+            wire_cache::build_params_cached(model, context, &transformed, options, &compat, cache_retention)
+        } else {
+            build_params(model, context, &transformed, options, &compat, cache_retention)
+        };
         request_body(&params, base_options.on_payload.as_ref(), model)
     };
 

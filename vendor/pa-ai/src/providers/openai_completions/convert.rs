@@ -68,8 +68,6 @@ fn is_reasoning_field(name: &str) -> bool {
 /// context; the entries borrow its strings. `system_prompts` are the ordered system prompt blocks:
 /// one message each, or one `\n\n`-joined message on hosts whose templates reject follow-up system
 /// messages (`compat.supportsMultipleSystemMessages === false`).
-// Long by design: mirrors the provider's stream shape.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn convert_messages<'a>(
     model: &Model,
     system_prompts: &[&'a str],
@@ -77,25 +75,55 @@ pub(crate) fn convert_messages<'a>(
     compat: &ResolvedCompat,
 ) -> Vec<Wire<'a>> {
     let mut params: Vec<Wire<'a>> = Vec::new();
-    let supports_images = compat.vision_supported(model);
+    push_system_messages(model, system_prompts, compat, &mut params);
+    convert_message_range(model, transformed, compat, 0, None, &mut params);
+    params
+}
 
+/// The system prompt blocks as leading `messages` entries (TS `convertMessages` system section);
+/// extracted from [`convert_messages`] so the wire-fragment cache can re-run a message range
+/// without re-deriving them.
+pub(crate) fn push_system_messages<'a>(
+    model: &Model,
+    system_prompts: &[&'a str],
+    compat: &ResolvedCompat,
+    params: &mut Vec<Wire<'a>>,
+) {
     let system_prompts: Vec<&'a str> = system_prompts.iter().copied().filter(|p| !p.trim().is_empty()).collect();
-    if !system_prompts.is_empty() {
-        let role = if model.reasoning && compat.supports_developer_role { "developer" } else { "system" };
-        if compat.supports_multiple_system_messages.unwrap_or(true) {
-            for prompt in &system_prompts {
-                params.push(obj([("role", Wire::str(role)), ("content", Wire::str(prompt))]));
-            }
-        } else {
-            params.push(obj([
-                ("role", Wire::str(role)),
-                ("content", Wire::join(system_prompts.iter().map(|p| Cow::Borrowed(*p)), "\n\n")),
-            ]));
-        }
+    if system_prompts.is_empty() {
+        return;
     }
+    let role = if model.reasoning && compat.supports_developer_role { "developer" } else { "system" };
+    if compat.supports_multiple_system_messages.unwrap_or(true) {
+        for prompt in &system_prompts {
+            params.push(obj([("role", Wire::str(role)), ("content", Wire::str(prompt))]));
+        }
+    } else {
+        params.push(obj([
+            ("role", Wire::str(role)),
+            ("content", Wire::join(system_prompts.iter().map(|p| Cow::Borrowed(*p)), "\n\n")),
+        ]));
+    }
+}
 
-    let mut last_role: Option<&'static str> = None;
-    let mut index = 0usize;
+/// Convert `transformed[start..]` into `messages` params appended to `params`, starting from the
+/// carried `last_role` of everything before `start` (`None` at the beginning of the history).
+/// Returns the `last_role` after the range, which a continuation conversion must carry. Extracted
+/// from [`convert_messages`] so the wire-fragment cache can convert only the messages added since
+/// the cached prefix.
+// Long by design: mirrors the provider's stream shape.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn convert_message_range<'a>(
+    model: &Model,
+    transformed: &'a [Message],
+    compat: &ResolvedCompat,
+    start: usize,
+    initial_last_role: Option<&'static str>,
+    params: &mut Vec<Wire<'a>>,
+) -> Option<&'static str> {
+    let supports_images = compat.vision_supported(model);
+    let mut last_role: Option<&'static str> = initial_last_role;
+    let mut index = start;
     while index < transformed.len() {
         let msg: &'a Message = &transformed[index];
         // Some providers (e.g. Mistral/Devstral) don't allow user messages directly after tool
@@ -489,7 +517,7 @@ pub(crate) fn convert_messages<'a>(
         index += 1;
     }
 
-    params
+    last_role
 }
 
 /// The wire form of a tool call id at emission time (TS `ensureToolCallId` +
