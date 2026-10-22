@@ -82,25 +82,18 @@ pub fn civil(days: i64) -> (i64, u32, u32) {
 
 /// Assemble the provider-facing system prompt: the ported omp prompt
 /// (SYSTEM.md override / flags / context files / skills / tools / env block)
-/// as one concatenated string of `\n\n`-joined blocks. `deferred` names the
-/// enabled tools a `tools.profile: core` session keeps off the wire; the
-/// prompt lists them in one line so the model can reach them from eval.
+/// as one concatenated string of `\n\n`-joined blocks.
 #[must_use]
 pub fn system_prompt(
     cwd: &Path,
     opts: &crate::sysprompt::Options,
     active_hidden: &[Arc<dyn AgentTool>],
-    deferred: &[String],
 ) -> String {
     // Edit mode does not affect the prompt; the tool surface (names) does.
     let settings = omp_settings::Settings::load(cwd);
-    let profile = crate::tools::Profile::of(&settings);
-    let keep = profile.keep_names();
-    let partial = keep.is_some() && opts.tools_csv.is_none();
     let mut metas: Vec<crate::sysprompt::ToolMeta> =
         crate::tools::session_builtin_tools(cwd, crate::tools::edit_mode_for(""), &settings)
             .iter()
-            .filter(|t| !partial || keep.unwrap().contains(&t.name()))
             .map(|t| (t.name().to_string(), t.name().to_string()))
             .collect();
     // Active hidden tools join the prompt's tool list/refs (TS lists active
@@ -110,16 +103,7 @@ pub fn system_prompt(
             .iter()
             .map(|t| (t.name().to_string(), t.name().to_string())),
     );
-    let mut opts = opts.clone();
-    if !deferred.is_empty() {
-        let note = if profile == crate::tools::Profile::Code {
-            code_mode_note()
-        } else {
-            deferred_tools_note(deferred)
-        };
-        opts.generated_append.push(note);
-    }
-    crate::sysprompt::build(cwd, &opts, &metas)
+    crate::sysprompt::build(cwd, opts, &metas)
         .blocks
         .join("\n\n")
 }
@@ -171,7 +155,7 @@ pub fn build_agent(
     ext_hooks: Option<&Arc<crate::ext::Extensions>>,
     sysprompt_opts: &crate::sysprompt::Options,
     context_strategy: crate::context::Kind,
-) -> Result<(Agent, Target, Vec<Arc<dyn AgentTool>>)> {
+) -> Result<(Agent, Target)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
     let settings = omp_settings::Settings::load(cwd);
@@ -201,13 +185,7 @@ pub fn build_agent(
         }
     }
     tools.extend(extra_tools);
-    let (mut tools, deferred) = if sysprompt_opts.tools_csv.is_none() {
-        crate::tools::split_by_profile(&settings, tools)
-    } else {
-        (tools, Vec::new())
-    };
-    let deferred_names: Vec<String> = deferred.iter().map(|t| t.name().to_string()).collect();
-    let prompt = system_prompt(cwd, sysprompt_opts, &hidden, &deferred_names);
+    let prompt = system_prompt(cwd, sysprompt_opts, &hidden);
     crate::tools::set_session_jobs(session_jobs);
     tools.extend(hidden);
     let ctx = (context_strategy != crate::context::Kind::Append).then(|| {
@@ -225,11 +203,10 @@ pub fn build_agent(
     if let Some(ctx) = &ctx {
         tools.push(crate::context::tool(ctx.clone()));
     }
-    // TS `ExtensionToolWrapper`: every tool passes the approval gate before it executes —
-    // deferred ones too, since eval-bridged calls run the same policy.
-    let (tools, deferred) = match crate::approval::Gate::get() {
-        Some(gate) => (gate.wrap_tools(tools), gate.wrap_tools(deferred)),
-        None => (tools, deferred),
+    // TS `ExtensionToolWrapper`: every tool passes the approval gate before it executes.
+    let tools = match crate::approval::Gate::get() {
+        Some(gate) => gate.wrap_tools(tools),
+        None => tools,
     };
     let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
         api_key: selected.api_key,
@@ -290,7 +267,7 @@ pub fn build_agent(
         after_tool_call,
         ..AgentOptions::default()
     });
-    Ok((agent, target, deferred))
+    Ok((agent, target))
 }
 
 /// Concatenated text of the last assistant message, plus its error (if any).

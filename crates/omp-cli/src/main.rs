@@ -397,7 +397,7 @@ async fn main() -> Result<()> {
         &cwd,
         extensions.as_ref(),
     );
-    let (agent, target, _deferred) = agent::build_agent(
+    let (agent, target) = agent::build_agent(
         &cwd,
         selected,
         extra_tools,
