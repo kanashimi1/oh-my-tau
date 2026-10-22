@@ -1938,6 +1938,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "omp-collab"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "nix",
+ "rand 0.8.8",
+ "ring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
 name = "omp-compact"
 version = "0.10.0"
 dependencies = [
