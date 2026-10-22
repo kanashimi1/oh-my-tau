@@ -623,13 +623,19 @@ impl Runtime {
             let n = serde_json::to_string(&frame).map_or(0, |s| s.len());
             turn_trace!("[turn-trace] framed={ev_kind} frame_json={n}B rss={}kB", rss_kb());
         }
-        if matches!(
-            event,
-            AgentEvent::AgentEnd { .. }
-                | AgentEvent::MessageEnd {
-                    message: AgentMessage::Standard(Message::Assistant(_) | Message::ToolResult(_))
-                }
-        ) {
+        // context-usage frames are TUI chrome; rpc/print clients never read
+        // them and each publish re-serializes the whole context. Skip in
+        // non-interactive sessions (stdout is what rpc/print write to).
+        let interactive = std::io::IsTerminal::is_terminal(&std::io::stdout());
+        if interactive
+            && matches!(
+                event,
+                AgentEvent::AgentEnd { .. }
+                    | AgentEvent::MessageEnd {
+                        message: AgentMessage::Standard(Message::Assistant(_) | Message::ToolResult(_))
+                    }
+            )
+        {
             self.publish_context_usage();
         }
         if let AgentEvent::AgentEnd { messages } = event {
