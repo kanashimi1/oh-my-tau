@@ -101,19 +101,9 @@ impl Settings {
 
     /// Same layering with explicit paths (used by tests and embedders).
     pub fn load_from(global_yaml: Option<&Path>, project_dir: &Path) -> Self {
-        let mut merged = Map::new();
-
-        // Layer 1: TS defaults.
-        for def in SETTINGS {
-            if let Some(raw) = def.default_yaml {
-                if let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw) {
-                    let value = yaml_to_json(value);
-                    if !value.is_null() {
-                        set_path(&mut merged, def.id, value);
-                    }
-                }
-            }
-        }
+        // Layer 1: TS defaults. Compile-time constants: parsed once per process
+        // (507 YAML snippets cost ~9ms, and tools load settings on every call).
+        let mut merged = defaults_layer().clone();
 
         // Layer 2: global config.yml / config.yaml.
         let global_path = global_yaml.and_then(load_yaml_file);
@@ -462,6 +452,25 @@ fn agent_config_path() -> Option<PathBuf> {
     Some(agent.join("config.yml"))
 }
 
+/// The TS-defaults layer: every `default_yaml` parsed and nested by id.
+fn defaults_layer() -> &'static Map<String, Value> {
+    static DEFAULTS: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| {
+        let mut merged = Map::new();
+        for def in SETTINGS {
+            if let Some(raw) = def.default_yaml {
+                if let Ok(value) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(raw) {
+                    let value = yaml_to_json(value);
+                    if !value.is_null() {
+                        set_path(&mut merged, def.id, value);
+                    }
+                }
+            }
+        }
+        merged
+    })
+}
+
 fn load_yaml_file(path: &Path) -> Option<(PathBuf, Value)> {
     let text = std::fs::read_to_string(path).ok()?;
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).ok()?;
@@ -641,19 +650,47 @@ fn collect_unknown(merged: &Map<String, Value>) -> Vec<String> {
     unknown
 }
 
-fn is_known_path(path: &str) -> bool {
-    // Exact id, group prefix of an id, or leaf inside a record subtree.
-    SETTINGS.iter().any(|def| {
-        def.id == path
-            || def.id.starts_with(&format!("{path}."))
-            || (matches!(def.ty, crate::SettingType::Record) && path.starts_with(&format!("{}.", def.id)))
+/// `path` lies strictly under the dotted group `prefix` (`prefix.` + more).
+fn is_dotted_child(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// Setting ids plus their dotted group prefixes, and the record-typed ids;
+/// built once (`collect_unknown` probes every merged path on each load).
+struct KnownPaths {
+    ids_and_groups: std::collections::HashSet<&'static str>,
+    records: Vec<&'static str>,
+}
+
+fn known_paths() -> &'static KnownPaths {
+    static KNOWN: std::sync::OnceLock<KnownPaths> = std::sync::OnceLock::new();
+    KNOWN.get_or_init(|| {
+        let mut ids_and_groups = std::collections::HashSet::new();
+        let mut records = Vec::new();
+        for def in SETTINGS {
+            ids_and_groups.insert(def.id);
+            for (dot, _) in def.id.match_indices('.') {
+                ids_and_groups.insert(&def.id[..dot]);
+            }
+            if matches!(def.ty, crate::SettingType::Record) {
+                records.push(def.id);
+            }
+        }
+        KnownPaths { ids_and_groups, records }
     })
 }
 
+fn is_known_path(path: &str) -> bool {
+    // Exact id, group prefix of an id, or leaf inside a record subtree.
+    let known = known_paths();
+    known.ids_and_groups.contains(path) || known.records.iter().any(|id| is_dotted_child(path, id))
+}
+
 fn is_record_prefix(path: &str) -> bool {
-    SETTINGS.iter().any(|def| {
-        matches!(def.ty, crate::SettingType::Record) && (def.id == path || path.starts_with(&format!("{}.", def.id)))
-    })
+    known_paths()
+        .records
+        .iter()
+        .any(|id| *id == path || is_dotted_child(path, id))
 }
 
 #[cfg(test)]
