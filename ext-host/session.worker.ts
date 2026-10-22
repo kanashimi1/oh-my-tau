@@ -72,20 +72,16 @@ for (const name of ["spawn", "spawnSync"] as const) {
   };
 }
 
+// Raw session bytes from the daemon (transferred Uint8Arrays); host.ts does
+// the newline framing. Chunks that arrive before host.ts finished importing
+// are replayed in order.
 let feed: ((chunk: string) => void) | null = null;
 const early: string[] = [];
-let buf = "";
-self.onmessage = (ev: MessageEvent<string>) => {
-  // The daemon may batch several lines into one message.
-  buf += String(ev.data ?? "");
-  let i: number;
-  while ((i = buf.indexOf("\n")) >= 0) {
-    const line = buf.slice(0, i).trim();
-    buf = buf.slice(i + 1);
-    if (!line) continue;
-    if (feed) feed(`${line}\n`);
-    else early.push(`${line}\n`);
-  }
+const decoder = new TextDecoder();
+self.onmessage = (ev: MessageEvent<Uint8Array>) => {
+  const chunk = decoder.decode(ev.data, { stream: true });
+  if (feed) feed(chunk);
+  else early.push(chunk);
 };
 
 const { startSession, sessionCwd } = await import("./host.ts");

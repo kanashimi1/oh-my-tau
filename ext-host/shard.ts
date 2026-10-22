@@ -46,7 +46,7 @@ function armIdleExit(): void {
 interface SessionState {
   worker: Worker | null;
   /** Bytes received before the env handshake line completed. */
-  pre: string;
+  pre: Uint8Array;
   open: boolean;
   /** Bytes the kernel did not accept yet, flushed on `drain` in order. */
   out: Uint8Array[];
@@ -74,7 +74,12 @@ function flush(socket: { write(b: Uint8Array): number }, st: SessionState): void
 /** First line of every connection: `{"env": {...}}`, the client's environment. */
 const ENV_HANDSHAKE = "omp-rs-env";
 
-function startWorker(socket: any, state: SessionState, env: Record<string, string>, rest: string): void {
+/**
+ * Session bytes travel to the Worker as transferred Uint8Arrays (decoded and
+ * framed there): bun retained every string posted to a Worker, so a session
+ * fed ~0.5 MB `context` frames grew ~90 KB per turn until it closed.
+ */
+function startWorker(socket: any, state: SessionState, env: Record<string, string>, rest: Uint8Array): void {
   // The Worker gets the CLIENT's environment (HOME, OMP_*, HOOK_TRACE, pane
   // ids, ...): the daemon's own env belongs to whichever session started it.
   const worker = new Worker(new URL("./session.worker.ts", import.meta.url), { env });
@@ -110,7 +115,7 @@ function startWorker(socket: any, state: SessionState, env: Record<string, strin
   };
   // Worker gone (crash or close): drop the connection.
   worker.addEventListener("close", cleanup);
-  if (rest) worker.postMessage(rest);
+  if (rest.byteLength) worker.postMessage(rest, [rest.buffer]);
 }
 
 function endSession(st: SessionState): void {
@@ -131,7 +136,7 @@ const server = Bun.listen({
         clearTimeout(idleTimer);
         idleTimer = null;
       }
-      socket.data = { worker: null, pre: "", decoder: new TextDecoder(), open: true, out: [] } satisfies SessionState;
+      socket.data = { worker: null, pre: new Uint8Array(0), open: true, out: [] } satisfies SessionState;
     },
     drain(socket) {
       flush(socket, socket.data as SessionState);
@@ -140,21 +145,25 @@ const server = Bun.listen({
       const st = socket.data as SessionState;
       if (!st.open) return;
       if (st.worker) {
-        // Forward raw bytes; the Worker re-assembles newline framing.
-        st.worker.postMessage(st.decoder.decode(data, { stream: true }));
+        const bytes = new Uint8Array(data); // own copy; ownership moves to the Worker
+        st.worker.postMessage(bytes, [bytes.buffer]);
         return;
       }
-      st.pre += st.decoder.decode(data, { stream: true });
-      const nl = st.pre.indexOf("\n");
-      if (nl < 0) return;
+      const pre = new Uint8Array(st.pre.byteLength + data.byteLength);
+      pre.set(st.pre);
+      pre.set(data, st.pre.byteLength);
+      const nl = pre.indexOf(0x0a);
+      if (nl < 0) {
+        st.pre = pre;
+        return;
+      }
       let env: Record<string, string> = {};
       try {
-        const hs = JSON.parse(st.pre.slice(0, nl));
+        const hs = JSON.parse(new TextDecoder().decode(pre.subarray(0, nl)));
         if (hs?.method === ENV_HANDSHAKE && hs.params?.env) env = hs.params.env;
       } catch {}
-      const rest = st.pre.slice(nl + 1);
-      st.pre = "";
-      startWorker(socket, st, env, rest);
+      st.pre = new Uint8Array(0);
+      startWorker(socket, st, env, pre.slice(nl + 1));
     },
     close(socket) {
       endSession(socket.data as SessionState);
