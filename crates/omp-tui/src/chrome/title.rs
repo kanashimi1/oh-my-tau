@@ -142,6 +142,23 @@ struct Shared {
     current: parking_lot::Mutex<Option<(TitleState, Option<String>)>>,
 }
 
+/// A running spinner thread plus its own stop flag. `disposed` alone cannot
+/// end it: a Working -> Idle transition stops the spinner without disposing,
+/// and joining a thread nobody told to exit hangs the UI thread forever.
+#[derive(Debug)]
+struct Spinner {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
+impl Spinner {
+    fn stop(self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.handle.thread().unpark();
+        let _ = self.handle.join();
+    }
+}
+
 impl Shared {
     fn brand(&self) -> &'static str {
         self.brand.lock().unwrap_or(DEFAULT_TERMINAL_TITLE)
@@ -154,7 +171,7 @@ impl Shared {
 #[derive(Debug, Clone)]
 pub struct TerminalTitle {
     shared: Arc<Shared>,
-    spinner: Arc<parking_lot::Mutex<Option<JoinHandle<()>>>>,
+    spinner: Arc<parking_lot::Mutex<Option<Spinner>>>,
     /// Spinner style in use.
     style: Arc<parking_lot::Mutex<TitleSpinner>>,
     /// `true` when the working separator must be static (`:`) — WSL or a
@@ -193,9 +210,7 @@ impl TerminalTitle {
     /// [`Self::init`] (TS `disposeTerminalTitleState`).
     pub fn dispose(&self) {
         self.shared.disposed.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.spinner.lock().take() {
-            let _ = handle.join();
-        }
+        self.stop_spinner();
     }
 
     /// Set the spinner style (`tui.titleSpinner`); resets the frame counter.
@@ -277,13 +292,18 @@ impl TerminalTitle {
         }
         let shared = Arc::clone(&self.shared);
         let style = Arc::clone(&self.style);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&stop);
         *shared.tick.lock() = 0;
-        *handle = Some(thread::spawn(move || loop {
-            if shared.disposed.load(Ordering::SeqCst) {
+        let halted = move || thread_stop.load(Ordering::SeqCst) || shared.disposed.load(Ordering::SeqCst);
+        let shared = Arc::clone(&self.shared);
+        let thread = thread::spawn(move || loop {
+            if halted() {
                 return;
             }
-            thread::sleep(SPINNER_ADVANCE);
-            if shared.disposed.load(Ordering::SeqCst) {
+            // Parked, not slept: `Spinner::stop` unparks so the join is prompt.
+            thread::park_timeout(SPINNER_ADVANCE);
+            if halted() {
                 return;
             }
             let mut tick = shared.tick.lock();
@@ -292,12 +312,15 @@ impl TerminalTitle {
             drop(tick);
             let title = build_branded_title(shared.brand(), frame, label.as_deref());
             write_title(&shared, &title);
-        }));
+        });
+        *handle = Some(Spinner { stop, handle: thread });
     }
 
     fn stop_spinner(&self) {
-        if let Some(handle) = self.spinner.lock().take() {
-            let _ = handle.join();
+        // Take first so the mutex is not held across the join.
+        let spinner = self.spinner.lock().take();
+        if let Some(spinner) = spinner {
+            spinner.stop();
         }
     }
 
@@ -382,6 +405,26 @@ mod tests {
         assert_eq!(TitleSpinner::parse("nonsense"), TitleSpinner::Braille);
         assert_eq!(TitleSpinner::Line.frame_at(0), "-");
         assert_eq!(TitleSpinner::Line.frame_at(4), "-");
+    }
+
+    /// Regression: Working -> Idle joined a spinner thread that only exited on
+    /// `dispose`, freezing the TUI after the first reply (non-WSL hosts).
+    #[test]
+    fn spinner_stops_on_state_change() {
+        let mut title = TerminalTitle::new();
+        title.static_working = false;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let t = title.clone();
+        thread::spawn(move || {
+            t.init(TitleState::Working, Some("p"));
+            thread::sleep(Duration::from_millis(200));
+            t.set_state(TitleState::Idle, Some("p"));
+            t.set_state(TitleState::Working, Some("p"));
+            t.set_state(TitleState::Idle, Some("p"));
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(Duration::from_secs(5)).expect("set_state(Idle) hung joining the spinner");
+        assert_eq!(title.current_title().as_deref(), Some("π > p"));
     }
 
     #[test]
