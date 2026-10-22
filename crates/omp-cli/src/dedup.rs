@@ -101,6 +101,20 @@ pub fn dedup_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the wire pass runs this process: explicit opt-in, or default-on
+/// when both stdin and stderr are not TTYs (rpc/print/CI), overridable with
+/// `OMP_RS_DEDUP_TOOL_RESULTS=0`/`=false`.
+#[must_use]
+pub fn dedup_active() -> bool {
+    match std::env::var("OMP_RS_DEDUP_TOOL_RESULTS") {
+        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
+        Err(_) => {
+            use std::io::IsTerminal;
+            !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

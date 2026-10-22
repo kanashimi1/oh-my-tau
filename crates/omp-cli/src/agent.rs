@@ -82,18 +82,25 @@ pub fn civil(days: i64) -> (i64, u32, u32) {
 
 /// Assemble the provider-facing system prompt: the ported omp prompt
 /// (SYSTEM.md override / flags / context files / skills / tools / env block)
-/// as one concatenated string of `\n\n`-joined blocks.
+/// as one concatenated string of `\n\n`-joined blocks. `deferred` names the
+/// enabled tools a `tools.profile: core` session keeps off the wire; the
+/// prompt lists them in one line so the model can reach them from eval.
 #[must_use]
 pub fn system_prompt(
     cwd: &Path,
     opts: &crate::sysprompt::Options,
     active_hidden: &[Arc<dyn AgentTool>],
+    deferred: &[String],
 ) -> String {
     // Edit mode does not affect the prompt; the tool surface (names) does.
     let settings = omp_settings::Settings::load(cwd);
+    let profile = crate::tools::Profile::of(&settings);
+    let keep = profile.keep_names();
+    let partial = keep.is_some() && opts.tools_csv.is_none();
     let mut metas: Vec<crate::sysprompt::ToolMeta> =
         crate::tools::session_builtin_tools(cwd, crate::tools::edit_mode_for(""), &settings)
             .iter()
+            .filter(|t| !partial || keep.unwrap().contains(&t.name()))
             .map(|t| (t.name().to_string(), t.name().to_string()))
             .collect();
     // Active hidden tools join the prompt's tool list/refs (TS lists active
@@ -103,15 +110,57 @@ pub fn system_prompt(
             .iter()
             .map(|t| (t.name().to_string(), t.name().to_string())),
     );
-    crate::sysprompt::build(cwd, opts, &metas)
+    let mut opts = opts.clone();
+    if !deferred.is_empty() {
+        let note = if profile == crate::tools::Profile::Code {
+            code_mode_note()
+        } else {
+            deferred_tools_note(deferred)
+        };
+        opts.generated_append.push(note);
+    }
+    crate::sysprompt::build(cwd, &opts, &metas)
         .blocks
         .join("\n\n")
+}
+
+/// One-line pointer to the deferred tools (`tools.profile: core`): names
+/// only; schemas come from `tool.describe` on demand.
+#[must_use]
+pub fn deferred_tools_note(deferred: &[String]) -> String {
+    format!(
+        "Deferred tools (not in the tool list; call from an eval cell: `await tool.<name>(args)`, schema via `tool.describe({{name}})`, all via `tool.list()`): {}.",
+        deferred.join(", ")
+    )
+}
+
+/// Codemode pointer for `tools.profile: code`, replacing the deferred-tools
+/// name list: read/search/edit/shell tools defer too, so the model does them
+/// from eval cells via the bridge. A cell's rendered output is capped (inline
+/// budget ~50 KB; larger results elide the middle with an `[…N ln elided…]`
+/// marker and save the full text to an artifact), so a cell printing a whole
+/// file cannot blow context.
+#[must_use]
+pub fn code_mode_note() -> String {
+    "Code mode: read/search/edit/shell tools are deferred — run them from an \
+     eval cell instead via the prelude bridge (`tool.<name>({{...}})`; Python \
+     `tool.read(path)` returns text; `tool.edit({...})` / `tool.bash({...})` \
+     too). Batch several calls into one cell and print only what matters. Cell \
+     output is capped (~50 KB inline, larger results elide the middle and save \
+     to an artifact)."
+        .to_string()
 }
 
 /// Build an agent for `cwd` using the selected model, plus the provider
 /// target slot a live `set_model` swaps. `extra_tools` (extension tools) are
 /// appended to the built-ins; `ext_hooks`, when present, wires the extension
 /// host into context transformation and tool call/result interception.
+///
+/// Returns the agent, the target and the *deferred* tools: under
+/// `tools.profile: core` every enabled tool outside [`crate::tools::CORE_TOOLS`]
+/// (built-ins, MCP, extension tools) stays off the model's tool list and is
+/// reachable only through the eval bridge; the caller registers them there.
+/// An explicit `--tools <csv>` list wins over the profile (nothing deferred).
 ///
 /// # Errors
 /// Fails when the model cannot cross the pa-ai/pa-agent boundary.
@@ -122,7 +171,7 @@ pub fn build_agent(
     ext_hooks: Option<&Arc<crate::ext::Extensions>>,
     sysprompt_opts: &crate::sysprompt::Options,
     context_strategy: crate::context::Kind,
-) -> Result<(Agent, Target)> {
+) -> Result<(Agent, Target, Vec<Arc<dyn AgentTool>>)> {
     let agent_model: pa_agent::types::Model = json_round_trip(&selected.model)
         .context("model does not convert to the agent model shape")?;
     let settings = omp_settings::Settings::load(cwd);
@@ -151,10 +200,16 @@ pub fn build_agent(
             }
         }
     }
-    let prompt = system_prompt(cwd, sysprompt_opts, &hidden);
+    tools.extend(extra_tools);
+    let (mut tools, deferred) = if sysprompt_opts.tools_csv.is_none() {
+        crate::tools::split_by_profile(&settings, tools)
+    } else {
+        (tools, Vec::new())
+    };
+    let deferred_names: Vec<String> = deferred.iter().map(|t| t.name().to_string()).collect();
+    let prompt = system_prompt(cwd, sysprompt_opts, &hidden, &deferred_names);
     crate::tools::set_session_jobs(session_jobs);
     tools.extend(hidden);
-    tools.extend(extra_tools);
     let ctx = (context_strategy != crate::context::Kind::Append).then(|| {
         let policy = crate::context_policy::Policy::resolve(&settings, &|k| std::env::var(k).ok())
             .unwrap_or_else(|e| {
@@ -170,10 +225,11 @@ pub fn build_agent(
     if let Some(ctx) = &ctx {
         tools.push(crate::context::tool(ctx.clone()));
     }
-    // TS `ExtensionToolWrapper`: every tool passes the approval gate before it executes.
-    let tools = match crate::approval::Gate::get() {
-        Some(gate) => gate.wrap_tools(tools),
-        None => tools,
+    // TS `ExtensionToolWrapper`: every tool passes the approval gate before it executes —
+    // deferred ones too, since eval-bridged calls run the same policy.
+    let (tools, deferred) = match crate::approval::Gate::get() {
+        Some(gate) => (gate.wrap_tools(tools), gate.wrap_tools(deferred)),
+        None => (tools, deferred),
     };
     let target: Target = Arc::new(RwLock::new(Some(ProviderTarget {
         api_key: selected.api_key,
@@ -213,8 +269,17 @@ pub fn build_agent(
                         Some(c) => c.wire(messages),
                         None => messages,
                     };
-                    let messages =
-                        if dedup { crate::dedup::dedup_tool_results(messages) } else { messages };
+                    // Wire dedup: exact-duplicate tool results collapse to
+                    // pointer stubs. Default-on in non-interactive sessions
+                    // (rpc/print): the loop re-carries every past tool result
+                    // through every request, and measured ~65% of billed input
+                    // bytes were re-occurrences (COST-CACHE-HYGIENE-20261014).
+                    // Env override: OMP_RS_DEDUP_TOOL_RESULTS=0 disables.
+                    let messages = if crate::dedup::dedup_active() {
+                        crate::dedup::dedup_tool_results(messages)
+                    } else {
+                        messages
+                    };
                     base(messages).await
                 })
             })
@@ -225,7 +290,7 @@ pub fn build_agent(
         after_tool_call,
         ..AgentOptions::default()
     });
-    Ok((agent, target))
+    Ok((agent, target, deferred))
 }
 
 /// Concatenated text of the last assistant message, plus its error (if any).

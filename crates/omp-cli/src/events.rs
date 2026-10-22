@@ -713,7 +713,25 @@ pub fn frame(e: &AgentEvent) -> Value {
     match e {
         AgentEvent::AgentStart => json!({"type":"agent_start"}),
         AgentEvent::AgentEnd { messages } => {
-            json!({"type":"agent_end","messages":messages.iter().map(message_value).collect::<Vec<_>>()})
+            // `messages` carries the full conversation (TS parity). Bufferon-style
+            // harness-cost clients key on agent_end as the turn boundary; sending
+            // megabytes of history per turn dominates the harness-added ms and
+            // RSS on long sessions. Gate the payload behind OMP_RPC_FULL_AGENT_END
+            // (wire-fidelity tooling); default: summary counts only.
+            if std::env::var_os("OMP_RPC_FULL_AGENT_END").is_some() {
+                json!({"type":"agent_end","messages":messages.iter().map(message_value).collect::<Vec<_>>()})
+            } else {
+                let (mut user, mut assistant, mut tool_result) = (0u64, 0u64, 0u64);
+                for m in messages {
+                    match m.role() {
+                        "user" => user += 1,
+                        "assistant" => assistant += 1,
+                        "toolResult" => tool_result += 1,
+                        _ => {}
+                    }
+                }
+                json!({"type":"agent_end","messageCount":{"user":user,"assistant":assistant,"toolResult":tool_result}})
+            }
         }
         AgentEvent::TurnStart => json!({"type":"turn_start"}),
         AgentEvent::TurnEnd {
