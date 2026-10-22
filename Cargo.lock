@@ -1890,6 +1890,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
+name = "omp-auth-broker"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "omp-providers",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "omp-cli"
 version = "0.10.0"
 dependencies = [

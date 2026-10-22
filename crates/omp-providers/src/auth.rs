@@ -459,6 +459,69 @@ async fn refresh_kimi(hosts: &Hosts, refresh_token: &str) -> Result<Refreshed> {
     })
 }
 
+/// TS `refresh { require "projectId" }` of `auth "google-gemini-cli"` / `"google-antigravity"`
+/// (pi-catalog `rules/auth/*.kdl`): form refresh grant at Google's token endpoint with the
+/// provider's installed-app client; `projectId` (and the rest of the row) survives via
+/// [`merge_refreshed`].
+async fn refresh_google(provider: &str, data: &Value, refresh_token: &str) -> Result<Refreshed> {
+    use base64::Engine as _;
+    const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+    let (client_id, client_secret) = match provider {
+        "google-gemini-cli" => (
+            "NjgxMjU1ODA5Mzk1LW9vOGZ0Mm9wcmRybnA5ZTNhcWY2YXYzaG1kaWIxMzVqLmFwcHMuZ29vZ2xldXNlcmNvbnRlbnQuY29t",
+            "R09DU1BYLTR1SGdNUG0tMW83U2stZ2VWNkN1NWNsWEZzeGw=",
+        ),
+        _ => (
+            "MTA3MTAwNjA2MDU5MS10bWhzc2luMmgyMWxjcmUyMzV2dG9sb2poNGc0MDNlcC5hcHBzLmdvb2dsZXVzZXJjb250ZW50LmNvbQ==",
+            "R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=",
+        ),
+    };
+    if data.get("projectId").and_then(Value::as_str).is_none_or(str::is_empty) {
+        bail!("{provider} credentials are missing projectId; sign in again");
+    }
+    let decode = |b: &str| -> Result<String> {
+        Ok(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b)?)?)
+    };
+    let (client_id, client_secret) = (decode(client_id)?, decode(client_secret)?);
+    let body = form_encode(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", &client_id),
+        ("client_secret", &client_secret),
+        ("refresh_token", refresh_token),
+    ]);
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let response = client
+        .post(TOKEN_URL)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .header("Accept", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("{provider} request to {TOKEN_URL} failed: {e}"))?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("{provider} token refresh failed: {} {}", status.as_u16(), text.chars().take(500).collect::<String>());
+    }
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let access = body
+        .get("access_token")
+        .and_then(Value::as_str)
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| anyhow!("{provider} token response missing access token"))?;
+    let expires_in = body
+        .get("expires_in")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow!("{provider} token response missing expires_in"))?;
+    Ok(Refreshed {
+        access: access.to_string(),
+        refresh: body.get("refresh_token").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_string),
+        expires: now_ms() as i64 + (expires_in * 1000.0) as i64 - 300_000,
+        account_id: None,
+        enterprise_url: None,
+    })
+}
+
 /// The provider's refresh flow, or `None` when omp-rs has none for it (the stored token is then
 /// used until it expires).
 async fn refresh_flow(provider: &str, data: &Value, hosts: &Hosts) -> Option<Result<Refreshed>> {
@@ -466,6 +529,7 @@ async fn refresh_flow(provider: &str, data: &Value, hosts: &Hosts) -> Option<Res
     let http = pa_ai::oauth::ReqwestProviderHttp::new();
     match provider {
         "kimi-code" => Some(refresh_kimi(hosts, &refresh).await),
+        "google-gemini-cli" | "google-antigravity" => Some(refresh_google(provider, data, &refresh).await),
         "anthropic" => Some(
             pa_ai::oauth::refresh_anthropic_token(&http, &refresh)
                 .await
@@ -599,6 +663,49 @@ async fn refresh_local_row(
         rusqlite::params![row.id, owner],
     );
     result
+}
+
+/// Outcome of [`force_refresh_row`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForceRefresh {
+    /// The row was re-minted (by us, or by a peer while we waited for the lease).
+    Refreshed,
+    /// `reuse_recent` and this process minted the stored token within the remint cooldown.
+    ReusedRecent,
+    /// omp-rs has no refresh flow for the row's provider.
+    Unsupported,
+}
+
+/// Auth-broker server side (TS `OAuthRefresher.refreshById`): force-refresh one active OAuth row
+/// under its refresh lease, whatever its expiry. `reuse_recent` is the `?reason=auth-recovery`
+/// `reuseRecentMint` option. Errors carry the TS messages (`No credential with id=N` → 404).
+///
+/// # Errors
+/// Unknown or disabled id, a non-OAuth row, a lease timeout, or the provider refresh failure.
+pub async fn force_refresh_row(db: &Path, id: i64, reuse_recent: bool) -> Result<ForceRefresh> {
+    let (provider, row) = {
+        let conn = open_rw(db)?;
+        conn.query_row(
+            "SELECT provider, credential_type, data FROM auth_credentials WHERE id = ?1 AND disabled_cause IS NULL",
+            [id],
+            |r| Ok((r.get::<_, String>(0)?, Row { kind: r.get(1)?, data: r.get(2)?, id })),
+        )
+        .map_err(|_| anyhow!("No credential with id={id}"))?
+    };
+    if row.kind != "oauth" {
+        bail!("Credential id={id} is not an OAuth credential");
+    }
+    if reuse_recent {
+        let data: Value = serde_json::from_str(&row.data).unwrap_or(Value::Null);
+        if access_of(&data).is_some_and(|a| recent_mint(&db_key(db), id, a)) {
+            return Ok(ForceRefresh::ReusedRecent);
+        }
+    }
+    let hosts = Hosts::from_env();
+    Ok(match refresh_local_row(db, &provider, &row, true, &hosts).await? {
+        Some(_) => ForceRefresh::Refreshed,
+        None => ForceRefresh::Unsupported,
+    })
 }
 
 async fn refresh_leased(
