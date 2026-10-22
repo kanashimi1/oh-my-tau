@@ -222,8 +222,24 @@ fn ensure_mimalloc_env() {
 }
 
 #[allow(clippy::too_many_lines)] // sequential startup guard clauses; mirrors omp's main flow
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // The rpc/print loop is strictly sequential; a multi-thread runtime costs
+    // ~20-30 ms CPU/turn in scheduler overhead (measured, RPC12 team run).
+    // Run those modes on a current-thread runtime; interactive TUI keeps the
+    // multi-thread default (spawns, lsp, ext-host IO overlap).
+    let mut raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    raw.remove(0);
+    let sequential = raw.iter().any(|a| a == "--mode" || a.to_string_lossy().starts_with("--mode="));
+    let rt = if sequential {
+        tokio::runtime::Builder::new_current_thread().enable_all().build()
+    } else {
+        tokio::runtime::Builder::new_multi_thread().enable_all().build()
+    }
+    .expect("tokio runtime");
+    rt.block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     ensure_mimalloc_env();
     let mut args = parse_args()?;
     if args.no_title {

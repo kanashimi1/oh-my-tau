@@ -83,7 +83,22 @@ fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
     };
     #[allow(clippy::result_large_err)]
     match tokio::runtime::Handle::try_current() {
-        Ok(handle) => Some(tokio::task::block_in_place(|| handle.block_on(discover()))),
+        // `block_in_place` panics on a current-thread runtime; fall through
+        // to the shared fallback runtime there (rpc/print modes).
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            Some(tokio::task::block_in_place(|| handle.block_on(discover())))
+        }
+        // `block_in_place` and in-place `block_on` both panic or deadlock on
+        // a current-thread runtime; run discovery on the shared fallback
+        // runtime's own thread (rpc/print modes).
+        Ok(_current_thread) => {
+            let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<Arc<dyn AgentTool>>>>();
+            std::thread::spawn(move || {
+                let result: Option<Vec<Arc<dyn AgentTool>>> = Some(fallback_runtime().block_on(discover()));
+                let _ = tx.send(result);
+            });
+            rx.recv().unwrap_or(None)
+        }
         // No ambient runtime (sync host): run discovery on a shared
         // process-lifetime runtime so the transports' spawned tasks (stdio
         // read loop, subprocess pipes) outlive this call — MCP tools are
