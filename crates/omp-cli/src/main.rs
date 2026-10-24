@@ -129,12 +129,18 @@ fn resolve_session(dir: &Path, value: &str) -> Option<PathBuf> {
 /// `ts_dir` is TS omp's session dir for the same folder (absent with
 /// `--session-dir`): ids/the picker also search it; `--continue` stays on the
 /// omp-rs store.
+/// `--session` value naming a session file rather than an id prefix.
+fn is_session_path(value: &str) -> bool {
+    value.contains(std::path::MAIN_SEPARATOR) || value.ends_with(".jsonl")
+}
+
 fn resolve_resume_target(
     resume: Option<&Resume>,
     continue_prev: bool,
     fork: Option<&str>,
     dir: &Path,
     ts_dir: Option<&Path>,
+    cwd: &Path,
 ) -> Result<Option<PathBuf>> {
     let resolve = |value: &str| {
         resolve_session(dir, value).or_else(|| ts_dir.and_then(|d| resolve_session(d, value)))
@@ -143,15 +149,27 @@ fn resolve_resume_target(
         return match resolve(fork) {
             Some(p) => Ok(Some(p)),
             None => bail!(
-                "Session \"{fork}\" not found.\nRun `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."
+                "Session \"{fork}\" not found.\nRun `omt --resume` without an argument to pick from recent sessions, or `omt` to start a new one."
             ),
         };
     }
     match resume {
         Some(Resume::Id(value)) => match resolve(value) {
             Some(p) => Ok(Some(p)),
+            // A path to a file that does not exist yet starts a new session
+            // there (Pi `--session <path>`); a bare id prefix still errors.
+            None if is_session_path(value) => {
+                let path = PathBuf::from(value);
+                omp_session::SessionWriter::create_at(
+                    &path,
+                    &cwd.display().to_string(),
+                    &persist::uuid_v7(),
+                    &persist::now_iso(),
+                )?;
+                Ok(Some(path))
+            }
             None => bail!(
-                "Session \"{value}\" not found.\nRun `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."
+                "Session \"{value}\" not found.\nRun `omt --resume` without an argument to pick from recent sessions, or `omt` to start a new one."
             ),
         },
         Some(Resume::Yes) => {
@@ -419,9 +437,13 @@ async fn async_main() -> Result<()> {
             .cloned()
             .chain(args.hooks.iter().map(PathBuf::from))
             .collect();
-        match ext::Extensions::start(&cwd, &extra).await {
-            Ok(e) => extensions = Some(e),
-            Err(e) => eprintln!("omt: extensions disabled: {e:#}"),
+        // Nothing to load: no host process and no warning (a standalone
+        // binary ships without the bun ext-host).
+        if ext::has_extensions(&extra) {
+            match ext::Extensions::start(&cwd, &extra).await {
+                Ok(e) => extensions = Some(e),
+                Err(e) => eprintln!("omt: extensions disabled: {e:#}"),
+            }
         }
     }
     let extra_tools = match extensions.as_ref() {
@@ -488,6 +510,7 @@ async fn async_main() -> Result<()> {
             args.fork.as_deref(),
             &dir,
             ts_dir.as_deref(),
+            &cwd,
         )?;
         // With a resume/fork target `load_session` binds the right file itself (and drops
         // the startup file); only a fresh run relocates to the new store here.
@@ -670,6 +693,11 @@ fn shutdown_lsp() {
     // within a runtime"). From non-runtime contexts (tests) fall back to a
     // scratch current-thread runtime.
     match tokio::runtime::Handle::try_current() {
+        // `--mode` runs on a current-thread runtime, where `block_in_place`
+        // panics and the blocked thread could not drive the handshake anyway.
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread => {
+            omp_lsp::client::kill_all_now();
+        }
         Ok(handle) => tokio::task::block_in_place(|| {
             handle.block_on(omp_lsp::client::shutdown_all());
         }),
@@ -749,8 +777,9 @@ async fn run_print(
         }
         return Ok(agent.messages_snapshot().await.into_vec());
     };
-    if let Some(f) = persist.file() {
-        eprintln!("session: {}", f.display());
+    match persist.file() {
+        Some(f) => eprintln!("session: {}", f.display()),
+        None => runtime::NO_SESSION_PRINT.store(true, std::sync::atomic::Ordering::Relaxed),
     }
     let agent = std::sync::Arc::new(agent);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();

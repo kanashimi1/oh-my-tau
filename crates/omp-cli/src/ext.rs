@@ -78,6 +78,34 @@ fn stop_continuation_text(outcome: &omp_ext::lifecycle::SessionStopOutcome) -> O
     }
 }
 
+/// Whether a session has any extension to load: explicit `--extension`/`--hook`
+/// paths, or an entry the host's discovery would pick up in
+/// `~/.omp/agent/extensions` (a `.ts`/`.js` file or a directory with an index).
+#[must_use]
+pub fn has_extensions(extra: &[PathBuf]) -> bool {
+    if !extra.is_empty() {
+        return true;
+    }
+    let Some(dir) = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|h| h.join(".omp").join("agent").join("extensions"))
+    else {
+        return false;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            ["index.ts", "index.js"].iter().any(|i| path.join(i).is_file())
+        } else {
+            path.extension()
+                .is_some_and(|e| e == "ts" || e == "js")
+        }
+    })
+}
+
 /// Locate `ext-host/host.ts`: `$OMP_RS_EXT_HOST`, else the workspace's copy
 /// found by walking up from the binary's location.
 #[must_use]

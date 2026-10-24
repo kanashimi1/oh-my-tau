@@ -25,6 +25,9 @@ The release binary is `omt`. Highlights:
 - **Sessions** — omp session JSONL (format v3) read/write; `-c`, `-r` and
   `--fork` work on the same sessions omp writes.
 
+It is fast: a one-shot `omt -p` run finishes in about 22 ms of harness time and
+uses ~20x less CPU than Pi on Node ([Benchmarks](#benchmarks), provisional).
+
 ## Screenshots
 
 The `omt web` browser UI:
@@ -32,6 +35,19 @@ The `omt web` browser UI:
 | Session | Models | Appearance |
 | --- | --- | --- |
 | ![Session with sakura theme](docs/screenshots/web-sakura.png) | ![Model picker](docs/screenshots/web-models.png) | ![Appearance settings](docs/screenshots/web-appearance.png) |
+
+## Install
+
+Linux x86_64, prebuilt binary (verifies the release's sha256, installs to
+`~/.local/bin/omt`; set `OMT_INSTALL_DIR` to change it):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/kanashimi1/oh-my-tau/main/install.sh | sh
+```
+
+Or download `omt-linux-x64` from the
+[releases](https://github.com/kanashimi1/oh-my-tau/releases), check it against
+`SHA256SUMS.txt` and put it on `PATH` as `omt`. Other platforms: build from source.
 
 ## Build from source
 
@@ -113,6 +129,78 @@ Useful subcommands (see `omt <sub> --help`): `models`, `stats`, `config`,
 - **Sessions** — resumable JSONL v3 sessions under `~/.omp/agent/sessions`,
   compatible with omp (`-c` continue newest, `-r [ID]` resume with picker,
   `--fork ID` to branch, `omt export` to HTML).
+
+## Benchmarks
+
+omt was measured with [Buffon](https://github.com/MichaelKinsy/buffon), a harness
+benchmark for Pi-family coding agents, against **Pi on Node** (`pi-node`,
+`@earendil-works/pi-coding-agent` 1.3.0), Buffon's reference arm.
+
+> **PROVISIONAL.** Measured on a shared WSL2 host (Buffon host class B: other tasks
+> may run on the bench CPUs), 6 rounds per cell (Buffon's adaptive stopping; the
+> Verified badge needs 12), 2026-10-24, omt v0.10.0. The model is Buffon's mock
+> server, so this measures **harness overhead only**, not model quality or task
+> success. This is **not** an official Buffon leaderboard entry yet (the `omt` arm
+> is submitted upstream). Absolute milliseconds depend on the host; the ratios are
+> the meaningful part.
+
+Overhead workloads, `openai-completions` endpoint, medians:
+
+| Metric | omt | Pi on Node | omt / Pi |
+|---|---:|---:|---:|
+| `--version`, wall time | 6.7 ms | 193 ms | 0.035 |
+| `-p`, wall time | 21.9 ms | 291 ms | 0.075 |
+| `-p`, time to first model request | 15.8 ms | 269 ms | 0.059 |
+| `-p`, CPU time | 18.9 ms | 365 ms | 0.052 |
+| `-p`, instructions | 42.4 M | 2,205 M | 0.019 |
+| `-p` with tools (9 turns), wall time | 40.3 ms | 364 ms | 0.11 |
+| RPC mode, ready time | 13.8 ms | 242 ms | 0.057 |
+| RPC mode, exit after stdin closes | 2.3 ms | 11.5 ms | 0.20 |
+| RPC, 40 turns, CPU time | 149 ms | 623 ms | 0.24 |
+| Streaming, CPU per 1k tokens | 4.5 ms | 46.3 ms | 0.097 |
+| Peak RSS (`-p` with tools / RPC) | 55 / 56 MiB | 137 / 148 MiB | 0.40 / 0.38 |
+| Install | one 104 MB binary | 110.6 MB + Node 199 MB | |
+
+Peak RSS of a bare `-p` run is about 51 MB (`/usr/bin/time`); Buffon's own sampler
+reads ~2 MiB for it because the process exits before it is sampled, so the table
+uses the longer workloads, where Buffon's reading is reliable.
+
+### Where omt is worse
+
+| Metric | omt | Pi on Node | omt / Pi |
+|---|---:|---:|---:|
+| Request bytes per turn, `-p` | 28,387 | 8,932 | 3.18 |
+| Request bytes per turn, `-p` with tools | 30,590 | 16,998 | 1.80 |
+| Request bytes per turn, RPC | 69,481 | 61,578 | 1.13 |
+| RPC, harness-added time per turn | 1.83 ms | 1.17 ms | 1.56 |
+
+Requests are larger because omt keeps omp's system prompt, which is bigger than Pi's
+(more input tokens per turn; provider prompt caching absorbs most of the repeat).
+
+### Reliability
+
+Buffon injects faults at the mock (HTTP 429/500, dropped connections, keepalive-only
+streams, SIGKILL during a tool call and resume, SIGTERM mid-stream) and compares the
+observable outcome with Pi's. omt passes `http-429-retry`, `http-500-retry`,
+`keepalive-only`, `kill-mid-tool` and `sigterm-midstream` on both wire APIs. In the
+`disconnect-before` / `disconnect-midstream` samples that ran, omt's outcome equals
+Pi's; the cells are not scored because the host was too busy for the reference run.
+One real difference: when every request is rate-limited, omt retries 10 times (omp's
+`retry.maxRetries` default) where Pi gives up after 3, then exits with an error.
+
+Buffon's Pi Harness Score for the families measured (overhead and streaming, 2 of 9)
+is 94 (A) for omt against 70 for the reference (provisional; Pi-faithfulness not
+measured).
+
+### Reproduce
+
+```sh
+git clone https://github.com/MichaelKinsy/buffon && cd buffon
+./buffon.sh up --harness omt,pi-node --bench standard
+```
+
+(once the `omt` arm is merged upstream; until then, add `arms/omt` from the pending
+pull request).
 
 ## Adding new models
 

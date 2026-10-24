@@ -159,7 +159,11 @@ pub fn is_retryable_error(status: Option<u16>, message: &str) -> bool {
     {
         return false;
     }
-    let status = status.or_else(|| status_from_message(&m));
+    // A body-read failure after a 2xx keeps the response's status, but the
+    // failure is the transport's: classify it by its text, not the status.
+    let status = status
+        .filter(|s| *s >= 400)
+        .or_else(|| status_from_message(&m));
     if let Some(s) = status {
         return matches!(s, 408 | 409 | 425 | 429) || s >= 500;
     }
@@ -179,6 +183,8 @@ pub fn is_retryable_error(status: Option<u16>, message: &str) -> bool {
         "quota",
         "network",
         "stream ended",
+        "failed to read provider response body",
+        "error decoding response body",
     ]
     .iter()
     .any(|p| m.contains(p))
@@ -1131,6 +1137,12 @@ mod tests {
         assert!(is_retryable_error(Some(429), "x"));
         assert!(is_retryable_error(None, "503 Service Unavailable"));
         assert!(is_retryable_error(None, "connection reset by peer"));
+        // Buffon disconnect-midstream / keepalive-only: the body read fails after a 200.
+        assert!(is_retryable_error(
+            Some(200),
+            "Failed to read provider response body: error decoding response body"
+        ));
+        assert!(!is_retryable_error(Some(200), "model refused"));
         assert!(!is_retryable_error(Some(401), "bad key"));
         assert!(!is_retryable_error(
             Some(400),

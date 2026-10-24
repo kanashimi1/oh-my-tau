@@ -2879,6 +2879,11 @@ impl Runtime {
         if std::env::var_os("OMP_RS_NO_TITLE").is_some() {
             return;
         }
+        // Print mode without a session file: the title has no reader (no
+        // session to name, no UI to show it), so the side request is skipped.
+        if NO_SESSION_PRINT.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
         if lock(&self.settings).session_name.is_some() {
             return;
         }
@@ -4150,6 +4155,11 @@ struct MessageEnvelope {
 /// (TS `hasExplicitModel`); cleared by the first `load_session`.
 pub static MODEL_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static THINKING_PINNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set by `main` for `-p` runs that persist no session: automatic titling
+/// is skipped (see `spawn_auto_title`).
+pub static NO_SESSION_PRINT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Set by `main` when `--model` was an ordered chain: `(provider/id of the

@@ -178,6 +178,25 @@ impl SessionWriter {
         Ok(w)
     }
 
+    /// Write a fresh session header at exactly `path` (a caller-chosen file name,
+    /// unlike [`Self::create`]); the file must not exist yet.
+    ///
+    /// # Errors
+    /// The file exists, or I/O failure.
+    pub fn create_at(path: &Path, cwd: &str, session_id: &str, timestamp_iso: &str) -> Result<()> {
+        if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(dir)?;
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .with_context(|| format!("create {}", path.display()))?;
+        let header = json!({"type": "session", "version": SESSION_VERSION, "id": session_id, "timestamp": timestamp_iso, "cwd": cwd});
+        std::io::Write::write_all(&mut file, format!("{header}\n").as_bytes())?;
+        Ok(())
+    }
+
     /// Reopen an existing session file for append (TS `SessionManager.open`: the file and its
     /// header stay untouched, new entries are appended). The append point is `leaf` when given
     /// (the active branch tip, which need not be the last line), else the last entry.
