@@ -25,15 +25,20 @@
   function renderHeader(s) {
     const st = s.state || {};
     const info = s.agents.find((a) => a.id === s.agentId) || s.agentInfo || {};
-    const title = st.sessionName || info.sessionName || (s.agentId ? "New session" : "omp-rs");
+    const title = st.sessionName || info.sessionName || (s.agentId ? "New session" : "omrs");
     $("#session-title").textContent = title;
-    document.title = s.agentId ? `${title} — omp-rs` : "omp-rs";
+    document.title = s.agentId ? `${title} — omrs` : "omrs";
     $("#session-cwd").textContent = info.cwd ? shortPath(info.cwd) : "";
     const model = st.model ? `${st.model.provider}/${st.model.id}` : "model";
     $("#model-btn").textContent = model;
     $("#model-btn").disabled = !s.agentId;
-    const level = st.ultra ? `ultra${st.ultra === "code" ? "code" : st.ultra}` : st.thinkingLevel || "thinking";
-    $("#thinking-btn").textContent = "◇ " + level;
+    const tb = $("#thinking-btn");
+    if (st.ultra) {
+      tb.replaceChildren(el("span", { text: "τ " }), el("span.ultra-text", { text: st.ultra, dataset: { mode: st.ultra } }));
+    } else {
+      tb.textContent = "◇ " + (st.thinkingLevel || "thinking");
+    }
+    tb.classList.toggle("ultra", !!st.ultra);
     $("#thinking-btn").disabled = !s.agentId;
     $("#thinking-btn").hidden = !!(st.model && !st.model.reasoning && !st.ultra);
   }
@@ -221,34 +226,42 @@
 
   // ── pickers / actions ──────────────────────────────────────────────────────
   async function modelPicker(s) {
-    let models;
-    try { models = (await app.rpc("get_available_models")).models || []; } catch (e) { return OMP.toast(e.message, "error"); }
-    const cur = s.state && s.state.model;
-    const items = models.map((m) => ({
-      label: `${m.provider}/${m.id}`,
-      description: [m.name, m.contextWindow ? OMP.fmtTokens(m.contextWindow) + " ctx" : "", m.cost ? `$${m.cost.input}/$${m.cost.output} per M` : "", m.reasoning ? "reasoning" : ""].filter(Boolean).join(" · "),
-      tag: cur && cur.provider === m.provider && cur.id === m.id ? "current" : undefined,
-    }));
-    const initial = Math.max(0, items.findIndex((i) => i.tag));
-    const i = await OMP.dialogs.pick("Select model", items, { searchable: true, initial, wide: true }).promise;
-    if (i == null) return;
+    const picked = await OMP.models.browse(app, s.state && s.state.model);
+    if (!picked) return;
     try {
-      await app.rpc("set_model", { provider: models[i].provider, modelId: models[i].id });
-      OMP.toast("Model: " + items[i].label, "success");
+      await app.rpc("set_model", { provider: picked.provider, modelId: picked.id });
+      OMP.toast(`Model: ${picked.provider}/${picked.id}`, "success");
     } catch (e) { OMP.toast(e.message, "error"); }
     app.S.state = await app.rpc("get_state").catch(() => app.S.state);
     renderHeader(s);
     refreshAgents(s);
   }
 
+  // omp-rs effort levels past `max`: workflow by default and its RLM/CLM hybrids.
+  const ULTRA_MODES = [
+    ["ultracode", "max thinking + workflow (eval workpool) on every substantial task"],
+    ["ultradeep", "ultracode + RLM (llm_query, λ-RLM, SERA rubrics) for huge inputs"],
+    ["ultralong", "ultracode + CLM context strategy for long sessions"],
+    ["hypercode", "ultracode + RLM + CLM — everything at once"],
+  ];
+
   async function thinkingPicker(s) {
     let levels;
     try { levels = (await app.rpc("get_available_thinking_levels")).levels || []; } catch (e) { return OMP.toast(e.message, "error"); }
-    const cur = s.state && s.state.thinkingLevel;
-    const items = levels.map((l) => ({ label: l, tag: l === cur ? "current" : undefined }));
-    const i = await OMP.dialogs.pick("Thinking level", items, { initial: Math.max(0, levels.indexOf(cur)) }).promise;
+    const st = s.state || {};
+    const cur = st.ultra || st.thinkingLevel;
+    const values = [...levels, ...ULTRA_MODES.map(([n]) => n)];
+    const items = [
+      ...levels.map((l) => ({ label: l, tag: l === cur ? "current" : undefined })),
+      ...ULTRA_MODES.map(([n, d]) => ({ label: n, description: d, tag: n === cur ? "current" : "ultra", cls: "ultra-opt", mode: n })),
+    ];
+    if (st.ultra) { values.push("__ultra_off"); items.push({ label: "ultra off", description: "leave the ultra mode, keep the current effort" }); }
+    const i = await OMP.dialogs.pick("Thinking level", items, { initial: Math.max(0, values.indexOf(cur)) }).promise;
     if (i == null) return;
-    try { await app.rpc("set_thinking_level", { level: levels[i] }); } catch (e) { return OMP.toast(e.message, "error"); }
+    try {
+      if (values[i] === "__ultra_off") await app.rpc("prompt", { message: "/ultra off" });
+      else await app.rpc("set_thinking_level", { level: values[i] });
+    } catch (e) { return OMP.toast(e.message, "error"); }
     app.S.state = await app.rpc("get_state").catch(() => app.S.state);
     renderHeader(s);
   }
@@ -347,13 +360,7 @@
   async function init(a) {
     app = a;
     const s = S();
-    const theme = localStorage.getItem("omp-web-theme") || "dark";
-    document.documentElement.dataset.theme = theme;
-    $("#theme-toggle").onclick = () => {
-      const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-      document.documentElement.dataset.theme = t;
-      localStorage.setItem("omp-web-theme", t);
-    };
+    $("#appearance-btn").onclick = () => OMP.appearance.open();
     $("#sidebar-toggle").onclick = () => {
       const appEl = $("#app");
       if (window.innerWidth <= 760) appEl.classList.toggle("show-sidebar"); else appEl.classList.toggle("no-sidebar");
@@ -380,6 +387,7 @@
       else if (e.ctrlKey && e.shiftKey && k === "t") { e.preventDefault(); if (s.agentId) thinkingPicker(s); }
       else if (e.ctrlKey && e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "r") { e.preventDefault(); resumePicker(s, app.currentCwd()); }
+      else if (e.ctrlKey && e.shiftKey && k === "a") { e.preventDefault(); OMP.appearance.open(); }
       else if (e.key === "Escape" && (s.streaming || s.bashRunning) && document.activeElement !== $("#composer")) { e.preventDefault(); app.abort(); }
     });
     setInterval(() => { if (s.streaming) renderStatus(s); }, 1000);

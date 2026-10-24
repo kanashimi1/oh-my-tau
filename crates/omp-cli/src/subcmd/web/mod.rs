@@ -10,6 +10,8 @@
 //! - `GET /api/agents`, `POST /api/agents {cwd, resume?, model?}`,
 //!   `DELETE /api/agents/<id>`.
 //! - `GET /api/export?session=<file>`: HTML export of a stored session.
+//! - `GET /api/wallpapers`, `POST /api/wallpapers?name=` (raw image body),
+//!   `DELETE /api/wallpapers/<name>`, `GET /wallpapers/custom/<name>`.
 //! - `GET /ws/<agentId>` (WebSocket): rpc frames both ways.
 //!
 //! Local-only: binds loopback by default and rejects cross-origin requests
@@ -18,6 +20,7 @@
 mod agent;
 mod assets;
 mod sessions;
+mod wallpapers;
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -42,7 +45,7 @@ use agent::{Agent, Spawn};
 
 const USAGE: &str = "Usage: omp-rs web [--port <port>] [--host <host>] [--cwd <dir>] [--open]
 
-Start the omp-rs browser UI (default http://127.0.0.1:7467). Each open
+Start the omrs browser UI (default http://127.0.0.1:7467). Each open
 session runs as its own `omp-rs --mode rpc` agent.";
 const DEFAULT_PORT: u16 = 7467;
 /// Request bodies are small JSON objects; images travel over the socket.
@@ -186,7 +189,7 @@ async fn serve(opts: Options) -> Result<i32> {
     });
     let shown_host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { opts.host.clone() };
     let url = format!("http://{shown_host}:{port}/");
-    println!("omp-rs web UI: {url}");
+    println!("omrs web UI: {url}");
     println!("Working directory: {}", opts.cwd.display());
     println!("Press Ctrl+C to stop");
     if opts.open {
@@ -351,6 +354,24 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             }
         }
         (&Method::GET, "/api/export") => export(query_param(&req, "session")),
+        (&Method::GET, "/api/wallpapers") => json_response(StatusCode::OK, &wallpapers::list()),
+        (&Method::POST, "/api/wallpapers") => upload_wallpaper(req).await,
+        (&Method::DELETE, p) if p.starts_with("/api/wallpapers/") => {
+            match wallpapers::delete(&percent_decode(&p["/api/wallpapers/".len()..])) {
+                Ok(()) => json_response(StatusCode::OK, &json!({"ok": true})),
+                Err(e) => error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+            }
+        }
+        (&Method::GET, p) if p.starts_with("/wallpapers/custom/") => {
+            match wallpapers::read(&percent_decode(&p["/wallpapers/custom/".len()..])) {
+                Some((mime, bytes)) => {
+                    let mut res = respond(StatusCode::OK, mime, bytes);
+                    res.headers_mut().insert("cache-control", HeaderValue::from_static("private, max-age=86400"));
+                    res
+                }
+                None => error(StatusCode::NOT_FOUND, "not found"),
+            }
+        }
         (&Method::GET, p) => match assets::get(p) {
             Some((mime, body)) => respond(StatusCode::OK, mime, body),
             None => error(StatusCode::NOT_FOUND, "not found"),
@@ -379,6 +400,18 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
     match hub.spawn(spec).await {
         Ok(agent) => json_response(StatusCode::OK, &agent.info_json()),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
+    }
+}
+
+async fn upload_wallpaper(req: Request<Incoming>) -> Response<Body> {
+    let name = query_param(&req, "name").unwrap_or_default();
+    let body = match http_body_util::Limited::new(req.into_body(), wallpapers::MAX_UPLOAD).collect().await {
+        Ok(b) => b.to_bytes(),
+        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, &format!("upload: {e}")),
+    };
+    match wallpapers::save(&name, &body) {
+        Ok(entry) => json_response(StatusCode::OK, &entry),
+        Err(e) => error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
     }
 }
 

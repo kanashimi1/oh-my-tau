@@ -11,9 +11,17 @@ const FILES: &[(&str, &str, &str)] = &[
     ("/assets/transcript.js", "text/javascript; charset=utf-8", include_str!("assets/transcript.js")),
     ("/assets/dialogs.js", "text/javascript; charset=utf-8", include_str!("assets/dialogs.js")),
     ("/assets/composer.js", "text/javascript; charset=utf-8", include_str!("assets/composer.js")),
+    ("/assets/appearance.js", "text/javascript; charset=utf-8", include_str!("assets/appearance.js")),
+    ("/assets/models.js", "text/javascript; charset=utf-8", include_str!("assets/models.js")),
     ("/assets/shell.js", "text/javascript; charset=utf-8", include_str!("assets/shell.js")),
     ("/assets/app.js", "text/javascript; charset=utf-8", include_str!("assets/app.js")),
     ("/favicon.svg", "image/svg+xml", include_str!("assets/favicon.svg")),
+    ("/wallpapers/midnight.svg", "image/svg+xml", include_str!("assets/wallpapers/midnight.svg")),
+    ("/wallpapers/anime-sakura.svg", "image/svg+xml", include_str!("assets/wallpapers/anime-sakura.svg")),
+    ("/wallpapers/anime-city.svg", "image/svg+xml", include_str!("assets/wallpapers/anime-city.svg")),
+    ("/wallpapers/anime-sky.svg", "image/svg+xml", include_str!("assets/wallpapers/anime-sky.svg")),
+    ("/wallpapers/vaporwave-sunset.svg", "image/svg+xml", include_str!("assets/wallpapers/vaporwave-sunset.svg")),
+    ("/wallpapers/vaporwave-grid.svg", "image/svg+xml", include_str!("assets/wallpapers/vaporwave-grid.svg")),
 ];
 
 /// `(content type, body)` for an app path; unknown non-API paths fall back

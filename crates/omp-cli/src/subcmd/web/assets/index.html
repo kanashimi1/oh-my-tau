@@ -1,18 +1,19 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="omrs">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>omp-rs</title>
+<title>omrs</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
+<div id="wallpaper" aria-hidden="true"></div>
 <div id="app">
   <aside id="sidebar">
     <div class="side-head">
-      <div class="brand"><span class="logo">◆</span> omp-rs</div>
-      <button class="icon-btn" id="theme-toggle" title="Toggle theme">◐</button>
+      <div class="brand"><svg class="tau" viewBox="0 0 10 8" shape-rendering="crispEdges" aria-label="τ"><rect x="0" y="0" width="10" height="1.02" fill="#ffe066"/><rect x="0" y="1" width="10" height="1.02" fill="#ffb05c"/><rect x="3" y="2" width="3" height="1.02" fill="#ff8080"/><rect x="3" y="3" width="3" height="1.02" fill="#ff5ca8"/><rect x="3" y="4" width="3" height="1.02" fill="#ec48d2"/><rect x="3" y="5" width="3" height="1.02" fill="#be4eec"/><rect x="4" y="6" width="3" height="1.02" fill="#8c60f6"/><rect x="5" y="7" width="5" height="1.02" fill="#6078fa"/></svg><span class="wordmark">OMRS</span></div>
+      <button class="icon-btn" id="appearance-btn" title="Themes &amp; wallpapers (Ctrl+Shift+A)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1.5"/><circle cx="17.5" cy="10.5" r="1.5"/><circle cx="8.5" cy="7.5" r="1.5"/><circle cx="6.5" cy="12.5" r="1.5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.75 1.5-1.67 0-.44-.17-.84-.44-1.13-.29-.29-.44-.68-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.96 6.01 17.46 2 12 2z"/></svg></button>
     </div>
     <button class="primary wide" id="new-session">+ New session</button>
     <div class="side-section">
@@ -33,7 +34,7 @@
     <header id="topbar">
       <button class="icon-btn" id="sidebar-toggle" title="Toggle sidebar">☰</button>
       <div class="title-block">
-        <div id="session-title" class="session-title" title="Rename session">omp-rs</div>
+        <div id="session-title" class="session-title" title="Rename session">omrs</div>
         <div id="session-cwd" class="muted small ellipsis"></div>
       </div>
       <div class="top-actions">
@@ -45,8 +46,9 @@
     <section id="transcript-wrap">
       <div id="transcript"></div>
       <div id="empty-state" class="empty-state">
-        <div class="logo big">◆</div>
-        <h1>omp-rs</h1>
+        <div class="logo big"><svg class="tau big" viewBox="0 0 10 8" shape-rendering="crispEdges" aria-label="τ"><rect x="0" y="0" width="10" height="1.02" fill="#ffe066"/><rect x="0" y="1" width="10" height="1.02" fill="#ffb05c"/><rect x="3" y="2" width="3" height="1.02" fill="#ff8080"/><rect x="3" y="3" width="3" height="1.02" fill="#ff5ca8"/><rect x="3" y="4" width="3" height="1.02" fill="#ec48d2"/><rect x="3" y="5" width="3" height="1.02" fill="#be4eec"/><rect x="4" y="6" width="3" height="1.02" fill="#8c60f6"/><rect x="5" y="7" width="5" height="1.02" fill="#6078fa"/></svg></div>
+        <h1 class="wordmark big">OMRS</h1>
+        <div class="katakana">オー・マイ・アールエス</div>
         <p class="muted">Start a new session or pick one from the sidebar.</p>
         <p class="muted small">Type <kbd>/</kbd> for commands · <kbd>!</kbd> runs a shell command · <kbd>Esc</kbd> interrupts</p>
       </div>
@@ -58,7 +60,7 @@
       <div id="autocomplete" class="autocomplete" hidden></div>
       <div id="attachments" class="attachments"></div>
       <div class="composer">
-        <textarea id="composer" rows="1" placeholder="Message omp-rs…  (/ commands · ! shell · Enter send · Shift+Enter newline)" disabled></textarea>
+        <div class="ta-wrap"><div id="composer-hl" class="ta-hl" aria-hidden="true"></div><textarea id="composer" rows="1" placeholder="Message omrs…  (/ commands · ! shell · Enter send · Shift+Enter newline)" disabled></textarea></div>
         <button id="attach-btn" class="icon-btn" title="Attach image"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
         <button id="send-btn" class="primary" disabled>Send</button>
         <button id="stop-btn" class="danger" hidden title="Interrupt (Esc)">Stop</button>
@@ -77,6 +79,8 @@
 <script src="/assets/transcript.js"></script>
 <script src="/assets/dialogs.js"></script>
 <script src="/assets/composer.js"></script>
+<script src="/assets/appearance.js"></script>
+<script src="/assets/models.js"></script>
 <script src="/assets/shell.js"></script>
 <script src="/assets/app.js"></script>
 </body>

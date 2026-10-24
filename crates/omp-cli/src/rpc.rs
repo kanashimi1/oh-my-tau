@@ -890,11 +890,18 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                     .zip(info.get("id"))
                     .map(|(p, i)| (p.clone(), i.clone()))
             };
-            let mut models: Vec<Value> = available_models(None)
-                .await
-                .iter()
-                .map(model_info)
-                .collect();
+            // Same catalogue as the TUI `/model` picker: every chat model of a
+            // provider with credentials (bundled catalog, models.db, models.yml).
+            let catalog = tokio::task::spawn_blocking(|| {
+                crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
+            })
+            .await
+            .unwrap_or_default();
+            let mut models: Vec<Value> = catalog
+                    .iter()
+                    .filter(|b| b.available && b.kind.is_empty() && !b.model.id.is_empty())
+                    .map(|b| model_info(&b.model))
+                    .collect();
             if let Some((p, i)) = current {
                 if !models
                     .iter()

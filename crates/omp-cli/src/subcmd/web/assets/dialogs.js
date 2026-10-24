@@ -57,10 +57,10 @@
         (it.label + " " + (it.description || "") + " " + (it.tag || "")).toLowerCase().includes(q));
       cursor = Math.max(0, Math.min(cursor, visible.length - 1));
       list.replaceChildren(...visible.map(([it, i], k) => {
-        const node = el("button.option" + (k === cursor ? ".sel" : "") + (opts.multi ? (checked.has(i) ? ".checked" : ".uncheck") : ""), {
+        const node = el("button.option" + (k === cursor ? ".sel" : "") + (it.cls ? "." + it.cls : "") + (opts.multi ? (checked.has(i) ? ".checked" : ".uncheck") : ""), {
           onclick: () => { cursor = k; choose(); },
           onmousemove: () => { if (cursor !== k) { cursor = k; render(); } },
-        }, el("span", null, el("span.label", { text: it.label }), it.tag ? el("span.tag", { text: it.tag }) : null),
+        }, el("span", null, el("span.label" + (it.mode ? ".ultra-text" : ""), { text: it.label, dataset: it.mode ? { mode: it.mode } : null }), it.tag ? el("span.tag", { text: it.tag }) : null),
         it.description ? el("span.desc", { text: it.description }) : null);
         return node;
       }));

@@ -6,6 +6,43 @@
   const HISTORY_KEY = "omp-web-history";
   const HISTORY_MAX = 200;
 
+  // Magic keywords (omp-tui `magic::KEYWORDS`): a standalone, case-sensitive
+  // prose word — not inside code spans/fences, not glued into an identifier,
+  // path or call. Painted with the TUI's HSL hue sweep.
+  const KEYWORDS = [
+    ["ultrathink", 0, 330], ["orchestrate", 150, 280], ["workflowz", 30, 150],
+    ["jevify", 300, 420], ["ultracode", 410, 270],
+  ];
+  const KW_RE = new RegExp(`(?<![\\w./:\\-])(${KEYWORDS.map((k) => k[0]).join("|")})(?![\\w(/:\\-]|\\.\\w)`, "g");
+  const kwGradient = (word) => {
+    const [, from, to] = KEYWORDS.find((k) => k[0] === word);
+    const stops = [0, 0.25, 0.5, 0.75, 1].map((t) => `hsl(${(from + (to - from) * t) % 360} 90% 62%)`);
+    return `linear-gradient(90deg, ${stops.join(", ")})`;
+  };
+  /** Character ranges of fenced blocks and inline code spans (not prose). */
+  function codeRanges(text) {
+    const out = [];
+    const fence = /^(```|~~~)[^\n]*\n[\s\S]*?(?:^\1[^\n]*$|(?![\s\S]))/gm;
+    let m;
+    while ((m = fence.exec(text))) out.push([m.index, m.index + m[0].length]);
+    const inline = /(`+)[^`]*?\1/g;
+    while ((m = inline.exec(text))) out.push([m.index, m.index + m[0].length]);
+    return out;
+  }
+  /** HTML for the highlight backdrop: escaped text with keyword spans. */
+  function highlightHtml(text) {
+    const code = codeRanges(text);
+    let html = "";
+    let last = 0;
+    for (const m of text.matchAll(KW_RE)) {
+      if (code.some(([a, b]) => m.index >= a && m.index < b)) continue;
+      html += OMP.esc(text.slice(last, m.index)) + `<span class="kw" style="background-image:${kwGradient(m[1])}">${m[1]}</span>`;
+      last = m.index + m[1].length;
+    }
+    // Trailing newline needs a glyph so the backdrop keeps the same height.
+    return html + OMP.esc(text.slice(last)) + "\u200b";
+  }
+
   class Composer {
     constructor({ onSubmit, onAbort }) {
       this.ta = OMP.$("#composer");
@@ -14,6 +51,7 @@
       this.acBox = OMP.$("#autocomplete");
       this.attBox = OMP.$("#attachments");
       this.fileInput = OMP.$("#file-input");
+      this.hl = OMP.$("#composer-hl");
       this.onSubmit = onSubmit;
       this.onAbort = onAbort;
       this.commands = [];
@@ -30,6 +68,7 @@
       const ta = this.ta;
       ta.addEventListener("input", () => { this.autosize(); this.updateAc(); this.updateMode(); });
       ta.addEventListener("keydown", (e) => this.onKey(e));
+      ta.addEventListener("scroll", () => { this.hl.scrollTop = ta.scrollTop; });
       ta.addEventListener("blur", () => setTimeout(() => this.closeAc(), 150));
       ta.addEventListener("paste", (e) => {
         const files = [...(e.clipboardData?.items || [])].filter((i) => i.type.startsWith("image/")).map((i) => i.getAsFile());
@@ -74,6 +113,15 @@
     autosize() {
       this.ta.style.height = "auto";
       this.ta.style.height = Math.min(this.ta.scrollHeight + 2, window.innerHeight * 0.4) + "px";
+      this.highlight();
+    }
+    highlight() {
+      const text = this.ta.value;
+      const on = KW_RE.test(text);
+      KW_RE.lastIndex = 0;
+      this.ta.parentElement.classList.toggle("magic", on);
+      this.hl.innerHTML = on ? highlightHtml(text) : "";
+      this.hl.scrollTop = this.ta.scrollTop;
     }
     updateMode() { this.ta.classList.toggle("bash", this.ta.value.startsWith("!")); }
 
