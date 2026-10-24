@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ed4abf"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#3fd0e8"/>
+    </linearGradient>
+    <linearGradient id="w" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ed4abf"/>
+      <stop offset="0.5" stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#3fd0e8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#8b5cf6" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#8b5cf6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="640" fill="#0f0b14"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <g transform="translate(150 150) scale(5.2)">
+    <rect width="64" height="64" rx="14" fill="#16111c" stroke="#2a2233" stroke-width="0.6"/>
+    <path fill="url(#g)" d="M10 14h44v9H37v24h13v9H28V23H10z"/>
+  </g>
+  <text x="540" y="330" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-weight="800" font-size="132" letter-spacing="10" fill="url(#w)">OMT</text>
+  <text x="546" y="400" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-weight="500" font-size="44" fill="#e6e3ea">oh my tau</text>
+  <text x="546" y="456" font-family="Inter, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="28" fill="#9a93a6">Rust coding agent · TUI · RPC · browser UI</text>
+</svg>

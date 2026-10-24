@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/banner.svg" alt="oh my tau (omt)" width="720"></p>
+
 # τ oh my tau (omt)
 
 **oh my tau** (**omt**) is a Rust port of [oh-my-pi](https://github.com/can1357/oh-my-pi)
