@@ -7,9 +7,9 @@ use sha2::{Digest, Sha256};
 
 use crate::compat::ModelView;
 use crate::providers::anthropic::convert::normalize_tool_call_id;
-use crate::providers::transform_ts::{transform_messages, SYNTHETIC_USER_KEY};
 use crate::providers::anthropic::AnthropicOptions;
 use crate::providers::openai_completions::schema::{spill_to_description, tool_wire_schema};
+use crate::providers::transform_ts::{transform_messages, SYNTHETIC_USER_KEY};
 use crate::types::{
     AssistantContent, CacheRetention, Context, Message, Model, ModelExt, ServiceTier,
     UserMessageContent, UserOrToolContent,
@@ -18,7 +18,8 @@ use crate::types::{
 pub(crate) const OUTPUT_FALLBACK_BUFFER: u64 = 4000;
 const UNKNOWN_MODEL_MAX_OUTPUT_TOKENS: u64 = 64_000;
 const CLAUDE_TOOL_PREFIX: &str = "_";
-const CLAUDE_CODE_SYSTEM_INSTRUCTION: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
+const CLAUDE_CODE_SYSTEM_INSTRUCTION: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
 const CLAUDE_BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header:";
 const DEFAULT_CLAUDE_CODE_VERSION: &str = "2.1.280";
 const NON_VISION_IMAGE_PLACEHOLDER: &str = "[image omitted: model does not support vision]";
@@ -41,7 +42,10 @@ fn sha256_hex(data: &[u8]) -> String {
 fn billing_header(first_user_text: &str) -> String {
     let chars: Vec<char> = first_user_text.chars().collect();
     // JS indexes UTF-16 code units; BMP text is identical.
-    let k: String = [4usize, 7, 20].iter().map(|&i| chars.get(i).copied().unwrap_or('0')).collect();
+    let k: String = [4usize, 7, 20]
+        .iter()
+        .map(|&i| chars.get(i).copied().unwrap_or('0'))
+        .collect();
     let version = claude_code_version();
     let suffix = &sha256_hex(format!("59cf53e54c78{k}{version}").as_bytes())[..3];
     format!("{CLAUDE_BILLING_HEADER_PREFIX} cc_version={version}.{suffix}; cc_entrypoint=cli; cch=00000;")
@@ -54,7 +58,13 @@ fn install_id() -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let id = text.trim().to_string();
     let ok = id.len() == 36
-        && id.chars().enumerate().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { c == '-' } else { c.is_ascii_hexdigit() });
+        && id.chars().enumerate().all(|(i, c)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                c == '-'
+            } else {
+                c.is_ascii_hexdigit()
+            }
+        });
     ok.then_some(id)
 }
 
@@ -78,13 +88,25 @@ fn derive_device_id(install_id: &str, account_id: Option<&str>) -> String {
 }
 
 fn is_claude_cloaking_user_id(user_id: &str) -> bool {
-    let Some(rest) = user_id.strip_prefix("user_") else { return false };
-    let Some((hash, rest)) = rest.split_once("_account_") else { return false };
-    let Some((account, session)) = rest.split_once("_session_") else { return false };
+    let Some(rest) = user_id.strip_prefix("user_") else {
+        return false;
+    };
+    let Some((hash, rest)) = rest.split_once("_account_") else {
+        return false;
+    };
+    let Some((account, session)) = rest.split_once("_session_") else {
+        return false;
+    };
     let hex_len = |s: &str, n: usize| s.len() == n && s.chars().all(|c| c.is_ascii_hexdigit());
     let uuid = |s: &str| {
         s.len() == 36
-            && s.chars().enumerate().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { c == '-' } else { c.is_ascii_hexdigit() })
+            && s.chars().enumerate().all(|(i, c)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    c == '-'
+                } else {
+                    c.is_ascii_hexdigit()
+                }
+            })
     };
     hex_len(hash, 64) && uuid(account) && uuid(session)
 }
@@ -95,7 +117,11 @@ fn is_claude_json_user_id(user_id: &str) -> bool {
     }
     serde_json::from_str::<Value>(user_id)
         .ok()
-        .and_then(|v| v.get("session_id").and_then(Value::as_str).map(|s| !s.is_empty()))
+        .and_then(|v| {
+            v.get("session_id")
+                .and_then(Value::as_str)
+                .map(|s| !s.is_empty())
+        })
         .unwrap_or(false)
 }
 
@@ -115,7 +141,13 @@ fn resolve_metadata_user_id(
         return None;
     }
     let mut map = Map::new();
-    map.insert("device_id".into(), json!(derive_device_id(&install_id().unwrap_or_default(), account_id)));
+    map.insert(
+        "device_id".into(),
+        json!(derive_device_id(
+            &install_id().unwrap_or_default(),
+            account_id
+        )),
+    );
     map.insert(
         "session_id".into(),
         json!(session_id.map_or_else(|| uuid_v4(), str::to_string)),
@@ -133,7 +165,14 @@ pub(crate) fn uuid_v4() -> String {
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     let h = hex::encode(b);
-    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..]
+    )
 }
 
 // ---------------------------------------------------------------- helpers
@@ -151,9 +190,17 @@ fn resolve_retention(explicit: Option<CacheRetention>, fallback: CacheRetention)
 }
 
 /// TS `getCacheControl`: the `cache_control` object, `None` when caching is off.
-pub(crate) fn cache_control_value(view: &ModelView, retention: Option<CacheRetention>, is_oauth: bool) -> Option<Value> {
+pub(crate) fn cache_control_value(
+    view: &ModelView,
+    retention: Option<CacheRetention>,
+    is_oauth: bool,
+) -> Option<Value> {
     let long_ok = view.is("supportsLongCacheRetention");
-    let default = if is_oauth && long_ok { CacheRetention::Long } else { CacheRetention::Short };
+    let default = if is_oauth && long_ok {
+        CacheRetention::Long
+    } else {
+        CacheRetention::Short
+    };
     let retention = resolve_retention(retention, default);
     if retention == CacheRetention::None {
         return None;
@@ -167,7 +214,10 @@ pub(crate) fn cache_control_value(view: &ModelView, retention: Option<CacheReten
 }
 
 fn is_builtin_tool_name(name: &str) -> bool {
-    matches!(name.to_lowercase().as_str(), "web_search" | "code_execution" | "text_editor" | "computer")
+    matches!(
+        name.to_lowercase().as_str(),
+        "web_search" | "code_execution" | "text_editor" | "computer"
+    )
 }
 
 /// TS `encodeAnthropicToolName`.
@@ -190,7 +240,11 @@ pub(crate) fn decode_tool_name(name: &str, is_oauth: bool, escape_builtin: bool)
 }
 
 fn normalize_system_prompts(prompt: Option<&str>) -> Vec<String> {
-    prompt.into_iter().filter(|p| !p.trim().is_empty()).map(str::to_string).collect()
+    prompt
+        .into_iter()
+        .filter(|p| !p.trim().is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn text_block(text: &str) -> Value {
@@ -228,12 +282,20 @@ fn convert_content_blocks(content: &[UserOrToolContent], supports_images: bool) 
                     blocks.push(text_block(NON_VISION_IMAGE_PLACEHOLDER));
                     continue;
                 }
-                let source = if let Some(url) = img.rest.get("url").and_then(Value::as_str).filter(|u| !u.is_empty()) {
+                let source = if let Some(url) = img
+                    .rest
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .filter(|u| !u.is_empty())
+                {
                     json!({ "type": "url", "url": url })
                 } else if let Some(media_type) = normalize_image_media_type(&img.mime_type) {
                     json!({ "type": "base64", "media_type": media_type, "data": img.data })
                 } else {
-                    blocks.push(text_block(&format!("[unsupported image: {}]", img.mime_type)));
+                    blocks.push(text_block(&format!(
+                        "[unsupported image: {}]",
+                        img.mime_type
+                    )));
                     continue;
                 };
                 saw_image = true;
@@ -250,8 +312,11 @@ fn convert_content_blocks(content: &[UserOrToolContent], supports_images: bool) 
         }
     }
     if !supports_images {
-        let joined: Vec<&str> =
-            blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
+        let joined: Vec<&str> = blocks
+            .iter()
+            .filter(|b| b["type"] == "text")
+            .filter_map(|b| b["text"].as_str())
+            .collect();
         return Value::String(joined.join("\n"));
     }
     if saw_image && !saw_text {
@@ -278,7 +343,8 @@ fn build_tool_result_block(
     if msg.is_error {
         if let Value::Array(blocks) = &content {
             if blocks.iter().any(|b| b["type"] == "image") {
-                let (images, texts): (Vec<Value>, Vec<Value>) = blocks.iter().cloned().partition(|b| b["type"] == "image");
+                let (images, texts): (Vec<Value>, Vec<Value>) =
+                    blocks.iter().cloned().partition(|b| b["type"] == "image");
                 hoisted.extend(images);
                 content = Value::Array(texts);
             }
@@ -308,7 +374,9 @@ fn build_tool_result_block(
 /// `renderDemotedThinking`: thinking replayed as plain text for models that cannot take it as a
 /// native block. The Anthropic dialect keeps the text verbatim.
 fn render_demoted_thinking(model_id: &str, text: &str) -> String {
-    let class = crate::compat::taxonomy::classify_model(crate::compat::rules(), "", model_id, true).map(|i| i.class).unwrap_or_default();
+    let class = crate::compat::taxonomy::classify_model(crate::compat::rules(), "", model_id, true)
+        .map(|i| i.class)
+        .unwrap_or_default();
     match class.as_str() {
         "anthropic" => text.to_string(),
         _ => format!("<think>\n{text}\n</think>"),
@@ -328,7 +396,12 @@ impl Param {
 }
 
 /// TS `convertAnthropicMessages` for the message shapes this runtime carries.
-fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is_oauth: bool) -> Vec<Param> {
+fn convert_messages(
+    view: &ModelView,
+    model: &Model,
+    transformed: &[Message],
+    is_oauth: bool,
+) -> Vec<Param> {
     let mut params: Vec<Param> = Vec::new();
     // Indices of params emitted from `developer` messages (upgraded to `system` below).
     let mut developer_params: Vec<usize> = Vec::new();
@@ -398,7 +471,10 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
                             blocks.push(json!({ "type": "redacted_thinking", "data": data }));
                         }
                         AssistantContent::Thinking(t) => {
-                            let sig = t.thinking_signature.as_deref().filter(|s| !s.trim().is_empty());
+                            let sig = t
+                                .thinking_signature
+                                .as_deref()
+                                .filter(|s| !s.trim().is_empty());
                             if has_signed_thinking {
                                 match sig {
                                     None => {
@@ -459,7 +535,10 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
                     i += 1;
                     continue;
                 }
-                params.push(Param { value: json!({ "role": "assistant", "content": blocks }), conversational: false });
+                params.push(Param {
+                    value: json!({ "role": "assistant", "content": blocks }),
+                    conversational: false,
+                });
             }
             Message::ToolResult(first) => {
                 let mut results: Vec<Value> = Vec::new();
@@ -472,10 +551,15 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
                 }
                 i = j - 1;
                 if !hoisted.is_empty() {
-                    results.push(text_block("Attached image(s) from the tool result(s) above:"));
+                    results.push(text_block(
+                        "Attached image(s) from the tool result(s) above:",
+                    ));
                     results.extend(hoisted);
                 }
-                params.push(Param { value: json!({ "role": "user", "content": results }), conversational: false });
+                params.push(Param {
+                    value: json!({ "role": "user", "content": results }),
+                    conversational: false,
+                });
             }
         }
         i += 1;
@@ -486,11 +570,15 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
         for &idx in developer_params.iter().rev() {
             let follows_user = idx > 0 && params[idx - 1].role() == "user";
             let next = idx + 1;
-            let last_or_before_assistant = next >= params.len() || params[next].role() == "assistant";
+            let last_or_before_assistant =
+                next >= params.len() || params[next].role() == "assistant";
             let system_compatible = match &params[idx].value["content"] {
                 Value::String(_) => true,
                 Value::Array(blocks) => blocks.iter().all(|b| {
-                    matches!(b["type"].as_str(), Some("text" | "tool_addition" | "tool_removal"))
+                    matches!(
+                        b["type"].as_str(),
+                        Some("text" | "tool_addition" | "tool_removal")
+                    )
                 }),
                 _ => false,
             };
@@ -504,11 +592,20 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
     while k > 1 {
         k -= 1;
         if params[k].role() == "assistant" && params[k - 1].role() == "assistant" {
-            params.insert(k, Param { value: json!({ "role": "user", "content": "Continue." }), conversational: false });
+            params.insert(
+                k,
+                Param {
+                    value: json!({ "role": "user", "content": "Continue." }),
+                    conversational: false,
+                },
+            );
         }
     }
     if params.last().is_some_and(|p| p.role() == "assistant") {
-        params.push(Param { value: json!({ "role": "user", "content": "Continue." }), conversational: false });
+        params.push(Param {
+            value: json!({ "role": "user", "content": "Continue." }),
+            conversational: false,
+        });
     }
     params
 }
@@ -516,14 +613,35 @@ fn convert_messages(view: &ModelView, model: &Model, transformed: &[Message], is
 // ---------------------------------------------------------------- tools
 
 const SCHEMA_UNIVERSAL_KEEP: &[&str] = &[
-    "$ref", "$defs", "$schema", "definitions", "type", "anyOf", "allOf", "enum", "const", "description", "title",
-    "default", "nullable",
+    "$ref",
+    "$defs",
+    "$schema",
+    "definitions",
+    "type",
+    "anyOf",
+    "allOf",
+    "enum",
+    "const",
+    "description",
+    "title",
+    "default",
+    "nullable",
 ];
 const SCHEMA_OBJECT_KEEP: &[&str] = &["properties", "required", "additionalProperties"];
 const SCHEMA_ARRAY_KEEP: &[&str] = &["items", "prefixItems", "minItems"];
 const SCHEMA_STRING_KEEP: &[&str] = &["format"];
-const SCHEMA_STRING_FORMATS: &[&str] =
-    &["date-time", "time", "date", "duration", "email", "hostname", "uri", "ipv4", "ipv6", "uuid"];
+const SCHEMA_STRING_FORMATS: &[&str] = &[
+    "date-time",
+    "time",
+    "date",
+    "duration",
+    "email",
+    "hostname",
+    "uri",
+    "ipv4",
+    "ipv6",
+    "uuid",
+];
 const COMBINATOR_KEYS: [&str; 3] = ["anyOf", "allOf", "oneOf"];
 const STRICT_TOOL_ALLOWLIST: &[&str] = &["python", "edit", "find"];
 const MAX_STRICT_TOOLS: usize = 20;
@@ -558,7 +676,9 @@ fn is_object_node(schema: &Map<String, Value>) -> bool {
 fn pick_scalar_type(ty: Option<&Value>) -> Option<String> {
     match ty? {
         Value::String(s) => Some(s.clone()),
-        Value::Array(a) => a.iter().find_map(|e| e.as_str().filter(|s| *s != "null").map(str::to_string)),
+        Value::Array(a) => a
+            .iter()
+            .find_map(|e| e.as_str().filter(|s| *s != "null").map(str::to_string)),
         _ => None,
     }
 }
@@ -578,7 +698,11 @@ fn effective_scalar_type(schema: &Map<String, Value>) -> Option<String> {
 
 fn normalize_tool_schema_node(schema: &Value, is_root: bool) -> Value {
     match schema {
-        Value::Array(a) => Value::Array(a.iter().map(|e| normalize_tool_schema_node(e, false)).collect()),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|e| normalize_tool_schema_node(e, false))
+                .collect(),
+        ),
         Value::Object(obj) => {
             let scalar = effective_scalar_type(obj);
             let per_type: Option<&[&str]> = match scalar.as_deref() {
@@ -592,7 +716,8 @@ fn normalize_tool_schema_node(schema: &Value, is_root: bool) -> Value {
             for (key, value) in obj {
                 let root_combinator = is_root && COMBINATOR_KEYS.contains(&key.as_str());
                 if !root_combinator
-                    && (SCHEMA_UNIVERSAL_KEEP.contains(&key.as_str()) || per_type.is_some_and(|k| k.contains(&key.as_str())))
+                    && (SCHEMA_UNIVERSAL_KEEP.contains(&key.as_str())
+                        || per_type.is_some_and(|k| k.contains(&key.as_str())))
                 {
                     result.insert(key.clone(), value.clone());
                 } else {
@@ -637,7 +762,15 @@ fn normalize_tool_schema_node(schema: &Value, is_root: bool) -> Value {
             }
             match result.get("items").cloned() {
                 Some(Value::Array(items)) => {
-                    result.insert("items".into(), Value::Array(items.iter().map(|i| normalize_tool_schema_node(i, false)).collect()));
+                    result.insert(
+                        "items".into(),
+                        Value::Array(
+                            items
+                                .iter()
+                                .map(|i| normalize_tool_schema_node(i, false))
+                                .collect(),
+                        ),
+                    );
                 }
                 Some(items @ Value::Object(_)) => {
                     result.insert("items".into(), normalize_tool_schema_node(&items, false));
@@ -645,11 +778,27 @@ fn normalize_tool_schema_node(schema: &Value, is_root: bool) -> Value {
                 _ => {}
             }
             if let Some(Value::Array(items)) = result.get("prefixItems").cloned() {
-                result.insert("prefixItems".into(), Value::Array(items.iter().map(|i| normalize_tool_schema_node(i, false)).collect()));
+                result.insert(
+                    "prefixItems".into(),
+                    Value::Array(
+                        items
+                            .iter()
+                            .map(|i| normalize_tool_schema_node(i, false))
+                            .collect(),
+                    ),
+                );
             }
             for key in COMBINATOR_KEYS {
                 if let Some(Value::Array(variants)) = result.get(key).cloned() {
-                    result.insert(key.into(), Value::Array(variants.iter().map(|v| normalize_tool_schema_node(v, false)).collect()));
+                    result.insert(
+                        key.into(),
+                        Value::Array(
+                            variants
+                                .iter()
+                                .map(|v| normalize_tool_schema_node(v, false))
+                                .collect(),
+                        ),
+                    );
                 }
             }
             for defs_key in ["$defs", "definitions"] {
@@ -676,7 +825,8 @@ struct StrictBudget {
 }
 
 fn has_union_type(schema: &Map<String, Value>) -> bool {
-    schema.get("type").is_some_and(Value::is_array) || schema.get("anyOf").is_some_and(Value::is_array)
+    schema.get("type").is_some_and(Value::is_array)
+        || schema.get("anyOf").is_some_and(Value::is_array)
 }
 
 fn has_null_variant(schema: &Map<String, Value>) -> bool {
@@ -689,9 +839,18 @@ fn has_null_variant(schema: &Map<String, Value>) -> bool {
 }
 
 fn has_schema_defining_keyword(schema: &Map<String, Value>) -> bool {
-    ["type", "properties", "additionalProperties", "items", "prefixItems", "enum", "const", "$ref"]
-        .iter()
-        .any(|k| schema.contains_key(*k))
+    [
+        "type",
+        "properties",
+        "additionalProperties",
+        "items",
+        "prefixItems",
+        "enum",
+        "const",
+        "$ref",
+    ]
+    .iter()
+    .any(|k| schema.contains_key(*k))
         || COMBINATOR_KEYS.iter().any(|k| schema.contains_key(*k))
         || schema.contains_key("$defs")
         || schema.contains_key("definitions")
@@ -753,7 +912,11 @@ fn normalize_strict_node(schema: &Value, budget: &mut StrictBudget) -> Option<Va
                 let original_required: Vec<String> = result
                     .get("required")
                     .and_then(Value::as_array)
-                    .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let mut properties = Map::new();
                 let mut required: Vec<Value> = Vec::new();
@@ -784,7 +947,10 @@ fn normalize_strict_node(schema: &Value, budget: &mut StrictBudget) -> Option<Va
                 _ => {}
             }
             if let Some(Value::Array(p)) = result.get("prefixItems").cloned() {
-                result.insert("prefixItems".into(), normalize_strict_node(&Value::Array(p), budget)?);
+                result.insert(
+                    "prefixItems".into(),
+                    normalize_strict_node(&Value::Array(p), budget)?,
+                );
             }
             for key in COMBINATOR_KEYS {
                 if let Some(Value::Array(v)) = result.get(key).cloned() {
@@ -810,7 +976,15 @@ fn has_strict_incompatible_keyword(schema: &Value) -> bool {
     match schema {
         Value::Array(a) => a.iter().any(has_strict_incompatible_keyword),
         Value::Object(o) => {
-            ["oneOf", "allOf", "$ref", "patternProperties", "propertyNames"].iter().any(|k| o.contains_key(*k))
+            [
+                "oneOf",
+                "allOf",
+                "$ref",
+                "patternProperties",
+                "propertyNames",
+            ]
+            .iter()
+            .any(|k| o.contains_key(*k))
                 || o.values().any(has_strict_incompatible_keyword)
         }
         _ => false,
@@ -821,7 +995,11 @@ fn base_tool_input_schema(tool: &crate::types::Tool) -> Value {
     let wire = tool_wire_schema(&tool.parameters);
     let mut obj = wire.as_object().cloned().unwrap_or_default();
     obj.insert("type".into(), json!("object"));
-    let props = obj.get("properties").filter(|p| p.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let props = obj
+        .get("properties")
+        .filter(|p| p.is_object())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     obj.insert("properties".into(), props);
     let required: Vec<Value> = obj
         .get("required")
@@ -840,7 +1018,10 @@ fn convert_tools(
     eager_streaming: bool,
     escape_builtin: bool,
 ) -> Vec<Value> {
-    let mut plans: Vec<(Value, bool)> = tools.iter().map(|t| (base_tool_input_schema(t), false)).collect();
+    let mut plans: Vec<(Value, bool)> = tools
+        .iter()
+        .map(|t| (base_tool_input_schema(t), false))
+        .collect();
     let no_strict = matches!(std::env::var("PI_NO_STRICT").as_deref(), Ok("1" | "true"));
     if !no_strict && !disable_strict {
         let candidates: Vec<usize> = tools
@@ -863,7 +1044,9 @@ fn convert_tools(
                 optional_count: 0,
                 union_count: 0,
             };
-            let Some(normalized) = normalize_strict_node(&plans[index].0, &mut budget) else { continue };
+            let Some(normalized) = normalize_strict_node(&plans[index].0, &mut budget) else {
+                continue;
+            };
             if !normalized.is_object() {
                 continue;
             }
@@ -878,7 +1061,10 @@ fn convert_tools(
         .zip(plans)
         .map(|(tool, (schema, strict))| {
             let mut entry = Map::new();
-            entry.insert("name".into(), json!(encode_tool_name(&tool.name, is_oauth, escape_builtin)));
+            entry.insert(
+                "name".into(),
+                json!(encode_tool_name(&tool.name, is_oauth, escape_builtin)),
+            );
             entry.insert("description".into(), json!(tool.description));
             entry.insert("input_schema".into(), schema);
             if eager_streaming {
@@ -899,10 +1085,18 @@ pub(crate) fn uses_adaptive_thinking_tag_only(view: &ModelView) -> bool {
         return false;
     }
     let efforts = view.efforts();
-    if view.thinking.as_ref().and_then(|t| t.get("effortMap")).is_none() {
+    if view
+        .thinking
+        .as_ref()
+        .and_then(|t| t.get("effortMap"))
+        .is_none()
+    {
         return false;
     }
-    !efforts.is_empty() && efforts.iter().all(|e| view.effort_map(e) == Some("adaptive"))
+    !efforts.is_empty()
+        && efforts
+            .iter()
+            .all(|e| view.effort_map(e) == Some("adaptive"))
 }
 
 pub(crate) fn uses_budget_thinking(view: &ModelView) -> bool {
@@ -916,9 +1110,16 @@ pub(crate) fn is_adaptive_only_thinking(view: &ModelView) -> bool {
 }
 
 /// TS `requireSupportedEffort`.
-pub(crate) fn require_supported_effort(model: &Model, view: &ModelView, effort: &str) -> Result<(), String> {
+pub(crate) fn require_supported_effort(
+    model: &Model,
+    view: &ModelView,
+    effort: &str,
+) -> Result<(), String> {
     if !model.reasoning {
-        return Err(format!("Model {}/{} does not support thinking", model.provider, model.id));
+        return Err(format!(
+            "Model {}/{} does not support thinking",
+            model.provider, model.id
+        ));
     }
     let levels = view.efforts();
     if !levels.contains(&effort) {
@@ -933,23 +1134,43 @@ pub(crate) fn require_supported_effort(model: &Model, view: &ModelView, effort: 
 }
 
 /// TS `mapEffortToAnthropicAdaptiveEffort`.
-pub(crate) fn map_effort_to_adaptive(model: &Model, view: &ModelView, effort: &str) -> Result<String, String> {
+pub(crate) fn map_effort_to_adaptive(
+    model: &Model,
+    view: &ModelView,
+    effort: &str,
+) -> Result<String, String> {
     require_supported_effort(model, view, effort)?;
     let mapped = view.effort_map(effort).unwrap_or(effort);
-    Ok(if mapped == "minimal" { "low".to_string() } else { mapped.to_string() })
+    Ok(if mapped == "minimal" {
+        "low".to_string()
+    } else {
+        mapped.to_string()
+    })
 }
 
-fn resolve_adaptive_effort(model: &Model, view: &ModelView, options: &AnthropicOptions) -> Result<Option<String>, String> {
+fn resolve_adaptive_effort(
+    model: &Model,
+    view: &ModelView,
+    options: &AnthropicOptions,
+) -> Result<Option<String>, String> {
     if let Some(effort) = options.effort {
-        return Ok(Some(if uses_adaptive_thinking_tag_only(view) { "adaptive".into() } else { effort.as_str().into() }));
+        return Ok(Some(if uses_adaptive_thinking_tag_only(view) {
+            "adaptive".into()
+        } else {
+            effort.as_str().into()
+        }));
     }
-    let Some(requested) = options.reasoning else { return Ok(None) };
+    let Some(requested) = options.reasoning else {
+        return Ok(None);
+    };
     map_effort_to_adaptive(model, view, requested.wire_name()).map(Some)
 }
 
 fn budget_thinking_output(max_tokens: Option<u64>, budget: u64, max_allowed: u64) -> (u64, i64) {
     let current = max_tokens.unwrap_or(max_allowed).min(max_allowed);
-    let raised = current.max(budget + OUTPUT_FALLBACK_BUFFER).min(max_allowed);
+    let raised = current
+        .max(budget + OUTPUT_FALLBACK_BUFFER)
+        .min(max_allowed);
     let new_budget = (budget as i64).min(raised as i64 - OUTPUT_FALLBACK_BUFFER as i64);
     (raised, new_budget)
 }
@@ -959,7 +1180,10 @@ fn budget_thinking_output(max_tokens: Option<u64>, budget: u64, max_allowed: u64
 fn apply_cache_control_to_last_block(blocks: &mut [Value], cache_control: &Value) -> bool {
     for block in blocks.iter_mut().rev() {
         let ty = block["type"].as_str().unwrap_or("");
-        if matches!(ty, "thinking" | "redacted_thinking" | "fallback" | "tool_addition" | "tool_removal") {
+        if matches!(
+            ty,
+            "thinking" | "redacted_thinking" | "fallback" | "tool_addition" | "tool_removal"
+        ) {
             continue;
         }
         if block.get("cache_control").is_some_and(|c| !c.is_null()) {
@@ -975,7 +1199,8 @@ fn apply_cache_control_to_message(message: &mut Value, cache_control: &Value) ->
     match message.get_mut("content") {
         Some(Value::String(text)) => {
             let t = std::mem::take(text);
-            message["content"] = json!([{ "type": "text", "text": t, "cache_control": cache_control }]);
+            message["content"] =
+                json!([{ "type": "text", "text": t, "cache_control": cache_control }]);
             true
         }
         Some(Value::Array(blocks)) => apply_cache_control_to_last_block(blocks, cache_control),
@@ -992,16 +1217,15 @@ fn is_slots_message(p: &Param) -> bool {
     }
     match &p.value["content"] {
         Value::String(t) => t.starts_with(SLOTS_MARKER),
-        Value::Array(b) => b.first().and_then(|b| b["text"].as_str()).is_some_and(|t| t.starts_with(SLOTS_MARKER)),
+        Value::Array(b) => b
+            .first()
+            .and_then(|b| b["text"].as_str())
+            .is_some_and(|t| t.starts_with(SLOTS_MARKER)),
         _ => false,
     }
 }
 
-fn apply_prompt_caching(
-    messages: &mut [Param],
-    head_breakpoints: usize,
-    cache_control: &Value,
-) {
+fn apply_prompt_caching(messages: &mut [Param], head_breakpoints: usize, cache_control: &Value) {
     let budget = MAX_BREAKPOINTS.saturating_sub(head_breakpoints);
     if budget == 0 || messages.is_empty() {
         return;
@@ -1013,7 +1237,11 @@ fn apply_prompt_caching(
         && !trailing.conversational
         && trailing_index > 0
         && messages[trailing_index - 1].role() == "assistant";
-    let message_end = if has_pad { trailing_index - 1 } else { trailing_index };
+    let message_end = if has_pad {
+        trailing_index - 1
+    } else {
+        trailing_index
+    };
 
     let mut stable_user_turns = 0usize;
     let mut trailing_candidates: Vec<usize> = Vec::new();
@@ -1028,14 +1256,17 @@ fn apply_prompt_caching(
     let stable_message_end = message_end as i64;
     let mut applied = 0usize;
     if let Some(&first) = trailing_candidates.first() {
-        if applied < budget && apply_cache_control_to_message(&mut messages[first].value, cache_control) {
+        if applied < budget
+            && apply_cache_control_to_message(&mut messages[first].value, cache_control)
+        {
             applied += 1;
         }
     }
     // CLM slot region (rs-only; the marker never occurs on TS wire bodies): keep a breakpoint on
     // the slots message so prefix + unchanged slots stay cached while the tail churns.
     if let Some(slots) = messages[..=message_end].iter().rposition(is_slots_message) {
-        if applied < budget && Some(slots) != trailing_candidates.first().copied()
+        if applied < budget
+            && Some(slots) != trailing_candidates.first().copied()
             && apply_cache_control_to_message(&mut messages[slots].value, cache_control)
         {
             applied += 1;
@@ -1072,9 +1303,17 @@ fn apply_prompt_caching(
 
 const VOLATILE_SYSTEM_MARKERS: [&str; 2] = ["<memories>", "<project-context>"];
 
-fn apply_head_caching(system: &mut Option<Vec<Value>>, tools: &mut Option<Vec<Value>>, cache_control: &Value) {
+fn apply_head_caching(
+    system: &mut Option<Vec<Value>>,
+    tools: &mut Option<Vec<Value>>,
+    cache_control: &Value,
+) {
     if let Some(tools) = tools {
-        if !tools.is_empty() && !tools.iter().any(|t| t.get("cache_control").is_some_and(|c| !c.is_null())) {
+        if !tools.is_empty()
+            && !tools
+                .iter()
+                .any(|t| t.get("cache_control").is_some_and(|c| !c.is_null()))
+        {
             for tool in tools.iter_mut().rev() {
                 if tool.get("defer_loading").is_some_and(|d| d == true) {
                     continue;
@@ -1095,8 +1334,15 @@ fn apply_head_caching(system: &mut Option<Vec<Value>>, tools: &mut Option<Vec<Va
                 VOLATILE_SYSTEM_MARKERS.iter().any(|m| text.starts_with(m))
             })
             .unwrap_or(system.len());
-        let anchor = if suffix_start == 0 { system.len() - 1 } else { suffix_start - 1 };
-        if system[anchor].get("cache_control").map_or(true, Value::is_null) {
+        let anchor = if suffix_start == 0 {
+            system.len() - 1
+        } else {
+            suffix_start - 1
+        };
+        if system[anchor]
+            .get("cache_control")
+            .map_or(true, Value::is_null)
+        {
             for block in system.iter_mut() {
                 if let Some(o) = block.as_object_mut() {
                     o.shift_remove("cache_control");
@@ -1121,18 +1367,29 @@ pub(crate) struct BodyInput<'a> {
 /// The request body TS `buildParams` produces (after `onPayload`-free post-processing).
 #[allow(clippy::too_many_lines)]
 pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
-    let BodyInput { model, view, context, is_oauth, options } = *input;
+    let BodyInput {
+        model,
+        view,
+        context,
+        is_oauth,
+        options,
+    } = *input;
     let base = &options.base;
     let cache_control = cache_control_value(view, base.cache_retention, is_oauth);
 
     // System blocks.
-    let inject_cc = is_oauth && view.compat.get("injectClaudeCodeInstruction") != Some(&Value::Bool(false));
+    let inject_cc =
+        is_oauth && view.compat.get("injectClaudeCodeInstruction") != Some(&Value::Bool(false));
     let prompts = normalize_system_prompts(context.system_prompt.as_deref());
-    let has_billing_header = prompts.iter().any(|p| p.starts_with(CLAUDE_BILLING_HEADER_PREFIX));
+    let has_billing_header = prompts
+        .iter()
+        .any(|p| p.starts_with(CLAUDE_BILLING_HEADER_PREFIX));
     let mut system: Option<Vec<Value>> = if inject_cc && !has_billing_header {
         let first_user = first_user_message_text(&context.messages);
         let mut identity = text_block(CLAUDE_CODE_SYSTEM_INSTRUCTION);
-        identity["cache_control"] = cache_control.clone().unwrap_or_else(|| json!({ "type": "ephemeral" }));
+        identity["cache_control"] = cache_control
+            .clone()
+            .unwrap_or_else(|| json!({ "type": "ephemeral" }));
         let mut blocks = vec![text_block(&billing_header(&first_user)), identity];
         blocks.extend(prompts.iter().map(|p| text_block(p)));
         Some(blocks)
@@ -1157,16 +1414,27 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
 
     // Metadata.
     let metadata_str = |key: &str| -> Option<String> {
-        base.metadata.as_ref()?.get(key)?.as_str().filter(|s| !s.is_empty()).map(str::to_string)
+        base.metadata
+            .as_ref()?
+            .get(key)?
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
     };
-    let account_id = metadata_str("account_uuid").or_else(|| metadata_str("accountId")).or_else(|| metadata_str("account_id"));
+    let account_id = metadata_str("account_uuid")
+        .or_else(|| metadata_str("accountId"))
+        .or_else(|| metadata_str("account_id"));
     let user_id_source = metadata_str("user_id").or_else(|| {
         (model.provider == "kimi-code")
             .then(|| prompt_cache_key(base.session_id.as_deref(), base.cache_retention))
             .flatten()
     });
-    let metadata_user_id =
-        resolve_metadata_user_id(user_id_source.as_deref(), is_oauth, base.session_id.as_deref(), account_id.as_deref());
+    let metadata_user_id = resolve_metadata_user_id(
+        user_id_source.as_deref(),
+        is_oauth,
+        base.session_id.as_deref(),
+        account_id.as_deref(),
+    );
 
     // Thinking + output_config effort.
     let mut thinking: Option<Value> = None;
@@ -1182,7 +1450,9 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
                 thinking = Some(if dt == "adaptive" {
                     let mut t = json!({ "type": "adaptive" });
                     if view.thinking_flag("supportsDisplay") == Some(true) {
-                        t["display"] = json!(options.thinking_display.map_or("summarized", |d| d.as_str()));
+                        t["display"] = json!(options
+                            .thinking_display
+                            .map_or("summarized", |d| d.as_str()));
                     }
                     t
                 } else {
@@ -1195,7 +1465,9 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
             if !uses_budget_thinking(view) {
                 let mut t = json!({ "type": "adaptive" });
                 if view.thinking_flag("supportsDisplay") == Some(true) {
-                    t["display"] = json!(options.thinking_display.map_or("summarized", |d| d.as_str()));
+                    t["display"] = json!(options
+                        .thinking_display
+                        .map_or("summarized", |d| d.as_str()));
                 }
                 thinking = Some(t);
                 if let Some(e) = effort.filter(|e| e != "adaptive") {
@@ -1207,7 +1479,9 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
                     "budget_tokens": options.thinking_budget_tokens.filter(|b| *b > 0).unwrap_or(1024),
                 });
                 if view.thinking_flag("supportsDisplay") != Some(false) {
-                    t["display"] = json!(options.thinking_display.map_or("summarized", |d| d.as_str()));
+                    t["display"] = json!(options
+                        .thinking_display
+                        .map_or("summarized", |d| d.as_str()));
                 }
                 thinking = Some(t);
                 if mode == Some("anthropic-budget-effort") {
@@ -1228,12 +1502,14 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
         }
     }
 
-    let prefix_mismatch = (view.thinking_flag("prefixBinding") == Some(true) && view.is("supportsThinkingBindingControls"))
-        .then_some("drop_block");
+    let prefix_mismatch = (view.thinking_flag("prefixBinding") == Some(true)
+        && view.is("supportsThinkingBindingControls"))
+    .then_some("drop_block");
     if let Some(behavior) = prefix_mismatch {
         if thinking.is_none()
             && view.thinking_str("mode") == Some("anthropic-adaptive")
-            && !(options.thinking_enabled == Some(false) && view.compat_str("disabledThinking") == Some("omit"))
+            && !(options.thinking_enabled == Some(false)
+                && view.compat_str("disabledThinking") == Some("omit"))
         {
             thinking = Some(json!({ "type": "adaptive" }));
         }
@@ -1245,29 +1521,40 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
     }
 
     // `between_tools` rejects xhigh/max effort.
-    if thinking.as_ref().is_some_and(|t| t["type"] == "between_tools")
+    if thinking
+        .as_ref()
+        .is_some_and(|t| t["type"] == "between_tools")
         && matches!(output_effort.as_deref(), Some("xhigh" | "max"))
     {
         thinking = None;
     }
 
     // Context management.
-    let thinking_type = thinking.as_ref().and_then(|t| t["type"].as_str()).map(str::to_string);
+    let thinking_type = thinking
+        .as_ref()
+        .and_then(|t| t["type"].as_str())
+        .map(str::to_string);
     let keep_thinking_context = view.not_false("supportsContextManagement")
         && !is_vertex_raw_predict(&model.base_url)
         && matches!(thinking_type.as_deref(), Some("adaptive" | "enabled"));
-    let context_management =
-        keep_thinking_context.then(|| json!({ "edits": [{ "type": "clear_thinking_20251015", "keep": "all" }] }));
+    let context_management = keep_thinking_context
+        .then(|| json!({ "edits": [{ "type": "clear_thinking_20251015", "keep": "all" }] }));
 
     // Messages.
-    let transformed = transform_messages(&context.messages, model, view, &|id, _, _| Some(normalize_tool_call_id(id)));
+    let transformed = transform_messages(&context.messages, model, view, &|id, _, _| {
+        Some(normalize_tool_call_id(id))
+    });
     let mut wire_messages = convert_messages(view, model, &transformed, is_oauth);
 
     if let Some(cc) = &cache_control {
         apply_head_caching(&mut system, &mut tools, cc);
     }
 
-    let max_output = if model.max_tokens == 0 { UNKNOWN_MODEL_MAX_OUTPUT_TOKENS } else { model.max_tokens };
+    let max_output = if model.max_tokens == 0 {
+        UNKNOWN_MODEL_MAX_OUTPUT_TOKENS
+    } else {
+        model.max_tokens
+    };
     let mut output_config = Map::new();
     if let Some(effort) = &output_effort {
         if view.is("supportsOutputEffort") {
@@ -1278,11 +1565,23 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
     let mut params = Map::new();
     params.insert(
         "model".into(),
-        json!(options.request_model_id.clone().or_else(|| model.request_model_id.clone()).unwrap_or_else(|| model.id.clone())),
+        json!(options
+            .request_model_id
+            .clone()
+            .or_else(|| model.request_model_id.clone())
+            .unwrap_or_else(|| model.id.clone())),
     );
     let head_breakpoints = {
-        let sys = system.as_ref().map_or(0, |s| s.iter().filter(|b| b.get("cache_control").is_some_and(|c| !c.is_null())).count());
-        let tl = tools.as_ref().map_or(0, |t| t.iter().filter(|b| b.get("cache_control").is_some_and(|c| !c.is_null())).count());
+        let sys = system.as_ref().map_or(0, |s| {
+            s.iter()
+                .filter(|b| b.get("cache_control").is_some_and(|c| !c.is_null()))
+                .count()
+        });
+        let tl = tools.as_ref().map_or(0, |t| {
+            t.iter()
+                .filter(|b| b.get("cache_control").is_some_and(|c| !c.is_null()))
+                .count()
+        });
         sys + tl
     };
     // `messages` is finalized after the tail-caching pass below; reserve its slot now.
@@ -1296,7 +1595,10 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
     if let Some(user_id) = metadata_user_id {
         params.insert("metadata".into(), json!({ "user_id": user_id }));
     }
-    params.insert("max_tokens".into(), json!(max_output.min(base.max_tokens.unwrap_or(max_output))));
+    params.insert(
+        "max_tokens".into(),
+        json!(max_output.min(base.max_tokens.unwrap_or(max_output))),
+    );
     if let Some(t) = &thinking {
         params.insert("thinking".into(), t.clone());
     }
@@ -1308,14 +1610,15 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
     }
     params.insert("stream".into(), json!(true));
 
-    let allow_sampling =
-        view.is("supportsSamplingParams") && matches!(thinking_type.as_deref(), None | Some("disabled"));
+    let allow_sampling = view.is("supportsSamplingParams")
+        && matches!(thinking_type.as_deref(), None | Some("disabled"));
     if allow_sampling {
         if let Some(t) = base.temperature {
             params.insert("temperature".into(), json!(t));
         }
     }
-    let fast = view.is("fastMode") || (model.provider == "anthropic" && base.service_tier == Some(ServiceTier::Priority));
+    let fast = view.is("fastMode")
+        || (model.provider == "anthropic" && base.service_tier == Some(ServiceTier::Priority));
     if fast {
         params.insert("speed".into(), json!("fast"));
     }
@@ -1333,7 +1636,9 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
             C::Tool { .. } => None,
         };
         if let Some(t) = &tc {
-            if matches!(t["type"].as_str(), Some("any" | "tool")) && !view.is("supportsForcedToolChoice") {
+            if matches!(t["type"].as_str(), Some("any" | "tool"))
+                && !view.is("supportsForcedToolChoice")
+            {
                 tc = Some(json!({ "type": "auto" }));
             }
         }
@@ -1343,11 +1648,18 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
     }
 
     // disableThinkingIfToolChoiceForced
-    if params.get("tool_choice").is_some_and(|t| matches!(t["type"].as_str(), Some("any" | "tool"))) {
+    if params
+        .get("tool_choice")
+        .is_some_and(|t| matches!(t["type"].as_str(), Some("any" | "tool")))
+    {
         params.shift_remove("thinking");
         params.shift_remove("context_management");
         if is_adaptive_only_thinking(view) && view.is("supportsOutputEffort") {
-            let mut oc = params.get("output_config").and_then(Value::as_object).cloned().unwrap_or_default();
+            let mut oc = params
+                .get("output_config")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             oc.insert("effort".into(), json!("low"));
             params.insert("output_config".into(), Value::Object(oc));
         } else if let Some(Value::Object(oc)) = params.get_mut("output_config") {
@@ -1383,13 +1695,18 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
     if let Some(cc) = &cache_control {
         apply_prompt_caching(&mut wire_messages, head_breakpoints, cc);
     }
-    params.insert("messages".into(), Value::Array(wire_messages.into_iter().map(|p| p.value).collect()));
+    params.insert(
+        "messages".into(),
+        Value::Array(wire_messages.into_iter().map(|p| p.value).collect()),
+    );
     Ok(Value::Object(params))
 }
 
 fn first_user_message_text(messages: &[Message]) -> String {
     for message in messages {
-        let (Message::User(user) | Message::Developer(user)) = message else { continue };
+        let (Message::User(user) | Message::Developer(user)) = message else {
+            continue;
+        };
         match &user.content {
             UserMessageContent::Text(t) => {
                 if !t.trim().is_empty() {
@@ -1404,7 +1721,10 @@ fn first_user_message_text(messages: &[Message]) -> String {
                         }
                     }
                 }
-                if blocks.iter().any(|b| matches!(b, UserOrToolContent::Image(_))) {
+                if blocks
+                    .iter()
+                    .any(|b| matches!(b, UserOrToolContent::Image(_)))
+                {
                     return String::new();
                 }
             }
@@ -1419,7 +1739,10 @@ fn is_vertex_raw_predict(url: &str) -> bool {
 }
 
 /// TS `getOpenAIPromptCacheKey` (cache identity → 64-char wire limit).
-pub(crate) fn prompt_cache_key(session_id: Option<&str>, retention: Option<CacheRetention>) -> Option<String> {
+pub(crate) fn prompt_cache_key(
+    session_id: Option<&str>,
+    retention: Option<CacheRetention>,
+) -> Option<String> {
     if resolve_retention(retention, CacheRetention::Short) == CacheRetention::None {
         return None;
     }
@@ -1432,7 +1755,10 @@ mod slots_cache_tests {
     use super::*;
 
     fn p(role: &str, text: &str, conversational: bool) -> Param {
-        Param { value: json!({ "role": role, "content": text }), conversational }
+        Param {
+            value: json!({ "role": role, "content": text }),
+            conversational,
+        }
     }
 
     fn marked(m: &[Param]) -> Vec<usize> {
@@ -1461,8 +1787,16 @@ mod slots_cache_tests {
     #[test]
     fn without_marker_layout_is_unchanged() {
         let cc = json!({ "type": "ephemeral" });
-        let mut m = vec![p("user", "task", true), p("assistant", "a1", false), p("user", "u1", true)];
+        let mut m = vec![
+            p("user", "task", true),
+            p("assistant", "a1", false),
+            p("user", "u1", true),
+        ];
         apply_prompt_caching(&mut m, 2, &cc);
-        assert_eq!(marked(&m), vec![1, 2], "the two trailing messages, as in TS");
+        assert_eq!(
+            marked(&m),
+            vec![1, 2],
+            "the two trailing messages, as in TS"
+        );
     }
 }

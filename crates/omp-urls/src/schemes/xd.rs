@@ -116,7 +116,10 @@ mod tests {
     fn parse_device_matches_ts() {
         assert_eq!(parse_xd_url("xd://"), Some(None));
         assert_eq!(parse_xd_url("xd://read"), Some(Some("read".to_string())));
-        assert_eq!(parse_xd_url(" xd://read \n"), Some(Some("read".to_string())));
+        assert_eq!(
+            parse_xd_url(" xd://read \n"),
+            Some(Some("read".to_string()))
+        );
         assert_eq!(parse_xd_url("xd://read/extra"), None);
         assert_eq!(parse_xd_url("local://read"), None);
     }

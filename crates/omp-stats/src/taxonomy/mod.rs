@@ -13,8 +13,10 @@ mod tests;
 
 pub use classify::{classify_model, ClassifyOptions, ModelIdentity};
 pub use collapse::{
-	billing_variant_plain, collapse_variant_id, recovers_canonical_params, strip_effort_lane,
-	strip_thinking_variant_suffix, CollapsedVariant,
+    billing_variant_plain, collapse_variant_id, recovers_canonical_params, strip_effort_lane,
+    strip_thinking_variant_suffix, CollapsedVariant,
 };
-pub use revision::{compare_revision, format_revision, parse_revision, parse_revision_prefix, Revision};
+pub use revision::{
+    compare_revision, format_revision, parse_revision, parse_revision_prefix, Revision,
+};
 pub use rules::Effort;

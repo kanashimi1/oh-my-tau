@@ -70,7 +70,12 @@ pub(crate) fn update_user_message_links_conn(
     )?;
     let mut updated = 0usize;
     for link in links {
-        updated += stmt.execute(rusqlite::params![link.model, link.provider, link.session_file, link.entry_id])?;
+        updated += stmt.execute(rusqlite::params![
+            link.model,
+            link.provider,
+            link.session_file,
+            link.entry_id
+        ])?;
     }
     Ok(updated)
 }

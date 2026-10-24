@@ -17,8 +17,9 @@ use ratatui::style::Color;
 
 pub mod loader;
 pub use loader::{
-    appearance_from_colorfgbg, appearance_of, available_themes, custom_themes_dir, detect_appearance,
-    load, load_configured, theme_name_for, Appearance, LoadedTheme, Rgb, ThemeError, ThemeInfo,
+    appearance_from_colorfgbg, appearance_of, available_themes, custom_themes_dir,
+    detect_appearance, load, load_configured, theme_name_for, Appearance, LoadedTheme, Rgb,
+    ThemeError, ThemeInfo,
 };
 
 /// One resolvable style value.

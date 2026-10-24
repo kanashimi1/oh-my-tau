@@ -315,7 +315,9 @@ mod tests {
     fn long_rows_word_wrap_inside_the_frame() {
         let lines = framed_card(
             None,
-            vec![CardSection::plain(vec![Line::from("alpha beta gamma delta")])],
+            vec![CardSection::plain(vec![Line::from(
+                "alpha beta gamma delta",
+            )])],
             15,
             Color::Reset,
         );

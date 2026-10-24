@@ -59,7 +59,13 @@ impl ServiceTier {
         Some(match raw {
             "none" => Self::None,
             "inherit" => Self::Inherit,
-            other => Self::Named(values.iter().find(|v| **v == other).copied().unwrap_or("none")),
+            other => Self::Named(
+                values
+                    .iter()
+                    .find(|v| **v == other)
+                    .copied()
+                    .unwrap_or("none"),
+            ),
         })
     }
 }
@@ -242,23 +248,22 @@ impl Settings {
     }
 }
 
-
 impl Settings {
     /// Named model presets (`modelPresets`, TS default `{}`).
     #[must_use]
     pub fn model_presets(&self) -> BTreeMap<String, ModelPreset> {
-    self.get("modelPresets")
-        .as_object()
-        .map(|obj| {
-            obj.iter()
-                .filter_map(|(k, v)| {
-                    serde_json::from_value::<ModelPreset>(v.clone())
-                        .ok()
-                        .map(|preset| (k.clone(), preset))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+        self.get("modelPresets")
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        serde_json::from_value::<ModelPreset>(v.clone())
+                            .ok()
+                            .map(|preset| (k.clone(), preset))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -369,7 +374,8 @@ impl Settings {
             "advisor" => "tier.advisor",
             _ => return None,
         };
-        self.get_string(id).and_then(|raw| ServiceTier::parse(family, &raw))
+        self.get_string(id)
+            .and_then(|raw| ServiceTier::parse(family, &raw))
     }
 }
 
@@ -386,17 +392,21 @@ impl Settings {
 /// `InvalidInput` when `id` is not a registered setting or `value` does not
 /// match its type; `Io` when the file cannot be written.
 pub fn write_global(id: &str, value: &Value) -> std::io::Result<PathBuf> {
-    let def = lookup(id)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("unknown setting: {id}")))?;
+    let def = lookup(id).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unknown setting: {id}"),
+        )
+    })?;
     let valid = match def.ty {
         crate::SettingType::Boolean => value.is_boolean(),
         crate::SettingType::Number => value.is_number(),
         crate::SettingType::String => value.is_string(),
         // An empty value list means TS derives the choices at runtime
         // (status-line presets, voices, devices): any string is accepted.
-        crate::SettingType::Enum(values) => {
-            value.as_str().is_some_and(|s| values.is_empty() || values.contains(&s))
-        }
+        crate::SettingType::Enum(values) => value
+            .as_str()
+            .is_some_and(|s| values.is_empty() || values.contains(&s)),
         crate::SettingType::Array => value.is_array(),
         crate::SettingType::Record => value.is_object(),
     };
@@ -404,12 +414,19 @@ pub fn write_global(id: &str, value: &Value) -> std::io::Result<PathBuf> {
     if !valid && !value.is_null() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("value for {id} does not match registry type {}", def.ty.ts_name()),
+            format!(
+                "value for {id} does not match registry type {}",
+                def.ty.ts_name()
+            ),
         ));
     }
 
-    let path = agent_config_path()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no agent config dir (HOME unset)"))?;
+    let path = agent_config_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no agent config dir (HOME unset)",
+        )
+    })?;
     let mut merged = load_yaml_file(&path)
         .and_then(|(_, value)| value.as_object().cloned())
         .unwrap_or_default();
@@ -421,8 +438,7 @@ pub fn write_global(id: &str, value: &Value) -> std::io::Result<PathBuf> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let yaml = serde_yaml_ng::to_string(&Value::Object(merged))
-        .map_err(std::io::Error::other)?;
+    let yaml = serde_yaml_ng::to_string(&Value::Object(merged)).map_err(std::io::Error::other)?;
     std::fs::write(&path, yaml)?;
     Ok(path)
 }
@@ -652,7 +668,8 @@ fn collect_unknown(merged: &Map<String, Value>) -> Vec<String> {
 
 /// `path` lies strictly under the dotted group `prefix` (`prefix.` + more).
 fn is_dotted_child(path: &str, prefix: &str) -> bool {
-    path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('.'))
+    path.strip_prefix(prefix)
+        .is_some_and(|rest| rest.starts_with('.'))
 }
 
 /// Setting ids plus their dotted group prefixes, and the record-typed ids;
@@ -676,7 +693,10 @@ fn known_paths() -> &'static KnownPaths {
                 records.push(def.id);
             }
         }
-        KnownPaths { ids_and_groups, records }
+        KnownPaths {
+            ids_and_groups,
+            records,
+        }
     })
 }
 
@@ -705,7 +725,8 @@ mod tests {
     struct TempHome(PathBuf);
     impl TempHome {
         fn new() -> Self {
-            let base = std::env::temp_dir().join(format!("omp-settings-test-{}", std::process::id()));
+            let base =
+                std::env::temp_dir().join(format!("omp-settings-test-{}", std::process::id()));
             std::fs::create_dir_all(&base).unwrap();
             let old = std::env::var_os("HOME");
             std::env::set_var("HOME", &base);

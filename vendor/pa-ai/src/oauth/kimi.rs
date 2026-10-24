@@ -104,7 +104,9 @@ pub async fn login_kimi(
         .get("interval")
         .and_then(serde_json::Value::as_f64)
         .filter(|seconds| seconds.is_finite())
-        .map_or(DEFAULT_POLL_INTERVAL_MS, |seconds| (seconds * 1000.0).max(0.0) as u64)
+        .map_or(DEFAULT_POLL_INTERVAL_MS, |seconds| {
+            (seconds * 1000.0).max(0.0) as u64
+        })
         .max(MIN_POLL_INTERVAL_MS);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let deadline = device
@@ -168,7 +170,9 @@ pub async fn login_kimi(
             }
         }
         let wait = Duration::from_millis(interval_ms);
-        let wait = deadline.map_or(wait, |d| wait.min(d.saturating_duration_since(Instant::now())));
+        let wait = deadline.map_or(wait, |d| {
+            wait.min(d.saturating_duration_since(Instant::now()))
+        });
         if wait.is_zero() {
             break;
         }
@@ -305,10 +309,10 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
     use std::collections::VecDeque;
     use std::future::Future;
     use std::pin::Pin;
-    use parking_lot::Mutex;
 
     use super::super::provider_http::ProviderHttpResponse;
     use super::super::types::OAuthPrompt;
@@ -345,7 +349,8 @@ mod tests {
             &self,
             request: ProviderHttpRequest,
             _timeout_ms: u64,
-        ) -> Pin<Box<dyn Future<Output = Result<ProviderHttpResponse, String>> + Send + '_>> {
+        ) -> Pin<Box<dyn Future<Output = Result<ProviderHttpResponse, String>> + Send + '_>>
+        {
             self.seen.lock().push(request.clone());
             let next = self.queued.lock().pop_front();
             Box::pin(async move {
@@ -394,7 +399,8 @@ mod tests {
     #[tokio::test]
     async fn device_flow_polls_then_maps_credentials() {
         let access = jwt(r#"{"user_id":"u-42","sub":"s"}"#);
-        let token_ok = format!(r#"{{"access_token":"{access}","refresh_token":"r1","expires_in":3600}}"#);
+        let token_ok =
+            format!(r#"{{"access_token":"{access}","refresh_token":"r1","expires_in":3600}}"#);
         let http = Scripted::new(vec![
             (
                 "https://auth.example/api/oauth/device_authorization",
@@ -423,11 +429,18 @@ mod tests {
         assert_eq!(auth[0].1.as_deref(), Some("Enter code: ABCD-1234"));
         let seen = http.seen.lock();
         assert_eq!(seen.len(), 3);
-        assert!(seen[0].body.as_deref().unwrap().contains(&format!("client_id={KIMI_CLIENT_ID}")));
+        assert!(seen[0]
+            .body
+            .as_deref()
+            .unwrap()
+            .contains(&format!("client_id={KIMI_CLIENT_ID}")));
         let poll = seen[2].body.as_deref().unwrap();
         assert!(poll.contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"));
         assert!(poll.contains("device_code=dev1"));
-        assert!(seen.iter().all(|r| r.headers.iter().any(|(k, v)| k == "X-Msh-Platform" && v == "kimi_cli")));
+        assert!(seen.iter().all(|r| r
+            .headers
+            .iter()
+            .any(|(k, v)| k == "X-Msh-Platform" && v == "kimi_cli")));
     }
 
     #[tokio::test]
@@ -438,9 +451,15 @@ mod tests {
                 200,
                 r#"{"user_code":"A","device_code":"d","verification_uri":"https://k/v","interval":1}"#,
             ),
-            ("https://auth.example/api/oauth/token", 400, r#"{"error":"access_denied"}"#),
+            (
+                "https://auth.example/api/oauth/token",
+                400,
+                r#"{"error":"access_denied"}"#,
+            ),
         ]);
-        let err = login_kimi(&http, &Ui::default(), "https://auth.example", &[]).await.unwrap_err();
+        let err = login_kimi(&http, &Ui::default(), "https://auth.example", &[])
+            .await
+            .unwrap_err();
         assert_eq!(err, "kimi-code device authorization was denied");
 
         let http = Scripted::new(vec![(
@@ -448,15 +467,22 @@ mod tests {
             200,
             r#"{"user_code":"A"}"#,
         )]);
-        let err = login_kimi(&http, &Ui::default(), "https://auth.example", &[]).await.unwrap_err();
-        assert_eq!(err, "kimi-code device authorization response missing required fields");
+        let err = login_kimi(&http, &Ui::default(), "https://auth.example", &[])
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "kimi-code device authorization response missing required fields"
+        );
 
         let http = Scripted::new(vec![(
             "https://auth.example/api/oauth/device_authorization",
             503,
             "down",
         )]);
-        let err = login_kimi(&http, &Ui::default(), "https://auth.example", &[]).await.unwrap_err();
+        let err = login_kimi(&http, &Ui::default(), "https://auth.example", &[])
+            .await
+            .unwrap_err();
         assert_eq!(err, "kimi-code device authorization failed: 503 down");
     }
 }

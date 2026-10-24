@@ -66,7 +66,8 @@ fn pick_index(title: &str, labels: &[String]) -> Result<usize, String> {
         let _ = writeln!(out, "  {}. {label}", i + 1);
     }
     let _ = writeln!(out);
-    let choice = prompt_line(&format!("Enter number (1-{}): ", labels.len())).ok_or("Login cancelled")?;
+    let choice =
+        prompt_line(&format!("Enter number (1-{}): ", labels.len())).ok_or("Login cancelled")?;
     choice
         .trim()
         .parse::<usize>()
@@ -117,20 +118,34 @@ impl OAuthLoginUi for TermUi {
         }
     }
 
-    fn on_prompt(&self, prompt: &OAuthPrompt) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
+    fn on_prompt(
+        &self,
+        prompt: &OAuthPrompt,
+    ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + '_>> {
         let question = format!(
             "{}{}: ",
             prompt.message,
-            prompt.placeholder.as_deref().filter(|p| !p.is_empty()).map_or_else(String::new, |p| format!(" ({p})"))
+            prompt
+                .placeholder
+                .as_deref()
+                .filter(|p| !p.is_empty())
+                .map_or_else(String::new, |p| format!(" ({p})"))
         );
-        Box::pin(async move { tokio::task::spawn_blocking(move || prompt_line(&question)).await.ok().flatten() })
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || prompt_line(&question))
+                .await
+                .ok()
+                .flatten()
+        })
     }
 
     fn on_progress(&self, message: &str) {
         println!("{message}");
     }
 
-    fn on_manual_code_input(&self) -> Option<Pin<Box<dyn Future<Output = Option<String>> + Send + '_>>> {
+    fn on_manual_code_input(
+        &self,
+    ) -> Option<Pin<Box<dyn Future<Output = Option<String>> + Send + '_>>> {
         // Only paste-code providers (fixed non-loopback redirect) get a manual prompt in TS;
         // none of the ported flows are paste-code providers.
         None
@@ -183,11 +198,20 @@ pub fn run_login(args: &[String]) -> anyhow::Result<i32> {
     }
     let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
     if let Some(flag) = args.iter().find(|a| a.starts_with('-')) {
-        eprintln!("{}", red_err(&format!("Login failed: Nonexistent flag: {flag}")));
+        eprintln!(
+            "{}",
+            red_err(&format!("Login failed: Nonexistent flag: {flag}"))
+        );
         return Ok(1);
     }
     if positional.len() > 1 {
-        eprintln!("{}", red_err(&format!("Login failed: Unexpected argument: {}", positional[1])));
+        eprintln!(
+            "{}",
+            red_err(&format!(
+                "Login failed: Unexpected argument: {}",
+                positional[1]
+            ))
+        );
         return Ok(1);
     }
     let provider = positional.first().map(|p| p.as_str());
@@ -211,29 +235,47 @@ async fn login_command(provider: Option<&str>) -> Result<(), String> {
         Some(id) => id.to_string(),
         None => {
             let labels: Vec<String> = roster.iter().map(|(_, name)| (*name).to_string()).collect();
-            let index = tokio::task::spawn_blocking(move || pick_index("Select a provider:", &labels))
-                .await
-                .map_err(|e| e.to_string())??;
+            let index =
+                tokio::task::spawn_blocking(move || pick_index("Select a provider:", &labels))
+                    .await
+                    .map_err(|e| e.to_string())??;
             roster[index].0.to_string()
         }
     };
     let Some(&(id, name)) = roster.iter().find(|(id, _)| *id == provider_id) else {
-        return Err(format!("Unknown OAuth provider '{provider_id}'. Run `{APP_NAME} login` to pick one."));
+        return Err(format!(
+            "Unknown OAuth provider '{provider_id}'. Run `{APP_NAME} login` to pick one."
+        ));
     };
 
     let services = Services::production();
-    let identity = login::login(&target, id, Arc::new(TermUi { open_browser: true }), &services).await?;
+    let identity = login::login(
+        &target,
+        id,
+        Arc::new(TermUi { open_browser: true }),
+        &services,
+    )
+    .await?;
     let Some(identity) = identity else {
-        print!("{}", yellow(&format!("No credentials were stored for {name}.\n")));
+        print!(
+            "{}",
+            yellow(&format!("No credentials were stored for {name}.\n"))
+        );
         return Ok(());
     };
     // TS then re-runs that provider's model discovery so the next session sees the unlocked
     // models; discovery failures never fail the login.
     let refresh_dir = dir.clone();
     let refresh_id = providers::store_as(id).to_string();
-    let _ = tokio::task::spawn_blocking(move || omp_providers::refresh(&refresh_dir, Some(&refresh_id))).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        omp_providers::refresh(&refresh_dir, Some(&refresh_id))
+    })
+    .await;
 
-    let who = identity.describe().map(|w| format!(" as {w}")).unwrap_or_default();
+    let who = identity
+        .describe()
+        .map(|w| format!(" as {w}"))
+        .unwrap_or_default();
     print!("{}", green(&format!("\nLogged in to {name}{who}\n")));
     print!("{}", dim(&format!("{}\n", target.saved_line())));
     Ok(())
@@ -289,13 +331,18 @@ async fn logout_command(provider: Option<&str>) -> Result<(), String> {
                 return Ok(());
             }
             let labels = stored.clone();
-            let index = tokio::task::spawn_blocking(move || pick_index("Select a provider to logout:", &labels))
-                .await
-                .map_err(|e| e.to_string())??;
+            let index = tokio::task::spawn_blocking(move || {
+                pick_index("Select a provider to logout:", &labels)
+            })
+            .await
+            .map_err(|e| e.to_string())??;
             stored[index].clone()
         }
     };
-    target.logout_provider(&provider_id, "logged out by user").await.map_err(|e| format!("{e:#}"))?;
+    target
+        .logout_provider(&provider_id, "logged out by user")
+        .await
+        .map_err(|e| format!("{e:#}"))?;
     println!("Logged out of {provider_id}");
     Ok(())
 }

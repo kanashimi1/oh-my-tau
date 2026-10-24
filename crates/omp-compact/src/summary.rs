@@ -19,7 +19,9 @@ use serde_json::{json, Value};
 
 use crate::convert::{convert_message_cow, convert_to_llm};
 use crate::cut::CompactionPreparation;
-use crate::dialect::{serialize_conversation_for_summary, serialize_conversation_for_summary_refs, Dialect};
+use crate::dialect::{
+    serialize_conversation_for_summary, serialize_conversation_for_summary_refs, Dialect,
+};
 use crate::files::{compute_file_lists, upsert_file_operations};
 use crate::prompts;
 use crate::serialize::{escape_summary_boundary_tags, utf16_len, utf16_prefix};

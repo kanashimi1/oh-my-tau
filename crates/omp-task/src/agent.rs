@@ -168,8 +168,8 @@ fn split_frontmatter(content: &str) -> Result<(Value, String), String> {
         return Err("unterminated frontmatter: no closing '---'".to_string());
     }
     let yaml_src = yaml_lines.join("\n");
-    let frontmatter: Value = serde_yaml_ng::from_str(&yaml_src)
-        .map_err(|e| format!("invalid YAML frontmatter: {e}"))?;
+    let frontmatter: Value =
+        serde_yaml_ng::from_str(&yaml_src).map_err(|e| format!("invalid YAML frontmatter: {e}"))?;
     let mut body = lines.collect::<Vec<_>>().join("\n");
     while body.starts_with('\n') {
         body.remove(0);
@@ -187,7 +187,11 @@ fn parse_array_or_csv(value: Option<&Value>) -> Option<Vec<String>> {
                 .iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
                 .collect();
-            if out.is_empty() { None } else { Some(out) }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
         }
         Value::String(s) => {
             let out: Vec<String> = s
@@ -196,7 +200,11 @@ fn parse_array_or_csv(value: Option<&Value>) -> Option<Vec<String>> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .collect();
-            if out.is_empty() { None } else { Some(out) }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
         }
         _ => None,
     }
@@ -243,7 +251,11 @@ fn parse_agent_fields(frontmatter: &Value) -> Option<ParsedAgentFields> {
         }
         Some(_) => None,
     };
-    if spawns.is_none() && tools.as_ref().is_some_and(|t| t.contains(&"task".to_string())) {
+    if spawns.is_none()
+        && tools
+            .as_ref()
+            .is_some_and(|t| t.contains(&"task".to_string()))
+    {
         // Backward compat: tools includes "task" implies unrestricted spawns.
         spawns = Some(Spawns::All);
     }
@@ -312,8 +324,10 @@ pub fn parse_agent(
     source: AgentSource,
 ) -> Result<AgentDefinition, AgentParseError> {
     let file_path = file_path.into();
-    let (frontmatter, body) = split_frontmatter(content)
-        .map_err(|message| AgentParseError { file_path: file_path.clone(), message })?;
+    let (frontmatter, body) = split_frontmatter(content).map_err(|message| AgentParseError {
+        file_path: file_path.clone(),
+        message,
+    })?;
     let fields = parse_agent_fields(&frontmatter).ok_or_else(|| AgentParseError {
         file_path: file_path.clone(),
         message: "invalid agent fields: `name` and `description` are required, and the \
@@ -350,9 +364,22 @@ You are an implementation agent.
     fn parses_full_frontmatter() {
         let def = parse_agent("glm.md", SAMPLE, AgentSource::User).unwrap();
         assert_eq!(def.fields.name, "glm-flash-coder");
-        assert_eq!(def.fields.description, "Implementation agent on the direct zai subscription.");
-        assert_eq!(def.fields.tools, Some(vec!["read".to_string(), "grep".to_string(), "yield".to_string()]));
-        assert_eq!(def.fields.model, Some(vec!["zai/glm-5.3-flash".to_string()]));
+        assert_eq!(
+            def.fields.description,
+            "Implementation agent on the direct zai subscription."
+        );
+        assert_eq!(
+            def.fields.tools,
+            Some(vec![
+                "read".to_string(),
+                "grep".to_string(),
+                "yield".to_string()
+            ])
+        );
+        assert_eq!(
+            def.fields.model,
+            Some(vec!["zai/glm-5.3-flash".to_string()])
+        );
         assert_eq!(def.fields.thinking_level, Some(ThinkingLevel::Low));
         assert_eq!(def.fields.thinking_level.unwrap().effort(), "lo");
         assert_eq!(def.system_prompt, "You are an implementation agent.");
@@ -366,7 +393,10 @@ You are an implementation agent.
             AgentSource::User,
         )
         .unwrap();
-        assert_eq!(def.fields.tools, Some(vec!["read".to_string(), "yield".to_string()]));
+        assert_eq!(
+            def.fields.tools,
+            Some(vec!["read".to_string(), "yield".to_string()])
+        );
     }
 
     #[test]
@@ -390,7 +420,14 @@ You are an implementation agent.
             AgentSource::User,
         )
         .unwrap();
-        assert_eq!(def.fields.tools, Some(vec!["read".to_string(), "grep".to_string(), "yield".to_string()]));
+        assert_eq!(
+            def.fields.tools,
+            Some(vec![
+                "read".to_string(),
+                "grep".to_string(),
+                "yield".to_string()
+            ])
+        );
         assert_eq!(
             def.fields.model,
             Some(vec!["zai/glm-5.3-flash".to_string(), "kimi/k2".to_string()])
@@ -425,7 +462,10 @@ You are an implementation agent.
         .unwrap();
         assert_eq!(
             list.fields.spawns,
-            Some(Spawns::Agents(vec!["scout-glm".to_string(), "scout-kimi".to_string()]))
+            Some(Spawns::Agents(vec![
+                "scout-glm".to_string(),
+                "scout-kimi".to_string()
+            ]))
         );
     }
 
@@ -458,7 +498,12 @@ You are an implementation agent.
         assert!(parse_agent("a.md", "---\nname: a\n---\n", AgentSource::User).is_err());
         assert!(parse_agent("a.md", "---\ndescription: d\n---\n", AgentSource::User).is_err());
         assert!(parse_agent("a.md", "no frontmatter at all\n", AgentSource::User).is_err());
-        assert!(parse_agent("a.md", "---\nname: [broken\ndescription: d\n", AgentSource::User).is_err());
+        assert!(parse_agent(
+            "a.md",
+            "---\nname: [broken\ndescription: d\n",
+            AgentSource::User
+        )
+        .is_err());
     }
 
     #[test]

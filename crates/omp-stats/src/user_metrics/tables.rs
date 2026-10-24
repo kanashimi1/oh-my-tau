@@ -72,19 +72,19 @@ pub(super) fn profanity_pattern() -> String {
 /// to avoid hex / base64 contamination via the surrounding `\b` plus
 /// letter-only alternatives.
 pub(super) const ANGUISH_PATTERNS: &[&str] = &[
-    "no{3,}",   // nooo, noooooo
-    "a+h{2,}",  // ahh, aaaahhh
-    "u+r?g+h+", // ugh, ughh, urgh, uuugh
-    "a+r+g+h+", // argh, aaargh, arrgghhh
-    "g+r{2,}",  // grr, grrrr
-    "st+o{3,}p+", // stooop, sttooopp
-    "w+h+y{3,}",  // whyyy, whyyyyy
+    "no{3,}",      // nooo, noooooo
+    "a+h{2,}",     // ahh, aaaahhh
+    "u+r?g+h+",    // ugh, ughh, urgh, uuugh
+    "a+r+g+h+",    // argh, aaargh, arrgghhh
+    "g+r{2,}",     // grr, grrrr
+    "st+o{3,}p+",  // stooop, sttooopp
+    "w+h+y{3,}",   // whyyy, whyyyyy
     "f+u{3,}c*k*", // fuuu, fuuuck
-    "wtf{3,}",    // wtfff
-    "o+m+g{2,}",  // omgg, omggg
-    "ye+s{3,}",   // yesss, yeessss
-    "g+o+d{3,}",  // goddd, goddddd
-    "br+u+h{2,}", // bruhh, bruuuhh
+    "wtf{3,}",     // wtfff
+    "o+m+g{2,}",   // omgg, omggg
+    "ye+s{3,}",    // yesss, yeessss
+    "g+o+d{3,}",   // goddd, goddddd
+    "br+u+h{2,}",  // bruhh, bruuuhh
 ];
 
 /// `\b(?:no{3,}|a+h{2,}|...)\b` - the elongated-interjection match.

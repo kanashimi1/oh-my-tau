@@ -85,7 +85,6 @@ impl KillRing {
     pub fn end_pop(&mut self) {
         self.rotate_index = None;
     }
-
 }
 
 #[cfg(test)]

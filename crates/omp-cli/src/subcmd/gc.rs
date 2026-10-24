@@ -60,7 +60,11 @@ fn parse_options(args: &[String]) -> Result<(Options, PathBuf)> {
         match arg.as_str() {
             "--apply" => opts.apply = true,
             "--json" => opts.json = true,
-            "--agent-dir" => agent_dir = Some(PathBuf::from(it.next().context("--agent-dir needs a value")?)),
+            "--agent-dir" => {
+                agent_dir = Some(PathBuf::from(
+                    it.next().context("--agent-dir needs a value")?,
+                ))
+            }
             "--cold-archive-after-days" => {
                 opts.cold_after = Duration::from_secs(u64::try_from(number(arg)?)? * 86_400);
             }
@@ -174,7 +178,10 @@ pub fn run(args: &[String]) -> Result<i32> {
             println!("session errors: {n_errors}");
         }
         if !opts.apply && would_archive > 0 {
-            println!("\nrerun with --apply to gzip + move these into {}", archive_root.display());
+            println!(
+                "\nrerun with --apply to gzip + move these into {}",
+                archive_root.display()
+            );
         }
     }
     Ok(0)
@@ -192,7 +199,9 @@ fn scan_sessions(root: &Path) -> Vec<SessionFile> {
         };
         for entry in rd.filter_map(std::result::Result::ok) {
             let path = entry.path();
-            let Ok(file_type) = entry.file_type() else { continue };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if file_type.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "jsonl") {
@@ -323,7 +332,8 @@ mod tests {
     /// live: `gc --apply` must not archive it, and a closed file passes.
     #[test]
     fn held_open_file_is_treated_as_live() {
-        let file = std::env::temp_dir().join(format!("omp-rs-gc-live-{}-{}", std::process::id(), "x"));
+        let file =
+            std::env::temp_dir().join(format!("omp-rs-gc-live-{}-{}", std::process::id(), "x"));
         std::fs::write(&file, "x").unwrap();
         let open = fs::File::open(&file).unwrap();
         assert!(held_open_elsewhere(&file), "open fd must read as live");

@@ -14,24 +14,24 @@ mod eval;
 pub(crate) mod eval_agents;
 pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;
-pub(crate) mod rlm;
-pub(crate) mod rlm_combinators;
 mod find;
 mod jobs;
 pub mod mcp;
 mod read;
 pub(crate) mod relevance;
+pub(crate) mod rlm;
+pub(crate) mod rlm_combinators;
 mod search;
 mod task;
 mod todo;
 pub use todo::{phases_from_entries, Status, TodoItem, TodoPhase, TodoTool};
+mod goal;
+mod lsp;
+mod think;
 mod tree;
 mod util;
-mod lsp;
-mod web_search;
-mod goal;
-mod think;
 mod wait;
+mod web_search;
 mod yield_tool;
 
 use std::path::{Path, PathBuf};
@@ -53,18 +53,26 @@ static SESSION_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mu
 /// capture right after (before anything else builds a throwaway set).
 #[must_use]
 pub fn take_last_jobs() -> Option<jobs::JobRegistry> {
-    LAST_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    LAST_JOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// Publish the agent session's job registry (`ctx.getAsyncJobSnapshot()`).
 pub fn set_session_jobs(jobs: Option<jobs::JobRegistry>) {
-    *SESSION_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = jobs;
+    *SESSION_JOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = jobs;
 }
 
 /// The agent session's job registry, once published.
 #[must_use]
 pub fn session_jobs() -> Option<jobs::JobRegistry> {
-    SESSION_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    SESSION_JOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// Per-session state shared by the tools: working directory, the hashline
@@ -188,7 +196,9 @@ const FIND_DESCRIPTION: &str = "Describe behavior, get implementing files and li
 #[allow(clippy::too_many_lines)] // the tool registry table; order mirrors omp's builtinTools
 pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>> {
     let env = Arc::new(Env::with_mode(cwd, edit_mode));
-    *LAST_JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(env.jobs.clone());
+    *LAST_JOBS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(env.jobs.clone());
     let mk = |name: &'static str,
               description: String,
               schema: Value,
@@ -381,7 +391,7 @@ pub fn hidden_tool_by_name(name: &str) -> Option<Arc<dyn AgentTool>> {
     }
 }
 
-pub use ask::{AskUi, SelectOption, tool_with_ui};
+pub use ask::{tool_with_ui, AskUi, SelectOption};
 
 #[cfg(test)]
 mod tests {
@@ -421,7 +431,10 @@ mod tests {
         }
         let custom = names("lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\nfind:\n  enabled: \"off\"\n");
         assert!(!custom.iter().any(|n| n == "lsp" || n == "find"));
-        assert!(defaults.iter().any(|n| n == "find"), "find.enabled auto keeps find");
+        assert!(
+            defaults.iter().any(|n| n == "find"),
+            "find.enabled auto keeps find"
+        );
         for on in ["ast_grep", "checkpoint", "rewind"] {
             assert!(custom.iter().any(|n| n == on), "{on} not enabled by config");
         }

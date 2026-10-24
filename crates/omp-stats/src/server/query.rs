@@ -23,12 +23,18 @@ impl Target {
                 None => (decode(pair), String::new()),
             })
             .collect();
-        Self { path: path.to_string(), pairs }
+        Self {
+            path: path.to_string(),
+            pairs,
+        }
     }
 
     /// `searchParams.get(name)`: first match, `None` when absent.
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.pairs.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.pairs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 }
 
@@ -40,7 +46,10 @@ fn decode(s: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'+' => out.push(b' '),
-            b'%' if i + 2 < bytes.len() && hex(bytes[i + 1]).is_some() && hex(bytes[i + 2]).is_some() => {
+            b'%' if i + 2 < bytes.len()
+                && hex(bytes[i + 1]).is_some()
+                && hex(bytes[i + 2]).is_some() =>
+            {
                 out.push(hex(bytes[i + 1]).unwrap_or(0) << 4 | hex(bytes[i + 2]).unwrap_or(0));
                 i += 2;
             }
@@ -67,7 +76,9 @@ pub(crate) fn parse_int(s: &str) -> Option<i64> {
         Some(rest) => (true, rest),
         None => (false, t.strip_prefix('+').unwrap_or(t)),
     };
-    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
     if end == 0 {
         return None;
     }

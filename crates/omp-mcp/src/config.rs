@@ -75,7 +75,9 @@ impl<'de> Deserialize<'de> for ServerKind {
             None | Some("stdio") => Ok(Self::Stdio),
             Some("http") => Ok(Self::Http),
             Some("sse") => Ok(Self::Sse),
-            Some(other) => Err(serde::de::Error::custom(format!("unknown server type: {other}"))),
+            Some(other) => Err(serde::de::Error::custom(format!(
+                "unknown server type: {other}"
+            ))),
         }
     }
 }
@@ -91,12 +93,16 @@ impl McpServerConfig {
 /// Standard user config path: `~/.omp/agent/mcp.json`.
 #[must_use]
 pub fn user_config_path() -> Option<PathBuf> {
-    let home = std::env::var_os("OMP_CONFIG_DIR").map(PathBuf::from).or_else(dirs_home)?;
+    let home = std::env::var_os("OMP_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(dirs_home)?;
     Some(home.join(".omp").join("agent").join("mcp.json"))
 }
 
 fn dirs_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from)
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Project config candidates for `cwd`, in omp's discovery order
@@ -104,7 +110,12 @@ fn dirs_home() -> Option<PathBuf> {
 /// sources override earlier ones per server name).
 #[must_use]
 pub fn project_config_paths(cwd: &Path) -> Vec<PathBuf> {
-    [cwd.join("mcp.json"), cwd.join(".mcp.json"), cwd.join(".omp").join("mcp.json")].to_vec()
+    [
+        cwd.join("mcp.json"),
+        cwd.join(".mcp.json"),
+        cwd.join(".omp").join("mcp.json"),
+    ]
+    .to_vec()
 }
 
 /// Read one config file; a missing file yields an empty config, an unreadable
@@ -132,7 +143,9 @@ fn read_config(path: &Path) -> McpConfigFile {
 /// entries with the same name.
 #[must_use]
 pub fn load_configs(cwd: &Path) -> BTreeMap<String, McpServerConfig> {
-    let user = user_config_path().map(|p| read_config(&p)).unwrap_or_default();
+    let user = user_config_path()
+        .map(|p| read_config(&p))
+        .unwrap_or_default();
     let mut merged = user.mcp_servers.clone();
     for path in project_config_paths(cwd) {
         for (name, cfg) in read_config(&path).mcp_servers {
@@ -140,8 +153,10 @@ pub fn load_configs(cwd: &Path) -> BTreeMap<String, McpServerConfig> {
         }
     }
 
-    let disabled: std::collections::HashSet<&str> = user.disabled_servers.iter().map(String::as_str).collect();
-    let forced: std::collections::HashSet<&str> = user.enabled_servers.iter().map(String::as_str).collect();
+    let disabled: std::collections::HashSet<&str> =
+        user.disabled_servers.iter().map(String::as_str).collect();
+    let forced: std::collections::HashSet<&str> =
+        user.enabled_servers.iter().map(String::as_str).collect();
     merged
         .into_iter()
         .filter(|(name, _)| !disabled.contains(name.as_str()))

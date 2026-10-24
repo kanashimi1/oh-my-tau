@@ -394,10 +394,16 @@ mod tests {
     fn write_agent_url_is_a_message_not_a_read_only_store() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(dir.path(), true);
-        let err = write(&env, &json!({"path": "agent://nobody-here", "content": "hi"}))
-            .unwrap_err()
-            .to_string();
-        assert!(err.starts_with("Failed: nobody-here is not running."), "{err}");
+        let err = write(
+            &env,
+            &json!({"path": "agent://nobody-here", "content": "hi"}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.starts_with("Failed: nobody-here is not running."),
+            "{err}"
+        );
         assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 }

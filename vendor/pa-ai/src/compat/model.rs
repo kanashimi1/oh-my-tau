@@ -23,7 +23,10 @@ fn spec_of(model: &Model, explicit_thinking: Option<&Value>) -> ModelSpec {
         provider_type: None,
         reasoning: model.reasoning,
         thinking: explicit_thinking.cloned(),
-        compat: model.compat.as_ref().map(|c| c.raw.clone().into_iter().collect()),
+        compat: model
+            .compat
+            .as_ref()
+            .map(|c| c.raw.clone().into_iter().collect()),
         lenient: true,
     }
 }
@@ -80,11 +83,18 @@ fn thinking_level_map_of(thinking: &Value) -> BTreeMap<ModelThinkingLevel, Optio
 ///
 /// # Errors
 /// See [`resolve_for_model`].
-pub fn materialize(model: &mut Model, explicit_thinking: Option<&Value>) -> Result<ResolvedModelPolicy, ResolveError> {
+pub fn materialize(
+    model: &mut Model,
+    explicit_thinking: Option<&Value>,
+) -> Result<ResolvedModelPolicy, ResolveError> {
     let policy = resolve_model_policy(&spec_of(model, explicit_thinking), None)?;
     // TS `applyCatalogAssignments`: rule-assigned catalog data the request builders read.
     if model.omit_max_output_tokens.is_none() {
-        if let Some(omit) = policy.catalog.get("omitMaxOutputTokens").and_then(Value::as_bool) {
+        if let Some(omit) = policy
+            .catalog
+            .get("omitMaxOutputTokens")
+            .and_then(Value::as_bool)
+        {
             model.omit_max_output_tokens = Some(omit);
         }
     }
@@ -126,5 +136,9 @@ pub fn model_from_catalog_row(mut row: Value) -> Option<(Model, Option<Value>)> 
 /// Sparse compat overrides as a plain JSON map (empty when none).
 #[must_use]
 pub fn compat_overrides(model: &Model) -> Map<String, Value> {
-    model.compat.as_ref().map(|c| c.raw.clone().into_iter().collect()).unwrap_or_default()
+    model
+        .compat
+        .as_ref()
+        .map(|c| c.raw.clone().into_iter().collect())
+        .unwrap_or_default()
 }

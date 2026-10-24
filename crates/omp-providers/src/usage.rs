@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
 /// `user-agent` Claude's account routes gate on (TS `getClaudeCodeUserAgent`).
@@ -84,7 +84,11 @@ impl UsageCredential<'_> {
 }
 
 /// Dispatch on the provider id; `Err` carries a human-readable reason.
-pub async fn fetch_provider_usage(provider: &str, cred: &UsageCredential<'_>, base_url: Option<&str>) -> Result<UsageReport> {
+pub async fn fetch_provider_usage(
+    provider: &str,
+    cred: &UsageCredential<'_>,
+    base_url: Option<&str>,
+) -> Result<UsageReport> {
     match provider {
         "anthropic" => fetch_anthropic_usage(cred, base_url).await,
         "kimi-code" => fetch_kimi_usage(cred, base_url).await,
@@ -153,7 +157,10 @@ fn parse_iso_ms(s: &str) -> Option<i64> {
 }
 
 fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build().context("usage http client")
+    reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .context("usage http client")
 }
 
 fn header_map(pairs: &[(&'static str, String)]) -> reqwest::header::HeaderMap {
@@ -176,7 +183,11 @@ fn bearer_headers(token: &str, extra: &[(&'static str, String)]) -> reqwest::hea
     header_map(&pairs)
 }
 
-async fn get_json(client: &reqwest::Client, url: &str, headers: reqwest::header::HeaderMap) -> Result<Value> {
+async fn get_json(
+    client: &reqwest::Client,
+    url: &str,
+    headers: reqwest::header::HeaderMap,
+) -> Result<Value> {
     let response = client.get(url).headers(headers).send().await?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
@@ -186,7 +197,12 @@ async fn get_json(client: &reqwest::Client, url: &str, headers: reqwest::header:
     serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("malformed JSON: {e}"))
 }
 
-async fn post_json(client: &reqwest::Client, url: &str, headers: reqwest::header::HeaderMap, body: Value) -> Result<Value> {
+async fn post_json(
+    client: &reqwest::Client,
+    url: &str,
+    headers: reqwest::header::HeaderMap,
+    body: Value,
+) -> Result<Value> {
     let response = client.post(url).headers(headers).json(&body).send().await?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
@@ -240,7 +256,10 @@ fn claude_api_root(base: &str) -> String {
     base.trim_end_matches("/api/oauth").to_string()
 }
 
-async fn fetch_anthropic_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> Result<UsageReport> {
+async fn fetch_anthropic_usage(
+    cred: &UsageCredential<'_>,
+    base_url: Option<&str>,
+) -> Result<UsageReport> {
     let token = cred.access_token.filter(|t| t.contains("sk-ant-oat"));
     let Some(token) = token else {
         bail!("no anthropic oauth access token");
@@ -271,16 +290,30 @@ async fn fetch_anthropic_usage(cred: &UsageCredential<'_>, base_url: Option<&str
 }
 
 fn anthropic_has_usage_data(payload: &Value) -> bool {
-    ["five_hour", "seven_day", "limits", "extra_usage", "spend", CEDAR_PROGRAM, JUNIPER_PROGRAM]
-        .iter()
-        .any(|k| payload.get(*k).is_some())
+    [
+        "five_hour",
+        "seven_day",
+        "limits",
+        "extra_usage",
+        "spend",
+        CEDAR_PROGRAM,
+        JUNIPER_PROGRAM,
+    ]
+    .iter()
+    .any(|k| payload.get(*k).is_some())
 }
 
 fn anthropic_bucket(v: Option<&Value>) -> Option<UsageBucket> {
     let v = v?.as_object()?;
     let utilization = v.get("utilization").and_then(as_f64);
-    let resets_at = v.get("resets_at").and_then(Value::as_str).and_then(parse_iso_ms);
-    (utilization.is_some() || resets_at.is_some()).then_some(UsageBucket { utilization, resets_at })
+    let resets_at = v
+        .get("resets_at")
+        .and_then(Value::as_str)
+        .and_then(parse_iso_ms);
+    (utilization.is_some() || resets_at.is_some()).then_some(UsageBucket {
+        utilization,
+        resets_at,
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -309,7 +342,11 @@ fn parse_anthropic_report(payload: &Value, _token: &str) -> UsageReport {
     }
     if let Some(entries) = payload.get("limits").and_then(Value::as_array) {
         for e in entries {
-            let kind = e.get("kind").and_then(Value::as_str).unwrap_or("limit").to_string();
+            let kind = e
+                .get("kind")
+                .and_then(Value::as_str)
+                .unwrap_or("limit")
+                .to_string();
             let display = e
                 .pointer("/scope/model/display_name")
                 .and_then(Value::as_str)
@@ -323,15 +360,26 @@ fn parse_anthropic_report(payload: &Value, _token: &str) -> UsageReport {
                 label,
                 used_percent: e.get("percent").and_then(as_f64),
                 remaining: None,
-                resets_at: e.get("resets_at").and_then(Value::as_str).and_then(parse_iso_ms),
+                resets_at: e
+                    .get("resets_at")
+                    .and_then(Value::as_str)
+                    .and_then(parse_iso_ms),
                 note: is_active.then_some("active".to_string()),
             });
         }
     }
     let mut notes = Vec::new();
     if let Some(extra) = payload.get("extra_usage").and_then(|e| e.as_object()) {
-        if extra.get("is_enabled").and_then(Value::as_bool).unwrap_or(false) {
-            let used = extra.get("used_credits").and_then(as_f64).map(|u| u.to_string()).unwrap_or_else(|| "?".into());
+        if extra
+            .get("is_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            let used = extra
+                .get("used_credits")
+                .and_then(as_f64)
+                .map(|u| u.to_string())
+                .unwrap_or_else(|| "?".into());
             let limit = extra
                 .get("monthly_limit")
                 .and_then(as_f64)
@@ -342,7 +390,11 @@ fn parse_anthropic_report(payload: &Value, _token: &str) -> UsageReport {
         }
     }
     if let Some(spend) = payload.get("spend").and_then(|s| s.as_object()) {
-        if spend.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+        if spend
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
             let minor = |k: &str| {
                 spend
                     .get(k)
@@ -350,8 +402,12 @@ fn parse_anthropic_report(payload: &Value, _token: &str) -> UsageReport {
                     .and_then(|m| m.get("amount_minor"))
                     .and_then(as_i64)
             };
-            let used = minor("used").map(|u| format!("{:.2}", u as f64 / 100.0)).unwrap_or_else(|| "?".into());
-            let limit = minor("limit").map(|u| format!("{:.2}", u as f64 / 100.0)).unwrap_or_else(|| "?".into());
+            let used = minor("used")
+                .map(|u| format!("{:.2}", u as f64 / 100.0))
+                .unwrap_or_else(|| "?".into());
+            let limit = minor("limit")
+                .map(|u| format!("{:.2}", u as f64 / 100.0))
+                .unwrap_or_else(|| "?".into());
             let currency = spend
                 .get("used")
                 .and_then(|m| m.as_object())
@@ -361,7 +417,12 @@ fn parse_anthropic_report(payload: &Value, _token: &str) -> UsageReport {
             notes.push(format!("spend: {used}/{limit} {currency}"));
         }
     }
-    UsageReport { provider: "anthropic".to_string(), fetched_at_ms: now_ms(), lines, notes }
+    UsageReport {
+        provider: "anthropic".to_string(),
+        fetched_at_ms: now_ms(),
+        lines,
+        notes,
+    }
 }
 
 /// A saved rate-limit reset credit (`cedar_ember` grant or `juniper_tide` reset).
@@ -403,7 +464,11 @@ pub struct ConsumeOutcome {
 
 fn parse_window_list(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -412,7 +477,11 @@ fn parse_cedar_credits(block: &Value) -> ResetCreditList {
     let now = now_ms();
     if let Some(grants) = block.get("grants").and_then(Value::as_array) {
         for g in grants {
-            let id = g.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let id = g
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if id.is_empty() {
                 continue;
             }
@@ -423,7 +492,10 @@ fn parse_cedar_credits(block: &Value) -> ResetCreditList {
                 usable: remaining.is_some_and(|r| r > 0),
                 remaining_count: remaining,
                 clears: parse_window_list(g.get("clears")),
-                expires_at_ms: g.get("ends_at").and_then(Value::as_str).and_then(parse_iso_ms),
+                expires_at_ms: g
+                    .get("ends_at")
+                    .and_then(Value::as_str)
+                    .and_then(parse_iso_ms),
                 next_available_at_ms: None,
                 weekly_resets_at_ms: None,
                 ineligible_reason: None,
@@ -435,7 +507,10 @@ fn parse_cedar_credits(block: &Value) -> ResetCreditList {
         .iter()
         .filter(|c| c.usable && c.expires_at_ms.is_none_or(|e| e > now))
         .count();
-    list.next_credit_id = block.get("next_grant_id").and_then(Value::as_str).map(str::to_string);
+    list.next_credit_id = block
+        .get("next_grant_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     if let Some(next) = list.next_credit_id.clone() {
         if !list.credits.iter().any(|c| c.id == next) {
             list.credits.push(ResetCredit {
@@ -457,19 +532,38 @@ fn parse_cedar_credits(block: &Value) -> ResetCreditList {
 
 fn parse_juniper_credits(block: &Value) -> ResetCreditList {
     let now = now_ms();
-    let next_available_at_ms = block.get("next_available_at").and_then(Value::as_str).and_then(parse_iso_ms);
-    let weekly_resets_at_ms = block.get("weekly_resets_at").and_then(Value::as_str).and_then(parse_iso_ms);
-    let cooldown_until_ms = block.get("cooldown_until").and_then(Value::as_str).and_then(parse_iso_ms);
-    let available = block.get("available").and_then(Value::as_bool).unwrap_or(false)
+    let next_available_at_ms = block
+        .get("next_available_at")
+        .and_then(Value::as_str)
+        .and_then(parse_iso_ms);
+    let weekly_resets_at_ms = block
+        .get("weekly_resets_at")
+        .and_then(Value::as_str)
+        .and_then(parse_iso_ms);
+    let cooldown_until_ms = block
+        .get("cooldown_until")
+        .and_then(Value::as_str)
+        .and_then(parse_iso_ms);
+    let available = block
+        .get("available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
         && cooldown_until_ms.is_none_or(|c| c <= now);
-    let ineligible_reason = block.get("ineligible_reason").and_then(Value::as_str).map(str::to_string);
+    let ineligible_reason = block
+        .get("ineligible_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut list = ResetCreditList::default();
     list.credits.push(ResetCredit {
         id: JUNIPER_PROGRAM.to_string(),
         program: JUNIPER_PROGRAM.to_string(),
         usable: available,
         remaining_count: Some(if available { 1 } else { 0 }),
-        clears: if available { vec!["anthropic:5h".to_string()] } else { Vec::new() },
+        clears: if available {
+            vec!["anthropic:5h".to_string()]
+        } else {
+            Vec::new()
+        },
         expires_at_ms: None,
         next_available_at_ms,
         weekly_resets_at_ms,
@@ -516,7 +610,10 @@ async fn claude_usage_query(token: &str, base_url: Option<&str>, query: &str) ->
 /// Discover saved anthropic reset credits: cedar grants first, then the juniper
 /// session reset. `Ok(None)` means discovery failed; a zero-count list is an
 /// authoritative answer.
-pub async fn anthropic_reset_credits(token: &str, base_url: Option<&str>) -> Result<Option<ResetCreditList>> {
+pub async fn anthropic_reset_credits(
+    token: &str,
+    base_url: Option<&str>,
+) -> Result<Option<ResetCreditList>> {
     if let Some(payload) = claude_usage_query(token, base_url, "cedar_ember=1&skip_spend=1").await {
         if let Some(cedar) = payload.get(CEDAR_PROGRAM) {
             let list = parse_cedar_credits(cedar);
@@ -540,7 +637,9 @@ pub async fn anthropic_reset_credits(token: &str, base_url: Option<&str>) -> Res
 pub async fn resolve_organization(token: &str, base_url: Option<&str>) -> Option<String> {
     let client = client().ok()?;
     for base in oauth_base_urls(base_url) {
-        if let Ok(payload) = get_json(&client, &format!("{base}/profile"), claude_headers(token)).await {
+        if let Ok(payload) =
+            get_json(&client, &format!("{base}/profile"), claude_headers(token)).await
+        {
             if let Some(org) = payload
                 .get("organizations")
                 .and_then(Value::as_array)
@@ -589,7 +688,9 @@ async fn consume_program_reset(
         Ok(c) => c,
         Err(_) => return fail("network_error", 0),
     };
-    let (url, body, headers) = if credit.program == CEDAR_PROGRAM || credit.program == JUNIPER_PROGRAM {
+    let (url, body, headers) = if credit.program == CEDAR_PROGRAM
+        || credit.program == JUNIPER_PROGRAM
+    {
         let base = oauth_base_urls(base_url)
             .into_iter()
             .next()
@@ -600,26 +701,46 @@ async fn consume_program_reset(
             serde_json::json!({"program": JUNIPER_PROGRAM})
         };
         let mut headers = claude_headers(token);
-        headers.insert(reqwest::header::CONTENT_TYPE, "application/json".parse().expect("json ct"));
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json".parse().expect("json ct"),
+        );
         (
-            format!("{}/api/organizations/{org_id}/{anthropic_path}", claude_api_root(&base)),
+            format!(
+                "{}/api/organizations/{org_id}/{anthropic_path}",
+                claude_api_root(&base)
+            ),
             body,
             headers,
         )
     } else if credit.program == "codex_reset" {
         let base = codex_base_url(base_url);
         let mut headers = codex_headers(token, None);
-        headers.insert(reqwest::header::CONTENT_TYPE, "application/json".parse().expect("json ct"));
-        (format!("{base}/wham/rate-limit-reset-credits/consume"), serde_json::json!({}), headers)
+        headers.insert(
+            reqwest::header::CONTENT_TYPE,
+            "application/json".parse().expect("json ct"),
+        );
+        (
+            format!("{base}/wham/rate-limit-reset-credits/consume"),
+            serde_json::json!({}),
+            headers,
+        )
     } else {
         return fail("unknown_program", 0);
     };
-    let response = match client.post(url).headers(headers).body(body.to_string()).send().await {
+    let response = match client
+        .post(url)
+        .headers(headers)
+        .body(body.to_string())
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(_) => return fail("network_error", 0),
     };
     let status = response.status();
-    let payload: Value = serde_json::from_str(&response.text().await.unwrap_or_default()).unwrap_or(Value::Null);
+    let payload: Value =
+        serde_json::from_str(&response.text().await.unwrap_or_default()).unwrap_or(Value::Null);
     if !status.is_success() {
         let code = match status.as_u16() {
             401 | 403 => "auth_error",
@@ -627,14 +748,20 @@ async fn consume_program_reset(
             s => return fail(&format!("http_{s}"), status.as_u16()),
         };
         let mut out = fail(code, status.as_u16());
-        out.reason = payload.pointer("/error/message").and_then(Value::as_str).map(str::to_string);
+        out.reason = payload
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         return out;
     }
     let result = payload.get("result").and_then(Value::as_str).unwrap_or("");
     if result.is_empty() {
         return fail("malformed_response", status.as_u16());
     }
-    let reason = payload.get("reason").and_then(Value::as_str).map(str::to_string);
+    let reason = payload
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let cleared = parse_window_list(payload.get("cleared"));
     let code = match result {
         "reset" => "reset",
@@ -655,14 +782,19 @@ async fn consume_program_reset(
 // Kimi (TS usage/kimi.ts)
 // ---------------------------------------------------------------------------
 
-async fn fetch_kimi_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> Result<UsageReport> {
+async fn fetch_kimi_usage(
+    cred: &UsageCredential<'_>,
+    base_url: Option<&str>,
+) -> Result<UsageReport> {
     let Some(token) = cred.access_token else {
         bail!("no kimi-code oauth access token");
     };
     if cred.token_expired() {
         bail!("kimi-code oauth token expired (refresh first)");
     }
-    let env_base = std::env::var("KIMI_CODE_BASE_URL").ok().filter(|s| !s.trim().is_empty());
+    let env_base = std::env::var("KIMI_CODE_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let base = base_url
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -712,7 +844,11 @@ fn kimi_reset_time(data: &serde_json::Map<String, Value>, now: i64) -> Option<i6
 
 fn kimi_window(data: &serde_json::Map<String, Value>, now: i64) -> (String, Option<i64>) {
     let duration = data.get("duration").and_then(as_f64);
-    let unit = data.get("timeUnit").and_then(Value::as_str).unwrap_or("").to_uppercase();
+    let unit = data
+        .get("timeUnit")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_uppercase();
     let resets_at = kimi_reset_time(data, now);
     let duration_ms = duration.map(|d| match unit.as_str() {
         u if u.contains("MINUTE") => d * 60_000.0,
@@ -723,8 +859,12 @@ fn kimi_window(data: &serde_json::Map<String, Value>, now: i64) -> (String, Opti
         _ => d,
     });
     let id = match duration_ms {
-        Some(ms) if ms > 0.0 && (ms % 86_400_000.0) == 0.0 => format!("{}d", (ms / 86_400_000.0) as i64),
-        Some(ms) if ms > 0.0 && (ms % 3_600_000.0) == 0.0 => format!("{}h", (ms / 3_600_000.0) as i64),
+        Some(ms) if ms > 0.0 && (ms % 86_400_000.0) == 0.0 => {
+            format!("{}d", (ms / 86_400_000.0) as i64)
+        }
+        Some(ms) if ms > 0.0 && (ms % 3_600_000.0) == 0.0 => {
+            format!("{}h", (ms / 3_600_000.0) as i64)
+        }
         Some(ms) if ms > 0.0 => format!("{}m", (ms / 60_000.0).round() as i64),
         _ => "default".to_string(),
     };
@@ -754,7 +894,13 @@ fn kimi_row(data: &serde_json::Map<String, Value>, label: &str, now: i64) -> Opt
         .or_else(|| data.get("title"))
         .and_then(Value::as_str)
         .unwrap_or(label);
-    let used_percent = limit.zip(used).map(|(l, u)| if l > 0.0 { (u / l * 100.0).min(100.0) } else { 0.0 });
+    let used_percent = limit.zip(used).map(|(l, u)| {
+        if l > 0.0 {
+            (u / l * 100.0).min(100.0)
+        } else {
+            0.0
+        }
+    });
     Some(UsageLine {
         label: format!("{name} ({window_id})"),
         used_percent,
@@ -787,14 +933,22 @@ fn parse_kimi_report(payload: &Value) -> UsageReport {
             }
         }
     }
-    UsageReport { provider: "kimi-code".to_string(), fetched_at_ms: now, lines, notes: Vec::new() }
+    UsageReport {
+        provider: "kimi-code".to_string(),
+        fetched_at_ms: now,
+        lines,
+        notes: Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Z.AI (TS usage/zai.ts)
 // ---------------------------------------------------------------------------
 
-async fn fetch_zai_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> Result<UsageReport> {
+async fn fetch_zai_usage(
+    cred: &UsageCredential<'_>,
+    base_url: Option<&str>,
+) -> Result<UsageReport> {
     // Sign-in (oauth) stores the minted id.secret key in access; the paste path in
     // apiKey. Both are used verbatim as the Authorization header (no Bearer).
     let token = cred.access_token.or(cred.raw_key);
@@ -816,7 +970,10 @@ async fn fetch_zai_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> 
     )
     .await?;
     if payload.get("success").and_then(Value::as_bool) != Some(true) {
-        let msg = payload.get("msg").and_then(Value::as_str).unwrap_or("unknown error");
+        let msg = payload
+            .get("msg")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown error");
         bail!("zai usage rejected: {msg}");
     }
     let report = parse_zai_report(&payload);
@@ -827,10 +984,20 @@ async fn fetch_zai_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> 
 }
 
 fn zai_window(item: &serde_json::Map<String, Value>) -> (String, String) {
-    let count = item.get("number").and_then(as_f64).filter(|n| *n > 0.0).unwrap_or(1.0);
+    let count = item
+        .get("number")
+        .and_then(as_f64)
+        .filter(|n| *n > 0.0)
+        .unwrap_or(1.0);
     match item.get("unit").and_then(as_i64) {
-        Some(3) => (format!("{}h", count as i64), format!("{} Hour", count as i64)),
-        Some(4) => (format!("{}d", count as i64), format!("{} Day", count as i64)),
+        Some(3) => (
+            format!("{}h", count as i64),
+            format!("{} Hour", count as i64),
+        ),
+        Some(4) => (
+            format!("{}d", count as i64),
+            format!("{} Day", count as i64),
+        ),
         Some(5) => (format!("{}mo", count as i64), "Monthly".to_string()),
         Some(6) => ("1w".to_string(), "Weekly".to_string()),
         Some(u) => (format!("{}u{u}", count as i64), "Quota".to_string()),
@@ -850,7 +1017,9 @@ fn parse_zai_report(payload: &Value) -> UsageReport {
         .cloned()
         .unwrap_or_default();
     for item in limits.iter().filter_map(|l| l.as_object()) {
-        let Some(ltype) = item.get("type").and_then(Value::as_str) else { continue };
+        let Some(ltype) = item.get("type").and_then(Value::as_str) else {
+            continue;
+        };
         let (window_id, window_label) = zai_window(item);
         let used_percent = item
             .get("percentage")
@@ -861,8 +1030,14 @@ fn parse_zai_report(payload: &Value) -> UsageReport {
         let remaining = item.get("remaining").and_then(as_f64);
         let resets_at = epoch_ms(item.get("nextResetTime"));
         let (label, unit) = match ltype {
-            "TOKENS_LIMIT" => (format!("ZAI {window_label} Token Quota ({window_id})"), "tokens"),
-            "TIME_LIMIT" => (format!("ZAI {window_label} Request Quota ({window_id})"), "requests"),
+            "TOKENS_LIMIT" => (
+                format!("ZAI {window_label} Token Quota ({window_id})"),
+                "tokens",
+            ),
+            "TIME_LIMIT" => (
+                format!("ZAI {window_label} Request Quota ({window_id})"),
+                "requests",
+            ),
             other => (format!("ZAI {window_label} {other} ({window_id})"), other),
         };
         lines.push(UsageLine {
@@ -877,7 +1052,12 @@ fn parse_zai_report(payload: &Value) -> UsageReport {
             )),
         });
     }
-    UsageReport { provider: "zai".to_string(), fetched_at_ms: now_ms(), lines, notes }
+    UsageReport {
+        provider: "zai".to_string(),
+        fetched_at_ms: now_ms(),
+        lines,
+        notes,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -892,7 +1072,11 @@ fn codex_base_url(base_url: Option<&str>) -> String {
             Ok(url) => {
                 let host = url.host_str().unwrap_or("").to_lowercase();
                 if host == "chatgpt.com" || host == "chat.openai.com" {
-                    format!("{}://{}", url.scheme(), url.host_str().unwrap_or("chatgpt.com"))
+                    format!(
+                        "{}://{}",
+                        url.scheme(),
+                        url.host_str().unwrap_or("chatgpt.com")
+                    )
                 } else {
                     CODEX_BASE_URL.to_string()
                 }
@@ -940,7 +1124,10 @@ fn codex_headers(token: &str, account_id: Option<&str>) -> reqwest::header::Head
     header_map(&pairs)
 }
 
-async fn fetch_codex_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> Result<UsageReport> {
+async fn fetch_codex_usage(
+    cred: &UsageCredential<'_>,
+    base_url: Option<&str>,
+) -> Result<UsageReport> {
     let Some(token) = cred.access_token else {
         bail!("no openai-codex oauth access token");
     };
@@ -948,19 +1135,21 @@ async fn fetch_codex_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -
         bail!("openai-codex oauth token expired (refresh first)");
     }
     let jwt = parse_jwt(token);
-    let account_id = cred
-        .data_str("accountId")
-        .map(str::to_string)
-        .or_else(|| {
-            jwt.as_ref()
-                .and_then(|j| j.get("https://api.openai.com/auth"))
-                .and_then(|a| a.get("chatgpt_account_id"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        });
+    let account_id = cred.data_str("accountId").map(str::to_string).or_else(|| {
+        jwt.as_ref()
+            .and_then(|j| j.get("https://api.openai.com/auth"))
+            .and_then(|a| a.get("chatgpt_account_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    });
     let base = codex_base_url(base_url);
     let client = client()?;
-    let payload = get_json(&client, &format!("{base}/wham/usage"), codex_headers(token, account_id.as_deref())).await?;
+    let payload = get_json(
+        &client,
+        &format!("{base}/wham/usage"),
+        codex_headers(token, account_id.as_deref()),
+    )
+    .await?;
     let report = parse_codex_report(&payload);
     if report.lines.is_empty() {
         bail!("codex usage response had no windows");
@@ -987,13 +1176,22 @@ fn codex_window_line(key: &str, w: Option<&Value>, plan_type: Option<&str>) -> O
         None => key.to_string(),
     };
     let note = plan_type.map(|p| format!("plan {p}"));
-    Some(UsageLine { label, used_percent, remaining: None, resets_at: reset_at, note })
+    Some(UsageLine {
+        label,
+        used_percent,
+        remaining: None,
+        resets_at: reset_at,
+        note,
+    })
 }
 
 fn parse_codex_report(payload: &Value) -> UsageReport {
     let mut lines = Vec::new();
     let mut notes = Vec::new();
-    let plan_type = payload.get("plan_type").and_then(Value::as_str).map(str::to_string);
+    let plan_type = payload
+        .get("plan_type")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     if let Some(plan_type) = &plan_type {
         notes.push(format!("plan: {plan_type}"));
     }
@@ -1006,21 +1204,27 @@ fn parse_codex_report(payload: &Value) -> UsageReport {
             notes.push("plan window exhausted".to_string());
             let credits = payload.get("credits").and_then(|c| c.as_object());
             let funded = credits.is_some_and(|c| {
-                (c.get("unlimited") == Some(&Value::Bool(true)) || c.get("has_credits") == Some(&Value::Bool(true)))
+                (c.get("unlimited") == Some(&Value::Bool(true))
+                    || c.get("has_credits") == Some(&Value::Bool(true)))
                     && c.get("overage_limit_reached") != Some(&Value::Bool(true))
             });
             if funded {
                 notes.push("credit overage still funds requests".to_string());
             }
         }
-        if let Some(line) = codex_window_line("primary", rl.get("primary_window"), plan_type.as_deref()) {
+        if let Some(line) =
+            codex_window_line("primary", rl.get("primary_window"), plan_type.as_deref())
+        {
             lines.push(line);
         }
         if let Some(line) = codex_window_line("secondary", rl.get("secondary_window"), None) {
             lines.push(line);
         }
     }
-    if let Some(additional) = payload.get("additional_rate_limits").and_then(Value::as_array) {
+    if let Some(additional) = payload
+        .get("additional_rate_limits")
+        .and_then(Value::as_array)
+    {
         for entry in additional {
             let name = entry
                 .get("limit_name")
@@ -1028,26 +1232,47 @@ fn parse_codex_report(payload: &Value) -> UsageReport {
                 .and_then(Value::as_str)
                 .unwrap_or("feature");
             let rl = entry.get("rate_limit");
-            if let Some(line) = codex_window_line(name, rl.and_then(|r| r.get("primary_window")), None) {
+            if let Some(line) =
+                codex_window_line(name, rl.and_then(|r| r.get("primary_window")), None)
+            {
                 lines.push(line);
             }
-            if let Some(line) = codex_window_line(name, rl.and_then(|r| r.get("secondary_window")), None) {
+            if let Some(line) =
+                codex_window_line(name, rl.and_then(|r| r.get("secondary_window")), None)
+            {
                 lines.push(line);
             }
         }
     }
     // Saved reset credits count rides on /wham/usage.
-    if let Some(credits) = payload.pointer("/rate_limit_reset_credits/available_count").and_then(as_i64) {
+    if let Some(credits) = payload
+        .pointer("/rate_limit_reset_credits/available_count")
+        .and_then(as_i64)
+    {
         notes.push(format!("reset credits available: {credits}"));
     }
-    UsageReport { provider: "openai-codex".to_string(), fetched_at_ms: now_ms(), lines, notes }
+    UsageReport {
+        provider: "openai-codex".to_string(),
+        fetched_at_ms: now_ms(),
+        lines,
+        notes,
+    }
 }
 
 /// List codex saved reset credits (`GET /wham/rate-limit-reset-credits`).
-pub async fn codex_reset_credits(token: &str, base_url: Option<&str>) -> Result<Option<ResetCreditList>> {
+pub async fn codex_reset_credits(
+    token: &str,
+    base_url: Option<&str>,
+) -> Result<Option<ResetCreditList>> {
     let base = codex_base_url(base_url);
     let client = client()?;
-    let payload = match get_json(&client, &format!("{base}/wham/rate-limit-reset-credits"), codex_headers(token, None)).await {
+    let payload = match get_json(
+        &client,
+        &format!("{base}/wham/rate-limit-reset-credits"),
+        codex_headers(token, None),
+    )
+    .await
+    {
         Ok(p) => p,
         Err(e) => {
             if e.to_string().starts_with("404") || e.to_string().starts_with("405") {
@@ -1072,7 +1297,10 @@ pub async fn codex_reset_credits(token: &str, base_url: Option<&str>) -> Result<
                         expires_at_ms: epoch_ms(c.get("expires_at")),
                         next_available_at_ms: epoch_ms(c.get("next_available_at")),
                         weekly_resets_at_ms: None,
-                        ineligible_reason: c.get("ineligible_reason").and_then(Value::as_str).map(str::to_string),
+                        ineligible_reason: c
+                            .get("ineligible_reason")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -1080,7 +1308,11 @@ pub async fn codex_reset_credits(token: &str, base_url: Option<&str>) -> Result<
         .unwrap_or_default();
     let usable = credits.iter().filter(|c| c.usable).count();
     Ok(Some(ResetCreditList {
-        available_count: if available > 0 { available as usize } else { usable },
+        available_count: if available > 0 {
+            available as usize
+        } else {
+            usable
+        },
         next_credit_id: credits.first().map(|c| c.id.clone()),
         eligible: available > 0 || usable > 0,
         credits,
@@ -1088,7 +1320,11 @@ pub async fn codex_reset_credits(token: &str, base_url: Option<&str>) -> Result<
 }
 
 /// POST `/wham/rate-limit-reset-credits/consume`, spending one codex credit.
-pub async fn consume_codex_reset_credit(token: &str, base_url: Option<&str>, credit: &ResetCredit) -> ConsumeOutcome {
+pub async fn consume_codex_reset_credit(
+    token: &str,
+    base_url: Option<&str>,
+    credit: &ResetCredit,
+) -> ConsumeOutcome {
     consume_program_reset(token, base_url, "", credit, "").await
 }
 
@@ -1096,7 +1332,10 @@ pub async fn consume_codex_reset_credit(token: &str, base_url: Option<&str>, cre
 // Google Antigravity (TS usage/google-antigravity.ts, quota-summary path)
 // ---------------------------------------------------------------------------
 
-async fn fetch_antigravity_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> Result<UsageReport> {
+async fn fetch_antigravity_usage(
+    cred: &UsageCredential<'_>,
+    base_url: Option<&str>,
+) -> Result<UsageReport> {
     let Some(token) = cred.access_token else {
         bail!("no google-antigravity oauth access token");
     };
@@ -1112,7 +1351,10 @@ async fn fetch_antigravity_usage(cred: &UsageCredential<'_>, base_url: Option<&s
     };
     let endpoints: Vec<String> = match base_url.map(str::trim).filter(|s| !s.is_empty()) {
         Some(u) => vec![u.trim_end_matches('/').to_string()],
-        None => vec![ANTIGRAVITY_DEFAULT_ENDPOINT.to_string(), ANTIGRAVITY_SANDBOX_ENDPOINT.to_string()],
+        None => vec![
+            ANTIGRAVITY_DEFAULT_ENDPOINT.to_string(),
+            ANTIGRAVITY_SANDBOX_ENDPOINT.to_string(),
+        ],
     };
     let client = client()?;
     let body = serde_json::json!({"project": project_id});
@@ -1156,18 +1398,33 @@ fn parse_quota_summary(payload: &Value) -> Option<UsageReport> {
         let display = bucket.get("displayName").and_then(Value::as_str);
         let (wid, wlabel) = classify_window(window_id, display)
             .map(|(a, b)| (a.to_string(), b.to_string()))
-            .unwrap_or_else(|| (window_id.unwrap_or("default").to_string(), display.unwrap_or("Usage").to_string()));
-        let remaining_fraction = bucket.get("remainingFraction").and_then(as_f64).map(|f| f.clamp(0.0, 1.0));
+            .unwrap_or_else(|| {
+                (
+                    window_id.unwrap_or("default").to_string(),
+                    display.unwrap_or("Usage").to_string(),
+                )
+            });
+        let remaining_fraction = bucket
+            .get("remainingFraction")
+            .and_then(as_f64)
+            .map(|f| f.clamp(0.0, 1.0));
         let remaining_amount = bucket
             .get("remainingAmount")
             .and_then(|v| as_f64(v).or_else(|| v.as_str()?.parse().ok()));
         let used_percent = remaining_fraction.map(|f| (1.0 - f) * 100.0);
-        let resets_at = bucket.get("resetTime").and_then(Value::as_str).and_then(parse_iso_ms);
+        let resets_at = bucket
+            .get("resetTime")
+            .and_then(Value::as_str)
+            .and_then(parse_iso_ms);
         let bucket_id = bucket.get("bucketId").and_then(Value::as_str).unwrap_or("");
         let gname = group_name.unwrap_or("").to_lowercase();
-        let counter = if bucket_id.to_lowercase().starts_with("gemini-") || gname.contains("gemini") {
+        let counter = if bucket_id.to_lowercase().starts_with("gemini-") || gname.contains("gemini")
+        {
             "Gemini"
-        } else if bucket_id.to_lowercase().starts_with("3p-") || gname.contains("claude") || gname.contains("gpt") {
+        } else if bucket_id.to_lowercase().starts_with("3p-")
+            || gname.contains("claude")
+            || gname.contains("gpt")
+        {
             "Claude & GPT (shared)"
         } else {
             wlabel.as_str()
@@ -1181,7 +1438,13 @@ fn parse_quota_summary(payload: &Value) -> Option<UsageReport> {
         });
     };
     let groups = payload.get("groups").and_then(Value::as_array);
-    let has_groups = groups.is_some_and(|g| g.iter().any(|gr| gr.get("buckets").and_then(Value::as_array).is_some_and(|b| !b.is_empty())));
+    let has_groups = groups.is_some_and(|g| {
+        g.iter().any(|gr| {
+            gr.get("buckets")
+                .and_then(Value::as_array)
+                .is_some_and(|b| !b.is_empty())
+        })
+    });
     if has_groups {
         for group in groups.unwrap() {
             let gname = group.get("displayName").and_then(Value::as_str);
@@ -1211,7 +1474,10 @@ fn parse_quota_summary(payload: &Value) -> Option<UsageReport> {
 // Google Gemini CLI (TS usage/gemini.ts)
 // ---------------------------------------------------------------------------
 
-async fn fetch_gemini_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) -> Result<UsageReport> {
+async fn fetch_gemini_usage(
+    cred: &UsageCredential<'_>,
+    base_url: Option<&str>,
+) -> Result<UsageReport> {
     let Some(token) = cred.access_token else {
         bail!("no google-gemini-cli oauth access token");
     };
@@ -1234,10 +1500,19 @@ async fn fetch_gemini_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) 
         Some(p) => Some(p),
         None => {
             let body = serde_json::json!({});
-            post_json(&client, &format!("{base}/v1internal:loadCodeAssist"), headers.clone(), body)
-                .await
-                .ok()
-                .and_then(|r| r.get("cloudaicompanionProject").and_then(Value::as_str).map(str::to_string))
+            post_json(
+                &client,
+                &format!("{base}/v1internal:loadCodeAssist"),
+                headers.clone(),
+                body,
+            )
+            .await
+            .ok()
+            .and_then(|r| {
+                r.get("cloudaicompanionProject")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
         }
     };
     let Some(project_id) = project_id else {
@@ -1254,9 +1529,17 @@ async fn fetch_gemini_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) 
     if let Some(buckets) = quota.get("buckets").and_then(Value::as_array) {
         for bucket in buckets {
             let model_id = bucket.get("modelId").and_then(Value::as_str);
-            let remaining_fraction = bucket.get("remainingFraction").and_then(as_f64).map(|f| f.clamp(0.0, 1.0));
-            let window = bucket.get("resetTime").and_then(Value::as_str).and_then(parse_iso_ms);
-            let label = model_id.map(|m| format!("Gemini {m}")).unwrap_or_else(|| "Gemini quota".to_string());
+            let remaining_fraction = bucket
+                .get("remainingFraction")
+                .and_then(as_f64)
+                .map(|f| f.clamp(0.0, 1.0));
+            let window = bucket
+                .get("resetTime")
+                .and_then(Value::as_str)
+                .and_then(parse_iso_ms);
+            let label = model_id
+                .map(|m| format!("Gemini {m}"))
+                .unwrap_or_else(|| "Gemini quota".to_string());
             lines.push(UsageLine {
                 label,
                 used_percent: remaining_fraction.map(|f| (1.0 - f) * 100.0),
@@ -1269,7 +1552,12 @@ async fn fetch_gemini_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) 
     if lines.is_empty() {
         bail!("gemini retrieveUserQuota returned no buckets");
     }
-    Ok(UsageReport { provider: "google-gemini-cli".to_string(), fetched_at_ms: now_ms(), lines, notes: Vec::new() })
+    Ok(UsageReport {
+        provider: "google-gemini-cli".to_string(),
+        fetched_at_ms: now_ms(),
+        lines,
+        notes: Vec::new(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1279,7 +1567,9 @@ async fn fetch_gemini_usage(cred: &UsageCredential<'_>, base_url: Option<&str>) 
 /// Random UUIDv4 without pulling in a uuid crate.
 fn uuid_v4() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     let pid = std::process::id() as u128;
     let mut x: u128 = nanos ^ (pid << 64) ^ 0x9E37_79B9_7F4A_7C15;
     let mut bytes = [0u8; 16];
@@ -1292,7 +1582,14 @@ fn uuid_v4() -> String {
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1367,7 +1664,11 @@ mod tests {
         assert_eq!(report.lines.len(), 3);
         assert_eq!(report.lines[0].label, "Weekly limit (7d)");
         assert!((report.lines[0].used_percent.unwrap() - 40.0).abs() < f64::EPSILON);
-        assert!(report.lines[1].label.contains("5h"), "{}", report.lines[1].label);
+        assert!(
+            report.lines[1].label.contains("5h"),
+            "{}",
+            report.lines[1].label
+        );
         assert!(report.lines[2].resets_at.is_some());
     }
 
@@ -1410,7 +1711,10 @@ mod tests {
         assert!(report.lines.iter().any(|l| l.label == "secondary 7d"));
         assert!((report.lines[0].used_percent.unwrap() - 55.0).abs() < f64::EPSILON);
         assert!(report.notes.iter().any(|n| n == "plan: plus"));
-        assert!(report.notes.iter().any(|n| n == "reset credits available: 2"));
+        assert!(report
+            .notes
+            .iter()
+            .any(|n| n == "reset credits available: 2"));
     }
 
     #[test]
@@ -1449,7 +1753,8 @@ mod tests {
     #[test]
     fn jwt_payload_decodes_account_claim() {
         // {"https://api.openai.com/auth":{"chatgpt_account_id":"acc-1"}}
-        let payload = "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjLTEifX0";
+        let payload =
+            "eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjLTEifX0";
         let token = format!("eyJhbGciOiJIUzI1NiJ9.{payload}.sig");
         let claims = parse_jwt(&token).expect("jwt");
         assert_eq!(

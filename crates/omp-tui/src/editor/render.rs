@@ -65,14 +65,20 @@ impl Editor {
         let padding_x = shape.default_padding_x();
         let chrome = shape.side_chrome_width(padding_x);
         // The box frame never renders a gutter (TS `#getEffectivePromptGutter`).
-        let gutter = if shape.side_borders() { None } else { shape.default_prompt_gutter() };
+        let gutter = if shape.side_borders() {
+            None
+        } else {
+            shape.default_prompt_gutter()
+        };
         (padding_x, chrome, gutter)
     }
 
     /// Width available to wrapped text for a composer `width` columns wide.
     fn text_width(&self, width: usize) -> usize {
         let (_, chrome, gutter) = self.shape_geometry();
-        let gutter_w = gutter.map_or(0, display_width).min(width.saturating_sub(chrome * 2));
+        let gutter_w = gutter
+            .map_or(0, display_width)
+            .min(width.saturating_sub(chrome * 2));
         width.saturating_sub(chrome * 2 + gutter_w).max(1)
     }
 
@@ -93,7 +99,11 @@ impl Editor {
         } else {
             layout(self.buffer.lines(), content_width).len().max(1)
         };
-        let max_content = usize::from(self.max_height.saturating_sub(self.shape.vertical_chrome()).max(1));
+        let max_content = usize::from(
+            self.max_height
+                .saturating_sub(self.shape.vertical_chrome())
+                .max(1),
+        );
         u16::try_from(rows.min(max_content)).unwrap_or(u16::MAX) + self.chrome_rows()
     }
 
@@ -134,7 +144,9 @@ impl Component for Editor {
         };
         let gutter_style = Style::default().fg(gutter_color);
         let width = usize::from(area.width);
-        let gutter_w = gutter.map_or(0, display_width).min(width.saturating_sub(chrome_w * 2));
+        let gutter_w = gutter
+            .map_or(0, display_width)
+            .min(width.saturating_sub(chrome_w * 2));
         let text_w = width.saturating_sub(chrome_w * 2 + gutter_w).max(1);
         let (accent, surface) = crate::composer::chrome_styles(theme, gutter_style);
         let ctx = crate::composer::Chrome {
@@ -149,11 +161,20 @@ impl Component for Editor {
         // Top chrome row.
         let mut y = area.y;
         if let Some(top) = shape.render_top(&ctx) {
-            frame.render_widget(Paragraph::new(top), Rect { y, height: 1, ..area });
+            frame.render_widget(
+                Paragraph::new(top),
+                Rect {
+                    y,
+                    height: 1,
+                    ..area
+                },
+            );
             y += 1;
         }
         let bottom_rows = u16::from(shape.has_bottom());
-        let content_height = (area.y + area.height).saturating_sub(y + bottom_rows).max(1) as usize;
+        let content_height = (area.y + area.height)
+            .saturating_sub(y + bottom_rows)
+            .max(1) as usize;
         let content_top = y;
 
         // Visual rows (an empty draft shows one row carrying the hint).
@@ -174,11 +195,12 @@ impl Component for Editor {
         };
         // Magic keywords: ranges over the whole draft (prose masking needs
         // the full text), painted per visual row by global byte offset.
-        let magic_hits = if !empty && crate::magic_paint::any_keyword(self.buffer.lines(), theme.magic_off) {
-            crate::magic::enabled_ranges(&self.buffer.lines().join("\n"), theme.magic_off)
-        } else {
-            Vec::new()
-        };
+        let magic_hits =
+            if !empty && crate::magic_paint::any_keyword(self.buffer.lines(), theme.magic_off) {
+                crate::magic::enabled_ranges(&self.buffer.lines().join("\n"), theme.magic_off)
+            } else {
+                Vec::new()
+            };
         let line_offsets: Vec<usize> = if magic_hits.is_empty() {
             Vec::new()
         } else {
@@ -203,7 +225,10 @@ impl Component for Editor {
                     // The cursor cell sits at the start of the free area.
                     if text_w >= hint_w + HINT_MIN_GAP {
                         spans.push(Span::raw(" ".repeat(text_w - hint_w)));
-                        spans.push(Span::styled(key.clone(), Style::default().fg(theme.color("accent"))));
+                        spans.push(Span::styled(
+                            key.clone(),
+                            Style::default().fg(theme.color("accent")),
+                        ));
                         spans.push(Span::raw(" "));
                         spans.push(Span::styled(
                             label.clone(),
@@ -233,13 +258,21 @@ impl Component for Editor {
             let row = crate::composer::Row {
                 text,
                 pad: text_w.saturating_sub(text_cells),
-                gutter: if vis == 0 { gutter_first.clone() } else { gutter_rest.clone() },
+                gutter: if vis == 0 {
+                    gutter_first.clone()
+                } else {
+                    gutter_rest.clone()
+                },
                 is_last: vis + 1 == visible_count,
             };
             let line = shape.render_row(&ctx, &row);
             frame.render_widget(
                 Paragraph::new(line),
-                Rect { y: content_top + vis as u16, height: 1, ..area },
+                Rect {
+                    y: content_top + vis as u16,
+                    height: 1,
+                    ..area
+                },
             );
         }
 
@@ -248,7 +281,14 @@ impl Component for Editor {
         if let Some(bottom) = shape.render_bottom(&ctx) {
             let by = content_top + visible_count as u16;
             if by < area.y + area.height {
-                frame.render_widget(Paragraph::new(bottom), Rect { y: by, height: 1, ..area });
+                frame.render_widget(
+                    Paragraph::new(bottom),
+                    Rect {
+                        y: by,
+                        height: 1,
+                        ..area
+                    },
+                );
             }
         }
 
@@ -280,7 +320,9 @@ impl Component for Editor {
             .get(vis_row)
             .map_or("", |r| &r.text[..col_in_row.min(r.text.len())]);
         if let Some(ghost) = self.word_ghost() {
-            let at_row_end = rows.get(vis_row).is_some_and(|r| col_in_row == r.text.len());
+            let at_row_end = rows
+                .get(vis_row)
+                .is_some_and(|r| col_in_row == r.text.len());
             if at_row_end && vis_row >= offset && vis_row - offset < visible_count {
                 Self::draw_ghost(
                     frame.buffer_mut(),
@@ -344,11 +386,14 @@ impl Editor {
         theme: &Theme,
     ) {
         let y = inner.y + u16::try_from(vis_row).unwrap_or(0);
-        let style = Style::default().fg(theme.color("text_muted")).add_modifier(Modifier::DIM);
+        let style = Style::default()
+            .fg(theme.color("text_muted"))
+            .add_modifier(Modifier::DIM);
         let mut x = inner.x + u16::try_from(text_cells).unwrap_or(inner.width);
         let end = inner.x + inner.width;
         for c in ghost.chars() {
-            let w = u16::try_from(unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).unwrap_or(0);
+            let w =
+                u16::try_from(unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).unwrap_or(0);
             if w == 0 {
                 continue;
             }

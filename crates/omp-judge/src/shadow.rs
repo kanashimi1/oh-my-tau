@@ -50,10 +50,17 @@ impl Config {
         if let Some(t) = get("OMP_LAYA_THREADS").and_then(|t| t.parse().ok()) {
             paths.threads = t;
         }
-        let out = get("OMP_LAYA_JUDGE_OUT").map(PathBuf::from).unwrap_or_else(|| {
-            PathBuf::from(get("HOME").unwrap_or_else(|| ".".into())).join(".omp/agent/laya_judge.jsonl")
-        });
-        Some(Self { out, paths, queue_cap: QUEUE_CAP })
+        let out = get("OMP_LAYA_JUDGE_OUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(get("HOME").unwrap_or_else(|| ".".into()))
+                    .join(".omp/agent/laya_judge.jsonl")
+            });
+        Some(Self {
+            out,
+            paths,
+            queue_cap: QUEUE_CAP,
+        })
     }
 }
 
@@ -71,7 +78,10 @@ pub struct Job {
 /// Wrap raw message values (`role`, `content`, ...) as session `message` entries.
 #[must_use]
 pub fn message_entries(messages: impl IntoIterator<Item = Value>) -> Vec<Value> {
-    messages.into_iter().map(|m| json!({"type": "message", "message": m})).collect()
+    messages
+        .into_iter()
+        .map(|m| json!({"type": "message", "message": m}))
+        .collect()
 }
 
 #[derive(Default)]
@@ -128,7 +138,8 @@ impl ShadowJudge {
             .spawn(move || {
                 let mut model = Model::Unloaded;
                 while let Ok(job) = rx.recv() {
-                    let r = catch_unwind(AssertUnwindSafe(|| handle_job(&cfg, &c, &mut model, &job)));
+                    let r =
+                        catch_unwind(AssertUnwindSafe(|| handle_job(&cfg, &c, &mut model, &job)));
                     if r.is_err() {
                         c.failed.fetch_add(1, Ordering::Relaxed);
                         tracing::warn!("laya shadow judge: worker panicked on a job; continuing");
@@ -137,7 +148,11 @@ impl ShadowJudge {
                 }
             })
             .ok();
-        Self { tx: Some(tx), counters, handle }
+        Self {
+            tx: Some(tx),
+            counters,
+            handle,
+        }
     }
 
     /// Enqueue a turn without ever blocking. Returns `false` when it was dropped (queue full
@@ -206,7 +221,14 @@ fn handle_job(cfg: &Config, c: &Counters, model: &mut Model, job: &Job) {
         let view = episode_view(ep, job.is_sub);
         match scorer.score(&view) {
             Ok(s) => {
-                let row = row(&job.session_id, job.turn_index, &job.ts, &s, &cfg.paths.ckpt.to_string_lossy(), t0.elapsed().as_millis());
+                let row = row(
+                    &job.session_id,
+                    job.turn_index,
+                    &job.ts,
+                    &s,
+                    &cfg.paths.ckpt.to_string_lossy(),
+                    t0.elapsed().as_millis(),
+                );
                 match append_row(&cfg.out, &row) {
                     Ok(()) => c.scored.fetch_add(1, Ordering::Relaxed),
                     Err(e) => {
@@ -226,7 +248,14 @@ fn handle_job(cfg: &Config, c: &Counters, model: &mut Model, job: &Job) {
 /// The output row: `{session_id, turn_index, ts, success_p, rework_p, failure_mode_probs,
 /// model_ckpt, latency_ms}`.
 #[must_use]
-pub fn row(session_id: &str, turn_index: u64, ts: &str, s: &Scores, ckpt: &str, latency_ms: u128) -> Map<String, Value> {
+pub fn row(
+    session_id: &str,
+    turn_index: u64,
+    ts: &str,
+    s: &Scores,
+    ckpt: &str,
+    latency_ms: u128,
+) -> Map<String, Value> {
     let mut m = Map::new();
     m.insert("session_id".into(), json!(session_id));
     m.insert("turn_index".into(), json!(turn_index));
@@ -235,7 +264,10 @@ pub fn row(session_id: &str, turn_index: u64, ts: &str, s: &Scores, ckpt: &str, 
     m.insert("rework_p".into(), json!(s.rework_p));
     m.insert("failure_mode_probs".into(), s.failure_mode_json());
     m.insert("model_ckpt".into(), json!(ckpt));
-    m.insert("latency_ms".into(), json!(u64::try_from(latency_ms).unwrap_or(u64::MAX)));
+    m.insert(
+        "latency_ms".into(),
+        json!(u64::try_from(latency_ms).unwrap_or(u64::MAX)),
+    );
     m
 }
 
@@ -287,15 +319,31 @@ mod tests {
         let out = dir.path().join("laya_judge.jsonl");
         let cfg = Config {
             out: out.clone(),
-            paths: ModelPaths { ckpt: dir.path().join("nope"), onnx: dir.path().join("nope.onnx"), threads: 1 },
+            paths: ModelPaths {
+                ckpt: dir.path().join("nope"),
+                onnx: dir.path().join("nope.onnx"),
+                threads: 1,
+            },
             queue_cap: 8,
         };
         let w = ShadowJudge::spawn(cfg);
         for i in 0..3 {
-            assert!(w.submit(Job { session_id: "s".into(), turn_index: i, ts: "t".into(), entries: turn(), is_sub: false }));
+            assert!(w.submit(Job {
+                session_id: "s".into(),
+                turn_index: i,
+                ts: "t".into(),
+                entries: turn(),
+                is_sub: false
+            }));
         }
         // a turn without a human request is skipped before the model is touched
-        assert!(w.submit(Job { session_id: "s".into(), turn_index: 9, ts: "t".into(), entries: Vec::new(), is_sub: false }));
+        assert!(w.submit(Job {
+            session_id: "s".into(),
+            turn_index: 9,
+            ts: "t".into(),
+            entries: Vec::new(),
+            is_sub: false
+        }));
         let st = w.shutdown();
         assert_eq!(st.warnings, 1, "{st:?}");
         assert_eq!(st.done, 4);
@@ -309,13 +357,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = Config {
             out: dir.path().join("o.jsonl"),
-            paths: ModelPaths { ckpt: dir.path().join("nope"), onnx: dir.path().join("nope.onnx"), threads: 1 },
+            paths: ModelPaths {
+                ckpt: dir.path().join("nope"),
+                onnx: dir.path().join("nope.onnx"),
+                threads: 1,
+            },
             queue_cap: 1,
         };
         let w = ShadowJudge::spawn(cfg);
         let mut accepted = 0;
         for i in 0..200 {
-            if w.submit(Job { session_id: "s".into(), turn_index: i, ts: "t".into(), entries: turn(), is_sub: false }) {
+            if w.submit(Job {
+                session_id: "s".into(),
+                turn_index: i,
+                ts: "t".into(),
+                entries: turn(),
+                is_sub: false,
+            }) {
                 accepted += 1;
             }
         }

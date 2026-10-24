@@ -13,9 +13,9 @@
 //! epoch counter; listeners are a `tokio::sync::broadcast` channel of
 //! [`LiveFrame`]s (sending never blocks and needs no runtime).
 
-mod watch;
 #[cfg(test)]
 mod tests;
+mod watch;
 
 use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
@@ -83,7 +83,11 @@ struct State {
 
 impl State {
     fn status(&self) -> LiveStatus {
-        LiveStatus { version: self.version, sync: self.sync.clone(), indexing_hours: self.indexing_hours }
+        LiveStatus {
+            version: self.version,
+            sync: self.sync.clone(),
+            indexing_hours: self.indexing_hours,
+        }
     }
 }
 
@@ -120,8 +124,16 @@ impl StatsLive {
     #[must_use]
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(CHANNEL_CAPACITY);
-        let state = State { version: 1, ..State::default() };
-        Self { inner: Arc::new(Inner { state: Mutex::new(state), tx }) }
+        let state = State {
+            version: 1,
+            ..State::default()
+        };
+        Self {
+            inner: Arc::new(Inner {
+                state: Mutex::new(state),
+                tx,
+            }),
+        }
     }
 
     /// Current status (also the first SSE frame of a new subscriber).
@@ -174,12 +186,16 @@ impl StatsLive {
 
 impl Inner {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn emit(&self, st: &mut State) {
         let status = st.status();
-        let Ok(frame) = serde_json::to_string(&status) else { return };
+        let Ok(frame) = serde_json::to_string(&status) else {
+            return;
+        };
         if st.last_frame.as_deref() == Some(frame.as_str()) {
             return;
         }
@@ -271,14 +287,22 @@ impl Inner {
                 self.changed(&mut st);
             }
         };
-        let opts = SyncOptions { on_progress: Some(&on_progress), files: files.clone(), workers: None };
+        let opts = SyncOptions {
+            on_progress: Some(&on_progress),
+            files: files.clone(),
+            workers: None,
+        };
         let result = init_db().and_then(|()| sync_all_sessions(&opts));
         let mut st = self.lock();
         match result {
             Ok(result) => {
                 st.sync = LiveSyncStatus {
                     phase: LiveSyncPhase::Idle,
-                    processed: if visible { result.processed } else { st.sync.processed },
+                    processed: if visible {
+                        result.processed
+                    } else {
+                        st.sync.processed
+                    },
                     last_synced_at: Some(now_ms()),
                     error: None,
                     ..st.sync.clone()
@@ -293,12 +317,16 @@ impl Inner {
                 if st.started {
                     st.retry_seq += 1;
                     let (seq, epoch) = (st.retry_seq, st.epoch);
-                    self.after(Duration::from_millis(SYNC_RETRY_MS), move |inner| {
-                        let current = inner.lock().retry_seq == seq;
-                        if current {
-                            inner.request_sync(files);
-                        }
-                    }, epoch);
+                    self.after(
+                        Duration::from_millis(SYNC_RETRY_MS),
+                        move |inner| {
+                            let current = inner.lock().retry_seq == seq;
+                            if current {
+                                inner.request_sync(files);
+                            }
+                        },
+                        epoch,
+                    );
                 }
             }
         }
@@ -317,7 +345,12 @@ impl Inner {
     }
 
     /// Run `f` after `delay` unless `stop` moved past `epoch` meanwhile.
-    fn after(self: &Arc<Self>, delay: Duration, f: impl FnOnce(&Arc<Self>) + Send + 'static, epoch: u64) {
+    fn after(
+        self: &Arc<Self>,
+        delay: Duration,
+        f: impl FnOnce(&Arc<Self>) + Send + 'static,
+        epoch: u64,
+    ) {
         let inner = Arc::clone(self);
         std::thread::spawn(move || {
             std::thread::sleep(delay);
@@ -341,20 +374,24 @@ impl Inner {
         st.version_timer = true;
         let wait = (st.last_version_at + VERSION_THROTTLE_MS - now_ms()).max(0);
         let epoch = st.epoch;
-        self.after(Duration::from_millis(wait.unsigned_abs()), move |inner| {
-            let dirty = get_rollup_status().map(|s| s.dirty_hours);
-            let mut st = inner.lock();
-            if st.epoch != epoch {
-                return;
-            }
-            st.version_timer = false;
-            st.last_version_at = now_ms();
-            st.version += 1;
-            if let Ok(dirty) = dirty {
-                st.indexing_hours = dirty;
-            }
-            inner.emit(&mut st);
-        }, epoch);
+        self.after(
+            Duration::from_millis(wait.unsigned_abs()),
+            move |inner| {
+                let dirty = get_rollup_status().map(|s| s.dirty_hours);
+                let mut st = inner.lock();
+                if st.epoch != epoch {
+                    return;
+                }
+                st.version_timer = false;
+                st.last_version_at = now_ms();
+                st.version += 1;
+                if let Ok(dirty) = dirty {
+                    st.indexing_hours = dirty;
+                }
+                inner.emit(&mut st);
+            },
+            epoch,
+        );
     }
 
     fn refresh(self: &Arc<Self>, st: &mut State) {
@@ -385,7 +422,10 @@ impl Inner {
                     self.bump_version(&mut st);
                 }
             };
-            let opts = RefreshOptions { on_progress: Some(&on_progress), abort: None };
+            let opts = RefreshOptions {
+                on_progress: Some(&on_progress),
+                abort: None,
+            };
             if let Err(error) = refresh_rollups_with(&opts) {
                 tracing::warn!(error = %format!("{error:#}"), "Stats rollup refresh failed");
                 let mut st = self.lock();
@@ -408,11 +448,15 @@ impl Inner {
         }
         st.progress_timer = true;
         let epoch = st.epoch;
-        self.after(Duration::from_millis(PROGRESS_THROTTLE_MS), |inner| {
-            let mut st = inner.lock();
-            st.progress_timer = false;
-            inner.emit(&mut st);
-        }, epoch);
+        self.after(
+            Duration::from_millis(PROGRESS_THROTTLE_MS),
+            |inner| {
+                let mut st = inner.lock();
+                st.progress_timer = false;
+                inner.emit(&mut st);
+            },
+            epoch,
+        );
     }
 
     /// Test hook: no sync, refresh or timer still running.

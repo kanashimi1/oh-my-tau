@@ -47,7 +47,11 @@ fn tips() -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(|l| l.strip_prefix("[NO-TERN]").map_or(l, str::trim_start).to_owned())
+        .map(|l| {
+            l.strip_prefix("[NO-TERN]")
+                .map_or(l, str::trim_start)
+                .to_owned()
+        })
         .collect()
 }
 
@@ -89,7 +93,12 @@ pub fn format_key_hint(key: &str) -> String {
     let parts: Vec<&str> = key.split('+').collect();
     let (base, mods) = parts.split_last().map_or(("", &[][..]), |(b, m)| (*b, m));
     let mut out = String::new();
-    for (name, label) in [("ctrl", "Ctrl+"), ("alt", "Alt+"), ("shift", "⇧"), ("super", "Super+")] {
+    for (name, label) in [
+        ("ctrl", "Ctrl+"),
+        ("alt", "Alt+"),
+        ("shift", "⇧"),
+        ("super", "Super+"),
+    ] {
         if mods.contains(&name) {
             out.push_str(label);
         }
@@ -114,7 +123,11 @@ pub fn format_key_hint(key: &str) -> String {
     if let Some(g) = glyph {
         out.push_str(g);
     } else if base.chars().count() == 1 {
-        out.push_str(&if mods.is_empty() { base.to_owned() } else { base.to_uppercase() });
+        out.push_str(&if mods.is_empty() {
+            base.to_owned()
+        } else {
+            base.to_uppercase()
+        });
     } else {
         let mut cs = base.chars();
         if let Some(f) = cs.next() {
@@ -141,7 +154,12 @@ fn expand_tip(tip: &str) -> String {
         match inner.split_once(':') {
             Some(("key", k)) => out.push_str(&format_key_hint(k)),
             Some(("keys", ks)) => {
-                out.push_str(&ks.split(',').map(format_key_hint).collect::<Vec<_>>().join("/"));
+                out.push_str(
+                    &ks.split(',')
+                        .map(format_key_hint)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
             }
             Some(("tap", k)) => {
                 let h = format_key_hint(k);
@@ -162,7 +180,11 @@ fn expand_links(s: &str) -> String {
         let tail = &rest[open..];
         let parsed = tail.find("](").and_then(|mid| {
             let close = tail[mid + 2..].find(')')?;
-            Some((&tail[1..mid], &tail[mid + 2..mid + 2 + close], mid + 2 + close + 1))
+            Some((
+                &tail[1..mid],
+                &tail[mid + 2..mid + 2 + close],
+                mid + 2 + close + 1,
+            ))
         });
         match parsed {
             Some((label, url, consumed)) => {
@@ -244,7 +266,9 @@ pub fn welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme) -> V
     let mut lines: Vec<Line<'static>> = Vec::new();
     if room >= lockup_w {
         let dim = Style::default().fg(theme.color("text_muted"));
-        let text_style = Style::default().fg(theme.color("text")).add_modifier(Modifier::BOLD);
+        let text_style = Style::default()
+            .fg(theme.color("text"))
+            .add_modifier(Modifier::BOLD);
         for row in 0..PI_LOGO.len() {
             let mut spans = vec![indent(lockup_w, width)];
             spans.extend(logo_spans(row));
@@ -359,14 +383,21 @@ fn rgb((r, g, b): (u8, u8, u8)) -> Color {
 
 /// Sunset stripe colour of pixel row `row` (0..8). Phase 0 is the static
 /// palette (row `r` = stop `r`); the phase rotates the stops cyclically.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 fn stripe(row: usize, phase: f64) -> Color {
     use crate::magic::SUNSET;
     let n = SUNSET.len();
     let x = (row as f64 + phase * n as f64).rem_euclid(n as f64);
     let i = x.floor() as usize % n;
     let f = x - x.floor();
-    rgb(crate::magic::gradient_at(&[SUNSET[i], SUNSET[(i + 1) % n]], f))
+    rgb(crate::magic::gradient_at(
+        &[SUNSET[i], SUNSET[(i + 1) % n]],
+        f,
+    ))
 }
 
 /// Gradient position of `OMRS` char `i`, ping-ponged by the phase so the
@@ -375,7 +406,10 @@ fn stripe(row: usize, phase: f64) -> Color {
 fn omrs_color(i: usize, phase: f64) -> Color {
     let t = i as f64 / 3.0 + 2.0 * phase;
     let f = t.rem_euclid(2.0);
-    rgb(crate::magic::gradient_at(&[PINK, CYAN], if f > 1.0 { 2.0 - f } else { f }))
+    rgb(crate::magic::gradient_at(
+        &[PINK, CYAN],
+        if f > 1.0 { 2.0 - f } else { f },
+    ))
 }
 
 fn omrs_spans(phase: f64) -> Vec<Span<'static>> {
@@ -385,7 +419,9 @@ fn omrs_spans(phase: f64) -> Vec<Span<'static>> {
         .map(|(i, c)| {
             Span::styled(
                 c.to_string(),
-                Style::default().fg(omrs_color(i, phase)).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(omrs_color(i, phase))
+                    .add_modifier(Modifier::BOLD),
             )
         })
         .collect()
@@ -405,7 +441,9 @@ fn tau_rows(phase: f64) -> Vec<Vec<Span<'static>>> {
                     (false, true) => Span::styled("▄", Style::default().fg(stripe(bottom, phase))),
                     (true, true) => Span::styled(
                         "▀",
-                        Style::default().fg(stripe(top, phase)).bg(stripe(bottom, phase)),
+                        Style::default()
+                            .fg(stripe(top, phase))
+                            .bg(stripe(bottom, phase)),
                     ),
                 })
                 .collect()
@@ -418,13 +456,22 @@ fn tau_rows(phase: f64) -> Vec<Vec<Span<'static>>> {
 /// one line (`τ OMRS v…`) on narrow terminals. `phase` 0 is the static
 /// palette, other values come from [`shimmer_phase`].
 #[must_use]
-pub fn clean_welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme, phase: f64) -> Vec<Line<'static>> {
+pub fn clean_welcome_lines(
+    version: &str,
+    tip: &str,
+    width: usize,
+    theme: &Theme,
+    phase: f64,
+) -> Vec<Line<'static>> {
     let side = width.saturating_sub(CLEAN_MARGIN + TAU_WIDTH + CLEAN_GAP + 1);
     let muted = Style::default().fg(theme.color("text_muted"));
     if side < 24 || width < CLEAN_MIN_COLUMNS {
         let mut spans = vec![
             Span::raw(" ".repeat(CLEAN_MARGIN)),
-            Span::styled("τ", Style::default().fg(rgb(PINK)).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "τ",
+                Style::default().fg(rgb(PINK)).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" "),
         ];
         spans.extend(omrs_spans(phase));
@@ -446,7 +493,9 @@ pub fn clean_welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme
             let last = &mut wrapped[1];
             *last = fit(&format!("{last} …"), measure);
         }
-        let label = Style::default().fg(theme.color("accent")).add_modifier(Modifier::ITALIC);
+        let label = Style::default()
+            .fg(theme.color("accent"))
+            .add_modifier(Modifier::ITALIC);
         let body_style = muted.add_modifier(Modifier::ITALIC);
         for (i, line) in wrapped.iter().enumerate() {
             let row = &mut beside[2 + i];
@@ -529,10 +578,16 @@ mod tests {
         let moving = clean_welcome_lines("1.0.0", "tip", 100, &theme, mid);
         assert_ne!(moving, static_rows);
         // The phase only recolours: same text.
-        assert_eq!(moving.iter().map(text).collect::<Vec<_>>(), static_rows.iter().map(text).collect::<Vec<_>>());
+        assert_eq!(
+            moving.iter().map(text).collect::<Vec<_>>(),
+            static_rows.iter().map(text).collect::<Vec<_>>()
+        );
         // After 1.5 s the rows are the static rows.
         let done = shimmer_phase(Duration::from_millis(1600)).unwrap_or(0.0);
-        assert_eq!(clean_welcome_lines("1.0.0", "tip", 100, &theme, done), static_rows);
+        assert_eq!(
+            clean_welcome_lines("1.0.0", "tip", 100, &theme, done),
+            static_rows
+        );
         // Just before the end the cycle is nearly closed (no jump at freeze).
         let late = shimmer_phase(Duration::from_millis(SHIMMER_MS - 1)).unwrap();
         assert!(late > 0.99);
@@ -548,7 +603,10 @@ mod tests {
     #[test]
     fn lockup_is_centered_like_ts() {
         let rows = welcome_lines("18.6.1", "Type `/` for commands", 120, &Theme::default());
-        assert_eq!(text(&rows[0]).trim_end(), format!("{}████████████", " ".repeat(44)));
+        assert_eq!(
+            text(&rows[0]).trim_end(),
+            format!("{}████████████", " ".repeat(44))
+        );
         assert_eq!(
             text(&rows[4]).trim_end(),
             format!("{}       ██       v18.6.1", " ".repeat(44))

@@ -11,8 +11,17 @@ fn view_sel_matches_python_on_50_episodes() {
     let mut n = 0;
     for line in text.lines() {
         let r: Value = serde_json::from_str(line).unwrap();
-        let got = view_sel(r["state"].as_str().unwrap(), &Objective::from_value(&r["objective"]), DEFAULT_BUDGET);
-        assert_eq!(got, r["expected"].as_str().unwrap(), "view mismatch for {}", r["id"]);
+        let got = view_sel(
+            r["state"].as_str().unwrap(),
+            &Objective::from_value(&r["objective"]),
+            DEFAULT_BUDGET,
+        );
+        assert_eq!(
+            got,
+            r["expected"].as_str().unwrap(),
+            "view mismatch for {}",
+            r["id"]
+        );
         n += 1;
     }
     assert_eq!(n, 50);
@@ -28,7 +37,11 @@ fn view_sel_matches_python_on_all_episodes() {
     let mut n = 0;
     for line in text.lines() {
         let r: Value = serde_json::from_str(line).unwrap();
-        let got = view_sel(r["state"].as_str().unwrap(), &Objective::from_value(&r["objective"]), DEFAULT_BUDGET);
+        let got = view_sel(
+            r["state"].as_str().unwrap(),
+            &Objective::from_value(&r["objective"]),
+            DEFAULT_BUDGET,
+        );
         n += 1;
         if got != r["expected"].as_str().unwrap() {
             bad += 1;

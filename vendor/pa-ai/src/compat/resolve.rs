@@ -16,8 +16,9 @@ use serde_json::{json, Map, Value};
 
 use super::cascade::{resolve_cascade, AmbiguousOverlap, ResolvedAxes, Target};
 use super::hosts::{
-    has_local_loopback_base_url, host_matches_url, is_anthropic_signing_proxy_url, is_azure_anthropic_route,
-    is_bedrock_anthropic_route, is_official_anthropic_api_url, model_matches_host,
+    has_local_loopback_base_url, host_matches_url, is_anthropic_signing_proxy_url,
+    is_azure_anthropic_route, is_bedrock_anthropic_route, is_official_anthropic_api_url,
+    model_matches_host,
 };
 use super::revision::{compare_revision, parse_revision, Revision};
 use super::taxonomy::{classify_model, strip_thinking_variant_suffix, AmbiguousIdentity, Identity};
@@ -147,9 +148,13 @@ fn apply_compat_overrides(rec: &mut Rec, overrides: Option<&Map<String, Value>>)
 /// Assign resolved wire axes onto a record when the model's API maps to one of the axis's records.
 fn apply_wire_axes(rec: &mut Rec, wire: &Map<String, Value>, api: &str) {
     let ax = axes();
-    let Some(records) = ax.api_records.get(api) else { return };
+    let Some(records) = ax.api_records.get(api) else {
+        return;
+    };
     for (key, value) in wire {
-        let Some(axis_records) = ax.wire.get(key) else { continue };
+        let Some(axis_records) = ax.wire.get(key) else {
+            continue;
+        };
         if !axis_records.iter().any(|r| records.contains(r)) {
             continue;
         }
@@ -163,7 +168,8 @@ fn apply_wire_axes(rec: &mut Rec, wire: &Map<String, Value>, api: &str) {
 
 const THINKING_EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 const DEFAULT_REASONING_EFFORTS: [&str; 4] = ["minimal", "low", "medium", "high"];
-const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
+const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: [&str; 5] =
+    ["minimal", "low", "medium", "high", "xhigh"];
 
 fn effort_value(v: &Value) -> Option<&'static str> {
     let s = v.as_str()?;
@@ -178,7 +184,9 @@ fn effort_record(v: &Value) -> Option<Map<String, Value>> {
     let obj = v.as_object()?;
     let mut out = Map::new();
     for (k, mapped) in obj {
-        let Some(effort) = THINKING_EFFORTS.iter().find(|e| **e == k.as_str()) else { continue };
+        let Some(effort) = THINKING_EFFORTS.iter().find(|e| **e == k.as_str()) else {
+            continue;
+        };
         if mapped.is_string() {
             out.insert((*effort).to_string(), mapped.clone());
         }
@@ -190,7 +198,9 @@ fn effort_number_record(v: &Value) -> Option<Map<String, Value>> {
     let obj = v.as_object()?;
     let mut out = Map::new();
     for (k, mapped) in obj {
-        let Some(effort) = THINKING_EFFORTS.iter().find(|e| **e == k.as_str()) else { continue };
+        let Some(effort) = THINKING_EFFORTS.iter().find(|e| **e == k.as_str()) else {
+            continue;
+        };
         if mapped.is_number() {
             out.insert((*effort).to_string(), mapped.clone());
         }
@@ -220,16 +230,24 @@ struct Facts<'a> {
 
 impl<'a> Facts<'a> {
     fn new(identity: &'a Identity) -> Self {
-        Self { identity, revision: identity.revision.as_deref().and_then(parse_revision) }
+        Self {
+            identity,
+            revision: identity.revision.as_deref().and_then(parse_revision),
+        }
     }
     fn is(&self, cls: &str) -> bool {
         self.identity.class == cls
     }
     fn family(&self, families: &[&str]) -> bool {
-        self.identity.family.as_deref().is_some_and(|f| families.contains(&f))
+        self.identity
+            .family
+            .as_deref()
+            .is_some_and(|f| families.contains(&f))
     }
     fn rev_gte(&self, min: &str) -> bool {
-        let Some(r) = &self.revision else { return false };
+        let Some(r) = &self.revision else {
+            return false;
+        };
         parse_revision(min).is_some_and(|b| compare_revision(r, &b).is_ge())
     }
     fn rev_major(&self) -> Option<u32> {
@@ -326,8 +344,8 @@ fn detect_openai(spec: &ModelSpec, facts: &Facts<'_>, reasoning_capable: bool) -
     let is_direct_deepseek_api = m("deepseekDirect");
     let is_deepseek_family = m("deepseekFamily") || facts.is("deepseek");
     let is_deepseek_reasoning = is_deepseek_family && reasoning_capable;
-    let is_local_openai_compat_backend =
-        !is_proxy_provider(backend_provider) && (is_local_provider(backend_provider) || has_local_loopback_base_url(base_url));
+    let is_local_openai_compat_backend = !is_proxy_provider(backend_provider)
+        && (is_local_provider(backend_provider) || has_local_loopback_base_url(base_url));
     OpenAIDetection {
         is_cline_pass: provider == "cline-pass",
         is_zai: m("zai"),
@@ -339,16 +357,28 @@ fn detect_openai(spec: &ModelSpec, facts: &Facts<'_>, reasoning_capable: bool) -
         is_deepseek_reasoning,
         is_direct_deepseek_reasoning: is_direct_deepseek_api && is_deepseek_reasoning,
         is_venice: m("venice"),
-        requires_enabled_thinking: is_moonshot_native && facts.is("kimi") && facts.family(&["k2.7-code"]),
+        requires_enabled_thinking: is_moonshot_native
+            && facts.is("kimi")
+            && facts.family(&["k2.7-code"]),
         is_xiaomi_mimo: is_xiaomi_host && facts.is("mimo"),
         is_local_openai_compat_backend,
-        is_local_serving_backend: is_local_openai_compat_backend || has_local_loopback_base_url(base_url),
+        is_local_serving_backend: is_local_openai_compat_backend
+            || has_local_loopback_base_url(base_url),
         is_open_router: m("openrouter"),
     }
 }
 
-fn detect_stream_markup_healing(provider: &str, facts: &Facts<'_>, base_url: &str) -> Option<&'static str> {
-    let is_kimi_k2 = facts.is("kimi") && facts.identity.family.as_deref().is_some_and(|f| f.starts_with("k2"));
+fn detect_stream_markup_healing(
+    provider: &str,
+    facts: &Facts<'_>,
+    base_url: &str,
+) -> Option<&'static str> {
+    let is_kimi_k2 = facts.is("kimi")
+        && facts
+            .identity
+            .family
+            .as_deref()
+            .is_some_and(|f| f.starts_with("k2"));
     if provider == "kimi-code" || provider == "moonshot" || is_kimi_k2 {
         return Some("kimi");
     }
@@ -362,7 +392,12 @@ fn detect_stream_markup_healing(provider: &str, facts: &Facts<'_>, base_url: &st
 }
 
 #[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
-fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>, reasoning_capable: bool) -> Rec {
+fn detect_openai_compat(
+    spec: &ModelSpec,
+    d: &OpenAIDetection,
+    facts: &Facts<'_>,
+    reasoning_capable: bool,
+) -> Rec {
     let provider = spec.provider.as_str();
     let base_url = spec.base_url.as_str();
     let m = |host: &str| model_matches_host(provider, base_url, host);
@@ -389,7 +424,8 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
     let is_anthropic_model = m("anthropic") || facts.is("anthropic");
     let is_qwen = facts.is("qwen");
     let is_deepseek_family = m("deepseekFamily") || facts.is("deepseek");
-    let supports_zai_reasoning_effort = (d.is_zai || d.is_zhipu) && facts.is("glm") && facts.rev_gte("5.2");
+    let supports_zai_reasoning_effort =
+        (d.is_zai || d.is_zhipu) && facts.is("glm") && facts.rev_gte("5.2");
 
     let is_non_standard = is_cerebras
         || is_grok
@@ -415,8 +451,9 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
         || is_fireworks
         || d.is_direct_deepseek_api;
 
-    let supports_prompt_cache_breakpoints =
-        is_official_openai_endpoint(provider, base_url) && facts.is("openai") && facts.rev_gte("5.6");
+    let supports_prompt_cache_breakpoints = is_official_openai_endpoint(provider, base_url)
+        && facts.is("openai")
+        && facts.rev_gte("5.6");
 
     let supports_multiple_system_messages_default = !is_minimax_host
         && !is_alibaba
@@ -445,7 +482,11 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
         Some(GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS)
     } else if facts.is("mimo") && u("xiaomi") {
         Some(300_000)
-    } else if reasoning_capable && facts.is("kimi") && (facts.family(&["k3"]) || facts.family(&["k2.7-code"])) && u("moonshotNative") {
+    } else if reasoning_capable
+        && facts.is("kimi")
+        && (facts.family(&["k3"]) || facts.family(&["k2.7-code"]))
+        && u("moonshotNative")
+    {
         Some(300_000)
     } else if reasoning_capable && facts.is("deepseek") && u("deepseekDirect") {
         Some(300_000)
@@ -478,15 +519,23 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
     let mut r = Rec::default();
     r.d("supportsStore", !is_non_standard);
     r.d("supportsDeveloperRole", is_openai_host || is_azure_host);
-    r.d("supportsMultipleSystemMessages", supports_multiple_system_messages_default);
+    r.d(
+        "supportsMultipleSystemMessages",
+        supports_multiple_system_messages_default,
+    );
     r.d(
         "supportsReasoningEffort",
-        !is_grok && !d.is_xiaomi_mimo && (!(d.is_zai || d.is_zhipu) || supports_zai_reasoning_effort),
+        !is_grok
+            && !d.is_xiaomi_mimo
+            && (!(d.is_zai || d.is_zhipu) || supports_zai_reasoning_effort),
     );
     r.u("trustExplicitThinkingOnly");
     r.d("supportsReasoningParams", provider != "github-copilot");
     r.d("supportsSamplingParams", true);
-    r.d("supportsPenaltyAndStopParams", !(is_grok && reasoning_capable));
+    r.d(
+        "supportsPenaltyAndStopParams",
+        !(is_grok && reasoning_capable),
+    );
     r.d("reasoningEffortMap", json!({}));
     r.d("supportsUsageInStreaming", !is_cerebras_host);
     r.d("alwaysSendMaxTokens", facts.is("kimi"));
@@ -499,7 +548,10 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
         !d.is_cline_pass && is_deepseek_family && reasoning_capable && !d.is_open_router,
     );
     r.d("disableReasoningWithTools", false);
-    r.d("supportsToolChoice", d.is_cline_pass || !d.is_direct_deepseek_reasoning);
+    r.d(
+        "supportsToolChoice",
+        d.is_cline_pass || !d.is_direct_deepseek_reasoning,
+    );
     r.d(
         "supportsForcedToolChoice",
         !d.requires_enabled_thinking
@@ -507,7 +559,14 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
             && !(d.is_cline_pass && is_qwen),
     );
     r.d("supportsNamedToolChoice", true);
-    r.d("maxTokensField", if use_max_tokens { "max_tokens" } else { "max_completion_tokens" });
+    r.d(
+        "maxTokensField",
+        if use_max_tokens {
+            "max_tokens"
+        } else {
+            "max_completion_tokens"
+        },
+    );
     r.d("requiresToolResultName", is_mistral);
     r.d("requiresAssistantAfterToolResult", is_mistral);
     r.d("requiresThinkingAsText", is_mistral);
@@ -526,9 +585,22 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
     );
     r.d("omitReasoningEffort", false);
     r.d("includeEncryptedReasoning", true);
-    r.d("filterReasoningHistory", d.is_open_router && is_anthropic_model);
-    r.opt("thinkingKeep", uses_moonshot_kimi_preserved_thinking.then(|| json!("all")));
-    r.d("reasoningContentField", if d.is_cline_pass { "reasoning" } else { "reasoning_content" });
+    r.d(
+        "filterReasoningHistory",
+        d.is_open_router && is_anthropic_model,
+    );
+    r.opt(
+        "thinkingKeep",
+        uses_moonshot_kimi_preserved_thinking.then(|| json!("all")),
+    );
+    r.d(
+        "reasoningContentField",
+        if d.is_cline_pass {
+            "reasoning"
+        } else {
+            "reasoning_content"
+        },
+    );
     r.u("mistralReasoningContentParts");
     r.d(
         "requiresReasoningContentForToolCalls",
@@ -549,17 +621,28 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
     r.d("replayReasoningContent", d.is_local_openai_compat_backend);
     r.d(
         "qwenPreserveThinking",
-        (thinking_format == "qwen" || thinking_format == "qwen-chat-template") && d.is_local_openai_compat_backend,
+        (thinking_format == "qwen" || thinking_format == "qwen-chat-template")
+            && d.is_local_openai_compat_backend,
     );
     r.d("qwenTemplateReasoningEffort", false);
-    r.d("requiresAssistantContentForToolCalls", facts.is("kimi") || d.is_direct_deepseek_reasoning);
+    r.d(
+        "requiresAssistantContentForToolCalls",
+        facts.is("kimi") || d.is_direct_deepseek_reasoning,
+    );
     r.opt(
         "cacheControlFormat",
-        ((d.is_cline_pass && (is_qwen || is_anthropic_model)) || (d.is_open_router && is_anthropic_model))
+        ((d.is_cline_pass && (is_qwen || is_anthropic_model))
+            || (d.is_open_router && is_anthropic_model))
             .then(|| json!("anthropic")),
     );
-    r.d("supportsPromptCacheBreakpoints", supports_prompt_cache_breakpoints);
-    r.opt("promptCacheBreakpointTtl", supports_prompt_cache_breakpoints.then(|| json!("30m")));
+    r.d(
+        "supportsPromptCacheBreakpoints",
+        supports_prompt_cache_breakpoints,
+    );
+    r.opt(
+        "promptCacheBreakpointTtl",
+        supports_prompt_cache_breakpoints.then(|| json!("30m")),
+    );
     r.u("openRouterRouting");
     r.u("vercelGatewayRouting");
     r.d("isOpenRouterHost", d.is_open_router);
@@ -567,10 +650,22 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
     r.d("isVercelGatewayHost", is_vercel_gateway);
     r.d(
         "supportsStrictMode",
-        u("openai") || u("azureOpenAI") || u("cerebras") || u("together") || u("openrouter") || u("deepseekFamily"),
+        u("openai")
+            || u("azureOpenAI")
+            || u("cerebras")
+            || u("together")
+            || u("openrouter")
+            || u("deepseekFamily"),
     );
     r.u("extraBody");
-    r.d("toolStrictMode", if is_cerebras_host { "all_strict" } else { "mixed" });
+    r.d(
+        "toolStrictMode",
+        if is_cerebras_host {
+            "all_strict"
+        } else {
+            "mixed"
+        },
+    );
     r.opt(
         "toolSchemaFlavor",
         if d.is_moonshot_native || facts.is("kimi") {
@@ -581,9 +676,18 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
             None
         },
     );
-    r.opt("streamFirstEventTimeoutMs", d.is_local_serving_backend.then(|| json!(0)));
-    r.opt("streamIdleTimeoutMs", stream_idle_timeout_ms.map(|v| json!(v)));
-    r.d("stripDeepseekSpecialTokens", facts.is("deepseek") && (provider == "nvidia" || provider == "deepseek"));
+    r.opt(
+        "streamFirstEventTimeoutMs",
+        d.is_local_serving_backend.then(|| json!(0)),
+    );
+    r.opt(
+        "streamIdleTimeoutMs",
+        stream_idle_timeout_ms.map(|v| json!(v)),
+    );
+    r.d(
+        "stripDeepseekSpecialTokens",
+        facts.is("deepseek") && (provider == "nvidia" || provider == "deepseek"),
+    );
     r.opt(
         "streamMarkupHealingPattern",
         detect_stream_markup_healing(provider, facts, base_url).map(|v| json!(v)),
@@ -591,7 +695,10 @@ fn detect_openai_compat(spec: &ModelSpec, d: &OpenAIDetection, facts: &Facts<'_>
     r.d("reasoningDeltasMayBeCumulative", false);
     r.d("emptyLengthFinishIsContextError", false);
     r.d("usesOpenAIToolCallIdLimit", false);
-    r.opt("promptCacheSessionHeader", u("xai").then(|| json!("x-grok-conv-id")));
+    r.opt(
+        "promptCacheSessionHeader",
+        u("xai").then(|| json!("x-grok-conv-id")),
+    );
     r.d("dropThinkingWhenReasoningEffort", false);
     r.d("nativeKimiK3Reasoning", false);
     r.d("zaiReasoningEffortDialect", false);
@@ -616,11 +723,20 @@ fn spread_maps(parts: &[Option<&Map<String, Value>>]) -> Map<String, Value> {
 }
 
 /// Per-key overlay: spec `reasoningEffortMap` keys win over the cascade-provided map.
-fn overlay_effort_map_axis(rec: &mut Rec, axes: &ResolvedAxes, spec_compat: Option<&Map<String, Value>>) {
+fn overlay_effort_map_axis(
+    rec: &mut Rec,
+    axes: &ResolvedAxes,
+    spec_compat: Option<&Map<String, Value>>,
+) {
     let axis_map = axes.wire.get("reasoningEffortMap").and_then(effort_record);
-    let spec_map = spec_compat.and_then(|c| c.get("reasoningEffortMap")).and_then(Value::as_object);
+    let spec_map = spec_compat
+        .and_then(|c| c.get("reasoningEffortMap"))
+        .and_then(Value::as_object);
     if let (Some(axis_map), Some(spec_map)) = (axis_map, spec_map) {
-        rec.d("reasoningEffortMap", Value::Object(spread_maps(&[Some(&axis_map), Some(spec_map)])));
+        rec.d(
+            "reasoningEffortMap",
+            Value::Object(spread_maps(&[Some(&axis_map), Some(spec_map)])),
+        );
     }
 }
 
@@ -649,7 +765,9 @@ fn fixup_openai_compat(spec: &ModelSpec, rec: &mut Rec, d: &OpenAIDetection, axe
             }
         }
     }
-    if !spec_compat_defined(spec, "reasoningDisableMode") && !axes.wire.contains_key("reasoningDisableMode") {
+    if !spec_compat_defined(spec, "reasoningDisableMode")
+        && !axes.wire.contains_key("reasoningDisableMode")
+    {
         let fmt = rec.str_of("thinkingFormat").unwrap_or("openai").to_string();
         let mode = if d.is_cline_pass {
             "cline-enabled-false"
@@ -672,7 +790,10 @@ fn fixup_openai_compat(spec: &ModelSpec, rec: &mut Rec, d: &OpenAIDetection, axe
     }
 
     let axis_when_thinking = if compat_reasoning(spec, axes) {
-        axes.wire.get("whenThinking").filter(|v| v.is_object()).cloned()
+        axes.wire
+            .get("whenThinking")
+            .filter(|v| v.is_object())
+            .cloned()
     } else {
         None
     };
@@ -684,7 +805,11 @@ fn fixup_openai_compat(spec: &ModelSpec, rec: &mut Rec, d: &OpenAIDetection, axe
         .cloned();
     let when_policy = spec_when.or(axis_when_thinking).or_else(|| {
         d.is_direct_deepseek_reasoning.then(|| {
-            let mut extra = rec.get("extraBody").and_then(Value::as_object).cloned().unwrap_or_default();
+            let mut extra = rec
+                .get("extraBody")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             extra.insert("thinking".into(), json!({"type": "enabled"}));
             json!({ "extraBody": extra })
         })
@@ -695,13 +820,22 @@ fn fixup_openai_compat(spec: &ModelSpec, rec: &mut Rec, d: &OpenAIDetection, axe
             variant.u("whenThinking");
             apply_compat_overrides(&mut variant, Some(policy));
             if policy.get("reasoningDisableMode").is_none() {
-                let fmt = variant.str_of("thinkingFormat").unwrap_or("openai").to_string();
+                let fmt = variant
+                    .str_of("thinkingFormat")
+                    .unwrap_or("openai")
+                    .to_string();
                 variant.d(
                     "reasoningDisableMode",
-                    if d.is_venice { "venice-disable-thinking" } else { resolve_reasoning_disable_mode(&fmt) },
+                    if d.is_venice {
+                        "venice-disable-thinking"
+                    } else {
+                        resolve_reasoning_disable_mode(&fmt)
+                    },
                 );
             }
-            if policy.get("omitReasoningEffort").is_none() && !variant.truthy("supportsReasoningEffort") {
+            if policy.get("omitReasoningEffort").is_none()
+                && !variant.truthy("supportsReasoningEffort")
+            {
                 variant.d("omitReasoningEffort", true);
             }
             rec.d("whenThinking", Value::Object(variant.map));
@@ -726,7 +860,12 @@ fn resolve_openai_completions_policy(
 }
 
 #[allow(clippy::too_many_lines)]
-fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &ResolvedAxes, api: &str) -> Rec {
+fn resolve_openai_responses_policy(
+    spec: &ModelSpec,
+    facts: &Facts<'_>,
+    axes: &ResolvedAxes,
+    api: &str,
+) -> Rec {
     let base_url = spec.base_url.as_str();
     let provider = spec.provider.as_str();
     let backend_provider = spec.provider_type.as_deref().unwrap_or(provider);
@@ -737,17 +876,26 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
     let is_openai_url = u("openai");
     let is_vercel_gateway = m("vercelAIGateway");
     let is_xai_host = m("xai");
-    let supports_prompt_cache_breakpoints =
-        is_official_openai_endpoint(provider, base_url) && facts.is("openai") && facts.rev_gte("5.6");
-    let thinking_format = if is_open_router { "openrouter" } else { "openai" };
+    let supports_prompt_cache_breakpoints = is_official_openai_endpoint(provider, base_url)
+        && facts.is("openai")
+        && facts.rev_gte("5.6");
+    let thinking_format = if is_open_router {
+        "openrouter"
+    } else {
+        "openai"
+    };
     let reasoning_capable = compat_reasoning(spec, axes);
-    let is_local_serving_backend = (!is_proxy_provider(backend_provider) && is_local_provider(backend_provider))
+    let is_local_serving_backend = (!is_proxy_provider(backend_provider)
+        && is_local_provider(backend_provider))
         || has_local_loopback_base_url(base_url);
     let is_anthropic_model = facts.is("anthropic");
     let is_deepseek_family = facts.is("deepseek");
 
     let mut r = Rec::default();
-    r.d("supportsDeveloperRole", is_azure || is_openai_url || u("githubCopilot"));
+    r.d(
+        "supportsDeveloperRole",
+        is_azure || is_openai_url || u("githubCopilot"),
+    );
     r.d(
         "supportsStrictMode",
         is_azure
@@ -761,9 +909,18 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
     r.d("supportsReasoningEffort", !is_xai_host);
     r.u("trustExplicitThinkingOnly");
     r.d("supportsLongPromptCacheRetention", is_openai_url);
-    r.d("supportsPromptCacheBreakpoints", supports_prompt_cache_breakpoints);
-    r.opt("promptCacheBreakpointTtl", supports_prompt_cache_breakpoints.then(|| json!("30m")));
-    r.d("strictResponsesPairing", is_azure || provider == "github-copilot");
+    r.d(
+        "supportsPromptCacheBreakpoints",
+        supports_prompt_cache_breakpoints,
+    );
+    r.opt(
+        "promptCacheBreakpointTtl",
+        supports_prompt_cache_breakpoints.then(|| json!("30m")),
+    );
+    r.d(
+        "strictResponsesPairing",
+        is_azure || provider == "github-copilot",
+    );
     r.d(
         "supportsImageDetailOriginal",
         is_openai_url || u("azureOpenAI") || (is_azure && base_url.is_empty()) || u("openaiCodex"),
@@ -781,27 +938,44 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
     r.d("supportsSamplingParams", true);
     r.d("supportsPenaltyAndStopParams", !is_xai_host);
     r.d("thinkingFormat", thinking_format);
-    r.d("reasoningDisableMode", resolve_reasoning_disable_mode(thinking_format));
+    r.d(
+        "reasoningDisableMode",
+        resolve_reasoning_disable_mode(thinking_format),
+    );
     r.d("omitReasoningEffort", false);
     r.d("includeEncryptedReasoning", true);
-    r.d("filterReasoningHistory", is_open_router && is_anthropic_model);
+    r.d(
+        "filterReasoningHistory",
+        is_open_router && is_anthropic_model,
+    );
     r.d("disableReasoningOnForcedToolChoice", facts.is("kimi"));
-    r.d("disableReasoningOnToolChoice", is_deepseek_family && reasoning_capable && !is_open_router);
+    r.d(
+        "disableReasoningOnToolChoice",
+        is_deepseek_family && reasoning_capable && !is_open_router,
+    );
     r.d("disableReasoningWithTools", false);
     r.d("supportsToolChoice", true);
-    r.d("supportsForcedToolChoice", provider != "opencode-go" && provider != "opencode-zen");
+    r.d(
+        "supportsForcedToolChoice",
+        provider != "opencode-go" && provider != "opencode-zen",
+    );
     r.d("supportsNamedToolChoice", true);
     r.d("reasoningContentField", "reasoning_content");
     r.d(
         "requiresReasoningContentForToolCalls",
-        (facts.is("kimi") || (is_deepseek_family && reasoning_capable) || (is_open_router && reasoning_capable))
+        (facts.is("kimi")
+            || (is_deepseek_family && reasoning_capable)
+            || (is_open_router && reasoning_capable))
             && reasoning_capable,
     );
     r.d(
         "requiresReasoningContentForAllAssistantTurns",
         is_deepseek_family && reasoning_capable && !is_open_router,
     );
-    r.d("allowsSyntheticReasoningContentForToolCalls", !is_deepseek_family || !reasoning_capable);
+    r.d(
+        "allowsSyntheticReasoningContentForToolCalls",
+        !is_deepseek_family || !reasoning_capable,
+    );
     r.u("syntheticReasoningContentFallback");
     r.d("replayReasoningContent", false);
     r.d("qwenPreserveThinking", false);
@@ -815,17 +989,30 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
     r.u("vercelGatewayRouting");
     r.d("isOpenRouterHost", is_open_router);
     r.d("isVercelGatewayHost", is_vercel_gateway);
-    r.d("wireModelIdMode", if is_open_router { "openrouter" } else { "raw" });
-    r.opt("toolSchemaFlavor", facts.is("kimi").then(|| json!("moonshot-mfjs")));
+    r.d(
+        "wireModelIdMode",
+        if is_open_router { "openrouter" } else { "raw" },
+    );
+    r.opt(
+        "toolSchemaFlavor",
+        facts.is("kimi").then(|| json!("moonshot-mfjs")),
+    );
     r.d("alwaysSendMaxTokens", facts.is("kimi"));
     r.d(
         "clampOutputToModelMax",
-        !is_proxy_provider(backend_provider) && (is_local_provider(backend_provider) || has_local_loopback_base_url(base_url)),
+        !is_proxy_provider(backend_provider)
+            && (is_local_provider(backend_provider) || has_local_loopback_base_url(base_url)),
     );
-    r.d("supportsObfuscationOptOut", is_openai_url || provider == "openai");
+    r.d(
+        "supportsObfuscationOptOut",
+        is_openai_url || provider == "openai",
+    );
     r.d("storeResponses", false);
     r.d("connectionBoundNativeHistory", false);
-    r.d("officialEndpoint", is_official_openai_endpoint(provider, base_url));
+    r.d(
+        "officialEndpoint",
+        is_official_openai_endpoint(provider, base_url),
+    );
     r.d("harmonyLeakMitigation", false);
     r.d("rejectRootObjectUnion", false);
     r.d("retryWithoutStrictOnGrammarError", false);
@@ -833,7 +1020,10 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
         "cacheControlFormat",
         (is_open_router && is_anthropic_model).then(|| json!("anthropic")),
     );
-    r.d("stripDeepseekSpecialTokens", facts.is("deepseek") && (provider == "nvidia" || provider == "deepseek"));
+    r.d(
+        "stripDeepseekSpecialTokens",
+        facts.is("deepseek") && (provider == "nvidia" || provider == "deepseek"),
+    );
     r.opt(
         "streamMarkupHealingPattern",
         detect_stream_markup_healing(provider, facts, base_url).map(|v| json!(v)),
@@ -841,13 +1031,19 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
     r.d("reasoningDeltasMayBeCumulative", false);
     r.d("emptyLengthFinishIsContextError", false);
     r.d("usesOpenAIToolCallIdLimit", false);
-    r.opt("promptCacheSessionHeader", u("xai").then(|| json!("x-grok-conv-id")));
+    r.opt(
+        "promptCacheSessionHeader",
+        u("xai").then(|| json!("x-grok-conv-id")),
+    );
     r.opt(
         "streamFirstEventTimeoutMs",
         if is_local_serving_backend {
             Some(json!(0))
         } else {
-            spec.compat.as_ref().and_then(|c| c.get("streamFirstEventTimeoutMs")).cloned()
+            spec.compat
+                .as_ref()
+                .and_then(|c| c.get("streamFirstEventTimeoutMs"))
+                .cloned()
         },
     );
     r.opt(
@@ -855,15 +1051,25 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
         if is_local_serving_backend {
             Some(json!(LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS))
         } else {
-            spec.compat.as_ref().and_then(|c| c.get("streamIdleTimeoutMs")).cloned()
+            spec.compat
+                .as_ref()
+                .and_then(|c| c.get("streamIdleTimeoutMs"))
+                .cloned()
         },
     );
     apply_wire_axes(&mut r, &axes.wire, api);
     apply_compat_overrides(&mut r, spec.compat.as_ref());
     overlay_effort_map_axis(&mut r, axes, spec.compat.as_ref());
     if is_xai_host && axes.wire.contains_key("reasoningEffortMap") {
-        let canonical = axes.wire.get("reasoningEffortMap").and_then(effort_record).unwrap_or_default();
-        let current = r.get("reasoningEffortMap").and_then(Value::as_object).cloned();
+        let canonical = axes
+            .wire
+            .get("reasoningEffortMap")
+            .and_then(effort_record)
+            .unwrap_or_default();
+        let current = r
+            .get("reasoningEffortMap")
+            .and_then(Value::as_object)
+            .cloned();
         let mut merged = spread_maps(&[current.as_ref(), Some(&canonical)]);
         for key in ["xhigh", "max"] {
             if !canonical.contains_key(key) {
@@ -872,7 +1078,9 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
         }
         r.d("reasoningEffortMap", Value::Object(merged));
     }
-    if !spec_compat_defined(spec, "reasoningDisableMode") && !axes.wire.contains_key("reasoningDisableMode") {
+    if !spec_compat_defined(spec, "reasoningDisableMode")
+        && !axes.wire.contains_key("reasoningDisableMode")
+    {
         let fmt = r.str_of("thinkingFormat").unwrap_or("openai").to_string();
         r.d("reasoningDisableMode", resolve_reasoning_disable_mode(&fmt));
     }
@@ -883,8 +1091,17 @@ fn resolve_openai_responses_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &R
         r.d("omitReasoningEffort", true);
     }
     if provider == "xai-oauth"
-        && axes.wire.get("supportsReasoningEffort").and_then(Value::as_bool) == Some(true)
-        && spec.compat.as_ref().and_then(|c| c.get("supportsReasoningEffort")).and_then(Value::as_bool) != Some(false)
+        && axes
+            .wire
+            .get("supportsReasoningEffort")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && spec
+            .compat
+            .as_ref()
+            .and_then(|c| c.get("supportsReasoningEffort"))
+            .and_then(Value::as_bool)
+            != Some(false)
     {
         r.d("supportsReasoningEffort", true);
         r.d("omitReasoningEffort", false);
@@ -921,7 +1138,8 @@ fn resolve_anthropic_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &Resolved
     let requires_thinking_enabled = m("moonshotNative") && facts.kimi_mandatory_thinking();
     let bedrock_messages_api = is_bedrock_anthropic_route(base_url);
     let rejects_strict_tools = is_azure_anthropic_route(base_url) || bedrock_messages_api;
-    let signing_endpoint = official || is_copilot || is_zenmux || is_anthropic_signing_proxy_url(base_url);
+    let signing_endpoint =
+        official || is_copilot || is_zenmux || is_anthropic_signing_proxy_url(base_url);
     let mut r = Rec::default();
     r.d("officialEndpoint", official);
     r.d("signingEndpoint", signing_endpoint);
@@ -930,7 +1148,10 @@ fn resolve_anthropic_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &Resolved
     r.d("firstPartyProvider", false);
     r.d("supportsOutputEffort", true);
     r.d("disableStrictTools", rejects_strict_tools);
-    r.opt("bedrockMessagesApi", bedrock_messages_api.then(|| json!(true)));
+    r.opt(
+        "bedrockMessagesApi",
+        bedrock_messages_api.then(|| json!(true)),
+    );
     r.d("disableAdaptiveThinking", false);
     r.d("allowAnthropicHeaderOverrides", false);
     r.d("supportsEagerToolInputStreaming", official);
@@ -944,7 +1165,10 @@ fn resolve_anthropic_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &Resolved
     r.d("supportsPerMessageEffort", false);
     r.d("supportsThinkingBindingControls", false);
     r.d("supportsBetweenToolsThinking", false);
-    r.d("supportsForcedToolChoice", !requires_thinking_enabled && !facts.family(&["fable", "mythos"]));
+    r.d(
+        "supportsForcedToolChoice",
+        !requires_thinking_enabled && !facts.family(&["fable", "mythos"]),
+    );
     r.d("supportsSamplingParams", true);
     r.d("requiresToolResultId", false);
     r.d("requiresThinkingEnabled", requires_thinking_enabled);
@@ -960,7 +1184,13 @@ fn resolve_anthropic_policy(spec: &ModelSpec, facts: &Facts<'_>, axes: &Resolved
     r.u("thinkingLoopGuard");
     r.u("stripThinkingHistory");
     r.u("fastMode");
-    r.opt("streamIdleTimeoutMs", spec.compat.as_ref().and_then(|c| c.get("streamIdleTimeoutMs")).cloned());
+    r.opt(
+        "streamIdleTimeoutMs",
+        spec.compat
+            .as_ref()
+            .and_then(|c| c.get("streamIdleTimeoutMs"))
+            .cloned(),
+    );
     apply_wire_axes(&mut r, &axes.wire, "anthropic-messages");
     apply_compat_overrides(&mut r, spec.compat.as_ref());
     r
@@ -1019,7 +1249,10 @@ fn resolve_google_policy(spec: &ModelSpec, axes: &ResolvedAxes) -> Rec {
 // ---------------------------------------------------------------------------
 
 fn omits_wire_reasoning_effort(api: &str, compat: Option<&Rec>) -> bool {
-    if !matches!(api, "openai-responses" | "openai-codex-responses" | "azure-openai-responses") {
+    if !matches!(
+        api,
+        "openai-responses" | "openai-codex-responses" | "azure-openai-responses"
+    ) {
         return false;
     }
     compat.is_some_and(|c| c.is("supportsReasoningEffort", false))
@@ -1043,11 +1276,18 @@ fn default_thinking_mode(spec: &ModelSpec, facts: &Facts<'_>) -> &'static str {
             if facts.is("minimax") && facts.family(&["m2", "m3"]) {
                 return "anthropic-adaptive";
             }
-            if facts.is("glm") && facts.rev_gte("5.2") && (spec.provider == "umans" || spec.provider == "zai") {
+            if facts.is("glm")
+                && facts.rev_gte("5.2")
+                && (spec.provider == "umans" || spec.provider == "zai")
+            {
                 return "anthropic-budget-effort";
             }
             if facts.is("anthropic") {
-                if facts.rev_gte(if facts.family(&["haiku"]) { "5.5" } else { "4.6" }) {
+                if facts.rev_gte(if facts.family(&["haiku"]) {
+                    "5.5"
+                } else {
+                    "4.6"
+                }) {
                     return "anthropic-adaptive";
                 }
                 if facts.family(&["opus"]) && facts.rev_gte("4.5") {
@@ -1090,7 +1330,10 @@ fn fallback_efforts(spec: &ModelSpec, compat: Option<&Rec>) -> Vec<&'static str>
             return DEFAULT_REASONING_EFFORTS.to_vec();
         }
     }
-    if matches!(api, "openai-responses" | "openai-codex-responses" | "azure-openai-responses") {
+    if matches!(
+        api,
+        "openai-responses" | "openai-codex-responses" | "azure-openai-responses"
+    ) {
         return DEFAULT_REASONING_EFFORTS_WITH_XHIGH.to_vec();
     }
     DEFAULT_REASONING_EFFORTS.to_vec()
@@ -1099,8 +1342,12 @@ fn fallback_efforts(spec: &ModelSpec, compat: Option<&Rec>) -> Vec<&'static str>
 fn filter_effort_map(map: &Map<String, Value>, efforts: &[&str]) -> Option<Map<String, Value>> {
     let mut filtered: Option<Map<String, Value>> = None;
     for effort in efforts {
-        let Some(mapped) = map.get(*effort) else { continue };
-        filtered.get_or_insert_with(Map::new).insert((*effort).to_string(), mapped.clone());
+        let Some(mapped) = map.get(*effort) else {
+            continue;
+        };
+        filtered
+            .get_or_insert_with(Map::new)
+            .insert((*effort).to_string(), mapped.clone());
     }
     filtered
 }
@@ -1141,8 +1388,10 @@ fn implies_mandatory_reasoning(facts: &Facts<'_>, model_id: &str) -> bool {
 }
 
 fn default_supports_display(spec: &ModelSpec, facts: &Facts<'_>) -> bool {
-    matches!(spec.api.as_str(), "anthropic-messages" | "bedrock-converse-stream")
-        && facts.anthropic_adaptive_gen_at_least("4.7")
+    matches!(
+        spec.api.as_str(),
+        "anthropic-messages" | "bedrock-converse-stream"
+    ) && facts.anthropic_adaptive_gen_at_least("4.7")
 }
 
 fn merge_effort_map(
@@ -1151,18 +1400,22 @@ fn merge_effort_map(
     compat: Option<&Rec>,
     efforts: &[&str],
 ) -> Option<Map<String, Value>> {
-    let detected: Option<Map<String, Value>> = (matches!(spec.api.as_str(), "openai-completions" | "openrouter")
-        && model_matches_host(&spec.provider, &spec.base_url, "fireworks"))
-    .then(|| {
-        let mut m = Map::new();
-        m.insert("minimal".into(), json!("none"));
-        m
-    });
+    let detected: Option<Map<String, Value>> =
+        (matches!(spec.api.as_str(), "openai-completions" | "openrouter")
+            && model_matches_host(&spec.provider, &spec.base_url, "fireworks"))
+        .then(|| {
+            let mut m = Map::new();
+            m.insert("minimal".into(), json!("none"));
+            m
+        });
     let configured = read_compat_effort_map(compat);
     if detected.is_none() && rule_map.is_none() && configured.is_none() {
         return None;
     }
-    filter_effort_map(&spread_maps(&[detected.as_ref(), rule_map, configured.as_ref()]), efforts)
+    filter_effort_map(
+        &spread_maps(&[detected.as_ref(), rule_map, configured.as_ref()]),
+        efforts,
+    )
 }
 
 fn is_qwen_template_reasoning_effort_compat(compat: Option<&Rec>) -> bool {
@@ -1176,21 +1429,26 @@ fn resolve_thinking_policy(
     compat: Option<&Rec>,
 ) -> Result<Option<Value>, ResolveError> {
     let rule = read_rule_thinking(axes);
-    let explicit = spec
-        .thinking
-        .as_ref()
-        .filter(|t| t.get("efforts").and_then(Value::as_array).is_some_and(|a| !a.is_empty()));
+    let explicit = spec.thinking.as_ref().filter(|t| {
+        t.get("efforts")
+            .and_then(Value::as_array)
+            .is_some_and(|a| !a.is_empty())
+    });
     if !spec.reasoning && (explicit.is_some() || rule.upgrade_neutral != Some(true)) {
         return Ok(None);
     }
-    if spec.provider == "cline-pass" && compat.is_some_and(|c| c.is("supportsReasoningEffort", false)) {
+    if spec.provider == "cline-pass"
+        && compat.is_some_and(|c| c.is("supportsReasoningEffort", false))
+    {
         return Ok(None);
     }
     if omits_wire_reasoning_effort(&spec.api, compat) {
         return Ok(None);
     }
     if let Some(explicit) = explicit {
-        return Ok(Some(fill_explicit_thinking(spec, facts, compat, explicit, &rule)));
+        return Ok(Some(fill_explicit_thinking(
+            spec, facts, compat, explicit, &rule,
+        )));
     }
     if compat.is_some_and(|c| c.is("trustExplicitThinkingOnly", true)) {
         return Ok(None);
@@ -1198,8 +1456,13 @@ fn resolve_thinking_policy(
     if rule.efforts.as_ref().is_some_and(Vec::is_empty) {
         return Ok(None);
     }
-    let mode = rule.mode.unwrap_or_else(|| default_thinking_mode(spec, facts));
-    let efforts = rule.efforts.clone().unwrap_or_else(|| fallback_efforts(spec, compat));
+    let mode = rule
+        .mode
+        .unwrap_or_else(|| default_thinking_mode(spec, facts));
+    let efforts = rule
+        .efforts
+        .clone()
+        .unwrap_or_else(|| fallback_efforts(spec, compat));
     if efforts.is_empty() {
         return Err(ResolveError::Thinking(format!(
             "Model {}/{} resolved to an empty thinking range",
@@ -1218,15 +1481,19 @@ fn resolve_thinking_policy(
     if let Some(b) = &rule.effort_budgets {
         config.insert("effortBudgets".into(), Value::Object(b.clone()));
     }
-    if rule.supports_display.unwrap_or_else(|| default_supports_display(spec, facts)) {
+    if rule
+        .supports_display
+        .unwrap_or_else(|| default_supports_display(spec, facts))
+    {
         config.insert("supportsDisplay".into(), json!(true));
     }
     if rule.prefix_binding == Some(true) {
         config.insert("prefixBinding".into(), json!(true));
     }
-    let requires_effort = rule
-        .requires_effort
-        .unwrap_or_else(|| implies_mandatory_reasoning(facts, &spec.id) || is_qwen_template_reasoning_effort_compat(compat));
+    let requires_effort = rule.requires_effort.unwrap_or_else(|| {
+        implies_mandatory_reasoning(facts, &spec.id)
+            || is_qwen_template_reasoning_effort_compat(compat)
+    });
     if requires_effort {
         config.insert("requiresEffort".into(), json!(true));
     }
@@ -1255,13 +1522,17 @@ fn fill_explicit_thinking(
         None
     };
     let needs_display = obj.get("supportsDisplay").is_none()
-        && rule.supports_display.unwrap_or_else(|| default_supports_display(spec, facts));
-    let needs_requires_effort = obj.get("requiresEffort").is_none()
         && rule
-            .requires_effort
-            .unwrap_or_else(|| implies_mandatory_reasoning(facts, &spec.id) || is_qwen_template_reasoning_effort_compat(compat));
+            .supports_display
+            .unwrap_or_else(|| default_supports_display(spec, facts));
+    let needs_requires_effort = obj.get("requiresEffort").is_none()
+        && rule.requires_effort.unwrap_or_else(|| {
+            implies_mandatory_reasoning(facts, &spec.id)
+                || is_qwen_template_reasoning_effort_compat(compat)
+        });
     let needs_default_level = obj.get("defaultLevel").is_none() && rule.default_level.is_some();
-    let needs_prefix_binding = obj.get("prefixBinding").is_none() && rule.prefix_binding == Some(true);
+    let needs_prefix_binding =
+        obj.get("prefixBinding").is_none() && rule.prefix_binding == Some(true);
     let needs_effort_budgets = obj.get("effortBudgets").is_none() && rule.effort_budgets.is_some();
     if effort_map.is_none()
         && !needs_display
@@ -1314,16 +1585,29 @@ fn build_resolve_target(spec: &ModelSpec, identity: &Identity, provider_type: &s
 /// Catalog-data axis assignments for one model spec.
 pub fn resolve_catalog_axes(spec: &ModelSpec) -> Result<Map<String, Value>, ResolveError> {
     let identity = classify_model(rules(), &spec.provider, &spec.id, spec.lenient)?;
-    let provider_type = spec.provider_type.clone().unwrap_or_else(|| spec.provider.clone());
-    Ok(resolve_cascade(rules(), &build_resolve_target(spec, &identity, &provider_type))?.catalog)
+    let provider_type = spec
+        .provider_type
+        .clone()
+        .unwrap_or_else(|| spec.provider.clone());
+    Ok(resolve_cascade(
+        rules(),
+        &build_resolve_target(spec, &identity, &provider_type),
+    )?
+    .catalog)
 }
 
 /// Resolve the full policy surface for one model spec: structured identity, complete compat
 /// record, thinking metadata, catalog-data corrections and request policy.
-pub fn resolve_model_policy(spec: &ModelSpec, upstream: Option<&str>) -> Result<ResolvedModelPolicy, ResolveError> {
+pub fn resolve_model_policy(
+    spec: &ModelSpec,
+    upstream: Option<&str>,
+) -> Result<ResolvedModelPolicy, ResolveError> {
     let identity = classify_model(rules(), &spec.provider, &spec.id, spec.lenient)?;
     let facts = Facts::new(&identity);
-    let provider_type = spec.provider_type.clone().unwrap_or_else(|| spec.provider.clone());
+    let provider_type = spec
+        .provider_type
+        .clone()
+        .unwrap_or_else(|| spec.provider.clone());
     let mut target = build_resolve_target(spec, &identity, &provider_type);
     target.upstream = upstream.map(str::to_string);
     let axes = resolve_cascade(rules(), &target)?;
@@ -1337,13 +1621,15 @@ pub fn resolve_model_policy(spec: &ModelSpec, upstream: Option<&str>) -> Result<
             Some(chat)
         }
         "openai-completions" => Some(resolve_openai_completions_policy(spec, &facts, &axes)),
-        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => {
-            Some(resolve_openai_responses_policy(spec, &facts, &axes, &spec.api))
-        }
+        "openai-responses" | "azure-openai-responses" | "openai-codex-responses" => Some(
+            resolve_openai_responses_policy(spec, &facts, &axes, &spec.api),
+        ),
         "anthropic-messages" => Some(resolve_anthropic_policy(spec, &facts, &axes)),
         "bedrock-converse-stream" => Some(resolve_bedrock_policy(spec, &axes)),
         "devin-agent" => Some(resolve_devin_policy(spec, &axes)),
-        "google-generative-ai" | "google-vertex" | "google-gemini-cli" => Some(resolve_google_policy(spec, &axes)),
+        "google-generative-ai" | "google-vertex" | "google-gemini-cli" => {
+            Some(resolve_google_policy(spec, &axes))
+        }
         _ => None,
     };
     let thinking = resolve_thinking_policy(spec, &facts, &axes, compat.as_ref())?;

@@ -632,7 +632,10 @@ impl ContextMessages {
 
     /// Messages in order.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &AgentMessage> + '_ {
-        self.segments.iter().flat_map(|s| s.iter()).chain(self.tail.iter())
+        self.segments
+            .iter()
+            .flat_map(|s| s.iter())
+            .chain(self.tail.iter())
     }
 
     #[must_use]
@@ -693,7 +696,9 @@ impl ContextMessages {
     /// free when nothing else shares the segments, a copy of the shared ones otherwise.
     pub fn make_contiguous(&mut self) -> &mut Vec<AgentMessage> {
         if !(self.segments.is_empty()
-            || (self.segments.len() == 1 && self.tail.is_empty() && Arc::get_mut(&mut self.segments[0]).is_some()))
+            || (self.segments.len() == 1
+                && self.tail.is_empty()
+                && Arc::get_mut(&mut self.segments[0]).is_some()))
         {
             let all = std::mem::take(self).into_vec();
             self.tail = all;
@@ -707,7 +712,10 @@ impl ContextMessages {
 
 impl From<Vec<AgentMessage>> for ContextMessages {
     fn from(messages: Vec<AgentMessage>) -> Self {
-        Self { segments: Vec::new(), tail: messages }
+        Self {
+            segments: Vec::new(),
+            tail: messages,
+        }
     }
 }
 
@@ -849,7 +857,8 @@ mod context_messages_tests {
 
     #[test]
     fn snapshot_shares_history_and_stays_isolated() {
-        let mut state: ContextMessages = vec![AgentMessage::user("a"), AgentMessage::user("b")].into();
+        let mut state: ContextMessages =
+            vec![AgentMessage::user("a"), AgentMessage::user("b")].into();
         state.freeze();
         let mut snap = state.clone();
         // Shared, not copied: both point at the same frozen segment.
@@ -859,7 +868,10 @@ mod context_messages_tests {
         assert_eq!(state.len(), 3);
         assert_eq!(snap.len(), 3);
         assert_ne!(texts(&state), texts(&snap));
-        assert_eq!(format!("{:?}", snap.last().unwrap()), format!("{:?}", AgentMessage::user("loop-only")));
+        assert_eq!(
+            format!("{:?}", snap.last().unwrap()),
+            format!("{:?}", AgentMessage::user("loop-only"))
+        );
     }
 
     #[test]
@@ -868,8 +880,14 @@ mod context_messages_tests {
         a.freeze();
         let b = a.clone();
         *a.last_mut().unwrap() = AgentMessage::user("y");
-        assert_eq!(format!("{:?}", b.last().unwrap()), format!("{:?}", AgentMessage::user("x")));
-        assert_eq!(format!("{:?}", a.last().unwrap()), format!("{:?}", AgentMessage::user("y")));
+        assert_eq!(
+            format!("{:?}", b.last().unwrap()),
+            format!("{:?}", AgentMessage::user("x"))
+        );
+        assert_eq!(
+            format!("{:?}", a.last().unwrap()),
+            format!("{:?}", AgentMessage::user("y"))
+        );
     }
 
     #[test]

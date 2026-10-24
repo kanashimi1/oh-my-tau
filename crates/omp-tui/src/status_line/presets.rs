@@ -331,7 +331,12 @@ impl StatusLineConfig {
         }
         let segments = |id: &str| -> Option<Vec<SegmentId>> {
             let names = settings.get_string_array(id);
-            (!names.is_empty()).then(|| names.iter().filter_map(|n| SegmentId::from_name(n)).collect())
+            (!names.is_empty()).then(|| {
+                names
+                    .iter()
+                    .filter_map(|n| SegmentId::from_name(n))
+                    .collect()
+            })
         };
         cfg.left_segments = segments("statusLine.leftSegments");
         cfg.right_segments = segments("statusLine.rightSegments");

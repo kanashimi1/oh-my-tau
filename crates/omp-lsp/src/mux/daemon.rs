@@ -14,12 +14,12 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::net::{UnixStream};
+use tokio::net::UnixStream;
 
 use super::protocol::{
-    lsp_mux_endpoint, CONNECT_TIMEOUT_MS, ENSURE_ATTEMPTS, HANDSHAKE_TIMEOUT_MS, LSP_MUX_PROJECT_DIR_ENV,
-    LSP_MUX_SOCKET_ENV, MUX_CONNECT_METHOD, MUX_PING_METHOD, MUX_PING_RESULT, MuxConnectParams, MuxConnectResult,
-    PROBE_TIMEOUT_MS, READY_TIMEOUT_MS,
+    lsp_mux_endpoint, MuxConnectParams, MuxConnectResult, CONNECT_TIMEOUT_MS, ENSURE_ATTEMPTS,
+    HANDSHAKE_TIMEOUT_MS, LSP_MUX_PROJECT_DIR_ENV, LSP_MUX_SOCKET_ENV, MUX_CONNECT_METHOD,
+    MUX_PING_METHOD, MUX_PING_RESULT, PROBE_TIMEOUT_MS, READY_TIMEOUT_MS,
 };
 use crate::client::Framer;
 
@@ -99,7 +99,12 @@ fn mux_binary() -> Option<PathBuf> {
 async fn connect_endpoint(endpoint: &Path, timeout: Duration) -> std::io::Result<UnixStream> {
     tokio::time::timeout(timeout, UnixStream::connect(endpoint))
         .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out connecting to LSP mux"))?
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "timed out connecting to LSP mux",
+            )
+        })?
 }
 
 /// Send one request on a fresh socket and await its response, returning the
@@ -119,7 +124,9 @@ async fn request_on_socket(
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         while let Some(text) = framer.next() {
-            let Ok(message) = serde_json::from_str::<Value>(&text) else { continue };
+            let Ok(message) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
             if message.get("id") != request.get("id") {
                 continue;
             }
@@ -136,8 +143,15 @@ async fn request_on_socket(
         if tokio::time::Instant::now() >= deadline {
             return Err("LSP mux handshake timed out".to_string());
         }
-        match tokio::time::timeout(deadline - tokio::time::Instant::now(), reader.read(&mut chunk)).await {
-            Ok(Ok(0) | Err(_)) => return Err("LSP mux connection closed during handshake".to_string()),
+        match tokio::time::timeout(
+            deadline - tokio::time::Instant::now(),
+            reader.read(&mut chunk),
+        )
+        .await
+        {
+            Ok(Ok(0) | Err(_)) => {
+                return Err("LSP mux connection closed during handshake".to_string())
+            }
             Ok(Ok(n)) => framer.push(&chunk[..n]),
             Err(_) => return Err("LSP mux handshake timed out".to_string()),
         }
@@ -145,7 +159,10 @@ async fn request_on_socket(
 }
 
 /// Dial and handshake one server link; fails on any error (omp `dialMuxServer`).
-async fn dial_mux_server(endpoint: &Path, params: &MuxConnectParams) -> Result<MuxTransport, String> {
+async fn dial_mux_server(
+    endpoint: &Path,
+    params: &MuxConnectParams,
+) -> Result<MuxTransport, String> {
     let stream = connect_endpoint(endpoint, Duration::from_millis(CONNECT_TIMEOUT_MS))
         .await
         .map_err(|e| format!("failed to connect to LSP mux: {e}"))?;
@@ -156,17 +173,27 @@ async fn dial_mux_server(endpoint: &Path, params: &MuxConnectParams) -> Result<M
         "method": MUX_CONNECT_METHOD,
         "params": serde_json::to_value(params).expect("serialize connect params"),
     });
-    let (response, leftover) =
-        request_on_socket(&mut reader, &mut writer, &request, Duration::from_millis(HANDSHAKE_TIMEOUT_MS)).await?;
+    let (response, leftover) = request_on_socket(
+        &mut reader,
+        &mut writer,
+        &request,
+        Duration::from_millis(HANDSHAKE_TIMEOUT_MS),
+    )
+    .await?;
     let result: MuxConnectResult =
         serde_json::from_value(response.get("result").cloned().unwrap_or(Value::Null))
             .map_err(|e| format!("invalid mux connect result: {e}"))?;
-    Ok(MuxTransport { reader: MuxReader::new(reader, leftover), writer, pid: result.pid })
+    Ok(MuxTransport {
+        reader: MuxReader::new(reader, leftover),
+        writer,
+        pid: result.pid,
+    })
 }
 
 /// True when a mux answers the ping handshake at `endpoint` (omp `probeMux`).
 async fn probe_mux(endpoint: &Path) -> bool {
-    let Ok(stream) = connect_endpoint(endpoint, Duration::from_millis(PROBE_TIMEOUT_MS)).await else {
+    let Ok(stream) = connect_endpoint(endpoint, Duration::from_millis(PROBE_TIMEOUT_MS)).await
+    else {
         return false;
     };
     let (mut reader, mut writer) = stream.into_split();
@@ -251,7 +278,9 @@ pub async fn connect_shared_lsp_transport(
     match dial_mux_server(&endpoint, &params).await {
         Ok(transport) => Some(transport),
         Err(error) => {
-            tracing::debug!("shared LSP transport unavailable; falling back to local spawn: {error}");
+            tracing::debug!(
+                "shared LSP transport unavailable; falling back to local spawn: {error}"
+            );
             None
         }
     }

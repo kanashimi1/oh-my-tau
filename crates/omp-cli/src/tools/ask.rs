@@ -619,9 +619,7 @@ impl AskTool {
                             .find(|(i, o)| display_label(o, recommended, *i) == display)
                             .map(|(_, o)| o.label.clone())
                             .or_else(|| {
-                                display
-                                    .strip_suffix(RECOMMENDED_SUFFIX)
-                                    .map(str::to_string)
+                                display.strip_suffix(RECOMMENDED_SUFFIX).map(str::to_string)
                             })
                             .unwrap_or(display);
                         selected = vec![picked];
@@ -695,7 +693,9 @@ impl AskTool {
         // Hosts without the rich dialog degrade to the select/editor prompts
         // (omp checks `extensionUi.askDialog` presence).
         if !ui.has_ask_dialog() {
-            return self.run_fallback(ui.as_ref(), &params.questions, signal).await;
+            return self
+                .run_fallback(ui.as_ref(), &params.questions, signal)
+                .await;
         }
         let frame: Vec<Value> = params.questions.iter().map(frame_question).collect();
         let fut = ui.ask(Value::Array(frame), None);
@@ -864,7 +864,10 @@ mod tests {
         let (ui, tool) = fake(Some(
             json!({"answers": [{"id": "storage", "selectedOptions": ["SQLite"]}]}),
         ));
-        let result = tool.run(storage_args(), &AbortSignal::never()).await.unwrap();
+        let result = tool
+            .run(storage_args(), &AbortSignal::never())
+            .await
+            .unwrap();
         assert_eq!(
             result.content,
             vec![ToolResultContent::text("User selected: SQLite")]
@@ -887,14 +890,20 @@ mod tests {
     async fn cancel_and_empty_single_select_are_cancellations() {
         let (_, tool) = fake(Some(json!({"cancelled": true})));
         assert_eq!(
-            tool.run(storage_args(), &AbortSignal::never()).await.unwrap_err().to_string(),
+            tool.run(storage_args(), &AbortSignal::never())
+                .await
+                .unwrap_err()
+                .to_string(),
             "Ask tool was cancelled by the user"
         );
         let (_, tool) = fake(Some(
             json!({"answers": [{"id": "storage", "selectedOptions": []}]}),
         ));
         assert_eq!(
-            tool.run(storage_args(), &AbortSignal::never()).await.unwrap_err().to_string(),
+            tool.run(storage_args(), &AbortSignal::never())
+                .await
+                .unwrap_err()
+                .to_string(),
             "Ask tool was cancelled by the user"
         );
     }
@@ -940,13 +949,20 @@ mod tests {
         let (_, tool) = fake(Some(
             json!({"answers": [{"id": "storage", "selectedOptions": ["Nope"]}]}),
         ));
-        let err = tool.run(storage_args(), &AbortSignal::never()).await.unwrap_err().to_string();
+        let err = tool
+            .run(storage_args(), &AbortSignal::never())
+            .await
+            .unwrap_err()
+            .to_string();
         assert_eq!(
             err,
             "Ask dialog answer \"storage\" selected unknown option \"Nope\""
         );
         let (_, tool) = fake(Some(json!({"answers": []})));
-        assert!(tool.run(storage_args(), &AbortSignal::never()).await.is_err());
+        assert!(tool
+            .run(storage_args(), &AbortSignal::never())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -1005,10 +1021,7 @@ mod tests {
         }
     }
 
-    fn scripted(
-        selects: Vec<Option<&'static str>>,
-        editors: Vec<Option<&'static str>>,
-    ) -> AskTool {
+    fn scripted(selects: Vec<Option<&'static str>>, editors: Vec<Option<&'static str>>) -> AskTool {
         AskTool {
             schema: schema(),
             ui: Some(Arc::new(ScriptedUi {
@@ -1028,7 +1041,10 @@ mod tests {
 
     #[tokio::test]
     async fn degraded_multi_select_loops_until_done() {
-        let tool = scripted(vec![Some("a"), Some("b"), Some("\u{2714} Done selecting")], vec![]);
+        let tool = scripted(
+            vec![Some("a"), Some("b"), Some("\u{2714} Done selecting")],
+            vec![],
+        );
         let result = tool.run(multi_args(), &AbortSignal::never()).await.unwrap();
         assert_eq!(
             result.content,

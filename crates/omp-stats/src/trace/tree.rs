@@ -10,8 +10,8 @@ use crate::types::{TraceSpan, TraceSpanKind, TraceTrack};
 
 use super::scan::{scan_transcript, TrackScan};
 use super::{
-    head_text, parse_entry_values, read_dir_names, read_transcript, transcript_stem, DETAIL_MAX, LABEL_MAX,
-    MAX_TRACK_DEPTH,
+    head_text, parse_entry_values, read_dir_names, read_transcript, transcript_stem, DETAIL_MAX,
+    LABEL_MAX, MAX_TRACK_DEPTH,
 };
 
 /// Base name of a transcript stem (`path.basename` in TS).
@@ -26,7 +26,10 @@ fn within_sessions_root(path: &Path) -> bool {
         return true; // Lexical containment was already checked; TS reads it.
     };
     let roots = crate::paths::session_roots();
-    let canon: Vec<_> = roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect();
+    let canon: Vec<_> = roots
+        .iter()
+        .filter_map(|r| std::fs::canonicalize(r).ok())
+        .collect();
     // No root exists on disk: nothing to compare against (TS reads it).
     canon.is_empty() || canon.iter().any(|root| target.starts_with(root))
 }
@@ -94,7 +97,10 @@ pub(crate) fn build_track_tree(
     scans.push(scan.clone());
 
     // Recurse into the artifacts directory (transcript stem = directory name).
-    let mut children_by_id = OrderedChildren { index: HashMap::new(), order: Vec::new() };
+    let mut children_by_id = OrderedChildren {
+        index: HashMap::new(),
+        order: Vec::new(),
+    };
     if depth < MAX_TRACK_DEPTH {
         let artifacts_dir = transcript_stem(file);
         if let Ok(mut names) = read_dir_names(Path::new(&artifacts_dir)) {
@@ -112,8 +118,11 @@ pub(crate) fn build_track_tree(
                 // it has its own descendants (M1).
                 let child_track_idx = out.len();
                 let stem = basename(&transcript_stem(&child_file));
-                let child_track_id =
-                    if track_id == "main" { stem.clone() } else { format!("{track_id}/{stem}") };
+                let child_track_id = if track_id == "main" {
+                    stem.clone()
+                } else {
+                    format!("{track_id}/{stem}")
+                };
                 let Some(child_scan_idx) = build_track_tree(
                     &child_file,
                     &child_track_id,
@@ -126,13 +135,16 @@ pub(crate) fn build_track_tree(
                 else {
                     continue;
                 };
-                let is_advisor =
-                    name == "__advisor.jsonl" || (name.starts_with("__advisor.") && name.ends_with(".jsonl"));
+                let is_advisor = name == "__advisor.jsonl"
+                    || (name.starts_with("__advisor.") && name.ends_with(".jsonl"));
                 let agent = out[child_track_idx].agent.clone();
                 let label = if is_advisor {
                     "Advisor".to_string()
                 } else {
-                    head_text(&format!("{} {stem}", agent.as_deref().unwrap_or("agent")), LABEL_MAX)
+                    head_text(
+                        &format!("{} {stem}", agent.as_deref().unwrap_or("agent")),
+                        LABEL_MAX,
+                    )
                 };
                 out[child_track_idx].label = label.clone();
                 // TS shares one object: the label must reach the scans copy too.
@@ -149,19 +161,27 @@ pub(crate) fn build_track_tree(
         if child.is_some() {
             linked_children.insert(result.child_id.clone());
         }
-        let (start, end) = match child.and_then(|i| scans[i].first_activity.zip(scans[i].last_activity)) {
-            Some(bounds) => bounds,
-            None => match result.duration_ms {
-                Some(d) => (result.tool_span_end.saturating_sub(d), result.tool_span_end),
-                None => continue,
-            },
-        };
+        let (start, end) =
+            match child.and_then(|i| scans[i].first_activity.zip(scans[i].last_activity)) {
+                Some(bounds) => bounds,
+                None => match result.duration_ms {
+                    Some(d) => (result.tool_span_end.saturating_sub(d), result.tool_span_end),
+                    None => continue,
+                },
+            };
         let mut span = TraceSpan {
-            id: format!("{track_id}:{}:{}", result.result_entry_id.as_deref().unwrap_or(""), result.child_id),
+            id: format!(
+                "{track_id}:{}:{}",
+                result.result_entry_id.as_deref().unwrap_or(""),
+                result.child_id
+            ),
             kind: TraceSpanKind::Subagent,
             start,
             end: end.max(start),
-            label: head_text(result.agent.as_deref().unwrap_or(&result.child_id), LABEL_MAX),
+            label: head_text(
+                result.agent.as_deref().unwrap_or(&result.child_id),
+                LABEL_MAX,
+            ),
             ..TraceSpan::default()
         };
         // TS `if (result.task)` — an empty task string is skipped.
@@ -194,14 +214,23 @@ pub(crate) fn build_track_tree(
             kind: TraceSpanKind::Subagent,
             start: first,
             end: last.max(first),
-            label: head_text(scans[i].track.agent.as_deref().unwrap_or(&scans[i].track.label), LABEL_MAX),
+            label: head_text(
+                scans[i]
+                    .track
+                    .agent
+                    .as_deref()
+                    .unwrap_or(&scans[i].track.label),
+                LABEL_MAX,
+            ),
             child_track_id: Some(scans[i].track.id.clone()),
             ..TraceSpan::default()
         };
         span.model = scans[i].track.model.clone().filter(|m| !m.is_empty());
         scan.track.spans.push(span);
     }
-    scan.track.spans.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
+    scan.track
+        .spans
+        .sort_by(|a, b| a.start.cmp(&b.start).then_with(|| a.end.cmp(&b.end)));
 
     // Mirror the finished spans/markers onto the pushed track and scan.
     out[track_index].spans = scan.track.spans.clone();

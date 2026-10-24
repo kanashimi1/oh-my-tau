@@ -42,10 +42,16 @@ fn is_selector_chunk(chunk: &str) -> bool {
     // `L?N(..|[-+])L?M?` chunks joined by commas.
     !chunk.is_empty()
         && chunk.split(',').all(|part| {
-            let t = part.strip_prefix('L').or_else(|| part.strip_prefix('l')).unwrap_or(part);
+            let t = part
+                .strip_prefix('L')
+                .or_else(|| part.strip_prefix('l'))
+                .unwrap_or(part);
             match t.split_once(['-', '+', '.']) {
                 Some((start, end)) => {
-                    let start = start.strip_prefix('L').or_else(|| start.strip_prefix('l')).unwrap_or(start);
+                    let start = start
+                        .strip_prefix('L')
+                        .or_else(|| start.strip_prefix('l'))
+                        .unwrap_or(start);
                     !start.is_empty()
                         && start.chars().all(|c: char| c.is_ascii_digit())
                         && (end.is_empty()

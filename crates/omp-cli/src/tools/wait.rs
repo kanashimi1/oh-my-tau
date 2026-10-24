@@ -16,8 +16,8 @@ use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_agent::BoxFut;
 use serde_json::{json, Value};
 
-use super::Env;
 use super::jobs::{JobStatus, ServiceState};
+use super::Env;
 
 const DESCRIPTION: &str = "Wait only when blocked with nothing else to do.\nBlocks on background jobs/services you started; returns on the first result, a message sent to you, or a steering interrupt; a safety cap returns a still-running snapshot.\nNothing you started running? Errors; NEVER wait on other agents.\nResults and messages auto-deliver. NEVER poll while work remains.";
 
@@ -71,10 +71,7 @@ fn watch_snapshot(env: &Env) -> Vec<Watched> {
             ServiceState::Failed => Some("failed".to_string()),
             _ => None,
         };
-        out.push(Watched {
-            id: name,
-            finished,
-        });
+        out.push(Watched { id: name, finished });
     }
     out
 }
@@ -147,13 +144,10 @@ Other agents' results and messages arrive on their own."
 }
 
 fn has_live_service(env: &Env) -> bool {
-    env.jobs
-        .services_sorted()
-        .iter()
-        .any(|(_, service)| {
-            !matches!(
-                service.lock().expect("service poisoned").state,
-                ServiceState::Exited | ServiceState::Failed
-            )
-        })
+    env.jobs.services_sorted().iter().any(|(_, service)| {
+        !matches!(
+            service.lock().expect("service poisoned").state,
+            ServiceState::Exited | ServiceState::Failed
+        )
+    })
 }

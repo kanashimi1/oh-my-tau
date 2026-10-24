@@ -58,14 +58,26 @@ fn bound_output(
     query: &str,
     save: impl Fn(&str) -> Option<String>,
 ) -> (String, Option<String>) {
+    if crate::methodology::raw_tool_output_requested() {
+        return (output.to_string(), None);
+    }
     if output.len() > cfg.threshold && !query.trim().is_empty() && super::relevance::enabled() {
         let budget = match cfg.head_bytes + cfg.tail_bytes {
             0 => cfg.threshold,
             b => b.min(cfg.threshold),
         };
-        if let Some(p) = super::relevance::pick(output, query, budget, None, (cfg.head_bytes, cfg.tail_bytes)) {
+        if let Some(p) = super::relevance::pick(
+            output,
+            query,
+            budget,
+            None,
+            (cfg.head_bytes, cfg.tail_bytes),
+        ) {
             let url = save(output);
-            return (p.content, Some(notice_with_artifact(&p.notice, url.as_deref())));
+            return (
+                p.content,
+                Some(notice_with_artifact(&p.notice, url.as_deref())),
+            );
         }
     }
     let (body, notice, mut artifact) = match sink_window(output, cfg) {
@@ -104,12 +116,13 @@ fn timeout_arg(args: &Value) -> Option<f64> {
 /// (`pre_exec`), so util-linux `setsid` does it; the spawned child is not a
 /// group leader, so `setsid` execs bash in place (same pid, kill works).
 fn detached_bash() -> tokio::process::Command {
-    static SETSID: std::sync::LazyLock<Option<std::path::PathBuf>> = std::sync::LazyLock::new(|| {
-        ["/usr/bin/setsid", "/bin/setsid"]
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .find(|p| p.is_file())
-    });
+    static SETSID: std::sync::LazyLock<Option<std::path::PathBuf>> =
+        std::sync::LazyLock::new(|| {
+            ["/usr/bin/setsid", "/bin/setsid"]
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .find(|p| p.is_file())
+        });
     match SETSID.as_deref() {
         Some(setsid) => {
             let mut cmd = tokio::process::Command::new(setsid);
@@ -449,7 +462,8 @@ pub async fn bash(
 /// omp `BashToolDetails` for a finished foreground run.
 fn run_details(timeout: Option<f64>, args: &Value, elapsed: Duration) -> Value {
     let mut d = serde_json::Map::new();
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // ms fit u64; whole seconds fit u64
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    // ms fit u64; whole seconds fit u64
     {
         d.insert(
             "wallTimeMs".into(),
@@ -710,7 +724,8 @@ fn start_background(
         let raw = run(&dir, &command, timeout, &controller.signal(), Some(output)).await;
         let (status, result, error) = match &raw {
             Ok((output, code, elapsed, outcome)) => {
-                let text = finished_text(output, *elapsed, *outcome, timeout, *code, &spill, &query);
+                let text =
+                    finished_text(output, *elapsed, *outcome, timeout, *code, &spill, &query);
                 let status = if outcome.is_none() && *code == Some(0) {
                     JobStatus::Completed
                 } else {
@@ -783,7 +798,10 @@ mod tests {
         let t = text_of(&r);
         assert!(t.contains("NO_TTY"), "{t}");
         let mut lines = t.lines().skip(1);
-        let (sid, pid) = (lines.next().unwrap_or_default(), lines.next().unwrap_or_default());
+        let (sid, pid) = (
+            lines.next().unwrap_or_default(),
+            lines.next().unwrap_or_default(),
+        );
         assert_eq!(sid, pid, "bash is its own session leader: {t}");
     }
 
@@ -1251,11 +1269,16 @@ mod tests {
         let run_with = |query: &str| {
             *env.query.lock() = query.to_string();
             text_of(
-                &rt.block_on(bash(env.clone(), serde_json::json!({"command": cmd}), sig()))
-                    .unwrap(),
+                &rt.block_on(bash(
+                    env.clone(),
+                    serde_json::json!({"command": cmd}),
+                    sig(),
+                ))
+                .unwrap(),
             )
         };
-        let ranked = run_with("why did the deploy hit QuorumLostError?\nChecking the shard_alpha7 log.");
+        let ranked =
+            run_with("why did the deploy hit QuorumLostError?\nChecking the shard_alpha7 log.");
         assert!(ranked.contains(marker), "{ranked}");
         assert!(ranked.contains(" lines omitted] …"), "{ranked}");
         assert!(ranked.len() < 12 * 1024, "inline {} bytes", ranked.len());
@@ -1268,11 +1291,17 @@ mod tests {
             .unwrap()
             .0;
         let cfg = SpillConfig::load(dir.path());
-        let (body, notice) = bound_output(output.trim_end_matches('\n'), &cfg, "QuorumLostError", |_| {
-            Some("artifact://4".to_string())
-        });
+        let (body, notice) = bound_output(
+            output.trim_end_matches('\n'),
+            &cfg,
+            "QuorumLostError",
+            |_| Some("artifact://4".to_string()),
+        );
         assert!(body.contains(marker));
         let notice = notice.unwrap();
-        assert!(notice.ends_with("Read artifact://4 for full output"), "{notice}");
+        assert!(
+            notice.ends_with("Read artifact://4 for full output"),
+            "{notice}"
+        );
     }
 }

@@ -295,7 +295,8 @@ impl TerminalTitle {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         *shared.tick.lock() = 0;
-        let halted = move || thread_stop.load(Ordering::SeqCst) || shared.disposed.load(Ordering::SeqCst);
+        let halted =
+            move || thread_stop.load(Ordering::SeqCst) || shared.disposed.load(Ordering::SeqCst);
         let shared = Arc::clone(&self.shared);
         let thread = thread::spawn(move || loop {
             if halted() {
@@ -313,7 +314,10 @@ impl TerminalTitle {
             let title = build_branded_title(shared.brand(), frame, label.as_deref());
             write_title(&shared, &title);
         });
-        *handle = Some(Spinner { stop, handle: thread });
+        *handle = Some(Spinner {
+            stop,
+            handle: thread,
+        });
     }
 
     fn stop_spinner(&self) {
@@ -377,8 +381,14 @@ mod tests {
 
     #[test]
     fn clean_titles_use_tau() {
-        assert_eq!(build_branded_title(CLEAN_TERMINAL_TITLE, ">", Some("omp-rs")), "τ > omp-rs");
-        assert_eq!(build_branded_title(CLEAN_TERMINAL_TITLE, "⠋", Some("x")), "τ ⠋ x");
+        assert_eq!(
+            build_branded_title(CLEAN_TERMINAL_TITLE, ">", Some("omp-rs")),
+            "τ > omp-rs"
+        );
+        assert_eq!(
+            build_branded_title(CLEAN_TERMINAL_TITLE, "⠋", Some("x")),
+            "τ ⠋ x"
+        );
         assert_eq!(build_branded_title(CLEAN_TERMINAL_TITLE, "!", None), "τ !");
         let title = TerminalTitle::new();
         title.init(TitleState::Idle, Some("proj"));
@@ -423,7 +433,8 @@ mod tests {
             t.set_state(TitleState::Idle, Some("p"));
             let _ = tx.send(());
         });
-        rx.recv_timeout(Duration::from_secs(5)).expect("set_state(Idle) hung joining the spinner");
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("set_state(Idle) hung joining the spinner");
         assert_eq!(title.current_title().as_deref(), Some("π > p"));
     }
 

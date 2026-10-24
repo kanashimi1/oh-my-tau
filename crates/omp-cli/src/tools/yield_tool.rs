@@ -66,12 +66,12 @@ fn parse_yield_type(value: Option<&Value>) -> Result<Option<Value>> {
     match value {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(_)) => Ok(Some(value.unwrap().clone())),
-        Some(Value::Array(items))
-            if !items.is_empty() && items.iter().all(Value::is_string) =>
-        {
+        Some(Value::Array(items)) if !items.is_empty() && items.iter().all(Value::is_string) => {
             Ok(Some(value.unwrap().clone()))
         }
-        Some(_) => Err(anyhow!("type must be a string or non-empty array of strings")),
+        Some(_) => Err(anyhow!(
+            "type must be a string or non-empty array of strings"
+        )),
     }
 }
 
@@ -158,7 +158,9 @@ impl YieldTool {
             .lock()
             .expect("yield retry counter poisoned") = 0;
 
-        if let Some(error) = error_message { Ok(aborted_result(&error, yield_type)) } else {
+        if let Some(error) = error_message {
+            Ok(aborted_result(&error, yield_type))
+        } else {
             let mut details = Map::new();
             if let Some(data) = data {
                 details.insert("data".into(), data.clone());
@@ -175,7 +177,9 @@ impl YieldTool {
                 details.insert("useLastTurn".into(), json!(true));
             }
             Ok(AgentToolResult {
-                content: vec![pa_agent::types::ToolResultContent::text("Result submitted.")],
+                content: vec![pa_agent::types::ToolResultContent::text(
+                    "Result submitted.",
+                )],
                 details: Value::Object(details),
                 terminate: None,
                 is_error: None,
@@ -247,7 +251,10 @@ mod tests {
     #[test]
     fn success_frame() {
         let r = run(json!({"data": {"n": 1}, "type": "result"})).unwrap();
-        assert_eq!(r.content[0], pa_agent::types::ToolResultContent::text("Result submitted."));
+        assert_eq!(
+            r.content[0],
+            pa_agent::types::ToolResultContent::text("Result submitted.")
+        );
         assert_eq!(r.details["status"], "success");
         assert_eq!(r.details["data"]["n"], 1);
         assert_eq!(r.details["type"], "result");
@@ -256,7 +263,10 @@ mod tests {
     #[test]
     fn abort_frame_and_mutual_exclusion() {
         let r = run(json!({"error": "boom"})).unwrap();
-        assert_eq!(r.content[0], pa_agent::types::ToolResultContent::text("Task aborted: boom"));
+        assert_eq!(
+            r.content[0],
+            pa_agent::types::ToolResultContent::text("Task aborted: boom")
+        );
         assert_eq!(r.details["status"], "aborted");
         let e = run(json!({"data": {}, "error": "x"})).unwrap_err();
         assert_eq!(e.to_string(), "yield cannot contain both data and error");
@@ -268,7 +278,10 @@ mod tests {
         let r = run(json!({"data": {"ok": true}, "type": null, "error": null})).unwrap();
         assert_eq!(r.details["status"], "success");
         let e = run(json!({"type": 3})).unwrap_err();
-        assert_eq!(e.to_string(), "type must be a string or non-empty array of strings");
+        assert_eq!(
+            e.to_string(),
+            "type must be a string or non-empty array of strings"
+        );
         let e = run(json!({"error": 3})).unwrap_err();
         assert_eq!(e.to_string(), "error must be a string");
     }
@@ -282,7 +295,8 @@ mod tests {
         for remaining in (0..3).rev() {
             let e = YieldTool::run(tool.clone(), json!({})).unwrap_err();
             assert!(
-                e.to_string().ends_with(&format!("before abort: {remaining}.")),
+                e.to_string()
+                    .ends_with(&format!("before abort: {remaining}.")),
                 "{e}"
             );
         }

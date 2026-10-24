@@ -37,9 +37,9 @@ pub use history::{HistoryNav, HistoryStore, JsonlHistory, MemoryHistory};
 pub use paste::PasteStore;
 pub use submit::{SubmitKind, SubmitRequest};
 
+use crate::keys::KeyEvent;
 use dispatch::LastAction;
 use render::ScrollOffset;
-use crate::keys::KeyEvent;
 
 /// Char index → byte offset within a line (`line.len()` when past the end).
 fn byte_col(line: &str, char_col: usize) -> usize {
@@ -260,7 +260,9 @@ impl Editor {
     /// `space: true` for a trailing space that stays provisional until the
     /// next keystroke; Right passes `false` so a suffix can follow the word.
     pub fn accept_word_completion(&mut self, space: bool) -> bool {
-        let Some(ghost) = self.word_ghost() else { return false };
+        let Some(ghost) = self.word_ghost() else {
+            return false;
+        };
         let cursor = self.buffer.cursor();
         if let Some(word) = &self.word {
             word.feedback(self.buffer.lines(), cursor.line, cursor.col, &ghost, true);
@@ -270,14 +272,24 @@ impl Editor {
         if space {
             self.buffer.insert_char(' ');
         }
-        self.note_action(if space { LastAction::AcceptWord } else { LastAction::Other });
+        self.note_action(if space {
+            LastAction::AcceptWord
+        } else {
+            LastAction::Other
+        });
         true
     }
 
     /// Typing `typed` where it diverges from the shown ghost rejects it.
     fn report_typed_past_word_completion(&self, typed: char) {
-        let Some(ghost) = self.word_ghost() else { return };
-        let first = ghost.chars().next().into_iter().flat_map(char::to_lowercase);
+        let Some(ghost) = self.word_ghost() else {
+            return;
+        };
+        let first = ghost
+            .chars()
+            .next()
+            .into_iter()
+            .flat_map(char::to_lowercase);
         if first.eq(typed.to_lowercase()) {
             return;
         }
@@ -543,7 +555,9 @@ impl Editor {
     /// pending (`vimPending` :921).
     #[must_use]
     pub fn vim_pending(&self) -> String {
-        self.vim.as_ref().map_or(String::new(), vim::VimState::pending_text)
+        self.vim
+            .as_ref()
+            .map_or(String::new(), vim::VimState::pending_text)
     }
 
     /// Hosts bind Escape to interrupt/clear; in Vim mode it first has to
@@ -621,7 +635,11 @@ impl Editor {
     /// Normal mode rests the cursor *on* a grapheme; Insert and Visual may
     /// sit one past the end (TS `#clampVimCursor` :2327).
     fn clamp_vim_cursor(&mut self) {
-        if self.vim.as_ref().map_or(true, |v| v.mode != vim::VimMode::Normal) {
+        if self
+            .vim
+            .as_ref()
+            .map_or(true, |v| v.mode != vim::VimMode::Normal)
+        {
             return;
         }
         let line = self.buffer.cursor().line;
@@ -637,7 +655,12 @@ impl Editor {
 
     /// Text covered by a half-open `[from, to)` range. Linewise ranges take
     /// whole lines. Positions are char indices.
-    fn slice_vim_range(&self, from: vim::VimPosition, to: vim::VimPosition, linewise: bool) -> String {
+    fn slice_vim_range(
+        &self,
+        from: vim::VimPosition,
+        to: vim::VimPosition,
+        linewise: bool,
+    ) -> String {
         let lines = self.buffer.lines();
         if linewise {
             let last = to.line.min(lines.len().saturating_sub(1));
@@ -706,8 +729,12 @@ impl Editor {
     }
 
     fn paste_vim_register(&mut self, after: bool, count: usize) {
-        let Some(state) = self.vim.as_ref() else { return };
-        let Some(entry) = state.register.clone() else { return };
+        let Some(state) = self.vim.as_ref() else {
+            return;
+        };
+        let Some(entry) = state.register.clone() else {
+            return;
+        };
         if entry.is_empty() {
             return;
         }
@@ -743,7 +770,13 @@ impl Editor {
                 &line_text[..at.min(line_text.len())],
                 &line_text[at.min(line_text.len())..]
             );
-            self.replace_lines(lines, Cursor { line: cur.line, col: at + last_char });
+            self.replace_lines(
+                lines,
+                Cursor {
+                    line: cur.line,
+                    col: at + last_char,
+                },
+            );
         }
     }
 
@@ -1129,7 +1162,10 @@ mod render_tests {
         // Row 0 is the band's status row; the prompt sits under it.
         let row = render_row(&e, 1, 60, 2);
         assert!(row.starts_with("╰─ "), "gutter: {row:?}");
-        assert!(row.ends_with("⇧⇥ to change thinking effort"), "hint flush right: {row:?}");
+        assert!(
+            row.ends_with("⇧⇥ to change thinking effort"),
+            "hint flush right: {row:?}"
+        );
         assert!(!row.contains('│') && !row.contains('╭'), "no box: {row:?}");
         e.set_hint(None);
         assert_eq!(render_row(&e, 1, 60, 2).trim_end(), "╰─");
@@ -1204,12 +1240,17 @@ mod render_tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 2)).unwrap();
         let theme = crate::theme::Theme::default();
         terminal.draw(|f| e.render(f, f.area(), &theme)).unwrap();
-        assert_eq!(terminal.backend().buffer()[(0, 1)].fg, theme.color("accent"));
+        assert_eq!(
+            terminal.backend().buffer()[(0, 1)].fg,
+            theme.color("accent")
+        );
     }
 
     /// All rows of a `width`x`height` render, trailing blanks trimmed.
     fn render_all(e: &Editor, width: u16, height: u16) -> Vec<String> {
-        (0..height).map(|y| render_row(e, y, width, height).trim_end().to_owned()).collect()
+        (0..height)
+            .map(|y| render_row(e, y, width, height).trim_end().to_owned())
+            .collect()
     }
 
     #[test]
@@ -1224,8 +1265,14 @@ mod render_tests {
             render_all(&e, 40, rows)
         };
         let box_rows = expect(ComposerShape::Box, 2);
-        assert!(box_rows[0].starts_with("╭──") && box_rows[0].ends_with("──╮"), "{box_rows:?}");
-        assert!(box_rows[1].starts_with("╰─ hi") && box_rows[1].ends_with(" ─╯"), "{box_rows:?}");
+        assert!(
+            box_rows[0].starts_with("╭──") && box_rows[0].ends_with("──╮"),
+            "{box_rows:?}"
+        );
+        assert!(
+            box_rows[1].starts_with("╰─ hi") && box_rows[1].ends_with(" ─╯"),
+            "{box_rows:?}"
+        );
         let claude = expect(ComposerShape::Claude, 3);
         assert_eq!(claude[0], "─".repeat(40), "{claude:?}");
         assert_eq!(claude[1], "❯ hi");
@@ -1238,7 +1285,10 @@ mod render_tests {
         assert_eq!(rule[0], "─".repeat(40));
         assert_eq!(rule[1], "❯ hi");
         let field = expect(ComposerShape::Field, 1);
-        assert!(field[0].starts_with("▐ hi") && field[0].ends_with('▌'), "{field:?}");
+        assert!(
+            field[0].starts_with("▐ hi") && field[0].ends_with('▌'),
+            "{field:?}"
+        );
         let rail = expect(ComposerShape::Rail, 1);
         assert!(rail[0].starts_with("▎ hi"), "{rail:?}");
     }

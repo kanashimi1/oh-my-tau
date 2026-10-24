@@ -9,17 +9,17 @@
 
 mod frustration;
 mod messages;
-mod tool_calls;
 #[cfg(test)]
 mod tests;
+mod tool_calls;
 
 pub use frustration::{
     get_frustration_by_model, get_frustration_overall, get_pending_frustration_prose,
-    get_pending_frustration_totals, upsert_frustration_verdicts, FrustrationModelRow, FrustrationVerdict,
-    PendingProse, PendingProseTotals,
+    get_pending_frustration_totals, upsert_frustration_verdicts, FrustrationModelRow,
+    FrustrationVerdict, PendingProse, PendingProseTotals,
 };
 pub use messages::{
-    get_daily_activity, get_message_by_id, get_recent_errors, get_recent_requests, insert_user_message_stats,
-    update_user_message_links,
+    get_daily_activity, get_message_by_id, get_recent_errors, get_recent_requests,
+    insert_user_message_stats, update_user_message_links,
 };
 pub use tool_calls::{insert_tool_calls, update_tool_results};

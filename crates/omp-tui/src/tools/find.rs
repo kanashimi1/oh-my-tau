@@ -14,10 +14,11 @@ use crate::theme::Theme;
 
 use super::frame::{status_header, token};
 use super::search::{
-    args_of, details_of, empty_row, error_row, format_count, pad_rows, paint, search_icon, status_icon, warn,
+    args_of, details_of, empty_row, error_row, format_count, pad_rows, paint, search_icon,
+    status_icon, warn,
 };
-use crate::chat::blocks::{format_duration, format_number};
 use super::ToolRenderer;
+use crate::chat::blocks::{format_duration, format_number};
 
 /// Cells in the per-hit score gauge (`GAUGE_WIDTH`).
 const GAUGE_WIDTH: usize = 6;
@@ -58,17 +59,37 @@ fn gauge(score: f64, theme: &Theme) -> Span<'static> {
 }
 
 fn dim(theme: &Theme, text: impl Into<String>) -> Span<'static> {
-    Span::styled(text.into(), Style::default().fg(token(theme, "dim", "text_muted")))
+    Span::styled(
+        text.into(),
+        Style::default().fg(token(theme, "dim", "text_muted")),
+    )
 }
 
 fn score_style(score: f64, theme: &Theme) -> Style {
-    Style::default().fg(token(theme, if score >= STRONG { "success" } else if score >= PLAUSIBLE { "warning" } else { "muted" }, "text_muted"))
+    Style::default().fg(token(
+        theme,
+        if score >= STRONG {
+            "success"
+        } else if score >= PLAUSIBLE {
+            "warning"
+        } else {
+            "muted"
+        },
+        "text_muted",
+    ))
 }
 
 /// One hit item (TS `renderHit`): head row + strongest range rows.
 fn hit_item(hit: &Value, range_limit: usize, theme: &Theme) -> Vec<Line<'static>> {
-    let score = hit.get("contentScore").and_then(Value::as_f64).unwrap_or(0.0);
-    let rel = hit.get("rel").and_then(Value::as_str).unwrap_or("?").to_owned();
+    let score = hit
+        .get("contentScore")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let rel = hit
+        .get("rel")
+        .and_then(Value::as_str)
+        .unwrap_or("?")
+        .to_owned();
     let seen = hit.get("linesSeen").and_then(Value::as_u64).unwrap_or(0);
     let coverage = if hit.get("truncated").and_then(Value::as_bool) == Some(true) {
         format!("{seen} lines judged, partial")
@@ -105,7 +126,11 @@ fn hit_item(hit: &Value, range_limit: usize, theme: &Theme) -> Vec<Line<'static>
     for (i, r) in ranges.into_iter().enumerate() {
         let start = r.get("start").and_then(Value::as_u64).unwrap_or(0);
         let end = r.get("end").and_then(Value::as_u64).unwrap_or(start);
-        let span_txt = if start == end { format!(":{start}") } else { format!(":{start}-{end}") };
+        let span_txt = if start == end {
+            format!(":{start}")
+        } else {
+            format!(":{start}-{end}")
+        };
         let p = r.get("p").and_then(Value::as_f64).unwrap_or(0.0);
         let snippet = r
             .get("snippet")
@@ -115,12 +140,28 @@ fn hit_item(hit: &Value, range_limit: usize, theme: &Theme) -> Vec<Line<'static>
             .replace('\t', "    ");
         rows.push(Line::from(vec![
             Span::raw("  "),
-            dim(theme, format!("{} ", theme.symbol(if i + 1 == n { "tree.last" } else { "tree.branch" }))),
-            Span::styled(span_txt, Style::default().fg(token(theme, "muted", "text_muted"))),
+            dim(
+                theme,
+                format!(
+                    "{} ",
+                    theme.symbol(if i + 1 == n {
+                        "tree.last"
+                    } else {
+                        "tree.branch"
+                    })
+                ),
+            ),
+            Span::styled(
+                span_txt,
+                Style::default().fg(token(theme, "muted", "text_muted")),
+            ),
             Span::raw(" "),
             dim(theme, format!("{p:.2}")),
             Span::raw(" "),
-            Span::styled(snippet, Style::default().fg(token(theme, "toolOutput", "text"))),
+            Span::styled(
+                snippet,
+                Style::default().fg(token(theme, "toolOutput", "text")),
+            ),
         ]));
     }
     rows
@@ -133,7 +174,8 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
     let details = details_of(call);
     let quote = |q: Option<&str>| q.map(|q| format!("\"{q}\""));
     let query_arg = args.and_then(|a| a.get("query")).and_then(Value::as_str);
-    let muted = |t: String| Span::styled(t, Style::default().fg(token(theme, "muted", "text_muted")));
+    let muted =
+        |t: String| Span::styled(t, Style::default().fg(token(theme, "muted", "text_muted")));
     let pending = call.get("result").is_none() && call.get("isError").is_none();
     if pending {
         let keywords: Vec<&str> = args
@@ -145,7 +187,11 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
         if !keywords.is_empty() {
             meta.push(dim(theme, keywords.join(" ")));
         }
-        if let Some(path) = args.and_then(|a| a.get("path")).and_then(Value::as_str).filter(|p| !p.is_empty()) {
+        if let Some(path) = args
+            .and_then(|a| a.get("path"))
+            .and_then(Value::as_str)
+            .filter(|p| !p.is_empty())
+        {
             meta.push(dim(theme, format!("in {path}")));
         }
         let header = status_header(
@@ -174,9 +220,20 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
         .cloned()
         .unwrap_or_default();
     let stats = details.and_then(|d| d.get("stats"));
-    let num = |key: &str| stats.and_then(|s| s.get(key)).and_then(Value::as_u64).unwrap_or(0);
-    let cost = stats.and_then(|s| s.get("cost")).and_then(Value::as_f64).unwrap_or(0.0);
-    let elapsed = details.and_then(|d| d.get("elapsedMs")).and_then(Value::as_u64).unwrap_or(0);
+    let num = |key: &str| {
+        stats
+            .and_then(|s| s.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    let cost = stats
+        .and_then(|s| s.get("cost"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let elapsed = details
+        .and_then(|d| d.get("elapsedMs"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
     let query = details.and_then(|d| d.get("query")).and_then(Value::as_str);
     let scope = details
         .and_then(|d| d.get("scopePath"))
@@ -187,7 +244,12 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
     let failures: Vec<String> = stats
         .and_then(|s| s.get("failures"))
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(ToOwned::to_owned).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
         .unwrap_or_default();
     let desc: Vec<Span<'static>> = quote(query).map(muted).into_iter().collect();
     let failed = |theme: &Theme| warn(theme, format!("{errors} failed"));
@@ -215,32 +277,62 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
     meta.extend(scope.map(|s| dim(theme, s)));
     meta.push(dim(theme, format!("{} files read", num("filesRead"))));
     meta.push(dim(theme, format!("τ {threshold:.2}")));
-    meta.push(dim(theme, format!("{} tokens", format_number(num("inputTokens")))));
+    meta.push(dim(
+        theme,
+        format!("{} tokens", format_number(num("inputTokens"))),
+    ));
     meta.push(dim(theme, format!("${cost:.4}")));
     meta.push(dim(theme, format_duration(elapsed)));
     if errors > 0 {
         meta.push(failed(theme));
     }
-    let header = status_header(theme, Some(search_icon(theme)), "Find", "toolTitle", desc, meta);
+    let header = status_header(
+        theme,
+        Some(search_icon(theme)),
+        "Find",
+        "toolTitle",
+        desc,
+        meta,
+    );
     let max = if expanded { hits.len() } else { COLLAPSED_HITS };
-    let range_limit = if expanded { RANGES_EXPANDED } else { RANGES_COLLAPSED };
+    let range_limit = if expanded {
+        RANGES_EXPANDED
+    } else {
+        RANGES_COLLAPSED
+    };
     let shown = hits.len().min(max);
     let mut rows = vec![header];
     let n = shown;
     let has_summary = hits.len() > shown;
     for (i, hit) in hits.iter().take(shown).enumerate() {
         let last = !has_summary && i + 1 == n;
-        let branch = format!("{} ", theme.symbol(if last { "tree.last" } else { "tree.branch" }));
-        let cont = if last { "   ".to_owned() } else { format!("{}  ", theme.symbol("tree.vertical")) };
+        let branch = format!(
+            "{} ",
+            theme.symbol(if last { "tree.last" } else { "tree.branch" })
+        );
+        let cont = if last {
+            "   ".to_owned()
+        } else {
+            format!("{}  ", theme.symbol("tree.vertical"))
+        };
         for (j, mut row) in hit_item(hit, range_limit, theme).into_iter().enumerate() {
-            row.spans.insert(0, dim(theme, if j == 0 { branch.clone() } else { cont.clone() }));
+            row.spans.insert(
+                0,
+                dim(theme, if j == 0 { branch.clone() } else { cont.clone() }),
+            );
             rows.push(row);
         }
     }
     if has_summary {
         rows.push(Line::from(vec![
             dim(theme, format!("{} ", theme.symbol("tree.last"))),
-            muted(format!("… {} more {}", hits.len() - shown, format_count("hit", hits.len() - shown).split_once(' ').map_or("hits", |(_, w)| w))),
+            muted(format!(
+                "… {} more {}",
+                hits.len() - shown,
+                format_count("hit", hits.len() - shown)
+                    .split_once(' ')
+                    .map_or("hits", |(_, w)| w)
+            )),
         ]));
     }
     if expanded {
@@ -249,7 +341,10 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).collect())
             .unwrap_or_default();
-        rows.push(Line::from(dim(theme, format!("keywords: {}", keywords.join(", ")))));
+        rows.push(Line::from(dim(
+            theme,
+            format!("keywords: {}", keywords.join(", ")),
+        )));
         rows.extend(failures.iter().map(|f| Line::from(warn(theme, f.clone()))));
     }
     pad_rows(rows)

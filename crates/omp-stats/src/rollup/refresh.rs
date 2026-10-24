@@ -8,8 +8,8 @@ use rusqlite::params;
 
 use super::{
     message_facts, session_facts, tool_facts, with_rollup_db, ImmediateTx, RollupStatus, HOUR_MS,
-    MESSAGE_DIMENSIONS, MESSAGE_ROLLUP_COLUMNS, REFRESH_MAX_BATCH, REFRESH_TARGET_MS, SESSION_ROLLUP_COLUMNS,
-    SESSIONS_PER_HOUR, TOOL_JOIN, TOOL_ROLLUP_COLUMNS,
+    MESSAGE_DIMENSIONS, MESSAGE_ROLLUP_COLUMNS, REFRESH_MAX_BATCH, REFRESH_TARGET_MS,
+    SESSIONS_PER_HOUR, SESSION_ROLLUP_COLUMNS, TOOL_JOIN, TOOL_ROLLUP_COLUMNS,
 };
 
 /// Backlog of hours and transcripts whose rollups are stale.
@@ -82,9 +82,8 @@ GROUP BY t.tool_name, t.model, t.provider",
         // Transcripts are cheap (indexed by session_file); roll many per hour-batch.
         let sessions = {
             let mut stmt = conn.prepare("SELECT session_file FROM session_dirty LIMIT ?")?;
-            let rows = stmt.query_map([limit * SESSIONS_PER_HOUR], |row| {
-                row.get::<_, String>(0)
-            })?;
+            let rows =
+                stmt.query_map([limit * SESSIONS_PER_HOUR], |row| row.get::<_, String>(0))?;
             let mut sessions = Vec::new();
             for session in rows {
                 sessions.push(session?);
@@ -96,7 +95,8 @@ GROUP BY t.tool_name, t.model, t.provider",
 SELECT {facts} FROM messages m WHERE m.session_file = ?1 GROUP BY m.session_file",
             facts = session_facts("m.")
         );
-        let mut clear_session = conn.prepare("DELETE FROM session_rollup WHERE session_file = ?")?;
+        let mut clear_session =
+            conn.prepare("DELETE FROM session_rollup WHERE session_file = ?")?;
         let mut insert_session = conn.prepare(&fill_session)?;
         let mut clean_session = conn.prepare("DELETE FROM session_dirty WHERE session_file = ?")?;
         for session_file in &sessions {
@@ -137,7 +137,10 @@ pub fn refresh_rollups() -> Result<()> {
 pub fn refresh_rollups_with(opts: &RefreshOptions<'_>) -> Result<()> {
     let mut batch: usize = 4;
     loop {
-        if opts.abort.is_some_and(|signal| signal.load(Ordering::Relaxed)) {
+        if opts
+            .abort
+            .is_some_and(|signal| signal.load(Ordering::Relaxed))
+        {
             return Ok(());
         }
         let started = Instant::now();

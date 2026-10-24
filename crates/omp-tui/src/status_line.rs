@@ -641,7 +641,10 @@ fn layout(
         && ctx.st.config.context_line == presets::ContextLineMode::Embedded
         && ctx.st.context_window.unwrap_or(0) > 0
         && left_ids.iter().chain(right_ids.iter()).any(is_context)
-        && left_ids.iter().chain(right_ids.iter()).any(|id| !is_context(id));
+        && left_ids
+            .iter()
+            .chain(right_ids.iter())
+            .any(|id| !is_context(id));
     if embed {
         left_ids.retain(|id| !is_context(id));
         right_ids.retain(|id| !is_context(id));
@@ -729,7 +732,9 @@ fn layout(
             spans.extend(right_group.spans);
             return Line::from(spans);
         }
-        let gap = width.saturating_sub(left_group.width + right_group.width).max(1);
+        let gap = width
+            .saturating_sub(left_group.width + right_group.width)
+            .max(1);
         let mut spans = left_group.spans;
         spans.push(Span::raw(" ".repeat(gap)));
         spans.extend(right_group.spans);
@@ -770,8 +775,14 @@ fn layout_clean(ctx: &Ctx<'_>, theme: &Theme, width: usize, kind: StatusLayout) 
             presets::CLEAN_DEFAULT_RIGHT.to_vec(),
         ),
         presets::Preset::Custom => (
-            config.left_segments.clone().unwrap_or_else(|| presets::CUSTOM_LEFT.to_vec()),
-            config.right_segments.clone().unwrap_or_else(|| presets::CUSTOM_RIGHT.to_vec()),
+            config
+                .left_segments
+                .clone()
+                .unwrap_or_else(|| presets::CUSTOM_LEFT.to_vec()),
+            config
+                .right_segments
+                .clone()
+                .unwrap_or_else(|| presets::CUSTOM_RIGHT.to_vec()),
         ),
         p => p.segments(),
     };
@@ -780,7 +791,10 @@ fn layout_clean(ctx: &Ctx<'_>, theme: &Theme, width: usize, kind: StatusLayout) 
         StatusLayout::PlainLeft => right_ids.clear(),
         _ => {}
     }
-    let has_context = left_ids.iter().chain(right_ids.iter()).any(|id| *id == SegmentId::ContextPct);
+    let has_context = left_ids
+        .iter()
+        .chain(right_ids.iter())
+        .any(|id| *id == SegmentId::ContextPct);
     left_ids.retain(|id| !matches!(id, SegmentId::Pi | SegmentId::ContextPct));
     right_ids.retain(|id| !matches!(id, SegmentId::Pi | SegmentId::ContextPct));
     let mut bar = if has_context && config.context_line != presets::ContextLineMode::Off {
@@ -800,7 +814,13 @@ fn layout_clean(ctx: &Ctx<'_>, theme: &Theme, width: usize, kind: StatusLayout) 
         left = render_side(&left_ids, ctx, theme, path_max);
         right = render_side(&right_ids, ctx, theme, path_max);
         if kind != StatusLayout::PlainRight {
-            left.insert(0, vec![Piece::from_rgb(vec![("τ".to_owned(), ctx.st.brand.color())])]);
+            left.insert(
+                0,
+                vec![Piece::from_rgb(vec![(
+                    "τ".to_owned(),
+                    ctx.st.brand.color(),
+                )])],
+            );
         }
         if jobs_badge {
             right.insert(
@@ -819,10 +839,9 @@ fn layout_clean(ctx: &Ctx<'_>, theme: &Theme, width: usize, kind: StatusLayout) 
             }
         }
         let name = ctx.st.session_name.as_deref().unwrap_or("");
-        let name_piece = right
-            .iter_mut()
-            .flatten()
-            .find(|p| !name.is_empty() && p.runs.is_empty() && p.rgb.is_empty() && p.text.contains(name));
+        let name_piece = right.iter_mut().flatten().find(|p| {
+            !name.is_empty() && p.runs.is_empty() && p.rgb.is_empty() && p.text.contains(name)
+        });
         let name_w = if let Some(piece) = name_piece {
             if name_floor != usize::MAX {
                 piece.text = clamp_cells(&piece.text, name_floor);
@@ -908,7 +927,10 @@ fn paint_clean_group(pieces: &[Piece], theme: &Theme) -> Group {
         } else if piece.runs.is_empty() {
             let body = Style::default().fg(style::clean_color(theme, piece.token));
             for (text, icon) in icon_runs(&piece.text) {
-                spans.push(Span::styled(text.to_string(), if icon { dim } else { body }));
+                spans.push(Span::styled(
+                    text.to_string(),
+                    if icon { dim } else { body },
+                ));
             }
         } else {
             for (text, token) in &piece.runs {
@@ -1152,7 +1174,9 @@ mod tests {
 
     fn draw_buf(status: &StatusLine, width: u16, theme: &Theme) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
-        terminal.draw(|f| status.render(f, f.area(), theme)).unwrap();
+        terminal
+            .draw(|f| status.render(f, f.area(), theme))
+            .unwrap();
         terminal.backend().buffer().clone()
     }
 
@@ -1182,9 +1206,15 @@ mod tests {
         let row = row_of(&buf);
         assert!(row.contains(" · "), "{row:?}");
         assert!(!row.contains('π'), "{row:?}");
-        assert!(!row.contains('>') && !row.contains('▶') && !row.contains('╎'), "{row:?}");
+        assert!(
+            !row.contains('>') && !row.contains('▶') && !row.contains('╎'),
+            "{row:?}"
+        );
         assert!(!row.contains("128K"), "{row:?}");
-        assert!(row.contains("sonnet-4.5") && row.contains("main"), "{row:?}");
+        assert!(
+            row.contains("sonnet-4.5") && row.contains("main"),
+            "{row:?}"
+        );
         assert!(row.contains(" work ") && !row.contains("/home"), "{row:?}");
         assert!(row.contains("ses-name · $0.12 · "), "{row:?}");
         assert!(row.trim_end().ends_with("━───────── 5%"), "{row:?}");
@@ -1208,7 +1238,11 @@ mod tests {
             let buf = draw_buf(&status, 120, &theme);
             let row = row_of(&buf);
             let x = row[..row.find('━').unwrap()].chars().count();
-            assert_eq!(buf[(u16::try_from(x).unwrap(), 0)].fg, theme.color(token), "{pct}");
+            assert_eq!(
+                buf[(u16::try_from(x).unwrap(), 0)].fg,
+                theme.color(token),
+                "{pct}"
+            );
         }
     }
 
@@ -1232,20 +1266,26 @@ mod tests {
         let row = row_of(&draw_buf(&status, 50, &clean_theme()));
         assert_eq!(row.chars().count(), 50);
         assert!(row.trim_end().ends_with(" 5%"), "{row:?}");
-        assert!(row.contains("some-r") || row.contains("name"), "path kept: {row:?}");
+        assert!(
+            row.contains("some-r") || row.contains("name"),
+            "path kept: {row:?}"
+        );
         assert!(!row.contains("$0.12"), "cost dropped: {row:?}");
     }
 
     #[test]
     fn clean_icon_runs_split_glyph_words() {
-        assert_eq!(icon_runs("⬢ sonnet · ◑ med"), vec![
-            ("⬢", true),
-            (" sonnet ", false),
-            ("·", true),
-            (" ", false),
-            ("◑", true),
-            (" med", false),
-        ]);
+        assert_eq!(
+            icon_runs("⬢ sonnet · ◑ med"),
+            vec![
+                ("⬢", true),
+                (" sonnet ", false),
+                ("·", true),
+                (" ", false),
+                ("◑", true),
+                (" med", false),
+            ]
+        );
         assert_eq!(icon_runs("#12 ⤴"), vec![("#12 ", false), ("⤴", true)]);
         assert_eq!(icon_runs("$0.12"), vec![("$0.12", false)]);
     }
@@ -1303,8 +1343,16 @@ mod tests {
             let row = row_of(&buf);
             let label = format!("◉ {}", ultra.name());
             let x = x_of(&row, &label);
-            assert_eq!(buf[(x, 0)].fg, Color::Rgb(first.0, first.1, first.2), "{row:?}");
-            assert_eq!(buf[(x + 10, 0)].fg, Color::Rgb(last.0, last.1, last.2), "{row:?}");
+            assert_eq!(
+                buf[(x, 0)].fg,
+                Color::Rgb(first.0, first.1, first.2),
+                "{row:?}"
+            );
+            assert_eq!(
+                buf[(x + 10, 0)].fg,
+                Color::Rgb(last.0, last.1, last.2),
+                "{row:?}"
+            );
         }
     }
 

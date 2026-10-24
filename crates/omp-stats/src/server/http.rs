@@ -12,11 +12,13 @@ use hyper::header::{HeaderName, HeaderValue, CACHE_CONTROL, CONTENT_TYPE};
 use hyper::{HeaderMap, Method, Request, Response};
 use tokio::sync::{broadcast, mpsc};
 
-use super::guard;
 use super::api::{handle_api, ApiResponse};
+use super::guard;
 use super::statics::handle_static;
 use crate::live;
-use crate::port_conflict::{STATS_DASHBOARD_HEADER, STATS_DASHBOARD_HOSTNAME_HEADER, STATS_DASHBOARD_SECURITY_VERSION};
+use crate::port_conflict::{
+    STATS_DASHBOARD_HEADER, STATS_DASHBOARD_HOSTNAME_HEADER, STATS_DASHBOARD_SECURITY_VERSION,
+};
 
 pub(super) type Body = BoxBody<Bytes, Infallible>;
 
@@ -35,13 +37,17 @@ fn stamp(headers: &mut HeaderMap, hostname: &str) {
         HeaderValue::from_static(STATS_DASHBOARD_SECURITY_VERSION),
     );
     if let Ok(value) = HeaderValue::from_str(hostname) {
-        headers.insert(HeaderName::from_static(STATS_DASHBOARD_HOSTNAME_HEADER), value);
+        headers.insert(
+            HeaderName::from_static(STATS_DASHBOARD_HOSTNAME_HEADER),
+            value,
+        );
     }
 }
 
 fn to_response(api: ApiResponse, hostname: &str) -> Response<Body> {
     let mut response = Response::new(full(api.body));
-    *response.status_mut() = hyper::StatusCode::from_u16(api.status).unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
+    *response.status_mut() =
+        hyper::StatusCode::from_u16(api.status).unwrap_or(hyper::StatusCode::INTERNAL_SERVER_ERROR);
     let headers = response.headers_mut();
     if !api.content_type.is_empty() {
         if let Ok(value) = HeaderValue::from_str(&api.content_type) {
@@ -49,7 +55,10 @@ fn to_response(api: ApiResponse, hostname: &str) -> Response<Body> {
         }
     }
     for (name, value) in api.headers {
-        if let (Ok(name), Ok(value)) = (HeaderName::try_from(name.as_str()), HeaderValue::from_str(&value)) {
+        if let (Ok(name), Ok(value)) = (
+            HeaderName::try_from(name.as_str()),
+            HeaderValue::from_str(&value),
+        ) {
             headers.insert(name, value);
         }
     }
@@ -64,7 +73,10 @@ pub(super) struct Ctx {
 }
 
 /// Serve one request.
-pub(super) async fn serve(req: Request<Incoming>, ctx: Arc<Ctx>) -> Result<Response<Body>, Infallible> {
+pub(super) async fn serve(
+    req: Request<Incoming>,
+    ctx: Arc<Ctx>,
+) -> Result<Response<Body>, Infallible> {
     let hostname = ctx.hostname.as_str();
     if guard::enforced(hostname) {
         if let Err(reason) = guard::check(req.headers(), hostname, ctx.port) {
@@ -79,7 +91,10 @@ pub(super) async fn serve(req: Request<Incoming>, ctx: Arc<Ctx>) -> Result<Respo
         return Ok(event_stream(hostname));
     }
     let method = req.method().as_str().to_string();
-    let target = req.uri().path_and_query().map_or_else(|| path.clone(), |pq| pq.as_str().to_string());
+    let target = req
+        .uri()
+        .path_and_query()
+        .map_or_else(|| path.clone(), |pq| pq.as_str().to_string());
     let headers = req.headers().clone();
     let joined = tokio::task::spawn_blocking(move || {
         if path.starts_with("/api/") {
@@ -112,8 +127,13 @@ impl hyper::body::Body for SseBody {
     type Data = Bytes;
     type Error = Infallible;
 
-    fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
-        self.rx.poll_recv(cx).map(|chunk| chunk.map(|bytes| Ok(Frame::data(bytes))))
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        self.rx
+            .poll_recv(cx)
+            .map(|chunk| chunk.map(|bytes| Ok(Frame::data(bytes))))
     }
 }
 
@@ -130,7 +150,10 @@ fn event_stream(hostname: &str) -> Response<Body> {
     let live = live::stats_live();
     live.start();
     let mut frames = live.subscribe();
-    let first = format!("data: {}\n\n", serde_json::to_string(&live.status()).unwrap_or_else(|_| "{}".to_string()));
+    let first = format!(
+        "data: {}\n\n",
+        serde_json::to_string(&live.status()).unwrap_or_else(|_| "{}".to_string())
+    );
     let (tx, rx) = mpsc::channel::<Bytes>(64);
     let task = tokio::spawn(async move {
         if tx.send(Bytes::from(first)).await.is_err() {
@@ -160,7 +183,10 @@ fn event_stream(hostname: &str) -> Response<Body> {
     let headers = response.headers_mut();
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("text/event-stream"));
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    headers.insert(hyper::header::CONNECTION, HeaderValue::from_static("keep-alive"));
+    headers.insert(
+        hyper::header::CONNECTION,
+        HeaderValue::from_static("keep-alive"),
+    );
     stamp(headers, hostname);
     response
 }

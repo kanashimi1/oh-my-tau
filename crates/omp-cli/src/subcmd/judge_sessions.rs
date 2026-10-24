@@ -22,7 +22,11 @@ pub fn run(args: &[String]) -> Result<i32> {
     let mut paths = ModelPaths::default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        let mut val = |name: &str| it.next().cloned().with_context(|| format!("{name} needs a value\n{USAGE}"));
+        let mut val = |name: &str| {
+            it.next()
+                .cloned()
+                .with_context(|| format!("{name} needs a value\n{USAGE}"))
+        };
         match a.as_str() {
             "--out" => out = Some(val("--out")?.into()),
             "--limit" => limit = Some(val("--limit")?.parse().context("--limit")?),
@@ -44,11 +48,18 @@ pub fn run(args: &[String]) -> Result<i32> {
         files.truncate(n);
     }
     let mut sink: Box<dyn Write> = match &out {
-        Some(p) => Box::new(BufWriter::new(File::create(p).with_context(|| format!("create {}", p.display()))?)),
+        Some(p) => Box::new(BufWriter::new(
+            File::create(p).with_context(|| format!("create {}", p.display()))?,
+        )),
         None => Box::new(BufWriter::new(std::io::stdout().lock())),
     };
-    let sum = offline::judge_files(&files, &mut sink, &paths, &mut |f, n| eprintln!("{}: {n} episode(s)", f.display()))?;
+    let sum = offline::judge_files(&files, &mut sink, &paths, &mut |f, n| {
+        eprintln!("{}: {n} episode(s)", f.display())
+    })?;
     sink.flush()?;
-    eprintln!("judged {} episode(s) from {} file(s), {} failed", sum.episodes, sum.files, sum.failed);
+    eprintln!(
+        "judged {} episode(s) from {} file(s), {} failed",
+        sum.episodes, sum.files, sum.failed
+    );
     Ok(i32::from(sum.failed > 0 && sum.episodes == 0))
 }

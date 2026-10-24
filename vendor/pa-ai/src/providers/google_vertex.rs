@@ -339,7 +339,9 @@ async fn run_stream(
     if let Some(api_key) = api_key {
         headers.push(("x-goog-api-key".into(), api_key));
     } else {
-        let token = resolve_adc_access_token().await.map_err(ProviderError::Message)?;
+        let token = resolve_adc_access_token()
+            .await
+            .map_err(ProviderError::Message)?;
         headers.push(("Authorization".into(), format!("Bearer {token}")));
     }
 

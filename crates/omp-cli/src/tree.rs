@@ -32,10 +32,16 @@ fn entries(rt: &Runtime) -> Result<Vec<Value>, CmdError> {
 
 /// `session_before_branch` (TS `#branchIntoNewSession`): `true` when an extension cancelled.
 async fn branch_cancelled(rt: &Runtime, reason: BranchReason, entry_id: &str) -> bool {
-    let Some(host) = rt.ext_host().filter(|h| h.has_handlers("session_before_branch")) else {
+    let Some(host) = rt
+        .ext_host()
+        .filter(|h| h.has_handlers("session_before_branch"))
+    else {
         return false;
     };
-    match host.emit_session_before_branch(reason, entry_id.to_owned(), None).await {
+    match host
+        .emit_session_before_branch(reason, entry_id.to_owned(), None)
+        .await
+    {
         Ok(outcome) => outcome.cancel,
         Err(e) => {
             eprintln!("omp-rs: extension session_before_branch: {e:#}");
@@ -283,7 +289,10 @@ pub async fn navigate_tree(
     // `session_before_tree`: a handler may cancel, or supply the summary itself.
     let mut summary_result: Option<(String, Value)> = None;
     let mut from_extension = false;
-    if let Some(host) = rt.ext_host().filter(|h| h.has_handlers("session_before_tree")) {
+    if let Some(host) = rt
+        .ext_host()
+        .filter(|h| h.has_handlers("session_before_tree"))
+    {
         let preparation = json!({
             "targetId": target,
             "oldLeafId": old_leaf,
@@ -298,9 +307,16 @@ pub async fn navigate_tree(
                 }
                 if let (true, Some(text)) = (
                     wants_summary,
-                    outcome.result.pointer("/summary/summary").and_then(Value::as_str),
+                    outcome
+                        .result
+                        .pointer("/summary/summary")
+                        .and_then(Value::as_str),
                 ) {
-                    let details = outcome.result.pointer("/summary/details").cloned().unwrap_or(Value::Null);
+                    let details = outcome
+                        .result
+                        .pointer("/summary/details")
+                        .cloned()
+                        .unwrap_or(Value::Null);
                     summary_result = Some((text.to_owned(), details));
                     from_extension = true;
                 }

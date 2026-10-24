@@ -228,7 +228,10 @@ impl ComposerShape {
     /// Whether the shape renders a top chrome row.
     #[must_use]
     pub const fn has_top(self) -> bool {
-        matches!(self, Self::Band | Self::Box | Self::Claude | Self::Pi | Self::Rule)
+        matches!(
+            self,
+            Self::Band | Self::Box | Self::Claude | Self::Pi | Self::Rule
+        )
     }
 
     /// Whether the shape renders a separate bottom chrome row (box merges
@@ -469,7 +472,12 @@ pub fn chrome_styles(theme: &Theme, border: Style) -> (Style, Style) {
 /// The shape's status top border for `width` columns (`attachToEditor`
 /// providers): `None` when the status line does not attach at the top.
 #[must_use]
-pub fn top_border(shape: ComposerShape, status: &StatusLine, theme: &Theme, width: usize) -> Option<TopBorder> {
+pub fn top_border(
+    shape: ComposerShape,
+    status: &StatusLine,
+    theme: &Theme,
+    width: usize,
+) -> Option<TopBorder> {
     let chrome = shape.side_chrome_width(shape.default_padding_x());
     let (layout, avail) = match shape.status_attachment() {
         StatusAttachment::TopBorder => (StatusLayout::Box, width.saturating_sub(chrome * 2).max(1)),
@@ -483,7 +491,12 @@ pub fn top_border(shape: ComposerShape, status: &StatusLine, theme: &Theme, widt
 
 /// The standalone bottom bar for `shape`, if it has one.
 #[must_use]
-pub fn bottom_bar(shape: ComposerShape, status: &StatusLine, theme: &Theme, width: usize) -> Option<Line<'static>> {
+pub fn bottom_bar(
+    shape: ComposerShape,
+    status: &StatusLine,
+    theme: &Theme,
+    width: usize,
+) -> Option<Line<'static>> {
     let layout = match shape.bottom_bar() {
         BottomBar::None => return None,
         BottomBar::Left => StatusLayout::PlainLeft,
@@ -499,7 +512,12 @@ const PREVIEW_PROMPT: &str = "Ask anything, edit files, run tools";
 /// The composer as `shape` renders it around a stand-in prompt, with the live
 /// status rows (`renderComposerShapePreview`).
 #[must_use]
-pub fn preview_lines(shape: ComposerShape, width: usize, theme: &Theme, status: &StatusLine) -> Vec<Line<'static>> {
+pub fn preview_lines(
+    shape: ComposerShape,
+    width: usize,
+    theme: &Theme,
+    status: &StatusLine,
+) -> Vec<Line<'static>> {
     let width = width.max(24);
     let padding_x = shape.default_padding_x();
     let chrome_w = shape.side_chrome_width(padding_x);
@@ -514,8 +532,13 @@ pub fn preview_lines(shape: ComposerShape, width: usize, theme: &Theme, status: 
         top: top_border(shape, status, theme, width),
     };
     let gutter = shape.default_prompt_gutter().unwrap_or("");
-    let content_width = width.saturating_sub(chrome_w * 2 + display_width(gutter)).max(1);
-    let prompt: String = PREVIEW_PROMPT.chars().take(content_width.saturating_sub(1).max(1)).collect();
+    let content_width = width
+        .saturating_sub(chrome_w * 2 + display_width(gutter))
+        .max(1);
+    let prompt: String = PREVIEW_PROMPT
+        .chars()
+        .take(content_width.saturating_sub(1).max(1))
+        .collect();
     let used = display_width(&prompt) + 1;
     let text_style = if shape.filled_surface() {
         Style::default()
@@ -581,7 +604,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("{shape:?}: no prompt row in {lines:?}"));
             // `pi` draws no right padding (TS `piComposerStyle.renderRow`).
             let want = if *shape == ComposerShape::Pi { 89 } else { 90 };
-            assert_eq!(display_width(&plain(prompt)), want, "{shape:?}: {}", plain(prompt));
+            assert_eq!(
+                display_width(&plain(prompt)),
+                want,
+                "{shape:?}: {}",
+                plain(prompt)
+            );
         }
     }
 
@@ -593,7 +621,10 @@ mod tests {
         let top = plain(&lines[0]);
         assert!(top.starts_with("╭──") && top.ends_with("──╮"), "{top}");
         let row = plain(&lines[1]);
-        assert!(row.starts_with("╰─ Ask anything") && row.ends_with(" ─╯"), "{row}");
+        assert!(
+            row.starts_with("╰─ Ask anything") && row.ends_with(" ─╯"),
+            "{row}"
+        );
     }
 
     #[test]

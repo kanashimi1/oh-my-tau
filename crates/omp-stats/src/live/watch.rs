@@ -36,11 +36,18 @@ fn is_transcript(path: &Path) -> bool {
 fn snapshot(roots: &[PathBuf]) -> Snapshot {
     roots
         .iter()
-        .flat_map(|root| walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok))
+        .flat_map(|root| {
+            walkdir::WalkDir::new(root)
+                .into_iter()
+                .filter_map(Result::ok)
+        })
         .filter(|entry| entry.file_type().is_file() && is_transcript(entry.path()))
         .filter_map(|entry| {
             let meta = entry.metadata().ok()?;
-            Some((entry.path().to_string_lossy().into_owned(), (meta.len(), meta.modified().ok())))
+            Some((
+                entry.path().to_string_lossy().into_owned(),
+                (meta.len(), meta.modified().ok()),
+            ))
         })
         .collect()
 }
@@ -88,7 +95,9 @@ impl Watches {
                     }
                 }
             }
-            let Some(watcher) = self.watcher.as_mut() else { continue };
+            let Some(watcher) = self.watcher.as_mut() else {
+                continue;
+            };
             match watcher.watch(root, RecursiveMode::Recursive) {
                 Ok(()) => {
                     self.watched.push(root.clone());
@@ -135,14 +144,23 @@ impl Pending {
     }
 }
 
-fn run(inner: &Arc<Inner>, epoch: u64, roots: &[PathBuf], tx: &mpsc::Sender<Msg>, rx: &mpsc::Receiver<Msg>) {
+fn run(
+    inner: &Arc<Inner>,
+    epoch: u64,
+    roots: &[PathBuf],
+    tx: &mpsc::Sender<Msg>,
+    rx: &mpsc::Receiver<Msg>,
+) {
     let poll = Duration::from_millis(WATCH_POLL_MS);
     let full_every = Duration::from_millis(FULL_SYNC_INTERVAL_MS);
     let mut watches = Watches::default();
     watches.refresh(roots, tx);
     // Baseline for polling; only maintained while no watcher works.
     let mut known: Option<Snapshot> = (!watches.active()).then(|| snapshot(roots));
-    let mut pending = Pending { files: Vec::new(), deadline: None };
+    let mut pending = Pending {
+        files: Vec::new(),
+        deadline: None,
+    };
     let mut next_poll = Instant::now() + poll;
     let mut next_full = Instant::now() + full_every;
     loop {
@@ -178,7 +196,11 @@ fn run(inner: &Arc<Inner>, epoch: u64, roots: &[PathBuf], tx: &mpsc::Sender<Msg>
             // Poll exactly the roots no watcher covers (a root whose watch
             // failed while another root is watched must not wait for the
             // 5-minute full sync); watched roots are never re-walked.
-            let unwatched: Vec<PathBuf> = roots.iter().filter(|r| !watches.watched.contains(*r)).cloned().collect();
+            let unwatched: Vec<PathBuf> = roots
+                .iter()
+                .filter(|r| !watches.watched.contains(*r))
+                .cloned()
+                .collect();
             {
                 let current = snapshot(&unwatched);
                 if let Some(known) = &known {

@@ -7,10 +7,10 @@ pub mod agent;
 pub mod artifact;
 pub mod cfg;
 pub mod core;
-pub mod mcp;
-pub mod omp;
 pub mod history;
 pub mod local;
+pub mod mcp;
+pub mod omp;
 pub mod rule;
 pub mod skill;
 pub mod xd;
@@ -156,7 +156,8 @@ mod tests {
 
     #[test]
     fn frontmatter_parses() {
-        let (meta, body) = parse_frontmatter("---\nname: foo\ndescription: \"bar\"\n---\n\nBody here.\n");
+        let (meta, body) =
+            parse_frontmatter("---\nname: foo\ndescription: \"bar\"\n---\n\nBody here.\n");
         assert_eq!(meta[0], ("name".into(), "foo".into()));
         assert_eq!(meta[1], ("description".into(), "bar".into()));
         assert_eq!(body, "Body here.");
@@ -169,6 +170,5 @@ mod tests {
     }
 
     #[test]
-    fn split_host_path_works() {
-    }
+    fn split_host_path_works() {}
 }

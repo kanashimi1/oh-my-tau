@@ -184,7 +184,13 @@ impl SessionIndex {
             None => !malformed.is_empty(),
         };
 
-        Ok(Self { refs, malformed, title_slot, invalid_header, size })
+        Ok(Self {
+            refs,
+            malformed,
+            title_slot,
+            invalid_header,
+            size,
+        })
     }
 
     /// Ids of the active branch, root → leaf (TS `SessionEntryIndex.pathTo(leafId)`).
@@ -234,7 +240,12 @@ impl SessionIndex {
     ///
     /// # Errors
     /// I/O or JSON failure on a requested line.
-    pub fn load_branch(&self, path: &Path, indices: &[u32], parse_values: bool) -> Result<Vec<BranchLine>> {
+    pub fn load_branch(
+        &self,
+        path: &Path,
+        indices: &[u32],
+        parse_values: bool,
+    ) -> Result<Vec<BranchLine>> {
         let mut file = LineReader::open(path)?;
         let mut out = Vec::with_capacity(indices.len());
         for &i in indices {
@@ -242,15 +253,19 @@ impl SessionIndex {
             let Some(raw) = file.read_at(r.offset, r.len)? else {
                 anyhow::bail!("{}:{}: entry vanished", path.display(), r.line_no);
             };
-            let value = if parse_values {
-                Some(
-                    serde_json::from_str::<Value>(&raw)
-                        .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?,
-                )
-            } else {
-                None
-            };
-            out.push(BranchLine { raw, kind: r.kind, value });
+            let value =
+                if parse_values {
+                    Some(serde_json::from_str::<Value>(&raw).with_context(|| {
+                        format!("{}:{}: entry parse", path.display(), r.line_no)
+                    })?)
+                } else {
+                    None
+                };
+            out.push(BranchLine {
+                raw,
+                kind: r.kind,
+                value,
+            });
         }
         Ok(out)
     }
@@ -267,7 +282,9 @@ impl SessionIndex {
         indices: &[u32],
         mut f: impl FnMut(&EntryRef, &str) -> Result<()>,
     ) -> Result<()> {
-        self.scan_lines(path, indices, |r, raw| f(r, raw).map(|()| std::ops::ControlFlow::Continue(())))
+        self.scan_lines(path, indices, |r, raw| {
+            f(r, raw).map(|()| std::ops::ControlFlow::Continue(()))
+        })
     }
 
     /// Like [`Self::for_each_line`], but the callback can stop the scan early
@@ -308,8 +325,14 @@ fn head_of(bytes: &[u8]) -> Option<Head> {
     Some(Head {
         kind: obj.get("type").and_then(Value::as_str).map(str::to_owned),
         id: obj.get("id").and_then(Value::as_str).map(str::to_owned),
-        parent_id: obj.get("parentId").and_then(Value::as_str).map(str::to_owned),
-        timestamp: obj.get("timestamp").and_then(Value::as_str).map(str::to_owned),
+        parent_id: obj
+            .get("parentId")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        timestamp: obj
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -325,7 +348,10 @@ struct LineReader {
 impl LineReader {
     fn open(path: &Path) -> Result<Self> {
         let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-        Ok(Self { inner: BufReader::with_capacity(256 * 1024, file), pos: 0 })
+        Ok(Self {
+            inner: BufReader::with_capacity(256 * 1024, file),
+            pos: 0,
+        })
     }
 
     /// Read the `len` bytes at `offset` and decode like the streaming loader
@@ -482,7 +508,11 @@ mod tests {
         assert!(lines[0].raw.contains(&big));
         let parsed = idx.load_branch(&path, &branch, true).unwrap();
         assert_eq!(
-            parsed[1].value.as_ref().and_then(|v| v.get("id")).and_then(Value::as_str),
+            parsed[1]
+                .value
+                .as_ref()
+                .and_then(|v| v.get("id"))
+                .and_then(Value::as_str),
             Some("b")
         );
         std::fs::remove_file(&path).ok();

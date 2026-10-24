@@ -13,7 +13,10 @@ async fn main() -> anyhow::Result<()> {
     if let Some(level) = args.next() {
         m.thinking = serde_json::from_value(Value::String(level))?;
     }
-    println!("model: {}/{} api={} reasoning={:?}", m.provider, m.id, m.api, m.thinking);
+    println!(
+        "model: {}/{} api={} reasoning={:?}",
+        m.provider, m.id, m.api, m.thinking
+    );
     let ctx = Context {
         system_prompt: None,
         messages: vec![Message::User(UserMessage {
@@ -28,7 +31,10 @@ async fn main() -> anyhow::Result<()> {
     while let Some(ev) = s.next().await {
         let v = serde_json::to_value(&ev)?;
         let kind = v["type"].as_str().unwrap_or("?").to_string();
-        let tag = if matches!(ev, AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }) {
+        let tag = if matches!(
+            ev,
+            AssistantMessageEvent::Done { .. } | AssistantMessageEvent::Error { .. }
+        ) {
             kind
         } else if kind.ends_with("_delta") {
             format!("{kind}+")
@@ -42,18 +48,36 @@ async fn main() -> anyhow::Result<()> {
     }
     println!("events: {}", seq.join(" "));
     if let Some(v) = last {
-        let msg = v.get("message").or_else(|| v.get("error")).cloned().unwrap_or(Value::Null);
-        let blocks: Vec<&str> =
-            msg["content"].as_array().map(|a| a.iter().filter_map(|b| b["type"].as_str()).collect()).unwrap_or_default();
+        let msg = v
+            .get("message")
+            .or_else(|| v.get("error"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let blocks: Vec<&str> = msg["content"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|b| b["type"].as_str()).collect())
+            .unwrap_or_default();
         println!("blocks: {}", blocks.join(","));
         println!("stopReason: {}", msg["stopReason"].as_str().unwrap_or("?"));
         let u = &msg["usage"];
         let keys: Vec<String> = ["input", "output", "cacheRead", "cacheWrite", "totalTokens"]
             .iter()
-            .map(|k| format!("{k}{}", if u[*k].as_u64().unwrap_or(0) > 0 { ">0" } else { "=0" }))
+            .map(|k| {
+                format!(
+                    "{k}{}",
+                    if u[*k].as_u64().unwrap_or(0) > 0 {
+                        ">0"
+                    } else {
+                        "=0"
+                    }
+                )
+            })
             .collect();
         println!("usage: {}", keys.join(" "));
-        println!("errorMessage: {}", msg["errorMessage"].as_str().map_or("none", |_| "present"));
+        println!(
+            "errorMessage: {}",
+            msg["errorMessage"].as_str().map_or("none", |_| "present")
+        );
     }
     Ok(())
 }

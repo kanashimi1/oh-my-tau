@@ -207,12 +207,20 @@ pub(crate) fn gradient_runs(text: &str, stops: &[(u8, u8, u8)]) -> Vec<(String, 
 
 /// Clean `model` with an ultra mode: `⬢ name τ∿` (the τ-wave in the mode's
 /// gradient) and the thinking slot as `◉ <mode>` in the same gradient.
-fn ultra_model(ctx: &Ctx<'_>, theme: &crate::theme::Theme, name: &str, ultra: crate::magic::Ultra) -> Vec<Piece> {
+fn ultra_model(
+    ctx: &Ctx<'_>,
+    theme: &crate::theme::Theme,
+    name: &str,
+    ultra: crate::magic::Ultra,
+) -> Vec<Piece> {
     let stops = ultra.gradient();
     let dim = style::dim(theme);
     let mut rgb = vec![
         (style::icon(theme, "icon.model", "⬢").to_owned(), dim),
-        (format!(" {name}"), style::clean_color(theme, ctx.tok("statusLineModel"))),
+        (
+            format!(" {name}"),
+            style::clean_color(theme, ctx.tok("statusLineModel")),
+        ),
     ];
     if ctx.st.fast_mode {
         rgb.push((format!(" {}", style::icon(theme, "icon.fast", "⚡")), dim));
@@ -244,7 +252,11 @@ fn thinking_display(st: &super::StatusLine, theme: &crate::theme::Theme) -> Opti
         return Some(format!("{} off", theme.symbol("status.disabled")));
     }
     let symbol = theme.symbol(&format!("thinking.{level}"));
-    Some(if symbol.is_empty() { level.to_owned() } else { symbol.to_owned() })
+    Some(if symbol.is_empty() {
+        level.to_owned()
+    } else {
+        symbol.to_owned()
+    })
 }
 
 /// `mode` — Plan/Prewalk/Goal/Vibe/Loop (`segments.ts:486-562`).
@@ -299,7 +311,11 @@ fn path(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Vec<Piece> {
         // Clean: the last path component only, no folder icon.
         let trimmed = ctx.st.cwd.trim_end_matches(['/', '\\']);
         let base = trimmed.rsplit(['/', '\\']).next().unwrap_or_default();
-        let base = if base.is_empty() { ctx.st.cwd.as_str() } else { base };
+        let base = if base.is_empty() {
+            ctx.st.cwd.as_str()
+        } else {
+            base
+        };
         let shown = fmt::clamp_path_length(base, ctx.path_max);
         if ctx.st.worktree {
             let icon = style::icon(theme, "icon.worktree", "🌳");
@@ -336,11 +352,7 @@ fn git(ctx: &Ctx<'_>, theme: &crate::theme::Theme) -> Option<Vec<Piece>> {
     }
     let mut text = String::new();
     if let Some(branch) = &git.branch {
-        let _ = write!(
-            text,
-            "{} {branch}",
-            style::icon(theme, "icon.branch", "⑂")
-        );
+        let _ = write!(text, "{} {branch}", style::icon(theme, "icon.branch", "⑂"));
     }
     if git.unstaged > 0 {
         let _ = write!(text, " *{}", git.unstaged);

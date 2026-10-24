@@ -46,7 +46,8 @@ pub const MOUSE_TRACKING_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1000l";
 /// (TS `terminal.ts` `altScreenActive`). Consulted by the emergency restore
 /// (panic hook / signals): DECRST 1049 must not be written blindly — on
 /// Windows' shared VT dispatcher it homes the cursor on the main buffer.
-pub static ALT_SCREEN_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static ALT_SCREEN_ACTIVE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Best-effort terminal restore for crash/signal paths (TS
 /// `emergencyTerminalRestore` blind branch): end sync output, autowrap on,
@@ -197,7 +198,10 @@ fn is_conpty_hosted() -> bool {
 /// ConPTY hosts push disambiguate-only (preserving event-type reporting, flag
 /// 2, if a parent enabled it); otherwise disambiguate + alternate keys
 /// (event-type reporting only when inherited, TS `>5u`/`>7u`).
-fn kitty_push_flags(conpty: bool, reported_event_types: bool) -> crossterm::event::KeyboardEnhancementFlags {
+fn kitty_push_flags(
+    conpty: bool,
+    reported_event_types: bool,
+) -> crossterm::event::KeyboardEnhancementFlags {
     use crossterm::event::KeyboardEnhancementFlags as F;
     let disambiguate = F::DISAMBIGUATE_ESCAPE_CODES;
     match (conpty, reported_event_types) {
@@ -461,7 +465,10 @@ impl Shell<ShellBackend, io::Stdout> {
     /// # Errors
     ///
     /// Fails if the alt-screen entry or paint writes fail.
-    pub fn draw_fullscreen(&mut self, draw: impl FnOnce(&mut ratatui::Frame<'_>)) -> io::Result<()> {
+    pub fn draw_fullscreen(
+        &mut self,
+        draw: impl FnOnce(&mut ratatui::Frame<'_>),
+    ) -> io::Result<()> {
         self.enter_alt()?;
         if self.alt_term.is_none() {
             self.alt_term = Some(Terminal::new(ShellBackend::new())?);
@@ -475,7 +482,6 @@ impl Shell<ShellBackend, io::Stdout> {
         self.paint_end()?;
         result
     }
-
 
     /// Restore the terminal: leave any fullscreen borrow, pop kitty /
     /// modifyOtherKeys, bracketed paste off, DECCKM normal, show cursor,
@@ -566,7 +572,11 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
         if on == self.mouse {
             return Ok(());
         }
-        self.raw.raw(if on { MOUSE_TRACKING_ON } else { MOUSE_TRACKING_OFF })?;
+        self.raw.raw(if on {
+            MOUSE_TRACKING_ON
+        } else {
+            MOUSE_TRACKING_OFF
+        })?;
         self.mouse = on;
         Ok(())
     }
@@ -686,20 +696,22 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
         }
         self.paint_begin()?;
         self.raw.raw(OSC133_ZONE_START)?;
-        let frame = self.term.insert_before(u16::try_from(lines.len()).unwrap_or(u16::MAX), |buf| {
-            let area = buf.area;
-            Paragraph::new(lines.to_vec()).render(area, buf);
-            // `insert_before` prints every cell, so the reset cell behind a
-            // width-2 glyph (🔍, 🦀) would add a stray space and shift the
-            // row right; blank it so only the glyph's own two columns print.
-            for y in area.top()..area.bottom() {
-                for x in area.left()..area.right().saturating_sub(1) {
-                    if unicode_width::UnicodeWidthStr::width(buf[(x, y)].symbol()) == 2 {
-                        buf[(x + 1, y)].set_symbol("");
+        let frame =
+            self.term
+                .insert_before(u16::try_from(lines.len()).unwrap_or(u16::MAX), |buf| {
+                    let area = buf.area;
+                    Paragraph::new(lines.to_vec()).render(area, buf);
+                    // `insert_before` prints every cell, so the reset cell behind a
+                    // width-2 glyph (🔍, 🦀) would add a stray space and shift the
+                    // row right; blank it so only the glyph's own two columns print.
+                    for y in area.top()..area.bottom() {
+                        for x in area.left()..area.right().saturating_sub(1) {
+                            if unicode_width::UnicodeWidthStr::width(buf[(x, y)].symbol()) == 2 {
+                                buf[(x + 1, y)].set_symbol("");
+                            }
+                        }
                     }
-                }
-            }
-        });
+                });
         let result = frame;
         self.raw.raw(OSC133_ZONE_CLOSE)?;
         self.paint_end()?;
@@ -979,7 +991,10 @@ mod tests {
         // The committed row itself lands in the buffer above the live row.
         let buf = shell.term.backend().buffer();
         let rows: Vec<String> = (0..10).map(|y| row(buf, y)).collect();
-        let h1 = rows.iter().position(|r| r.starts_with("history-1")).unwrap();
+        let h1 = rows
+            .iter()
+            .position(|r| r.starts_with("history-1"))
+            .unwrap();
         let live = rows.iter().position(|r| r.starts_with("live")).unwrap();
         assert!(h1 < live, "{rows:?}");
     }
@@ -1075,14 +1090,20 @@ mod keyboard_probe_tests {
     #[test]
     fn kitty_reply_pushes_exactly_one_level() {
         assert_eq!(keyboard_mode_after_probe(true, false), KittyKeys::Pushed);
-        assert_eq!(keyboard_mode_after_probe(false, false), KittyKeys::ModifyOtherKeys);
+        assert_eq!(
+            keyboard_mode_after_probe(false, false),
+            KittyKeys::ModifyOtherKeys
+        );
     }
 
     #[test]
     fn push_flags_match_ts_levels() {
         use crossterm::event::{KeyboardEnhancementFlags as F, PushKeyboardEnhancementFlags};
         let seq = |conpty: bool, event_types: bool| {
-            cmd_ansi(&PushKeyboardEnhancementFlags(kitty_push_flags(conpty, event_types)))
+            cmd_ansi(&PushKeyboardEnhancementFlags(kitty_push_flags(
+                conpty,
+                event_types,
+            )))
         };
         // TS: conpty → `>1u` (disambiguate only; ConPTY drops Shift+letter
         // under flag 4), preserving flag 2 if reported (`>3u`).

@@ -11,7 +11,9 @@ use omp_providers::auth::{resolve_broker_config, BrokerConfig};
 use omp_providers::login::{broker_client_usage_summary, broker_usage_history};
 use omp_providers::AgentDir;
 use omp_stats::usage_windows::UsageSnapshotRow;
-use omp_stats::usage_windows::{set_usage_broker, ClientProviderUsage, ClientUsageClientSummary, UsageBroker};
+use omp_stats::usage_windows::{
+    set_usage_broker, ClientProviderUsage, ClientUsageClientSummary, UsageBroker,
+};
 
 /// Install the broker usage source. Idempotent; every dashboard entry point
 /// (`omp-rs stats`, `/stats`, `/trace`) calls it before starting the server.

@@ -150,7 +150,9 @@ fn authorization_url(challenge: &str, verifier: &str) -> String {
 async fn wait_for_code(
     server: Option<&AnthropicCallbackServer>,
     ui: &dyn OAuthLoginUi,
-    manual: Option<std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + '_>>>,
+    manual: Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + '_>>,
+    >,
     verifier: &str,
 ) -> Result<CallbackCode, String> {
     let manual_available = manual.is_some();
@@ -748,10 +750,17 @@ mod tests {
             None,
         );
         let busy = Err("port 53692: Address already in use (os error 98)".to_string());
-        login_with_server(&http, &ui, busy, &verifier, &challenge).await.unwrap();
+        login_with_server(&http, &ui, busy, &verifier, &challenge)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_str(&http.first_body(TOKEN_URL)).unwrap();
         assert_eq!(json["code"], "pasted");
-        assert!(ui.progress.lock().unwrap().iter().any(|p| p.contains("Callback server unavailable")));
+        assert!(ui
+            .progress
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.contains("Callback server unavailable")));
     }
 
     #[tokio::test]
@@ -760,9 +769,14 @@ mod tests {
         let (verifier, challenge) = generate_pkce();
         let ui = ScriptedUi::new(None, None);
         let busy = Err("port 53692: Address already in use (os error 98)".to_string());
-        let error = login_with_server(&http, &ui, busy, &verifier, &challenge).await.unwrap_err();
+        let error = login_with_server(&http, &ui, busy, &verifier, &challenge)
+            .await
+            .unwrap_err();
         assert!(error.contains("Address already in use"), "{error}");
-        assert!(ui.auth_url.lock().unwrap().is_none(), "no URL is shown for a login that cannot finish");
+        assert!(
+            ui.auth_url.lock().unwrap().is_none(),
+            "no URL is shown for a login that cannot finish"
+        );
     }
 
     #[tokio::test]

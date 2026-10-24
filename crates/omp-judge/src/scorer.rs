@@ -22,7 +22,11 @@ pub struct ModelPaths {
 
 impl Default for ModelPaths {
     fn default() -> Self {
-        Self { ckpt: DEFAULT_CKPT.into(), onnx: DEFAULT_ONNX.into(), threads: 2 }
+        Self {
+            ckpt: DEFAULT_CKPT.into(),
+            onnx: DEFAULT_ONNX.into(),
+            threads: 2,
+        }
     }
 }
 
@@ -57,9 +61,22 @@ impl Scorer {
     /// # Errors
     /// Missing/invalid checkpoint or ONNX file.
     pub fn load(paths: &ModelPaths) -> Result<Self> {
-        let judge = laya_ort::Judge::load(Path::new(&paths.ckpt), Path::new(&paths.onnx), paths.threads.max(1))
-            .with_context(|| format!("load laya judge (ckpt {}, onnx {})", paths.ckpt.display(), paths.onnx.display()))?;
-        Ok(Self { judge, questions: serde_json::from_str(QUESTIONS).context("questions.json")? })
+        let judge = laya_ort::Judge::load(
+            Path::new(&paths.ckpt),
+            Path::new(&paths.onnx),
+            paths.threads.max(1),
+        )
+        .with_context(|| {
+            format!(
+                "load laya judge (ckpt {}, onnx {})",
+                paths.ckpt.display(),
+                paths.onnx.display()
+            )
+        })?;
+        Ok(Self {
+            judge,
+            questions: serde_json::from_str(QUESTIONS).context("questions.json")?,
+        })
     }
 
     /// Score one judge view.
@@ -68,17 +85,30 @@ impl Scorer {
     /// Inference failure.
     pub fn score(&mut self, view: &str) -> Result<Scores> {
         let qs = self.judge.judge(view, &self.questions)?;
-        let find = |qid: &str| qs.iter().find(|q| q.qid == qid).with_context(|| format!("missing question {qid}"));
+        let find = |qid: &str| {
+            qs.iter()
+                .find(|q| q.qid == qid)
+                .with_context(|| format!("missing question {qid}"))
+        };
         let p_true = |qid: &str| -> Result<f64> {
             let q = find(qid)?;
-            let i = q.options.iter().position(|o| o == "true").context("no `true` option")?;
+            let i = q
+                .options
+                .iter()
+                .position(|o| o == "true")
+                .context("no `true` option")?;
             Ok(f64::from(q.probs[i]))
         };
         let fm = find("failure_mode")?;
         Ok(Scores {
             success_p: p_true("success")?,
             rework_p: p_true("rework")?,
-            failure_mode_probs: fm.options.iter().cloned().zip(fm.probs.iter().map(|p| f64::from(*p))).collect(),
+            failure_mode_probs: fm
+                .options
+                .iter()
+                .cloned()
+                .zip(fm.probs.iter().map(|p| f64::from(*p)))
+                .collect(),
         })
     }
 }

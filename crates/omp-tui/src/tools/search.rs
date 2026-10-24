@@ -325,7 +325,11 @@ pub fn glob_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
     if let Some(err) = is_error_result(call, details) {
         return pad_rows(vec![error_row(theme, &err)]);
     }
-    let max = if expanded { usize::MAX } else { COLLAPSED_ITEMS };
+    let max = if expanded {
+        usize::MAX
+    } else {
+        COLLAPSED_ITEMS
+    };
     if detail_count(details, "fileCount").is_none() {
         let text = result_text(call).unwrap_or_default();
         if text.trim().is_empty()
@@ -919,7 +923,10 @@ mod tests {
     fn pending_calls_show_hourglass_header() {
         let theme = Theme::default();
         let call = serde_json::json!({"name":"grep","arguments":{"pattern":"x","path":"src"}});
-        assert_eq!(plain(grep_lines(&call, false, &theme))[0], " ◷ Grep: x in src");
+        assert_eq!(
+            plain(grep_lines(&call, false, &theme))[0],
+            " ◷ Grep: x in src"
+        );
         let call = serde_json::json!({"name":"glob","arguments":{}});
         assert_eq!(plain(glob_lines(&call, false, &theme))[0], " ◷ Glob: *");
     }

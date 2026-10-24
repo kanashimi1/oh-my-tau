@@ -62,11 +62,17 @@ pub fn resolve_config_value(raw: &str) -> Option<String> {
     let command = raw[1..].trim().to_string();
     // Fast paths under a brief lock; never held across a run.
     {
-        let st = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st = STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(v) = st.ok.get(&command) {
             return Some(v.clone());
         }
-        if st.failed_until.get(&command).is_some_and(|t| Instant::now() < *t) {
+        if st
+            .failed_until
+            .get(&command)
+            .is_some_and(|t| Instant::now() < *t)
+        {
             return None;
         }
     }
@@ -74,7 +80,9 @@ pub fn resolve_config_value(raw: &str) -> Option<String> {
     // slot; the thread whose slot is still registered runs the command, the
     // rest wait for it and read the cache.
     let (slot, is_leader) = {
-        let mut st = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut st = STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(v) = st.ok.get(&command) {
             return Some(v.clone());
         }
@@ -88,25 +96,39 @@ pub fn resolve_config_value(raw: &str) -> Option<String> {
         }
     };
     if !is_leader {
-        let done = slot.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let done = slot
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut done = done;
         while !*done {
-            done = slot.cv.wait(done).unwrap_or_else(std::sync::PoisonError::into_inner);
+            done = slot
+                .cv
+                .wait(done)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        let st = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st = STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         return st.ok.get(&command).cloned();
     }
     let result = run(&command, TIMEOUT);
-    let mut st = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut st = STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     st.in_flight.remove(&command);
     if let Some(v) = &result {
         st.failed_until.remove(&command);
         st.ok.insert(command, v.clone());
     } else {
-        st.failed_until.insert(command, Instant::now() + FAILURE_RETRY);
+        st.failed_until
+            .insert(command, Instant::now() + FAILURE_RETRY);
     }
     {
-        let mut done = slot.done.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut done = slot
+            .done
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *done = true;
     }
     slot.cv.notify_all();
@@ -132,7 +154,9 @@ pub fn invalidate(raw: &str) {
         return;
     }
     let command = raw[1..].trim();
-    let mut st = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut st = STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     st.ok.remove(command);
     st.failed_until.remove(command);
 }
@@ -188,25 +212,25 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
         std::thread::Builder::new()
             .name("config-cmd-reader".to_string())
             .spawn(move || {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match out.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => buf
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .extend_from_slice(&chunk[..n]),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                            break;
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match out.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => buf
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .extend_from_slice(&chunk[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(10));
                         }
-                        std::thread::sleep(Duration::from_millis(10));
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => break,
                 }
-            }
-            let _ = done_tx.send(());
+                let _ = done_tx.send(());
             })
             .ok()?;
     }
@@ -262,10 +286,16 @@ mod tests {
         let cmd = format!("!  echo x >> {p}; echo '  sekret  '", p = counter.display());
         assert_eq!(resolve_config_value(&cmd).as_deref(), Some("sekret"));
         assert_eq!(resolve_config_value(&cmd).as_deref(), Some("sekret"));
-        assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().lines().count(),
+            1
+        );
         invalidate(&cmd);
         assert_eq!(resolve_config_value(&cmd).as_deref(), Some("sekret"));
-        assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 2);
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().lines().count(),
+            2
+        );
     }
 
     #[test]
@@ -286,7 +316,11 @@ mod tests {
         // stdout pipe after the direct child has exited 0.
         let got = run("echo done; sleep 30 &", Duration::from_secs(5));
         assert_eq!(got.as_deref(), Some("done"));
-        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     /// A `setsid` grandchild escapes the process group and holds the stdout
@@ -295,8 +329,19 @@ mod tests {
     #[test]
     fn escaped_grandchild_does_not_hang_success() {
         let started = Instant::now();
-        assert_eq!(run("setsid sleep 100 & echo started", Duration::from_millis(300)).as_deref(), Some("started"));
-        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        assert_eq!(
+            run(
+                "setsid sleep 100 & echo started",
+                Duration::from_millis(300)
+            )
+            .as_deref(),
+            Some("started")
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     /// Reader threads must not accumulate across runs whose pipe is held open
@@ -307,9 +352,7 @@ mod tests {
         fn named_reader_threads() -> usize {
             std::fs::read_dir("/proc/self/task")
                 .unwrap()
-                .filter_map(|e| {
-                    std::fs::read_to_string(e.ok()?.path().join("comm")).ok()
-                })
+                .filter_map(|e| std::fs::read_to_string(e.ok()?.path().join("comm")).ok())
                 .filter(|name| name.trim() == "config-cmd-reader")
                 .count()
         }
@@ -331,7 +374,11 @@ mod tests {
         let h2 = std::thread::spawn(|| resolve_config_value("!sleep 0.4; echo two"));
         assert_eq!(h1.join().unwrap().as_deref(), Some("one"));
         assert_eq!(h2.join().unwrap().as_deref(), Some("two"));
-        assert!(started.elapsed() < Duration::from_millis(750), "took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_millis(750),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 
     /// L1: concurrent resolves of the SAME command share one run (TS
@@ -340,7 +387,10 @@ mod tests {
     fn same_command_concurrent_runs_once() {
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("n");
-        let cmd = format!("! echo x >> {p}; sleep 0.3; echo once", p = counter.display());
+        let cmd = format!(
+            "! echo x >> {p}; sleep 0.3; echo once",
+            p = counter.display()
+        );
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let cmd = cmd.clone();
@@ -350,6 +400,9 @@ mod tests {
         for h in handles {
             assert_eq!(h.join().unwrap().as_deref(), Some("once"));
         }
-        assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().lines().count(),
+            1
+        );
     }
 }

@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-use omp_providers::{JudgeRequest, JudgmentCache};
 use omp_providers::{AgentDir, ResolvedModel};
+use omp_providers::{JudgeRequest, JudgmentCache};
 use pa_agent::abort::AbortSignal;
 use pa_ai::types::{SimpleStreamOptions, SimpleToolChoice};
 use pa_types::ai::{
@@ -47,7 +47,8 @@ use super::Env;
 const EVAL_HANDLE_CONCURRENCY: usize = 32;
 
 /// Shared eval model-request slots (TS `evalRequestSlots`).
-static REQUEST_SLOTS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(EVAL_HANDLE_CONCURRENCY));
+static REQUEST_SLOTS: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(EVAL_HANDLE_CONCURRENCY));
 
 /// Synthetic tool the model is forced to call when a `schema` is supplied
 /// (TS `STRUCTURED_TOOL_NAME`).
@@ -100,9 +101,9 @@ fn hooks() -> Result<std::sync::RwLockReadGuard<'static, Option<EvalRuntimeHooks
 /// The live provider target (TS `session.getActiveModel`-backed `default` tier).
 fn provider_target() -> Result<crate::adapter::ProviderTarget, String> {
     let guard = hooks()?;
-    let hooks = guard
-        .as_ref()
-        .ok_or_else(|| "eval runtime is not initialized (set_runtime_hooks not called)".to_string())?;
+    let hooks = guard.as_ref().ok_or_else(|| {
+        "eval runtime is not initialized (set_runtime_hooks not called)".to_string()
+    })?;
     let target = hooks.target.read().expect("provider target lock").clone();
     target.ok_or_else(|| "completion() has no provider target set.".to_string())
 }
@@ -216,7 +217,13 @@ impl Handle {
 
     /// Settle once: the first terminal state wins (a `cancel()` settles the
     /// handle immediately; the killed run's own settle is then ignored).
-    fn settle(&self, status: HandleStatus, text: Option<String>, data: Option<Value>, error: Option<String>) {
+    fn settle(
+        &self,
+        status: HandleStatus,
+        text: Option<String>,
+        data: Option<Value>,
+        error: Option<String>,
+    ) {
         {
             let mut inner = self.inner.lock().expect("eval handle lock");
             if inner.settled {
@@ -269,18 +276,26 @@ fn parse_handle_ref(value: &Value) -> Result<(&'static str, String), String> {
     let kind = match item.get("kind").and_then(Value::as_str) {
         Some("agent") => "agent",
         Some("completion") => "completion",
-        _ => return Err("handle must contain kind agent|completion and a non-empty id".to_string()),
+        _ => {
+            return Err("handle must contain kind agent|completion and a non-empty id".to_string())
+        }
     };
     let id = item
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .ok_or_else(|| "handle must contain kind agent|completion and a non-empty id".to_string())?;
+        .ok_or_else(|| {
+            "handle must contain kind agent|completion and a non-empty id".to_string()
+        })?;
     Ok((kind, id.to_string()))
 }
 
 fn lookup_handle(kind: &str, id: &str) -> Result<Arc<Handle>, String> {
-    let registry = if kind == "agent" { &AGENT_HANDLES } else { &COMPLETION_HANDLES };
+    let registry = if kind == "agent" {
+        &AGENT_HANDLES
+    } else {
+        &COMPLETION_HANDLES
+    };
     registry
         .lock()
         .expect("eval handles lock")
@@ -356,7 +371,11 @@ pub(crate) async fn deliver_message(to: &str, content: &str) -> Result<String, S
     if to == "all" {
         return broadcast_message(content).await;
     }
-    let handle = AGENT_HANDLES.lock().expect("eval handles lock").get(to).cloned();
+    let handle = AGENT_HANDLES
+        .lock()
+        .expect("eval handles lock")
+        .get(to)
+        .cloned();
     match steer_handle(handle.as_deref(), to, content).await {
         Ok(()) => Ok(format!("Delivered to {to}.")),
         Err(error) => Err(format!("Failed: {to} is not running. {error}")),
@@ -387,7 +406,11 @@ async fn broadcast_message(content: &str) -> Result<String, String> {
             Err(error) => text.push_str(&format!("\n- {id}: failed — {error}")),
         }
     }
-    text = format!("Broadcast delivered to {delivered} of {} peer(s).{}", targets.len(), text);
+    text = format!(
+        "Broadcast delivered to {delivered} of {} peer(s).{}",
+        targets.len(),
+        text
+    );
     if delivered == 0 {
         Err(text)
     } else {
@@ -582,7 +605,9 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
-        .ok_or_else(|| "agent() received invalid arguments: prompt must be a non-empty string".to_string())?;
+        .ok_or_else(|| {
+            "agent() received invalid arguments: prompt must be a non-empty string".to_string()
+        })?;
     let agent = args
         .get("agent")
         .and_then(Value::as_str)
@@ -599,9 +624,11 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
             ));
         }
     };
-    if args.get("isolated").is_some() || args.get("apply").is_some() || args.get("merge").is_some() {
+    if args.get("isolated").is_some() || args.get("apply").is_some() || args.get("merge").is_some()
+    {
         return Err(
-            "agent() isolation controls (isolated/apply/merge) are not supported in this runtime".to_string(),
+            "agent() isolation controls (isolated/apply/merge) are not supported in this runtime"
+                .to_string(),
         );
     }
     if args
@@ -613,7 +640,8 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
     }
     // TS `assertDepthAndSpawnAllowed` / `canSpawnAtDepth`
     // (`task.maxRecursionDepth`, default 2): refuse unbounded recursion.
-    omp_task::recursion_gate().map_err(|error| format!("agent() cannot spawn a subagent: {error}"))?;
+    omp_task::recursion_gate()
+        .map_err(|error| format!("agent() cannot spawn a subagent: {error}"))?;
 
     let id = mint_id("agt");
     // Validate exactly like the `task` tool does (`TaskItem::validate`:
@@ -714,7 +742,9 @@ async fn resolve_completion_candidates(tier: &str) -> Result<Vec<CompletionCandi
                 headers: target.headers.map(|headers| headers.into_iter().collect()),
                 thinking: None,
             });
-            if let Ok(primary) = omp_providers::resolve_in_async(dir.clone(), "default".to_string()).await {
+            if let Ok(primary) =
+                omp_providers::resolve_in_async(dir.clone(), "default".to_string()).await
+            {
                 candidates.extend(walk_fallbacks(dir, primary).await);
             }
         }
@@ -758,7 +788,9 @@ async fn execute_completion(
     let tools = schema.map(|schema| {
         vec![Tool {
             name: STRUCTURED_TOOL_NAME.to_string(),
-            description: "Return your answer by calling this tool with the requested structured fields.".to_string(),
+            description:
+                "Return your answer by calling this tool with the requested structured fields."
+                    .to_string(),
             parameters: schema.clone(),
         }]
     });
@@ -807,7 +839,8 @@ async fn execute_completion(
                 name: STRUCTURED_TOOL_NAME.to_string(),
             }),
         };
-        let response = match pa_ai::complete_simple(&candidate.model, &context, Some(options)).await {
+        let response = match pa_ai::complete_simple(&candidate.model, &context, Some(options)).await
+        {
             Ok(response) => response,
             Err(error) => {
                 last_error = Some(format!("{error:?}"));
@@ -830,7 +863,9 @@ async fn execute_completion(
         }
         if schema.is_some() {
             let call = response.content.iter().find_map(|block| match block {
-                AssistantContentBlock::ToolCall(call) if call.name == STRUCTURED_TOOL_NAME => Some(call),
+                AssistantContentBlock::ToolCall(call) if call.name == STRUCTURED_TOOL_NAME => {
+                    Some(call)
+                }
                 _ => None,
             });
             let value = match call {
@@ -841,11 +876,17 @@ async fn execute_completion(
                         return Err("completion() returned no structured response.".to_string());
                     }
                     serde_json::from_str::<Value>(&text).map_err(|_| {
-                        "completion() did not return a structured response matching the schema.".to_string()
+                        "completion() did not return a structured response matching the schema."
+                            .to_string()
                     })?
                 }
             };
-            return Ok((serde_json::to_string(&value).unwrap_or_default(), Some(value), response.usage, candidate.model.clone()));
+            return Ok((
+                serde_json::to_string(&value).unwrap_or_default(),
+                Some(value),
+                response.usage,
+                candidate.model.clone(),
+            ));
         }
         let text = assistant_text(&response.content);
         if text.is_empty() {
@@ -918,7 +959,10 @@ async fn run_completion(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
         .ok_or_else(|| {
             "completion() received invalid arguments: prompt must be a non-empty string".to_string()
         })?;
-    let tier = args.get("model").and_then(Value::as_str).unwrap_or("default");
+    let tier = args
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
     let system = args.get("system").and_then(Value::as_str);
     let schema = args.get("schema").cloned();
 
@@ -945,7 +989,9 @@ async fn run_completion(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
         )
         .await
         {
-            Ok((text, data, _usage)) => handle.settle(HandleStatus::Completed, Some(text), data, None),
+            Ok((text, data, _usage)) => {
+                handle.settle(HandleStatus::Completed, Some(text), data, None)
+            }
             Err(error) => {
                 let status = if cancel.is_cancelled() {
                     HandleStatus::Cancelled
@@ -1021,10 +1067,16 @@ fn parse_instructions(id: &str, value: Option<&Value>) -> Result<String, String>
 /// the cell-facing `bool` maps to the library's `noul` wire type.
 fn parse_questions(value: Option<&Value>) -> Result<Map<String, Value>, String> {
     let Some(questions) = value.and_then(Value::as_object) else {
-        return Err("judge() received invalid arguments: questions must be an object keyed by question id".to_string());
+        return Err(
+            "judge() received invalid arguments: questions must be an object keyed by question id"
+                .to_string(),
+        );
     };
     if questions.is_empty() {
-        return Err("judge() received invalid arguments: questions must contain at least one question".to_string());
+        return Err(
+            "judge() received invalid arguments: questions must contain at least one question"
+                .to_string(),
+        );
     }
     let mut parsed = Map::new();
     for (id, question) in questions {
@@ -1043,7 +1095,9 @@ fn parse_questions(value: Option<&Value>) -> Result<Map<String, Value>, String> 
                     )));
                 };
                 if criteria.len() < 2 {
-                    return Err(invalid(&format!("choice question \"{id}\" needs at least two options")));
+                    return Err(invalid(&format!(
+                        "choice question \"{id}\" needs at least two options"
+                    )));
                 }
                 for (label, rubric) in criteria {
                     if !rubric.is_null() && !rubric.is_string() {
@@ -1130,7 +1184,9 @@ fn judgment_cache() -> Option<JudgmentCache> {
 
 async fn run_judgment_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
     if !args.is_object() {
-        return Err("judge() received invalid arguments: expected { state, questions }".to_string());
+        return Err(
+            "judge() received invalid arguments: expected { state, questions }".to_string(),
+        );
     }
     let state = parse_state(args.get("state").unwrap_or(&Value::Null))?;
     let questions = parse_questions(args.get("questions"))?;
@@ -1142,9 +1198,13 @@ async fn run_judgment_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
         .acquire()
         .await
         .map_err(|_| "judge() request aborted.".to_string())?;
-    let result = omp_providers::judge(&chain, &JudgeRequest { state, questions }, judgment_cache().as_ref())
-        .await
-        .map_err(|error| error.to_string())?;
+    let result = omp_providers::judge(
+        &chain,
+        &JudgeRequest { state, questions },
+        judgment_cache().as_ref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
     throw_if_aborted(&ctx.signal)?;
     Ok(judgment_result_value(&result))
 }
@@ -1307,12 +1367,16 @@ fn parse_batch_items(value: Option<&Value>) -> Result<Vec<BatchInput>, String> {
     let mut parsed = Vec::new();
     for (index, entry) in items.iter().enumerate() {
         let Some(entry) = entry.as_object() else {
-            return Err(batch_invalid(&format!("item {index} needs a string or number key")));
+            return Err(batch_invalid(&format!(
+                "item {index} needs a string or number key"
+            )));
         };
         let key = entry.get("key").cloned().unwrap_or(Value::Null);
         let valid_key = matches!(&key, Value::String(s) if !s.is_empty()) || key.is_number();
         if !valid_key {
-            return Err(batch_invalid(&format!("item {index} needs a string or number key")));
+            return Err(batch_invalid(&format!(
+                "item {index} needs a string or number key"
+            )));
         }
         let key_id = serde_json::to_string(&key).unwrap_or_default();
         if seen.contains(&key_id) {
@@ -1342,7 +1406,9 @@ fn parse_batch_count(value: Option<&Value>, name: &str, fallback: u64) -> Result
                 u64::MAX
             }))
         }
-        Some(_) => Err(batch_invalid(&format!("{name} must be a non-negative integer"))),
+        Some(_) => Err(batch_invalid(&format!(
+            "{name} must be a non-negative integer"
+        ))),
     }
 }
 
@@ -1362,13 +1428,21 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
             let total = items.len();
             // TS `parseBatchOptions`: an explicit 0 falls back to the default
             // ceiling (`concurrency > 0 ? concurrency : EVAL_HANDLE_CONCURRENCY`).
-            let concurrency = parse_batch_count(record.get("concurrency"), "concurrency", EVAL_HANDLE_CONCURRENCY as u64)?;
+            let concurrency = parse_batch_count(
+                record.get("concurrency"),
+                "concurrency",
+                EVAL_HANDLE_CONCURRENCY as u64,
+            )?;
             let concurrency = if concurrency == 0 {
                 EVAL_HANDLE_CONCURRENCY
             } else {
                 concurrency as usize
             };
-            let retries = parse_batch_count(record.get("retries"), "retries", u64::from(DEFAULT_BATCH_RETRIES))? as u32;
+            let retries = parse_batch_count(
+                record.get("retries"),
+                "retries",
+                u64::from(DEFAULT_BATCH_RETRIES),
+            )? as u32;
             let min_ok = record
                 .get("minOk")
                 .map(|_| parse_batch_count(record.get("minOk"), "minOk", 1))
@@ -1397,7 +1471,14 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
                 .lock()
                 .expect("judge batches lock")
                 .insert(batch.id.clone(), batch.clone());
-            start_batch(batch.clone(), items, questions, concurrency, retries, ctx.signal.clone());
+            start_batch(
+                batch.clone(),
+                items,
+                questions,
+                concurrency,
+                retries,
+                ctx.signal.clone(),
+            );
             // `create` answers with the status snapshot (TS returns
             // `batch.status()`; the prelude only requires id/total/intent).
             Ok(batch.status())
@@ -1411,10 +1492,14 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
             let timeout_ms = record.get("timeoutMs");
             if let Some(value) = timeout_ms {
                 let Some(ms) = value.as_f64() else {
-                    return Err(batch_invalid("timeoutMs must be a non-negative finite number"));
+                    return Err(batch_invalid(
+                        "timeoutMs must be a non-negative finite number",
+                    ));
                 };
                 if !ms.is_finite() || ms < 0.0 {
-                    return Err(batch_invalid("timeoutMs must be a non-negative finite number"));
+                    return Err(batch_invalid(
+                        "timeoutMs must be a non-negative finite number",
+                    ));
                 }
             }
             let timeout = timeout_ms
@@ -1541,9 +1626,15 @@ fn start_batch(
                 let Some(input) = items.get(index) else {
                     break;
                 };
-                let settled =
-                    judge_one_batch_item(&batch, input, &questions, retries, &AgentDir::default(), &cell_signal)
-                        .await;
+                let settled = judge_one_batch_item(
+                    &batch,
+                    input,
+                    &questions,
+                    retries,
+                    &AgentDir::default(),
+                    &cell_signal,
+                )
+                .await;
                 {
                     let mut inner = batch.inner.lock().expect("judge batch lock");
                     if let Some(model) = &settled.model {
@@ -1792,7 +1883,12 @@ impl PoolState {
 
     /// TS `#dispatch` (fresh mode): spawn a worker while under the limit,
     /// otherwise wait in the FIFO queue.
-    fn dispatch(&mut self, index: usize, starts: &mut Vec<TurnStart>, taken: &dyn Fn(&str) -> bool) {
+    fn dispatch(
+        &mut self,
+        index: usize,
+        starts: &mut Vec<TurnStart>,
+        taken: &dyn Fn(&str) -> bool,
+    ) {
         if self.closed || self.items[index].status != ItemStatus::Queued {
             return;
         }
@@ -1804,7 +1900,12 @@ impl PoolState {
     }
 
     /// TS `#spawn` + `#drain`: a new worker takes the item as its first batch.
-    fn spawn_worker(&mut self, index: usize, starts: &mut Vec<TurnStart>, taken: &dyn Fn(&str) -> bool) {
+    fn spawn_worker(
+        &mut self,
+        index: usize,
+        starts: &mut Vec<TurnStart>,
+        taken: &dyn Fn(&str) -> bool,
+    ) {
         let base = format!("{}-{}", self.name, self.next_worker);
         self.next_worker += 1;
         let mut worker_id = base.clone();
@@ -1891,7 +1992,11 @@ impl PoolState {
             ItemStatus::Failed,
             ItemStatus::Cancelled,
         ] {
-            let n = self.items.iter().filter(|item| item.status == status).count();
+            let n = self
+                .items
+                .iter()
+                .filter(|item| item.status == status)
+                .count();
             counts.insert(status.as_str().to_string(), json!(n));
         }
         json!({
@@ -1969,7 +2074,10 @@ static WORKPOOLS: LazyLock<Mutex<HashMap<String, Arc<WorkPool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn agent_id_taken(id: &str) -> bool {
-    AGENT_HANDLES.lock().expect("eval handles lock").contains_key(id)
+    AGENT_HANDLES
+        .lock()
+        .expect("eval handles lock")
+        .contains_key(id)
 }
 
 /// Parent spawn policy captured from this process's own argv
@@ -2027,7 +2135,10 @@ pub(crate) fn child_spawn_policy() -> &'static ChildSpawnPolicy {
                 _ => {}
             }
         }
-        ChildSpawnPolicy { extra_args, allowed_tools }
+        ChildSpawnPolicy {
+            extra_args,
+            allowed_tools,
+        }
     });
     &POLICY
 }
@@ -2050,7 +2161,10 @@ fn clamp_tools(
         Some(allowed) => match requested {
             None => Some(allowed.clone()),
             Some(requested) => {
-                let kept: Vec<String> = requested.into_iter().filter(|tool| allowed.contains(tool)).collect();
+                let kept: Vec<String> = requested
+                    .into_iter()
+                    .filter(|tool| allowed.contains(tool))
+                    .collect();
                 Some(if kept.is_empty() {
                     vec!["__none__".to_string()]
                 } else {
@@ -2116,11 +2230,12 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
                 Some(format!("worker id {worker_id} is already registered; refusing to overwrite its agent handle")),
             );
             let (status, text) = turn_outcome(&handle);
-            let next = pool
-                .state
-                .lock()
-                .expect("workpool lock")
-                .finish_turn(start.batch, status, text, &agent_id_taken);
+            let next = pool.state.lock().expect("workpool lock").finish_turn(
+                start.batch,
+                status,
+                text,
+                &agent_id_taken,
+            );
             start_turns(&pool, next);
             continue;
         }
@@ -2132,11 +2247,12 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             settle_agent(&handle, &output, omp_task::SchemaMode::Permissive, false);
             handle.mark_run_finished();
             let (status, text) = turn_outcome(&handle);
-            let next = pool
-                .state
-                .lock()
-                .expect("workpool lock")
-                .finish_turn(batch, status, text, &agent_id_taken);
+            let next = pool.state.lock().expect("workpool lock").finish_turn(
+                batch,
+                status,
+                text,
+                &agent_id_taken,
+            );
             start_turns(&pool, next);
         });
     }
@@ -2162,10 +2278,15 @@ fn turn_outcome(handle: &Handle) -> (ItemStatus, String) {
     (status, output)
 }
 
-fn workpool_optional_string(record: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
+fn workpool_optional_string(
+    record: &Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
     match record.get(key) {
         None => Ok(None),
-        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.trim().to_string())),
+        Some(Value::String(value)) if !value.trim().is_empty() => {
+            Ok(Some(value.trim().to_string()))
+        }
         Some(_) => Err(format!("workpool {key} must be a non-empty string")),
     }
 }
@@ -2275,7 +2396,11 @@ fn create_workpool(
         name
     };
     let pool = WorkPool {
-        state: Mutex::new(PoolState::new(name.clone(), agent.clone(), SUBAGENT_CONCURRENCY)),
+        state: Mutex::new(PoolState::new(
+            name.clone(),
+            agent.clone(),
+            SUBAGENT_CONCURRENCY,
+        )),
         context,
         cwd: cwd.to_path_buf(),
         launcher: launcher.clone(),
@@ -2546,7 +2671,12 @@ mod tests {
         assert_eq!(status["freshAgents"], true);
 
         // A finished turn retires its worker and hands the queued item a new one.
-        let next = pool.finish_turn(starts[0].batch, ItemStatus::Completed, "done a".to_string(), &no_ids);
+        let next = pool.finish_turn(
+            starts[0].batch,
+            ItemStatus::Completed,
+            "done a".to_string(),
+            &no_ids,
+        );
         assert_eq!(next.len(), 1);
         assert_eq!(next[0].worker_id, "p-3");
         assert!(next[0].prompt.contains("## Item 1\nc\n"));
@@ -2559,12 +2689,27 @@ mod tests {
 
         // Settling is idempotent.
         assert!(pool
-            .finish_turn(starts[0].batch, ItemStatus::Failed, "x".to_string(), &no_ids)
+            .finish_turn(
+                starts[0].batch,
+                ItemStatus::Failed,
+                "x".to_string(),
+                &no_ids
+            )
             .is_empty());
         assert_eq!(pool.peek()["batches"][0]["status"], "completed");
 
-        pool.finish_turn(starts[1].batch, ItemStatus::Failed, "boom".to_string(), &no_ids);
-        pool.finish_turn(next[0].batch, ItemStatus::Cancelled, "stop".to_string(), &no_ids);
+        pool.finish_turn(
+            starts[1].batch,
+            ItemStatus::Failed,
+            "boom".to_string(),
+            &no_ids,
+        );
+        pool.finish_turn(
+            next[0].batch,
+            ItemStatus::Cancelled,
+            "stop".to_string(),
+            &no_ids,
+        );
         let status = pool.status();
         assert_eq!(status["items"]["completed"], 1);
         assert_eq!(status["items"]["failed"], 1);
@@ -2586,7 +2731,12 @@ mod tests {
             "workpool q is closed"
         );
         // The running turn still finishes; nothing new is dispatched.
-        let next = pool.finish_turn(starts[0].batch, ItemStatus::Completed, "ok".to_string(), &no_ids);
+        let next = pool.finish_turn(
+            starts[0].batch,
+            ItemStatus::Completed,
+            "ok".to_string(),
+            &no_ids,
+        );
         assert!(next.is_empty());
         let status = pool.status();
         assert_eq!(status["closed"], true);
@@ -2599,7 +2749,9 @@ mod tests {
     fn pool_worker_ids_avoid_taken_agent_ids() {
         let mut pool = PoolState::new("r".to_string(), "task".to_string(), 4);
         let taken = |id: &str| id == "r-1";
-        let (_, starts) = pool.push(&["a".to_string(), "b".to_string()], &taken).unwrap();
+        let (_, starts) = pool
+            .push(&["a".to_string(), "b".to_string()], &taken)
+            .unwrap();
         let workers: Vec<&str> = starts.iter().map(|s| s.worker_id.as_str()).collect();
         assert_eq!(workers, ["r-1-2", "r-2"]);
         assert!(pool.push(&[], &taken).unwrap().0.is_empty());
@@ -2640,7 +2792,9 @@ mod tests {
         let launcher = MockLauncher::default();
         let (handle, run) = mock_agent(&launcher, "test-msg-1");
         assert_eq!(
-            deliver_message("test-msg-1", "look at foo.rs").await.unwrap(),
+            deliver_message("test-msg-1", "look at foo.rs")
+                .await
+                .unwrap(),
             "Delivered to test-msg-1."
         );
         assert_eq!(*run.steered.lock().unwrap(), ["look at foo.rs"]);
@@ -2650,7 +2804,10 @@ mod tests {
             .unwrap_err()
             .contains("JSON-path suffix"));
         let unknown = deliver_message("test-msg-nope", "x").await.unwrap_err();
-        assert!(unknown.starts_with("Failed: test-msg-nope is not running."), "{unknown}");
+        assert!(
+            unknown.starts_with("Failed: test-msg-nope is not running."),
+            "{unknown}"
+        );
         run.finish(omp_task::RunStatus::Completed, "done");
         settled(&handle).await;
         let late = deliver_message("test-msg-1", "x").await.unwrap_err();
@@ -2680,7 +2837,10 @@ mod tests {
             &cwd,
             &dyn_launcher,
         );
-        assert_eq!(dup.unwrap_err(), "workpool \"test-pool-e2e\" already exists");
+        assert_eq!(
+            dup.unwrap_err(),
+            "workpool \"test-pool-e2e\" already exists"
+        );
 
         let pushed = run_workpool_with(
             &json!({"op": "push", "name": "test-pool-e2e", "items": ["one", "two"]}),
@@ -2688,7 +2848,10 @@ mod tests {
             &dyn_launcher,
         )
         .unwrap();
-        assert_eq!(pushed, json!({"ids": ["test-pool-e2e#1", "test-pool-e2e#2"]}));
+        assert_eq!(
+            pushed,
+            json!({"ids": ["test-pool-e2e#1", "test-pool-e2e#2"]})
+        );
         assert_eq!(launcher.launched(), 2);
         {
             let runs = launcher.runs.lock().unwrap();
@@ -2701,8 +2864,11 @@ mod tests {
             deliver_message("test-pool-e2e-1", "hint").await.unwrap(),
             "Delivered to test-pool-e2e-1."
         );
-        launcher.run(0).finish(omp_task::RunStatus::Completed, "first done");
-        let cancel = run_cancel(&json!({"item": {"kind": "agent", "id": "test-pool-e2e-2"}})).unwrap();
+        launcher
+            .run(0)
+            .finish(omp_task::RunStatus::Completed, "first done");
+        let cancel =
+            run_cancel(&json!({"item": {"kind": "agent", "id": "test-pool-e2e-2"}})).unwrap();
         assert_eq!(cancel, json!({"cancelled": true}));
 
         let peek_args = json!({"op": "peek", "name": "test-pool-e2e"});
@@ -2720,8 +2886,12 @@ mod tests {
         assert_eq!(peek["batches"][1]["status"], "cancelled");
         assert_eq!(peek["batches"][1]["output"], AGENT_CANCELLED_TEXT);
 
-        let closed = run_workpool_with(&json!({"op": "close", "name": "test-pool-e2e"}), &cwd, &dyn_launcher)
-            .unwrap();
+        let closed = run_workpool_with(
+            &json!({"op": "close", "name": "test-pool-e2e"}),
+            &cwd,
+            &dyn_launcher,
+        )
+        .unwrap();
         assert_eq!(closed, json!({"dropped": []}));
         let err = run_workpool_with(
             &json!({"op": "push", "name": "test-pool-e2e", "items": ["x"]}),
@@ -2731,13 +2901,21 @@ mod tests {
         .unwrap_err();
         assert_eq!(err, "workpool test-pool-e2e is closed");
         assert_eq!(
-            run_workpool_with(&json!({"op": "status", "name": "nope-pool"}), &cwd, &dyn_launcher)
-                .unwrap_err(),
+            run_workpool_with(
+                &json!({"op": "status", "name": "nope-pool"}),
+                &cwd,
+                &dyn_launcher
+            )
+            .unwrap_err(),
             "unknown workpool \"nope-pool\""
         );
         assert_eq!(
-            run_workpool_with(&json!({"op": "create", "tools": ["bash"]}), &cwd, &dyn_launcher)
-                .unwrap_err(),
+            run_workpool_with(
+                &json!({"op": "create", "tools": ["bash"]}),
+                &cwd,
+                &dyn_launcher
+            )
+            .unwrap_err(),
             "Eval-defined tools are unavailable in this runtime."
         );
     }
@@ -2766,7 +2944,12 @@ mod tests {
             &dyn_launcher,
         )
         .unwrap();
-        let pool = WORKPOOLS.lock().unwrap().get("test-pool-collision").cloned().unwrap();
+        let pool = WORKPOOLS
+            .lock()
+            .unwrap()
+            .get("test-pool-collision")
+            .cloned()
+            .unwrap();
 
         // Occupy the id a turn will try to register.
         let existing = Handle::new("agent", "occupied-worker".to_string());
@@ -2786,7 +2969,11 @@ mod tests {
         assert_eq!(launcher.launched(), 0, "no run launches on a collision");
 
         // The existing handle still owns the id, untouched by the failed turn.
-        let registered = AGENT_HANDLES.lock().unwrap().get("occupied-worker").cloned();
+        let registered = AGENT_HANDLES
+            .lock()
+            .unwrap()
+            .get("occupied-worker")
+            .cloned();
         assert!(Arc::ptr_eq(&registered.unwrap(), &existing));
         assert_eq!(existing.snapshot()["status"], "running");
         AGENT_HANDLES.lock().unwrap().remove("occupied-worker");
@@ -2854,7 +3041,9 @@ mod tests {
     #[tokio::test]
     async fn aborted_wait_cancels_then_waits_for_settlement() {
         let _depth_env = DEPTH_ENV_LOCK.lock();
-        let launcher = Arc::new(SlowMockLauncher { runs: Mutex::new(Vec::new()) });
+        let launcher = Arc::new(SlowMockLauncher {
+            runs: Mutex::new(Vec::new()),
+        });
         let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
         let cwd = PathBuf::from(".");
         run_workpool_with(
@@ -2892,7 +3081,12 @@ mod tests {
         }
         // The runs were asked to cancel but are not finished yet; the handles
         // already report cancelled (TS `manager.cancel` flips job status at once).
-        assert!(launcher.runs.lock().unwrap().iter().all(|run| run.inner.cancelled.load(Ordering::SeqCst)));
+        assert!(launcher
+            .runs
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|run| run.inner.cancelled.load(Ordering::SeqCst)));
         let handle = lookup_handle("agent", "test-pool-abort-1").unwrap();
         assert_eq!(handle.snapshot()["status"], "cancelled");
         assert!(!handle
@@ -2901,7 +3095,11 @@ mod tests {
 
         for run in launcher.runs.lock().unwrap().iter() {
             let tx = run.release.lock().unwrap().take().unwrap();
-            let _ = tx.send(run_output(&run.inner.id, omp_task::RunStatus::Cancelled, ""));
+            let _ = tx.send(run_output(
+                &run.inner.id,
+                omp_task::RunStatus::Cancelled,
+                "",
+            ));
         }
         let err = tokio::time::timeout(Duration::from_secs(5), &mut wait)
             .await
@@ -2910,7 +3108,12 @@ mod tests {
         assert_eq!(err, "aborted");
         for id in ["test-pool-abort-1", "test-pool-abort-2"] {
             let handle = lookup_handle("agent", id).unwrap();
-            assert!(handle.run_finished.load(std::sync::atomic::Ordering::SeqCst), "{id} run finished before the abort error");
+            assert!(
+                handle
+                    .run_finished
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                "{id} run finished before the abort error"
+            );
         }
         WORKPOOLS.lock().unwrap().remove("test-pool-abort");
         for id in ["test-pool-abort-1", "test-pool-abort-2"] {
@@ -2931,7 +3134,10 @@ mod tests {
         assert!(omp_task::recursion_gate_at(0).is_ok());
         assert!(omp_task::recursion_gate_at(1).is_ok());
         let err = omp_task::recursion_gate_at(2).unwrap_err();
-        assert_eq!(err, "Cannot spawn another agent at task depth 2; maximum depth is 2.");
+        assert_eq!(
+            err,
+            "Cannot spawn another agent at task depth 2; maximum depth is 2."
+        );
         std::env::remove_var(omp_task::MAX_RECURSION_ENV);
     }
 
@@ -2980,6 +3186,9 @@ mod tests {
             Some(vec!["__none__".to_string()])
         );
         // Unrestricted parent: the request passes through untouched.
-        assert_eq!(clamp_tools(&None, Some(vec!["eval".to_string()])), Some(vec!["eval".to_string()]));
+        assert_eq!(
+            clamp_tools(&None, Some(vec!["eval".to_string()])),
+            Some(vec!["eval".to_string()])
+        );
     }
 }

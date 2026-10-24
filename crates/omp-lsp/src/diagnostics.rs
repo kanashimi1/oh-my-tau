@@ -170,11 +170,16 @@ pub async fn wait_for_diagnostics(
             pull_attempted = true;
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             match request_document_diagnostics(client, uri, remaining).await {
-                PullOutcome { diagnostics: Some(items), .. } => {
+                PullOutcome {
+                    diagnostics: Some(items),
+                    ..
+                } => {
                     pulled = Some(items);
                     break;
                 }
-                PullOutcome { failed: Some(e), .. } => pull_failure = Some(e),
+                PullOutcome {
+                    failed: Some(e), ..
+                } => pull_failure = Some(e),
                 _ => {}
             }
         }
@@ -254,12 +259,20 @@ async fn request_document_diagnostics(
     timeout: Duration,
 ) -> PullOutcome {
     match client
-        .send_request("textDocument/diagnostic", json!({ "textDocument": { "uri": uri } }), None, Some(timeout))
+        .send_request(
+            "textDocument/diagnostic",
+            json!({ "textDocument": { "uri": uri } }),
+            None,
+            Some(timeout),
+        )
         .await
     {
         Ok(report) => {
             if report.get("kind").and_then(Value::as_str) != Some("full") {
-                return PullOutcome { diagnostics: None, failed: None };
+                return PullOutcome {
+                    diagnostics: None,
+                    failed: None,
+                };
             }
             let items = report
                 .get("items")
@@ -270,11 +283,17 @@ async fn request_document_diagnostics(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            PullOutcome { diagnostics: Some(items), failed: None }
+            PullOutcome {
+                diagnostics: Some(items),
+                failed: None,
+            }
         }
         Err(e) => {
             tracing::debug!("LSP document diagnostic pull failed: {}", e.message);
-            PullOutcome { diagnostics: None, failed: Some(e.message) }
+            PullOutcome {
+                diagnostics: None,
+                failed: Some(e.message),
+            }
         }
     }
 }
@@ -370,7 +389,10 @@ fn glob_match(pattern: &str, name: &str) -> bool {
             Some(i) => (&name_rest[..i], &name_rest[i + 1..]),
             None => (name_rest, ""),
         };
-        if !seg_match(&pat.chars().collect::<Vec<_>>(), &seg.chars().collect::<Vec<_>>()) {
+        if !seg_match(
+            &pat.chars().collect::<Vec<_>>(),
+            &seg.chars().collect::<Vec<_>>(),
+        ) {
             return false;
         }
         name_rest = rest;

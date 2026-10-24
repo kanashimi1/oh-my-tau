@@ -37,11 +37,13 @@ pub(crate) fn should_reset_backfill(value: Option<&str>) -> bool {
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Sampled BEFORE CREATE TABLE adds the table: drives the one-time
     // agent_type backfill enrollment below.
-    let messages_table_existed: bool = conn.query_row(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
-        [],
-        |_| Ok(()),
-    ).is_ok();
+    let messages_table_existed: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
 
     conn.execute_batch(
         r#"
@@ -163,10 +165,16 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     }
     let message_columns = table_columns(conn, "messages")?;
     if !message_columns.iter().any(|c| c == "premium_requests") {
-        conn.execute("ALTER TABLE messages ADD COLUMN premium_requests REAL NOT NULL DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN premium_requests REAL NOT NULL DEFAULT 0",
+            [],
+        )?;
     }
     if !message_columns.iter().any(|c| c == "cost_no_cache_input") {
-        conn.execute("ALTER TABLE messages ADD COLUMN cost_no_cache_input REAL", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN cost_no_cache_input REAL",
+            [],
+        )?;
     }
     // Rows ingested before this column existed carry no served tier; a re-parse
     // fills them from the session's assistant messages.
@@ -176,11 +184,17 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // Rows ingested before this column existed default to 0 (not unpriced), so
     // their epoch-sentinel zeros read as free until a re-parse rewrites them.
     if !message_columns.iter().any(|c| c == "cost_unpriced") {
-        conn.execute("ALTER TABLE messages ADD COLUMN cost_unpriced INTEGER NOT NULL DEFAULT 0", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN cost_unpriced INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
     }
     let has_agent_type_column = message_columns.iter().any(|c| c == "agent_type");
     if !has_agent_type_column {
-        conn.execute("ALTER TABLE messages ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'main'", [])?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN agent_type TEXT NOT NULL DEFAULT 'main'",
+            [],
+        )?;
     }
     // Enroll the backfill PENDING for any pre-existing table unless a prior run
     // settled the sentinel — OR IGNORE leaves an existing COMPLETE/PENDING
@@ -188,7 +202,14 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // reclassifies on the next init. A brand-new table settles COMPLETE.
     conn.execute(
         "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
-        rusqlite::params![AGENT_TYPE_BACKFILL_KEY, if messages_table_existed { BACKFILL_PENDING } else { BACKFILL_COMPLETE }],
+        rusqlite::params![
+            AGENT_TYPE_BACKFILL_KEY,
+            if messages_table_existed {
+                BACKFILL_PENDING
+            } else {
+                BACKFILL_COMPLETE
+            }
+        ],
     )?;
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp_agent_type ON messages(timestamp, agent_type)", [])?;
 
@@ -196,9 +217,9 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     // the stale schema by column name and wipe + re-ingest (v1..v9 history in
     // the TS comment on `backfillUserMessages`).
     let user_message_columns = table_columns(conn, "user_messages")?;
-    let has_stale_column = user_message_columns.iter().any(|c| {
-        c == "caps_words" || c == "drama_runs" || c == "yelling_sentences"
-    });
+    let has_stale_column = user_message_columns
+        .iter()
+        .any(|c| c == "caps_words" || c == "drama_runs" || c == "yelling_sentences");
     let has_v4_columns = user_message_columns.iter().any(|c| c == "negation");
     let has_old_user_messages = !user_message_columns.is_empty();
     if has_stale_column || (has_old_user_messages && !has_v4_columns) {
@@ -239,7 +260,10 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
              ALTER TABLE user_messages ADD COLUMN prose_hash TEXT NOT NULL DEFAULT '';",
         )?;
     }
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_messages_prose_hash ON user_messages(prose_hash)", [])?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_user_messages_prose_hash ON user_messages(prose_hash)",
+        [],
+    )?;
 
     // ---- One-time backfills, TS initDb order ----
     backfills::backfill_user_messages(conn)?;
@@ -278,7 +302,10 @@ pub(crate) fn meta_value(conn: &Connection, key: &str) -> Result<Option<String>>
 }
 
 pub(crate) fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
-    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", rusqlite::params![key, value])?;
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, value],
+    )?;
     Ok(())
 }
 
@@ -291,7 +318,6 @@ pub(crate) fn reset_offsets(conn: &Connection, key: &str) -> Result<()> {
     Ok(())
 }
 
-
 /// One-time backfill bodies and the db.ts pricing helpers shared with
 /// `ingest`; split out only to keep files under ~400 lines.
 #[path = "schema_backfills.rs"]
@@ -302,9 +328,7 @@ pub(crate) use backfills::agent_type_str;
 // Pricing helpers are only consumed by the ingest write path; gate them so
 // `db_query`-alone builds stay warning-free.
 #[cfg(feature = "db_ingest")]
-pub(crate) use backfills::{
-    calculate_no_cache_input_cost, resolve_stored_cost, usage_from_input,
-};
+pub(crate) use backfills::{calculate_no_cache_input_cost, resolve_stored_cost, usage_from_input};
 
 #[cfg(test)]
 mod tests {
@@ -316,7 +340,9 @@ mod tests {
         if let Ok(p) = std::env::var("GOLDEN_STATS_DB") {
             return Some(std::path::PathBuf::from(p));
         }
-        let default = std::path::Path::new("/home/kaneki/fleet-split/runs/omp-rust/webui-port/golden/_stats.full.db");
+        let default = std::path::Path::new(
+            "/home/kaneki/fleet-split/runs/omp-rust/webui-port/golden/_stats.full.db",
+        );
         default.exists().then(|| default.to_path_buf())
     }
 
@@ -324,10 +350,19 @@ mod tests {
     /// `rollup` feature; TS `ensureRollupSchema` creates them after the
     /// backfills above).
     const ROLLUP_OWNED: &[&str] = &[
-        "message_rollup", "tool_rollup", "session_rollup", "rollup_dirty", "session_dirty",
-        "idx_message_rollup_bucket", "idx_tool_rollup_bucket",
-        "rollup_dirty_messages_insert", "rollup_dirty_messages_update", "rollup_dirty_messages_delete",
-        "rollup_dirty_tool_calls_insert", "rollup_dirty_tool_calls_update", "rollup_dirty_tool_calls_delete",
+        "message_rollup",
+        "tool_rollup",
+        "session_rollup",
+        "rollup_dirty",
+        "session_dirty",
+        "idx_message_rollup_bucket",
+        "idx_tool_rollup_bucket",
+        "rollup_dirty_messages_insert",
+        "rollup_dirty_messages_update",
+        "rollup_dirty_messages_delete",
+        "rollup_dirty_tool_calls_insert",
+        "rollup_dirty_tool_calls_update",
+        "rollup_dirty_tool_calls_delete",
     ];
 
     fn is_rollup_owned(name: &str) -> bool {
@@ -337,9 +372,14 @@ mod tests {
     /// name -> whitespace-normalized SQL for every object both DBs share.
     fn schema_map(conn: &Connection) -> Result<std::collections::BTreeMap<String, String>> {
         let mut out = std::collections::BTreeMap::new();
-        let mut stmt = conn.prepare("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL")?;
+        let mut stmt =
+            conn.prepare("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         for row in rows {
             let (ty, name, sql) = row?;
@@ -367,7 +407,8 @@ mod tests {
             eprintln!("golden DB not found; skipping");
             return Ok(());
         };
-        let golden = Connection::open_with_flags(golden, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let golden =
+            Connection::open_with_flags(golden, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let golden_map = schema_map(&golden)?;
 
         let fresh = Connection::open_in_memory()?;
@@ -387,7 +428,11 @@ mod tests {
         assert!(missing.is_empty(), "missing objects: {missing:?}");
         assert!(different.is_empty(), "sql mismatch: {different:?}");
         // And nothing extra beyond rollup objects sqlite owns implicitly.
-        let extra: Vec<_> = fresh_map.keys().filter(|k| !golden_map.contains_key(*k)).cloned().collect();
+        let extra: Vec<_> = fresh_map
+            .keys()
+            .filter(|k| !golden_map.contains_key(*k))
+            .cloned()
+            .collect();
         assert!(extra.is_empty(), "extra objects: {extra:?}");
         Ok(())
     }

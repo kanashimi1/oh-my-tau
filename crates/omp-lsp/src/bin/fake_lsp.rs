@@ -73,7 +73,10 @@ fn main() {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("file:///unknown")
                     .to_string();
-                let version = msg.pointer("/params/textDocument/version").cloned().unwrap_or(serde_json::json!(1));
+                let version = msg
+                    .pointer("/params/textDocument/version")
+                    .cloned()
+                    .unwrap_or(serde_json::json!(1));
                 write_message(&serde_json::json!({
                     "jsonrpc": "2.0",
                     "method": "textDocument/publishDiagnostics",

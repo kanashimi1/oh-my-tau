@@ -6,9 +6,9 @@
 
 pub mod hooks;
 // `emit_auto_compaction_end` mirrors omp's six-field event as one argument per field.
+mod host;
 #[allow(clippy::too_many_arguments)]
 pub mod lifecycle;
-mod host;
 
 pub use host::{
     CommandInfo, EmitResult, ExtHost, HandlerRecord, HostConfig, HostMessage, LoadResult,

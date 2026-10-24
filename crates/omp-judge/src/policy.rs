@@ -22,9 +22,22 @@ impl PolicyScorer {
     /// # Errors
     /// Missing/invalid checkpoint or ONNX file.
     pub fn load(paths: &ModelPaths) -> Result<Self> {
-        let judge = laya_ort::Judge::load(Path::new(&paths.ckpt), Path::new(&paths.onnx), paths.threads.max(1))
-            .with_context(|| format!("load laya policy (ckpt {}, onnx {})", paths.ckpt.display(), paths.onnx.display()))?;
-        Ok(Self { judge, questions: serde_json::from_str(QUESTIONS).context("policy_questions.json")? })
+        let judge = laya_ort::Judge::load(
+            Path::new(&paths.ckpt),
+            Path::new(&paths.onnx),
+            paths.threads.max(1),
+        )
+        .with_context(|| {
+            format!(
+                "load laya policy (ckpt {}, onnx {})",
+                paths.ckpt.display(),
+                paths.onnx.display()
+            )
+        })?;
+        Ok(Self {
+            judge,
+            questions: serde_json::from_str(QUESTIONS).context("policy_questions.json")?,
+        })
     }
 
     /// `(option, probability)` in label order for one controller state.
@@ -33,8 +46,14 @@ impl PolicyScorer {
     /// Inference failure.
     pub fn probs(&mut self, state: &str) -> Result<Vec<(String, f64)>> {
         let qs = self.judge.judge(state, &self.questions)?;
-        let q = qs.into_iter().find(|q| q.qid == "action").context("missing question `action`")?;
-        Ok(q.options.into_iter().zip(q.probs.into_iter().map(f64::from)).collect())
+        let q = qs
+            .into_iter()
+            .find(|q| q.qid == "action")
+            .context("missing question `action`")?;
+        Ok(q.options
+            .into_iter()
+            .zip(q.probs.into_iter().map(f64::from))
+            .collect())
     }
 }
 
@@ -43,7 +62,12 @@ mod tests {
     #[test]
     fn questions_parse_and_have_three_actions() {
         let v: serde_json::Value = serde_json::from_str(super::QUESTIONS).unwrap();
-        let keys: Vec<_> = v["action"]["criteria"].as_object().unwrap().keys().cloned().collect();
+        let keys: Vec<_> = v["action"]["criteria"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
         assert_eq!(keys, ["noop", "clm_edit", "rlm_offload"]);
     }
 }

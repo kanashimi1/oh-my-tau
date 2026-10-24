@@ -106,12 +106,17 @@ pub(crate) fn resolve_session_path(file_param: &str) -> Result<PathBuf> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     if !base.ends_with(".jsonl") && !base.ends_with(".jsonl.gz") {
-        anyhow::bail!(TracePathError(format!("Not a session transcript: {file_param}")));
+        anyhow::bail!(TracePathError(format!(
+            "Not a session transcript: {file_param}"
+        )));
     }
     // Hardening beyond TS (m6): the lexical check above matches TS, but a
     // symlinked project/file can still escape the root. When the target
     // exists, re-check against the canonicalized root.
-    if let (Ok(croot), Ok(ctarget)) = (std::fs::canonicalize(&root), std::fs::canonicalize(&resolved)) {
+    if let (Ok(croot), Ok(ctarget)) = (
+        std::fs::canonicalize(&root),
+        std::fs::canonicalize(&resolved),
+    ) {
         if !ctarget.starts_with(&croot) {
             anyhow::bail!(TracePathError(format!(
                 "Path is outside the sessions directory: {file_param}"
@@ -167,8 +172,14 @@ pub(crate) fn to_ms(iso: Option<&Value>) -> Option<i64> {
 fn js_whitespace(c: char) -> bool {
     matches!(
         c,
-        ' ' | '\t' | '\n' | '\r' | '\u{0b}' | '\u{0c}' | '\u{a0}' | '\u{1680}'
-            | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' | '\u{205f}' | '\u{3000}' | '\u{feff}'
+        ' ' | '\t' | '\n' | '\r' | '\u{0b}' | '\u{0c}' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
     )
 }
 
@@ -176,7 +187,11 @@ fn js_whitespace(c: char) -> bool {
 /// like TS `headText` (`length`/`slice` count UTF-16 units; truncation backs
 /// off to a char boundary rather than emitting a lone surrogate).
 pub(crate) fn head_text(value: &str, max: usize) -> String {
-    let collapsed: String = value.split(js_whitespace).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    let collapsed: String = value
+        .split(js_whitespace)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     let units: Vec<usize> = collapsed
         .chars()
         .map(|c| c.len_utf16())
@@ -239,7 +254,10 @@ pub(crate) fn js_truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64().map(|f| f != 0.0 && f.is_finite()).unwrap_or(false),
+        Some(Value::Number(n)) => n
+            .as_f64()
+            .map(|f| f != 0.0 && f.is_finite())
+            .unwrap_or(false),
         Some(Value::String(s)) => !s.is_empty(),
         Some(Value::Array(_)) | Some(Value::Object(_)) => true,
     }
@@ -270,7 +288,8 @@ pub(crate) fn transcript_stem(file: &str) -> String {
     if let Some(s) = file.strip_suffix(".jsonl.gz") {
         s.to_string()
     } else {
-        file.strip_suffix(".jsonl").map_or_else(|| file.to_string(), ToString::to_string)
+        file.strip_suffix(".jsonl")
+            .map_or_else(|| file.to_string(), ToString::to_string)
     }
 }
 
@@ -344,7 +363,10 @@ pub(crate) fn read_dir_names(dir: &Path) -> Result<Vec<String>> {
 pub(crate) fn read_trace_fingerprint(resolved: &Path) -> Result<TraceFingerprint> {
     let root_mtime_ms = mtime_ms(&std::fs::metadata(resolved)?);
     let child_fingerprint = child_transcripts_fingerprint(&resolved.to_string_lossy(), 0);
-    Ok(TraceFingerprint { root_mtime_ms, child_fingerprint })
+    Ok(TraceFingerprint {
+        root_mtime_ms,
+        child_fingerprint,
+    })
 }
 
 /**
@@ -364,7 +386,10 @@ pub fn get_trace_entry(file_param: &str, entry_id: &str) -> Result<Option<Sessio
     let resolved = resolve_session_path(file_param)?;
     let bytes = match read_transcript(&resolved) {
         Ok(bytes) => bytes,
-        Err(err) if err.downcast_ref::<std::io::Error>().map(|e| e.kind()) == Some(ErrorKind::NotFound) => {
+        Err(err)
+            if err.downcast_ref::<std::io::Error>().map(|e| e.kind())
+                == Some(ErrorKind::NotFound) =>
+        {
             return Ok(None)
         }
         Err(err) => return Err(err),
@@ -387,7 +412,10 @@ pub fn get_trace_entry(file_param: &str, entry_id: &str) -> Result<Option<Sessio
  * [`trace_fingerprint_for_etag`] value the caller just computed for the same
  * file (its ETag pre-check), sparing a second walk.
  */
-pub fn build_session_trace(file_param: &str, fingerprint: Option<&TraceFingerprint>) -> Result<SessionTrace> {
+pub fn build_session_trace(
+    file_param: &str,
+    fingerprint: Option<&TraceFingerprint>,
+) -> Result<SessionTrace> {
     let resolved = resolve_session_path(file_param)?;
     let resolved_str = resolved.to_string_lossy().into_owned();
     let (root_mtime_ms, pre_child_fingerprint) = match fingerprint {
@@ -401,7 +429,9 @@ pub fn build_session_trace(file_param: &str, fingerprint: Option<&TraceFingerpri
     // the post-build race guard compares against this. Memo equality, not <=:
     // a LOWER mark (delete/older-mtime replace) is also stale.
     {
-        let memo = TRACE_MEMO.lock().map_err(|_| anyhow::anyhow!("trace memo poisoned"))?;
+        let memo = TRACE_MEMO
+            .lock()
+            .map_err(|_| anyhow::anyhow!("trace memo poisoned"))?;
         if let Some((file, entry)) = memo.as_ref() {
             if file == &resolved_str
                 && entry.mtime_ms == root_mtime_ms
@@ -415,10 +445,21 @@ pub fn build_session_trace(file_param: &str, fingerprint: Option<&TraceFingerpri
     let mut tracks = Vec::new();
     let mut scans = Vec::new();
     let mut visited = std::collections::HashSet::new();
-    let root_scan_idx = tree::build_track_tree(&resolved_str, "main", None, 0, &mut visited, &mut tracks, &mut scans)
-        .with_context(|| format!("build track tree for {resolved_str}"))?;
+    let root_scan_idx = tree::build_track_tree(
+        &resolved_str,
+        "main",
+        None,
+        0,
+        &mut visited,
+        &mut tracks,
+        &mut scans,
+    )
+    .with_context(|| format!("build track tree for {resolved_str}"))?;
     let Some(root_scan_idx) = root_scan_idx else {
-        anyhow::bail!(std::io::Error::new(ErrorKind::NotFound, format!("session not found: {resolved_str}")));
+        anyhow::bail!(std::io::Error::new(
+            ErrorKind::NotFound,
+            format!("session not found: {resolved_str}")
+        ));
     };
     let root_index = tracks
         .iter()
@@ -482,8 +523,12 @@ pub fn build_session_trace(file_param: &str, fingerprint: Option<&TraceFingerpri
     let mut turns = 0i64;
     for span in &tracks[root_index].spans {
         match span.kind {
-            crate::types::TraceSpanKind::Model => model_ms = model_ms.saturating_add(span.end.saturating_sub(span.start)),
-            crate::types::TraceSpanKind::Tool => tool_ms = tool_ms.saturating_add(span.end.saturating_sub(span.start)),
+            crate::types::TraceSpanKind::Model => {
+                model_ms = model_ms.saturating_add(span.end.saturating_sub(span.start))
+            }
+            crate::types::TraceSpanKind::Tool => {
+                tool_ms = tool_ms.saturating_add(span.end.saturating_sub(span.start))
+            }
             crate::types::TraceSpanKind::Turn => turns += 1,
             _ => {}
         }
@@ -541,10 +586,16 @@ pub fn build_session_trace(file_param: &str, fingerprint: Option<&TraceFingerpri
         summary,
     };
     if !raced && !root_changed {
-        let mut memo = TRACE_MEMO.lock().map_err(|_| anyhow::anyhow!("trace memo poisoned"))?;
+        let mut memo = TRACE_MEMO
+            .lock()
+            .map_err(|_| anyhow::anyhow!("trace memo poisoned"))?;
         *memo = Some((
             resolved_str,
-            TraceMemoEntry { mtime_ms: root_mtime_ms, child_fingerprint, trace: trace.clone() },
+            TraceMemoEntry {
+                mtime_ms: root_mtime_ms,
+                child_fingerprint,
+                trace: trace.clone(),
+            },
         ));
     }
     Ok(trace)

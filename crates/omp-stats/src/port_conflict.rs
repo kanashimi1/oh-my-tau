@@ -124,7 +124,8 @@ fn probe_stats_dashboard(port: u16, hostname: &str) -> StatsDashboardProbe {
     let version_header = response.header(STATS_DASHBOARD_HEADER);
     let dashboard_version = parse_dashboard_version(version_header);
     // Never replace a newer dashboard: an older CLI must not downgrade it.
-    let replaceable = response.status == 200 && matches!(dashboard_version, Some(version) if version > 0 && version <= SECURITY_VERSION_NUMBER);
+    let replaceable = response.status == 200
+        && matches!(dashboard_version, Some(version) if version > 0 && version <= SECURITY_VERSION_NUMBER);
     let reusable = response.status == 200
         && version_header == Some(STATS_DASHBOARD_SECURITY_VERSION)
         && response.header(STATS_DASHBOARD_HOSTNAME_HEADER) == Some(hostname)
@@ -154,7 +155,10 @@ struct ProbeResponse {
 
 impl ProbeResponse {
     fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str())
+        self.headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
     }
 
     fn has_header(&self, name: &str) -> bool {
@@ -173,7 +177,11 @@ fn http_probe(port: u16, hostname: &str) -> Option<ProbeResponse> {
     stream.set_read_timeout(Some(deadline)).ok()?;
     stream.set_write_timeout(Some(deadline)).ok()?;
 
-    let authority = if hostname.contains(':') { format!("[{hostname}]:{port}") } else { format!("{hostname}:{port}") };
+    let authority = if hostname.contains(':') {
+        format!("[{hostname}]:{port}")
+    } else {
+        format!("{hostname}:{port}")
+    };
     let request = format!(
         "GET {STATS_PROBE_PATH} HTTP/1.1\r\nHost: {authority}\r\nUser-Agent: omp-stats-probe\r\nAccept: */*\r\nConnection: close\r\n\r\n"
     );
@@ -206,7 +214,10 @@ fn read_until_headers(stream: &mut TcpStream) -> Option<Vec<u8>> {
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {
-    buffer.windows(4).position(|window| window == b"\r\n\r\n").map(|index| index + 4)
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
 }
 
 fn parse_response(raw: &[u8]) -> Option<ProbeResponse> {
@@ -227,7 +238,10 @@ fn parse_response(raw: &[u8]) -> Option<ProbeResponse> {
 /// Bare host of a `--host` value: exactly one `[`…`]` pair is removed, so
 /// `[::1]` and `::1` name the same listener. Other strings pass through.
 pub(crate) fn normalize_host(hostname: &str) -> &str {
-    hostname.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(hostname)
+    hostname
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(hostname)
 }
 
 fn reclaim_stats_port(port: u16, has_dashboard_identity: bool) -> Result<PortAction> {
@@ -235,7 +249,11 @@ fn reclaim_stats_port(port: u16, has_dashboard_identity: bool) -> Result<PortAct
         bail!("Port {port} is in use, but the listening process could not be identified.");
     };
     if holder.pid == std::process::id() {
-        bail!("Port {port} is held by the current process ({}, PID {}).", holder.image, holder.pid);
+        bail!(
+            "Port {port} is held by the current process ({}, PID {}).",
+            holder.image,
+            holder.pid
+        );
     }
 
     let normalized_image = normalize_image(&holder.image);
@@ -243,9 +261,12 @@ fn reclaim_stats_port(port: u16, has_dashboard_identity: bool) -> Result<PortAct
     let has_stats_identity = normalized_image == "omp-stats"
         || IDENTITY.omp_stats_binary.is_match(&normalized_command)
         || IDENTITY.stats_index_ts.is_match(&normalized_command)
-        || (normalized_image == "omp" && IDENTITY.omp_stats_subcommand.is_match(&normalized_command))
+        || (normalized_image == "omp"
+            && IDENTITY.omp_stats_subcommand.is_match(&normalized_command))
         || IDENTITY.omp_binary_stats.is_match(&normalized_command);
-    if !STATS_RUNTIME_IMAGES.contains(&normalized_image.as_str()) || (!has_stats_identity && !has_dashboard_identity) {
+    if !STATS_RUNTIME_IMAGES.contains(&normalized_image.as_str())
+        || (!has_stats_identity && !has_dashboard_identity)
+    {
         bail!(
             "Port {port} is in use by {} (PID {}), which is not identifiable as an omp stats dashboard; refusing to stop it.",
             holder.image,
@@ -265,16 +286,22 @@ struct StatsIdentity {
 }
 
 static IDENTITY: LazyLock<StatsIdentity> = LazyLock::new(|| StatsIdentity {
-    omp_stats_binary: Regex::new(r#"(?:^|[/"'\s])omp-stats(?:\.exe)?(?:["'\s]|$)"#).expect("omp-stats binary pattern"),
-    stats_index_ts: Regex::new(r#"/packages/stats/src/index\.ts(?:["'\s]|$)"#).expect("stats index pattern"),
+    omp_stats_binary: Regex::new(r#"(?:^|[/"'\s])omp-stats(?:\.exe)?(?:["'\s]|$)"#)
+        .expect("omp-stats binary pattern"),
+    stats_index_ts: Regex::new(r#"/packages/stats/src/index\.ts(?:["'\s]|$)"#)
+        .expect("stats index pattern"),
     omp_stats_subcommand: Regex::new(r"(?:^|\s)stats(?:\s|$)").expect("stats subcommand pattern"),
-    omp_binary_stats: Regex::new(r#"(?:^|/)omp(?:\.exe)?["'\s]+stats(?:["'\s]|$)"#).expect("omp stats subcommand pattern"),
+    omp_binary_stats: Regex::new(r#"(?:^|/)omp(?:\.exe)?["'\s]+stats(?:["'\s]|$)"#)
+        .expect("omp stats subcommand pattern"),
 });
 
 fn normalize_image(image: &str) -> String {
     let lowered = image.to_lowercase();
     let without_exe = lowered.strip_suffix(".exe").unwrap_or(&lowered);
-    without_exe.strip_suffix(" (deleted)").unwrap_or(without_exe).to_owned()
+    without_exe
+        .strip_suffix(" (deleted)")
+        .unwrap_or(without_exe)
+        .to_owned()
 }
 
 /// SIGTERM, poll for the exit, then SIGKILL. The `kill` binary stands in for libc
@@ -283,14 +310,26 @@ fn terminate_port_holder(holder: &PortHolder) -> Result<()> {
     if !process_alive(holder.pid) {
         return Ok(());
     }
-    signal_pid(holder.pid, "-TERM").map_err(|err| anyhow!("Failed to stop {} (PID {}): {err}", holder.image, holder.pid))?;
+    signal_pid(holder.pid, "-TERM").map_err(|err| {
+        anyhow!(
+            "Failed to stop {} (PID {}): {err}",
+            holder.image,
+            holder.pid
+        )
+    })?;
     for _ in 0..PROCESS_EXIT_POLLS {
         std::thread::sleep(Duration::from_millis(PROCESS_EXIT_POLL_MS));
         if !process_alive(holder.pid) {
             return Ok(());
         }
     }
-    signal_pid(holder.pid, "-KILL").map_err(|err| anyhow!("Failed to kill {} (PID {}): {err}", holder.image, holder.pid))?;
+    signal_pid(holder.pid, "-KILL").map_err(|err| {
+        anyhow!(
+            "Failed to kill {} (PID {}): {err}",
+            holder.image,
+            holder.pid
+        )
+    })?;
     std::thread::sleep(Duration::from_millis(PROCESS_EXIT_POLL_MS));
     Ok(())
 }
@@ -339,14 +378,22 @@ fn find_linux_port_holder(port: u16) -> Option<PortHolder> {
 
     let mut inodes: HashSet<String> = HashSet::new();
     for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
-        let Ok(contents) = std::fs::read_to_string(table) else { continue };
+        let Ok(contents) = std::fs::read_to_string(table) else {
+            continue;
+        };
         for line in contents.lines().skip(1) {
             let fields: Vec<&str> = line.split_whitespace().collect();
-            let (Some(address), Some(state), Some(inode)) = (fields.get(1), fields.get(3), fields.get(9)) else { continue };
+            let (Some(address), Some(state), Some(inode)) =
+                (fields.get(1), fields.get(3), fields.get(9))
+            else {
+                continue;
+            };
             if *state != "0A" {
                 continue;
             }
-            let Some(encoded_port) = address.rsplit(':').next() else { continue };
+            let Some(encoded_port) = address.rsplit(':').next() else {
+                continue;
+            };
             if u16::from_str_radix(encoded_port, 16).ok() == Some(port) {
                 inodes.insert((*inode).to_owned());
             }
@@ -359,18 +406,28 @@ fn find_linux_port_holder(port: u16) -> Option<PortHolder> {
     for entry in std::fs::read_dir("/proc").ok()? {
         let Ok(entry) = entry else { continue };
         let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else { continue };
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
         if !name.bytes().all(|byte| byte.is_ascii_digit()) || !entry.path().is_dir() {
             continue;
         }
-        let Ok(pid) = name.parse::<u32>() else { continue };
-        let Ok(descriptors) = std::fs::read_dir(format!("/proc/{pid}/fd")) else { continue };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Ok(descriptors) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            continue;
+        };
 
         let mut owns_socket = false;
         for descriptor in descriptors.flatten() {
-            let Ok(target) = std::fs::read_link(descriptor.path()) else { continue };
+            let Ok(target) = std::fs::read_link(descriptor.path()) else {
+                continue;
+            };
             let link = target.to_string_lossy().into_owned();
-            let Some(inode) = SOCKET_LINK.captures(&link).and_then(|caps| caps.get(1)) else { continue };
+            let Some(inode) = SOCKET_LINK.captures(&link).and_then(|caps| caps.get(1)) else {
+                continue;
+            };
             if inodes.contains(inode.as_str()) {
                 owns_socket = true;
                 break;
@@ -395,17 +452,25 @@ fn find_linux_port_holder(port: u16) -> Option<PortHolder> {
             .or_else(|| command_line.split(' ').next().map(basename))
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| "unknown".to_owned());
-        return Some(PortHolder { pid, image, command_line });
+        return Some(PortHolder {
+            pid,
+            image,
+            command_line,
+        });
     }
     None
 }
 
 #[cfg(target_os = "linux")]
-static SOCKET_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^socket:\[(\d+)\]$").expect("socket link pattern"));
+static SOCKET_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^socket:\[(\d+)\]$").expect("socket link pattern"));
 
 #[cfg(target_os = "linux")]
 fn basename(path: &str) -> String {
-    path.rsplit('/').find(|part| !part.is_empty()).unwrap_or_default().to_owned()
+    path.rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or_default()
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -422,7 +487,9 @@ mod tests {
         let port = listener.local_addr().expect("local addr").port();
         std::thread::spawn(move || {
             for _ in 0..connections {
-                let Ok((mut stream, _)) = listener.accept() else { return };
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
                 let mut sink = [0u8; 2048];
                 let _ = stream.read(&mut sink);
                 let _ = stream.write_all(response.as_bytes());
@@ -439,8 +506,14 @@ mod tests {
         drop(probe);
 
         assert!(is_port_free(port, STATS_DASHBOARD_HOSTNAME));
-        assert_eq!(probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME), StatsDashboardProbe::Unreachable);
-        assert_eq!(prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("prepare"), PortAction::Retry);
+        assert_eq!(
+            probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME),
+            StatsDashboardProbe::Unreachable
+        );
+        assert_eq!(
+            prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("prepare"),
+            PortAction::Retry
+        );
     }
 
     #[test]
@@ -450,16 +523,26 @@ mod tests {
 
         // Speaks no HTTP: the probe deadline expires, exactly like the TS fetch timeout.
         assert!(!is_port_free(port, STATS_DASHBOARD_HOSTNAME));
-        assert_eq!(probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME), StatsDashboardProbe::Unreachable);
-        assert_eq!(prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("prepare"), PortAction::Retry);
+        assert_eq!(
+            probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME),
+            StatsDashboardProbe::Unreachable
+        );
+        assert_eq!(
+            prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("prepare"),
+            PortAction::Retry
+        );
     }
 
     #[test]
     fn http_responder_without_dashboard_header_is_occupied() {
         let port = start_server("HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n", 4);
-        assert_eq!(probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME), StatsDashboardProbe::Occupied);
+        assert_eq!(
+            probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME),
+            StatsDashboardProbe::Occupied
+        );
         // Reclaiming refuses: the holder is not identifiable as an omp stats dashboard.
-        let error = prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect_err("must refuse to stop it");
+        let error =
+            prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect_err("must refuse to stop it");
         let message = error.to_string();
         assert!(
             message.contains(&format!("Port {port} is in use"))
@@ -477,9 +560,18 @@ mod tests {
             ),
             4,
         );
-        assert_eq!(probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME), StatsDashboardProbe::Reusable);
-        assert_eq!(prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("prepare"), PortAction::Reuse);
-        assert_eq!(recover_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("recover"), PortAction::Reuse);
+        assert_eq!(
+            probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME),
+            StatsDashboardProbe::Reusable
+        );
+        assert_eq!(
+            prepare_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("prepare"),
+            PortAction::Reuse
+        );
+        assert_eq!(
+            recover_stats_port(port, STATS_DASHBOARD_HOSTNAME).expect("recover"),
+            PortAction::Reuse
+        );
     }
 
     #[test]
@@ -492,8 +584,14 @@ mod tests {
         // The dashboard bound to `::1` identifies itself as `::1`; both spellings must reuse it.
         let response = "HTTP/1.1 200 OK\r\nx-omp-stats-dashboard: 3\r\nx-omp-stats-hostname: ::1\r\ncontent-length: 0\r\n\r\n";
         let port = start_server_on("::1", response, 4);
-        assert_eq!(probe_stats_dashboard(port, "[::1]"), StatsDashboardProbe::Reusable);
-        assert_eq!(probe_stats_dashboard(port, "::1"), StatsDashboardProbe::Reusable);
+        assert_eq!(
+            probe_stats_dashboard(port, "[::1]"),
+            StatsDashboardProbe::Reusable
+        );
+        assert_eq!(
+            probe_stats_dashboard(port, "::1"),
+            StatsDashboardProbe::Reusable
+        );
     }
 
     #[test]
@@ -505,7 +603,10 @@ mod tests {
             ),
             2,
         );
-        assert_eq!(probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME), StatsDashboardProbe::Occupied);
+        assert_eq!(
+            probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME),
+            StatsDashboardProbe::Occupied
+        );
     }
 
     #[test]
@@ -517,24 +618,38 @@ mod tests {
             ),
             2,
         );
-        assert_eq!(probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME), StatsDashboardProbe::Replaceable);
+        assert_eq!(
+            probe_stats_dashboard(port, STATS_DASHBOARD_HOSTNAME),
+            StatsDashboardProbe::Replaceable
+        );
     }
 
     #[test]
     fn port_zero_always_retries() {
-        assert_eq!(prepare_stats_port(0, STATS_DASHBOARD_HOSTNAME).expect("prepare"), PortAction::Retry);
+        assert_eq!(
+            prepare_stats_port(0, STATS_DASHBOARD_HOSTNAME).expect("prepare"),
+            PortAction::Retry
+        );
         assert_eq!(PortAction::Reuse.as_str(), "reuse");
         assert_eq!(PortAction::Retry.as_str(), "retry");
     }
 
     #[test]
     fn identity_detection_matches_stats_processes() {
-        assert!(IDENTITY.omp_stats_binary.is_match("/usr/local/bin/omp-stats --port 7777"));
-        assert!(IDENTITY.stats_index_ts.is_match("bun /repo/packages/stats/src/index.ts"));
-        assert!(IDENTITY.omp_stats_subcommand.is_match("omp stats --port 7777"));
+        assert!(IDENTITY
+            .omp_stats_binary
+            .is_match("/usr/local/bin/omp-stats --port 7777"));
+        assert!(IDENTITY
+            .stats_index_ts
+            .is_match("bun /repo/packages/stats/src/index.ts"));
+        assert!(IDENTITY
+            .omp_stats_subcommand
+            .is_match("omp stats --port 7777"));
         assert!(IDENTITY.omp_binary_stats.is_match("omp.exe stats"));
         assert!(!IDENTITY.omp_binary_stats.is_match("stats"));
-        assert!(!IDENTITY.omp_stats_binary.is_match("python -m omp_stats_helper"));
+        assert!(!IDENTITY
+            .omp_stats_binary
+            .is_match("python -m omp_stats_helper"));
         assert_eq!(normalize_image("OMP-Stats.EXE"), "omp-stats");
         assert_eq!(normalize_image("bun (deleted)"), "bun");
     }

@@ -50,7 +50,9 @@ fn load_messages(path: &std::path::Path) -> anyhow::Result<Vec<serde_json::Value
         if line.trim().is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
         if !saw_header {
             if value.get("type").and_then(|t| t.as_str()) == Some("session") {
                 saw_header = true;
@@ -121,12 +123,16 @@ impl UrlProvider for HistoryProvider {
         if agent_id.is_empty() {
             return Ok(InternalResource::text(render_index(ctx)));
         }
-        let Some((matched_id, file)) = find_on_disk(agent_id, ctx.artifacts_dir().as_deref()) else {
+        let Some((matched_id, file)) = find_on_disk(agent_id, ctx.artifacts_dir().as_deref())
+        else {
             // TS lists registered refs only; omp-rs has no live registry yet.
-            anyhow::bail!("Unknown agent: {agent_id}\nKnown agents: none\nList all with history://");
+            anyhow::bail!(
+                "Unknown agent: {agent_id}\nKnown agents: none\nList all with history://"
+            );
         };
         let messages = load_messages(&file)?;
-        let content = format_session_history_markdown(&messages, Some(&format!("{matched_id} (on disk)")));
+        let content =
+            format_session_history_markdown(&messages, Some(&format!("{matched_id} (on disk)")));
         let mut r = InternalResource::text(content);
         r.path = Some(file.to_string_lossy().into_owned());
         Ok(r)
@@ -146,7 +152,10 @@ impl UrlProvider for HistoryProvider {
     fn complete(&self, _query: &str, ctx: &UrlCtx) -> Vec<crate::UrlCompletion> {
         session_files_from_disk(ctx.artifacts_dir().as_deref())
             .into_iter()
-            .map(|(id, _)| crate::UrlCompletion { label: id, detail: Some("on disk".to_string()) })
+            .map(|(id, _)| crate::UrlCompletion {
+                label: id,
+                detail: Some("on disk".to_string()),
+            })
             .collect()
     }
 }
@@ -154,7 +163,10 @@ impl UrlProvider for HistoryProvider {
 /// TS `session-history-format.ts` `formatSessionHistoryMarkdown` (default
 /// options: no thinking, no expanded IO, tool calls collapsed to one line),
 /// operating on raw message JSON.
-pub fn format_session_history_markdown(messages: &[serde_json::Value], title: Option<&str>) -> String {
+pub fn format_session_history_markdown(
+    messages: &[serde_json::Value],
+    title: Option<&str>,
+) -> String {
     let mut lines: Vec<String> = Vec::new();
     if let Some(title) = title {
         lines.push(format!("# {title}"));
@@ -172,7 +184,9 @@ pub fn format_session_history_markdown(messages: &[serde_json::Value], title: Op
     let mut consumed: Vec<String> = Vec::new();
 
     for msg in messages {
-        let Some(role) = msg.get("role").and_then(|r| r.as_str()) else { continue };
+        let Some(role) = msg.get("role").and_then(|r| r.as_str()) else {
+            continue;
+        };
         match role {
             "user" | "developer" => {
                 let text = content_to_text(msg.get("content"));
@@ -186,7 +200,9 @@ pub fn format_session_history_markdown(messages: &[serde_json::Value], title: Op
             }
             "assistant" => {
                 let mut body: Vec<String> = Vec::new();
-                let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) else { continue };
+                let Some(blocks) = msg.get("content").and_then(|c| c.as_array()) else {
+                    continue;
+                };
                 for block in blocks {
                     match block.get("type").and_then(|t| t.as_str()) {
                         Some("text") => {
@@ -251,7 +267,10 @@ pub fn format_session_history_markdown(messages: &[serde_json::Value], title: Op
                     .get("customType")
                     .and_then(|t| t.as_str())
                     .unwrap_or("custom");
-                lines.push(format!("[{custom_type}] {}", one_line(&content_to_text(msg.get("content")), 120)));
+                lines.push(format!(
+                    "[{custom_type}] {}",
+                    one_line(&content_to_text(msg.get("content")), 120)
+                ));
                 lines.push(String::new());
             }
             "branchSummary" => {
@@ -293,7 +312,11 @@ fn content_to_text(content: Option<&serde_json::Value>) -> String {
         Some(serde_json::Value::Array(blocks)) => blocks
             .iter()
             .map(|block| match block.get("type").and_then(|t| t.as_str()) {
-                Some("text") => block.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+                Some("text") => block
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 Some("image") => "[image]".to_string(),
                 _ => String::new(),
             })
@@ -316,10 +339,25 @@ fn one_line(text: &str, max: usize) -> String {
 
 /// TS `formatToolCallPrimaryArg` over the PRIMARY_ARG_KEYS preference order.
 fn primary_arg(args: Option<&serde_json::Value>) -> String {
-    let Some(args) = args else { return String::new() };
+    let Some(args) = args else {
+        return String::new();
+    };
     const KEYS: &[&str] = &[
-        "path", "file_path", "filePath", "command", "cmd", "pattern", "url", "query", "prompt",
-        "assignment", "note", "message", "op", "name", "id",
+        "path",
+        "file_path",
+        "filePath",
+        "command",
+        "cmd",
+        "pattern",
+        "url",
+        "query",
+        "prompt",
+        "assignment",
+        "note",
+        "message",
+        "op",
+        "name",
+        "id",
     ];
     let scalar = |value: Option<&serde_json::Value>| -> Option<String> {
         match value {
@@ -328,7 +366,11 @@ fn primary_arg(args: Option<&serde_json::Value>) -> String {
                 if !items.is_empty() && items.iter().all(|i| i.is_string()) =>
             {
                 Some(
-                    items.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(", "),
+                    items
+                        .iter()
+                        .filter_map(|i| i.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 )
             }
             _ => None,
@@ -353,14 +395,26 @@ fn primary_arg(args: Option<&serde_json::Value>) -> String {
 }
 
 /// TS `toolCallLine` (no intent, no expanded IO): `→ name(arg) ⇒ ok · N lines`.
-fn tool_call_line(name: &str, args: Option<&serde_json::Value>, result: Option<&serde_json::Value>) -> String {
+fn tool_call_line(
+    name: &str,
+    args: Option<&serde_json::Value>,
+    result: Option<&serde_json::Value>,
+) -> String {
     let head = format!("\u{2192} {name}({})", primary_arg(args));
     let Some(result) = result else {
         return format!("{head} \u{21d2} pending");
     };
     let raw_text = content_to_text(result.get("content"));
-    let count = if raw_text.is_empty() { 0 } else { raw_text.split('\n').count() };
-    let count_label = if count == 1 { "1 line".to_string() } else { format!("{count} lines") };
+    let count = if raw_text.is_empty() {
+        0
+    } else {
+        raw_text.split('\n').count()
+    };
+    let count_label = if count == 1 {
+        "1 line".to_string()
+    } else {
+        format!("{count} lines")
+    };
     if result.get("isError").and_then(|e| e.as_bool()) == Some(true) {
         let first_line = one_line(raw_text.split('\n').next().unwrap_or(""), 120);
         if first_line.is_empty() {

@@ -182,7 +182,11 @@ struct ModelCostEffective {
     long_context: Option<LongContextTokenCost>,
 }
 
-fn resolve_token_cost(cost: &ModelCost, prompt_input_tokens: i64, timestamp: Option<i64>) -> EffectiveRates {
+fn resolve_token_cost(
+    cost: &ModelCost,
+    prompt_input_tokens: i64,
+    timestamp: Option<i64>,
+) -> EffectiveRates {
     let mut rates = ModelCostEffective {
         base: cost.base,
         long_context: cost.long_context,
@@ -206,7 +210,8 @@ fn resolve_token_cost(cost: &ModelCost, prompt_input_tokens: i64, timestamp: Opt
     };
     let threshold = long_context.input_threshold;
     let reaches = prompt_input_tokens > threshold
-        || (long_context.input_threshold_inclusive.unwrap_or(false) && prompt_input_tokens == threshold);
+        || (long_context.input_threshold_inclusive.unwrap_or(false)
+            && prompt_input_tokens == threshold);
     if reaches {
         EffectiveRates::Long(long_context)
     } else {
@@ -247,25 +252,35 @@ fn now_ms() -> i64 {
 
 /// Price a fully uncached prompt at its request timestamp (Unix ms);
 /// scheduled prices default to now.
-pub fn calculate_uncached_input_cost(cost: &ModelCost, prompt_input_tokens: i64, timestamp: Option<i64>) -> f64 {
+pub fn calculate_uncached_input_cost(
+    cost: &ModelCost,
+    prompt_input_tokens: i64,
+    timestamp: Option<i64>,
+) -> f64 {
     let pricing_timestamp = if cost.time_based.is_some() {
         timestamp.or_else(|| Some(now_ms()))
     } else {
         None
     };
     let rates = resolve_token_cost(cost, prompt_input_tokens, pricing_timestamp);
-    (rates.input() / 1_000_000.0) * prompt_input_tokens as f64
+    (rates.input() / 1_000_000.0)
+        * prompt_input_tokens as f64
         * time_based_multiplier(cost.time_based.as_ref(), pricing_timestamp)
 }
 
 /// Price usage at its request timestamp (Unix ms); only scheduled prices
 /// default to now. Writes the amounts into `usage.cost` and returns a copy.
-pub fn calculate_usage_cost(cost: &ModelCost, usage: &mut Usage, timestamp: Option<i64>) -> UsageCost {
+pub fn calculate_usage_cost(
+    cost: &ModelCost,
+    usage: &mut Usage,
+    timestamp: Option<i64>,
+) -> UsageCost {
     let orch = usage.orchestration.unwrap_or_default();
     let orch_input = orch.input.unwrap_or(0);
     let orch_cache_read = orch.cache_read.unwrap_or(0);
     let orch_output = orch.output.unwrap_or(0);
-    let prompt_input_tokens = usage.input + usage.cache_read + usage.cache_write + orch_input + orch_cache_read;
+    let prompt_input_tokens =
+        usage.input + usage.cache_read + usage.cache_write + orch_input + orch_cache_read;
     let pricing_timestamp = if cost.time_based.is_some() {
         timestamp.or_else(|| Some(now_ms()))
     } else {
@@ -274,11 +289,16 @@ pub fn calculate_usage_cost(cost: &ModelCost, usage: &mut Usage, timestamp: Opti
     let rates = resolve_token_cost(cost, prompt_input_tokens, pricing_timestamp);
     let multiplier = time_based_multiplier(cost.time_based.as_ref(), pricing_timestamp);
     let token_rates = rates.as_token_cost();
-    usage.cost.input = (token_rates.input / 1_000_000.0) * (usage.input + orch_input) as f64 * multiplier;
-    usage.cost.output = (token_rates.output / 1_000_000.0) * (usage.output + orch_output) as f64 * multiplier;
-    usage.cost.cache_read = (token_rates.cache_read / 1_000_000.0) * (usage.cache_read + orch_cache_read) as f64 * multiplier;
+    usage.cost.input =
+        (token_rates.input / 1_000_000.0) * (usage.input + orch_input) as f64 * multiplier;
+    usage.cost.output =
+        (token_rates.output / 1_000_000.0) * (usage.output + orch_output) as f64 * multiplier;
+    usage.cost.cache_read = (token_rates.cache_read / 1_000_000.0)
+        * (usage.cache_read + orch_cache_read) as f64
+        * multiplier;
     usage.cost.cache_write = cache_write_cost(&token_rates, usage) * multiplier;
-    usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
+    usage.cost.total =
+        usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write;
     usage.cost
 }
 

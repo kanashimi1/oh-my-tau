@@ -126,9 +126,7 @@ pub enum SimpleToolChoice {
     None,
     Any,
     Required,
-    Function {
-        name: String,
-    },
+    Function { name: String },
 }
 
 impl SimpleStreamOptions {

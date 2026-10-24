@@ -15,7 +15,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use pa_agent::agent_loop::BeforeToolCallFn;
-use pa_agent::types::{AgentMessage, AssistantContent, BeforeToolCallContext, Message, UserContent, UserPart};
+use pa_agent::types::{
+    AgentMessage, AssistantContent, BeforeToolCallContext, Message, UserContent, UserPart,
+};
 
 /// Long lines are split into units of this many bytes (analyze.py `SEG`).
 const SEG: usize = 1024;
@@ -26,14 +28,14 @@ pub const CHUNK_UNITS: usize = 5;
 const MAX_PENDING: usize = 64;
 
 const STOP: &[&str] = &[
-    "the", "and", "for", "with", "that", "this", "from", "have", "not", "are", "was", "were", "will",
-    "would", "should", "could", "into", "onto", "over", "under", "about", "after", "before", "then",
-    "than", "when", "what", "where", "which", "while", "true", "false", "none", "null", "self",
-    "return", "import", "export", "const", "let", "var", "function", "def", "class", "struct",
-    "impl", "pub", "use", "mod", "type", "enum", "match", "string", "number", "object", "array",
-    "value", "values", "error", "errors", "warning", "info", "debug", "test", "tests", "main",
-    "data", "file", "files", "path", "line", "lines", "name", "names", "text", "content", "result",
-    "results", "output", "input", "default", "config",
+    "the", "and", "for", "with", "that", "this", "from", "have", "not", "are", "was", "were",
+    "will", "would", "should", "could", "into", "onto", "over", "under", "about", "after",
+    "before", "then", "than", "when", "what", "where", "which", "while", "true", "false", "none",
+    "null", "self", "return", "import", "export", "const", "let", "var", "function", "def",
+    "class", "struct", "impl", "pub", "use", "mod", "type", "enum", "match", "string", "number",
+    "object", "array", "value", "values", "error", "errors", "warning", "info", "debug", "test",
+    "tests", "main", "data", "file", "files", "path", "line", "lines", "name", "names", "text",
+    "content", "result", "results", "output", "input", "default", "config",
 ];
 
 /// Kill switch: `OMP_TRUNC_BM25=0` disables relevance selection.
@@ -108,7 +110,11 @@ pub fn query_for(ctx: &BeforeToolCallContext) -> String {
         }
     }
     let own = assistant_text(&ctx.assistant_message.content);
-    let asst = if own.trim().is_empty() { prev_asst } else { own };
+    let asst = if own.trim().is_empty() {
+        prev_asst
+    } else {
+        own
+    };
     format!("{user}\n{asst}")
 }
 
@@ -169,7 +175,10 @@ struct Units<'a> {
 }
 
 fn units_of(text: &str) -> Units<'_> {
-    let mut u = Units { text: Vec::new(), line: Vec::new() };
+    let mut u = Units {
+        text: Vec::new(),
+        line: Vec::new(),
+    };
     for (li, line) in text.split('\n').enumerate() {
         let mut rest = line;
         loop {
@@ -201,14 +210,26 @@ fn ubytes(u: &str) -> usize {
 /// any chunk matched the query.
 #[must_use]
 #[allow(clippy::cast_precision_loss)]
-pub fn select(units: &[&str], query: &str, chunk: usize, budget: usize, pre: &[bool]) -> (Vec<bool>, bool) {
+pub fn select(
+    units: &[&str],
+    query: &str,
+    chunk: usize,
+    budget: usize,
+    pre: &[bool],
+) -> (Vec<bool>, bool) {
     let chunk = chunk.max(1);
     let n_units = units.len();
-    let ch: Vec<std::ops::Range<usize>> =
-        (0..n_units).step_by(chunk).map(|i| i..(i + chunk).min(n_units)).collect();
-    let docs: Vec<Vec<String>> = ch.iter().map(|r| terms(&units[r.clone()].join("\n"))).collect();
+    let ch: Vec<std::ops::Range<usize>> = (0..n_units)
+        .step_by(chunk)
+        .map(|i| i..(i + chunk).min(n_units))
+        .collect();
+    let docs: Vec<Vec<String>> = ch
+        .iter()
+        .map(|r| terms(&units[r.clone()].join("\n")))
+        .collect();
     let n = docs.len();
-    let avg = (docs.iter().map(Vec::len).sum::<usize>() as f64 / n.max(1) as f64).max(f64::MIN_POSITIVE);
+    let avg =
+        (docs.iter().map(Vec::len).sum::<usize>() as f64 / n.max(1) as f64).max(f64::MIN_POSITIVE);
     let mut df: HashMap<&str, usize> = HashMap::new();
     for d in &docs {
         let set: HashSet<&str> = d.iter().map(String::as_str).collect();
@@ -247,7 +268,11 @@ pub fn select(units: &[&str], query: &str, chunk: usize, budget: usize, pre: &[b
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]).then(a.cmp(b)));
     for k in order {
-        let add: usize = ch[k].clone().filter(|i| !kept[*i]).map(|i| ubytes(units[i])).sum();
+        let add: usize = ch[k]
+            .clone()
+            .filter(|i| !kept[*i])
+            .map(|i| ubytes(units[i]))
+            .sum();
         if used + add <= budget {
             for i in ch[k].clone() {
                 kept[i] = true;
@@ -284,7 +309,11 @@ fn flush_gap(out: &mut String, gap: &mut HashSet<usize>, started: bool) {
         out.push('\n');
     }
     let n = gap.len();
-    let _ = write!(out, "… [{n} line{} omitted] …", if n == 1 { "" } else { "s" });
+    let _ = write!(
+        out,
+        "… [{n} line{} omitted] …",
+        if n == 1 { "" } else { "s" }
+    );
     gap.clear();
 }
 
@@ -337,9 +366,16 @@ pub fn pick(
     if total_bytes <= budget {
         return None;
     }
-    let pre = hybrid.map_or_else(|| vec![false; u.text.len()], |(h, t)| head_tail_mask(&u.text, h, t));
+    let pre = hybrid.map_or_else(
+        || vec![false; u.text.len()],
+        |(h, t)| head_tail_mask(&u.text, h, t),
+    );
     let (mut kept, matched) = select(&u.text, query, CHUNK_UNITS, budget, &pre);
-    let mut policy = if hybrid.is_some() { "head/tail + relevance" } else { "relevance" };
+    let mut policy = if hybrid.is_some() {
+        "head/tail + relevance"
+    } else {
+        "relevance"
+    };
     if !matched && hybrid.is_none() {
         let pre = head_tail_mask(&u.text, fallback.0, fallback.1);
         kept = select(&u.text, "", CHUNK_UNITS, budget, &pre).0;
@@ -364,7 +400,10 @@ mod tests {
 
     #[test]
     fn terms_split_camel_case_and_drop_stop_words() {
-        assert_eq!(terms("parseConfig the HTTPServer foo_bar x 42"), ["parse", "httpserver", "foo", "bar", "42"]);
+        assert_eq!(
+            terms("parseConfig the HTTPServer foo_bar x 42"),
+            ["parse", "httpserver", "foo", "bar", "42"]
+        );
     }
 
     #[test]
@@ -376,13 +415,27 @@ mod tests {
         let pre = vec![false; u.text.len()];
         let (kept, matched) = select(&u.text, "where is needleToken", CHUNK_UNITS, budget, &pre);
         assert!(matched);
-        let used: usize = u.text.iter().zip(&kept).filter(|(_, k)| **k).map(|(t, _)| ubytes(t)).sum();
+        let used: usize = u
+            .text
+            .iter()
+            .zip(&kept)
+            .filter(|(_, k)| **k)
+            .map(|(t, _)| ubytes(t))
+            .sum();
         assert!(used <= budget, "{used}");
         assert!(kept[199], "needle unit kept");
         // Deterministic.
-        assert_eq!(select(&u.text, "where is needleToken", CHUNK_UNITS, budget, &pre).0, kept);
+        assert_eq!(
+            select(&u.text, "where is needleToken", CHUNK_UNITS, budget, &pre).0,
+            kept
+        );
         let p = pick(&text, "where is needleToken", budget, None, (300, 600)).unwrap();
-        assert_eq!(p.content, pick(&text, "where is needleToken", budget, None, (300, 600)).unwrap().content);
+        assert_eq!(
+            p.content,
+            pick(&text, "where is needleToken", budget, None, (300, 600))
+                .unwrap()
+                .content
+        );
         // Original order: row numbers strictly increase.
         let nums: Vec<usize> = p
             .content
@@ -402,7 +455,10 @@ mod tests {
         kept[10] = true;
         let u = units_of(&text);
         let (out, n) = render(&u, &kept);
-        assert_eq!(out, "l1\n… [9 lines omitted] …\nl11\n… [19 lines omitted] …");
+        assert_eq!(
+            out,
+            "l1\n… [9 lines omitted] …\nl11\n… [19 lines omitted] …"
+        );
         assert_eq!(n, 2);
         kept[29] = true;
         kept[28] = true;

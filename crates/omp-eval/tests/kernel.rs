@@ -106,7 +106,9 @@ fn timeout_interrupts_and_kernel_survives() {
     );
     // Kernel survives; the interrupted cell's new names are rolled back
     // (prelude_txn.py, default on), earlier state is untouched.
-    let after = k.execute("'total' in globals()", None).expect("post-interrupt cell");
+    let after = k
+        .execute("'total' in globals()", None)
+        .expect("post-interrupt cell");
     assert_eq!(after.status, CellStatus::Ok);
     assert_eq!(after.output.trim(), "False");
     assert!(k.is_alive());
@@ -140,7 +142,12 @@ fn error_traceback_matches_omp_format() {
         err.traceback
     );
     // Traceback first, then the rollback note for `boom` (prelude_txn.py).
-    assert!(r.output.contains("ValueError: nope\n[omp-txn] rolled back: boom"), "{:?}", r.output);
+    assert!(
+        r.output
+            .contains("ValueError: nope\n[omp-txn] rolled back: boom"),
+        "{:?}",
+        r.output
+    );
 
     // syntax error: caret-only formatting, like a REPL
     let r2 = k
@@ -161,7 +168,9 @@ fn error_traceback_matches_omp_format() {
 
     // The kernel keeps running after errors and the execution count advances;
     // `boom`, defined by the failed cell, was rolled back (prelude_txn.py).
-    let r3 = k.execute("'boom' in globals()", None).expect("post-error cell");
+    let r3 = k
+        .execute("'boom' in globals()", None)
+        .expect("post-error cell");
     assert_eq!(r3.output, "False\n");
     assert_eq!(r3.execution_count, 3);
     k.shutdown();

@@ -53,7 +53,11 @@ const PUMP_TICK: Duration = Duration::from_millis(33);
 /// Arm the animation frame timer: keep a running deadline, start one a full
 /// `interval` out when animation begins, and drop it when nothing animates
 /// (`interval == None`) so an idle loop never wakes.
-fn arm_frame_timer(deadline: Option<Instant>, now: Instant, interval: Option<Duration>) -> Option<Instant> {
+fn arm_frame_timer(
+    deadline: Option<Instant>,
+    now: Instant,
+    interval: Option<Duration>,
+) -> Option<Instant> {
     let interval = interval?;
     Some(deadline.unwrap_or(now + interval))
 }
@@ -62,7 +66,11 @@ fn arm_frame_timer(deadline: Option<Instant>, now: Instant, interval: Option<Dur
 /// (`fired + interval`, so loop latency does not stretch the period); when
 /// the loop fell behind, resume from `now` instead of bursting catch-up
 /// frames.
-fn advance_frame_timer(deadline: Option<Instant>, now: Instant, interval: Option<Duration>) -> Option<Instant> {
+fn advance_frame_timer(
+    deadline: Option<Instant>,
+    now: Instant,
+    interval: Option<Duration>,
+) -> Option<Instant> {
     let interval = interval?;
     let next = deadline.map_or(now + interval, |d| d + interval);
     Some(if next > now { next } else { now + interval })
@@ -244,7 +252,9 @@ fn paint(app: &mut App, shell: &mut StdShell) -> Result<()> {
     shell
         .set_mouse_tracking(app.wants_mouse())
         .context("mouse tracking")?;
-    if shell.is_alt() && shell.leave_alt().context("leave alternate screen")? == ResizeAction::RebuildScrollback {
+    if shell.is_alt()
+        && shell.leave_alt().context("leave alternate screen")? == ResizeAction::RebuildScrollback
+    {
         let lines = take_scrollback(app, shell.width(), Rebuild::Yes);
         shell.commit(&lines).context("rebuild scrollback")?;
     }
@@ -274,10 +284,14 @@ impl TermSignals {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let streams = [SignalKind::terminate(), SignalKind::hangup(), SignalKind::interrupt()]
-                .into_iter()
-                .filter_map(|kind| signal(kind).ok())
-                .collect();
+            let streams = [
+                SignalKind::terminate(),
+                SignalKind::hangup(),
+                SignalKind::interrupt(),
+            ]
+            .into_iter()
+            .filter_map(|kind| signal(kind).ok())
+            .collect();
             Self { streams }
         }
         #[cfg(not(unix))]
@@ -391,8 +405,15 @@ mod tests {
         assert!(title.contains('>'), "idle title: {title:?}");
 
         // Turn settle fires the notification (recorded by the sink).
-        assert!(apply_frame(&mut app, &json!({"type":"session_settled"}), t0));
-        assert_eq!(app.notify_sink().record(), vec!["omp: Complete".to_string()]);
+        assert!(apply_frame(
+            &mut app,
+            &json!({"type":"session_settled"}),
+            t0
+        ));
+        assert_eq!(
+            app.notify_sink().record(),
+            vec!["omp: Complete".to_string()]
+        );
     }
 
     #[test]
@@ -407,7 +428,11 @@ mod tests {
         );
         app.pump_events(t0);
         // `error.notify` defaults to off (TS): silent, and never a "Complete" toast.
-        assert!(app.notify_sink().record().iter().all(|l| l != "omp: Complete"));
+        assert!(app
+            .notify_sink()
+            .record()
+            .iter()
+            .all(|l| l != "omp: Complete"));
         let _port = FakePort::default();
     }
 
@@ -510,10 +535,16 @@ mod frame_timer_tests {
         let fired = t0 + IV;
         // On-time wake: next is fired + interval despite small latency.
         let now = fired + Duration::from_millis(2);
-        assert_eq!(advance_frame_timer(Some(fired), now, Some(IV)), Some(fired + IV));
+        assert_eq!(
+            advance_frame_timer(Some(fired), now, Some(IV)),
+            Some(fired + IV)
+        );
         // Fell far behind: resume one interval from now, no catch-up burst.
         let late = fired + Duration::from_millis(500);
-        assert_eq!(advance_frame_timer(Some(fired), late, Some(IV)), Some(late + IV));
+        assert_eq!(
+            advance_frame_timer(Some(fired), late, Some(IV)),
+            Some(late + IV)
+        );
         // Animation ended meanwhile: timer disarms.
         assert_eq!(advance_frame_timer(Some(fired), now, None), None);
     }
@@ -523,7 +554,11 @@ mod frame_timer_tests {
         use serde_json::json;
         let mut app = App::new("p/m".into(), std::path::Path::new("/repo"));
         let t0 = Instant::now();
-        assert_eq!(app.animation_interval(), None, "idle app must not arm a timer");
+        assert_eq!(
+            app.animation_interval(),
+            None,
+            "idle app must not arm a timer"
+        );
         app.push_frame(&json!({"type":"agent_start"}), t0);
         app.pump_events(t0);
         // Loader visible: spinner cadence.

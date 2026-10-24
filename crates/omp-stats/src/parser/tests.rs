@@ -117,14 +117,23 @@ fn incremental_tail_parse_yields_only_remaining_rows() -> anyhow::Result<()> {
 
     let full = parse_session_file(file, 0, None, false)?;
     let tail = parse_session_file(file, mid as i64, None, false)?;
-    assert_eq!(tail.new_offset, full.new_offset, "tail converges to the same offset");
+    assert_eq!(
+        tail.new_offset, full.new_offset,
+        "tail converges to the same offset"
+    );
     // The tail rows are exactly the suffix of the full parse (the prefix
     // lines may themselves carry no stats rows, so counts can be equal).
     let tail_len = tail.stats.len();
     let suffix = &full.stats[full.stats.len() - tail_len..];
     assert_eq!(
-        tail.stats.iter().map(|s| (&s.entry_id, s.timestamp)).collect::<Vec<_>>(),
-        suffix.iter().map(|s| (&s.entry_id, s.timestamp)).collect::<Vec<_>>(),
+        tail.stats
+            .iter()
+            .map(|s| (&s.entry_id, s.timestamp))
+            .collect::<Vec<_>>(),
+        suffix
+            .iter()
+            .map(|s| (&s.entry_id, s.timestamp))
+            .collect::<Vec<_>>(),
         "tail rows are the full-parse suffix"
     );
 

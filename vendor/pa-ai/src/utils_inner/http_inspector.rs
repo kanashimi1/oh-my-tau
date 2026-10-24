@@ -20,8 +20,9 @@ const HTTP_DUMP_DIR_NAME: &str = "http-400-requests";
 const HTTP_DUMP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const HTTP_DUMP_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
-static SENSITIVE_HEADER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)key|token|secret|auth|credential|cookie").expect("valid regex"));
+static SENSITIVE_HEADER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)key|token|secret|auth|credential|cookie").expect("valid regex")
+});
 static NO_BODY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bstatus code\s*\(no body\)").expect("valid regex"));
 
@@ -78,7 +79,11 @@ pub fn finalize_http_error(
 ) -> ProviderError {
     if let ProviderError::Http(http) = &mut error {
         let status = http.status.unwrap_or(0);
-        let captured = if capture_body { http.body.as_deref() } else { None };
+        let captured = if capture_body {
+            http.body.as_deref()
+        } else {
+            None
+        };
         http.message = finalize_http_error_message(&http.message, status, captured, dump);
     }
     error
@@ -153,7 +158,11 @@ pub fn strip_raw_http_request_diagnostics(message: &str) -> String {
 
 /// TS `appendRawHttpRequestDumpFor400`: write the sanitized request (plus
 /// the error) for a 400/413 rejection and reference it from the message.
-fn append_raw_http_request_dump(message: String, status: u16, dump: Option<&RawHttpRequestDump>) -> String {
+fn append_raw_http_request_dump(
+    message: String,
+    status: u16,
+    dump: Option<&RawHttpRequestDump>,
+) -> String {
     let Some(dump) = dump else {
         return message;
     };
@@ -166,10 +175,14 @@ fn append_raw_http_request_dump(message: String, status: u16, dump: Option<&RawH
         return message;
     };
     let now_ms = crate::utils_inner::diagnostics::now_ms();
-    let file_name = format!("{now_ms}-{}.json", crate::utils_inner::hash::short_hash(&text));
+    let file_name = format!(
+        "{now_ms}-{}.json",
+        crate::utils_inner::hash::short_hash(&text)
+    );
     let dir = logs_dir().join(HTTP_DUMP_DIR_NAME);
     let path = dir.join(&file_name);
-    let written = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, format!("{text}\n")));
+    let written =
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, format!("{text}\n")));
     match written {
         Ok(()) => {
             prune_http_request_dumps(&dir, &file_name);
@@ -199,7 +212,11 @@ struct ErrorResponse<'a> {
 }
 
 /// TS `buildHttp400DumpPayload`: query string and sensitive headers redacted.
-fn dump_payload<'a>(dump: &'a RawHttpRequestDump, status: u16, message: &'a str) -> DumpPayload<'a> {
+fn dump_payload<'a>(
+    dump: &'a RawHttpRequestDump,
+    status: u16,
+    message: &'a str,
+) -> DumpPayload<'a> {
     let headers = dump
         .headers
         .iter()
@@ -271,7 +288,9 @@ fn prune_http_request_dumps(dir: &Path, keep: &str) {
     let mut retained = 0u64;
     for (name, modified, size) in dumps {
         let age = now.duration_since(modified).unwrap_or_default();
-        if name == keep || (age <= HTTP_DUMP_MAX_AGE && retained + size <= HTTP_DUMP_MAX_TOTAL_BYTES) {
+        if name == keep
+            || (age <= HTTP_DUMP_MAX_AGE && retained + size <= HTTP_DUMP_MAX_TOTAL_BYTES)
+        {
             retained += size;
             continue;
         }
@@ -290,8 +309,14 @@ mod tests {
             format_captured_http_error(body).as_deref(),
             Some("E2E-PROVIDER-FAILURE (type=invalid_request_error param=e2e_failure)")
         );
-        assert_eq!(format_captured_http_error(r#"{"error":{"message":"bad"}}"#).as_deref(), Some("bad"));
-        assert_eq!(format_captured_http_error("<html>502</html>").as_deref(), Some("<html>502</html>"));
+        assert_eq!(
+            format_captured_http_error(r#"{"error":{"message":"bad"}}"#).as_deref(),
+            Some("bad")
+        );
+        assert_eq!(
+            format_captured_http_error("<html>502</html>").as_deref(),
+            Some("<html>502</html>")
+        );
         assert_eq!(format_captured_http_error("  "), None);
         assert_eq!(
             format_captured_http_error(r#"{"error":"flat","code":"x"}"#).as_deref(),
@@ -308,12 +333,22 @@ mod tests {
         );
         // Already contained: unchanged.
         assert_eq!(
-            finalize_http_error_message("400 bad", 400, Some(r#"{"error":{"message":"bad"}}"#), None),
+            finalize_http_error_message(
+                "400 bad",
+                400,
+                Some(r#"{"error":{"message":"bad"}}"#),
+                None
+            ),
             "400 bad"
         );
         // A bare no-body message takes the captured text.
         assert_eq!(
-            finalize_http_error_message("400 status code (no body)", 400, Some(r#"{"detail":"x","message":"m"}"#), None),
+            finalize_http_error_message(
+                "400 status code (no body)",
+                400,
+                Some(r#"{"detail":"x","message":"m"}"#),
+                None
+            ),
             "400 status code: m"
         );
     }
@@ -335,7 +370,10 @@ mod tests {
         let payload = serde_json::to_value(dump_payload(&dump, 400, "400 x")).unwrap();
         assert_eq!(payload["headers"]["Authorization"], "[redacted]");
         assert_eq!(payload["headers"]["content-type"], "application/json");
-        assert_eq!(payload["url"], "http://h/v1/chat/completions[redacted-query]");
+        assert_eq!(
+            payload["url"],
+            "http://h/v1/chat/completions[redacted-query]"
+        );
         assert_eq!(payload["body"]["model"], "fail");
         assert_eq!(payload["errorResponse"]["status"], 400);
     }

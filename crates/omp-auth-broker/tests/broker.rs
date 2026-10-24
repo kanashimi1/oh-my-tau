@@ -24,7 +24,10 @@ use tempfile::TempDir;
 const TOKEN: &str = "FIXTURE_TOKEN_1234567890abcdef";
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +54,6 @@ impl MockServer {
         });
         MockServer { addr, calls }
     }
-
 }
 
 fn find_slice(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -87,7 +89,9 @@ fn handle_token_conn(mut stream: TcpStream, calls: &AtomicU64) {
     let len = head
         .lines()
         .find_map(|l| {
-            l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0))
+            l.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
         })
         .unwrap_or(0);
     while buf.len() < head_end + 4 + len {
@@ -132,7 +136,8 @@ fn fixture() -> Fixture {
     let agent = tmp.path().join("agent");
     std::fs::create_dir_all(&agent).expect("create agent dir");
     let token = TOKEN.to_string();
-    std::fs::write(tmp.path().join("auth-broker.token"), format!("{token}\n")).expect("write token");
+    std::fs::write(tmp.path().join("auth-broker.token"), format!("{token}\n"))
+        .expect("write token");
     Fixture { tmp, agent, token }
 }
 
@@ -170,7 +175,14 @@ fn spawn_from(fx: Fixture, mock: Option<MockServer>, disable_refresher: bool) ->
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     let child = cmd.spawn().expect("spawn broker");
     let db = fx.agent.join("agent.db");
-    Broker { child, url, token: fx.token, db, _tmp: fx.tmp, _mock: mock }
+    Broker {
+        child,
+        url,
+        token: fx.token,
+        db,
+        _tmp: fx.tmp,
+        _mock: mock,
+    }
 }
 
 fn spawn_broker(mock: Option<MockServer>, disable_refresher: bool) -> Broker {
@@ -211,7 +223,14 @@ fn init_schema(conn: &Connection) {
     .expect("init schema");
 }
 
-fn insert_oauth(conn: &Connection, provider: &str, access: &str, refresh: &str, expires_ms: i64, email: Option<&str>) -> i64 {
+fn insert_oauth(
+    conn: &Connection,
+    provider: &str,
+    access: &str,
+    refresh: &str,
+    expires_ms: i64,
+    email: Option<&str>,
+) -> i64 {
     let mut d = json!({"access": access, "refresh": refresh, "expires": expires_ms as f64});
     if let Some(e) = email {
         d["email"] = json!(e);
@@ -238,17 +257,30 @@ fn insert_api_key(conn: &Connection, provider: &str, key: &str) -> i64 {
 
 fn data_of(conn: &Connection, id: i64) -> Value {
     let s: String = conn
-        .query_row("SELECT data FROM auth_credentials WHERE id = ?1", params![id], |r| r.get(0))
+        .query_row(
+            "SELECT data FROM auth_credentials WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .expect("row exists");
     serde_json::from_str(&s).expect("row json")
 }
 
 fn cause_of(conn: &Connection, id: i64) -> Option<String> {
-    conn.query_row("SELECT disabled_cause FROM auth_credentials WHERE id = ?1", params![id], |r| r.get(0)).ok()
+    conn.query_row(
+        "SELECT disabled_cause FROM auth_credentials WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .ok()
 }
 
 async fn wait_healthz(url: &str) -> reqwest::Client {
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(2)).no_proxy().build().expect("client");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .no_proxy()
+        .build()
+        .expect("client");
     for _ in 0..30 {
         if let Ok(r) = client.get(format!("{url}/v1/healthz")).send().await {
             if r.status() == 200 {
@@ -270,7 +302,10 @@ async fn request(
     body: Option<Value>,
     extra: &[(&str, &str)],
 ) -> (u16, reqwest::header::HeaderMap, Value) {
-    let mut rb = client.request(reqwest::Method::from_bytes(method.as_bytes()).unwrap(), format!("{url}{path}"));
+    let mut rb = client.request(
+        reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+        format!("{url}{path}"),
+    );
     if let Some(t) = token {
         rb = rb.bearer_auth(t);
     }
@@ -289,7 +324,10 @@ async fn request(
 }
 
 fn find_entry<'a>(snap: &'a Value, provider: &str) -> Option<&'a Value> {
-    snap["credentials"].as_array()?.iter().find(|c| c["provider"].as_str() == Some(provider))
+    snap["credentials"]
+        .as_array()?
+        .iter()
+        .find(|c| c["provider"].as_str() == Some(provider))
 }
 
 // ---------------------------------------------------------------------------
@@ -307,12 +345,33 @@ async fn healthz_and_auth() {
     let (s, _, _) = request(&client, &b.url, "GET", "/v1/snapshot", None, None, &[]).await;
     assert_eq!(s, 401, "snapshot without token must 401");
 
-    let (s, _, _) = request(&client, &b.url, "GET", "/v1/snapshot", Some("WRONG_TOKEN"), None, &[]).await;
+    let (s, _, _) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/snapshot",
+        Some("WRONG_TOKEN"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 401, "snapshot with wrong token must 401");
 
-    let (s, _, body) = request(&client, &b.url, "GET", "/v1/snapshot", Some(&b.token), None, &[]).await;
+    let (s, _, body) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/snapshot",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
-    assert!(body.get("credentials").is_some(), "snapshot body has credentials");
+    assert!(
+        body.get("credentials").is_some(),
+        "snapshot body has credentials"
+    );
 }
 
 #[tokio::test]
@@ -320,21 +379,51 @@ async fn snapshot_shape_redaction_and_etag() {
     let b = spawn_broker(None, true);
     let client = wait_healthz(&b.url).await;
     let db = open_db(&b.db);
-    let kimi_id = insert_oauth(&db, "kimi-code", "FAKE_KIMI_ACCESS", "FAKE_KIMI_OK_REFRESH", now_ms() + 3 * 86_400_000, None);
+    let kimi_id = insert_oauth(
+        &db,
+        "kimi-code",
+        "FAKE_KIMI_ACCESS",
+        "FAKE_KIMI_OK_REFRESH",
+        now_ms() + 3 * 86_400_000,
+        None,
+    );
     let api_id = insert_api_key(&db, "cursor", "FAKE_CURSOR_KEY");
     drop(db);
 
-    let (s, headers, body) = request(&client, &b.url, "GET", "/v1/snapshot", Some(&b.token), None, &[]).await;
+    let (s, headers, body) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/snapshot",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
-    let gen = headers.get("etag").expect("etag header").to_str().unwrap().to_string();
-    assert!(gen.starts_with('"') && gen.ends_with('"'), "etag is quoted: {gen}");
+    let gen = headers
+        .get("etag")
+        .expect("etag header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        gen.starts_with('"') && gen.ends_with('"'),
+        "etag is quoted: {gen}"
+    );
 
     let kimi = find_entry(&body, "kimi-code").expect("kimi entry");
     assert_eq!(kimi["credential"]["type"], "oauth");
-    assert_eq!(kimi["credential"]["refresh"], "__remote__", "oauth refresh redacted");
+    assert_eq!(
+        kimi["credential"]["refresh"], "__remote__",
+        "oauth refresh redacted"
+    );
     let cursor = find_entry(&body, "cursor").expect("cursor entry");
     assert_eq!(cursor["credential"]["type"], "api_key");
-    assert_eq!(cursor["credential"]["key"], "FAKE_CURSOR_KEY", "api_key verbatim");
+    assert_eq!(
+        cursor["credential"]["key"], "FAKE_CURSOR_KEY",
+        "api_key verbatim"
+    );
     assert!(cursor["credential"].get("source").is_none());
 
     // Same generation + wait=300 -> 304.
@@ -360,9 +449,23 @@ async fn snapshot_shape_redaction_and_etag() {
     .unwrap();
     drop(db);
 
-    let (s, headers2, _) = request(&client, &b.url, "GET", "/v1/snapshot", Some(&b.token), None, &[]).await;
+    let (s, headers2, _) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/snapshot",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
-    let gen2 = headers2.get("etag").expect("etag header").to_str().unwrap().to_string();
+    let gen2 = headers2
+        .get("etag")
+        .expect("etag header")
+        .to_str()
+        .unwrap()
+        .to_string();
     assert_ne!(gen2, gen, "external UPDATE must advance generation");
 
     // The api_key row's identity is unchanged; ensure the update didn't touch it.
@@ -376,12 +479,31 @@ async fn refresh_success_and_unknown_id() {
     let b = spawn_broker(Some(mock), true);
     let client = wait_healthz(&b.url).await;
     let db = open_db(&b.db);
-    let id = insert_oauth(&db, "kimi-code", "FAKE_KIMI_ACCESS", "FAKE_KIMI_OK_REFRESH", now_ms() + 3 * 86_400_000, Some("kimi@test.invalid"));
+    let id = insert_oauth(
+        &db,
+        "kimi-code",
+        "FAKE_KIMI_ACCESS",
+        "FAKE_KIMI_OK_REFRESH",
+        now_ms() + 3 * 86_400_000,
+        Some("kimi@test.invalid"),
+    );
     drop(db);
 
-    let (s, _, body) = request(&client, &b.url, "POST", &format!("/v1/credential/{id}/refresh"), Some(&b.token), None, &[]).await;
+    let (s, _, body) = request(
+        &client,
+        &b.url,
+        "POST",
+        &format!("/v1/credential/{id}/refresh"),
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200, "refresh success returns 200");
-    assert!(mock_calls.load(Ordering::SeqCst) >= 1, "mock token server hit");
+    assert!(
+        mock_calls.load(Ordering::SeqCst) >= 1,
+        "mock token server hit"
+    );
     let entry = &body["entry"];
     let access = entry["credential"]["access"].as_str().expect("access");
     assert!(access.starts_with("NEW_"), "minted access token: {access}");
@@ -393,7 +515,16 @@ async fn refresh_success_and_unknown_id() {
     assert!(r.starts_with("ROT_"), "db holds rotated refresh: {r}");
     drop(db);
 
-    let (s, _, _) = request(&client, &b.url, "POST", "/v1/credential/999999/refresh", Some(&b.token), None, &[]).await;
+    let (s, _, _) = request(
+        &client,
+        &b.url,
+        "POST",
+        "/v1/credential/999999/refresh",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 404, "unknown id refresh must 404");
 }
 
@@ -404,22 +535,53 @@ async fn refresh_invalid_disables_row() {
     let b = spawn_broker(Some(mock), true);
     let client = wait_healthz(&b.url).await;
     let db = open_db(&b.db);
-    let id = insert_oauth(&db, "kimi-code", "FAKE_KIMI_ACCESS", "FAKE_INVALID_REFRESH", now_ms() + 3 * 86_400_000, None);
+    let id = insert_oauth(
+        &db,
+        "kimi-code",
+        "FAKE_KIMI_ACCESS",
+        "FAKE_INVALID_REFRESH",
+        now_ms() + 3 * 86_400_000,
+        None,
+    );
     drop(db);
 
-    let (s, _, _) = request(&client, &b.url, "POST", &format!("/v1/credential/{id}/refresh"), Some(&b.token), None, &[]).await;
+    let (s, _, _) = request(
+        &client,
+        &b.url,
+        "POST",
+        &format!("/v1/credential/{id}/refresh"),
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 500, "invalid_grant refresh must 500");
-    assert!(mock_calls.load(Ordering::SeqCst) >= 1, "mock token server hit");
+    assert!(
+        mock_calls.load(Ordering::SeqCst) >= 1,
+        "mock token server hit"
+    );
 
     let db = open_db(&b.db);
     let cause = cause_of(&db, id).expect("row disabled");
     assert!(!cause.is_empty(), "disabled_cause set");
     drop(db);
 
-    let (s, _, body) = request(&client, &b.url, "GET", "/v1/credentials/disabled", Some(&b.token), None, &[]).await;
+    let (s, _, body) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/credentials/disabled",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
     let list = body["disabled"].as_array().expect("disabled array");
-    assert!(list.iter().any(|d| d["id"].as_i64() == Some(id)), "row appears in disabled list");
+    assert!(
+        list.iter().any(|d| d["id"].as_i64() == Some(id)),
+        "row appears in disabled list"
+    );
 }
 
 #[tokio::test]
@@ -442,24 +604,71 @@ async fn upload_api_key_then_disable() {
     assert_eq!(entries.len(), 1);
     let id = entries[0]["id"].as_i64().expect("id");
     assert_eq!(entries[0]["credential"]["key"], "FAKE_CURSOR_KEY");
-    assert!(entries[0]["credential"].get("source").is_none(), "source not echoed");
+    assert!(
+        entries[0]["credential"].get("source").is_none(),
+        "source not echoed"
+    );
 
     let db = open_db(&b.db);
     let stored = data_of(&db, id);
     assert_eq!(stored["key"], "FAKE_CURSOR_KEY");
-    assert!(stored.get("source").is_none(), "stored data has no source: {stored}");
+    assert!(
+        stored.get("source").is_none(),
+        "stored data has no source: {stored}"
+    );
     drop(db);
 
-    let (s, _, body) = request(&client, &b.url, "POST", &format!("/v1/credential/{id}/disable"), Some(&b.token), None, &[]).await;
+    let (s, _, body) = request(
+        &client,
+        &b.url,
+        "POST",
+        &format!("/v1/credential/{id}/disable"),
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
     assert_eq!(body["ok"], true);
 
-    let (s, _, snap) = request(&client, &b.url, "GET", "/v1/snapshot", Some(&b.token), None, &[]).await;
+    let (s, _, snap) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/snapshot",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
-    assert!(snap["credentials"].as_array().unwrap().iter().all(|c| c["id"].as_i64() != Some(id)), "disabled row gone from snapshot");
+    assert!(
+        snap["credentials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["id"].as_i64() != Some(id)),
+        "disabled row gone from snapshot"
+    );
 
-    let (_, _, disabled) = request(&client, &b.url, "GET", "/v1/credentials/disabled", Some(&b.token), None, &[]).await;
-    assert!(disabled["disabled"].as_array().unwrap().iter().any(|d| d["id"].as_i64() == Some(id)), "row appears in disabled");
+    let (_, _, disabled) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/credentials/disabled",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
+    assert!(
+        disabled["disabled"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["id"].as_i64() == Some(id)),
+        "row appears in disabled"
+    );
 }
 
 #[tokio::test]
@@ -467,8 +676,22 @@ async fn block_upsert_delete_and_codex_hide() {
     let b = spawn_broker(None, true);
     let client = wait_healthz(&b.url).await;
     let db = open_db(&b.db);
-    let kimi_id = insert_oauth(&db, "kimi-code", "FAKE_KIMI_ACCESS", "FAKE_KIMI_OK_REFRESH", now_ms() + 3 * 86_400_000, None);
-    let codex_id = insert_oauth(&db, "openai-codex", "FAKE_CODEX_ACCESS", "FAKE_CODEX_REFRESH", now_ms() + 3 * 86_400_000, None);
+    let kimi_id = insert_oauth(
+        &db,
+        "kimi-code",
+        "FAKE_KIMI_ACCESS",
+        "FAKE_KIMI_OK_REFRESH",
+        now_ms() + 3 * 86_400_000,
+        None,
+    );
+    let codex_id = insert_oauth(
+        &db,
+        "openai-codex",
+        "FAKE_CODEX_ACCESS",
+        "FAKE_CODEX_REFRESH",
+        now_ms() + 3 * 86_400_000,
+        None,
+    );
     drop(db);
 
     let until = now_ms() + 3_600_000;
@@ -485,12 +708,23 @@ async fn block_upsert_delete_and_codex_hide() {
     assert_eq!(s, 200);
     assert_eq!(body["ok"], true);
 
-    let (s, _, snap) = request(&client, &b.url, "GET", "/v1/snapshot", Some(&b.token), None, &[]).await;
+    let (s, _, snap) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/snapshot",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
     let kimi = find_entry(&snap, "kimi-code").expect("kimi entry");
     let blocks = kimi["blocks"].as_array().expect("kimi blocks");
     assert!(
-        blocks.iter().any(|bl| bl["providerKey"] == "kimi-code:oauth" && bl["blockScope"] == "chat"),
+        blocks
+            .iter()
+            .any(|bl| bl["providerKey"] == "kimi-code:oauth" && bl["blockScope"] == "chat"),
         "chat block appears: {blocks:?}"
     );
 
@@ -507,10 +741,26 @@ async fn block_upsert_delete_and_codex_hide() {
     assert_eq!(s, 200);
     assert_eq!(body["ok"], true);
 
-    let (_, _, snap) = request(&client, &b.url, "GET", "/v1/snapshot", Some(&b.token), None, &[]).await;
+    let (_, _, snap) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/snapshot",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     let kimi = find_entry(&snap, "kimi-code").expect("kimi entry");
-    let blocks = kimi.get("blocks").and_then(Value::as_array).cloned().unwrap_or_default();
-    assert!(!blocks.iter().any(|bl| bl["blockScope"] == "chat"), "chat block removed");
+    let blocks = kimi
+        .get("blocks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !blocks.iter().any(|bl| bl["blockScope"] == "chat"),
+        "chat block removed"
+    );
 
     // Codex: insert a `chat` and a `shared` block directly against the DB.
     let db = open_db(&b.db);
@@ -538,9 +788,19 @@ async fn block_upsert_delete_and_codex_hide() {
     .await;
     assert_eq!(s, 200);
     let codex = find_entry(&snap, "openai-codex").expect("codex entry");
-    let blocks = codex.get("blocks").and_then(Value::as_array).cloned().unwrap_or_default();
-    assert!(blocks.iter().any(|bl| bl["blockScope"] == "chat"), "codex chat block visible with capability");
-    assert!(!blocks.iter().any(|bl| bl["blockScope"] == "shared"), "codex shared block hidden with capability");
+    let blocks = codex
+        .get("blocks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        blocks.iter().any(|bl| bl["blockScope"] == "chat"),
+        "codex chat block visible with capability"
+    );
+    assert!(
+        !blocks.iter().any(|bl| bl["blockScope"] == "shared"),
+        "codex shared block hidden with capability"
+    );
 }
 
 #[tokio::test]
@@ -570,19 +830,49 @@ async fn usage_observed_clients_history() {
     assert_eq!(s, 200);
     assert_eq!(body["ok"], true);
 
-    let (s, _, body) = request(&client, &b.url, "GET", "/v1/usage/clients", Some(&b.token), None, &[]).await;
+    let (s, _, body) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/usage/clients",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
     let clients = body["clients"].as_array().expect("clients");
-    let x = clients.iter().find(|c| c["installId"] == "install-X").expect("install-X");
+    let x = clients
+        .iter()
+        .find(|c| c["installId"] == "install-X")
+        .expect("install-X");
     let providers = x["providers"].as_array().unwrap();
-    let in_tok: f64 = providers.iter().map(|p| p["inputTokens"].as_f64().unwrap()).sum();
-    let out_tok: f64 = providers.iter().map(|p| p["outputTokens"].as_f64().unwrap()).sum();
-    let reqs: f64 = providers.iter().map(|p| p["requests"].as_f64().unwrap()).sum();
+    let in_tok: f64 = providers
+        .iter()
+        .map(|p| p["inputTokens"].as_f64().unwrap())
+        .sum();
+    let out_tok: f64 = providers
+        .iter()
+        .map(|p| p["outputTokens"].as_f64().unwrap())
+        .sum();
+    let reqs: f64 = providers
+        .iter()
+        .map(|p| p["requests"].as_f64().unwrap())
+        .sum();
     assert_eq!(in_tok, 800.0);
     assert_eq!(out_tok, 300.0);
     assert_eq!(reqs, 12.0);
 
-    let (s, _, body) = request(&client, &b.url, "GET", "/v1/usage/history", Some(&b.token), None, &[]).await;
+    let (s, _, body) = request(
+        &client,
+        &b.url,
+        "GET",
+        "/v1/usage/history",
+        Some(&b.token),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, 200);
     assert!(body.get("generatedAt").is_some());
     assert!(body.get("entries").is_some());
@@ -595,7 +885,14 @@ async fn background_refresher_rotates_expiring_row() {
     {
         let conn = open_db(&fx.agent.join("agent.db"));
         init_schema(&conn);
-        insert_oauth(&conn, "kimi-code", "FAKE_KIMI_ACCESS", "FAKE_KIMI_OK_REFRESH", now_ms() + 60_000, None);
+        insert_oauth(
+            &conn,
+            "kimi-code",
+            "FAKE_KIMI_ACCESS",
+            "FAKE_KIMI_OK_REFRESH",
+            now_ms() + 60_000,
+            None,
+        );
     }
     let mock = MockServer::start();
     let b = spawn_from(fx, Some(mock), false); // refresher enabled
@@ -605,11 +902,17 @@ async fn background_refresher_rotates_expiring_row() {
     let mut refreshed = false;
     while Instant::now() < deadline {
         let conn = open_db(&b.db);
-        let rotated = match conn.query_row::<String, _, _>("SELECT data FROM auth_credentials WHERE id = 1", [], |r| r.get(0)) {
+        let rotated = match conn.query_row::<String, _, _>(
+            "SELECT data FROM auth_credentials WHERE id = 1",
+            [],
+            |r| r.get(0),
+        ) {
             Ok(s) => serde_json::from_str::<Value>(&s).unwrap_or(Value::Null),
             Err(_) => Value::Null,
         };
-        let is_rotated = rotated["refresh"].as_str().is_some_and(|r| r.starts_with("ROT_"));
+        let is_rotated = rotated["refresh"]
+            .as_str()
+            .is_some_and(|r| r.starts_with("ROT_"));
         drop(conn);
         if is_rotated {
             refreshed = true;
@@ -617,5 +920,8 @@ async fn background_refresher_rotates_expiring_row() {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    assert!(refreshed, "background sweep did not rotate the 60s-expiring row");
+    assert!(
+        refreshed,
+        "background sweep did not rotate the 60s-expiring row"
+    );
 }

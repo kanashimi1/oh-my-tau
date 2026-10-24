@@ -87,7 +87,7 @@ impl Editor {
             Char('-' | '_') if ctrl && !alt => {
                 self.apply_undo();
                 EditorOutcome::Edited
-        }
+            }
 
             // -- kill group (TS :2020-2083) ---------------------------------
             Char('u') if ctrl && !alt => self.kill_to_line_start(),
@@ -106,79 +106,79 @@ impl Editor {
             Up if !ctrl && !alt && !shift => {
                 self.history_up();
                 EditorOutcome::Edited
-        }
+            }
             Down if !ctrl && !alt && !shift => {
                 self.history_down();
                 EditorOutcome::Edited
-        }
+            }
 
             // -- horizontal movement ------------------------------------------
             Char('b') if ctrl && !alt => {
                 self.move_left();
                 EditorOutcome::Edited
-        }
+            }
             Char('f') if ctrl && !alt => {
                 self.move_right();
                 EditorOutcome::Edited
-        }
+            }
             Char('a') if ctrl && !alt => {
                 self.move_line_start();
                 EditorOutcome::Edited
-        }
+            }
             Char('e') if ctrl && !alt => {
                 self.move_line_end();
                 EditorOutcome::Edited
-        }
+            }
             // alt+arrows / ctrl+arrows = word motion (TS `cursorWordLeft/Right`).
             Left if alt || ctrl => {
                 self.move_word_left();
                 EditorOutcome::Edited
-        }
+            }
             Right if alt || ctrl => {
                 self.move_word_right();
                 EditorOutcome::Edited
-        }
+            }
             Left => {
                 self.move_left();
                 EditorOutcome::Edited
-        }
+            }
             Right => {
                 self.accept_or_move_right();
                 EditorOutcome::Edited
-        }
+            }
             Home => {
                 self.move_line_start();
                 EditorOutcome::Edited
-        }
+            }
             End => {
                 self.move_line_end();
                 EditorOutcome::Edited
-        }
+            }
 
             // -- word movement (alt+arrows, alt+b/f) ---------------------------
             Char('b') if alt && !ctrl => {
                 self.move_word_left();
                 EditorOutcome::Edited
-        }
+            }
             Char('f') if alt && !ctrl => {
                 self.move_word_right();
                 EditorOutcome::Edited
-        }
+            }
             // -- page scroll (viewport only, never history; TS :2141) ---------
             PageUp => {
                 self.scroll_page_up();
                 EditorOutcome::Edited
-        }
+            }
             PageDown => {
                 self.scroll_page_down();
                 EditorOutcome::Edited
-        }
+            }
 
             // -- delete ---------------------------------------------------------
             Backspace => {
                 self.backspace_widened();
                 EditorOutcome::Edited
-        }
+            }
             Delete => self.forward_delete(),
 
             // -- printable input -------------------------------------------------

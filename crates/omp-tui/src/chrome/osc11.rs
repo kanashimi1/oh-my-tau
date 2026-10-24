@@ -29,7 +29,9 @@ pub fn parse_osc11_response(bytes: &[u8]) -> Option<Rgb> {
     let text = String::from_utf8_lossy(bytes);
     let marker = text.find("11;")?;
     let rest = &text[marker + 3..];
-    let values = rest.strip_prefix("rgb:").or_else(|| rest.strip_prefix("rgba:"))?;
+    let values = rest
+        .strip_prefix("rgb:")
+        .or_else(|| rest.strip_prefix("rgba:"))?;
     // Channels are `/`-separated; the response may end with BEL or ST.
     let mut parts = values.split(|c: char| matches!(c, '/' | ';' | '\u{7}' | '\u{1b}'));
     let mut next = || {
@@ -57,8 +59,8 @@ pub fn parse_osc11_response(bytes: &[u8]) -> Option<Rgb> {
 #[cfg(unix)]
 #[must_use]
 pub fn probe_osc11_background(timeout: Duration) -> Option<Rgb> {
-    use std::io::IsTerminal;
     use rustix::event::{poll, PollFd, PollFlags, Timespec};
+    use std::io::IsTerminal;
     if !std::io::stdout().is_terminal() {
         return None;
     }
@@ -112,7 +114,11 @@ mod tests {
         let resp = b"\x1b]11;rgb:1c1c/1c1c/1c1c\x1b\\";
         assert_eq!(
             parse_osc11_response(resp),
-            Some(Rgb { r: 0x1c, g: 0x1c, b: 0x1c })
+            Some(Rgb {
+                r: 0x1c,
+                g: 0x1c,
+                b: 0x1c
+            })
         );
     }
 
@@ -121,14 +127,21 @@ mod tests {
         let resp = b"\x1b]11;rgb:ffff/ffff/ffff\x07";
         assert_eq!(
             parse_osc11_response(resp),
-            Some(Rgb { r: 0xff, g: 0xff, b: 0xff })
+            Some(Rgb {
+                r: 0xff,
+                g: 0xff,
+                b: 0xff
+            })
         );
     }
 
     #[test]
     fn ignores_garbage_and_missing_response() {
         assert_eq!(parse_osc11_response(b""), None);
-        assert_eq!(parse_osc11_response(b"\x1b]10;rgb:0000/0000/0000\x1b\\"), None);
+        assert_eq!(
+            parse_osc11_response(b"\x1b]10;rgb:0000/0000/0000\x1b\\"),
+            None
+        );
         assert_eq!(parse_osc11_response(b"hello"), None);
     }
 }

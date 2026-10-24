@@ -192,16 +192,30 @@ fn kernel_env() -> Vec<(String, String)> {
 /// python kernels), so without it they silently never load under omp-rs.
 fn python_kernel_env(cwd: &std::path::Path) -> Vec<(String, String)> {
     let mut vars = kernel_env();
-    let namespace = omp_urls::global_session_file()
-        .map_or_else(|| format!("session:{}", cwd.display()), |f| f.to_string_lossy().into_owned());
-    vars.push(("PI_TOOL_BRIDGE_SESSION".to_owned(), format!("python:{namespace}")));
+    let namespace = omp_urls::global_session_file().map_or_else(
+        || format!("session:{}", cwd.display()),
+        |f| f.to_string_lossy().into_owned(),
+    );
+    vars.push((
+        "PI_TOOL_BRIDGE_SESSION".to_owned(),
+        format!("python:{namespace}"),
+    ));
     vars
 }
 
 /// Cell options: the bridge lives in the blocking task next to the cell it
 /// serves; TS idle-timeout semantics (host calls pause the deadline).
-fn run_opts(bridge: &EvalBridge, timeout: Option<Duration>, cancel: CancelToken) -> ExecOptions<'_> {
-    ExecOptions { timeout, idle_timeout: true, bridge: Some(bridge), cancel: Some(cancel) }
+fn run_opts(
+    bridge: &EvalBridge,
+    timeout: Option<Duration>,
+    cancel: CancelToken,
+) -> ExecOptions<'_> {
+    ExecOptions {
+        timeout,
+        idle_timeout: true,
+        bridge: Some(bridge),
+        cancel: Some(cancel),
+    }
 }
 
 /// Bound the rendered output the way omp's eval does. The `OutputSink`
@@ -212,6 +226,9 @@ fn run_opts(bridge: &EvalBridge, timeout: Option<Duration>, cancel: CancelToken)
 /// within `2 × artifactTailLines` lines). The full text goes to an artifact;
 /// the notice links it only when the save succeeded.
 fn cap_output_with(text: &str, cfg: &SpillConfig) -> String {
+    if crate::methodology::raw_tool_output_requested() {
+        return text.to_owned();
+    }
     let elided = match sink_window(text, cfg) {
         Some(e) => e,
         // The session-level spill needs a session to hold the artifact.
@@ -335,7 +352,6 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         )
     };
 
-
     let mut kernel_loss_notice: Option<String> = None;
     let mut results: Vec<CellResult> = Vec::with_capacity(codes.len());
     if is_js {
@@ -357,8 +373,8 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             let result = tokio::task::spawn_blocking(move || {
                 k.execute_with(&code_c, run_opts(&bridge, timeout, cell_cancel))
             })
-                .await
-                .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+            .await
+            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
             eval_journal::record_cell(&cwd, lang, cell_code, &result);
             let failed = result.status != CellStatus::Ok;
             results.push(result);
@@ -387,8 +403,8 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
             let result = tokio::task::spawn_blocking(move || {
                 k.execute_with(&code_c, run_opts(&bridge, timeout, cell_cancel))
             })
-                .await
-                .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
+            .await
+            .map_err(|e| anyhow::anyhow!("eval kernel task failed: {e}"))??;
             eval_journal::record_cell(&cwd, lang, cell_code, &result);
             let failed = result.status != CellStatus::Ok;
             results.push(result);

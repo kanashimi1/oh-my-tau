@@ -59,7 +59,9 @@ async fn wait_phase(control: &omp_task::RunControl, phase: RunPhase) {
 /// run that settles first makes a late `cancel()` return `false`.
 #[tokio::test]
 async fn cancel_in_the_post_loop_window_is_consistent() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     // Answers everything and exits, but a detached grandchild holds stderr
@@ -109,17 +111,16 @@ exit 0"#,
         );
     }
     assert_eq!(runner.available_permits(), 1, "permit released");
-    assert!(
-        !control.cancel(),
-        "cancel after settle is a no-op"
-    );
+    assert!(!control.cancel(), "cancel after settle is a no-op");
 }
 
 /// The other side of finding 1: no cancel at all — the run settles
 /// Completed even though a detached grandchild holds stderr (bounded join).
 #[tokio::test]
 async fn completed_run_with_detached_stderr_holder_settles() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -155,7 +156,9 @@ exit 0"#,
 /// run must settle failed — no hang, permit released.
 #[tokio::test]
 async fn finishing_phase_deadline_kills_hanging_child() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     set_finishing_deadline("400");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -187,7 +190,9 @@ sleep 30"#,
 /// receipt reports failure instead of a silently dropped message.
 #[tokio::test]
 async fn steer_receipt_reports_finishing_failure() {
-    let _env = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -206,7 +211,10 @@ read -r eof || exit 0"#,
     let runner = TaskRunner::new(&bin, 1);
     let (control, join) = runner.start(spec("go", dir.path()), ChildMode::Rpc);
     wait_phase(&control, RunPhase::Running).await;
-    control.steer("first").await.expect("running steer is delivered");
+    control
+        .steer("first")
+        .await
+        .expect("running steer is delivered");
     wait_phase(&control, RunPhase::Finishing).await;
     let receipt = control.steer("second").await;
     assert_eq!(
@@ -256,10 +264,18 @@ async fn child_gets_depth_env_and_extra_args() {
     let runner = TaskRunner::new(&bin, 1);
     let mut spec = spec("hello", dir.path());
     spec.depth = 3;
-    spec.extra_args = vec!["--no-extensions".to_string(), "--extension".to_string(), "/tmp/x".to_string()];
+    spec.extra_args = vec![
+        "--no-extensions".to_string(),
+        "--extension".to_string(),
+        "/tmp/x".to_string(),
+    ];
     let (_control, join) = runner.start(spec, ChildMode::Print);
     let out = join.await;
     assert_eq!(out.status, RunStatus::Completed, "{out:?}");
     assert!(out.output.contains("depth=3"), "got {:?}", out.output);
-    assert!(out.output.contains("--no-extensions --extension /tmp/x"), "got {:?}", out.output);
+    assert!(
+        out.output.contains("--no-extensions --extension /tmp/x"),
+        "got {:?}",
+        out.output
+    );
 }

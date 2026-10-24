@@ -95,7 +95,9 @@ pub trait RuntimePort: Send + Sync + 'static {
     /// `off` (TS `getAvailableThinkingLevels`); empty when the model cannot
     /// think. Drives the Shift+Tab cycle and the thinking selectors.
     fn available_thinking_levels(&self) -> Vec<String> {
-        ["minimal", "low", "medium", "high", "xhigh"].map(String::from).to_vec()
+        ["minimal", "low", "medium", "high", "xhigh"]
+            .map(String::from)
+            .to_vec()
     }
 
     /// Gather the `/session` info report; the runtime answers with a
@@ -175,11 +177,15 @@ impl RuntimePort for FakePort {
         // Resolve the global config.yml from HOME like the real port (the
         // temp-HOME tests rely on this path).
         let settings = omp_settings::Settings::load(std::path::Path::new("/nonexistent"));
-        ids.iter().map(|id| (id.clone(), settings.get(id))).collect()
+        ids.iter()
+            .map(|id| (id.clone(), settings.get(id)))
+            .collect()
     }
     fn settings_set(&self, id: String, value: Value) -> Result<(), String> {
         self.record(format!("settings_set({id}, {value})"));
-        omp_settings::write_global(&id, &value).map(|_| ()).map_err(|e| e.to_string())
+        omp_settings::write_global(&id, &value)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
     fn request_session_info(&self) {
         self.record("request_session_info()".into());

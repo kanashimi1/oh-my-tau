@@ -270,6 +270,10 @@ fn usage(ctx: &Ctx<'_>, theme: &Theme) -> Option<Vec<Piece>> {
             format!("{} {pct}% ({reset})", w.label)
         })
         .collect::<Vec<_>>();
-    let text = format!("{} {}", style::icon(theme, "icon.time", "⏱"), parts.join(" · "));
+    let text = format!(
+        "{} {}",
+        style::icon(theme, "icon.time", "⏱"),
+        parts.join(" · ")
+    );
     Some(vec![ctx.maybe_accent("accent", text)])
 }

@@ -67,13 +67,21 @@ impl SessionInfoLine {
                 spans
                     .iter()
                     .map(|s| InfoSpan {
-                        text: s.get("t").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                        text: s
+                            .get("t")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
                         color: s.get("c").and_then(Value::as_str).map(str::to_owned),
                     })
                     .collect()
             } else {
                 vec![InfoSpan {
-                    text: v.get("v").and_then(Value::as_str).unwrap_or_default().to_owned(),
+                    text: v
+                        .get("v")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
                     color: None,
                 }]
             };
@@ -120,7 +128,9 @@ impl SessionInfoLine {
                 }
             }
             Self::Head(text) => push(text, Style::default().add_modifier(Modifier::BOLD)),
-            Self::Text { text, dim: is_dim } => push(text, if *is_dim { dim } else { Style::default() }),
+            Self::Text { text, dim: is_dim } => {
+                push(text, if *is_dim { dim } else { Style::default() })
+            }
         }
         out
     }
@@ -189,7 +199,10 @@ fn to_line(cells: &[(char, Style)]) -> Line<'static> {
     let mut current: Option<Style> = None;
     for &(c, style) in cells {
         if current.is_some_and(|s| s != style) {
-            spans.push(Span::styled(std::mem::take(&mut text), current.unwrap_or_default()));
+            spans.push(Span::styled(
+                std::mem::take(&mut text),
+                current.unwrap_or_default(),
+            ));
         }
         current = Some(style);
         text.push(c);
@@ -212,7 +225,11 @@ fn thumb_range(height: usize, total: usize, offset: usize) -> (usize, usize) {
     let travel = height - size;
     let max_offset = total - height;
     let offset = offset.min(max_offset);
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let start = ((offset as f64 / max_offset as f64) * travel as f64).round() as usize;
     (start, start + size)
 }
@@ -296,7 +313,11 @@ impl Component for SessionInfoOverlay {
         // Top border with the inset title (overlay-box `topBorder`).
         let title = format!(
             " {} ",
-            if self.title.is_empty() { "Session Info" } else { self.title.as_str() }
+            if self.title.is_empty() {
+                "Session Info"
+            } else {
+                self.title.as_str()
+            }
         );
         let title_w: usize = title.chars().map(char_width).sum();
         let fill = (width - 2).saturating_sub(1 + title_w);
@@ -304,9 +325,14 @@ impl Component for SessionInfoOverlay {
             Span::styled(format!("{}{horizontal}", sym("boxRound.topLeft")), border),
             Span::styled(
                 title,
-                Style::default().fg(theme.color("accent")).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.color("accent"))
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!("{}{}", horizontal.repeat(fill), sym("boxRound.topRight")), border),
+            Span::styled(
+                format!("{}{}", horizontal.repeat(fill), sym("boxRound.topRight")),
+                border,
+            ),
         ]));
         let boxed = |content: Line<'static>, content_w: usize| {
             let mut spans = vec![Span::styled(format!("{vertical} "), border)];
@@ -321,24 +347,36 @@ impl Component for SessionInfoOverlay {
             let mut line = to_line(row);
             let mut w = row_w;
             if overflow {
-                line.spans.push(Span::raw(" ".repeat(content_width.saturating_sub(row_w))));
+                line.spans
+                    .push(Span::raw(" ".repeat(content_width.saturating_sub(row_w))));
                 let (glyph, token) = if i >= thumb_start && i < thumb_end {
                     ("█", "accent")
                 } else {
                     ("│", "dim")
                 };
-                line.spans.push(Span::styled(glyph, Style::default().fg(theme.color(token))));
+                line.spans
+                    .push(Span::styled(glyph, Style::default().fg(theme.color(token))));
                 w = content_width + 1;
             }
             out.push(boxed(line, w));
         }
         // Divider (overlay-box `divider`).
         out.push(Line::styled(
-            format!("{}{}{}", sym("boxSharp.teeRight"), horizontal.repeat(width - 2), sym("boxSharp.teeLeft")),
+            format!(
+                "{}{}{}",
+                sym("boxSharp.teeRight"),
+                horizontal.repeat(width - 2),
+                sym("boxSharp.teeLeft")
+            ),
             border,
         ));
         // Footer hint (TS `formatKeyHints(["up","down"]) scroll · editorKey(cancel) close`).
-        let hint = format!("{}/{} scroll · {} close", sym("key.up"), sym("key.down"), sym("key.esc"));
+        let hint = format!(
+            "{}/{} scroll · {} close",
+            sym("key.up"),
+            sym("key.down"),
+            sym("key.esc")
+        );
         let hint: String = {
             let mut w = 0;
             hint.chars()
@@ -349,7 +387,10 @@ impl Component for SessionInfoOverlay {
                 .collect()
         };
         let hint_w: usize = hint.chars().map(char_width).sum();
-        out.push(boxed(Line::styled(hint, Style::default().fg(theme.color("dim"))), hint_w));
+        out.push(boxed(
+            Line::styled(hint, Style::default().fg(theme.color("dim"))),
+            hint_w,
+        ));
         out.push(Line::styled(
             format!(
                 "{}{}{}",
@@ -470,16 +511,25 @@ mod tests {
         assert_eq!(panel[1], format!("│ File:{} │", " ".repeat(111)));
         assert!(panel[2].starts_with("│ /tmp/e2e-home-yjtazx1t/"));
         assert!(panel[3].starts_with("│ e2b-883cca3faf0d.jsonl "));
-        assert!(panel.iter().any(|r| r.starts_with("│ Endpoint: http://127.0.0.1:45133/v1 ")));
+        assert!(panel
+            .iter()
+            .any(|r| r.starts_with("│ Endpoint: http://127.0.0.1:45133/v1 ")));
         assert_eq!(panel[29].chars().count(), 120);
         assert!(panel[30].starts_with("├─") && panel[30].ends_with('┤'));
-        assert!(panel[31].starts_with("│ ↑/↓ scroll · ⎋ close "), "{}", panel[31]);
+        assert!(
+            panel[31].starts_with("│ ↑/↓ scroll · ⎋ close "),
+            "{}",
+            panel[31]
+        );
         assert!(panel[32].starts_with("╰─") && panel[32].ends_with('╯'));
         // Text-exact against the TS ground truth when the capture is present.
         if let Ok(ts) = ts {
             let ts_panel: Vec<&str> = ts.lines().skip_while(|l| !l.starts_with('╭')).collect();
             let ours: Vec<&str> = panel.iter().map(String::as_str).collect();
-            assert_eq!(ours, ts_panel.iter().map(|l| l.trim_end()).collect::<Vec<_>>());
+            assert_eq!(
+                ours,
+                ts_panel.iter().map(|l| l.trim_end()).collect::<Vec<_>>()
+            );
         }
     }
 

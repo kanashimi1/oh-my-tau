@@ -14,7 +14,13 @@ const MAX_STATE: usize = 24000;
 const REQ_MAX: usize = 1500;
 const FINAL_MAX: usize = 1500;
 
-const TAG_NAMES: [&str; 5] = ["system-reminder", "system-notice", "memory-recall", "skill-state", "environment_context"];
+const TAG_NAMES: [&str; 5] = [
+    "system-reminder",
+    "system-notice",
+    "memory-recall",
+    "skill-state",
+    "environment_context",
+];
 const PSEUDO_PREFIX: [&str; 9] = [
     "[fleet-envelope]",
     "[budget notice]",
@@ -83,7 +89,10 @@ impl Objective {
             tests_run: b("tests_run"),
             tests_final_pass: b("tests_final_pass"),
             ended_with_error: b("ended_with_error"),
-            identical_fail_run_max: o.get("identical_fail_run_max").and_then(Value::as_i64).unwrap_or(0),
+            identical_fail_run_max: o
+                .get("identical_fail_run_max")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
             n_steps: o.get("n_steps").and_then(Value::as_i64).unwrap_or(0),
             interrupted: b("interrupted"),
             claimed_done: b("claimed_done"),
@@ -128,9 +137,11 @@ fn strip_tags(s: &str) -> String {
                 candidates.push(name[..cut].to_owned());
             }
         }
-        let close = candidates
-            .iter()
-            .find_map(|n| s[body_start..].find(&format!("</{n}>")).map(|i| body_start + i + n.len() + 3));
+        let close = candidates.iter().find_map(|n| {
+            s[body_start..]
+                .find(&format!("</{n}>"))
+                .map(|i| body_start + i + n.len() + 3)
+        });
         if let Some(end) = close {
             out.push_str(&s[pos..whole.start()]);
             pos = end;
@@ -176,7 +187,8 @@ fn is_test_cmd(cmd: &str) -> bool {
         &TEST,
         r"^(pytest|py\.test|unittest|cargo\s+(test|nextest)|go\s+test|npm\s+(run\s+)?test|npm\s+t\b|yarn\s+test|pnpm\s+(run\s+)?test|(\S*/)?gradlew?\s+\S*(test|build)|(\S*/)?mvnw?\b|tsc\b|ruff\b|mypy\b|eslint\b)",
     );
-    seg.split(cmd).any(|s| test.is_match(&prefix.replace(s.trim(), "")))
+    seg.split(cmd)
+        .any(|s| test.is_match(&prefix.replace(s.trim(), "")))
 }
 
 fn done_re() -> &'static Regex {
@@ -196,7 +208,10 @@ fn as_pyint(v: &Value) -> Option<i64> {
 
 /// Port of `parse_file` over already-decoded session entries (`{"type":"message",...}` lines).
 /// `is_sub`: the entries belong to a subagent session (the first user message is the task).
-pub fn parse_entries<'a>(entries: impl IntoIterator<Item = &'a Value>, is_sub: bool) -> Vec<Episode> {
+pub fn parse_entries<'a>(
+    entries: impl IntoIterator<Item = &'a Value>,
+    is_sub: bool,
+) -> Vec<Episode> {
     let mut intents: HashMap<String, String> = HashMap::new();
     let mut eps: Vec<Episode> = Vec::new();
     let mut pend: HashMap<String, (usize, usize)> = HashMap::new();
@@ -204,7 +219,9 @@ pub fn parse_entries<'a>(entries: impl IntoIterator<Item = &'a Value>, is_sub: b
     let empty = Map::new();
     for e in entries {
         let ty = e.get("type").and_then(Value::as_str);
-        if ty == Some("custom") && e.get("customType").and_then(Value::as_str) == Some("tool_execution_start") {
+        if ty == Some("custom")
+            && e.get("customType").and_then(Value::as_str) == Some("tool_execution_start")
+        {
             let d = e.get("data").and_then(Value::as_object).unwrap_or(&empty);
             if let Some(i) = d.get("intent").filter(|v| truthy(v)) {
                 let id = d.get("toolCallId").and_then(Value::as_str).unwrap_or("");
@@ -215,22 +232,31 @@ pub fn parse_entries<'a>(entries: impl IntoIterator<Item = &'a Value>, is_sub: b
         if ty != Some("message") {
             continue;
         }
-        let Some(m) = e.get("message").filter(|m| m.is_object()) else { continue };
+        let Some(m) = e.get("message").filter(|m| m.is_object()) else {
+            continue;
+        };
         let role = m.get("role").and_then(Value::as_str);
         if role == Some("user") {
             if is_sub && seen_task {
                 continue;
             }
-            let Some(t) = human_text(m, is_sub) else { continue };
+            let Some(t) = human_text(m, is_sub) else {
+                continue;
+            };
             seen_task = true;
             eps.push(Episode {
                 request: t,
-                ts: e.get("timestamp").and_then(Value::as_str).map(str::to_owned),
+                ts: e
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 ..Episode::default()
             });
             continue;
         }
-        let Some(ei) = eps.len().checked_sub(1) else { continue };
+        let Some(ei) = eps.len().checked_sub(1) else {
+            continue;
+        };
         let cur = &mut eps[ei];
         if role == Some("assistant") {
             let content = m.get("content").filter(|v| truthy(v));
@@ -241,7 +267,10 @@ pub fn parse_entries<'a>(entries: impl IntoIterator<Item = &'a Value>, is_sub: b
                     cur.models.push((model, 1));
                 }
             }
-            cur.last_stop = m.get("stopReason").and_then(Value::as_str).map(str::to_owned);
+            cur.last_stop = m
+                .get("stopReason")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             cur.final_text = text_of(content).trim().to_owned();
             cur.yield_args = None;
             if let Some(Value::Array(blocks)) = content {
@@ -249,7 +278,11 @@ pub fn parse_entries<'a>(entries: impl IntoIterator<Item = &'a Value>, is_sub: b
                     if !b.is_object() || b.get("type").and_then(Value::as_str) != Some("toolCall") {
                         continue;
                     }
-                    let args = b.get("arguments").filter(|v| truthy(v)).cloned().unwrap_or_else(|| Value::Object(Map::new()));
+                    let args = b
+                        .get("arguments")
+                        .filter(|v| truthy(v))
+                        .cloned()
+                        .unwrap_or_else(|| Value::Object(Map::new()));
                     let name = b.get("name").and_then(Value::as_str).unwrap_or("");
                     if name == "yield" || name == "submit_result" {
                         cur.yield_args = Some(args);
@@ -279,7 +312,9 @@ pub fn parse_entries<'a>(entries: impl IntoIterator<Item = &'a Value>, is_sub: b
             }
         } else if role == Some("toolResult") {
             let id = m.get("toolCallId").and_then(Value::as_str).unwrap_or("");
-            let Some((ei, si)) = pend.remove(id) else { continue };
+            let Some((ei, si)) = pend.remove(id) else {
+                continue;
+            };
             let st = &mut eps[ei].steps[si];
             let ec = m
                 .get("details")
@@ -302,7 +337,11 @@ pub fn parse_entries<'a>(entries: impl IntoIterator<Item = &'a Value>, is_sub: b
 
 fn key_args(st: &Step, n: usize) -> String {
     let a: Map<String, Value> = match &st.args {
-        Value::Object(o) => o.iter().filter(|(k, _)| !DROP_KEYS.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect(),
+        Value::Object(o) => o
+            .iter()
+            .filter(|(k, _)| !DROP_KEYS.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
         _ => Map::new(),
     };
     let t = st.tool.as_str();
@@ -326,7 +365,11 @@ fn one_line(s: &str, n: usize) -> String {
 
 fn step_line(i: usize, st: &Step, na: usize, no: usize, ni: usize) -> String {
     let out = if st.done {
-        let tag = if st.err { format!("[ERR exit={}]", st.exit) } else { "[ok]".to_owned() };
+        let tag = if st.err {
+            format!("[ERR exit={}]", st.exit)
+        } else {
+            "[ok]".to_owned()
+        };
         format!("{tag} {}", one_line(&st.text, no))
     } else {
         "[no result]".to_owned()
@@ -348,7 +391,13 @@ fn render_steps(steps: &[Step], budget: usize) -> String {
         ((0..n).collect(), 0)
     };
     let mut s = String::new();
-    for (na, no, ni) in [(160, 200, 120), (120, 150, 80), (90, 110, 60), (60, 70, 40), (40, 40, 30)] {
+    for (na, no, ni) in [
+        (160, 200, 120),
+        (120, 150, 80),
+        (90, 110, 60),
+        (60, 70, 40),
+        (40, 40, 30),
+    ] {
         let mut lines = Vec::with_capacity(keep.len() + 1);
         for (k, &i) in keep.iter().enumerate() {
             if omitted > 0 && k == 10 {
@@ -400,7 +449,13 @@ impl Episode {
                 s.tool == "bash"
                     && s.done
                     && s.args.is_object()
-                    && is_test_cmd(&s.args.get("command").map_or_else(String::new, |c| if c.is_null() { String::new() } else { py_str(c) }))
+                    && is_test_cmd(&s.args.get("command").map_or_else(String::new, |c| {
+                        if c.is_null() {
+                            String::new()
+                        } else {
+                            py_str(c)
+                        }
+                    }))
             })
             .collect();
         let fin = self.final_reply();
@@ -409,7 +464,11 @@ impl Episode {
         for s in steps {
             if s.done && s.err {
                 let sig = (s.tool.clone(), take_chars(&s.text, 60).to_owned());
-                run = if prev.as_ref() == Some(&sig) { run + 1 } else { 1 };
+                run = if prev.as_ref() == Some(&sig) {
+                    run + 1
+                } else {
+                    1
+                };
                 prev = Some(sig);
                 best = best.max(run);
             } else {
@@ -449,9 +508,15 @@ mod tests {
 
     #[test]
     fn tags_are_stripped() {
-        assert_eq!(strip_tags("a<system-reminder x=1>zzz\nq</system-reminder>b"), "ab");
+        assert_eq!(
+            strip_tags("a<system-reminder x=1>zzz\nq</system-reminder>b"),
+            "ab"
+        );
         assert_eq!(strip_tags("a<s1-ab>q</s1-ab>b"), "ab");
-        assert_eq!(strip_tags("a<skill-state>never closed"), "a<skill-state>never closed");
+        assert_eq!(
+            strip_tags("a<skill-state>never closed"),
+            "a<skill-state>never closed"
+        );
     }
 
     #[test]
@@ -466,7 +531,10 @@ mod tests {
         let eps = parse_entries(&entries, false);
         assert_eq!(eps.len(), 1);
         let st = eps[0].render_state();
-        assert!(st.contains("1. bash: run tests | cargo test -> [ok] ok 3 passed"), "{st}");
+        assert!(
+            st.contains("1. bash: run tests | cargo test -> [ok] ok 3 passed"),
+            "{st}"
+        );
         assert!(st.ends_with("FINAL REPLY:\nAll done, tests pass."));
         let o = eps[0].objective(false);
         assert!(o.tests_run && !o.tests_final_pass && !o.interrupted && o.claimed_done);

@@ -13,6 +13,8 @@ members = [
     "vendor/pi-predict",
     "crates/*",
 ]
+# ws_ckpt checkpoint stores (not crates).
+exclude = ["crates/.wsckpt"]
 
 [workspace.package]
 version = "0.10.0"

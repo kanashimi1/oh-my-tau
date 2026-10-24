@@ -1,6 +1,6 @@
-//! System clipboard reads — port of the read paths of
-//! `coding-agent/src/utils/clipboard.ts` (`readTextFromClipboard` /
-//! `readImageFromClipboard`).
+//! System clipboard — port of `coding-agent/src/utils/clipboard.ts`: the read paths
+//! (`readTextFromClipboard` / `readImageFromClipboard`) and the text write
+//! (`copyToClipboard`: OSC 52 plus the platform tools, [`osc52`] / [`write_text`]).
 //!
 //! Like TS, reads shell out to the platform clipboard tools; there is no
 //! in-process clipboard backend in omp-rs, so every platform branch is a
@@ -144,7 +144,11 @@ fn stdout_lossy(mut bytes: Vec<u8>) -> String {
 /// branch order preserved). Empty string = no text / unreachable clipboard.
 #[must_use]
 pub fn read_text() -> String {
-    if let Some(bytes) = std::env::var("OMP_CLIPBOARD_TEXT_GET").ok().as_deref().and_then(override_bytes) {
+    if let Some(bytes) = std::env::var("OMP_CLIPBOARD_TEXT_GET")
+        .ok()
+        .as_deref()
+        .and_then(override_bytes)
+    {
         return stdout_lossy(bytes);
     }
     if cfg!(target_os = "macos") {
@@ -201,11 +205,94 @@ fn read_text_from_x11() -> String {
 
 fn read_text_via_powershell() -> Option<String> {
     let bytes = capture(
-        Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", POWERSHELL_TEXT_SCRIPT]),
+        Command::new("powershell.exe").args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            POWERSHELL_TEXT_SCRIPT,
+        ]),
         IMAGE_TIMEOUT,
     )?;
     Some(stdout_lossy(bytes))
+}
+
+/// Timeout for the native copy tools (TS `copyToClipboard` `timeoutMs: 5000`).
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The OSC 52 "set clipboard" sequence for `text` (TS `copyToClipboard` writes it first so
+/// remote/SSH terminals get the copy too).
+#[must_use]
+pub fn osc52(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", crate::chrome::notify::base64_utf8(text))
+}
+
+/// Feed `text` to `cmd`'s stdin; `true` when it exited successfully in time.
+fn pipe_to(cmd: &mut Command, text: &str) -> bool {
+    use std::io::Write as _;
+    let Ok(mut child) = cmd
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(text.as_bytes()).is_err() {
+            let _ = child.kill();
+            return false;
+        }
+    }
+    let deadline = Instant::now() + WRITE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                return false;
+            }
+        }
+    }
+}
+
+/// Copy `text` with the platform clipboard tools (TS `copyToClipboard` native half; blocking,
+/// call off the render thread). `OMP_CLIPBOARD_TEXT_SET` names a command (whitespace-split argv)
+/// that receives the text on stdin instead, for tests. `false` when every tool failed.
+pub fn write_text(text: &str) -> bool {
+    if let Ok(spec) = std::env::var("OMP_CLIPBOARD_TEXT_SET") {
+        let mut argv = spec.split_whitespace();
+        if let Some(program) = argv.next() {
+            return pipe_to(Command::new(program).args(argv), text);
+        }
+    }
+    if std::env::var_os("TERMUX_VERSION").is_some()
+        && pipe_to(&mut Command::new("termux-clipboard-set"), text)
+    {
+        return true;
+    }
+    if cfg!(target_os = "macos") {
+        return pipe_to(
+            Command::new("pbcopy")
+                .env("LANG", "en_US.UTF-8")
+                .env("LC_ALL", "en_US.UTF-8"),
+            text,
+        );
+    }
+    if is_wsl() && pipe_to(&mut Command::new("clip.exe"), text) {
+        return true;
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() && pipe_to(&mut Command::new("wl-copy"), text)
+    {
+        return true;
+    }
+    if std::env::var_os("DISPLAY").is_some() {
+        return pipe_to(
+            Command::new("xclip").args(["-selection", "clipboard"]),
+            text,
+        ) || pipe_to(Command::new("xsel").args(["--clipboard", "--input"]), text);
+    }
+    false
 }
 
 /// Read an image from the system clipboard (TS `readImageFromClipboard`).
@@ -215,8 +302,15 @@ pub fn read_image() -> Option<ClipboardImage> {
     if std::env::var_os("TERMUX_VERSION").is_some() {
         return None;
     }
-    if let Some(bytes) = std::env::var("OMP_CLIPBOARD_IMAGE_GET").ok().as_deref().and_then(override_bytes) {
-        return Some(ClipboardImage { data: bytes, mime: "image/png" });
+    if let Some(bytes) = std::env::var("OMP_CLIPBOARD_IMAGE_GET")
+        .ok()
+        .as_deref()
+        .and_then(override_bytes)
+    {
+        return Some(ClipboardImage {
+            data: bytes,
+            mime: "image/png",
+        });
     }
     if is_wsl() || cfg!(target_os = "windows") {
         if let Some(image) = read_image_via_powershell() {
@@ -251,15 +345,18 @@ fn read_image_via_powershell() -> Option<ClipboardImage> {
     if data.is_empty() {
         return None;
     }
-    Some(ClipboardImage { data, mime: "image/png" })
+    Some(ClipboardImage {
+        data,
+        mime: "image/png",
+    })
 }
 
 fn read_image_via_wl_paste() -> Option<ClipboardImage> {
-    let listing = capture(&mut Command::new("wl-paste").arg("--list-types"), TEXT_TIMEOUT)?;
-    let offered: Vec<String> = stdout_lossy(listing)
-        .lines()
-        .map(str::to_owned)
-        .collect();
+    let listing = capture(
+        &mut Command::new("wl-paste").arg("--list-types"),
+        TEXT_TIMEOUT,
+    )?;
+    let offered: Vec<String> = stdout_lossy(listing).lines().map(str::to_owned).collect();
     for mime in IMAGE_MIME_TYPES {
         if !offered.iter().any(|m| m == mime) {
             continue;
@@ -382,6 +479,28 @@ mod tests {
             Some(b"PNGDATA".as_slice())
         );
         assert_eq!(override_bytes("definitely-not-a-real-cmd-xyz"), None);
+    }
+
+    #[test]
+    fn osc52_encodes_the_text() {
+        assert_eq!(osc52("hello"), "\x1b]52;c;aGVsbG8=\x07");
+    }
+
+    #[test]
+    fn write_text_pipes_to_the_override_command() {
+        let dir = std::env::temp_dir().join(format!("omp-clip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.txt");
+        let script = dir.join("set.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ncat > {}\n", out.display())).unwrap();
+        std::process::Command::new("chmod")
+            .arg("+x")
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(pipe_to(&mut Command::new(&script), "copied ✓"));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "copied ✓");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

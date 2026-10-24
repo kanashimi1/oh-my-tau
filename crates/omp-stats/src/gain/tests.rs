@@ -63,10 +63,15 @@ fn sub_path_comparison() {
 
 #[test]
 fn dedupe_drops_deep_sub_paths_of_normalized_roots() {
-    let mut raw: HashSet<String> = ["/repo/.wt/lane", "/repo", "/home/u/proj/x/y/z", "/home/u/proj/x"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let mut raw: HashSet<String> = [
+        "/repo/.wt/lane",
+        "/repo",
+        "/home/u/proj/x/y/z",
+        "/home/u/proj/x",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     raw.insert("/tmp/x".into());
     // "/home/u/proj/x" has 4 segments, so it absorbs the deeper child;
     // "/repo" (2 segments) absorbs the worktree path.
@@ -85,16 +90,25 @@ fn dedupe_keeps_shallow_similar_prefixes() {
 #[test]
 fn dedupe_only_collapses_at_depth_4() {
     // Parent shallower than 4 segments does NOT absorb the child.
-    let raw: HashSet<String> = ["/a/b/c", "/a/b/c/d"].iter().map(|s| s.to_string()).collect();
+    let raw: HashSet<String> = ["/a/b/c", "/a/b/c/d"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(dedupe_projects(&raw), vec!["/a/b/c", "/a/b/c/d"]);
     // At depth >= 4 the parent absorbs the child.
-    let raw: HashSet<String> = ["/a/b/c/d", "/a/b/c/d/e"].iter().map(|s| s.to_string()).collect();
+    let raw: HashSet<String> = ["/a/b/c/d", "/a/b/c/d/e"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(dedupe_projects(&raw), vec!["/a/b/c/d"]);
 }
 
 #[test]
 fn dedupe_output_is_sorted() {
-    let raw: HashSet<String> = ["/z/repo", "/a/repo", "/m/repo"].iter().map(|s| s.to_string()).collect();
+    let raw: HashSet<String> = ["/z/repo", "/a/repo", "/m/repo"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(dedupe_projects(&raw), vec!["/a/repo", "/m/repo", "/z/repo"]);
 }
 
@@ -108,11 +122,9 @@ mod golden {
     fn gain_matches_golden() {
         let Some(home) = fixture_home() else { return };
         for request in golden_requests("/api/stats/gain") {
-            let stats = super::super::get_gain_dashboard_stats(
-                request.split("range=").nth(1),
-                None,
-            )
-            .expect("gain stats");
+            let stats =
+                super::super::get_gain_dashboard_stats(request.split("range=").nth(1), None)
+                    .expect("gain stats");
             let actual = serde_json::to_value(&stats).expect("serialize");
             let (status, _) = golden(&request);
             assert_eq!(status, 200, "{request}");
@@ -171,10 +183,13 @@ mod synthetic {
 
     fn run(project: Option<&str>, expected_name: &str) {
         let Some(home) = fixture_home() else { return };
-        let jsonl = std::fs::read_to_string(Path::new(DIR).join("snapcompact-savings.jsonl")).expect("read jsonl");
+        let jsonl = std::fs::read_to_string(Path::new(DIR).join("snapcompact-savings.jsonl"))
+            .expect("read jsonl");
         let jsonl = jsonl.replace(TS_HOME, &home.path().to_string_lossy());
-        std::fs::write(home.path().join(".omp/snapcompact-savings.jsonl"), jsonl).expect("copy jsonl");
-        let stats = crate::gain::get_gain_dashboard_stats(Some("all"), project).expect("gain stats");
+        std::fs::write(home.path().join(".omp/snapcompact-savings.jsonl"), jsonl)
+            .expect("copy jsonl");
+        let stats =
+            crate::gain::get_gain_dashboard_stats(Some("all"), project).expect("gain stats");
         let actual = serde_json::to_value(&stats).expect("serialize");
         assert_same(&actual, &read_expected(expected_name), "$");
     }

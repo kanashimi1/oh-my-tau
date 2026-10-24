@@ -16,17 +16,26 @@ fn start(options: StartServerOptions) -> (TestHome, super::StatsServerHandle) {
 
 fn connect(port: u16) -> TcpStream {
     let stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("timeout");
     stream
 }
 
 fn status_of(raw: &str) -> u16 {
-    raw.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0)
+    raw.split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 fn request(port: u16, headers: &str) -> String {
     let mut stream = connect(port);
-    write!(stream, "GET /api/stats/models HTTP/1.1\r\n{headers}Connection: close\r\n\r\n").expect("send");
+    write!(
+        stream,
+        "GET /api/stats/models HTTP/1.1\r\n{headers}Connection: close\r\n\r\n"
+    )
+    .expect("send");
     let mut raw = String::new();
     let _ = stream.read_to_string(&mut raw);
     raw
@@ -43,9 +52,21 @@ fn foreign_host_and_origin_get_403_loopback_gets_through() {
     let (_home, handle) = start(StartServerOptions::default());
     let port = handle.port;
     assert_eq!(status_of(&request(port, "Host: evil.example\r\n")), 403);
-    assert_eq!(status_of(&request(port, &format!("Host: evil.example:{port}\r\n"))), 403);
-    assert_eq!(status_of(&request(port, &format!("Host: localhost:{port}\r\nOrigin: http://evil.example\r\n"))), 403);
-    let ok = request(port, &format!("Host: 127.0.0.1:{port}\r\nOrigin: http://localhost:{port}\r\n"));
+    assert_eq!(
+        status_of(&request(port, &format!("Host: evil.example:{port}\r\n"))),
+        403
+    );
+    assert_eq!(
+        status_of(&request(
+            port,
+            &format!("Host: localhost:{port}\r\nOrigin: http://evil.example\r\n")
+        )),
+        403
+    );
+    let ok = request(
+        port,
+        &format!("Host: 127.0.0.1:{port}\r\nOrigin: http://localhost:{port}\r\n"),
+    );
     assert_eq!(status_of(&ok), 200, "{ok}");
     handle.stop();
 }
@@ -57,9 +78,17 @@ fn slow_header_connection_is_closed() {
         idle_timeout: Some(Duration::from_secs(60)),
     });
     let mut stream = connect(handle.port);
-    write!(stream, "GET /api/stats/models HTTP/1.1\r\nHost: localhost:{}\r\n", handle.port).expect("partial headers");
+    write!(
+        stream,
+        "GET /api/stats/models HTTP/1.1\r\nHost: localhost:{}\r\n",
+        handle.port
+    )
+    .expect("partial headers");
     let started = std::time::Instant::now();
-    assert!(closed_by_server(&mut stream), "server should drop a stalled header read");
+    assert!(
+        closed_by_server(&mut stream),
+        "server should drop a stalled header read"
+    );
     assert!(started.elapsed() < Duration::from_secs(4));
     handle.stop();
 }
@@ -76,12 +105,14 @@ fn idle_keepalive_connection_closes_but_sse_stays_open() {
     write!(idle, "GET /api/stats/models HTTP/1.1\r\n{host}\r\n").expect("send");
     let mut sse = connect(handle.port);
     write!(sse, "GET /api/events HTTP/1.1\r\n{host}\r\n").expect("send");
-    sse.set_read_timeout(Some(Duration::from_millis(1500))).expect("timeout");
+    sse.set_read_timeout(Some(Duration::from_millis(1500)))
+        .expect("timeout");
 
     // The idle keep-alive connection answers once, then is closed by the server.
     let mut raw = Vec::new();
     let started = std::time::Instant::now();
-    idle.read_to_end(&mut raw).expect("server closes the idle connection (EOF), not a read timeout");
+    idle.read_to_end(&mut raw)
+        .expect("server closes the idle connection (EOF), not a read timeout");
     assert!(started.elapsed() < Duration::from_secs(3));
     assert_eq!(status_of(&String::from_utf8_lossy(&raw)), 200);
 
@@ -94,7 +125,14 @@ fn idle_keepalive_connection_closes_but_sse_stays_open() {
         match sse.read(&mut buf) {
             Ok(0) => panic!("SSE connection was closed by the idle timeout"),
             Ok(_) => {}
-            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => break,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break
+            }
             Err(e) => panic!("sse read: {e}"),
         }
     }
@@ -112,10 +150,16 @@ fn rejected_events_request_is_still_idle_closed() {
         idle_timeout: Some(Duration::from_millis(400)),
     });
     let mut stream = connect(handle.port);
-    write!(stream, "GET /api/events HTTP/1.1\r\nHost: evil.example\r\n\r\n").expect("send");
+    write!(
+        stream,
+        "GET /api/events HTTP/1.1\r\nHost: evil.example\r\n\r\n"
+    )
+    .expect("send");
     let mut raw = Vec::new();
     let started = std::time::Instant::now();
-    stream.read_to_end(&mut raw).expect("server closes the rejected connection (EOF), not a read timeout");
+    stream
+        .read_to_end(&mut raw)
+        .expect("server closes the rejected connection (EOF), not a read timeout");
     assert!(started.elapsed() < Duration::from_secs(3));
     assert_eq!(status_of(&String::from_utf8_lossy(&raw)), 403);
     handle.stop();

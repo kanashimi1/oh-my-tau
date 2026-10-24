@@ -16,6 +16,7 @@ pub mod reveal;
 pub mod thinking;
 
 pub use messages::{
-    AssistantMsg, AssistantSegment, ChatEntry, ChatKind, ChatRole, Compaction, Custom, DisplayPrefs,
-    ExecStatus, Execution, Messages, ReadGroup, ReadItem, ToolCard, ToolStatus, Usage,
+    AssistantMsg, AssistantSegment, ChatEntry, ChatKind, ChatRole, Compaction, Custom,
+    DisplayPrefs, ExecStatus, Execution, Messages, ReadGroup, ReadItem, ToolCard, ToolStatus,
+    Usage,
 };

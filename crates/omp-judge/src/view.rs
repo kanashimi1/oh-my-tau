@@ -36,7 +36,13 @@ const STEPS_MARK: &str = "STEPS (action -> outcome):";
 /// `parts(state)`: (request, steps, final reply).
 #[must_use]
 pub fn parts(state: &str) -> (String, Vec<String>, String) {
-    let req = state.split(STEPS_MARK).next().unwrap_or("").replace("USER REQUEST:", "").trim().to_owned();
+    let req = state
+        .split(STEPS_MARK)
+        .next()
+        .unwrap_or("")
+        .replace("USER REQUEST:", "")
+        .trim()
+        .to_owned();
     let mid = state.split_once(STEPS_MARK).map_or("", |(_, m)| m);
     let (steps_txt, fin) = match mid.split_once("FINAL REPLY:") {
         Some((a, b)) => (a, b),
@@ -67,13 +73,22 @@ pub fn facts(o: &Objective, steps: &[String]) -> String {
         format!("steps: {}", o.n_steps),
         format!("failed steps: {errs}"),
         format!("last step failed: {}", yes(o.ended_with_error)),
-        format!("longest run of identical failures: {}", o.identical_fail_run_max),
+        format!(
+            "longest run of identical failures: {}",
+            o.identical_fail_run_max
+        ),
         format!("tests/linters run: {}", yes(o.tests_run)),
     ];
     if o.tests_run {
-        f.push(format!("last test/lint call passed: {}", yes(o.tests_final_pass)));
+        f.push(format!(
+            "last test/lint call passed: {}",
+            yes(o.tests_final_pass)
+        ));
     }
-    f.push(format!("agent ended without a final reply / interrupted: {}", yes(o.interrupted)));
+    f.push(format!(
+        "agent ended without a final reply / interrupted: {}",
+        yes(o.interrupted)
+    ));
     f.push(format!("final reply claims done: {}", yes(o.claimed_done)));
     f.push(format!("subagent task: {}", yes(o.is_subagent)));
     f.join("; ")
@@ -83,7 +98,10 @@ pub fn facts(o: &Objective, steps: &[String]) -> String {
 #[must_use]
 pub fn view_sel(state: &str, objective: &Objective, budget: usize) -> String {
     let (req, steps, fin) = parts(state);
-    let rw: HashSet<String> = word_re().find_iter(&req).map(|m| m.as_str().to_lowercase()).collect();
+    let rw: HashSet<String> = word_re()
+        .find_iter(&req)
+        .map(|m| m.as_str().to_lowercase())
+        .collect();
     let n = steps.len();
     let mut sc: Vec<f64> = Vec::with_capacity(n);
     for (i, s) in steps.iter().enumerate() {
@@ -92,17 +110,27 @@ pub fn view_sel(state: &str, objective: &Objective, budget: usize) -> String {
         let mut v = 3.0 * b(i + 4 >= n)
             + 2.0 * b(s.contains("[ERR"))
             + 1.0 * b(i > 0 && steps[i - 1].contains("[ERR") && !s.contains("[ERR"));
-        v += 2.0 * b(test_re().is_match(head)) + 1.0 * b(head.trim_start().starts_with("edit") || head.trim_start().starts_with("write"));
-        let sw: HashSet<String> = word_re().find_iter(head).map(|m| m.as_str().to_lowercase()).collect();
+        v += 2.0 * b(test_re().is_match(head))
+            + 1.0
+                * b(head.trim_start().starts_with("edit") || head.trim_start().starts_with("write"));
+        let sw: HashSet<String> = word_re()
+            .find_iter(head)
+            .map(|m| m.as_str().to_lowercase())
+            .collect();
         #[allow(clippy::cast_precision_loss)]
         {
-            v += 3.0 * (rw.intersection(&sw).count() as f64 / sw.len().max(1) as f64) + 0.001 * i as f64;
+            v += 3.0 * (rw.intersection(&sw).count() as f64 / sw.len().max(1) as f64)
+                + 0.001 * i as f64;
         }
         sc.push(v);
     }
     let line = |i: usize| format!("#{} {}", i + 1, take_chars(&steps[i], 240));
     let mut order: Vec<usize> = (0..n).collect();
-    order.sort_by(|&a, &b| sc[b].partial_cmp(&sc[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        sc[b]
+            .partial_cmp(&sc[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let mut keep: Vec<usize> = Vec::new();
     let mut used = 0;
     for i in order {
@@ -130,7 +158,11 @@ pub fn view_sel(state: &str, objective: &Objective, budget: usize) -> String {
     if tail > 0 {
         lines.push(format!("... {tail} steps ..."));
     }
-    let fin = if fin.is_empty() { "(none)" } else { take_chars(&fin, 1200) };
+    let fin = if fin.is_empty() {
+        "(none)"
+    } else {
+        take_chars(&fin, 1200)
+    };
     let mut out = vec![
         format!("REQUEST: {}", take_chars(&req, 600)),
         format!("FACTS: {}", facts(objective, &steps)),

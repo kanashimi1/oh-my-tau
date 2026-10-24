@@ -69,7 +69,11 @@ pub struct McpTransportError {
 
 impl fmt::Display for McpTransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "MCP {} {} error ({}): {}", self.transport, self.stage, self.failure, self.message)
+        write!(
+            f,
+            "MCP {} {} error ({}): {}",
+            self.transport, self.stage, self.failure, self.message
+        )
     }
 }
 

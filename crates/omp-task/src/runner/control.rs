@@ -44,7 +44,10 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use super::{collect_output, is_transient_spawn_error, spawn_failure, RunOutput, RunStatus, TaskRunner, TaskSpec};
+use super::{
+    collect_output, is_transient_spawn_error, spawn_failure, RunOutput, RunStatus, TaskRunner,
+    TaskSpec,
+};
 use crate::schema::SchemaValidation;
 
 /// How long pipe readers may linger after a kill (a grandchild that left the
@@ -312,7 +315,14 @@ impl TaskRunner {
             shared: shared.clone(),
         };
         let agent = spec.agent.clone();
-        let inner = tokio::spawn(run_controlled(self.clone(), id.clone(), spec, mode, rx, shared));
+        let inner = tokio::spawn(run_controlled(
+            self.clone(),
+            id.clone(),
+            spec,
+            mode,
+            rx,
+            shared,
+        ));
         (control, RunJoin { inner, id, agent })
     }
 }
@@ -355,9 +365,21 @@ async fn run_controlled(
             // run task being dropped (parent runtime shutdown).
             let _group = GroupGuard::new(&child);
             match mode {
-                ChildMode::Print => drive_print(child, &mut rx, controls_open, id, spec, start).await,
+                ChildMode::Print => {
+                    drive_print(child, &mut rx, controls_open, id, spec, start).await
+                }
                 ChildMode::Rpc => {
-                    drive_rpc(child, &mut rx, controls_open, steers, id, spec, start, &shared).await
+                    drive_rpc(
+                        child,
+                        &mut rx,
+                        controls_open,
+                        steers,
+                        id,
+                        spec,
+                        start,
+                        &shared,
+                    )
+                    .await
                 }
             }
         }
@@ -439,8 +461,7 @@ async fn spawn_child(binary: &Path, spec: &TaskSpec, mode: ChildMode) -> std::io
                 command.arg("--mode").arg("rpc");
             }
         }
-        command
-            .current_dir(&spec.cwd);
+        command.current_dir(&spec.cwd);
         super::apply_child_policy(&mut command, spec);
         if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
             command.arg("--model").arg(model);
@@ -449,7 +470,11 @@ async fn spawn_child(binary: &Path, spec: &TaskSpec, mode: ChildMode) -> std::io
             command.arg("--tools").arg(tools.join(","));
         }
         command
-            .stdin(if mode == ChildMode::Rpc { Stdio::piped() } else { Stdio::null() })
+            .stdin(if mode == ChildMode::Rpc {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -580,13 +605,24 @@ async fn drive_print(
         reap_group(pgid);
     }
     let (stdout, stderr) = tokio::join!(join_text(stdout, killed), join_text(stderr, killed));
-    let exit_code = status.as_ref().ok().and_then(std::process::ExitStatus::code);
+    let exit_code = status
+        .as_ref()
+        .ok()
+        .and_then(std::process::ExitStatus::code);
     if killed {
         return cancelled_output(id, spec.agent, exit_code, stderr, start);
     }
     match status {
         Ok(status) => collect_output(id, spec, status.success(), exit_code, stdout, stderr, start),
-        Err(e) => collect_output(id, spec, false, None, stdout, format!("{stderr}\nwait failed: {e}"), start),
+        Err(e) => collect_output(
+            id,
+            spec,
+            false,
+            None,
+            stdout,
+            format!("{stderr}\nwait failed: {e}"),
+            start,
+        ),
     }
 }
 
@@ -624,13 +660,25 @@ async fn drive_rpc(
         kill_tree(&mut child);
         let _ = child.wait().await;
         let stderr = join_text(stderr, true).await;
-        return collect_output(id, spec, false, None, String::new(), format!("{stderr}\nchild stdout unavailable"), start);
+        return collect_output(
+            id,
+            spec,
+            false,
+            None,
+            String::new(),
+            format!("{stderr}\nchild stdout unavailable"),
+            start,
+        );
     };
     let mut lines = BufReader::new(stdout).lines();
     let mut rpc = RpcRun::default();
     let mut killed = false;
     let mut finishing_at: Option<Instant> = None;
-    send(&mut stdin, &json!({"id": PROMPT_ID, "type": "prompt", "message": spec.prompt})).await;
+    send(
+        &mut stdin,
+        &json!({"id": PROMPT_ID, "type": "prompt", "message": spec.prompt}),
+    )
+    .await;
     for (message, ack) in steers {
         send(&mut stdin, &steer_frame(&message)).await;
         let _ = ack.send(Ok(()));
@@ -712,7 +760,10 @@ async fn drive_rpc(
         reap_group(pgid);
     }
     let stderr = join_text(stderr, killed).await;
-    let exit_code = status.as_ref().ok().and_then(std::process::ExitStatus::code);
+    let exit_code = status
+        .as_ref()
+        .ok()
+        .and_then(std::process::ExitStatus::code);
     if killed {
         return cancelled_output(id, spec.agent, exit_code, stderr, start);
     }
@@ -754,7 +805,10 @@ struct RpcRun {
 fn error_text(value: Option<&Value>) -> Option<String> {
     match value? {
         Value::String(s) => Some(s.clone()),
-        Value::Object(map) => map.get("message").and_then(Value::as_str).map(str::to_string),
+        Value::Object(map) => map
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         _ => None,
     }
 }
@@ -787,7 +841,8 @@ impl RpcRun {
                 match frame.get("command").and_then(Value::as_str) {
                     Some("prompt") if !success => {
                         self.prompt_error = Some(
-                            error_text(frame.get("error")).unwrap_or_else(|| "prompt rejected".to_string()),
+                            error_text(frame.get("error"))
+                                .unwrap_or_else(|| "prompt rejected".to_string()),
                         );
                         self.finishing = true;
                         self.close_stdin = true;
@@ -798,18 +853,23 @@ impl RpcRun {
                     Some("prompt")
                         if frame.pointer("/data/agentInvoked") == Some(&Value::Bool(false)) =>
                     {
-                        self.result.get_or_insert_with(|| ("completed".to_string(), None));
+                        self.result
+                            .get_or_insert_with(|| ("completed".to_string(), None));
                         self.finish()
                     }
                     Some("get_last_assistant_text") => {
                         if success {
-                            self.final_text = frame.pointer("/data/text").and_then(Value::as_str).map(str::to_string);
+                            self.final_text = frame
+                                .pointer("/data/text")
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
                         }
                         Vec::new()
                     }
                     Some("get_session_stats") => {
                         if success {
-                            self.output_tokens = frame.pointer("/data/tokens/output").and_then(Value::as_u64);
+                            self.output_tokens =
+                                frame.pointer("/data/tokens/output").and_then(Value::as_u64);
                         }
                         self.close_stdin = true;
                         Vec::new()
@@ -824,7 +884,8 @@ impl RpcRun {
             }),
             Some("message_end") => {
                 let message = frame.get("message");
-                if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant") {
+                if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant")
+                {
                     let text = message
                         .and_then(|m| m.get("content"))
                         .and_then(Value::as_array)
@@ -879,7 +940,11 @@ impl RpcRun {
             .unwrap_or_default();
         match status.as_str() {
             "completed" => (true, text, None),
-            "aborted" => (false, text, Some(error.clone().unwrap_or_else(|| "aborted".to_string()))),
+            "aborted" => (
+                false,
+                text,
+                Some(error.clone().unwrap_or_else(|| "aborted".to_string())),
+            ),
             _ => (
                 false,
                 text,
@@ -949,7 +1014,10 @@ mod tests {
         let runner = TaskRunner::new(&bin, 1);
         let (_control, join) = runner.start(spec("hello", dir.path()), ChildMode::Print);
         assert_eq!(join.await.output.trim(), "title-off=1");
-        assert_eq!(runner.spawn(spec("hello", dir.path())).await.output.trim(), "title-off=1");
+        assert_eq!(
+            runner.spawn(spec("hello", dir.path())).await.output.trim(),
+            "title-off=1"
+        );
     }
 
     #[tokio::test]
@@ -982,7 +1050,10 @@ mod tests {
     async fn cancel_while_queued_never_spawns() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("spawned");
-        let bin = fake_binary(dir.path(), &format!("echo $$ >> {}; sleep 1", log.display()));
+        let bin = fake_binary(
+            dir.path(),
+            &format!("echo $$ >> {}; sleep 1", log.display()),
+        );
         let runner = TaskRunner::new(&bin, 1);
         let (_first, first_join) = runner.start(spec("a", dir.path()), ChildMode::Print);
         let (second, second_join) = runner.start(
@@ -1046,7 +1117,10 @@ read -r eof || exit 0
         assert!(!rpc.finishing, "unsettled session keeps steering open");
         let requests = rpc.on_line(r#"{"type":"session_settled"}"#);
         assert_eq!(requests.len(), 2);
-        assert!(rpc.on_line(r#"{"type":"session_settled"}"#).is_empty(), "finish is once");
+        assert!(
+            rpc.on_line(r#"{"type":"session_settled"}"#).is_empty(),
+            "finish is once"
+        );
         let (ok, _, error) = rpc.outcome();
         assert!(!ok);
         assert_eq!(error.as_deref(), Some("boom"));
@@ -1056,10 +1130,16 @@ read -r eof || exit 0
     fn rpc_ui_requests_are_refused_and_rejected_prompt_closes() {
         let mut rpc = RpcRun::default();
         let reply = rpc.on_line(r#"{"type":"extension_ui_request","id":"ui-1","method":"ask"}"#);
-        assert_eq!(reply, vec![json!({"type":"extension_ui_response","id":"ui-1","cancelled":true})]);
+        assert_eq!(
+            reply,
+            vec![json!({"type":"extension_ui_response","id":"ui-1","cancelled":true})]
+        );
         rpc.on_line(r#"{"type":"response","command":"prompt","success":false,"error":"no model"}"#);
         assert!(rpc.close_stdin);
-        assert_eq!(rpc.outcome(), (false, String::new(), Some("no model".to_string())));
+        assert_eq!(
+            rpc.outcome(),
+            (false, String::new(), Some("no model".to_string()))
+        );
         let empty = RpcRun::default();
         assert!(!empty.outcome().0, "no prompt_result = failure");
     }

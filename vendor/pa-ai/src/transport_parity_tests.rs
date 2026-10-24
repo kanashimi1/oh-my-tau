@@ -8,7 +8,10 @@ use crate::compat::materialize;
 use crate::transport::{plan_simple_request, TransportEnv};
 use crate::types::{Context, Model, ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice};
 
-const BODIES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../runs/omp-rust/compat-oracle/bodies-transport.jsonl");
+const BODIES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../runs/omp-rust/compat-oracle/bodies-transport.jsonl"
+);
 /// The TS oracle stubs `crypto.randomUUID` to this value.
 const FIXED_ID: &str = "00000000-0000-4000-8000-000000000000";
 
@@ -18,13 +21,24 @@ fn options_of(case: &Value) -> SimpleStreamOptions {
     opts.base.api_key = Some(case["apiKey"].as_str().unwrap_or("test-key").to_string());
     opts.base.max_tokens = o.get("maxTokens").and_then(Value::as_u64);
     opts.base.temperature = o.get("temperature").and_then(Value::as_f64);
-    opts.base.session_id = o.get("sessionId").and_then(Value::as_str).map(str::to_string);
-    opts.reasoning = o.get("reasoning").and_then(Value::as_str).and_then(crate::models::thinking_level_from_str);
+    opts.base.session_id = o
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    opts.reasoning = o
+        .get("reasoning")
+        .and_then(Value::as_str)
+        .and_then(crate::models::thinking_level_from_str);
     if o.get("disableReasoning") == Some(&json!(true)) {
         opts.disable_reasoning = true;
     }
-    if let Some(name) = o.pointer("/toolChoice/function/name").and_then(Value::as_str) {
-        opts.tool_choice = Some(SimpleToolChoice::Function { name: name.to_string() });
+    if let Some(name) = o
+        .pointer("/toolChoice/function/name")
+        .and_then(Value::as_str)
+    {
+        opts.tool_choice = Some(SimpleToolChoice::Function {
+            name: name.to_string(),
+        });
     }
     let _ = ModelThinkingLevel::Off;
     opts
@@ -32,8 +46,14 @@ fn options_of(case: &Value) -> SimpleStreamOptions {
 
 fn env_of(case: &Value) -> TransportEnv {
     TransportEnv {
-        openrouter_responses: case["env"].get("PI_OPENROUTER_RESPONSES").and_then(Value::as_str) != Some("0"),
-        azure_deployment_name_map: case["env"].get("AZURE_OPENAI_DEPLOYMENT_NAME_MAP").and_then(Value::as_str).map(str::to_string),
+        openrouter_responses: case["env"]
+            .get("PI_OPENROUTER_RESPONSES")
+            .and_then(Value::as_str)
+            != Some("0"),
+        azure_deployment_name_map: case["env"]
+            .get("AZURE_OPENAI_DEPLOYMENT_NAME_MAP")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -58,7 +78,13 @@ fn diff(got: &Value, want: &Value) -> String {
     let keys: std::collections::BTreeSet<_> = g.keys().chain(w.keys()).collect();
     keys.into_iter()
         .filter(|k| g.get(*k) != w.get(*k))
-        .map(|k| format!("{k}: rust={} ts={}", g.get(k).map_or("<absent>".into(), ToString::to_string), w.get(k).map_or("<absent>".into(), ToString::to_string)))
+        .map(|k| {
+            format!(
+                "{k}: rust={} ts={}",
+                g.get(k).map_or("<absent>".into(), ToString::to_string),
+                w.get(k).map_or("<absent>".into(), ToString::to_string)
+            )
+        })
         .collect::<Vec<_>>()
         .join(" | ")
 }
@@ -82,20 +108,31 @@ fn rust_transport_matches_ts_stream_simple_for_every_case() {
             continue;
         }
         total += 1;
-        let mut model: Model = serde_json::from_value(case["spec"].clone()).expect("spec parses as a Model");
+        let mut model: Model =
+            serde_json::from_value(case["spec"].clone()).expect("spec parses as a Model");
         materialize(&mut model, None).expect("policy resolves");
-        let context: Context = serde_json::from_value(case["context"].clone()).expect("context parses");
+        let context: Context =
+            serde_json::from_value(case["context"].clone()).expect("context parses");
         let want = case["body"].clone();
         let want = &want;
         let want_api = case["payloadApi"].as_str().unwrap_or("?");
-        let planned = plan_simple_request(&model, &context, Some(&options_of(&case)), &env_of(&case), &|| FIXED_ID.to_string());
+        let planned = plan_simple_request(
+            &model,
+            &context,
+            Some(&options_of(&case)),
+            &env_of(&case),
+            &|| FIXED_ID.to_string(),
+        );
         *apis.entry(want_api.to_string()).or_default() += 1;
         match planned {
             Err(e) => failures.push(format!("{name}: rust error: {e}")),
             Ok(mut p) => {
                 let mut want = want.clone();
                 if case["options"].get("sessionId").is_none() {
-                    let re = regex::Regex::new("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").expect("regex");
+                    let re = regex::Regex::new(
+                        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                    )
+                    .expect("regex");
                     mask_uuids(&mut p.body, &re);
                     mask_uuids(&mut want, &re);
                 }
@@ -107,15 +144,33 @@ fn rust_transport_matches_ts_stream_simple_for_every_case() {
             }
         }
     }
-    eprintln!("transport parity: {total} cases {apis:?}, {} mismatches", failures.len());
+    eprintln!(
+        "transport parity: {total} cases {apis:?}, {} mismatches",
+        failures.len()
+    );
     let mut by_kind = std::collections::BTreeMap::<String, usize>::new();
     for f in &failures {
-        let key = f.split(':').next().unwrap_or("").rsplitn(3, '/').nth(2).unwrap_or("?").to_string();
+        let key = f
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .rsplitn(3, '/')
+            .nth(2)
+            .unwrap_or("?")
+            .to_string();
         *by_kind.entry(key).or_default() += 1;
     }
     eprintln!("  by model: {by_kind:?}");
-    for f in failures.iter().filter(|f| !f.contains("no planned transport")).take(30) {
+    for f in failures
+        .iter()
+        .filter(|f| !f.contains("no planned transport"))
+        .take(30)
+    {
         eprintln!("  MISMATCH {}", &f[..f.len().min(600)]);
     }
-    assert!(failures.is_empty(), "{} of {total} transport requests differ from TS", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} of {total} transport requests differ from TS",
+        failures.len()
+    );
 }

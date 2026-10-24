@@ -21,12 +21,18 @@ use crate::tools::edit_mode_for;
 fn developer_message(custom: &pa_agent::types::CustomAgentMessage) -> Option<DeveloperMessage> {
     let is_custom = custom.role == "custom";
     let content = match &custom.payload["content"] {
-        serde_json::Value::String(text) if is_custom => UserContent::Parts(vec![UserPart::Text(
-            pa_agent::types::TextContent { text: text.clone(), text_signature: None },
-        )]),
+        serde_json::Value::String(text) if is_custom => {
+            UserContent::Parts(vec![UserPart::Text(pa_agent::types::TextContent {
+                text: text.clone(),
+                text_signature: None,
+            })])
+        }
         serde_json::Value::String(text) => UserContent::Text(text.clone()),
         serde_json::Value::Array(parts) => UserContent::Parts(
-            parts.iter().filter_map(|p| serde_json::from_value::<UserPart>(p.clone()).ok()).collect(),
+            parts
+                .iter()
+                .filter_map(|p| serde_json::from_value::<UserPart>(p.clone()).ok())
+                .collect(),
         ),
         _ => return None,
     };
@@ -53,7 +59,9 @@ pub fn convert_to_llm() -> ConvertToLlmFn {
                 .into_iter()
                 .filter_map(|m| match m {
                     AgentMessage::Standard(message) => Some(message),
-                    AgentMessage::Custom(custom) if custom.role == "developer" || custom.role == "custom" => {
+                    AgentMessage::Custom(custom)
+                        if custom.role == "developer" || custom.role == "custom" =>
+                    {
                         developer_message(&custom).map(Message::Developer)
                     }
                     AgentMessage::Custom(_) => None,
@@ -184,10 +192,28 @@ pub fn build_agent(
             }
         }
     }
+    let replacement_names: std::collections::HashSet<String> = extra_tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    tools.retain(|tool| !replacement_names.contains(tool.name()));
     tools.extend(extra_tools);
-    let prompt = system_prompt(cwd, sysprompt_opts, &hidden);
+    let mut prompt = system_prompt(cwd, sysprompt_opts, &hidden);
     crate::tools::set_session_jobs(session_jobs);
     tools.extend(hidden);
+    let core_profile =
+        sysprompt_opts.tools_csv.is_none() && crate::methodology::core_profile_requested();
+    if core_profile {
+        let deferred: Vec<String> = tools
+            .iter()
+            .filter(|tool| !crate::methodology::is_core_tool(tool.name()))
+            .map(|tool| tool.name().to_string())
+            .collect();
+        if !deferred.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&deferred_tools_note(&deferred));
+        }
+    }
     let ctx = (context_strategy != crate::context::Kind::Append).then(|| {
         let policy = crate::context_policy::Policy::resolve(&settings, &|k| std::env::var(k).ok())
             .unwrap_or_else(|e| {
@@ -261,7 +287,11 @@ pub fn build_agent(
                 })
             })
         }),
-        stream_fn: Some(switchable_stream_fn(target.clone())),
+        stream_fn: Some(crate::methodology::wrap_stream(
+            switchable_stream_fn(target.clone()),
+            core_profile,
+            ext_hooks.cloned(),
+        )),
         transform_context,
         before_tool_call: crate::tools::relevance::wrap_before(before_tool_call),
         after_tool_call,

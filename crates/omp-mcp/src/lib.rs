@@ -57,9 +57,17 @@ pub struct ToolCallResult {
 /// One MCP content block.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Content {
-    Text { text: String },
-    Image { data: String, mime_type: String },
-    Resource { uri: String, text: Option<String> },
+    Text {
+        text: String,
+    },
+    Image {
+        data: String,
+        mime_type: String,
+    },
+    Resource {
+        uri: String,
+        text: Option<String>,
+    },
     /// Any other content type, kept as raw JSON.
     Other(Value),
 }

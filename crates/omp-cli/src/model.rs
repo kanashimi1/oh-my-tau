@@ -165,11 +165,12 @@ impl CatalogStore {
     fn extras(&self, provider: &str, id: &str) -> Option<Vec<(&'static str, serde_json::Value)>> {
         let entry = self.providers.get(provider)?.get(id)?;
         let mut out = Vec::new();
-        let push = |out: &mut Vec<(&'static str, serde_json::Value)>, k: &'static str, raw: &str| {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-                out.push((k, v));
-            }
-        };
+        let push =
+            |out: &mut Vec<(&'static str, serde_json::Value)>, k: &'static str, raw: &str| {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
+                    out.push((k, v));
+                }
+            };
         if let Some(raw) = &entry.int {
             push(&mut out, "int", self.str(*raw));
         }
@@ -193,7 +194,6 @@ impl CatalogStore {
         }
         (!out.is_empty()).then_some(out)
     }
-
 }
 
 fn catalog() -> Option<&'static CatalogStore> {
@@ -278,7 +278,13 @@ fn build_catalog() -> Option<CatalogStore> {
             while let Some(id) = m.next_key::<String>()? {
                 let raw = m.next_value::<RawEntry>()?;
                 let mut interned = |rv: Option<Box<serde_json::value::RawValue>>| {
-                    rv.map(|rv| CatalogStore::intern(&mut self.store.strings, self.seen, rv.get().to_string()))
+                    rv.map(|rv| {
+                        CatalogStore::intern(
+                            &mut self.store.strings,
+                            self.seen,
+                            rv.get().to_string(),
+                        )
+                    })
                 };
                 let entry = CatalogEntry {
                     int: interned(raw.int),
@@ -429,7 +435,10 @@ mod tests {
                 let expected: Vec<(&'static str, serde_json::Value)> = CATALOG_EXTRA_KEYS
                     .iter()
                     .filter_map(|k| {
-                        entry.get(*k).map(|v| (*k, v.clone())).filter(|(_, v)| !v.is_null())
+                        entry
+                            .get(*k)
+                            .map(|v| (*k, v.clone()))
+                            .filter(|(_, v)| !v.is_null())
                     })
                     .collect();
                 let got = catalog()

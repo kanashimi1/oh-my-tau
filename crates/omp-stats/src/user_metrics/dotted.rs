@@ -42,7 +42,10 @@ fn token_end(chars: &[char], start: usize) -> Option<usize> {
     if ends.len() < 2 {
         return None;
     }
-    ends.iter().rev().copied().find(|&e| has_terminator(chars, e))
+    ends.iter()
+        .rev()
+        .copied()
+        .find(|&e| has_terminator(chars, e))
 }
 
 /// `/DOTTED_TOKEN_RE/g` replaced with `" "`: filenames (`AGENTS.md`), dotted

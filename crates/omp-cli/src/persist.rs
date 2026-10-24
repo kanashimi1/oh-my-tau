@@ -72,7 +72,8 @@ pub fn ts_sessions_dir(cwd: &Path) -> Option<PathBuf> {
     let env_str = |k: &str| std::env::var(k).ok();
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let tmp = omp_stats::paths::ts_tmpdir(env_str);
-    let name = omp_stats::paths::ts_session_dir_name(&canon(cwd), &canon(&home), &canon(Path::new(&tmp)));
+    let name =
+        omp_stats::paths::ts_session_dir_name(&canon(cwd), &canon(&home), &canon(Path::new(&tmp)));
     Some(omp_stats::paths::sessions_dir().join(name))
 }
 
@@ -429,7 +430,12 @@ impl Persistence {
     ///
     /// # Errors
     /// Fails when the file cannot be opened or `leaf` is not one of its entries.
-    pub fn bind_existing(&self, path: &Path, session_id: Option<&str>, leaf: Option<&str>) -> Result<()> {
+    pub fn bind_existing(
+        &self,
+        path: &Path,
+        session_id: Option<&str>,
+        leaf: Option<&str>,
+    ) -> Result<()> {
         let old = self.path();
         let opened = SessionWriter::open(path, leaf)?;
         *self.writer.lock().unwrap() = opened;
@@ -453,12 +459,21 @@ impl Persistence {
 
 /// Remove `path` when every record is a session-start bookkeeping entry (no message ever landed).
 fn discard_if_preamble_only(path: &Path) {
-    let Ok(text) = std::fs::read_to_string(path) else { return };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
     let only_preamble = text.lines().filter(|l| !l.trim().is_empty()).all(|l| {
         serde_json::from_str::<Value>(l).ok().is_some_and(|v| {
             matches!(
                 v.get("type").and_then(Value::as_str),
-                Some("session" | "custom" | "model_change" | "thinking_level_change" | "service_tier_change" | "session_init")
+                Some(
+                    "session"
+                        | "custom"
+                        | "model_change"
+                        | "thinking_level_change"
+                        | "service_tier_change"
+                        | "session_init"
+                )
             )
         })
     });

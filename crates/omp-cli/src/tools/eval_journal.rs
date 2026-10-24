@@ -151,7 +151,10 @@ fn journal_path() -> Option<PathBuf> {
 /// session's journal over, so the kernel-loss notice and `%replay` see the
 /// previous process's kernel generations and setup cells.
 pub fn carry_over(from_session: &Path) {
-    let (Some(src_dir), Some(dst)) = (omp_urls::artifacts_directory_for(from_session), journal_path()) else {
+    let (Some(src_dir), Some(dst)) = (
+        omp_urls::artifacts_directory_for(from_session),
+        journal_path(),
+    ) else {
         return;
     };
     let src = src_dir.join("eval-journal.jsonl");
@@ -246,9 +249,7 @@ fn with_event<T>(
                 },
             );
         } else if path.is_none() {
-            MEM.lock()
-                .expect("eval journal lock")
-                .insert(key, journal);
+            MEM.lock().expect("eval journal lock").insert(key, journal);
         }
     }
     out
@@ -380,8 +381,21 @@ fn split_assignment(stmt: &str) -> Option<(&str, &str)> {
             b'=' if depth == 0 => {
                 let prev = bytes.get(i.wrapping_sub(1)).copied().unwrap_or(b' ');
                 let next = bytes.get(i + 1).copied().unwrap_or(b' ');
-                if !matches!(prev, b'=' | b'!' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' | b'%' | b':' | b'&' | b'|' | b'^')
-                    && next != b'='
+                if !matches!(
+                    prev,
+                    b'=' | b'!'
+                        | b'<'
+                        | b'>'
+                        | b'+'
+                        | b'-'
+                        | b'*'
+                        | b'/'
+                        | b'%'
+                        | b':'
+                        | b'&'
+                        | b'|'
+                        | b'^'
+                ) && next != b'='
                 {
                     return Some((&stmt[..i], &stmt[i + 1..]));
                 }
@@ -403,9 +417,11 @@ fn is_assignable_lhs(lhs: &str) -> bool {
     lhs.split(',').all(|part| {
         let part = part.trim();
         !part.is_empty()
-            && part
-                .split('.')
-                .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_alphanumeric() || c == '_') && !seg.chars().next().unwrap().is_ascii_digit())
+            && part.split('.').all(|seg| {
+                !seg.is_empty()
+                    && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    && !seg.chars().next().unwrap().is_ascii_digit()
+            })
     })
 }
 
@@ -413,7 +429,9 @@ fn is_assignable_lhs(lhs: &str) -> bool {
 fn is_literal_rhs(rhs: &str) -> bool {
     let rhs = rhs.trim();
     let quoted = rhs.len() >= 2
-        && ['"', '\''].iter().any(|&q| rhs.starts_with(q) && rhs.ends_with(q))
+        && ['"', '\'']
+            .iter()
+            .any(|&q| rhs.starts_with(q) && rhs.ends_with(q))
         && !rhs[1..rhs.len() - 1].contains(['"', '\'']);
     let num = rhs.strip_prefix('-').unwrap_or(rhs).trim();
     quoted || num.parse::<f64>().is_ok() || matches!(rhs, "True" | "False" | "None" | "...")
@@ -607,19 +625,25 @@ mod tests {
 
     #[test]
     fn py_multiline_paren_import_is_setup() {
-        assert!(is_setup_py("from typing import (\n    Optional,\n    List,\n)"));
+        assert!(is_setup_py(
+            "from typing import (\n    Optional,\n    List,\n)"
+        ));
     }
 
     // ---- classifier: JS ----
 
     #[test]
     fn js_imports_and_decls_are_setup() {
-        assert!(is_setup_js("import { x } from 'm';\nfunction f() {}\nclass C {}"));
+        assert!(is_setup_js(
+            "import { x } from 'm';\nfunction f() {}\nclass C {}"
+        ));
     }
 
     #[test]
     fn js_const_dynamic_imports_are_setup() {
-        assert!(is_setup_js("const m = await import('m');\nconst r = require('r');"));
+        assert!(is_setup_js(
+            "const m = await import('m');\nconst r = require('r');"
+        ));
     }
 
     #[test]
@@ -675,7 +699,9 @@ mod tests {
         assert_eq!(ok.status, CellStatus::Ok);
         assert!(is_setup_py("import json"));
         assert!(!is_setup_py("print(1)"));
-        j.apply(&EventKind::Cell { code: "import json".into() });
+        j.apply(&EventKind::Cell {
+            code: "import json".into(),
+        });
         assert_eq!(j.setup.len(), 1);
     }
 }

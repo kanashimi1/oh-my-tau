@@ -35,11 +35,25 @@ pub fn extract_resource_uri(url: &InternalUrl) -> Result<String, String> {
     // parsed fields, `mcp://test://notes` has host `test:` and pathname
     // `//notes`, reconstructing `test://notes` exactly.
     let has_path = !url.pathname.is_empty() && url.pathname != "/";
-    let search = if url.query.is_empty() { String::new() } else { format!("?{}", url.query) };
-    let hash = if url.fragment.is_empty() { String::new() } else { format!("#{}", url.fragment) };
-    let uri = format!("{}{}{}{}", url.host, if has_path { url.pathname.as_str() } else { "" }, search, hash)
-        .trim()
-        .to_string();
+    let search = if url.query.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", url.query)
+    };
+    let hash = if url.fragment.is_empty() {
+        String::new()
+    } else {
+        format!("#{}", url.fragment)
+    };
+    let uri = format!(
+        "{}{}{}{}",
+        url.host,
+        if has_path { url.pathname.as_str() } else { "" },
+        search,
+        hash
+    )
+    .trim()
+    .to_string();
     if uri.is_empty() {
         return Err("mcp:// URL requires a resource URI: mcp://<resource-uri>".to_string());
     }
@@ -80,10 +94,7 @@ pub fn uri_template_match_score(uri: &str, uri_template: &str) -> Option<(usize,
 /// Pick the server owning `uri`: exact resource match first, else the best
 /// template match — most literal chars, then fewest expressions, then lowest
 /// server and template index (TS `resolveTargetServer`).
-pub fn resolve_target_server(
-    servers: &[(String, ServerResources)],
-    uri: &str,
-) -> Option<String> {
+pub fn resolve_target_server(servers: &[(String, ServerResources)], uri: &str) -> Option<String> {
     for (name, res) in servers {
         if res.resources.iter().any(|r| r == uri) {
             return Some(name.clone());
@@ -108,7 +119,13 @@ pub fn resolve_target_server(
                 }
             };
             if better {
-                best = Some((literal_chars, expression_count, server_index, template_index, name.clone()));
+                best = Some((
+                    literal_chars,
+                    expression_count,
+                    server_index,
+                    template_index,
+                    name.clone(),
+                ));
             }
         }
     }
@@ -141,7 +158,9 @@ pub fn format_resource_contents(contents: &[ResourceContent]) -> String {
         match item {
             ResourceContent::Text(text) => parts.push(text.clone()),
             ResourceContent::Binary { mime, base64_len } => {
-                parts.push(format!("[Binary content: {mime}, base64 length {base64_len}]"));
+                parts.push(format!(
+                    "[Binary content: {mime}, base64 length {base64_len}]"
+                ));
             }
         }
     }
@@ -161,7 +180,10 @@ pub enum ResourceContent {
 
 /// Resolve an `mcp://` URL against a live catalog (TS `McpProtocolHandler.resolve`,
 /// minus the async manager handshake).
-pub fn resolve(url: &InternalUrl, servers: &[(String, ServerResources)]) -> Result<InternalResource, String> {
+pub fn resolve(
+    url: &InternalUrl,
+    servers: &[(String, ServerResources)],
+) -> Result<InternalResource, String> {
     let uri = extract_resource_uri(url)?;
     let Some(_server) = resolve_target_server(servers, &uri) else {
         return Err(format!(
@@ -171,7 +193,10 @@ pub fn resolve(url: &InternalUrl, servers: &[(String, ServerResources)]) -> Resu
     };
     // Reading goes through the manager; with no content channel wired the TS
     // "no content" error is the honest answer.
-    Err(format!("Server \"{}\" returned no content for \"{uri}\".", _server))
+    Err(format!(
+        "Server \"{}\" returned no content for \"{uri}\".",
+        _server
+    ))
 }
 
 /// `mcp://` provider over MCP server resources.
@@ -232,7 +257,10 @@ mod tests {
         let url = parse_internal_url("mcp://test://notes").unwrap();
         assert_eq!(extract_resource_uri(&url).unwrap(), "test://notes");
         let url = parse_internal_url("mcp://ibkr://portfolio/positions").unwrap();
-        assert_eq!(extract_resource_uri(&url).unwrap(), "ibkr://portfolio/positions");
+        assert_eq!(
+            extract_resource_uri(&url).unwrap(),
+            "ibkr://portfolio/positions"
+        );
     }
 
     #[test]
@@ -247,7 +275,10 @@ mod tests {
     #[test]
     fn native_uri_preserved() {
         let url = parse_internal_url("ags://capabilities/current-host").unwrap();
-        assert_eq!(extract_resource_uri(&url).unwrap(), "ags://capabilities/current-host");
+        assert_eq!(
+            extract_resource_uri(&url).unwrap(),
+            "ags://capabilities/current-host"
+        );
     }
 
     #[test]
@@ -256,7 +287,10 @@ mod tests {
             server("templated", &[], &["test://{thing}"]),
             server("exact", &["test://notes"], &["test://notes"]),
         ];
-        assert_eq!(resolve_target_server(&servers, "test://notes"), Some("exact".to_string()));
+        assert_eq!(
+            resolve_target_server(&servers, "test://notes"),
+            Some("exact".to_string())
+        );
     }
 
     #[test]
@@ -305,7 +339,10 @@ mod tests {
     #[test]
     fn content_joining_matches_ts() {
         assert_eq!(
-            format_resource_contents(&[ResourceContent::Text("a".into()), ResourceContent::Text("b".into())]),
+            format_resource_contents(&[
+                ResourceContent::Text("a".into()),
+                ResourceContent::Text("b".into())
+            ]),
             "a\n---\nb"
         );
         assert_eq!(format_resource_contents(&[]), "(empty resource)");

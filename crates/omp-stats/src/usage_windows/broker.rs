@@ -61,13 +61,19 @@ pub fn set_usage_broker(broker: Option<Arc<dyn UsageBroker>>) {
 }
 
 pub(crate) fn installed_broker() -> Option<Arc<dyn UsageBroker>> {
-    BROKER.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    BROKER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
 }
 
 /// TS `fetchFleetTokens`: sum broker-recorded client token burn per provider;
 /// a summary failure or an empty report is `None`, not an error, so callers
 /// fall back to local message stats instead of zeroing estimates.
-pub(crate) fn fetch_fleet_tokens(broker: &Arc<dyn UsageBroker>, since_ms: i64) -> Option<HashMap<String, f64>> {
+pub(crate) fn fetch_fleet_tokens(
+    broker: &Arc<dyn UsageBroker>,
+    since_ms: i64,
+) -> Option<HashMap<String, f64>> {
     match broker.client_usage_summary(since_ms) {
         Ok(clients) => sum_fleet_tokens(&clients),
         Err(err) => {
@@ -85,9 +91,16 @@ pub fn sum_fleet_tokens(clients: &[ClientUsageClientSummary]) -> Option<HashMap<
     let mut tokens: HashMap<String, f64> = HashMap::new();
     for client in clients {
         for usage in &client.providers {
-            let total = usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+            let total = usage.input_tokens
+                + usage.output_tokens
+                + usage.cache_read_tokens
+                + usage.cache_write_tokens;
             *tokens.entry(usage.provider.clone()).or_default() += total;
         }
     }
-    if tokens.is_empty() { None } else { Some(tokens) }
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens)
+    }
 }

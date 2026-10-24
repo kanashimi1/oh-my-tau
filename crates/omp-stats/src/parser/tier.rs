@@ -159,7 +159,9 @@ pub fn resolve_model_service_tier(
 /// discovery metadata, so `serviceTiers` gating reduces to "not reported".
 #[must_use]
 pub fn should_send_service_tier(service_tier: Option<ServiceTier>, model: &TierModel<'_>) -> bool {
-    let Some(tier) = service_tier else { return false };
+    let Some(tier) = service_tier else {
+        return false;
+    };
     if tier == ServiceTier::Auto {
         return false;
     }
@@ -200,10 +202,7 @@ pub fn realizes_priority_service_tier(
         return true;
     }
     if model.provider == "openrouter" {
-        return matches!(
-            service_tier_family(model),
-            Some("openai") | Some("google")
-        );
+        return matches!(service_tier_family(model), Some("openai") | Some("google"));
     }
     if model.api == "anthropic-messages" {
         return false;
@@ -254,7 +253,10 @@ mod tests {
 
     #[test]
     fn parses_wire_tiers() {
-        assert_eq!(parse_service_tier(&Value::from("priority")), Some(ServiceTier::Priority));
+        assert_eq!(
+            parse_service_tier(&Value::from("priority")),
+            Some(ServiceTier::Priority)
+        );
         assert_eq!(parse_service_tier(&Value::from("bogus")), None);
         assert_eq!(parse_service_tier(&Value::Null), None);
     }
@@ -273,9 +275,17 @@ mod tests {
 
     #[test]
     fn family_routing() {
-        let m = TierModel { provider: "zai", api: "openai-completions", identity_class: "openai" };
+        let m = TierModel {
+            provider: "zai",
+            api: "openai-completions",
+            identity_class: "openai",
+        };
         assert_eq!(service_tier_family(&m), Some("openai"));
-        let m = TierModel { provider: "amazon-bedrock", api: "anthropic-messages", identity_class: "anthropic" };
+        let m = TierModel {
+            provider: "amazon-bedrock",
+            api: "anthropic-messages",
+            identity_class: "anthropic",
+        };
         assert_eq!(service_tier_family(&m), Some("anthropic"));
         assert_eq!(
             get_premium_service_tier_requests(Some(ServiceTier::Priority), &m, false),
@@ -288,7 +298,11 @@ mod tests {
             0.0
         );
         // Vertex Claude drops priority on request but bills it when served.
-        let m = TierModel { provider: "google-vertex", api: "anthropic-messages", identity_class: "anthropic" };
+        let m = TierModel {
+            provider: "google-vertex",
+            api: "anthropic-messages",
+            identity_class: "anthropic",
+        };
         assert_eq!(
             get_premium_service_tier_requests(Some(ServiceTier::Priority), &m, false),
             0.0

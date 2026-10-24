@@ -27,7 +27,10 @@ fn has_path_extraction(url: &InternalUrl) -> bool {
 }
 
 /// TS `extractJsonPath`: object segments index by key, array segments by index.
-fn extract_json_path<'a>(mut value: &'a serde_json::Value, segments: &[String]) -> Option<&'a serde_json::Value> {
+fn extract_json_path<'a>(
+    mut value: &'a serde_json::Value,
+    segments: &[String],
+) -> Option<&'a serde_json::Value> {
     for segment in segments {
         match value {
             serde_json::Value::Array(items) => {
@@ -54,10 +57,14 @@ fn find_output(id: &str, ctx: &UrlCtx) -> OutputScan {
     let mut json_by_id: Vec<(String, PathBuf)> = Vec::new();
     let mut any_dir_exists = false;
     for dir in artifacts_dirs(ctx) {
-        let Ok(files) = std::fs::read_dir(&dir) else { continue };
+        let Ok(files) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         any_dir_exists = true;
         for entry in files.flatten() {
-            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else { continue };
+            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
             if let Some(json_id) = name.strip_suffix(".json") {
                 if !json_by_id.iter().any(|(existing, _)| existing == json_id) {
                     json_by_id.push((json_id.to_string(), entry.path()));
@@ -72,7 +79,10 @@ fn find_output(id: &str, ctx: &UrlCtx) -> OutputScan {
         }
     }
     let available = by_id.iter().map(|(id, _)| id.clone()).collect();
-    let found = by_id.iter().find(|(existing, _)| existing == id).map(|(_, p)| p.clone());
+    let found = by_id
+        .iter()
+        .find(|(existing, _)| existing == id)
+        .map(|(_, p)| p.clone());
     // Pair the sidecar only from the SAME dir as the matched `.md`.
     let json = found.as_ref().and_then(|found_path| {
         json_by_id
@@ -81,7 +91,12 @@ fn find_output(id: &str, ctx: &UrlCtx) -> OutputScan {
             .filter(|(_, p)| p.parent() == found_path.parent())
             .map(|(_, p)| p.clone())
     });
-    OutputScan { found, json, any_dir_exists, available }
+    OutputScan {
+        found,
+        json,
+        any_dir_exists,
+        available,
+    }
 }
 
 /// TS `Output <id> is not valid JSON: <message>`.
@@ -160,17 +175,25 @@ impl UrlProvider for AgentProvider {
                 let raw = std::fs::read_to_string(sidecar)?;
                 match serde_json::from_str(&raw) {
                     Ok(value) => (value, sidecar.clone()),
-                    Err(_) => (parse_output_json(id, &std::fs::read_to_string(&found)?)?, found.clone()),
+                    Err(_) => (
+                        parse_output_json(id, &std::fs::read_to_string(&found)?)?,
+                        found.clone(),
+                    ),
                 }
             } else {
-                (parse_output_json(id, &std::fs::read_to_string(&found)?)?, found.clone())
+                (
+                    parse_output_json(id, &std::fs::read_to_string(&found)?)?,
+                    found.clone(),
+                )
             };
             let extracted = extract_json_path(&json_value, &segments);
             // A string field reads as prose; anything else pretty-printed JSON
             // (`undefined` extraction included — TS renders "null").
             let content = match extracted {
                 Some(serde_json::Value::String(text)) => text.clone(),
-                Some(value) => serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".to_string()),
+                Some(value) => {
+                    serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".to_string())
+                }
                 None => "null".to_string(),
             };
             let mut r = InternalResource::text(content);
@@ -197,7 +220,10 @@ impl UrlProvider for AgentProvider {
         scan.available.sort();
         scan.available
             .into_iter()
-            .map(|label| crate::UrlCompletion { label, detail: None })
+            .map(|label| crate::UrlCompletion {
+                label,
+                detail: None,
+            })
             .collect()
     }
 }

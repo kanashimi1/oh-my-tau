@@ -12,9 +12,8 @@ use crate::types::{
 
 use super::run::clone_context;
 use super::tool_call::{
-    is_non_blank,
     create_tool_result_message, emit_tool_execution_end, emit_tool_result_message,
-    execute_prepared_tool_call, finalize_executed_tool_call, prepare_tool_call,
+    execute_prepared_tool_call, finalize_executed_tool_call, is_non_blank, prepare_tool_call,
 };
 use super::{AgentEventSink, AgentLoopConfig};
 
@@ -65,7 +64,16 @@ async fn preparation_for(
 ) -> Preparation {
     match pre.as_mut().and_then(|p| p.0.next()) {
         Some(p) => p,
-        None => prepare_tool_call(current_context, assistant_message, tool_call, config, signal).await,
+        None => {
+            prepare_tool_call(
+                current_context,
+                assistant_message,
+                tool_call,
+                config,
+                signal,
+            )
+            .await
+        }
     }
 }
 
@@ -183,7 +191,10 @@ async fn execute_tool_calls_sequential(
 
     Ok(ExecutedToolCallBatch {
         messages,
-        tool_calls: finalized_calls.iter().map(|f| f.tool_call.clone()).collect(),
+        tool_calls: finalized_calls
+            .iter()
+            .map(|f| f.tool_call.clone())
+            .collect(),
         terminate: should_terminate_tool_batch(&finalized_calls),
         additional_context: join_additional_context(
             finalized_calls.iter().flat_map(|f| &f.additional_context),

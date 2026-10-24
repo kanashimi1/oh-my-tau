@@ -134,7 +134,9 @@ mod tests {
     fn selector() -> ThinkingSelector {
         let mut s = ThinkingSelector::default();
         s.open(
-            ["off", "minimal", "low", "medium", "high"].map(String::from).to_vec(),
+            ["off", "minimal", "low", "medium", "high"]
+                .map(String::from)
+                .to_vec(),
             "medium",
         );
         s
@@ -172,7 +174,10 @@ mod tests {
             .collect();
         let text = rows.join("\n");
         assert!(text.contains("Thinking Level"), "{text}");
-        assert!(text.contains("min") && text.contains("Very brief reasoning (~1k tokens)"), "{text}");
+        assert!(
+            text.contains("min") && text.contains("Very brief reasoning (~1k tokens)"),
+            "{text}"
+        );
         assert!(text.contains("❯ medium"), "{text}");
     }
 }

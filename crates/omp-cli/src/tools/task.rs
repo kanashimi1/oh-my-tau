@@ -162,7 +162,10 @@ fn agent_summary(description: &str) -> String {
     if out.len() < flat.len() {
         // Truncated: end on the last clause boundary when one keeps at least
         // half the budget, so the line never stops mid-phrase.
-        if let Some(i) = out.rfind(['.', ';']).filter(|&i| i >= AGENT_SUMMARY_MAX / 2) {
+        if let Some(i) = out
+            .rfind(['.', ';'])
+            .filter(|&i| i >= AGENT_SUMMARY_MAX / 2)
+        {
             out.truncate(i);
         }
     }
@@ -385,7 +388,10 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
             params.context.as_deref(),
             env.cwd.clone(),
         ));
-        rubrics.push(super::rlm_combinators::freeze_wire(params.rubric.as_ref()).map_err(|e| anyhow::anyhow!("task: rubric: {e}"))?);
+        rubrics.push(
+            super::rlm_combinators::freeze_wire(params.rubric.as_ref())
+                .map_err(|e| anyhow::anyhow!("task: rubric: {e}"))?,
+        );
     } else {
         if params.task.is_some() {
             bail!(
@@ -425,7 +431,12 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
     }
     // SERA: rubrics were frozen above, before any child spawned; score afterwards.
     let scorer = super::rlm_combinators::SessionScorer::new(pa_agent::abort::AbortSignal::never());
-    let scored = omp_task::rubric::spawn_all_with_rubrics(&runner, specs.into_iter().zip(rubrics).collect(), &scorer).await;
+    let scored = omp_task::rubric::spawn_all_with_rubrics(
+        &runner,
+        specs.into_iter().zip(rubrics).collect(),
+        &scorer,
+    )
+    .await;
     let (outputs, records): (Vec<_>, Vec<_>) = scored.into_iter().unzip();
     let mut result = merge_outputs(&outputs)?;
     attach_rubric_scores(&mut result, &outputs, &records);
@@ -667,7 +678,9 @@ mod tests {
             "per-child envelopes kept: {text}"
         );
         assert!(
-            result.details["results"].as_array().is_some_and(|r| r.len() == 2),
+            result.details["results"]
+                .as_array()
+                .is_some_and(|r| r.len() == 2),
             "details.results kept: {}",
             result.details
         );
@@ -681,19 +694,37 @@ mod tests {
             "task": "x", "solutionSpace": ".",
             "rubric": [{"criterion": "correct", "weight": 3}, {"criterion": "short", "weight": 1}],
         }));
-        let frozen = super::super::rlm_combinators::freeze_wire(item.rubric.as_ref()).unwrap().unwrap();
+        let frozen = super::super::rlm_combinators::freeze_wire(item.rubric.as_ref())
+            .unwrap()
+            .unwrap();
         assert!((frozen.criteria[0].weight - 0.75).abs() < 1e-12);
         let none = wire_item(json!({"task": "x", "solutionSpace": "."}));
-        assert!(super::super::rlm_combinators::freeze_wire(none.rubric.as_ref()).unwrap().is_none());
+        assert!(
+            super::super::rlm_combinators::freeze_wire(none.rubric.as_ref())
+                .unwrap()
+                .is_none()
+        );
         let bad = wire_item(json!({"task": "x", "solutionSpace": ".", "rubric": []}));
         assert!(super::super::rlm_combinators::freeze_wire(bad.rubric.as_ref()).is_err());
 
         let out = run_output("agent-1", RunStatus::Completed);
-        let rec = omp_task::rubric::RubricRecord::from_verdict("task", &frozen, "agent-1", 1, 1, true, vec![1.0, 0.0], Some(1.0)).unwrap();
+        let rec = omp_task::rubric::RubricRecord::from_verdict(
+            "task",
+            &frozen,
+            "agent-1",
+            1,
+            1,
+            true,
+            vec![1.0, 0.0],
+            Some(1.0),
+        )
+        .unwrap();
         let mut result = merge_outputs(std::slice::from_ref(&out)).unwrap();
         attach_rubric_scores(&mut result, std::slice::from_ref(&out), &[Some(Ok(rec))]);
         assert_eq!(result.details["rubric"][0]["score"], 0.75);
-        let pa_agent::types::ToolResultContent::Text(t) = &result.content[0] else { panic!("text") };
+        let pa_agent::types::ToolResultContent::Text(t) = &result.content[0] else {
+            panic!("text")
+        };
         assert!(t.text.contains("score=0.750"), "{}", t.text);
     }
 

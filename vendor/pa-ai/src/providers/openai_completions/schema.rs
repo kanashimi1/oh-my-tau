@@ -9,12 +9,44 @@
 use serde_json::{json, Map, Value};
 
 const NON_STRUCTURAL: [&str; 38] = [
-    "format", "pattern", "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-    "minItems", "maxItems", "uniqueItems", "multipleOf", "$schema", "examples", "default", "title", "$comment",
-    "if", "then", "else", "not", "unevaluatedProperties", "unevaluatedItems", "patternProperties",
-    "propertyNames", "contains", "minContains", "maxContains", "dependentRequired", "dependentSchemas",
-    "contentEncoding", "contentMediaType", "contentSchema", "deprecated", "readOnly", "writeOnly",
-    "minProperties", "maxProperties",
+    "format",
+    "pattern",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "multipleOf",
+    "$schema",
+    "examples",
+    "default",
+    "title",
+    "$comment",
+    "if",
+    "then",
+    "else",
+    "not",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "patternProperties",
+    "propertyNames",
+    "contains",
+    "minContains",
+    "maxContains",
+    "dependentRequired",
+    "dependentSchemas",
+    "contentEncoding",
+    "contentMediaType",
+    "contentSchema",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "minProperties",
+    "maxProperties",
 ];
 const COMBINATORS: [&str; 3] = ["anyOf", "allOf", "oneOf"];
 
@@ -24,7 +56,11 @@ fn is_unrepresentable_branch(v: &Value) -> bool {
 
 /// Schemas strict mode cannot represent (open key sets, boolean/empty branches).
 fn has_unrepresentable_strict_object_map(schema: &Map<String, Value>) -> bool {
-    if schema.get("patternProperties").and_then(Value::as_object).is_some_and(|m| !m.is_empty()) {
+    if schema
+        .get("patternProperties")
+        .and_then(Value::as_object)
+        .is_some_and(|m| !m.is_empty())
+    {
         return true;
     }
     match schema.get("additionalProperties") {
@@ -32,7 +68,11 @@ fn has_unrepresentable_strict_object_map(schema: &Map<String, Value>) -> bool {
         Some(Value::Object(_)) => return true,
         _ => {}
     }
-    let check = |v: &Value| is_unrepresentable_branch(v) || v.as_object().is_some_and(has_unrepresentable_strict_object_map);
+    let check = |v: &Value| {
+        is_unrepresentable_branch(v)
+            || v.as_object()
+                .is_some_and(has_unrepresentable_strict_object_map)
+    };
     if let Some(props) = schema.get("properties").and_then(Value::as_object) {
         if props.values().any(check) {
             return true;
@@ -78,7 +118,10 @@ fn has_unrepresentable_strict_object_map(schema: &Map<String, Value>) -> bool {
     false
 }
 
-fn resolve_strict_ref<'a>(root: &'a Map<String, Value>, reference: &str) -> Option<&'a Map<String, Value>> {
+fn resolve_strict_ref<'a>(
+    root: &'a Map<String, Value>,
+    reference: &str,
+) -> Option<&'a Map<String, Value>> {
     let path = reference.strip_prefix("#/")?;
     let mut cursor: &Map<String, Value> = root;
     for raw in path.split('/') {
@@ -112,8 +155,14 @@ fn schema_type_accepts(ty: &str, v: &Value) -> bool {
 }
 
 fn narrow_enum_to_type(schema: &mut Map<String, Value>, ty: &str) -> bool {
-    let Some(values) = schema.get("enum").and_then(Value::as_array) else { return true };
-    let narrowed: Vec<Value> = values.iter().filter(|v| schema_type_accepts(ty, v)).cloned().collect();
+    let Some(values) = schema.get("enum").and_then(Value::as_array) else {
+        return true;
+    };
+    let narrowed: Vec<Value> = values
+        .iter()
+        .filter(|v| schema_type_accepts(ty, v))
+        .cloned()
+        .collect();
     if narrowed.is_empty() {
         return false;
     }
@@ -213,7 +262,9 @@ fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<Strin
             return sanitized_without_type;
         }
         if variants.len() == 1 {
-            let Value::Object(mut sole) = variants.remove(0) else { unreachable!("variants are objects") };
+            let Value::Object(mut sole) = variants.remove(0) else {
+                unreachable!("variants are objects")
+            };
             if let Some(d) = description {
                 if !sole.contains_key("description") {
                     sole.insert("description".into(), d);
@@ -232,7 +283,11 @@ fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<Strin
     // Scalar `type`: walk the keys, rewriting or stripping per strict-mode rules.
     let mut sanitized = Map::new();
     for (key, value) in schema {
-        if NON_STRUCTURAL.contains(&key.as_str()) || key == "type" || key == "const" || key == "nullable" {
+        if NON_STRUCTURAL.contains(&key.as_str())
+            || key == "type"
+            || key == "const"
+            || key == "nullable"
+        {
             continue;
         }
         match (key.as_str(), value) {
@@ -269,7 +324,11 @@ fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<Strin
                     Value::String(s) => s.clone(),
                     other => other.to_string(),
                 };
-                let description = if text.contains("(default:") { text.clone() } else { format!("{text} (default: {formatted})") };
+                let description = if text.contains("(default:") {
+                    text.clone()
+                } else {
+                    format!("{text} (default: {formatted})")
+                };
                 sanitized.insert("description".into(), Value::String(description));
             }
             _ => {
@@ -278,7 +337,11 @@ fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<Strin
         }
     }
     if let Some(const_val) = schema.get("const") {
-        let mut existing = sanitized.get("enum").and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut existing = sanitized
+            .get("enum")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if !existing.contains(const_val) {
             existing.push(const_val.clone());
         }
@@ -287,10 +350,13 @@ fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<Strin
     if let Some(Value::String(ty)) = schema.get("type") {
         sanitized.insert("type".into(), Value::String(ty.clone()));
     }
-    if !sanitized.contains_key("type") && sanitized.get("properties").is_some_and(Value::is_object) {
+    if !sanitized.contains_key("type") && sanitized.get("properties").is_some_and(Value::is_object)
+    {
         sanitized.insert("type".into(), json!("object"));
     }
-    if !sanitized.contains_key("type") && (sanitized.contains_key("items") || sanitized.contains_key("prefixItems")) {
+    if !sanitized.contains_key("type")
+        && (sanitized.contains_key("items") || sanitized.contains_key("prefixItems"))
+    {
         sanitized.insert("type".into(), json!("array"));
     }
     if !sanitized.contains_key("type") {
@@ -302,7 +368,10 @@ fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<Strin
         let mut without = sanitized;
         let description = without.shift_remove("description");
         let mut wrapper = Map::new();
-        wrapper.insert("anyOf".into(), json!([Value::Object(without), { "type": "null" }]));
+        wrapper.insert(
+            "anyOf".into(),
+            json!([Value::Object(without), { "type": "null" }]),
+        );
         if let Some(d) = description {
             wrapper.insert("description".into(), d);
         }
@@ -312,7 +381,10 @@ fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<Strin
 }
 
 fn is_pure_any_of(v: &Value) -> bool {
-    v.as_object().is_some_and(|o| o.get("anyOf").is_some_and(Value::is_array) && o.keys().all(|k| k == "anyOf" || k == "description"))
+    v.as_object().is_some_and(|o| {
+        o.get("anyOf").is_some_and(Value::is_array)
+            && o.keys().all(|k| k == "anyOf" || k == "description")
+    })
 }
 
 struct NotRepresentable;
@@ -329,11 +401,19 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
     let mut result = schema.clone();
     if result.get("type").and_then(Value::as_str) == Some("object") {
         result.insert("additionalProperties".into(), json!(false));
-        let props = result.get("properties").and_then(Value::as_object).cloned().unwrap_or_default();
+        let props = result
+            .get("properties")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         let original_required: Vec<String> = result
             .get("required")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let mut strict_props = Map::new();
         for (key, value) in &props {
@@ -343,9 +423,12 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
             };
             if !original_required.contains(key) {
                 let already_nullable = processed.as_object().is_some_and(|o| {
-                    o.get("anyOf")
-                        .and_then(Value::as_array)
-                        .is_some_and(|a| a.iter().any(|v| v.as_object().is_some_and(|o| o.get("type") == Some(&json!("null")))))
+                    o.get("anyOf").and_then(Value::as_array).is_some_and(|a| {
+                        a.iter().any(|v| {
+                            v.as_object()
+                                .is_some_and(|o| o.get("type") == Some(&json!("null")))
+                        })
+                    })
                 });
                 if already_nullable {
                     strict_props.insert(key.clone(), processed);
@@ -353,7 +436,11 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
                 }
                 if is_pure_any_of(&processed) {
                     let mut o = processed.as_object().cloned().unwrap_or_default();
-                    let mut any_of = o.get("anyOf").and_then(Value::as_array).cloned().unwrap_or_default();
+                    let mut any_of = o
+                        .get("anyOf")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
                     any_of.push(json!({ "type": "null" }));
                     o.insert("anyOf".into(), Value::Array(any_of));
                     strict_props.insert(key.clone(), Value::Object(o));
@@ -362,15 +449,22 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
                 if let Some(o) = processed.as_object() {
                     if o.get("description").is_some_and(Value::is_string) {
                         let mut without = o.clone();
-                        let description = without.shift_remove("description").unwrap_or(Value::Null);
+                        let description =
+                            without.shift_remove("description").unwrap_or(Value::Null);
                         let mut wrapper = Map::new();
-                        wrapper.insert("anyOf".into(), json!([Value::Object(without), { "type": "null" }]));
+                        wrapper.insert(
+                            "anyOf".into(),
+                            json!([Value::Object(without), { "type": "null" }]),
+                        );
                         wrapper.insert("description".into(), description);
                         strict_props.insert(key.clone(), Value::Object(wrapper));
                         continue;
                     }
                 }
-                strict_props.insert(key.clone(), json!({ "anyOf": [processed, { "type": "null" }] }));
+                strict_props.insert(
+                    key.clone(),
+                    json!({ "anyOf": [processed, { "type": "null" }] }),
+                );
                 continue;
             }
             strict_props.insert(key.clone(), processed);
@@ -427,10 +521,13 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
         if let Some(Value::Object(defs)) = result.get(key).cloned() {
             let mut next = Map::new();
             for (name, def) in &defs {
-                next.insert(name.clone(), match def {
-                    Value::Object(_) => enforce_value(def)?,
-                    other => other.clone(),
-                });
+                next.insert(
+                    name.clone(),
+                    match def {
+                        Value::Object(_) => enforce_value(def)?,
+                        other => other.clone(),
+                    },
+                );
             }
             result.insert(key.into(), Value::Object(next));
         }
@@ -442,7 +539,9 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
     }
     if !result.contains_key("type")
         && !result.contains_key("$ref")
-        && !COMBINATORS.iter().any(|k| result.get(*k).is_some_and(Value::is_array))
+        && !COMBINATORS
+            .iter()
+            .any(|k| result.get(*k).is_some_and(Value::is_array))
         && !result.get("not").is_some_and(Value::is_object)
     {
         return Err(NotRepresentable);
@@ -456,7 +555,9 @@ pub(crate) fn adapt_schema_for_strict(schema: &Value, want_strict: bool) -> (Val
     if !want_strict {
         return (schema.clone(), false);
     }
-    let Some(obj) = schema.as_object() else { return (schema.clone(), false) };
+    let Some(obj) = schema.as_object() else {
+        return (schema.clone(), false);
+    };
     if has_unrepresentable_strict_object_map(obj) {
         return (schema.clone(), false);
     }
@@ -473,19 +574,44 @@ pub(crate) fn adapt_schema_for_strict(schema: &Value, want_strict: bool) -> (Val
 
 const NULLABLE_SCALAR_TYPES: [&str; 4] = ["string", "number", "integer", "boolean"];
 const SCHEMA_DEFINING_SIBLINGS: [&str; 19] = [
-    "$ref", "additionalProperties", "allOf", "anyOf", "const", "contains", "enum", "if", "items", "not", "oneOf",
-    "patternProperties", "prefixItems", "properties", "propertyNames", "then", "else", "unevaluatedItems",
+    "$ref",
+    "additionalProperties",
+    "allOf",
+    "anyOf",
+    "const",
+    "contains",
+    "enum",
+    "if",
+    "items",
+    "not",
+    "oneOf",
+    "patternProperties",
+    "prefixItems",
+    "properties",
+    "propertyNames",
+    "then",
+    "else",
+    "unevaluatedItems",
     "unevaluatedProperties",
 ];
 const WIRE_VALUE_KEYS: [&str; 10] = [
-    "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "items", "contains", "propertyNames", "if",
-    "then", "else", "not",
+    "additionalProperties",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "items",
+    "contains",
+    "propertyNames",
+    "if",
+    "then",
+    "else",
+    "not",
 ];
 const WIRE_MAP_KEYS: [&str; 4] = ["properties", "patternProperties", "$defs", "definitions"];
 const WIRE_ARRAY_KEYS: [&str; 4] = ["anyOf", "oneOf", "allOf", "prefixItems"];
 
 fn has_schema_defining_sibling(o: &Map<String, Value>) -> bool {
-    o.keys().any(|k| k != "anyOf" && SCHEMA_DEFINING_SIBLINGS.contains(&k.as_str()))
+    o.keys()
+        .any(|k| k != "anyOf" && SCHEMA_DEFINING_SIBLINGS.contains(&k.as_str()))
 }
 
 fn is_null_variant(o: &Map<String, Value>) -> bool {
@@ -496,7 +622,9 @@ fn rewrite_nullable_scalar_any_of(o: &mut Map<String, Value>) {
     if has_schema_defining_sibling(o) {
         return;
     }
-    let Some(Value::Array(variants)) = o.get("anyOf") else { return };
+    let Some(Value::Array(variants)) = o.get("anyOf") else {
+        return;
+    };
     if variants.len() != 2 {
         return;
     }
@@ -521,7 +649,9 @@ fn rewrite_nullable_scalar_any_of(o: &mut Map<String, Value>) {
             _ => return,
         }
     }
-    let (Some(scalar), Some(scalar_type), true) = (scalar, scalar_type, saw_null) else { return };
+    let (Some(scalar), Some(scalar_type), true) = (scalar, scalar_type, saw_null) else {
+        return;
+    };
     o.shift_remove("anyOf");
     for (k, v) in &scalar {
         if k == "type" || k == "enum" || k == "const" || o.contains_key(k) {
@@ -563,7 +693,9 @@ fn infer_bare_enum_scalar_type(o: &mut Map<String, Value>) {
     if o.contains_key("type") {
         return;
     }
-    let Some(Value::Array(e)) = o.get("enum") else { return };
+    let Some(Value::Array(e)) = o.get("enum") else {
+        return;
+    };
     if let Some(t) = homogeneous_enum_scalar_type(e) {
         o.insert("type".into(), json!(t));
     }
@@ -573,7 +705,9 @@ fn collapse_const_union_any_of(o: &mut Map<String, Value>) {
     if has_schema_defining_sibling(o) || o.contains_key("type") {
         return;
     }
-    let Some(Value::Array(variants)) = o.get("anyOf") else { return };
+    let Some(Value::Array(variants)) = o.get("anyOf") else {
+        return;
+    };
     if variants.len() < 2 {
         return;
     }
@@ -606,7 +740,9 @@ fn collapse_const_union_any_of(o: &mut Map<String, Value>) {
             }
         }
     }
-    let Some(scalar_type) = homogeneous_enum_scalar_type(&values) else { return };
+    let Some(scalar_type) = homogeneous_enum_scalar_type(&values) else {
+        return;
+    };
     o.shift_remove("anyOf");
     o.insert("type".into(), json!(scalar_type));
     o.insert("enum".into(), Value::Array(values));
@@ -684,7 +820,9 @@ pub(crate) fn tool_wire_schema(schema: &Value) -> Value {
 /// TS `flattenExclusiveRequiredRootUnion` (xAI): drop a root union made only of typeless
 /// required-key fragments.
 pub(crate) fn flatten_exclusive_required_root_union(schema: &Value) -> Value {
-    let Some(obj) = schema.as_object() else { return schema.clone() };
+    let Some(obj) = schema.as_object() else {
+        return schema.clone();
+    };
     let union_key = if obj.get("anyOf").is_some_and(Value::is_array) {
         "anyOf"
     } else if obj.get("oneOf").is_some_and(Value::is_array) {
@@ -692,7 +830,9 @@ pub(crate) fn flatten_exclusive_required_root_union(schema: &Value) -> Value {
     } else {
         return schema.clone();
     };
-    let Some(Value::Array(union)) = obj.get(union_key) else { return schema.clone() };
+    let Some(Value::Array(union)) = obj.get(union_key) else {
+        return schema.clone();
+    };
     if union.is_empty() {
         return schema.clone();
     }
@@ -705,14 +845,21 @@ pub(crate) fn flatten_exclusive_required_root_union(schema: &Value) -> Value {
         return schema.clone();
     }
     let exclusive = |branch: &Value| {
-        let Some(b) = branch.as_object() else { return false };
+        let Some(b) = branch.as_object() else {
+            return false;
+        };
         if b.contains_key("type") {
             return false;
         }
-        let Some(Value::Array(req)) = b.get("required") else { return false };
+        let Some(Value::Array(req)) = b.get("required") else {
+            return false;
+        };
         !req.is_empty()
-            && req.iter().all(|n| n.as_str().is_some_and(|s| !s.is_empty()))
-            && b.keys().all(|k| k == "required" || k == "description" || k == "title")
+            && req
+                .iter()
+                .all(|n| n.as_str().is_some_and(|s| !s.is_empty()))
+            && b.keys()
+                .all(|k| k == "required" || k == "description" || k == "title")
     };
     if !union.iter().all(exclusive) {
         return schema.clone();
@@ -725,14 +872,43 @@ pub(crate) fn flatten_exclusive_required_root_union(schema: &Value) -> Value {
 // ---- Moonshot (MFJS) normalization — TS `normalizeSchemaForMoonshot`
 
 const TYPE_KEYS_ARRAY: [&str; 9] = [
-    "items", "prefixItems", "contains", "minContains", "maxContains", "minItems", "maxItems", "uniqueItems", "unevaluatedItems",
+    "items",
+    "prefixItems",
+    "contains",
+    "minContains",
+    "maxContains",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "unevaluatedItems",
 ];
 const TYPE_KEYS_OBJECT: [&str; 10] = [
-    "properties", "required", "additionalProperties", "patternProperties", "propertyNames", "minProperties",
-    "maxProperties", "dependentRequired", "dependentSchemas", "unevaluatedProperties",
+    "properties",
+    "required",
+    "additionalProperties",
+    "patternProperties",
+    "propertyNames",
+    "minProperties",
+    "maxProperties",
+    "dependentRequired",
+    "dependentSchemas",
+    "unevaluatedProperties",
 ];
-const TYPE_KEYS_STRING: [&str; 6] = ["minLength", "maxLength", "pattern", "format", "contentEncoding", "contentMediaType"];
-const TYPE_KEYS_NUMBER: [&str; 5] = ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"];
+const TYPE_KEYS_STRING: [&str; 6] = [
+    "minLength",
+    "maxLength",
+    "pattern",
+    "format",
+    "contentEncoding",
+    "contentMediaType",
+];
+const TYPE_KEYS_NUMBER: [&str; 5] = [
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+];
 
 fn type_specific_keys(ty: &str) -> &'static [&'static str] {
     match ty {
@@ -752,8 +928,22 @@ fn is_cca_type_specific(key: &str) -> bool {
 }
 
 const LIFTABLE_TO_DESCRIPTION: [&str; 16] = [
-    "pattern", "format", "minLength", "maxLength", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-    "multipleOf", "minItems", "maxItems", "uniqueItems", "minProperties", "maxProperties", "default", "examples",
+    "pattern",
+    "format",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "minProperties",
+    "maxProperties",
+    "default",
+    "examples",
 ];
 
 fn moonshot_unsupported(key: &str) -> bool {
@@ -771,10 +961,14 @@ fn classify_schema_child(key: &str, value: &Value, inside_map: bool) -> Option<C
         return Some(ChildKind::Schema);
     }
     match key {
-        "properties" | "patternProperties" | "dependencies" | "dependentSchemas" | "$defs" | "definitions" => Some(ChildKind::Map),
-        "items" | "additionalItems" | "unevaluatedItems" | "not" | "if" | "then" | "else" | "contains" | "propertyNames"
-        | "contentSchema" | "anyOf" | "oneOf" | "allOf" | "prefixItems" => Some(ChildKind::Schema),
-        "additionalProperties" | "unevaluatedProperties" if value.is_object() => Some(ChildKind::Schema),
+        "properties" | "patternProperties" | "dependencies" | "dependentSchemas" | "$defs"
+        | "definitions" => Some(ChildKind::Map),
+        "items" | "additionalItems" | "unevaluatedItems" | "not" | "if" | "then" | "else"
+        | "contains" | "propertyNames" | "contentSchema" | "anyOf" | "oneOf" | "allOf"
+        | "prefixItems" => Some(ChildKind::Schema),
+        "additionalProperties" | "unevaluatedProperties" if value.is_object() => {
+            Some(ChildKind::Schema)
+        }
         _ => None,
     }
 }
@@ -797,7 +991,9 @@ fn push_enum_value(values: &mut Vec<Value>, v: &Value) {
 }
 
 fn split_type_array_into_any_of(obj: Map<String, Value>) -> Map<String, Value> {
-    let Some(Value::Array(types_raw)) = obj.get("type") else { return obj };
+    let Some(Value::Array(types_raw)) = obj.get("type") else {
+        return obj;
+    };
     if obj.get("anyOf").is_some_and(Value::is_array) {
         return obj;
     }
@@ -837,7 +1033,10 @@ fn split_type_array_into_any_of(obj: Map<String, Value>) -> Map<String, Value> {
         }
     }
     let _ = has_null; // `nullable` is stripped for Moonshot (stripNullableKeyword)
-    out.insert("anyOf".into(), Value::Array(branches.into_iter().map(Value::Object).collect()));
+    out.insert(
+        "anyOf".into(),
+        Value::Array(branches.into_iter().map(Value::Object).collect()),
+    );
     out
 }
 
@@ -857,19 +1056,35 @@ pub(crate) fn spill_to_description(node: &mut Map<String, Value>, spill: &[(Stri
     if spill.is_empty() {
         return;
     }
-    let existing = node.get("description").and_then(Value::as_str).unwrap_or("").to_string();
+    let existing = node
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     let formatted = format!(
         "{{{}}}",
-        spill.iter().map(|(k, v)| format!("{k}: {}", serde_json::to_string(v).unwrap_or_default())).collect::<Vec<_>>().join(", ")
+        spill
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", serde_json::to_string(v).unwrap_or_default()))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
-    let description = if existing.is_empty() { formatted } else { format!("{existing}\n\n{formatted}") };
+    let description = if existing.is_empty() {
+        formatted
+    } else {
+        format!("{existing}\n\n{formatted}")
+    };
     node.insert("description".into(), Value::String(description));
 }
 
 fn moonshot_post(mut schema: Map<String, Value>) -> Map<String, Value> {
     if let Some(Value::Array(one_of)) = schema.get("oneOf").cloned() {
         schema.shift_remove("oneOf");
-        let mut any_of = schema.get("anyOf").and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut any_of = schema
+            .get("anyOf")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         any_of.extend(one_of);
         schema.insert("anyOf".into(), Value::Array(any_of));
     }
@@ -883,7 +1098,11 @@ fn moonshot_post(mut schema: Map<String, Value>) -> Map<String, Value> {
 
 fn moonshot_node(value: &Value, inside_map: bool, boolean_is_subschema: bool) -> Value {
     match value {
-        Value::Array(a) => Value::Array(a.iter().map(|e| moonshot_node(e, inside_map, boolean_is_subschema)).collect()),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|e| moonshot_node(e, inside_map, boolean_is_subschema))
+                .collect(),
+        ),
         Value::Bool(_) if boolean_is_subschema => json!({}),
         Value::Object(o) => Value::Object(moonshot_object(o, inside_map)),
         other => other.clone(),
@@ -898,11 +1117,20 @@ fn moonshot_child(key: &str, entry: &Value, inside_map: bool) -> Value {
 }
 
 fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, Value> {
-    let obj = if inside_map { value.clone() } else { split_type_array_into_any_of(value.clone()) };
+    let obj = if inside_map {
+        value.clone()
+    } else {
+        split_type_array_into_any_of(value.clone())
+    };
     // anyOf/oneOf whose every branch is a bare `const` collapses to an enum.
     for combiner in ["anyOf", "oneOf"] {
-        let Some(Value::Array(variants)) = obj.get(combiner) else { continue };
-        let all_const = !variants.is_empty() && variants.iter().all(|v| v.as_object().is_some_and(|o| o.contains_key("const")));
+        let Some(Value::Array(variants)) = obj.get(combiner) else {
+            continue;
+        };
+        let all_const = !variants.is_empty()
+            && variants
+                .iter()
+                .all(|v| v.as_object().is_some_and(|o| o.contains_key("const")));
         if !all_const {
             continue;
         }
@@ -912,7 +1140,10 @@ fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, 
             push_enum_value(&mut deduped, &v["const"]);
         }
         result.insert("enum".into(), Value::Array(deduped.clone()));
-        let explicit: Vec<&str> = variants.iter().filter_map(|v| v.get("type").and_then(Value::as_str)).collect();
+        let explicit: Vec<&str> = variants
+            .iter()
+            .filter_map(|v| v.get("type").and_then(Value::as_str))
+            .collect();
         if explicit.len() == variants.len() && explicit.iter().all(|t| *t == explicit[0]) {
             result.insert("type".into(), json!(explicit[0]));
         } else {
@@ -921,8 +1152,10 @@ fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, 
             if distinct.len() == 1 {
                 result.insert("type".into(), json!(inferred[0]));
             } else {
-                let non_null: Vec<&str> = inferred.iter().copied().filter(|t| *t != "null").collect();
-                let non_null_set: std::collections::BTreeSet<&str> = non_null.iter().copied().collect();
+                let non_null: Vec<&str> =
+                    inferred.iter().copied().filter(|t| *t != "null").collect();
+                let non_null_set: std::collections::BTreeSet<&str> =
+                    non_null.iter().copied().collect();
                 if inferred.contains(&"null") && non_null_set.len() == 1 {
                     result.insert("type".into(), json!(non_null[0]));
                 }
@@ -969,7 +1202,11 @@ fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, 
     }
     if let Some(Value::Array(types)) = result.get("type").cloned() {
         let names: Vec<&str> = types.iter().filter_map(Value::as_str).collect();
-        let first = names.iter().copied().find(|t| *t != "null").or_else(|| names.first().copied());
+        let first = names
+            .iter()
+            .copied()
+            .find(|t| *t != "null")
+            .or_else(|| names.first().copied());
         match first {
             Some(t) => {
                 result.insert("type".into(), json!(t));
@@ -981,16 +1218,25 @@ fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, 
         }
     }
     if let Some(c) = const_value {
-        let mut existing = result.get("enum").and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut existing = result
+            .get("enum")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         push_enum_value(&mut existing, &c);
         result.insert("enum".into(), Value::Array(existing));
-        if !result.get("type").is_some_and(|t| t.as_str().is_some_and(|s| !s.is_empty())) {
+        if !result
+            .get("type")
+            .is_some_and(|t| t.as_str().is_some_and(|s| !s.is_empty()))
+        {
             if let Some(t) = infer_json_schema_type(&c) {
                 result.insert("type".into(), json!(t));
             }
         }
     }
-    let type_missing = !result.get("type").is_some_and(|t| t.as_str().is_some_and(|s| !s.is_empty()));
+    let type_missing = !result
+        .get("type")
+        .is_some_and(|t| t.as_str().is_some_and(|s| !s.is_empty()));
     if type_missing
         && !result.get("anyOf").is_some_and(Value::is_array)
         && !result.get("oneOf").is_some_and(Value::is_array)
@@ -998,7 +1244,13 @@ fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, 
         if let Some(Value::Array(e)) = result.get("enum") {
             if !e.is_empty() {
                 let types: Vec<Option<&str>> = e.iter().map(infer_json_schema_type).collect();
-                if types.iter().all(Option::is_some) && types.iter().collect::<std::collections::BTreeSet<_>>().len() == 1 {
+                if types.iter().all(Option::is_some)
+                    && types
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        == 1
+                {
                     let t = types[0].expect("checked");
                     result.insert("type".into(), json!(t));
                 }
@@ -1033,16 +1285,27 @@ fn grammar_node(value: &Value, is_subschema: bool) -> Value {
             let mut out = Map::new();
             for (key, child) in o {
                 let next = match key.as_str() {
-                    "properties" | "patternProperties" | "dependencies" | "dependentSchemas" | "$defs" | "definitions"
+                    "properties" | "patternProperties" | "dependencies" | "dependentSchemas"
+                    | "$defs" | "definitions"
                         if child.is_object() =>
                     {
                         let m = child.as_object().expect("checked");
-                        Value::Object(m.iter().map(|(k, v)| (k.clone(), grammar_node(v, true))).collect())
+                        Value::Object(
+                            m.iter()
+                                .map(|(k, v)| (k.clone(), grammar_node(v, true)))
+                                .collect(),
+                        )
                     }
-                    "anyOf" | "oneOf" | "allOf" | "prefixItems" if child.is_array() => grammar_node(child, true),
-                    "items" | "additionalItems" | "contains" | "contentSchema" | "propertyNames" | "if" | "then" | "else"
-                    | "not" | "unevaluatedItems" => grammar_node(child, true),
-                    "additionalProperties" | "unevaluatedProperties" if !child.is_boolean() => grammar_node(child, true),
+                    "anyOf" | "oneOf" | "allOf" | "prefixItems" if child.is_array() => {
+                        grammar_node(child, true)
+                    }
+                    "items" | "additionalItems" | "contains" | "contentSchema"
+                    | "propertyNames" | "if" | "then" | "else" | "not" | "unevaluatedItems" => {
+                        grammar_node(child, true)
+                    }
+                    "additionalProperties" | "unevaluatedProperties" if !child.is_boolean() => {
+                        grammar_node(child, true)
+                    }
                     _ => child.clone(),
                 };
                 out.insert(key.clone(), next);

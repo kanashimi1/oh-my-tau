@@ -31,13 +31,19 @@ impl ModelView {
             provider_type: None,
             reasoning: model.reasoning,
             thinking: explicit_thinking,
-            compat: model.compat.as_ref().map(|c| c.raw.clone().into_iter().collect()),
+            compat: model
+                .compat
+                .as_ref()
+                .map(|c| c.raw.clone().into_iter().collect()),
             lenient: true,
         };
         let has_explicit = spec.thinking.is_some();
         match resolve_model_policy(&spec, None) {
             Ok(policy) => {
-                let mut view = Self { compat: policy.compat.unwrap_or_default(), thinking: policy.thinking };
+                let mut view = Self {
+                    compat: policy.compat.unwrap_or_default(),
+                    thinking: policy.thinking,
+                };
                 if !has_explicit {
                     view.apply_materialized_ladder(model);
                 }
@@ -51,7 +57,11 @@ impl ModelView {
     /// carries that ladder in its `thinking_level_map`; the effort set the request reads must be
     /// the one the caller clamped against, not a fresh re-derivation.
     fn apply_materialized_ladder(&mut self, model: &Model) {
-        let (Some(map), Some(Value::Object(thinking))) = (&model.thinking_level_map, self.thinking.as_mut()) else { return };
+        let (Some(map), Some(Value::Object(thinking))) =
+            (&model.thinking_level_map, self.thinking.as_mut())
+        else {
+            return;
+        };
         let derived: Vec<&str> = [
             pa_types::ai::ModelThinkingLevel::Minimal,
             pa_types::ai::ModelThinkingLevel::Low,
@@ -64,11 +74,23 @@ impl ModelView {
         .filter(|l| map.get(l).is_some_and(Option::is_some))
         .map(pa_types::ai::ModelThinkingLevel::wire_name)
         .collect();
-        let current: Vec<&str> = thinking.get("efforts").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let current: Vec<&str> = thinking
+            .get("efforts")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
         if derived == current || derived.is_empty() {
             return;
         }
-        thinking.insert("efforts".into(), Value::Array(derived.iter().map(|e| Value::String((*e).to_string())).collect()));
+        thinking.insert(
+            "efforts".into(),
+            Value::Array(
+                derived
+                    .iter()
+                    .map(|e| Value::String((*e).to_string()))
+                    .collect(),
+            ),
+        );
         let mut effort_map = Map::new();
         for (level, value) in map {
             if let Some(v) = value {
@@ -130,12 +152,20 @@ impl ModelView {
     /// `thinking.effortMap[effort]`.
     #[must_use]
     pub fn effort_map(&self, effort: &str) -> Option<&str> {
-        self.thinking.as_ref()?.get("effortMap")?.get(effort)?.as_str()
+        self.thinking
+            .as_ref()?
+            .get("effortMap")?
+            .get(effort)?
+            .as_str()
     }
 
     /// `thinking.effortRouting[effort ?? "off"]`.
     #[must_use]
     pub fn effort_routing(&self, effort: Option<&str>) -> Option<&str> {
-        self.thinking.as_ref()?.get("effortRouting")?.get(effort.unwrap_or("off"))?.as_str()
+        self.thinking
+            .as_ref()?
+            .get("effortRouting")?
+            .get(effort.unwrap_or("off"))?
+            .as_str()
     }
 }

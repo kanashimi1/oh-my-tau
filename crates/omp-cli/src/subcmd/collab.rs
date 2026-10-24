@@ -6,11 +6,11 @@
 use std::future::Future;
 
 use anyhow::{bail, Context as _, Result};
-use serde_json::json;
 use omp_collab::registry::{
-    CollabAccess, CollabLinkError, COLLAB_REGISTRY_VERSION, list_collab_hosts,
-    resolve_collab_host_link,
+    list_collab_hosts, resolve_collab_host_link, CollabAccess, CollabLinkError,
+    COLLAB_REGISTRY_VERSION,
 };
+use serde_json::json;
 
 const USAGE: &str =
     "Usage: omp-rs collab <list|link> ...\n  omp-rs collab list [--json]\n  omp-rs collab link <instanceId|pid> [--view] [--json]";
@@ -78,30 +78,51 @@ fn parse_link(args: &[String]) -> Result<(String, bool, bool)> {
 }
 
 fn print_list(json_out: bool) -> Result<()> {
-    let hosts = block_on_registry(async { list_collab_hosts(None).await })
-        .context("list Collab hosts")?;
+    let hosts =
+        block_on_registry(async { list_collab_hosts(None).await }).context("list Collab hosts")?;
     if json_out {
-        println!("{}", serde_json::to_string_pretty(&json!({"version": COLLAB_REGISTRY_VERSION, "hosts": hosts}))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(
+                &json!({"version": COLLAB_REGISTRY_VERSION, "hosts": hosts})
+            )?
+        );
         return Ok(());
     }
     if hosts.is_empty() {
         println!("No active Collab hosts.");
         return Ok(());
     }
-    println!("{} active Collab {}", hosts.len(), if hosts.len() == 1 { "host" } else { "hosts" });
+    println!(
+        "{} active Collab {}",
+        hosts.len(),
+        if hosts.len() == 1 { "host" } else { "hosts" }
+    );
     for h in &hosts {
         let name = h.session_name.as_deref().unwrap_or("");
-        let session = if name.is_empty() { h.session_id.clone() } else { format!("{name} ({})", h.session_id) };
+        let session = if name.is_empty() {
+            h.session_id.clone()
+        } else {
+            format!("{name} ({})", h.session_id)
+        };
         println!("{:<8} {session}  {}", h.instance_id, h.cwd);
         let guests = h.participants - 1;
         let mut details = vec![
             format!("pid {}", h.pid),
             format!("gen {}", h.generation),
-            h.model.as_ref().map_or_else(|| "no model".to_string(), |m| format!("{}/{}", m.provider, m.id)),
+            h.model.as_ref().map_or_else(
+                || "no model".to_string(),
+                |m| format!("{}/{}", m.provider, m.id),
+            ),
             format!("participants {}", h.participants),
             format!("{guests} {}", if guests == 1 { "guest" } else { "guests" }),
             h.access.to_string(),
-            if h.relay_connected { "relay connected" } else { "relay reconnecting" }.to_string(),
+            if h.relay_connected {
+                "relay connected"
+            } else {
+                "relay reconnecting"
+            }
+            .to_string(),
         ];
         if h.busy == Some(true) {
             details.push("working".to_string());
@@ -115,19 +136,26 @@ fn print_list(json_out: bool) -> Result<()> {
 }
 
 fn print_link(selector: &str, view: bool, json_out: bool) -> Result<i32> {
-    let access = if view { CollabAccess::View } else { CollabAccess::Control };
+    let access = if view {
+        CollabAccess::View
+    } else {
+        CollabAccess::Control
+    };
     let selector = selector.to_string();
     match block_on_registry(async move { resolve_collab_host_link(&selector, access, None).await })
     {
         Ok(link) => {
             if json_out {
-                println!("{}", serde_json::to_string_pretty(&json!({
-                    "version": COLLAB_REGISTRY_VERSION,
-                    "instanceId": link.instance_id,
-                    "generation": link.generation,
-                    "access": link.access.to_string(),
-                    "url": link.url,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "version": COLLAB_REGISTRY_VERSION,
+                        "instanceId": link.instance_id,
+                        "generation": link.generation,
+                        "access": link.access.to_string(),
+                        "url": link.url,
+                    }))?
+                );
             } else {
                 println!("{}", link.url);
             }

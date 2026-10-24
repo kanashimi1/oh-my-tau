@@ -105,8 +105,21 @@ pub const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high
 
 /// Built-in model roles in TS display order (`MODEL_ROLE_IDS`).
 const ROLE_IDS: [&str; 15] = [
-    "default", "smol", "slow", "vision", "plan", "commit", "tiny", "memory", "task", "advisor",
-    "image", "web", "speech", "dictation", "judge",
+    "default",
+    "smol",
+    "slow",
+    "vision",
+    "plan",
+    "commit",
+    "tiny",
+    "memory",
+    "task",
+    "advisor",
+    "image",
+    "web",
+    "speech",
+    "dictation",
+    "judge",
 ];
 /// Kind roles' auto-selection defaults (`rolePriorityDefaults` for the
 /// non-chat roles): the model id taken when the role is unconfigured.
@@ -117,7 +130,17 @@ const AUTO_KIND_ROLES: [(&str, &str); 3] = [
 ];
 /// Kind tabs (TS `MODEL_KIND_TABS`); omp-rs only carries chat models.
 const KIND_TABS: [&str; 11] = [
-    "all", "chat", "tiny", "image", "tts", "stt", "search", "judge", "embedding", "rerank", "video",
+    "all",
+    "chat",
+    "tiny",
+    "image",
+    "tts",
+    "stt",
+    "search",
+    "judge",
+    "embedding",
+    "rerank",
+    "video",
 ];
 const SIDEBAR_MIN: usize = 18;
 const SIDEBAR_MAX: usize = 26;
@@ -193,9 +216,19 @@ struct Chip {
 #[derive(Debug, Clone)]
 enum Strip {
     /// "model →" role chips.
-    Role { model: ModelEntry, chips: Vec<Chip>, index: usize },
+    Role {
+        model: ModelEntry,
+        chips: Vec<Chip>,
+        index: usize,
+    },
     /// "role · model →" thinking-level chips.
-    Thinking { model: ModelEntry, role: String, chips: Vec<Chip>, index: usize, initial: String },
+    Thinking {
+        model: ModelEntry,
+        role: String,
+        chips: Vec<Chip>,
+        index: usize,
+        initial: String,
+    },
 }
 
 impl Strip {
@@ -437,7 +470,11 @@ fn version_number(id: &str) -> f64 {
         if a - i <= 2 && a < b.len() && b[a] == '-' {
             let c = digits(a + 1);
             if c > a + 1 && c - (a + 1) <= 2 && (c == b.len() || b[c] == '-') {
-                let s: String = b[i..a].iter().chain(['.'].iter()).chain(b[a + 1..c].iter()).collect();
+                let s: String = b[i..a]
+                    .iter()
+                    .chain(['.'].iter())
+                    .chain(b[a + 1..c].iter())
+                    .collect();
                 return s.parse().unwrap_or(0.0);
             }
         }
@@ -453,7 +490,9 @@ fn version_number(id: &str) -> f64 {
 }
 
 fn locale_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| b.cmp(a))
+    a.to_lowercase()
+        .cmp(&b.to_lowercase())
+        .then_with(|| b.cmp(a))
 }
 
 /// TS `modelItemComparator` below the role rank: provider, priority,
@@ -482,13 +521,21 @@ fn cmp_model(a: &ModelEntry, b: &ModelEntry) -> std::cmp::Ordering {
             let (ad, bd) = (date(&a.id), date(&b.id));
             let (ar, br) = (al || !ad.is_empty(), bl || !bd.is_empty());
             if ar != br {
-                return if ar { Ordering::Less } else { Ordering::Greater };
+                return if ar {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                };
             }
             if !ar {
                 return locale_cmp(&a.id, &b.id);
             }
             if al != bl {
-                return if al { Ordering::Less } else { Ordering::Greater };
+                return if al {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                };
             }
             if !ad.is_empty() && !bd.is_empty() {
                 return bd.cmp(&ad);
@@ -579,7 +626,10 @@ impl ModelPicker {
     fn role_level(&self, role: &str) -> Option<String> {
         let value = self.role_map.get(role)?;
         let base = base_selector(value);
-        value.strip_prefix(base)?.strip_prefix(':').map(str::to_owned)
+        value
+            .strip_prefix(base)?
+            .strip_prefix(':')
+            .map(str::to_owned)
     }
 
     fn search_active(&self) -> bool {
@@ -613,9 +663,7 @@ impl ModelPicker {
                 id: "all".into(),
                 kind: EntryKind::All,
                 label: "All models".into(),
-                annotation: Some(
-                    if searching { match_count(None) } else { total }.to_string(),
-                ),
+                annotation: Some(if searching { match_count(None) } else { total }.to_string()),
                 locked: false,
             },
         ];
@@ -628,7 +676,12 @@ impl ModelPicker {
                 kind: EntryKind::Provider,
                 label: (*provider).to_owned(),
                 annotation: (!is_locked).then(|| {
-                    if searching { match_count(Some(provider)) } else { *avail }.to_string()
+                    if searching {
+                        match_count(Some(provider))
+                    } else {
+                        *avail
+                    }
+                    .to_string()
                 }),
                 locked: is_locked,
             };
@@ -734,11 +787,7 @@ impl ModelPicker {
             .filter(|m| matches_query(m, &self.query))
             .collect();
         if !self.search_active() {
-            pool.sort_by(|a, b| {
-                rank(a)
-                    .cmp(&rank(b))
-                    .then_with(|| cmp_model(a, b))
-            });
+            pool.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| cmp_model(a, b)));
         }
         let split = pool.iter().position(|m| rank(m) == ROLE_IDS.len());
         let mut out: Vec<Row> = Vec::new();
@@ -764,7 +813,10 @@ impl ModelPicker {
     fn move_sidebar(&mut self, delta: isize) {
         let entries = self.entries();
         let n = entries.len() as isize;
-        let mut idx = entries.iter().position(|e| e.id == self.active).unwrap_or(0) as isize;
+        let mut idx = entries
+            .iter()
+            .position(|e| e.id == self.active)
+            .unwrap_or(0) as isize;
         for _ in 0..n {
             idx = (idx + delta).rem_euclid(n);
             let e = &entries[idx as usize];
@@ -884,13 +936,19 @@ impl ModelPicker {
                 },
             });
         }
-        self.strip = Some(Strip::Role { model: m, chips, index: 0 });
+        self.strip = Some(Strip::Role {
+            model: m,
+            chips,
+            index: 0,
+        });
     }
 
     /// Persist `role → model` (keeping a still-valid thinking level), switch
     /// the live model for `default`, then offer the thinking strip.
     fn assign_role(&mut self, m: &ModelEntry, role: &str, return_to_roles: bool) {
-        let level = self.role_level(role).filter(|l| l != "inherit" && m.reasoning);
+        let level = self
+            .role_level(role)
+            .filter(|l| l != "inherit" && m.reasoning);
         let value = match &level {
             Some(l) => format!("{}:{l}", m.selector()),
             None => m.selector(),
@@ -918,7 +976,10 @@ impl ModelPicker {
                 })
                 .collect();
             let initial = level.unwrap_or_else(|| "inherit".to_owned());
-            let index = THINKING_LEVELS.iter().position(|l| *l == initial).unwrap_or(0);
+            let index = THINKING_LEVELS
+                .iter()
+                .position(|l| *l == initial)
+                .unwrap_or(0);
             self.strip = Some(Strip::Thinking {
                 model: m.clone(),
                 role: role.to_owned(),
@@ -939,14 +1000,26 @@ impl ModelPicker {
     }
 
     fn activate_strip_chip(&mut self) {
-        let Some(strip) = self.strip.take() else { return };
-        let Some(chip) = strip.chips().get(strip.index()).cloned() else { return };
+        let Some(strip) = self.strip.take() else {
+            return;
+        };
+        let Some(chip) = strip.chips().get(strip.index()).cloned() else {
+            return;
+        };
         match (strip, chip.action) {
             (Strip::Role { model, .. }, ChipAction::Assign(role)) => {
                 self.assign_role(&model, &role, false);
             }
             (Strip::Role { .. }, ChipAction::Unassign(role)) => self.unassign_role(&role),
-            (Strip::Thinking { model, role, initial, .. }, ChipAction::Level(level)) => {
+            (
+                Strip::Thinking {
+                    model,
+                    role,
+                    initial,
+                    ..
+                },
+                ChipAction::Level(level),
+            ) => {
                 if level != initial {
                     self.role_map
                         .insert(role.clone(), format!("{}:{level}", model.selector()));
@@ -1163,9 +1236,7 @@ impl ModelPicker {
         let (row, col) = (ev.row, ev.col);
         if let Some(strip) = &mut self.strip {
             if ev.left_click && row == l.footer_y {
-                if let Some(&(_, _, idx)) =
-                    l.chips.iter().find(|(a, b, _)| col >= *a && col < *b)
-                {
+                if let Some(&(_, _, idx)) = l.chips.iter().find(|(a, b, _)| col >= *a && col < *b) {
                     *strip.index_mut() = idx;
                     self.activate_strip_chip();
                 }
@@ -1273,17 +1344,16 @@ fn sp(text: impl Into<String>, style: Style) -> Span<'static> {
 
 fn status_row_text(p: &ModelPicker, e: &Entry) -> (String, bool) {
     if let Some(role) = &p.assigning {
-        return (
-            format!(" Assigning {role} — ⏎ assigns, ⎋ cancels"),
-            true,
-        );
+        return (format!(" Assigning {role} — ⏎ assigns, ⎋ cancels"), true);
     }
     let text = match e.kind {
-        EntryKind::Roles => {
-            "Model roles — cleared roles fall back to auto-selection".to_owned()
-        }
+        EntryKind::Roles => "Model roles — cleared roles fall back to auto-selection".to_owned(),
         EntryKind::Provider if e.locked => format!("{} · not configured", e.label),
-        EntryKind::Provider => format!("{} · {} models", e.label, e.annotation.as_deref().unwrap_or("0")),
+        EntryKind::Provider => format!(
+            "{} · {} models",
+            e.label,
+            e.annotation.as_deref().unwrap_or("0")
+        ),
         _ => "All available models".to_owned(),
     };
     (format!(" {text}"), false)
@@ -1301,10 +1371,14 @@ impl ModelPicker {
         match e.kind {
             EntryKind::Roles => {
                 if !self.focus_list {
-                    return format!("↑/↓ providers · ⏎/→ roles · Alt+←/Alt+→ tabs · {cancel} close");
+                    return format!(
+                        "↑/↓ providers · ⏎/→ roles · Alt+←/Alt+→ tabs · {cancel} close"
+                    );
                 }
                 if !self.query.is_empty() {
-                    return format!("↑/↓ rows · ⏎ pick · type to search · ← providers · {cancel} close");
+                    return format!(
+                        "↑/↓ rows · ⏎ pick · type to search · ← providers · {cancel} close"
+                    );
                 }
                 "↑/↓ rows · ⏎ pick · x clear".to_owned()
             }
@@ -1331,7 +1405,10 @@ impl ModelPicker {
                 }
             }
             if i == active {
-                spans.push(sp(format!("◀ {label} ▶"), st.accent.add_modifier(Modifier::BOLD)));
+                spans.push(sp(
+                    format!("◀ {label} ▶"),
+                    st.accent.add_modifier(Modifier::BOLD),
+                ));
             } else {
                 spans.push(sp(*label, st.dim));
             }
@@ -1370,9 +1447,11 @@ impl ModelPicker {
         if cost_w > 0 {
             cols.push((cost, cost_w));
         }
-        let meta: usize = cols.iter().map(|c| c.1).sum::<usize>()
-            + 2 * cols.len().saturating_sub(1);
-        let available = rw.saturating_sub(meta + usize::from(!cols.is_empty())).max(1);
+        let meta: usize =
+            cols.iter().map(|c| c.1).sum::<usize>() + 2 * cols.len().saturating_sub(1);
+        let available = rw
+            .saturating_sub(meta + usize::from(!cols.is_empty()))
+            .max(1);
         let mut line = pad(truncate_spans(left, available), available);
         if !cols.is_empty() {
             line.push(sp(" ", st.text));
@@ -1618,7 +1697,14 @@ impl ModelPicker {
             let mut line = vec![
                 cursor,
                 sp(" ", st.text),
-                sp(format!("{:<10}", role_label(role)), if i == self.roles_index { st.accent } else { st.text }),
+                sp(
+                    format!("{:<10}", role_label(role)),
+                    if i == self.roles_index {
+                        st.accent
+                    } else {
+                        st.text
+                    },
+                ),
                 sp("  ", st.text),
             ];
             line.extend(value);
@@ -1692,8 +1778,8 @@ impl ModelPicker {
         let start_for = |target: usize| {
             let mut start = 0;
             while start < target {
-                let sum: usize = (if start > 0 { 2 } else { 0 })
-                    + widths[start..=target].iter().sum::<usize>();
+                let sum: usize =
+                    (if start > 0 { 2 } else { 0 }) + widths[start..=target].iter().sum::<usize>();
                 if sum <= avail {
                     break;
                 }
@@ -1786,7 +1872,10 @@ impl Component for ModelPicker {
         // Sidebar viewport.
         let mut scroll = self.sidebar_scroll.get();
         if self.sidebar_follow.get() {
-            let ai = entries.iter().position(|e| e.id == self.active).unwrap_or(0);
+            let ai = entries
+                .iter()
+                .position(|e| e.id == self.active)
+                .unwrap_or(0);
             if ai < scroll {
                 scroll = ai;
             } else if ai >= scroll + content_rows {
@@ -1814,7 +1903,8 @@ impl Component for ModelPicker {
             let muted = e.locked
                 || (searching
                     && (e.kind == EntryKind::Roles
-                        || (e.kind == EntryKind::Provider && e.annotation.as_deref() == Some("0"))));
+                        || (e.kind == EntryKind::Provider
+                            && e.annotation.as_deref() == Some("0"))));
             let (icon, icon_style) = match e.kind {
                 EntryKind::Roles => ("✦", st.accent),
                 EntryKind::All => ("⬢", st.accent),
@@ -1866,7 +1956,15 @@ impl Component for ModelPicker {
         } else if locked_view {
             self.locked_lines(&st, bw, &entry)
         } else {
-            self.browser_lines(&st, bw, content_rows, &entry, &mut layout, list_abs_y, theme)
+            self.browser_lines(
+                &st,
+                bw,
+                content_rows,
+                &entry,
+                &mut layout,
+                list_abs_y,
+                theme,
+            )
         };
         body.resize(content_rows, Vec::new());
 
@@ -2039,7 +2137,10 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].display(), "zai/glm-5.3-flash");
         p.query = "claude".into();
-        assert!(p.rows().is_empty(), "unconfigured providers are not selectable");
+        assert!(
+            p.rows().is_empty(),
+            "unconfigured providers are not selectable"
+        );
     }
 
     #[test]
@@ -2054,8 +2155,22 @@ mod tests {
         p.handle_key(key(KeyCode::Enter)); // default chip
         let actions = p.take_actions();
         assert!(actions.contains(&Action::SetModel {
-            provider: p.current.as_deref().unwrap().split('/').next().unwrap().into(),
-            id: p.current.as_deref().unwrap().split_once('/').unwrap().1.into(),
+            provider: p
+                .current
+                .as_deref()
+                .unwrap()
+                .split('/')
+                .next()
+                .unwrap()
+                .into(),
+            id: p
+                .current
+                .as_deref()
+                .unwrap()
+                .split_once('/')
+                .unwrap()
+                .1
+                .into(),
         }));
         assert!(matches!(
             actions.last(),

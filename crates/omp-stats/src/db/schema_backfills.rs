@@ -3,14 +3,15 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use super::{
-    meta_value, set_meta, should_reset_backfill, CATALOG_BACKFILL_VERSION,
+    meta_value, reset_offsets, set_meta, should_reset_backfill, AGENT_TYPE_BACKFILL_KEY,
+    BACKFILL_COMPLETE, BACKFILL_PENDING, CATALOG_BACKFILL_VERSION, CATALOG_COST_BACKFILL_KEY,
     COST_REINGEST_BACKFILL_KEY, COST_UNPRICED_BACKFILL_KEY, FORK_DEDUPE_KEY,
-    NO_CACHE_INPUT_BACKFILL_KEY, PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY,
-    TOOL_CALLS_BACKFILL_KEY, USER_MESSAGES_BACKFILL_KEY, USER_MESSAGE_LINKS_REPAIR_KEY,
-    AGENT_TYPE_BACKFILL_KEY, CATALOG_COST_BACKFILL_KEY, BACKFILL_COMPLETE, BACKFILL_PENDING,
-    reset_offsets,
+    NO_CACHE_INPUT_BACKFILL_KEY, PRIORITY_PREMIUM_REQUESTS_BACKFILL_KEY, TOOL_CALLS_BACKFILL_KEY,
+    USER_MESSAGES_BACKFILL_KEY, USER_MESSAGE_LINKS_REPAIR_KEY,
 };
-use crate::catalog::{calculate_uncached_input_cost, calculate_usage_cost, get_catalog_cost, Usage};
+use crate::catalog::{
+    calculate_uncached_input_cost, calculate_usage_cost, get_catalog_cost, Usage,
+};
 use crate::types::AgentType;
 #[cfg(feature = "db_ingest")]
 use crate::types::{MessageStatsInput, UsageInputCost};
@@ -73,7 +74,8 @@ pub(crate) fn backfill_agent_type(conn: &Connection) -> Result<()> {
     drop(stmt);
     let tx = conn.unchecked_transaction()?;
     {
-        let mut update = tx.prepare("UPDATE messages SET agent_type = ?1 WHERE session_file = ?2")?;
+        let mut update =
+            tx.prepare("UPDATE messages SET agent_type = ?1 WHERE session_file = ?2")?;
         for file in &files {
             let agent_type = classify_agent_type(file);
             // Rows already default to 'main'; only the nested transcripts move.
@@ -82,7 +84,10 @@ pub(crate) fn backfill_agent_type(conn: &Connection) -> Result<()> {
             }
         }
     }
-    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", rusqlite::params![AGENT_TYPE_BACKFILL_KEY, BACKFILL_COMPLETE])?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![AGENT_TYPE_BACKFILL_KEY, BACKFILL_COMPLETE],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -131,7 +136,10 @@ pub(crate) fn backfill_missing_catalog_costs(conn: &Connection) -> Result<()> {
             // Never reprice recorded scheduled usage: a zero ingested for a
             // scheduled card is permanent. Re-parsing the session file is the
             // only repair.
-            if get_catalog_cost(&provider, &model).and_then(|c| c.time_based).is_some() {
+            if get_catalog_cost(&provider, &model)
+                .and_then(|c| c.time_based)
+                .is_some()
+            {
                 continue;
             }
             let usage = Usage {
@@ -147,10 +155,20 @@ pub(crate) fn backfill_missing_catalog_costs(conn: &Connection) -> Result<()> {
             if cost.total == 0.0 {
                 continue;
             }
-            update.execute(rusqlite::params![cost.input, cost.output, cost.cache_read, cost.cache_write, cost.total, id])?;
+            update.execute(rusqlite::params![
+                cost.input,
+                cost.output,
+                cost.cache_read,
+                cost.cache_write,
+                cost.total,
+                id
+            ])?;
         }
     }
-    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", rusqlite::params![CATALOG_COST_BACKFILL_KEY, CATALOG_BACKFILL_VERSION])?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![CATALOG_COST_BACKFILL_KEY, CATALOG_BACKFILL_VERSION],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -181,7 +199,8 @@ pub(crate) fn backfill_no_cache_input_costs(conn: &Connection) -> Result<()> {
     };
     let tx = conn.unchecked_transaction()?;
     {
-        let mut update = tx.prepare("UPDATE messages SET cost_no_cache_input = ?1 WHERE id = ?2")?;
+        let mut update =
+            tx.prepare("UPDATE messages SET cost_no_cache_input = ?1 WHERE id = ?2")?;
         for (id, provider, model, timestamp, input, cache_read, cache_write) in rows {
             let usage = Usage {
                 input,
@@ -190,11 +209,15 @@ pub(crate) fn backfill_no_cache_input_costs(conn: &Connection) -> Result<()> {
                 cache_write,
                 ..Usage::default()
             };
-            let cost = calculate_no_cache_input_cost(&provider, &model, &usage, timestamp).unwrap_or(0.0);
+            let cost =
+                calculate_no_cache_input_cost(&provider, &model, &usage, timestamp).unwrap_or(0.0);
             update.execute(rusqlite::params![cost, id])?;
         }
     }
-    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", rusqlite::params![NO_CACHE_INPUT_BACKFILL_KEY, BACKFILL_COMPLETE])?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![NO_CACHE_INPUT_BACKFILL_KEY, BACKFILL_COMPLETE],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -211,12 +234,13 @@ pub(crate) fn backfill_fork_duplicates(conn: &Connection) -> Result<()> {
         "DELETE FROM messages WHERE id NOT IN (SELECT MIN(id) FROM messages GROUP BY entry_id, timestamp);
          DELETE FROM user_messages WHERE id NOT IN (SELECT MIN(id) FROM user_messages GROUP BY entry_id, timestamp);",
     )?;
-    tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)", rusqlite::params![FORK_DEDUPE_KEY, BACKFILL_COMPLETE])?;
+    tx.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![FORK_DEDUPE_KEY, BACKFILL_COMPLETE],
+    )?;
     tx.commit()?;
     Ok(())
 }
-
-
 
 /// TS `calculateCatalogCost`: price the four stored buckets (plus
 /// orchestration, when the input carries it) at the request timestamp.
@@ -244,7 +268,9 @@ fn normalize_usage_cost(cost: &UsageInputCost) -> crate::catalog::UsageCost {
         output,
         cache_read,
         cache_write,
-        total: cost.total.unwrap_or(input + output + cache_read + cache_write),
+        total: cost
+            .total
+            .unwrap_or(input + output + cache_read + cache_write),
     }
 }
 
@@ -274,19 +300,43 @@ pub(crate) fn resolve_stored_cost(stats: &MessageStatsInput) -> ResolvedCost {
     let catalog = get_catalog_cost(&stats.provider, &stats.model);
 
     if let Some(stored) = stored_cost {
-        if stored.total != 0.0 || catalog.as_ref().map(|c| c.time_based.is_some()).unwrap_or(false) {
-            return ResolvedCost { cost: stored, unpriced: false };
+        if stored.total != 0.0
+            || catalog
+                .as_ref()
+                .map(|c| c.time_based.is_some())
+                .unwrap_or(false)
+        {
+            return ResolvedCost {
+                cost: stored,
+                unpriced: false,
+            };
         }
     }
     // Without a request timestamp a scheduled card has no tariff to select,
     // and the epoch would silently become one.
-    if !has_request_timestamp(stats.timestamp) && catalog.as_ref().map(|c| c.time_based.is_some()).unwrap_or(false) {
-        return ResolvedCost { cost: stored_cost.unwrap_or(zero), unpriced: true };
+    if !has_request_timestamp(stats.timestamp)
+        && catalog
+            .as_ref()
+            .map(|c| c.time_based.is_some())
+            .unwrap_or(false)
+    {
+        return ResolvedCost {
+            cost: stored_cost.unwrap_or(zero),
+            unpriced: true,
+        };
     }
-    let cost = calculate_catalog_cost(&stats.provider, &stats.model, &usage_from_input(&stats.usage), stats.timestamp)
-        .or(stored_cost)
-        .unwrap_or(zero);
-    ResolvedCost { cost, unpriced: false }
+    let cost = calculate_catalog_cost(
+        &stats.provider,
+        &stats.model,
+        &usage_from_input(&stats.usage),
+        stats.timestamp,
+    )
+    .or(stored_cost)
+    .unwrap_or(zero);
+    ResolvedCost {
+        cost,
+        unpriced: false,
+    }
 }
 
 /// TS `calculateNoCacheInputCost`: price the prompt as if fully uncached.
@@ -303,9 +353,16 @@ pub(crate) fn calculate_no_cache_input_cost(
         return None;
     }
     let orch = tokens.orchestration.unwrap_or_default();
-    let prompt_input_tokens =
-        tokens.input + tokens.cache_read + tokens.cache_write + orch.input.unwrap_or(0) + orch.cache_read.unwrap_or(0);
-    Some(calculate_uncached_input_cost(&cost, prompt_input_tokens, Some(timestamp)))
+    let prompt_input_tokens = tokens.input
+        + tokens.cache_read
+        + tokens.cache_write
+        + orch.input.unwrap_or(0)
+        + orch.cache_read.unwrap_or(0);
+    Some(calculate_uncached_input_cost(
+        &cost,
+        prompt_input_tokens,
+        Some(timestamp),
+    ))
 }
 
 /// Map the wire `UsageInput` onto the pricing `Usage` buckets.
@@ -319,12 +376,17 @@ pub(crate) fn usage_from_input(input: &crate::types::UsageInput) -> Usage {
         output: input.output,
         cache_read: input.cache_read,
         cache_write: input.cache_write,
-        orchestration: input.orchestration.map(|o| crate::catalog::OrchestrationUsage {
-            input: o.input,
-            cache_read: o.cache_read,
-            output: o.output,
+        orchestration: input
+            .orchestration
+            .map(|o| crate::catalog::OrchestrationUsage {
+                input: o.input,
+                cache_read: o.cache_read,
+                output: o.output,
+            }),
+        cttl: input.cttl.map(|c| crate::catalog::CttlUsage {
+            ephemeral5m: c.ephemeral5m,
+            ephemeral1h: c.ephemeral1h,
         }),
-        cttl: input.cttl.map(|c| crate::catalog::CttlUsage { ephemeral5m: c.ephemeral5m, ephemeral1h: c.ephemeral1h }),
         ..Usage::default()
     }
 }
@@ -344,8 +406,13 @@ mod orchestration_tests {
             "cttl": {"ephemeral5m": 1000, "ephemeral1h": 2000}
         }))
         .expect("wire usage");
-        let cost = calculate_catalog_cost("anthropic", "claude-sonnet-5-5", &usage_from_input(&input), 1_792_000_000_000)
-            .expect("priced");
+        let cost = calculate_catalog_cost(
+            "anthropic",
+            "claude-sonnet-5-5",
+            &usage_from_input(&input),
+            1_792_000_000_000,
+        )
+        .expect("priced");
         let close = |a: f64, b: f64| (a - b).abs() <= 1e-12;
         assert!(close(cost.input, 0.0028), "{cost:?}");
         assert!(close(cost.output, 0.006), "{cost:?}");

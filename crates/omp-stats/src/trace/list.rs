@@ -15,7 +15,7 @@ use crate::paths::{path_relative, session_root_of, session_roots};
 use crate::rollup::get_session_rollups;
 use crate::types::SessionSummary;
 
-use super::{mtime_ms, TITLE_SCAN_BYTES, LIST_FOLD_LIMIT};
+use super::{mtime_ms, LIST_FOLD_LIMIT, TITLE_SCAN_BYTES};
 
 /// Session list metadata read from the fixed title slot and session header.
 #[derive(Debug, Clone)]
@@ -55,7 +55,9 @@ fn read_session_metadata_head(file: &str) -> Option<String> {
         let mut decoder = flate2::read::GzDecoder::new(file_handle).take(TITLE_SCAN_BYTES as u64);
         let _ = decoder.read_to_end(&mut head); // partial head kept on a corrupt tail
     } else {
-        let _ = file_handle.take(TITLE_SCAN_BYTES as u64).read_to_end(&mut head);
+        let _ = file_handle
+            .take(TITLE_SCAN_BYTES as u64)
+            .read_to_end(&mut head);
     }
     Some(String::from_utf8_lossy(&head).into_owned())
 }
@@ -65,11 +67,16 @@ fn read_session_metadata_head(file: &str) -> Option<String> {
 /// the lock released.
 fn read_session_metadata(file: &str) -> SessionMetadata {
     let Ok(meta) = std::fs::metadata(file) else {
-        return SessionMetadata { title: None, cwd: None };
+        return SessionMetadata {
+            title: None,
+            cwd: None,
+        };
     };
     let mtime = mtime_ms(&meta);
     {
-        let cache = METADATA_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache = METADATA_CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((cached_mtime, metadata)) = cache.get(file) {
             if *cached_mtime == mtime {
                 return metadata.clone();
@@ -83,7 +90,9 @@ fn read_session_metadata(file: &str) -> SessionMetadata {
             if line.trim().is_empty() {
                 continue;
             }
-            let Ok(parsed) = serde_json::from_str::<Value>(line) else { continue };
+            let Ok(parsed) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
             if parsed.get("type").and_then(Value::as_str) == Some("title") {
                 if let Some(t) = parsed.get("title").and_then(Value::as_str) {
                     title = Some(t.to_string());
@@ -92,15 +101,23 @@ fn read_session_metadata(file: &str) -> SessionMetadata {
             }
             if parsed.get("type").and_then(Value::as_str) == Some("session") {
                 if title.is_none() {
-                    title = parsed.get("title").and_then(Value::as_str).map(ToString::to_string);
+                    title = parsed
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
                 }
-                cwd = parsed.get("cwd").and_then(Value::as_str).map(ToString::to_string);
+                cwd = parsed
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
                 break;
             }
         }
     }
     let metadata = SessionMetadata { title, cwd };
-    let mut cache = METADATA_CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = METADATA_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.insert(file.to_string(), (mtime, metadata.clone()));
     metadata
 }
@@ -120,19 +137,29 @@ fn basename_timestamp(base: &str) -> Option<i64> {
     let b = base.as_bytes();
     let digit = |i: usize| b[i].is_ascii_digit();
     if b.len() < 25
-        || !digit(0) || !digit(1) || !digit(2) || !digit(3)
+        || !digit(0)
+        || !digit(1)
+        || !digit(2)
+        || !digit(3)
         || b[4] != b'-'
-        || !digit(5) || !digit(6)
+        || !digit(5)
+        || !digit(6)
         || b[7] != b'-'
-        || !digit(8) || !digit(9)
+        || !digit(8)
+        || !digit(9)
         || b[10] != b'T'
-        || !digit(11) || !digit(12)
+        || !digit(11)
+        || !digit(12)
         || b[13] != b'-'
-        || !digit(14) || !digit(15)
+        || !digit(14)
+        || !digit(15)
         || b[16] != b'-'
-        || !digit(17) || !digit(18)
+        || !digit(17)
+        || !digit(18)
         || b[19] != b'-'
-        || !digit(20) || !digit(21) || !digit(22)
+        || !digit(20)
+        || !digit(21)
+        || !digit(22)
         || &b[23..25] != b"Z_"
     {
         return None;
@@ -169,13 +196,20 @@ fn scan_disk_roots(limit: i64) -> Result<Vec<DiskRoot>> {
         .collect::<Vec<_>>()
         .join("\n");
     {
-        let memo = DISK_ROOTS_MEMO.lock().map_err(|_| anyhow::anyhow!("disk roots memo poisoned"))?;
+        let memo = DISK_ROOTS_MEMO
+            .lock()
+            .map_err(|_| anyhow::anyhow!("disk roots memo poisoned"))?;
         if let Some(memo) = memo.as_ref() {
             if memo.sessions_dir == sessions_dir_str
                 && memo.limit >= limit
                 && now_ms() - memo.at_ms < DISK_ROOTS_TTL_MS
             {
-                return Ok(memo.roots.iter().take(limit.max(0) as usize).cloned().collect());
+                return Ok(memo
+                    .roots
+                    .iter()
+                    .take(limit.max(0) as usize)
+                    .cloned()
+                    .collect());
             }
         }
     }
@@ -209,7 +243,11 @@ fn scan_disk_roots(limit: i64) -> Result<Vec<DiskRoot>> {
             });
         }
     }
-    roots.sort_by(|a, b| b.mtime_ms.partial_cmp(&a.mtime_ms).unwrap_or(std::cmp::Ordering::Equal));
+    roots.sort_by(|a, b| {
+        b.mtime_ms
+            .partial_cmp(&a.mtime_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     roots.truncate(limit.max(0) as usize);
     let memo = DiskRootsMemo {
         at_ms: now_ms(),
@@ -217,7 +255,9 @@ fn scan_disk_roots(limit: i64) -> Result<Vec<DiskRoot>> {
         limit,
         roots: roots.clone(),
     };
-    let mut slot = DISK_ROOTS_MEMO.lock().map_err(|_| anyhow::anyhow!("disk roots memo poisoned"))?;
+    let mut slot = DISK_ROOTS_MEMO
+        .lock()
+        .map_err(|_| anyhow::anyhow!("disk roots memo poisoned"))?;
     *slot = Some(memo);
     Ok(roots)
 }
@@ -262,7 +302,11 @@ pub fn list_session_summaries(limit: i64, q: Option<&str>) -> Result<Vec<Session
         }
         let is_child = segments.len() > 2;
         let root_file = if is_child {
-            format!("{sessions_dir_str}/{}/{segments1}.jsonl", segments[0], segments1 = segments[1])
+            format!(
+                "{sessions_dir_str}/{}/{segments1}.jsonl",
+                segments[0],
+                segments1 = segments[1]
+            )
         } else {
             row.session_file.clone()
         };
@@ -352,7 +396,9 @@ pub fn list_session_summaries(limit: i64, q: Option<&str>) -> Result<Vec<Session
         .map(|mut fold| {
             let metadata = read_session_metadata(&fold.summary.file);
             fold.summary.title = metadata.title;
-            fold.summary.folder = metadata.cwd.unwrap_or_else(|| extract_folder_from_path(&fold.summary.file));
+            fold.summary.folder = metadata
+                .cwd
+                .unwrap_or_else(|| extract_folder_from_path(&fold.summary.file));
             fold.summary.models = fold.model_set.into_iter().collect();
             fold.summary
         })
@@ -361,7 +407,11 @@ pub fn list_session_summaries(limit: i64, q: Option<&str>) -> Result<Vec<Session
     if let Some(needle) = q.map(str::trim).filter(|s| !s.is_empty()) {
         let needle = needle.to_lowercase();
         rows.retain(|row| {
-            row.title.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+            row.title
+                .as_deref()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&needle)
                 || row.folder.to_lowercase().contains(&needle)
                 || PathBuf::from(&row.file)
                     .file_name()

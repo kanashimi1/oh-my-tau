@@ -98,7 +98,10 @@ pub fn plan(req: &PlanReq) -> Result<LamPlan, String> {
         return Err("lam: input is empty".into());
     }
     if req.n > req.max_chars {
-        return Err(format!("lam: input of {} chars exceeds {MAX_CHARS_ENV}={}", req.n, req.max_chars));
+        return Err(format!(
+            "lam: input of {} chars exceeds {MAX_CHARS_ENV}={}",
+            req.n, req.max_chars
+        ));
     }
     if req.window == 0 {
         return Err("lam: window must be ≥ 1".into());
@@ -119,7 +122,15 @@ pub fn plan(req: &PlanReq) -> Result<LamPlan, String> {
         }
     };
     if req.n <= req.window {
-        return finish(LamPlan { n: req.n, tau, k: 1, depth: 0, max_leaves: 1, max_calls: 1, direct: true });
+        return finish(LamPlan {
+            n: req.n,
+            tau,
+            k: 1,
+            depth: 0,
+            max_leaves: 1,
+            max_calls: 1,
+            direct: true,
+        });
     }
     let k = match req.fanout {
         Some(0) => return Err("lam: fan-out must be ≥ 2".into()),
@@ -134,8 +145,18 @@ pub fn plan(req: &PlanReq) -> Result<LamPlan, String> {
             return Err("lam: plan exceeds the hard depth bound".into());
         }
     }
-    let max_leaves = k.saturating_pow(u32::try_from(depth).unwrap_or(u32::MAX)).min(req.n);
-    finish(LamPlan { n: req.n, tau, k, depth, max_leaves, max_calls: max_leaves.saturating_add(req.extra_calls), direct: false })
+    let max_leaves = k
+        .saturating_pow(u32::try_from(depth).unwrap_or(u32::MAX))
+        .min(req.n);
+    finish(LamPlan {
+        n: req.n,
+        tau,
+        k,
+        depth,
+        max_leaves,
+        max_calls: max_leaves.saturating_add(req.extra_calls),
+        direct: false,
+    })
 }
 
 fn arg_u64(args: &Value, key: &str) -> Option<u64> {
@@ -144,8 +165,15 @@ fn arg_u64(args: &Value, key: &str) -> Option<u64> {
 
 fn plan_op(args: &Value) -> Result<Value, String> {
     let limits = Limits::effective();
-    let used = SESSION.stats(limits).get("calls").and_then(Value::as_u64).unwrap_or(0);
-    let max_chars = std::env::var(MAX_CHARS_ENV).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_MAX_CHARS);
+    let used = SESSION
+        .stats(limits)
+        .get("calls")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let max_chars = std::env::var(MAX_CHARS_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(DEFAULT_MAX_CHARS);
     let req = PlanReq {
         n: arg_u64(args, "n").ok_or("lam: n must be a non-negative integer")?,
         window: arg_u64(args, "window").ok_or("lam: window must be a positive integer")?,
@@ -177,8 +205,11 @@ pub fn freeze_wire(raw: Option<&Value>) -> Result<Option<FrozenRubric>, String> 
 }
 
 fn freeze_op(args: &Value) -> Result<Value, String> {
-    let rubric = FrozenRubric::freeze(args.get("rubric").ok_or("rubric_freeze: missing `rubric`")?)
-        .map_err(|e| format!("rubric_freeze: {e}"))?;
+    let rubric = FrozenRubric::freeze(
+        args.get("rubric")
+            .ok_or("rubric_freeze: missing `rubric`")?,
+    )
+    .map_err(|e| format!("rubric_freeze: {e}"))?;
     let mut map = FROZEN.lock();
     // Same content = same id: keep the first commit (its timestamp is the proof of order).
     let kept = map.entry(rubric.id.clone()).or_insert(rubric);
@@ -190,7 +221,11 @@ fn scorer_model(args: &Value) -> String {
         .and_then(Value::as_str)
         .filter(|m| !m.is_empty())
         .map(str::to_string)
-        .or_else(|| std::env::var(RUBRIC_MODEL_ENV).ok().filter(|m| !m.is_empty()))
+        .or_else(|| {
+            std::env::var(RUBRIC_MODEL_ENV)
+                .ok()
+                .filter(|m| !m.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_MODEL.to_string())
 }
 
@@ -205,26 +240,58 @@ pub async fn score_with(
     args: &Value,
     signal: &AbortSignal,
 ) -> Result<Value, String> {
-    let id = args.get("id").and_then(Value::as_str).ok_or("rubric_score: missing `id`")?;
-    let rubric = FROZEN
-        .lock()
-        .get(id)
-        .cloned()
-        .ok_or_else(|| format!("rubric_score: rubric {id} was never frozen (call rubric_freeze before the child runs)"))?;
-    let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or_default();
-    let output = args.get("output").and_then(Value::as_str).unwrap_or_default();
-    let verified = args.get("verified").and_then(Value::as_f64).map(|v| v.clamp(0.0, 1.0));
-    let run_id = args.get("run_id").and_then(Value::as_str).unwrap_or("llm_query");
-    let source = args.get("source").and_then(Value::as_str).unwrap_or("llm_query");
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("rubric_score: missing `id`")?;
+    let rubric = FROZEN.lock().get(id).cloned().ok_or_else(|| {
+        format!(
+            "rubric_score: rubric {id} was never frozen (call rubric_freeze before the child runs)"
+        )
+    })?;
+    let prompt = args
+        .get("prompt")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let output = args
+        .get("output")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let verified = args
+        .get("verified")
+        .and_then(Value::as_f64)
+        .map(|v| v.clamp(0.0, 1.0));
+    let run_id = args
+        .get("run_id")
+        .and_then(Value::as_str)
+        .unwrap_or("llm_query");
+    let source = args
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or("llm_query");
     let (gate, per) = if output.trim().is_empty() {
         (false, vec![0.0; rubric.criteria.len()])
     } else {
-        let q = json!({"prompt": rubric.scorer_prompt(prompt, output), "model": scorer_model(args)});
+        let q =
+            json!({"prompt": rubric.scorer_prompt(prompt, output), "model": scorer_model(args)});
         let reply = session.query(backend, limits, &q, signal).await?;
-        let text = reply.get("text").and_then(Value::as_str).unwrap_or_default();
-        rubric::parse_scorer_reply(text, rubric.criteria.len()).map_err(|e| format!("rubric_score: {e}"))?
+        let text = reply
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        rubric::parse_scorer_reply(text, rubric.criteria.len())
+            .map_err(|e| format!("rubric_score: {e}"))?
     };
-    let rec = RubricRecord::from_verdict(source, &rubric, run_id, prompt.len(), output.len(), gate, per, verified)?;
+    let rec = RubricRecord::from_verdict(
+        source,
+        &rubric,
+        run_id,
+        prompt.len(),
+        output.len(),
+        gate,
+        per,
+        verified,
+    )?;
     rec.append_log();
     Ok(json!(rec))
 }
@@ -242,7 +309,10 @@ impl Backend for HostBackend {
         Box::pin(async move {
             #[cfg(test)]
             {
-                let test_backend = super::rlm::TEST_BACKEND.lock().expect("test backend").clone();
+                let test_backend = super::rlm::TEST_BACKEND
+                    .lock()
+                    .expect("test backend")
+                    .clone();
                 if let Some(b) = test_backend {
                     return b.complete(model, prompt, signal).await;
                 }
@@ -261,16 +331,28 @@ pub struct SessionScorer {
 impl SessionScorer {
     #[must_use]
     pub fn new(signal: AbortSignal) -> Self {
-        Self { model: scorer_model(&Value::Null), signal }
+        Self {
+            model: scorer_model(&Value::Null),
+            signal,
+        }
     }
 }
 
 impl RubricScorer for SessionScorer {
-    fn complete<'a>(&'a self, prompt: &'a str) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+    fn complete<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
         Box::pin(async move {
             let q = json!({"prompt": prompt, "model": self.model});
-            let reply = SESSION.query(&HostBackend, Limits::effective(), &q, &self.signal).await?;
-            Ok(reply.get("text").and_then(Value::as_str).unwrap_or_default().to_string())
+            let reply = SESSION
+                .query(&HostBackend, Limits::effective(), &q, &self.signal)
+                .await?;
+            Ok(reply
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string())
         })
     }
 }
@@ -280,7 +362,16 @@ pub async fn handle(op: &str, args: &Value, ctx: &OpCtx) -> Option<Result<Value,
     match op {
         "__lam_plan__" => Some(plan_op(args)),
         "__rubric_freeze__" => Some(freeze_op(args)),
-        "__rubric_score__" => Some(score_with(&SESSION, &HostBackend, Limits::effective(), args, &ctx.signal).await),
+        "__rubric_score__" => Some(
+            score_with(
+                &SESSION,
+                &HostBackend,
+                Limits::effective(),
+                args,
+                &ctx.signal,
+            )
+            .await,
+        ),
         "__rubric_rank__" => Some(rank_op(args)),
         _ => None,
     }
@@ -292,7 +383,10 @@ fn rank_op(args: &Value) -> Result<Value, String> {
             .and_then(Value::as_array)
             .ok_or_else(|| format!("rubric_rank: `{k}` must be an array of numbers"))?
             .iter()
-            .map(|v| v.as_f64().ok_or_else(|| format!("rubric_rank: `{k}` must contain only numbers")))
+            .map(|v| {
+                v.as_f64()
+                    .ok_or_else(|| format!("rubric_rank: `{k}` must contain only numbers"))
+            })
             .collect()
     };
     let (scores, verified) = (nums("scores")?, nums("verified")?);
@@ -300,7 +394,9 @@ fn rank_op(args: &Value) -> Result<Value, String> {
         return Err("rubric_rank: scores and verified differ in length".into());
     }
     let margin = args.get("margin").and_then(Value::as_f64).unwrap_or(0.1);
-    Ok(json!({"loss": rubric::rank_loss(&scores, &verified, margin), "pairs_skipped": rubric::rank_loss(&scores, &verified, margin).is_none()}))
+    Ok(
+        json!({"loss": rubric::rank_loss(&scores, &verified, margin), "pairs_skipped": rubric::rank_loss(&scores, &verified, margin).is_none()}),
+    )
 }
 
 #[cfg(test)]
@@ -309,7 +405,15 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn req(n: u64, window: u64, remaining: u64) -> PlanReq {
-        PlanReq { n, window, tau: None, fanout: None, extra_calls: 0, remaining_calls: remaining, max_chars: 1 << 30 }
+        PlanReq {
+            n,
+            window,
+            tau: None,
+            fanout: None,
+            extra_calls: 0,
+            remaining_calls: remaining,
+            max_chars: 1 << 30,
+        }
     }
 
     /// Reference execution of Φ's recursion: (rank reached, leaf count).
@@ -337,13 +441,23 @@ mod tests {
 
     #[test]
     fn plan_terminates_and_bounds_hold() {
-        for (n, w, fan) in [(10_000, 700, None), (1_000_000, 4_000, None), (50_000, 100, Some(3)), (257, 2, Some(2)), (9_999, 10, Some(7))] {
+        for (n, w, fan) in [
+            (10_000, 700, None),
+            (1_000_000, 4_000, None),
+            (50_000, 100, Some(3)),
+            (257, 2, Some(2)),
+            (9_999, 10, Some(7)),
+        ] {
             let mut r = req(n, w, u64::MAX);
             r.fanout = fan;
             let p = plan(&r).unwrap();
             let (rank, leaves) = simulate(n, p.tau, p.k, 0);
             assert!(rank <= p.depth, "rank {rank} > planned depth {}", p.depth);
-            assert!(leaves <= p.max_leaves, "leaves {leaves} > bound {}", p.max_leaves);
+            assert!(
+                leaves <= p.max_leaves,
+                "leaves {leaves} > bound {}",
+                p.max_leaves
+            );
             assert!(p.depth <= MAX_DEPTH);
         }
     }
@@ -377,11 +491,20 @@ mod tests {
 
     struct Scorer(AtomicU64, &'static str);
     impl Backend for Scorer {
-        fn complete<'a>(&'a self, _m: &'a str, _p: &'a str, _s: &'a AbortSignal) -> BoxFut<'a, Result<(String, Usage, Model), String>> {
+        fn complete<'a>(
+            &'a self,
+            _m: &'a str,
+            _p: &'a str,
+            _s: &'a AbortSignal,
+        ) -> BoxFut<'a, Result<(String, Usage, Model), String>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             let text = self.1.to_string();
             Box::pin(async move {
-                let usage = Usage { input: 10, output: 5, ..Usage::default() };
+                let usage = Usage {
+                    input: 10,
+                    output: 5,
+                    ..Usage::default()
+                };
                 let model: Model = serde_json::from_value(json!({
                     "id": "mock-1", "name": "Mock", "api": "mock-api", "provider": "mock",
                     "baseUrl": "http://localhost", "reasoning": false, "input": ["text"],
@@ -397,26 +520,53 @@ mod tests {
     #[tokio::test]
     async fn rubric_must_be_frozen_then_scores_and_shares_budget() {
         let session = Session::default();
-        let backend = Scorer(AtomicU64::new(0), "{\"success\": true, \"scores\": [1, 0.5]}");
-        let limits = Limits { max_depth: 2, max_calls: 1, max_tokens: 1_000_000 };
+        let backend = Scorer(
+            AtomicU64::new(0),
+            "{\"success\": true, \"scores\": [1, 0.5]}",
+        );
+        let limits = Limits {
+            max_depth: 2,
+            max_calls: 1,
+            max_tokens: 1_000_000,
+        };
         let signal = AbortSignal::never();
         // never frozen → refused
-        let err = score_with(&session, &backend, limits, &json!({"id": "rb-deadbeef", "output": "x"}), &signal).await.unwrap_err();
+        let err = score_with(
+            &session,
+            &backend,
+            limits,
+            &json!({"id": "rb-deadbeef", "output": "x"}),
+            &signal,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("never frozen"), "{err}");
         let frozen = freeze_op(&json!({"rubric": [{"criterion": "right", "weight": 1}, {"criterion": "short", "weight": 1}]})).unwrap();
         let id = frozen["id"].as_str().unwrap();
         let args = json!({"id": id, "prompt": "q", "output": "a", "verified": 1.0});
-        let rec = score_with(&session, &backend, limits, &args, &signal).await.unwrap();
+        let rec = score_with(&session, &backend, limits, &args, &signal)
+            .await
+            .unwrap();
         assert!((rec["score"].as_f64().unwrap() - 0.75).abs() < 1e-12);
         assert_eq!(rec["verified"], 1.0);
         assert!(rec["scored_ms"].as_u64() > rec["frozen_ms"].as_u64());
         // scorer call is charged to the shared ledger: the 1-call budget is now spent
         let again = json!({"id": id, "prompt": "q", "output": "different", "verified": 0.0});
-        let err = score_with(&session, &backend, limits, &again, &signal).await.unwrap_err();
+        let err = score_with(&session, &backend, limits, &again, &signal)
+            .await
+            .unwrap_err();
         assert!(err.contains("call budget exhausted"), "{err}");
         assert_eq!(backend.0.load(Ordering::SeqCst), 1);
         // empty output: gate 0, no scorer call, score exactly 0
-        let empty = score_with(&session, &backend, limits, &json!({"id": id, "output": "  "}), &signal).await.unwrap();
+        let empty = score_with(
+            &session,
+            &backend,
+            limits,
+            &json!({"id": id, "output": "  "}),
+            &signal,
+        )
+        .await
+        .unwrap();
         assert_eq!(empty["score"], 0.0);
         assert_eq!(backend.0.load(Ordering::SeqCst), 1);
     }

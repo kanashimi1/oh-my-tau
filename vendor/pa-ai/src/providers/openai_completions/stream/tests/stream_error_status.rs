@@ -79,11 +79,8 @@ async fn rejected_request_records_http_status() {
 
 #[test]
 fn error_status_round_trips_as_ts_error_status_key() {
-    let mut message = crate::event_stream::initial_assistant_message(
-        "openai-completions",
-        "openai",
-        "gpt-5.5",
-    );
+    let mut message =
+        crate::event_stream::initial_assistant_message("openai-completions", "openai", "gpt-5.5");
     message.stop_reason = StopReason::Error;
     message.error_message = Some("Rate limit reached".into());
     message.error_status = Some(429);

@@ -116,7 +116,9 @@ impl Herdr {
             return None;
         }
         let bin = PathBuf::from(std::env::var_os("HERDR_BIN_PATH")?);
-        let pane = std::env::var("HERDR_PANE_ID").ok().filter(|p| !p.is_empty())?;
+        let pane = std::env::var("HERDR_PANE_ID")
+            .ok()
+            .filter(|p| !p.is_empty())?;
         // Nested/test processes inherit HERDR_ENV=1 from a pane owned by the
         // TS `omp` integration (source `herdr:omp`). Reporting from them is
         // rejected server-side (owner conflict; our reports carry resume
@@ -132,7 +134,12 @@ impl Herdr {
     /// Point the reporter at a new session: rebuilds the resume command and
     /// queues `pane report-agent-session` so Herdr restores this session in
     /// this pane after a server restart. `model_ref` is `provider/id`.
-    pub fn set_session(&self, session_file: Option<&Path>, model_ref: Option<&str>, start_source: &str) {
+    pub fn set_session(
+        &self,
+        session_file: Option<&Path>,
+        model_ref: Option<&str>,
+        start_source: &str,
+    ) {
         let mut resume = lock(&self.resume);
         *resume = Vec::new();
         if let Some(f) = session_file {
@@ -343,8 +350,7 @@ fn worker(weak: std::sync::Weak<Herdr>) {
     }
 }
 
-static GLOBAL: std::sync::LazyLock<Option<Arc<Herdr>>> =
-    std::sync::LazyLock::new(Herdr::detect);
+static GLOBAL: std::sync::LazyLock<Option<Arc<Herdr>>> = std::sync::LazyLock::new(Herdr::detect);
 
 /// One bounded `pane process-info` probe: true when the pane's foreground
 /// process is the TS `omp` agent (i.e. the pane is owned by the `herdr:omp`
@@ -419,10 +425,7 @@ mod tests {
     fn stub_bin(dir: &Path) -> PathBuf {
         let bin = dir.join("herdr-stub");
         let log = dir.join("herdr-stub.log");
-        let script = format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
-            log.display()
-        );
+        let script = format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n", log.display());
         std::fs::write(&bin, script).unwrap();
         std::fs::set_permissions(&bin, {
             use std::os::unix::fs::PermissionsExt;
@@ -440,10 +443,7 @@ mod tests {
 
     /// Poll the stub log until `pred` holds (or the deadline), then return
     /// the log lines — deliveries are async, so assertions must not race them.
-    fn wait_until(
-        dir: &Path,
-        pred: impl Fn(&[String]) -> bool,
-    ) -> Vec<String> {
+    fn wait_until(dir: &Path, pred: impl Fn(&[String]) -> bool) -> Vec<String> {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             let lines = read_log(dir);
@@ -455,7 +455,8 @@ mod tests {
     }
 
     fn tmp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("omp-herdr-test-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("omp-herdr-test-{}-{}", name, std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -613,15 +614,22 @@ mod tests {
         let dir = tmp("session");
         let bin = stub_bin(&dir);
         let h = Herdr::new(bin, "pane-9".into());
-        h.set_session(Some(Path::new("/tmp/a.jsonl")), Some("openai/gpt-5"), "resume");
+        h.set_session(
+            Some(Path::new("/tmp/a.jsonl")),
+            Some("openai/gpt-5"),
+            "resume",
+        );
         settle();
-        h.set_session(Some(Path::new("/tmp/b.jsonl")), Some("openai/gpt-5"), "fork");
+        h.set_session(
+            Some(Path::new("/tmp/b.jsonl")),
+            Some("openai/gpt-5"),
+            "fork",
+        );
         settle();
         h.release_blocking();
 
         let lines = wait_until(&dir, |l| {
-            l.iter().any(|l| l == "release-agent")
-                && l.iter().any(|l| l == "report-agent-session")
+            l.iter().any(|l| l == "release-agent") && l.iter().any(|l| l == "report-agent-session")
         });
         assert!(lines.iter().any(|l| l == "--session-start-source"));
         assert!(lines.iter().any(|l| l == "fork"));

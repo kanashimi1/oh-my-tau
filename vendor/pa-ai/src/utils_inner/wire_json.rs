@@ -442,11 +442,19 @@ mod tests {
     fn insert_replaces_in_place_like_preserve_order_map() {
         let mut wire = WireObject::new();
         let mut map = Map::new();
-        for (key, value) in [("role", "a"), ("content", "b"), ("x", "c"), ("content", "d")] {
+        for (key, value) in [
+            ("role", "a"),
+            ("content", "b"),
+            ("x", "c"),
+            ("content", "d"),
+        ] {
             wire.insert(key, value);
             map.insert(key.to_string(), json!(value));
         }
-        assert_eq!(to_json_string(&wire), Value::Object(map.clone()).to_string());
+        assert_eq!(
+            to_json_string(&wire),
+            Value::Object(map.clone()).to_string()
+        );
         assert_eq!(Wire::Object(wire).to_value(), Value::Object(map));
     }
 
@@ -457,14 +465,26 @@ mod tests {
             unreachable!()
         };
         let pieces = Wire::join(
-            [Cow::from("x\"y"), Cow::from("\u{e9}\t"), Cow::from(String::new())],
+            [
+                Cow::from("x\"y"),
+                Cow::from("\u{e9}\t"),
+                Cow::from(String::new()),
+            ],
             "\n\n",
         );
         let wire = obj([
             ("text", pieces),
             ("arguments", Wire::JsonText(args_map)),
             ("input", Wire::RefMap(args_map)),
-            ("url", Wire::Concat(vec!["data:".into(), "image/png".into(), ";base64,".into(), "QUJD".into()])),
+            (
+                "url",
+                Wire::Concat(vec![
+                    "data:".into(),
+                    "image/png".into(),
+                    ";base64,".into(),
+                    "QUJD".into(),
+                ]),
+            ),
         ]);
         let expected = json!({
             "text": "x\"y\n\n\u{e9}\t\n\n",

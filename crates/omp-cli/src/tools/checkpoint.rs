@@ -96,7 +96,9 @@ pub struct Shared {
     inner: Mutex<SharedInner>,
 }
 
-static SHARED: LazyLock<Shared> = LazyLock::new(|| Shared { inner: Mutex::new(SharedInner::default()) });
+static SHARED: LazyLock<Shared> = LazyLock::new(|| Shared {
+    inner: Mutex::new(SharedInner::default()),
+});
 
 /// The shared registry used by the tools and the agent runtime.
 pub fn shared() -> &'static Shared {
@@ -183,7 +185,12 @@ struct RewindTool {
 }
 
 fn result_with_text(text: &str, details: Value) -> AgentToolResult {
-    AgentToolResult { content: vec![ToolResultContent::text(text)], details, terminate: None, is_error: None }
+    AgentToolResult {
+        content: vec![ToolResultContent::text(text)],
+        details,
+        terminate: None,
+        is_error: None,
+    }
 }
 
 impl AgentTool for CheckpointTool {
@@ -251,7 +258,12 @@ impl AgentTool for RewindTool {
                 }
                 bail!("No active checkpoint. Create a checkpoint before calling rewind.");
             }
-            let report = params.get("report").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            let report = params
+                .get("report")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             if report.is_empty() {
                 bail!("Report cannot be empty.");
             }
@@ -266,13 +278,19 @@ impl AgentTool for RewindTool {
 /// Registered `checkpoint` tool, sharing the process-wide [`Shared`] state.
 #[must_use]
 pub fn checkpoint_tool() -> Arc<dyn AgentTool> {
-    Arc::new(CheckpointTool { state: shared(), schema: schema_checkpoint() })
+    Arc::new(CheckpointTool {
+        state: shared(),
+        schema: schema_checkpoint(),
+    })
 }
 
 /// Registered `rewind` tool, sharing the process-wide [`Shared`] state.
 #[must_use]
 pub fn rewind_tool() -> Arc<dyn AgentTool> {
-    Arc::new(RewindTool { state: shared(), schema: schema_rewind() })
+    Arc::new(RewindTool {
+        state: shared(),
+        schema: schema_rewind(),
+    })
 }
 
 #[cfg(test)]
@@ -280,11 +298,17 @@ mod tests {
     use super::*;
 
     fn checkpoint(state: &'static Shared) -> Arc<CheckpointTool> {
-        Arc::new(CheckpointTool { state, schema: schema_checkpoint() })
+        Arc::new(CheckpointTool {
+            state,
+            schema: schema_checkpoint(),
+        })
     }
 
     fn rewind(state: &'static Shared) -> Arc<RewindTool> {
-        Arc::new(RewindTool { state, schema: schema_rewind() })
+        Arc::new(RewindTool {
+            state,
+            schema: schema_rewind(),
+        })
     }
 
     fn text_of(result: &AgentToolResult) -> &str {
@@ -298,12 +322,19 @@ mod tests {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(tool.execute("call-1".into(), params, AbortSignal::never(), Arc::new(|_| {})))
+            .block_on(tool.execute(
+                "call-1".into(),
+                params,
+                AbortSignal::never(),
+                Arc::new(|_| {}),
+            ))
     }
 
     /// Fresh state per test: build standalone tools over a leaked Shared.
     fn fresh() -> &'static Shared {
-        Box::leak(Box::new(Shared { inner: Mutex::new(SharedInner::default()) }))
+        Box::leak(Box::new(Shared {
+            inner: Mutex::new(SharedInner::default()),
+        }))
     }
 
     #[test]
@@ -317,7 +348,10 @@ mod tests {
         let details = &result.details;
         assert_eq!(details["goal"], "trace flush path");
         let started = details["startedAt"].as_str().unwrap();
-        assert!(started.ends_with('Z') && started.contains('T'), "iso ts: {started}");
+        assert!(
+            started.ends_with('Z') && started.contains('T'),
+            "iso ts: {started}"
+        );
     }
 
     #[test]
@@ -336,7 +370,10 @@ mod tests {
     fn rewind_requires_active_checkpoint() {
         let state = fresh();
         let err = run(rewind(state), json!({"report": "findings"})).unwrap_err();
-        assert_eq!(err.to_string(), "No active checkpoint. Create a checkpoint before calling rewind.");
+        assert_eq!(
+            err.to_string(),
+            "No active checkpoint. Create a checkpoint before calling rewind."
+        );
     }
 
     #[test]
@@ -348,10 +385,9 @@ mod tests {
             rewound_at: "2026-10-01T00:01:00.000Z".into(),
         });
         let err = run(rewind(state), json!({"report": "again"})).unwrap_err();
-        assert!(
-            err.to_string()
-                .starts_with("Checkpoint already completed; continue from the retained rewind report")
-        );
+        assert!(err
+            .to_string()
+            .starts_with("Checkpoint already completed; continue from the retained rewind report"));
     }
 
     #[test]

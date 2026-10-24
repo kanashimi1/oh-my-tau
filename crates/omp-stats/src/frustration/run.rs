@@ -19,8 +19,8 @@ use tokio::task::JoinSet;
 
 use super::{Questions, FRUSTRATION_QUESTIONS};
 use crate::db_query::{
-    get_pending_frustration_prose, get_pending_frustration_totals, upsert_frustration_verdicts, FrustrationVerdict,
-    PendingProse,
+    get_pending_frustration_prose, get_pending_frustration_totals, upsert_frustration_verdicts,
+    FrustrationVerdict, PendingProse,
 };
 use crate::rollup::get_time_range_config;
 use crate::types::{FrustrationEstimate, FrustrationJobState, FrustrationJobStatus};
@@ -93,7 +93,10 @@ struct Slot {
     judge: Option<Arc<dyn StatsJudge>>,
 }
 
-static SLOT: Mutex<Slot> = Mutex::new(Slot { provider: None, judge: None });
+static SLOT: Mutex<Slot> = Mutex::new(Slot {
+    provider: None,
+    judge: None,
+});
 
 fn lock_slot() -> MutexGuard<'static, Slot> {
     SLOT.lock().unwrap_or_else(PoisonError::into_inner)
@@ -116,17 +119,22 @@ pub fn judge_available() -> bool {
 fn ready_judge() -> Result<(Arc<dyn StatsJudge>, JudgeModel), String> {
     let judge = {
         let mut slot = lock_slot();
-        let Some(provider) = slot.provider.clone() else { return Err(NO_PROVIDER_REASON.to_owned()) };
+        let Some(provider) = slot.provider.clone() else {
+            return Err(NO_PROVIDER_REASON.to_owned());
+        };
         match &slot.judge {
             Some(judge) => Arc::clone(judge),
             None => {
-                let judge = provider().map_err(|e| format!("The judge could not be loaded: {e}"))?;
+                let judge =
+                    provider().map_err(|e| format!("The judge could not be loaded: {e}"))?;
                 slot.judge = Some(Arc::clone(&judge));
                 judge
             }
         }
     };
-    let model = judge.primary_model().ok_or_else(|| NO_MODEL_REASON.to_owned())?;
+    let model = judge
+        .primary_model()
+        .ok_or_else(|| NO_MODEL_REASON.to_owned())?;
     Ok((judge, model))
 }
 
@@ -159,7 +167,13 @@ const fn idle_job() -> FrustrationJobStatus {
     }
 }
 
-static STATE: Mutex<State> = Mutex::new(State { job: idle_job(), run: 0, cancel: None, starting: false, active: false });
+static STATE: Mutex<State> = Mutex::new(State {
+    job: idle_job(),
+    run: 0,
+    cancel: None,
+    starting: false,
+    active: false,
+});
 /// Notified when a worker finishes.
 static FINISHED: Condvar = Condvar::new();
 
@@ -184,8 +198,13 @@ pub fn wait_frustration_run_finished(timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     let mut state = lock_state();
     while state.active {
-        let Some(left) = deadline.checked_duration_since(Instant::now()) else { return false };
-        state = FINISHED.wait_timeout(state, left).unwrap_or_else(PoisonError::into_inner).0;
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            return false;
+        };
+        state = FINISHED
+            .wait_timeout(state, left)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
     }
     true
 }
@@ -211,14 +230,20 @@ pub(crate) fn reset_for_tests() {
 pub fn estimate_frustration_run(range: Option<&str>) -> Result<FrustrationEstimate> {
     let model = match ready_judge() {
         Ok((_, model)) => model,
-        Err(reason) => return Ok(FrustrationEstimate::Unavailable { available: false, reason }),
+        Err(reason) => {
+            return Ok(FrustrationEstimate::Unavailable {
+                available: false,
+                reason,
+            })
+        }
     };
     let cutoff = get_time_range_config(range).cutoff;
     let totals = get_pending_frustration_totals(cutoff)?;
     let messages = totals.messages;
     let chars = totals.chars;
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-    let input_tokens = messages * REQUEST_OVERHEAD_TOKENS + (chars as f64 / CHARS_PER_TOKEN).ceil() as i64;
+    let input_tokens =
+        messages * REQUEST_OVERHEAD_TOKENS + (chars as f64 / CHARS_PER_TOKEN).ceil() as i64;
     #[allow(clippy::cast_precision_loss)]
     let cost = (input_tokens as f64 * model.cost_input) / 1e6
         + ((messages * OUTPUT_TOKENS_PER_REQUEST) as f64 * model.cost_output) / 1e6;
@@ -240,7 +265,10 @@ pub enum StartFrustrationRunResult {
 }
 
 fn refused(status: u16, error: impl Into<String>) -> StartFrustrationRunResult {
-    StartFrustrationRunResult::Refused { status, error: error.into() }
+    StartFrustrationRunResult::Refused {
+        status,
+        error: error.into(),
+    }
 }
 
 /// Clears `starting` on every exit of a start request.
@@ -288,7 +316,11 @@ pub fn start_frustration_run(range: Option<&str>) -> Result<StartFrustrationRunR
     let now = now_ms();
     let running = !pending.is_empty();
     let job = FrustrationJobStatus {
-        state: if running { FrustrationJobState::Running } else { FrustrationJobState::Done },
+        state: if running {
+            FrustrationJobState::Running
+        } else {
+            FrustrationJobState::Done
+        },
         total: i64::try_from(pending.len()).unwrap_or(i64::MAX),
         done: 0,
         failed: 0,
@@ -365,7 +397,11 @@ pub(super) struct AdaptiveLimit {
 
 impl AdaptiveLimit {
     pub(super) const fn new() -> Self {
-        Self { limit: INITIAL_CONCURRENCY, slow_start: true, last_backoff: None }
+        Self {
+            limit: INITIAL_CONCURRENCY,
+            slow_start: true,
+            last_backoff: None,
+        }
     }
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -374,14 +410,21 @@ impl AdaptiveLimit {
     }
 
     pub(super) fn succeeded(&mut self) {
-        let step = if self.slow_start { 1.0 } else { 4.0 / self.limit };
+        let step = if self.slow_start {
+            1.0
+        } else {
+            4.0 / self.limit
+        };
         self.limit = (self.limit + step).min(MAX_CONCURRENCY);
     }
 
     pub(super) fn failed(&mut self) {
         self.slow_start = false;
         let now = Instant::now();
-        if self.last_backoff.is_some_and(|last| now.duration_since(last) < BACKOFF_COOLDOWN) {
+        if self
+            .last_backoff
+            .is_some_and(|last| now.duration_since(last) < BACKOFF_COOLDOWN)
+        {
             return;
         }
         self.last_backoff = Some(now);
@@ -411,7 +454,11 @@ async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     let _ = cancel.wait_for(|stop| *stop).await;
 }
 
-async fn judge_text(judge: Arc<dyn StatsJudge>, item: PendingProse, mut cancel: watch::Receiver<bool>) -> TextOutcome {
+async fn judge_text(
+    judge: Arc<dyn StatsJudge>,
+    item: PendingProse,
+    mut cancel: watch::Receiver<bool>,
+) -> TextOutcome {
     let mut outcome = TextOutcome {
         hash: item.hash.clone(),
         failed_attempts: 0,
@@ -468,7 +515,12 @@ async fn judge_text(judge: Arc<dyn StatsJudge>, item: PendingProse, mut cancel: 
     outcome
 }
 
-async fn run_job(run: u64, judge: Arc<dyn StatsJudge>, queue: Vec<PendingProse>, mut cancel: watch::Receiver<bool>) {
+async fn run_job(
+    run: u64,
+    judge: Arc<dyn StatsJudge>,
+    queue: Vec<PendingProse>,
+    mut cancel: watch::Receiver<bool>,
+) {
     let mut limit = AdaptiveLimit::new();
     let mut tasks: JoinSet<TextOutcome> = JoinSet::new();
     let mut queue = queue.into_iter();
@@ -483,9 +535,9 @@ async fn run_job(run: u64, judge: Arc<dyn StatsJudge>, queue: Vec<PendingProse>,
 
     // A write failure (e.g. SQLite) is not a judge failure: it ends the run.
     let flush = |buffered: &mut Vec<FrustrationVerdict>,
-                     flush_at: &mut Option<Instant>,
-                     tripped: &mut bool,
-                     last_error: &mut Option<String>|
+                 flush_at: &mut Option<Instant>,
+                 tripped: &mut bool,
+                 last_error: &mut Option<String>|
      -> bool {
         *flush_at = None;
         let batch = std::mem::take(buffered);

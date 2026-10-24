@@ -194,16 +194,15 @@ mod default_renderer {
                 &args_inline(args_of(call), INLINE_BUDGET),
                 Vec::new(),
             )];
-            lines.extend(output_pane_lines(theme, result_text(call).as_deref(), false));
+            lines.extend(output_pane_lines(
+                theme,
+                result_text(call).as_deref(),
+                false,
+            ));
             paint(frame, area, lines);
         }
 
-        fn render_frame(
-            &self,
-            frame: &Value,
-            expanded: bool,
-            theme: &Theme,
-        ) -> Vec<Line<'static>> {
+        fn render_frame(&self, frame: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
             let name = frame
                 .get("toolName")
                 .and_then(Value::as_str)
@@ -250,13 +249,20 @@ mod default_renderer {
                 } else {
                     let inline = args_inline(Some(args), INLINE_BUDGET);
                     if !inline.is_empty() && inline != "{}" {
-                        lines
-                            .push(Line::from(styled(theme, "text_muted", format!(" └─ {inline}"))));
+                        lines.push(Line::from(styled(
+                            theme,
+                            "text_muted",
+                            format!(" └─ {inline}"),
+                        )));
                     }
                 }
             }
             if settled {
-                lines.extend(output_pane_lines(theme, result_text(frame).as_deref(), expanded));
+                lines.extend(output_pane_lines(
+                    theme,
+                    result_text(frame).as_deref(),
+                    expanded,
+                ));
             }
             lines
         }
@@ -266,11 +272,7 @@ mod default_renderer {
     /// `(no output)` placeholder, JSON-tree passthrough is left to callers
     /// that pre-parse; here the raw text rows are capped to the collapsed
     /// budget with a dim expand hint.
-    fn output_pane_lines(
-        theme: &Theme,
-        text: Option<&str>,
-        _expanded: bool,
-    ) -> Vec<Line<'static>> {
+    fn output_pane_lines(theme: &Theme, text: Option<&str>, _expanded: bool) -> Vec<Line<'static>> {
         let Some(text) = text else {
             return Vec::new();
         };
@@ -646,12 +648,10 @@ mod tests {
                 .map(|s| s.content.to_string())
                 .collect();
             assert_eq!(&got, want);
-            assert!(
-                lines[i]
-                    .spans
-                    .iter()
-                    .all(|s| s.style.fg == Some(theme.color("error")))
-            );
+            assert!(lines[i]
+                .spans
+                .iter()
+                .all(|s| s.style.fg == Some(theme.color("error"))));
         }
     }
 
@@ -672,8 +672,12 @@ mod tests {
     #[test]
     fn json_tree_lines_render_branches_and_scalars() {
         let value = json!({"a": 1, "b": {"c": [1, 2], "d": "x"}, "e": null});
-        let (rows, truncated) =
-            json_tree_lines(&value, JSON_TREE_MAX_DEPTH_EXPANDED, JSON_TREE_MAX_LINES_EXPANDED, JSON_TREE_SCALAR_LEN_EXPANDED);
+        let (rows, truncated) = json_tree_lines(
+            &value,
+            JSON_TREE_MAX_DEPTH_EXPANDED,
+            JSON_TREE_MAX_LINES_EXPANDED,
+            JSON_TREE_SCALAR_LEN_EXPANDED,
+        );
         assert!(!truncated, "{rows:?}");
         assert_eq!(rows[0], "├─ a: 1");
         assert!(rows.iter().any(|r| r == "├─ b"), "{rows:?}");
@@ -717,7 +721,10 @@ mod tests {
         };
         let expanded = flat(&family("frobnicate").render_frame(&frame, true, &theme));
         assert!(expanded.iter().any(|l| l == "Args"), "{expanded:?}");
-        assert!(expanded.iter().any(|l| l.contains("├─ x: 1")), "{expanded:?}");
+        assert!(
+            expanded.iter().any(|l| l.contains("├─ x: 1")),
+            "{expanded:?}"
+        );
         assert!(
             expanded.iter().any(|l| l.contains("nested")),
             "{expanded:?}"

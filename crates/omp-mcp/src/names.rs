@@ -108,15 +108,27 @@ mod tests {
 
     #[test]
     fn basic_mint() {
-        assert_eq!(create_tool_name("puppeteer", "puppeteer_screenshot"), "mcp__puppeteer_screenshot");
-        assert_eq!(create_tool_name("hub", "herald_search"), "mcp__hub_herald_search");
-        assert_eq!(create_tool_name("My Server!", "do-thing2"), "mcp__my_server_do_thing2");
+        assert_eq!(
+            create_tool_name("puppeteer", "puppeteer_screenshot"),
+            "mcp__puppeteer_screenshot"
+        );
+        assert_eq!(
+            create_tool_name("hub", "herald_search"),
+            "mcp__hub_herald_search"
+        );
+        assert_eq!(
+            create_tool_name("My Server!", "do-thing2"),
+            "mcp__my_server_do_thing2"
+        );
     }
 
     #[test]
     fn legacy_mint_differs_only_with_digits() {
         assert_eq!(create_legacy_tool_name("hub", "search"), None);
-        assert_eq!(create_legacy_tool_name("srv2", "tool"), Some("mcp__srv_tool".to_string()));
+        assert_eq!(
+            create_legacy_tool_name("srv2", "tool"),
+            Some("mcp__srv_tool".to_string())
+        );
     }
 
     #[test]

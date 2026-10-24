@@ -116,8 +116,14 @@ fn trim_cells(mut cells: Vec<(char, Style)>) -> Vec<(char, Style)> {
 fn bar_label(line: &Line<'static>) -> Vec<(char, Style)> {
     let cells: Vec<(char, Style)> = cells(line);
     // Strip the leading corner + `───` and the trailing fill + corner.
-    let start = cells.iter().position(|(c, _)| !is_box_glyph(*c)).unwrap_or(cells.len());
-    let end = cells.iter().rposition(|(c, _)| !is_box_glyph(*c)).map_or(start, |i| i + 1);
+    let start = cells
+        .iter()
+        .position(|(c, _)| !is_box_glyph(*c))
+        .unwrap_or(cells.len());
+    let end = cells
+        .iter()
+        .rposition(|(c, _)| !is_box_glyph(*c))
+        .map_or(start, |i| i + 1);
     trim_cells(cells[start..end.max(start)].to_vec())
 }
 
@@ -151,7 +157,10 @@ struct Parsed {
 fn parse(lines: &[Line<'static>]) -> Parsed {
     let mut rows = lines.iter().skip_while(|l| text_of(l).trim().is_empty());
     let Some(first) = rows.next() else {
-        return Parsed { header: Vec::new(), body: Vec::new() };
+        return Parsed {
+            header: Vec::new(),
+            body: Vec::new(),
+        };
     };
     let first_text = text_of(first);
     if first_text.starts_with('╭') {
@@ -217,7 +226,10 @@ fn split_header(cells: &[(char, Style)]) -> (Vec<(char, Style)>, Vec<(char, Styl
             (title, desc)
         }
         None => {
-            let end = cells.iter().position(|(c, _)| *c == ' ').unwrap_or(cells.len());
+            let end = cells
+                .iter()
+                .position(|(c, _)| *c == ' ')
+                .unwrap_or(cells.len());
             let title = cells[..end].to_vec();
             let desc = trim_cells(cells[end..].to_vec());
             (title, desc)
@@ -265,7 +277,11 @@ pub fn header_line(
 ) -> Line<'static> {
     let dot = Style::default().fg(dot_color(status, theme));
     let title_style = Style::default()
-        .fg(if status == RailStatus::Error { theme.color("error") } else { theme.color("text") })
+        .fg(if status == RailStatus::Error {
+            theme.color("error")
+        } else {
+            theme.color("text")
+        })
         .add_modifier(Modifier::BOLD);
     let mut spans = vec![
         Span::styled("● ", dot),
@@ -280,7 +296,11 @@ pub fn header_line(
 
 fn dim_style(theme: &Theme) -> Style {
     let c = theme.color("dim");
-    Style::default().fg(if c == Color::Reset { theme.color("text_muted") } else { c })
+    Style::default().fg(if c == Color::Reset {
+        theme.color("text_muted")
+    } else {
+        c
+    })
 }
 
 /// Drop one level of `├─ `/`└─ ` tree connectors (and their `│  `
@@ -350,7 +370,13 @@ pub fn restyle(
 ) -> Vec<Line<'static>> {
     let Parsed { header, mut body } = parse(lines);
     let (title, mut desc) = if header.is_empty() {
-        (pretty_name(tool).chars().map(|c| (c, Style::default())).collect(), Vec::new())
+        (
+            pretty_name(tool)
+                .chars()
+                .map(|c| (c, Style::default()))
+                .collect(),
+            Vec::new(),
+        )
     } else {
         split_header(&header)
     };
@@ -370,19 +396,32 @@ pub fn restyle(
     body.retain(|row| {
         let s: String = row.iter().map(|(c, _)| *c).collect();
         let s = s.trim();
-        if s.starts_with('⟦') && s.ends_with('⟧') && (s.contains("Wall:") || s.contains("Timeout:")) {
+        if s.starts_with('⟦') && s.ends_with('⟧') && (s.contains("Wall:") || s.contains("Timeout:"))
+        {
             if let Some(rest) = s.split("Wall: ").nth(1) {
-                wall = rest.split(|c| c == ' ' || c == '|' || c == '⟧').next().map(str::to_owned);
+                wall = rest
+                    .split(|c| c == ' ' || c == '|' || c == '⟧')
+                    .next()
+                    .map(str::to_owned);
             }
             return false;
         }
         true
     });
     let suffix: Vec<(char, Style)> = wall
-        .map(|w| format!(" · {w}").chars().map(|c| (c, dim_style(theme))).collect())
+        .map(|w| {
+            format!(" · {w}")
+                .chars()
+                .map(|c| (c, dim_style(theme)))
+                .collect()
+        })
         .unwrap_or_default();
     let title_text: String = title.iter().map(|(c, _)| *c).collect();
-    let title_text = if title_text.is_empty() { pretty_name(tool) } else { title_text };
+    let title_text = if title_text.is_empty() {
+        pretty_name(tool)
+    } else {
+        title_text
+    };
     // Generic one-liners repeat the name (`todo Todo init …`): keep one.
     let desc_text: String = desc.iter().map(|(c, _)| *c).collect();
     let title_text = match desc_text.split_once(' ') {
@@ -468,7 +507,10 @@ mod tests {
             Color::Gray,
         );
         let out = restyle(&card, RailStatus::Running, "write", false, 40, &t);
-        assert_eq!(rows(&out), vec!["● Write ◦ a.txt · 2 lines", "  ⎿ 1 alpha", "    2 beta"]);
+        assert_eq!(
+            rows(&out),
+            vec!["● Write ◦ a.txt · 2 lines", "  ⎿ 1 alpha", "    2 beta"]
+        );
         // Settled write collapses to the header.
         let out = restyle(&card, RailStatus::Ok, "write", false, 40, &t);
         assert_eq!(rows(&out), vec!["● Write ◦ a.txt · 2 lines"]);
@@ -504,7 +546,10 @@ mod tests {
             Line::from("    *2│beta"),
         ];
         let out = restyle(&lines, RailStatus::Error, "grep", false, 60, &t);
-        assert_eq!(rows(&out), vec!["● Grep beta 1 match · 1 file", "  ⎿ # a.txt", "    *2│beta"]);
+        assert_eq!(
+            rows(&out),
+            vec!["● Grep beta 1 match · 1 file", "  ⎿ # a.txt", "    *2│beta"]
+        );
         assert_eq!(out[0].spans[1].style.fg, Some(Color::Red));
     }
 }

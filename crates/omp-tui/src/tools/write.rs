@@ -13,9 +13,9 @@ use serde_json::Value;
 
 use crate::theme::Theme;
 
+use super::bash::replace_tabs;
 use super::edit::{arg_str, args_of, phase_of, result_text, Phase};
 use super::frame::{framed_card, lang_icon, status_header, token, CardSection};
-use super::bash::replace_tabs;
 use super::{error_detail_lines, ToolRenderer};
 
 /// Rows shown in the collapsed settled preview (TS `WRITE_PREVIEW_LINES`).
@@ -107,7 +107,10 @@ fn streaming_lines(content: &str, expanded: bool, theme: &Theme) -> Vec<Line<'st
     let mut out = Vec::new();
     if start > 0 {
         out.push(dim_row(
-            format!("… ({start} earlier line{})", if start == 1 { "" } else { "s" }),
+            format!(
+                "… ({start} earlier line{})",
+                if start == 1 { "" } else { "s" }
+            ),
             theme,
         ));
     }
@@ -172,10 +175,16 @@ pub fn build_card_lines(
 
     let accent = |text: String| Span::styled(text, Style::default().fg(theme.color("accent")));
     let muted = |text: String| {
-        Span::styled(text, Style::default().fg(token(theme, "muted", "text_muted")))
+        Span::styled(
+            text,
+            Style::default().fg(token(theme, "muted", "text_muted")),
+        )
     };
     let path_span = if path.is_empty() {
-        Span::styled("…".to_owned(), Style::default().fg(token(theme, "toolOutput", "text")))
+        Span::styled(
+            "…".to_owned(),
+            Style::default().fg(token(theme, "toolOutput", "text")),
+        )
     } else {
         accent(path.clone())
     };
@@ -281,16 +290,23 @@ mod tests {
         let call = json!({"name":"write","arguments":{"path":"out.txt","content":content}});
         let theme = Theme::default();
         let text = rows(build_card_lines(&call, None, false, 40, &theme)).join("\n");
-        assert!(text.starts_with("╭─── Write: "), "no status icon while pending:\n{text}");
+        assert!(
+            text.starts_with("╭─── Write: "),
+            "no status icon while pending:\n{text}"
+        );
         assert!(text.contains("earlier lines"), "got:\n{text}");
         assert!(text.contains(" 20 line 20"), "got:\n{text}");
         assert!(text.contains("… (streaming)"), "got:\n{text}");
-        assert!(!text.contains("line 1\n"), "head hidden while streaming:\n{text}");
+        assert!(
+            !text.contains("line 1\n"),
+            "head hidden while streaming:\n{text}"
+        );
     }
 
     #[test]
     fn success_card_title_row_and_preview() {
-        let call = json!({"name":"write","arguments":{"path":"e2e-new.txt","content":"alpha\nbeta\n"}});
+        let call =
+            json!({"name":"write","arguments":{"path":"e2e-new.txt","content":"alpha\nbeta\n"}});
         let result = json!({"isError": false, "content":[{"type":"text","text":"Successfully wrote 11 bytes"}]});
         let theme = Theme::default();
         let t = rows(build_card_lines(&call, Some(&result), false, 60, &theme));
@@ -312,7 +328,10 @@ mod tests {
         let result = json!({"isError": true, "text": "Tool call denied by user: write"});
         let theme = Theme::default();
         let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
-        assert!(text.contains("Tool call denied by user: write"), "got:\n{text}");
+        assert!(
+            text.contains("Tool call denied by user: write"),
+            "got:\n{text}"
+        );
         assert!(!text.contains("Unknown error"), "got:\n{text}");
     }
 
@@ -324,7 +343,10 @@ mod tests {
         let theme = Theme::default();
         let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
         assert!(text.contains("· 9 lines"), "got:\n{text}");
-        assert!(text.contains("… 3 more lines ⟦ctrl+o: Expand⟧"), "got:\n{text}");
+        assert!(
+            text.contains("… 3 more lines ⟦ctrl+o: Expand⟧"),
+            "got:\n{text}"
+        );
         let expanded = rows(build_card_lines(&call, Some(&result), true, 60, &theme)).join("\n");
         assert!(!expanded.contains("more line"), "got:\n{expanded}");
         assert!(expanded.contains("  9 "), "got:\n{expanded}");
@@ -348,7 +370,10 @@ mod tests {
         let theme = Theme::default();
         let text = rows(build_card_lines(&call, Some(&result), false, 60, &theme)).join("\n");
         assert!(text.contains("permission denied"), "got:\n{text}");
-        assert!(!text.contains("Error: permission denied"), "prefix stripped:\n{text}");
+        assert!(
+            !text.contains("Error: permission denied"),
+            "prefix stripped:\n{text}"
+        );
         assert!(text.starts_with("╭─── ✗ Write: "), "got:\n{text}");
     }
 }

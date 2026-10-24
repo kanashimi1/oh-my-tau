@@ -7,8 +7,12 @@ use pa_ai::types::{AssistantMessageEvent, Context, Message, UserMessage, UserMes
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let model_ref = args.next().ok_or_else(|| anyhow::anyhow!("usage: probe <model_ref> <prompt>"))?;
-    let prompt = args.next().unwrap_or_else(|| "Say hi in five words.".into());
+    let model_ref = args
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("usage: probe <model_ref> <prompt>"))?;
+    let prompt = args
+        .next()
+        .unwrap_or_else(|| "Say hi in five words.".into());
     let m = omp_providers::resolve(&model_ref)?;
     eprintln!(
         "[resolved] {}/{} api={} base_url={} key={} thinking={:?}",
@@ -16,7 +20,11 @@ async fn main() -> anyhow::Result<()> {
         m.id,
         m.api,
         m.base_url,
-        if m.api_key.is_some() { "set" } else { "MISSING" },
+        if m.api_key.is_some() {
+            "set"
+        } else {
+            "MISSING"
+        },
         m.thinking
     );
     eprintln!(
@@ -34,7 +42,11 @@ async fn main() -> anyhow::Result<()> {
                 c.model.id,
                 c.model.api,
                 c.url,
-                if c.model.api_key.is_some() { "set" } else { "MISSING" }
+                if c.model.api_key.is_some() {
+                    "set"
+                } else {
+                    "MISSING"
+                }
             );
         }
     }

@@ -76,15 +76,19 @@ pub fn collect_settings(settings: &omp_settings::Settings) -> Vec<CfgSetting> {
             id: def.id.to_string(),
             ty: def.ty.ts_name(),
             enum_values: match def.ty {
-                omp_settings::SettingType::Enum(values) => Some(values.iter().map(|s| s.to_string()).collect()),
+                omp_settings::SettingType::Enum(values) => {
+                    Some(values.iter().map(|s| s.to_string()).collect())
+                }
                 _ => None,
             },
             value: settings.get(def.id),
-            default: def
-                .default_yaml
-                .map_or_else(|| serde_json::Value::Null, |yaml| {
-                    serde_yaml_ng::from_str::<serde_json::Value>(yaml).unwrap_or(serde_json::Value::Null)
-                }),
+            default: def.default_yaml.map_or_else(
+                || serde_json::Value::Null,
+                |yaml| {
+                    serde_yaml_ng::from_str::<serde_json::Value>(yaml)
+                        .unwrap_or(serde_json::Value::Null)
+                },
+            ),
             provenance: provenance_label(settings.provenance(def.id)),
             credential: def.credential,
         })
@@ -140,7 +144,10 @@ pub struct ResolvedSegments {
 }
 
 /// Resolve `segments` against `rows`, returning indexes into `rows` (TS `resolveSegments`).
-pub fn resolve_segments(rows: &[CfgSetting], segments: &[String]) -> Result<ResolvedSegments, String> {
+pub fn resolve_segments(
+    rows: &[CfgSetting],
+    segments: &[String],
+) -> Result<ResolvedSegments, String> {
     if segments.is_empty() {
         return Ok(ResolvedSegments {
             path: String::new(),
@@ -157,7 +164,11 @@ pub fn resolve_segments(rows: &[CfgSetting], segments: &[String]) -> Result<Reso
         .map(|(i, _)| i)
         .collect();
     let path = leaf.map_or_else(
-        || members.first().map(|&i| rows[i].id[..lower.len()].to_string()),
+        || {
+            members
+                .first()
+                .map(|&i| rows[i].id[..lower.len()].to_string())
+        },
         |i| Some(rows[i].id.clone()),
     );
     let Some(path) = path else {
@@ -180,7 +191,11 @@ pub fn resolve_segments(rows: &[CfgSetting], segments: &[String]) -> Result<Reso
             segments.join(".")
         ));
     };
-    Ok(ResolvedSegments { path, leaf, members })
+    Ok(ResolvedSegments {
+        path,
+        leaf,
+        members,
+    })
 }
 
 /// Comment on a tree line: enum choices, non-default default, description (TS `treeComment`).
@@ -190,7 +205,10 @@ fn tree_comment(setting: &CfgSetting) -> String {
         parts.push(choices.join("|"));
     }
     if setting.value != setting.default {
-        parts.push(format!("default {}", format_value(setting, &setting.default)));
+        parts.push(format!(
+            "default {}",
+            format_value(setting, &setting.default)
+        ));
     }
     if parts.is_empty() {
         String::new()
@@ -204,16 +222,28 @@ pub fn render_tree(rows: &[CfgSetting], members: &[usize], prefix: &str) -> (Str
     let mut lines: Vec<String> = Vec::new();
     let mut modified = 0;
     let mut opened: Vec<&str> = Vec::new();
-    let strip = if prefix.is_empty() { 0 } else { prefix.len() + 1 };
+    let strip = if prefix.is_empty() {
+        0
+    } else {
+        prefix.len() + 1
+    };
     for &mi in members {
         let setting = &rows[mi];
         let segments: Vec<&str> = setting.id[strip..].split('.').collect();
         let mut shared = 0;
-        while shared < opened.len() && shared + 1 < segments.len() && opened[shared] == segments[shared] {
+        while shared < opened.len()
+            && shared + 1 < segments.len()
+            && opened[shared] == segments[shared]
+        {
             shared += 1;
         }
         opened.truncate(shared);
-        for (depth, segment) in segments.iter().enumerate().take(segments.len() - 1).skip(shared) {
+        for (depth, segment) in segments
+            .iter()
+            .enumerate()
+            .take(segments.len() - 1)
+            .skip(shared)
+        {
             lines.push(format!("{}{}:", "  ".repeat(depth), segment));
             opened.push(segment);
         }
@@ -247,13 +277,20 @@ pub fn render_leaf(setting: &CfgSetting) -> String {
 }
 
 /// Resolve a `cfg://` URL against a loaded settings scope (TS `CfgProtocolHandler.resolve`).
-pub fn resolve(settings: &omp_settings::Settings, url: &InternalUrl) -> Result<InternalResource, String> {
+pub fn resolve(
+    settings: &omp_settings::Settings,
+    url: &InternalUrl,
+) -> Result<InternalResource, String> {
     let target = parse_cfg_url(&url.raw_href).unwrap_or(CfgTarget {
         segments: Vec::new(),
         save: false,
     });
     let rows = collect_settings(settings);
-    let ResolvedSegments { path, leaf, members } = resolve_segments(&rows, &target.segments)?;
+    let ResolvedSegments {
+        path,
+        leaf,
+        members,
+    } = resolve_segments(&rows, &target.segments)?;
     let mut sections: Vec<String> = Vec::new();
     if let Some(i) = leaf {
         sections.push(render_leaf(&rows[i]));
@@ -293,10 +330,9 @@ impl UrlProvider for CfgProvider {
     }
 
     fn read(&self, url: &InternalUrl, ctx: &UrlCtx) -> anyhow::Result<InternalResource> {
-        let cwd = ctx
-            .cwd
-            .clone()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+        let cwd = ctx.cwd.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
         let settings = omp_settings::Settings::load(&cwd);
         resolve(&settings, url).map_err(anyhow::Error::msg)
     }
@@ -320,7 +356,12 @@ impl UrlProvider for CfgProvider {
 mod tests {
     use super::*;
 
-    fn setting(id: &str, ty: &'static str, value: serde_json::Value, default: serde_json::Value) -> CfgSetting {
+    fn setting(
+        id: &str,
+        ty: &'static str,
+        value: serde_json::Value,
+        default: serde_json::Value,
+    ) -> CfgSetting {
         CfgSetting {
             id: id.to_string(),
             ty,
@@ -358,7 +399,12 @@ mod tests {
         let leaf = render_leaf(&empty);
         assert!(leaf.starts_with("auth.broker.token: \"\""), "{leaf}");
         // Non-credential settings are untouched.
-        let plain = setting("model.name", "string", serde_json::json!("kimi"), serde_json::json!(""));
+        let plain = setting(
+            "model.name",
+            "string",
+            serde_json::json!("kimi"),
+            serde_json::json!(""),
+        );
         assert!(render_leaf(&plain).contains("kimi"));
     }
 
@@ -375,7 +421,10 @@ mod tests {
             "searxng.token",
             "searxng.basicPassword",
         ] {
-            assert!(omp_settings::lookup(id).is_some_and(|d| d.credential), "{id}");
+            assert!(
+                omp_settings::lookup(id).is_some_and(|d| d.credential),
+                "{id}"
+            );
         }
         assert!(!omp_settings::lookup("searxng.endpoint").unwrap().credential);
         assert!(!omp_settings::lookup("modelRoles").unwrap().credential);
@@ -383,9 +432,24 @@ mod tests {
 
     fn rows() -> Vec<CfgSetting> {
         vec![
-            setting("advisor.enabled", "boolean", serde_json::Value::Bool(false), serde_json::Value::Bool(false)),
-            setting("advisor.watchdog", "boolean", serde_json::Value::Bool(true), serde_json::Value::Bool(true)),
-            setting("model.name", "string", serde_json::json!("kimi"), serde_json::json!("")),
+            setting(
+                "advisor.enabled",
+                "boolean",
+                serde_json::Value::Bool(false),
+                serde_json::Value::Bool(false),
+            ),
+            setting(
+                "advisor.watchdog",
+                "boolean",
+                serde_json::Value::Bool(true),
+                serde_json::Value::Bool(true),
+            ),
+            setting(
+                "model.name",
+                "string",
+                serde_json::json!("kimi"),
+                serde_json::json!(""),
+            ),
         ]
     }
 
@@ -393,19 +457,40 @@ mod tests {
     fn parse_matches_ts() {
         assert_eq!(
             parse_cfg_url("cfg://advisor/enabled"),
-            Some(CfgTarget { segments: vec!["advisor".into(), "enabled".into()], save: false })
+            Some(CfgTarget {
+                segments: vec!["advisor".into(), "enabled".into()],
+                save: false
+            })
         );
         assert_eq!(
             parse_cfg_url("cfg://advisor.enabled/save"),
-            Some(CfgTarget { segments: vec!["advisor".into(), "enabled".into()], save: true })
+            Some(CfgTarget {
+                segments: vec!["advisor".into(), "enabled".into()],
+                save: true
+            })
         );
-        assert_eq!(parse_cfg_url("cfg://"), Some(CfgTarget { segments: vec![], save: false }));
+        assert_eq!(
+            parse_cfg_url("cfg://"),
+            Some(CfgTarget {
+                segments: vec![],
+                save: false
+            })
+        );
         // Single `save` alone is not stripped (TS: length > 1 guard).
-        assert_eq!(parse_cfg_url("cfg://save"), Some(CfgTarget { segments: vec!["save".into()], save: false }));
+        assert_eq!(
+            parse_cfg_url("cfg://save"),
+            Some(CfgTarget {
+                segments: vec!["save".into()],
+                save: false
+            })
+        );
         assert_eq!(parse_cfg_url("local://x"), None);
         assert_eq!(
             parse_cfg_url("cfg://a.b/c?query#frag"),
-            Some(CfgTarget { segments: vec!["a".into(), "b".into(), "c".into()], save: false })
+            Some(CfgTarget {
+                segments: vec!["a".into(), "b".into(), "c".into()],
+                save: false
+            })
         );
     }
 
@@ -447,10 +532,7 @@ mod tests {
         rows[0].value = serde_json::Value::Bool(true); // modified → `default false` comment
         let members = vec![0, 1];
         let (text, modified) = render_tree(&rows, &members, "advisor");
-        assert_eq!(
-            text,
-            "enabled: true  # default false\nwatchdog: true"
-        );
+        assert_eq!(text, "enabled: true  # default false\nwatchdog: true");
         assert_eq!(modified, 1);
         // Root scope opens namespaces.
         let members: Vec<usize> = (0..rows.len()).collect();

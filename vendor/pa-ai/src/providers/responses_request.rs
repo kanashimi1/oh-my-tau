@@ -6,14 +6,18 @@ use serde_json::{json, Map, Value};
 
 use crate::compat::ModelView;
 use crate::providers::openai_completions::compat::{
-    is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning, CompatPolicy, ResolvedCompat,
+    is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning, CompatPolicy,
+    ResolvedCompat,
 };
-use crate::providers::openai_completions::schema::{adapt_schema_for_strict, flatten_exclusive_required_root_union, normalize_schema_for_moonshot, tool_wire_schema};
+use crate::providers::openai_completions::schema::{
+    adapt_schema_for_strict, flatten_exclusive_required_root_union, normalize_schema_for_moonshot,
+    tool_wire_schema,
+};
 use crate::providers::openai_completions::{normalize_stable_id, ToolChoice};
 use crate::providers::transform_ts::transform_messages;
 use crate::types::{
-    AssistantContent, CacheRetention, Context, Message, Model, ModelExt, ServiceTier, StreamOptions, Tool,
-    UserMessageContent, UserOrToolContent,
+    AssistantContent, CacheRetention, Context, Message, Model, ModelExt, ServiceTier,
+    StreamOptions, Tool, UserMessageContent, UserOrToolContent,
 };
 
 const OPENAI_MAX_OUTPUT_TOKENS: u64 = 64_000;
@@ -47,7 +51,11 @@ impl ResponsesOptions {
     #[must_use]
     pub fn from_base(base: StreamOptions) -> Self {
         let max_tokens_explicit = base.max_tokens.is_some();
-        Self { base, max_tokens_explicit, ..Self::default() }
+        Self {
+            base,
+            max_tokens_explicit,
+            ..Self::default()
+        }
     }
 }
 
@@ -132,7 +140,11 @@ fn prompt_cache_key(base: &StreamOptions) -> Option<String> {
     if resolve_retention(base.cache_retention) == CacheRetention::None {
         return None;
     }
-    normalize_stable_id(base.session_id.as_deref().filter(|s| !s.is_empty())?, 64, "pc_")
+    normalize_stable_id(
+        base.session_id.as_deref().filter(|s| !s.is_empty())?,
+        64,
+        "pc_",
+    )
 }
 
 fn compat_of(view: &ModelView) -> ResolvedCompat {
@@ -150,18 +162,28 @@ fn clamp_image_detail(detail: Option<&str>, supports_original: bool) -> String {
 }
 
 fn input_image(img: &crate::types::ImageContent, supports_original: bool) -> Value {
-    let detail = clamp_image_detail(img.rest.get("detail").and_then(Value::as_str), supports_original);
+    let detail = clamp_image_detail(
+        img.rest.get("detail").and_then(Value::as_str),
+        supports_original,
+    );
     let url = img
         .rest
         .get("url")
         .and_then(Value::as_str)
         .filter(|u| !u.is_empty())
-        .map_or_else(|| format!("data:{};base64,{}", img.mime_type, img.data), str::to_string);
+        .map_or_else(
+            || format!("data:{};base64,{}", img.mime_type, img.data),
+            str::to_string,
+        );
     json!({ "type": "input_image", "detail": detail, "image_url": url })
 }
 
 /// TS `convertResponsesInputContent`.
-fn convert_input_content(content: &UserMessageContent, supports_images: bool, supports_original: bool) -> Option<Vec<Value>> {
+fn convert_input_content(
+    content: &UserMessageContent,
+    supports_images: bool,
+    supports_original: bool,
+) -> Option<Vec<Value>> {
     match content {
         UserMessageContent::Text(t) => {
             (!t.trim().is_empty()).then(|| vec![json!({ "type": "input_text", "text": t })])
@@ -182,8 +204,16 @@ fn convert_input_content(content: &UserMessageContent, supports_images: bool, su
                     _ => {}
                 }
             }
-            let images: Vec<&crate::types::ImageContent> =
-                blocks.iter().filter_map(|b| if let UserOrToolContent::Image(i) = b { Some(i) } else { None }).collect();
+            let images: Vec<&crate::types::ImageContent> = blocks
+                .iter()
+                .filter_map(|b| {
+                    if let UserOrToolContent::Image(i) = b {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             if supports_images {
                 out.extend(images.iter().map(|i| input_image(i, supports_original)));
             } else if !images.is_empty() {
@@ -211,14 +241,33 @@ fn base36_hash(value: &str) -> String {
 }
 
 fn sanitize_call_id(id: &str) -> String {
-    let s: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' }).collect();
+    let s: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
     s.chars().take(64).collect()
 }
 
 /// TS `normalizeResponsesToolCallIdForTransform`.
-fn normalize_call_id_for_transform(id: &str, model: &Model, source: &crate::types::AssistantMessage) -> Option<String> {
+fn normalize_call_id_for_transform(
+    id: &str,
+    model: &Model,
+    source: &crate::types::AssistantMessage,
+) -> Option<String> {
     let sep = id.find(['\n', '|']);
-    if sep.is_none() && id.len() <= 64 && !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if sep.is_none()
+        && id.len() <= 64
+        && !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Some(id.to_string());
     }
     let foreign = source.provider != model.provider || source.api != model.api;
@@ -227,7 +276,10 @@ fn normalize_call_id_for_transform(id: &str, model: &Model, source: &crate::type
             Some(s) if s > 0 => (&id[..s], Some(&id[s + 1..])),
             _ => (id, None),
         };
-        let mut item_id = format!("fc_{}", base36_hash(item.filter(|i| !i.is_empty()).unwrap_or(id)));
+        let mut item_id = format!(
+            "fc_{}",
+            base36_hash(item.filter(|i| !i.is_empty()).unwrap_or(id))
+        );
         item_id.truncate(64);
         return Some(format!("{}|{item_id}", sanitize_call_id(call)));
     }
@@ -248,7 +300,13 @@ fn split_call_id(id: &str) -> (String, String) {
 fn normalize_item_id(item: &str, prefix: &str) -> String {
     let sanitized: String = item
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let mut s: String = sanitized.chars().take(64).collect();
     while s.ends_with('_') {
@@ -268,7 +326,10 @@ fn parse_text_signature(sig: Option<&str>) -> Option<(String, Option<String>)> {
         if let Ok(v) = serde_json::from_str::<Value>(sig) {
             if v.get("v") == Some(&json!(1)) {
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    let phase = v.get("phase").and_then(Value::as_str).filter(|p| matches!(*p, "commentary" | "final_answer"));
+                    let phase = v
+                        .get("phase")
+                        .and_then(Value::as_str)
+                        .filter(|p| matches!(*p, "commentary" | "final_answer"));
                     return Some((id.to_string(), phase.map(str::to_string)));
                 }
             }
@@ -279,7 +340,8 @@ fn parse_text_signature(sig: Option<&str>) -> Option<(String, Option<String>)> {
 
 fn parse_reasoning_replay_item(sig: Option<&str>) -> Option<Value> {
     let v: Value = serde_json::from_str(sig.filter(|s| !s.is_empty())?).ok()?;
-    (v.get("type") == Some(&json!("reasoning")) && v.get("id").is_some_and(Value::is_string)).then_some(v)
+    (v.get("type") == Some(&json!("reasoning")) && v.get("id").is_some_and(Value::is_string))
+        .then_some(v)
 }
 
 fn synthetic_reasoning_item(text: &str, id: Option<&str>) -> Value {
@@ -289,7 +351,10 @@ fn synthetic_reasoning_item(text: &str, id: Option<&str>) -> Value {
         m.insert("id".into(), json!(id));
     }
     m.insert("summary".into(), json!([]));
-    m.insert("content".into(), json!([{ "type": "reasoning_text", "text": text }]));
+    m.insert(
+        "content".into(),
+        json!([{ "type": "reasoning_text", "text": text }]),
+    );
     Value::Object(m)
 }
 
@@ -300,14 +365,24 @@ fn with_required_reasoning_text(item: Value) -> Value {
     let has_text = item
         .get("content")
         .and_then(Value::as_array)
-        .is_some_and(|c| c.iter().any(|p| p["type"] == "reasoning_text" && p["text"].as_str().is_some_and(|t| !t.trim().is_empty())));
+        .is_some_and(|c| {
+            c.iter().any(|p| {
+                p["type"] == "reasoning_text"
+                    && p["text"].as_str().is_some_and(|t| !t.trim().is_empty())
+            })
+        });
     if has_text {
         return item;
     }
     let summary: Vec<&str> = item
         .get("summary")
         .and_then(Value::as_array)
-        .map(|s| s.iter().filter_map(|p| p["text"].as_str()).filter(|t| !t.trim().is_empty()).collect())
+        .map(|s| {
+            s.iter()
+                .filter_map(|p| p["text"].as_str())
+                .filter(|t| !t.trim().is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     let text = summary.join("\n\n");
     let mut item = item;
@@ -332,22 +407,37 @@ struct InputOptions {
 fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOptions) -> Vec<Value> {
     let mut messages: Vec<Value> = Vec::new();
     if let Some(role) = o.system_role {
-        for sp in context.system_prompt.iter().filter(|p| !p.trim().is_empty()) {
+        for sp in context
+            .system_prompt
+            .iter()
+            .filter(|p| !p.trim().is_empty())
+        {
             messages.push(json!({ "role": role, "content": sp }));
         }
     }
-    let transformed = transform_messages(&context.messages, model, view, &normalize_call_id_for_transform);
+    let transformed = transform_messages(
+        &context.messages,
+        model,
+        view,
+        &normalize_call_id_for_transform,
+    );
     let supports_images = model.supports_image_input();
     let mut known_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut msg_index = 0usize;
     for msg in &transformed {
         match msg {
             Message::User(user) | Message::Developer(user) => {
-                let Some(content) = convert_input_content(&user.content, supports_images, o.supports_original) else {
+                let Some(content) =
+                    convert_input_content(&user.content, supports_images, o.supports_original)
+                else {
                     continue;
                 };
                 let content = match (&msg, &user.content) {
-                    (Message::Developer(_), UserMessageContent::Text(text)) if o.developer_string_content => json!(text),
+                    (Message::Developer(_), UserMessageContent::Text(text))
+                        if o.developer_string_content =>
+                    {
+                        json!(text)
+                    }
                     _ => json!(content),
                 };
                 messages.push(json!({ "role": "user", "content": content }));
@@ -359,24 +449,36 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                     && a.content.iter().any(|b| {
                         matches!(b, AssistantContent::Thinking(t) if parse_reasoning_replay_item(t.thinking_signature.as_deref()).is_some())
                     });
-                let is_different_model = a.model != model.id && a.provider == model.provider && a.api == model.api;
+                let is_different_model =
+                    a.model != model.id && a.provider == model.provider && a.api == model.api;
                 let requires_reasoning_item = a.stop_reason != crate::types::StopReason::Error
                     && (o.reasoning_for_all_turns
-                        || (o.reasoning_for_tool_calls && a.content.iter().any(|b| matches!(b, AssistantContent::ToolCall(_)))));
+                        || (o.reasoning_for_tool_calls
+                            && a.content
+                                .iter()
+                                .any(|b| matches!(b, AssistantContent::ToolCall(_)))));
                 let mut reasoning_emitted = false;
                 let mut carried: Vec<String> = Vec::new();
                 let mut unsigned_text = 0usize;
                 for block in &a.content {
                     match block {
-                        AssistantContent::Thinking(t) if a.stop_reason != crate::types::StopReason::Error => {
+                        AssistantContent::Thinking(t)
+                            if a.stop_reason != crate::types::StopReason::Error =>
+                        {
                             if requires_reasoning_item && !t.thinking.trim().is_empty() {
                                 carried.push(t.thinking.clone());
                             }
                             if !o.include_thinking_signatures {
                                 continue;
                             }
-                            if let Some(item) = parse_reasoning_replay_item(t.thinking_signature.as_deref()) {
-                                out.push(if requires_reasoning_item { with_required_reasoning_text(item) } else { item });
+                            if let Some(item) =
+                                parse_reasoning_replay_item(t.thinking_signature.as_deref())
+                            {
+                                out.push(if requires_reasoning_item {
+                                    with_required_reasoning_text(item)
+                                } else {
+                                    item
+                                });
                                 reasoning_emitted = true;
                             }
                         }
@@ -395,8 +497,12 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                                         unsigned_text += 1;
                                     }
                                 }
-                                Some(_) if !o.preserve_message_ids && !has_replayable => msg_id = None,
-                                Some(id) if id.len() > 64 => msg_id = Some(format!("msg_{}", base36_hash(id))),
+                                Some(_) if !o.preserve_message_ids && !has_replayable => {
+                                    msg_id = None
+                                }
+                                Some(id) if id.len() > 64 => {
+                                    msg_id = Some(format!("msg_{}", base36_hash(id)))
+                                }
                                 _ => {}
                             }
                             let mut item = Map::new();
@@ -414,8 +520,13 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                         }
                         AssistantContent::ToolCall(call) => {
                             let (call_id, mut item_id) = split_call_id(&call.id);
-                            let prefixed = |s: &str| s.starts_with("fc_") || s.starts_with("fcr_") || s.starts_with("ctc_");
-                            let drop_item = (!has_replayable && prefixed(&item_id)) || (is_different_model && prefixed(&item_id));
+                            let prefixed = |s: &str| {
+                                s.starts_with("fc_")
+                                    || s.starts_with("fcr_")
+                                    || s.starts_with("ctc_")
+                            };
+                            let drop_item = (!has_replayable && prefixed(&item_id))
+                                || (is_different_model && prefixed(&item_id));
                             known_call_ids.insert(call_id.clone());
                             let mut item = Map::new();
                             item.insert("type".into(), json!("function_call"));
@@ -424,13 +535,20 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                             }
                             item.insert("call_id".into(), json!(call_id));
                             item.insert("name".into(), json!(call.name));
-                            item.insert("arguments".into(), json!(Value::Object(call.arguments.clone()).to_string()));
+                            item.insert(
+                                "arguments".into(),
+                                json!(Value::Object(call.arguments.clone()).to_string()),
+                            );
                             out.push(Value::Object(item));
                         }
                     }
                 }
                 if requires_reasoning_item && !reasoning_emitted && !out.is_empty() {
-                    let text = if carried.is_empty() { SYNTHETIC_REASONING_PLACEHOLDER.to_string() } else { carried.join("\n") };
+                    let text = if carried.is_empty() {
+                        SYNTHETIC_REASONING_PLACEHOLDER.to_string()
+                    } else {
+                        carried.join("\n")
+                    };
                     out.insert(0, synthetic_reasoning_item(&text, None));
                 }
                 if out.is_empty() {
@@ -439,13 +557,29 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                 messages.extend(out);
             }
             Message::ToolResult(r) => {
-                let text_result: Vec<&str> =
-                    r.content.iter().filter_map(|b| if let UserOrToolContent::Text(t) = b { Some(t.text.as_str()) } else { None }).collect();
+                let text_result: Vec<&str> = r
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let UserOrToolContent::Text(t) = b {
+                            Some(t.text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 let text_result = text_result.join("\n");
-                let has_images = r.content.iter().any(|b| matches!(b, UserOrToolContent::Image(_)));
+                let has_images = r
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, UserOrToolContent::Image(_)));
                 let omitted = has_images && !supports_images;
                 let raw_output = if omitted {
-                    if text_result.is_empty() { NON_VISION_IMAGE_PLACEHOLDER.to_string() } else { format!("{text_result}\n{NON_VISION_IMAGE_PLACEHOLDER}") }
+                    if text_result.is_empty() {
+                        NON_VISION_IMAGE_PLACEHOLDER.to_string()
+                    } else {
+                        format!("{text_result}\n{NON_VISION_IMAGE_PLACEHOLDER}")
+                    }
                 } else if !text_result.is_empty() {
                     text_result.clone()
                 } else if has_images {
@@ -459,8 +593,12 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                             .iter()
                             .map(|b| match b {
                                 UserOrToolContent::Image(i) => input_image(i, o.supports_original),
-                                UserOrToolContent::Text(t) => json!({ "type": "input_text", "text": t.text }),
-                                UserOrToolContent::Raw(v) => json!({ "type": "input_text", "text": v.to_string() }),
+                                UserOrToolContent::Text(t) => {
+                                    json!({ "type": "input_text", "text": t.text })
+                                }
+                                UserOrToolContent::Raw(v) => {
+                                    json!({ "type": "input_text", "text": v.to_string() })
+                                }
                             })
                             .collect(),
                     )
@@ -470,11 +608,18 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                 let call_id = split_call_id(&r.tool_call_id).0;
                 if o.strict_pairing && !known_call_ids.contains(&call_id) {
                     let note: String = if raw_output.chars().count() > 16_000 {
-                        format!("{}\n...[truncated]", raw_output.chars().take(16_000).collect::<String>())
+                        format!(
+                            "{}\n...[truncated]",
+                            raw_output.chars().take(16_000).collect::<String>()
+                        )
                     } else {
                         raw_output
                     };
-                    let name = if r.tool_name.is_empty() { "tool" } else { r.tool_name.as_str() };
+                    let name = if r.tool_name.is_empty() {
+                        "tool"
+                    } else {
+                        r.tool_name.as_str()
+                    };
                     messages.push(json!({
                         "type": "message", "role": "assistant",
                         "content": format!("[Orphan {name} result; call_id={call_id}]: {note}"),
@@ -498,7 +643,11 @@ fn has_unsupported_lookaround(pattern: &str) -> bool {
         if b[i] == '(' && b[i + 1] == '?' {
             let escapes = b[..i].iter().rev().take_while(|c| **c == '\\').count();
             if escapes % 2 == 0 {
-                let op: String = if b[i + 2] == '<' { b[i + 2..(i + 4).min(b.len())].iter().collect() } else { b[i + 2].to_string() };
+                let op: String = if b[i + 2] == '<' {
+                    b[i + 2..(i + 4).min(b.len())].iter().collect()
+                } else {
+                    b[i + 2].to_string()
+                };
                 if matches!(op.as_str(), "=" | "!" | "<=" | "<!") {
                     return true;
                 }
@@ -512,12 +661,22 @@ fn has_unsupported_lookaround(pattern: &str) -> bool {
 const SCHEMA_MAP_KEYS: [&str; 4] = ["properties", "patternProperties", "$defs", "definitions"];
 const SCHEMA_ARRAY_KEYS: [&str; 3] = ["anyOf", "allOf", "prefixItems"];
 const SCHEMA_VALUE_KEYS: [&str; 10] = [
-    "additionalProperties", "unevaluatedProperties", "unevaluatedItems", "items", "additionalItems", "contains",
-    "propertyNames", "if", "then", "else",
+    "additionalProperties",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "items",
+    "additionalItems",
+    "contains",
+    "propertyNames",
+    "if",
+    "then",
+    "else",
 ];
 
 fn sanitize_responses_node(value: &Value) -> Value {
-    let Value::Object(obj) = value else { return value.clone() };
+    let Value::Object(obj) = value else {
+        return value.clone();
+    };
     if obj.is_empty() {
         return Value::Bool(true);
     }
@@ -537,7 +696,14 @@ fn sanitize_responses_node(value: &Value) -> Value {
         } else if SCHEMA_MAP_KEYS.contains(&key.as_str()) && child.is_object() {
             sanitize_responses_map(child.as_object().expect("object"), false)
         } else if SCHEMA_ARRAY_KEYS.contains(&key.as_str()) && child.is_array() {
-            Value::Array(child.as_array().expect("array").iter().map(sanitize_responses_node).collect())
+            Value::Array(
+                child
+                    .as_array()
+                    .expect("array")
+                    .iter()
+                    .map(sanitize_responses_node)
+                    .collect(),
+            )
         } else if SCHEMA_VALUE_KEYS.contains(&key.as_str()) && child.is_object() {
             sanitize_responses_node(child)
         } else {
@@ -566,7 +732,11 @@ fn sanitize_responses_node(value: &Value) -> Value {
         changed = true;
     }
     if changed {
-        if out.is_empty() { Value::Bool(true) } else { Value::Object(out) }
+        if out.is_empty() {
+            Value::Bool(true)
+        } else {
+            Value::Object(out)
+        }
     } else {
         value.clone()
     }
@@ -581,7 +751,10 @@ fn sanitize_responses_map(map: &Map<String, Value>, strip_regex_keys: bool) -> V
                 None => {
                     out.insert(".*".into(), next);
                 }
-                Some(Value::Object(existing)) if existing.len() == 1 && existing.get("anyOf").is_some_and(Value::is_array) => {
+                Some(Value::Object(existing))
+                    if existing.len() == 1
+                        && existing.get("anyOf").is_some_and(Value::is_array) =>
+                {
                     if let Some(Value::Array(a)) = existing.get_mut("anyOf") {
                         a.push(next);
                     }
@@ -612,10 +785,17 @@ fn json_matches_type(v: &Value, ty: &str) -> bool {
 }
 
 fn declared_types(node: &Map<String, Value>) -> Vec<String> {
-    const NAMES: [&str; 7] = ["string", "number", "integer", "boolean", "object", "array", "null"];
+    const NAMES: [&str; 7] = [
+        "string", "number", "integer", "boolean", "object", "array", "null",
+    ];
     match node.get("type") {
         Some(Value::String(t)) if NAMES.contains(&t.as_str()) => vec![t.clone()],
-        Some(Value::Array(a)) => a.iter().filter_map(Value::as_str).filter(|t| NAMES.contains(t)).map(str::to_string).collect(),
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|t| NAMES.contains(t))
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -623,12 +803,17 @@ fn declared_types(node: &Map<String, Value>) -> Vec<String> {
 /// TS `findStrictToolSchemaViolation`.
 fn find_strict_violation(schema: &Value, path: &str, reject_root_union: bool) -> Option<String> {
     match schema {
-        Value::Array(a) => a.iter().enumerate().find_map(|(i, s)| find_strict_violation(s, &format!("{path}/{i}"), reject_root_union)),
+        Value::Array(a) => a
+            .iter()
+            .enumerate()
+            .find_map(|(i, s)| find_strict_violation(s, &format!("{path}/{i}"), reject_root_union)),
         Value::Object(node) => {
             let types = declared_types(node);
             if !types.is_empty() {
                 if let Some(Value::Array(e)) = node.get("enum") {
-                    if e.iter().any(|v| !types.iter().any(|t| json_matches_type(v, t))) {
+                    if e.iter()
+                        .any(|v| !types.iter().any(|t| json_matches_type(v, t)))
+                    {
                         return Some(format!("{path}/enum"));
                     }
                 }
@@ -638,7 +823,11 @@ fn find_strict_violation(schema: &Value, path: &str, reject_root_union: bool) ->
                     }
                 }
             }
-            if reject_root_union && path == "#" && (types.iter().any(|t| t == "object") || node.get("properties").is_some_and(Value::is_object)) {
+            if reject_root_union
+                && path == "#"
+                && (types.iter().any(|t| t == "object")
+                    || node.get("properties").is_some_and(Value::is_object))
+            {
                 for key in ["anyOf", "oneOf"] {
                     if let Some(Value::Array(arr)) = node.get(key) {
                         if arr.is_empty() {
@@ -654,25 +843,50 @@ fn find_strict_violation(schema: &Value, path: &str, reject_root_union: bool) ->
                     }
                 }
             }
-            for key in ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"] {
+            for key in [
+                "properties",
+                "patternProperties",
+                "$defs",
+                "definitions",
+                "dependentSchemas",
+            ] {
                 if let Some(Value::Object(sub)) = node.get(key) {
                     for (k, v) in sub {
-                        if let Some(hit) = find_strict_violation(v, &format!("{path}/{key}/{k}"), reject_root_union) {
+                        if let Some(hit) = find_strict_violation(
+                            v,
+                            &format!("{path}/{key}/{k}"),
+                            reject_root_union,
+                        ) {
                             return Some(hit);
                         }
                     }
                 }
             }
-            for key in ["items", "contains", "not", "if", "then", "else", "propertyNames", "additionalProperties", "unevaluatedProperties", "unevaluatedItems"] {
+            for key in [
+                "items",
+                "contains",
+                "not",
+                "if",
+                "then",
+                "else",
+                "propertyNames",
+                "additionalProperties",
+                "unevaluatedProperties",
+                "unevaluatedItems",
+            ] {
                 if let Some(v) = node.get(key) {
-                    if let Some(hit) = find_strict_violation(v, &format!("{path}/{key}"), reject_root_union) {
+                    if let Some(hit) =
+                        find_strict_violation(v, &format!("{path}/{key}"), reject_root_union)
+                    {
                         return Some(hit);
                     }
                 }
             }
             for key in ["anyOf", "oneOf", "allOf", "prefixItems"] {
                 if let Some(v @ Value::Array(_)) = node.get(key) {
-                    if let Some(hit) = find_strict_violation(v, &format!("{path}/{key}"), reject_root_union) {
+                    if let Some(hit) =
+                        find_strict_violation(v, &format!("{path}/{key}"), reject_root_union)
+                    {
                         return Some(hit);
                     }
                 }
@@ -684,7 +898,11 @@ fn find_strict_violation(schema: &Value, path: &str, reject_root_union: bool) ->
 }
 
 /// TS Responses `convertTools`: `(wire tools, surviving source tools)`.
-fn convert_tools<'a>(tools: &'a [Tool], strict_mode: bool, view: &ModelView) -> (Vec<Value>, Vec<&'a Tool>) {
+fn convert_tools<'a>(
+    tools: &'a [Tool],
+    strict_mode: bool,
+    view: &ModelView,
+) -> (Vec<Value>, Vec<&'a Tool>) {
     let no_strict = matches!(std::env::var("PI_NO_STRICT").as_deref(), Ok("1" | "true"));
     let reject_root_union = view.is("rejectRootObjectUnion");
     let mut out = Vec::new();
@@ -693,7 +911,11 @@ fn convert_tools<'a>(tools: &'a [Tool], strict_mode: bool, view: &ModelView) -> 
         let strict = !no_strict && strict_mode;
         let base = tool_wire_schema(&tool.parameters);
         let sanitized = sanitize_responses_node(&base);
-        let provider_params = if reject_root_union { flatten_exclusive_required_root_union(&sanitized) } else { sanitized };
+        let provider_params = if reject_root_union {
+            flatten_exclusive_required_root_union(&sanitized)
+        } else {
+            sanitized
+        };
         let response_params = if view.compat_str("toolSchemaFlavor") == Some("moonshot-mfjs") {
             normalize_schema_for_moonshot(&provider_params)
         } else {
@@ -722,7 +944,9 @@ fn map_responses_tool_choice(choice: &ToolChoice) -> Option<Value> {
         ToolChoice::Auto => Some(json!("auto")),
         ToolChoice::None => Some(json!("none")),
         ToolChoice::Required => Some(json!("required")),
-        ToolChoice::Function { name } if !name.is_empty() => Some(json!({ "type": "function", "name": name })),
+        ToolChoice::Function { name } if !name.is_empty() => {
+            Some(json!({ "type": "function", "name": name }))
+        }
         ToolChoice::Function { .. } => None,
     }
 }
@@ -736,28 +960,52 @@ fn should_send_service_tier(provider: &str, tier: ServiceTier) -> bool {
     if provider == "openai" || provider == "openai-codex" {
         return true;
     }
-    provider == "openrouter" && matches!(tier, ServiceTier::Flex | ServiceTier::Scale | ServiceTier::Priority)
+    provider == "openrouter"
+        && matches!(
+            tier,
+            ServiceTier::Flex | ServiceTier::Scale | ServiceTier::Priority
+        )
 }
 
 fn clamp_output_to_model_max(view: &ModelView, model: &Model) -> Option<u64> {
-    view.is("clampOutputToModelMax").then(|| if model.max_tokens == 0 { OPENAI_MAX_OUTPUT_TOKENS } else { model.max_tokens })
+    view.is("clampOutputToModelMax").then(|| {
+        if model.max_tokens == 0 {
+            OPENAI_MAX_OUTPUT_TOKENS
+        } else {
+            model.max_tokens
+        }
+    })
 }
 
 fn applies_summary(view: &ModelView, o: &ResponsesOptions) -> Summary {
     if view.is("supportsReasoningSummary") {
         return o.reasoning_summary;
     }
-    if o.reasoning.is_none() { Summary::Unset } else { Summary::Null }
+    if o.reasoning.is_none() {
+        Summary::Unset
+    } else {
+        Summary::Null
+    }
 }
 
 /// TS `applyResponsesCompatPolicy` (without `forceReasoningOff`).
-fn apply_responses_compat_policy(params: &mut Map<String, Value>, policy: &CompatPolicy, view: &ModelView, summary: &Summary, map_effort: &dyn Fn(&str) -> String) {
+fn apply_responses_compat_policy(
+    params: &mut Map<String, Value>,
+    policy: &CompatPolicy,
+    view: &ModelView,
+    summary: &Summary,
+    map_effort: &dyn Fn(&str) -> String,
+) {
     let r = &policy.reasoning;
     if !r.model_supported {
         return;
     }
     if view.is("includeEncryptedReasoning") {
-        let mut include: Vec<Value> = params.get("include").and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut include: Vec<Value> = params
+            .get("include")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         if !include.iter().any(|v| v == "reasoning.encrypted_content") {
             include.push(json!("reasoning.encrypted_content"));
         }
@@ -768,7 +1016,10 @@ fn apply_responses_compat_policy(params: &mut Map<String, Value>, policy: &Compa
             params.insert("reasoning".into(), json!({ "enabled": false }));
             return;
         }
-        if matches!(r.disable_mode.as_str(), "lowest-effort" | "none-effort") && r.wire_effort.is_some() && !r.omit_reasoning_effort {
+        if matches!(r.disable_mode.as_str(), "lowest-effort" | "none-effort")
+            && r.wire_effort.is_some()
+            && !r.omit_reasoning_effort
+        {
             params.insert("reasoning".into(), json!({ "effort": r.wire_effort }));
         }
         return;
@@ -780,8 +1031,14 @@ fn apply_responses_compat_policy(params: &mut Map<String, Value>, policy: &Compa
             }
             return;
         }
-        let requested = r.requested_effort.clone().unwrap_or_else(|| "medium".into());
-        let wire = r.wire_effort.clone().unwrap_or_else(|| map_effort(&requested));
+        let requested = r
+            .requested_effort
+            .clone()
+            .unwrap_or_else(|| "medium".into());
+        let wire = r
+            .wire_effort
+            .clone()
+            .unwrap_or_else(|| map_effort(&requested));
         let mut reasoning = Map::new();
         reasoning.insert("effort".into(), json!(wire));
         if *summary != Summary::Null {
@@ -808,12 +1065,28 @@ pub(crate) enum Flavor {
 /// # Errors
 /// Never in practice; reserved for configuration errors TS throws.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, options: &ResponsesOptions, flavor: &Flavor) -> Result<Value, String> {
+pub(crate) fn build_body(
+    model: &Model,
+    view: &ModelView,
+    context: &Context,
+    options: &ResponsesOptions,
+    flavor: &Flavor,
+) -> Result<Value, String> {
     let compat = compat_of(view);
     let has_tools = false;
-    let policy = resolve_policy(model, &compat, options.reasoning.as_deref(), options.disable_reasoning, options.tool_choice.as_ref(), has_tools);
+    let policy = resolve_policy(
+        model,
+        &compat,
+        options.reasoning.as_deref(),
+        options.disable_reasoning,
+        options.tool_choice.as_ref(),
+        has_tools,
+    );
     let map_effort = |level: &str| -> String {
-        view.compat.get("reasoningEffortMap").and_then(|m| m.get(level)).and_then(Value::as_str)
+        view.compat
+            .get("reasoningEffortMap")
+            .and_then(|m| m.get(level))
+            .and_then(Value::as_str)
             .or_else(|| view.effort_map(level))
             .unwrap_or(level)
             .to_string()
@@ -829,7 +1102,8 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
         Flavor::OpenAi => {
             let strict_pairing = view.is("strictResponsesPairing");
             let filter_reasoning = view.is("filterReasoningHistory");
-            let can_reconstruct = !filter_reasoning || view.is("allowsSyntheticReasoningContentForToolCalls");
+            let can_reconstruct =
+                !filter_reasoning || view.is("allowsSyntheticReasoningContentForToolCalls");
             let enabled = policy.reasoning.enabled;
             input = build_input(
                 model,
@@ -840,13 +1114,21 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
                     supports_original,
                     include_thinking_signatures: !filter_reasoning,
                     preserve_message_ids: false,
-                    reasoning_for_all_turns: enabled && view.is("requiresReasoningContentForAllAssistantTurns") && can_reconstruct,
-                    reasoning_for_tool_calls: enabled && view.is("requiresReasoningContentForToolCalls") && can_reconstruct,
+                    reasoning_for_all_turns: enabled
+                        && view.is("requiresReasoningContentForAllAssistantTurns")
+                        && can_reconstruct,
+                    reasoning_for_tool_calls: enabled
+                        && view.is("requiresReasoningContentForToolCalls")
+                        && can_reconstruct,
                     system_role: None,
                     developer_string_content: false,
                 },
             );
-            let prompts: Vec<&String> = context.system_prompt.iter().filter(|p| !p.trim().is_empty()).collect();
+            let prompts: Vec<&String> = context
+                .system_prompt
+                .iter()
+                .filter(|p| !p.trim().is_empty())
+                .collect();
             if !prompts.is_empty() {
                 let developer = model.reasoning && view.is("supportsDeveloperRole");
                 if developer {
@@ -854,7 +1136,13 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
                         input.insert(i, json!({ "role": "developer", "content": p }));
                     }
                 } else {
-                    instructions = Some(prompts.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("\n\n"));
+                    instructions = Some(
+                        prompts
+                            .iter()
+                            .map(|p| p.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                    );
                 }
             }
             let key = prompt_cache_key(&options.base);
@@ -867,7 +1155,9 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
             params.insert("stream".into(), json!(true));
             if let Some(k) = &key {
                 params.insert("prompt_cache_key".into(), json!(k));
-                if cache_retention == CacheRetention::Long && view.is("supportsLongPromptCacheRetention") {
+                if cache_retention == CacheRetention::Long
+                    && view.is("supportsLongPromptCacheRetention")
+                {
                     params.insert("prompt_cache_retention".into(), json!("24h"));
                 }
             }
@@ -878,40 +1168,68 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
                     }
                 }
             }
-            let stores = view.is("storeResponses") && matches!(std::env::var("PI_MUSE_STORE_RESPONSES").as_deref(), Ok("1" | "true"));
+            let stores = view.is("storeResponses")
+                && matches!(
+                    std::env::var("PI_MUSE_STORE_RESPONSES").as_deref(),
+                    Ok("1" | "true")
+                );
             params.insert("store".into(), json!(stores));
             if view.is("supportsObfuscationOptOut") {
-                params.insert("stream_options".into(), json!({ "include_obfuscation": false }));
+                params.insert(
+                    "stream_options".into(),
+                    json!({ "include_obfuscation": false }),
+                );
             }
-            if cache_retention != CacheRetention::None && view.compat_str("cacheControlFormat") == Some("anthropic") {
+            if cache_retention != CacheRetention::None
+                && view.compat_str("cacheControlFormat") == Some("anthropic")
+            {
                 params.insert(
                     "cache_control".into(),
-                    if cache_retention == CacheRetention::Long { json!({ "type": "ephemeral", "ttl": "1h" }) } else { json!({ "type": "ephemeral" }) },
+                    if cache_retention == CacheRetention::Long {
+                        json!({ "type": "ephemeral", "ttl": "1h" })
+                    } else {
+                        json!({ "type": "ephemeral" })
+                    },
                 );
             }
             // Output tokens.
             let model_max = (model.max_tokens > 0).then_some(model.max_tokens);
             let omit = model.omit_max_output_tokens.unwrap_or(false);
             let always = view.is("alwaysSendMaxTokens");
-            let requested = options.base.max_tokens.or_else(|| always.then(|| model_max.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS)));
+            let requested = options
+                .base
+                .max_tokens
+                .or_else(|| always.then(|| model_max.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS)));
             let clamp = clamp_output_to_model_max(view, model);
             let output_token = if omit {
                 None
             } else {
-                requested.filter(|_| !(view.is("isOpenRouterHost") && !always && !options.max_tokens_explicit)).and_then(|r| {
-                    let v = r.min(model_max.unwrap_or(u64::MAX)).min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS));
-                    (v > 0).then_some(v)
-                })
+                requested
+                    .filter(|_| {
+                        !(view.is("isOpenRouterHost") && !always && !options.max_tokens_explicit)
+                    })
+                    .and_then(|r| {
+                        let v = r
+                            .min(model_max.unwrap_or(u64::MAX))
+                            .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS));
+                        (v > 0).then_some(v)
+                    })
             };
             if let Some(max) = output_token.filter(|m| *m > 0).filter(|_| !omit) {
                 params.insert(
                     "max_output_tokens".into(),
-                    json!(max.min(model_max.unwrap_or(u64::MAX)).min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))),
+                    json!(max
+                        .min(model_max.unwrap_or(u64::MAX))
+                        .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))),
                 );
             }
         }
         Flavor::Azure { deployment } => {
-            let system_role = if model.reasoning && view.is("supportsDeveloperRole") { "developer" } else { "system" };
+            let system_role = if model.reasoning && view.is("supportsDeveloperRole") {
+                "developer"
+            } else {
+                "system"
+            };
             input = build_input(
                 model,
                 view,
@@ -935,9 +1253,19 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
             }
             params.insert("store".into(), json!(false));
             let model_max = (model.max_tokens > 0).then_some(model.max_tokens);
-            if let Some(max) = options.base.max_tokens.filter(|m| *m > 0).filter(|_| !model.omit_max_output_tokens.unwrap_or(false)) {
+            if let Some(max) = options
+                .base
+                .max_tokens
+                .filter(|m| *m > 0)
+                .filter(|_| !model.omit_max_output_tokens.unwrap_or(false))
+            {
                 let clamp = clamp_output_to_model_max(view, model);
-                params.insert("max_output_tokens".into(), json!(max.min(model_max.unwrap_or(u64::MAX)).min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))));
+                params.insert(
+                    "max_output_tokens".into(),
+                    json!(max
+                        .min(model_max.unwrap_or(u64::MAX))
+                        .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))),
+                );
             }
         }
     }
@@ -949,7 +1277,10 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
     }
     if let Some(tier) = options.base.service_tier {
         if should_send_service_tier(&model.provider, tier) {
-            params.insert("service_tier".into(), serde_json::to_value(tier).unwrap_or(Value::Null));
+            params.insert(
+                "service_tier".into(),
+                serde_json::to_value(tier).unwrap_or(Value::Null),
+            );
         }
     }
 
@@ -971,13 +1302,18 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
                         match map_responses_tool_choice(choice) {
                             Some(Value::Object(o)) => {
                                 let name = o.get("name").and_then(Value::as_str).unwrap_or("");
-                                surviving.iter().any(|t| t.name == name).then(|| Value::Object(o))
+                                surviving
+                                    .iter()
+                                    .any(|t| t.name == name)
+                                    .then(|| Value::Object(o))
                             }
                             other => other,
                         }
                     };
                     if let Some(tc) = mapped.filter(|_| !wire.is_empty()) {
-                        if tc.get("type") == Some(&json!("function")) && !view.is("supportsNamedToolChoice") {
+                        if tc.get("type") == Some(&json!("function"))
+                            && !view.is("supportsNamedToolChoice")
+                        {
                             let name = tc["name"].as_str().unwrap_or("").to_string();
                             wire.retain(|t| t["type"] == "function" && t["name"] == name.as_str());
                             tool_choice = Some(json!("required"));
@@ -1005,7 +1341,10 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
                             Some(Value::String(s)) => Some(Value::String(s)),
                             Some(Value::Object(o)) => {
                                 let name = o.get("name").and_then(Value::as_str).unwrap_or("");
-                                serialized.iter().any(|t| t["name"] == name).then(|| Value::Object(o))
+                                serialized
+                                    .iter()
+                                    .any(|t| t["name"] == name)
+                                    .then(|| Value::Object(o))
                             }
                             _ => None,
                         };
@@ -1019,27 +1358,54 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
         params.insert("tools".into(), Value::Array(tools));
     }
     if let Some(tc) = &tool_choice {
-        if matches!(flavor, Flavor::Azure { .. }) || !(tc == "auto" && drop_auto_tool_choice(model, &compat, options)) {
+        if matches!(flavor, Flavor::Azure { .. })
+            || !(tc == "auto" && drop_auto_tool_choice(model, &compat, options))
+        {
             params.insert("tool_choice".into(), tc.clone());
         }
     }
 
     // Reasoning.
     let reasoning_policy = if matches!(flavor, Flavor::OpenAi) {
-        let choice_for_policy: Option<ToolChoice> = params.get("tool_choice").and_then(|t| match t {
-            Value::String(s) if s == "auto" => Some(ToolChoice::Auto),
-            Value::String(s) if s == "none" => Some(ToolChoice::None),
-            Value::String(s) if s == "required" => Some(ToolChoice::Required),
-            Value::Object(o) => o.get("name").and_then(Value::as_str).map(|n| ToolChoice::Function { name: n.to_string() }),
-            _ => None,
-        });
-        resolve_policy(model, &compat, options.reasoning.as_deref(), options.disable_reasoning, choice_for_policy.as_ref(), false)
+        let choice_for_policy: Option<ToolChoice> =
+            params.get("tool_choice").and_then(|t| match t {
+                Value::String(s) if s == "auto" => Some(ToolChoice::Auto),
+                Value::String(s) if s == "none" => Some(ToolChoice::None),
+                Value::String(s) if s == "required" => Some(ToolChoice::Required),
+                Value::Object(o) => {
+                    o.get("name")
+                        .and_then(Value::as_str)
+                        .map(|n| ToolChoice::Function {
+                            name: n.to_string(),
+                        })
+                }
+                _ => None,
+            });
+        resolve_policy(
+            model,
+            &compat,
+            options.reasoning.as_deref(),
+            options.disable_reasoning,
+            choice_for_policy.as_ref(),
+            false,
+        )
     } else {
-        resolve_policy(model, &compat, options.reasoning.as_deref(), options.disable_reasoning, options.tool_choice.as_ref(), false)
+        resolve_policy(
+            model,
+            &compat,
+            options.reasoning.as_deref(),
+            options.disable_reasoning,
+            options.tool_choice.as_ref(),
+            false,
+        )
     };
     apply_responses_compat_policy(&mut params, &reasoning_policy, view, &summary, &map_effort);
 
-    if let Some(provider_routing) = view.compat.get("openRouterRouting").filter(|_| view.is("isOpenRouterHost") && matches!(flavor, Flavor::OpenAi)) {
+    if let Some(provider_routing) = view
+        .compat
+        .get("openRouterRouting")
+        .filter(|_| view.is("isOpenRouterHost") && matches!(flavor, Flavor::OpenAi))
+    {
         params.insert("provider".into(), provider_routing.clone());
     }
     params.insert("input".into(), Value::Array(input));
@@ -1047,19 +1413,36 @@ pub(crate) fn build_body(model: &Model, view: &ModelView, context: &Context, opt
     Ok(Value::Object(params))
 }
 
-fn drop_auto_tool_choice(model: &Model, compat: &ResolvedCompat, options: &ResponsesOptions) -> bool {
-    should_drop_auto_tool_choice_for_reasoning(model, compat, Some(&ToolChoice::Auto), options.reasoning.as_deref(), options.disable_reasoning)
+fn drop_auto_tool_choice(
+    model: &Model,
+    compat: &ResolvedCompat,
+    options: &ResponsesOptions,
+) -> bool {
+    should_drop_auto_tool_choice_for_reasoning(
+        model,
+        compat,
+        Some(&ToolChoice::Auto),
+        options.reasoning.as_deref(),
+        options.disable_reasoning,
+    )
 }
 
 /// TS `applyWireModelIdTransform` for the Responses transports (`openrouter` routing variant).
 fn wire_model_id(model: &Model, view: &ModelView, variant: Option<&str>) -> String {
-    let base = model.request_model_id.clone().unwrap_or_else(|| model.id.clone());
+    let base = model
+        .request_model_id
+        .clone()
+        .unwrap_or_else(|| model.id.clone());
     match view.compat_str("wireModelIdMode") {
         Some("openrouter") => match variant.filter(|v| !v.is_empty()) {
             Some(v) => {
                 let last_slash = base.rfind('/');
                 let last_colon = base.rfind(':');
-                if last_colon > last_slash && last_colon.is_some() { base } else { format!("{base}:{v}") }
+                if last_colon > last_slash && last_colon.is_some() {
+                    base
+                } else {
+                    format!("{base}:{v}")
+                }
             }
             None => base,
         },

@@ -40,21 +40,25 @@ pub fn supports_external_thinking(model: &pa_types::ai::Model) -> bool {
     use serde_json::Value;
     // The resolved record (not the model's sparse `compat` overrides): the flags below are
     // resolver outputs.
-    let compat = pa_ai::compat::resolve_for_model(model).ok().and_then(|p| p.compat);
+    let compat = pa_ai::compat::resolve_for_model(model)
+        .ok()
+        .and_then(|p| p.compat);
     let compat = compat.as_ref();
-    let compat_true = |key: &str| {
-        compat.is_some_and(|raw| raw.get(key).is_some_and(|v| v == &Value::Bool(true)))
-    };
+    let compat_true =
+        |key: &str| compat.is_some_and(|raw| raw.get(key).is_some_and(|v| v == &Value::Bool(true)));
     let anthropic = model.api == "anthropic-messages";
     let requires_thinking = anthropic && compat_true("requiresThinkingEnabled");
     if model.reasoning
         && (requires_thinking
             || compat_true("omitReasoningEffort")
-            || compat.is_some_and(|raw| raw.get("supportsReasoningEffort") == Some(&Value::Bool(false))))
+            || compat
+                .is_some_and(|raw| raw.get("supportsReasoningEffort") == Some(&Value::Bool(false))))
     {
         return false;
     }
-    if model.api == "google-generative-ai" || model.api == "google-gemini-cli" || model.api == "google-vertex"
+    if model.api == "google-generative-ai"
+        || model.api == "google-gemini-cli"
+        || model.api == "google-vertex"
     {
         return !model.reasoning;
     }
@@ -67,9 +71,7 @@ pub fn supports_external_thinking(model: &pa_types::ai::Model) -> bool {
 /// The hidden `think` tool (omp `HIDDEN_TOOLS.think`).
 #[must_use]
 pub fn tool() -> Arc<dyn AgentTool> {
-    Arc::new(ThinkTool {
-        schema: schema(),
-    })
+    Arc::new(ThinkTool { schema: schema() })
 }
 
 impl AgentTool for ThinkTool {
@@ -120,6 +122,9 @@ mod tests {
     fn execute_returns_separator() {
         let result = tool();
         assert_eq!(result.name(), "think");
-        assert_eq!(result.description(), "private scratchpad; not shown to user");
+        assert_eq!(
+            result.description(),
+            "private scratchpad; not shown to user"
+        );
     }
 }

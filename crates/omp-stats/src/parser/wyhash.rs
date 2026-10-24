@@ -82,7 +82,10 @@ pub fn wyhash_seed(seed: u64, input: &[u8]) -> u64 {
         let tail = &input[i..];
         let mut j = 0usize;
         while j + 16 < tail.len() {
-            state[0] = mix(read8(&tail[j..]) ^ SECRET[1], read8(&tail[j + 8..]) ^ state[0]);
+            state[0] = mix(
+                read8(&tail[j..]) ^ SECRET[1],
+                read8(&tail[j + 8..]) ^ state[0],
+            );
             j += 16;
         }
         a = read8(&input[input.len() - 16..]);

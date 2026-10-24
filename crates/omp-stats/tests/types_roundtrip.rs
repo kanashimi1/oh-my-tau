@@ -22,7 +22,10 @@ fn golden_dir() -> Option<PathBuf> {
 fn same(a: &Value, b: &Value, path: &str, out: &mut Vec<String>) {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => {
-            let (x, y) = (x.as_f64().unwrap_or(f64::NAN), y.as_f64().unwrap_or(f64::NAN));
+            let (x, y) = (
+                x.as_f64().unwrap_or(f64::NAN),
+                y.as_f64().unwrap_or(f64::NAN),
+            );
             if (x - y).abs() > 1e-9 * x.abs().max(y.abs()).max(1.0) {
                 out.push(format!("{path}: {x} != {y}"));
             }
@@ -55,15 +58,18 @@ fn same(a: &Value, b: &Value, path: &str, out: &mut Vec<String>) {
 
 fn check<T: DeserializeOwned + Serialize>(prefix: &str, failures: &mut Vec<String>) -> usize {
     let Some(dir) = golden_dir() else { return 0 };
-    let index: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("_index.json")).unwrap()).unwrap();
+    let index: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("_index.json")).unwrap()).unwrap();
     let mut n = 0;
     for (req, meta) in index.as_object().unwrap() {
         let path = req.split('?').next().unwrap();
         if path != prefix || meta["status"] != 200 {
             continue;
         }
-        let g: Value =
-            serde_json::from_str(&std::fs::read_to_string(dir.join(meta["file"].as_str().unwrap())).unwrap()).unwrap();
+        let g: Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(meta["file"].as_str().unwrap())).unwrap(),
+        )
+        .unwrap();
         let body = &g["body"];
         n += 1;
         match serde_json::from_value::<T>(body.clone()) {

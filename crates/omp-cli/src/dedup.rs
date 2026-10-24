@@ -33,7 +33,11 @@ fn content_hash(text: &str) -> u64 {
 }
 
 fn text_of(content: &[ToolResultContent]) -> Option<String> {
-    if content.is_empty() || content.iter().any(|c| matches!(c, ToolResultContent::Image(_))) {
+    if content.is_empty()
+        || content
+            .iter()
+            .any(|c| matches!(c, ToolResultContent::Image(_)))
+    {
         return None;
     }
     let text: String = content
@@ -118,7 +122,9 @@ pub fn dedup_active() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pa_agent::types::{AgentMessage, Message, TextContent, ToolResultContent, ToolResultMessage};
+    use pa_agent::types::{
+        AgentMessage, Message, TextContent, ToolResultContent, ToolResultMessage,
+    };
 
     fn tool_result(call_id: &str, text: &str) -> AgentMessage {
         AgentMessage::Standard(Message::ToolResult(ToolResultMessage {
@@ -156,8 +162,15 @@ mod tests {
         ];
         let out = dedup_tool_results(msgs);
         assert_eq!(body_of(&out[0]), big, "error result keeps its body");
-        assert_eq!(body_of(&out[1]), big, "first non-error occurrence stays full");
-        assert!(body_of(&out[2]).contains("call_f"), "later duplicate stubs to the non-error first");
+        assert_eq!(
+            body_of(&out[1]),
+            big,
+            "first non-error occurrence stays full"
+        );
+        assert!(
+            body_of(&out[2]).contains("call_f"),
+            "later duplicate stubs to the non-error first"
+        );
         assert!(body_of(&out[2]).contains("1000 bytes"));
     }
 
@@ -225,7 +238,11 @@ mod tests {
         for n in 1..history.len() {
             let shorter = dedup_tool_results(history[..n].to_vec());
             let longer = dedup_tool_results(history[..=n].to_vec());
-            assert_eq!(&longer[..n], &shorter[..], "turn {n}: earlier wire bytes changed");
+            assert_eq!(
+                &longer[..n],
+                &shorter[..],
+                "turn {n}: earlier wire bytes changed"
+            );
         }
     }
 }

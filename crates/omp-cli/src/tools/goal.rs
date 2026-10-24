@@ -86,8 +86,7 @@ impl Goal {
     /// omp `remainingTokens`.
     #[must_use]
     pub fn remaining_tokens(&self) -> Option<i64> {
-        self.token_budget
-            .map(|b| (b - self.tokens_used).max(0))
+        self.token_budget.map(|b| (b - self.tokens_used).max(0))
     }
 
     fn to_json(&self) -> Value {
@@ -175,7 +174,10 @@ impl GoalRuntime {
         self.next_id += 1;
         let now = Self::now_millis();
         let goal = Goal {
-            id: format!("{}", now * 1000 + i64::try_from(self.next_id).unwrap_or(i64::MAX)),
+            id: format!(
+                "{}",
+                now * 1000 + i64::try_from(self.next_id).unwrap_or(i64::MAX)
+            ),
             objective: objective.to_string(),
             status: GoalStatus::Active,
             token_budget,
@@ -193,7 +195,9 @@ impl GoalRuntime {
     pub fn resume_goal(&mut self) -> Result<Goal> {
         match self.goal.as_ref() {
             None => anyhow::bail!("No paused goal."),
-            Some(g) if g.status == GoalStatus::Complete => anyhow::bail!("Goal is already complete."),
+            Some(g) if g.status == GoalStatus::Complete => {
+                anyhow::bail!("Goal is already complete.")
+            }
             Some(_) => {}
         }
         let now = Self::now_millis();
@@ -285,12 +289,12 @@ fn build_response(
     include_completion_report: bool,
 ) -> (Value, Option<i64>, Option<String>) {
     let remaining = goal.and_then(Goal::remaining_tokens);
-    let report = if include_completion_report && goal.is_some_and(|g| g.status == GoalStatus::Complete)
-    {
-        completion_budget_report(goal.expect("goal checked"))
-    } else {
-        None
-    };
+    let report =
+        if include_completion_report && goal.is_some_and(|g| g.status == GoalStatus::Complete) {
+            completion_budget_report(goal.expect("goal checked"))
+        } else {
+            None
+        };
     (goal.map_or(Value::Null, Goal::to_json), remaining, report)
 }
 
@@ -372,7 +376,10 @@ impl AgentTool for GoalTool {
             let mut details = Map::new();
             details.insert("op".into(), json!(op));
             details.insert("goal".into(), goal_json);
-            details.insert("remainingTokens".into(), remaining.map_or(Value::Null, |r| json!(r)));
+            details.insert(
+                "remainingTokens".into(),
+                remaining.map_or(Value::Null, |r| json!(r)),
+            );
             details.insert(
                 "completionBudgetReport".into(),
                 report.map_or(Value::Null, Value::String),
@@ -434,9 +441,13 @@ mod tests {
         let done = rt.complete_goal().unwrap();
         assert_eq!(done.status, GoalStatus::Complete);
         assert_eq!(done.remaining_tokens(), Some(70));
-        assert_eq!(rt.complete_goal().unwrap_err().to_string(), "goal is already complete");
-        assert!(completion_budget_report(&done)
-            .is_some_and(|r| r.contains("tokens used: 30 of 100")));
+        assert_eq!(
+            rt.complete_goal().unwrap_err().to_string(),
+            "goal is already complete"
+        );
+        assert!(
+            completion_budget_report(&done).is_some_and(|r| r.contains("tokens used: 30 of 100"))
+        );
     }
 
     #[test]

@@ -99,13 +99,11 @@ fn items_in_args(a: &Value) -> usize {
             return v.len();
         }
     }
-    a.get("list")
-        .and_then(Value::as_array)
-        .map_or(0, |l| {
-            l.iter()
-                .map(|p| p.get("items").and_then(Value::as_array).map_or(0, Vec::len))
-                .sum()
-        })
+    a.get("list").and_then(Value::as_array).map_or(0, |l| {
+        l.iter()
+            .map(|p| p.get("items").and_then(Value::as_array).map_or(0, Vec::len))
+            .sum()
+    })
 }
 
 /// Collapse control/format chars and whitespace (TS `forDisplay`).
@@ -256,19 +254,18 @@ pub fn result_lines(
 pub fn status_summary(result: &Value) -> String {
     let details = result.get("details").unwrap_or(result);
     let phases = details.get("phases").and_then(Value::as_array);
-    let (closed, total) = phases
-        .map_or((0, 0), |ps| {
-            ps.iter()
-                .filter_map(|p| p.get("tasks").and_then(Value::as_array))
-                .flatten()
-                .fold((0usize, 0usize), |(c, t), task| {
-                    let s = task.get("status").and_then(Value::as_str).unwrap_or("");
-                    (
-                        c + usize::from(matches!(s, "completed" | "abandoned")),
-                        t + 1,
-                    )
-                })
-        });
+    let (closed, total) = phases.map_or((0, 0), |ps| {
+        ps.iter()
+            .filter_map(|p| p.get("tasks").and_then(Value::as_array))
+            .flatten()
+            .fold((0usize, 0usize), |(c, t), task| {
+                let s = task.get("status").and_then(Value::as_str).unwrap_or("");
+                (
+                    c + usize::from(matches!(s, "completed" | "abandoned")),
+                    t + 1,
+                )
+            })
+    });
     if total == 0 {
         "idle".into()
     } else {
@@ -276,10 +273,7 @@ pub fn status_summary(result: &Value) -> String {
     }
 }
 
-fn collapsed_selection(phases: &Phases,
-    expanded: bool,
-    cap: usize,
-) -> Vec<(usize, usize)> {
+fn collapsed_selection(phases: &Phases, expanded: bool, cap: usize) -> Vec<(usize, usize)> {
     if expanded {
         return (0..phases.len())
             .flat_map(|pi| (0..phases[pi].1.len()).map(move |ti| (pi, ti)))

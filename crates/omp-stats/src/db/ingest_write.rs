@@ -11,7 +11,6 @@ use crate::db::schema::{
     agent_type_str, calculate_no_cache_input_cost, resolve_stored_cost, usage_from_input,
 };
 
-
 fn service_tier_str(tier: Option<ServiceTier>) -> Option<&'static str> {
     tier.map(|t| match t {
         ServiceTier::Auto => "auto",
@@ -43,14 +42,25 @@ pub(super) fn set_file_offset(
 
 // ---- Stored-row snapshots for the reconcile/replay branches ----
 
-pub(super) fn load_message_keys(conn: &Connection, session_file: &str) -> Result<Vec<(String, i64)>> {
-    let mut stmt = conn.prepare("SELECT entry_id, timestamp FROM messages WHERE session_file = ?1")?;
-    let rows = stmt.query_map(rusqlite::params![session_file], |row| Ok((row.get(0)?, row.get(1)?)))?;
+pub(super) fn load_message_keys(
+    conn: &Connection,
+    session_file: &str,
+) -> Result<Vec<(String, i64)>> {
+    let mut stmt =
+        conn.prepare("SELECT entry_id, timestamp FROM messages WHERE session_file = ?1")?;
+    let rows = stmt.query_map(rusqlite::params![session_file], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub(super) fn load_user_keys(conn: &Connection, session_file: &str) -> Result<Vec<(String, i64, bool)>> {
-    let mut stmt = conn.prepare("SELECT entry_id, timestamp, model IS NOT NULL FROM user_messages WHERE session_file = ?1")?;
+pub(super) fn load_user_keys(
+    conn: &Connection,
+    session_file: &str,
+) -> Result<Vec<(String, i64, bool)>> {
+    let mut stmt = conn.prepare(
+        "SELECT entry_id, timestamp, model IS NOT NULL FROM user_messages WHERE session_file = ?1",
+    )?;
     let rows = stmt.query_map(rusqlite::params![session_file], |row| {
         Ok((row.get(0)?, row.get(1)?, row.get::<_, i64>(2)? != 0))
     })?;
@@ -65,30 +75,56 @@ pub(super) fn load_tool_keys(
         "SELECT entry_id, timestamp, tool_call_id, result_chars IS NOT NULL FROM tool_calls WHERE session_file = ?1",
     )?;
     let rows = stmt.query_map(rusqlite::params![session_file], |row| {
-        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get::<_, i64>(3)? != 0))
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get::<_, i64>(3)? != 0,
+        ))
     })?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
-pub(super) fn delete_all_messages(conn: &Connection, session_file: &str, had_rows: bool) -> Result<i64> {
+pub(super) fn delete_all_messages(
+    conn: &Connection,
+    session_file: &str,
+    had_rows: bool,
+) -> Result<i64> {
     if !had_rows {
         return Ok(0);
     }
-    Ok(conn.execute("DELETE FROM messages WHERE session_file = ?1", rusqlite::params![session_file])? as i64)
+    Ok(conn.execute(
+        "DELETE FROM messages WHERE session_file = ?1",
+        rusqlite::params![session_file],
+    )? as i64)
 }
 
-pub(super) fn delete_all_users(conn: &Connection, session_file: &str, had_rows: bool) -> Result<i64> {
+pub(super) fn delete_all_users(
+    conn: &Connection,
+    session_file: &str,
+    had_rows: bool,
+) -> Result<i64> {
     if !had_rows {
         return Ok(0);
     }
-    Ok(conn.execute("DELETE FROM user_messages WHERE session_file = ?1", rusqlite::params![session_file])? as i64)
+    Ok(conn.execute(
+        "DELETE FROM user_messages WHERE session_file = ?1",
+        rusqlite::params![session_file],
+    )? as i64)
 }
 
-pub(super) fn delete_all_tools(conn: &Connection, session_file: &str, had_rows: bool) -> Result<i64> {
+pub(super) fn delete_all_tools(
+    conn: &Connection,
+    session_file: &str,
+    had_rows: bool,
+) -> Result<i64> {
     if !had_rows {
         return Ok(0);
     }
-    Ok(conn.execute("DELETE FROM tool_calls WHERE session_file = ?1", rusqlite::params![session_file])? as i64)
+    Ok(conn.execute(
+        "DELETE FROM tool_calls WHERE session_file = ?1",
+        rusqlite::params![session_file],
+    )? as i64)
 }
 
 pub(super) fn delete_message(conn: &Connection, session_file: &str, entry_id: &str) -> Result<i64> {
@@ -105,7 +141,11 @@ pub(super) fn delete_user(conn: &Connection, session_file: &str, entry_id: &str)
     )? as i64)
 }
 
-pub(super) fn delete_tool(conn: &Connection, session_file: &str, tool_call_id: &str) -> Result<i64> {
+pub(super) fn delete_tool(
+    conn: &Connection,
+    session_file: &str,
+    tool_call_id: &str,
+) -> Result<i64> {
     Ok(conn.execute(
         "DELETE FROM tool_calls WHERE session_file = ?1 AND tool_call_id = ?2",
         rusqlite::params![session_file, tool_call_id],
@@ -151,7 +191,9 @@ pub(super) fn insert_message_stats_conn(
     for s in stats {
         let resolved = resolve_stored_cost(&s);
         let tokens = usage_from_input(&s.usage);
-        let no_cache_input = calculate_no_cache_input_cost(&s.provider, &s.model, &tokens, s.timestamp).unwrap_or(0.0);
+        let no_cache_input =
+            calculate_no_cache_input_cost(&s.provider, &s.model, &tokens, s.timestamp)
+                .unwrap_or(0.0);
         let changes = stmt.execute(rusqlite::params![
             s.session_file,
             s.entry_id,

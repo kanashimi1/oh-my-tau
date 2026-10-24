@@ -229,7 +229,11 @@ struct RuntimeResponder {
 
 impl RuntimeResponder {
     /// Send one dialog and await the answer object (`None` = cancelled / no UI).
-    async fn dialog(&self, method: &str, mut frame: serde_json::Map<String, Value>) -> Option<Value> {
+    async fn dialog(
+        &self,
+        method: &str,
+        mut frame: serde_json::Map<String, Value>,
+    ) -> Option<Value> {
         if !self.mode.has_ui() {
             return None;
         }
@@ -250,12 +254,19 @@ impl RuntimeResponder {
     }
 
     fn text(answer: Option<Value>) -> Option<String> {
-        answer?.get("value").and_then(Value::as_str).map(str::to_owned)
+        answer?
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     }
 }
 
 impl omp_ext::lifecycle::HostResponder for RuntimeResponder {
-    fn ui_confirm<'a>(&'a self, title: &'a str, message: &'a str) -> omp_ext::lifecycle::BoxFuture<'a, bool> {
+    fn ui_confirm<'a>(
+        &'a self,
+        title: &'a str,
+        message: &'a str,
+    ) -> omp_ext::lifecycle::BoxFuture<'a, bool> {
         Box::pin(async move {
             let mut f = serde_json::Map::new();
             f.insert("title".into(), json!(title));
@@ -314,10 +325,16 @@ impl omp_ext::lifecycle::HostResponder for RuntimeResponder {
             };
             let instructions = match &options {
                 Value::String(s) => Some(s.clone()),
-                Value::Object(o) => o.get("customInstructions").and_then(Value::as_str).map(str::to_owned),
+                Value::Object(o) => o
+                    .get("customInstructions")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
                 _ => None,
             };
-            rt.compact(instructions.as_deref()).await.map(|_| ()).map_err(|e| e.message)
+            rt.compact(instructions.as_deref())
+                .await
+                .map(|_| ())
+                .map_err(|e| e.message)
         })
     }
 
@@ -328,13 +345,57 @@ impl omp_ext::lifecycle::HostResponder for RuntimeResponder {
     ) -> omp_ext::lifecycle::BoxFuture<'a, Result<Value, String>> {
         Box::pin(async move {
             // TS: only command contexts (interactive / rpc) carry a real handler.
-            let (true, Some(rt)) = (matches!(self.mode, ExtMode::Tui | ExtMode::Rpc), self.rt.upgrade()) else {
+            let (true, Some(rt)) = (
+                matches!(self.mode, ExtMode::Tui | ExtMode::Rpc),
+                self.rt.upgrade(),
+            ) else {
                 return Ok(json!({"cancelled": false}));
             };
             crate::tree::navigate_tree(&rt, target, &options, None)
                 .await
                 .map(|v| v.unwrap_or_else(|| json!({"cancelled": false})))
                 .map_err(|e| e.message)
+        })
+    }
+
+    fn model_complete(
+        &self,
+        request: Value,
+    ) -> omp_ext::lifecycle::BoxFuture<'_, Result<Value, String>> {
+        Box::pin(async move {
+            let provider = request
+                .get("provider")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let id = request
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if provider.is_empty() || id.is_empty() {
+                return Err("model_complete requires provider and model".into());
+            }
+            let selected = crate::model::select(Some(&format!("{provider}/{id}")))
+                .await
+                .map_err(|e| format!("model resolution failed: {e:#}"))?;
+            let context: pa_types::ai::Context =
+                serde_json::from_value(request.get("context").cloned().unwrap_or(Value::Null))
+                    .map_err(|e| format!("invalid completion context: {e}"))?;
+            let options_value = request.get("options").cloned().unwrap_or(Value::Null);
+            let options = pa_ai::types::StreamOptions {
+                api_key: selected.api_key,
+                max_tokens: options_value.get("maxTokens").and_then(Value::as_u64),
+                session_id: options_value
+                    .get("sessionId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                timeout_ms: options_value.get("timeoutMs").and_then(Value::as_u64),
+                headers: selected.headers.map(|h| h.into_iter().collect()),
+                ..Default::default()
+            };
+            let response = pa_ai::complete(&selected.model, &context, Some(options))
+                .await
+                .map_err(|e| format!("model completion failed: {e}"))?;
+            serde_json::to_value(response).map_err(|e| format!("completion encoding failed: {e}"))
         })
     }
 }
@@ -345,11 +406,16 @@ fn injected_message(payload: &Value) -> Option<AgentMessage> {
     let (custom_type, content, display, details, attribution) = match payload {
         Value::String(text) => ("message".to_string(), json!(text), true, None, None),
         Value::Object(o) => (
-            o.get("customType").and_then(Value::as_str).unwrap_or("message").to_string(),
+            o.get("customType")
+                .and_then(Value::as_str)
+                .unwrap_or("message")
+                .to_string(),
             o.get("content").cloned().unwrap_or_else(|| json!("")),
             o.get("display").and_then(Value::as_bool).unwrap_or(false),
             o.get("details").cloned(),
-            o.get("attribution").and_then(Value::as_str).filter(|a| matches!(*a, "user" | "agent")),
+            o.get("attribution")
+                .and_then(Value::as_str)
+                .filter(|a| matches!(*a, "user" | "agent")),
         ),
         _ => return None,
     };
@@ -459,7 +525,11 @@ impl crate::runtime::CompactionHooks for CompactBridge {
         compaction_entry: Value,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            emit_silent(self.host.emit_session_compact(compaction_entry, false, None).await);
+            emit_silent(
+                self.host
+                    .emit_session_compact(compaction_entry, false, None)
+                    .await,
+            );
         })
     }
 }
@@ -478,7 +548,14 @@ impl Live {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
-            out.insert("leafId".into(), b.as_array().and_then(|a| a.last()).and_then(|e| e.get("id")).cloned().unwrap_or(Value::Null));
+            out.insert(
+                "leafId".into(),
+                b.as_array()
+                    .and_then(|a| a.last())
+                    .and_then(|e| e.get("id"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
             out.insert("branch".into(), b);
         }
         (!out.is_empty()).then_some(Value::Object(out))
@@ -500,7 +577,9 @@ fn sources_read_branch(dir: Option<&str>, extra: &[PathBuf]) -> bool {
         }
         p.extension().is_some_and(|e| e == "ts" || e == "js")
             && std::fs::read_to_string(p).is_ok_and(|t| {
-                ["getBranch", "getEntries", "getEntry(", "getLeafId"].iter().any(|k| t.contains(k))
+                ["getBranch", "getEntries", "getEntry(", "getLeafId"]
+                    .iter()
+                    .any(|k| t.contains(k))
             })
     }
     dir.is_some_and(|d| scan(Path::new(d), 3)) || extra.iter().any(|p| scan(p, 3))
@@ -569,7 +648,8 @@ impl Extensions {
         );
         {
             let live = ext.live.clone();
-            ext.host.set_ctx_provider(Some(Arc::new(move |_ty: &str| live.provide())));
+            ext.host
+                .set_ctx_provider(Some(Arc::new(move |_ty: &str| live.provide())));
         }
         if ext.host.may_reconnect() {
             // Shared-daemon supervisor: on daemon death the host transparently
@@ -593,7 +673,10 @@ impl Extensions {
             Box::pin(async move {
                 let result = fut.await?;
                 if result.as_ref().is_some_and(|r| r.block) {
-                    blocked.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id);
+                    blocked
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(id);
                 }
                 Ok(result)
             })
@@ -608,8 +691,21 @@ impl Extensions {
         });
         // While an ultra mode runs CLM, `context-slim` stands aside: the core
         // owns context maintenance then.
-        let transform = self.hooks.transform_context_skipping(Arc::new(crate::context::skip_extensions));
+        let transform = self
+            .hooks
+            .transform_context_skipping(Arc::new(crate::context::skip_extensions));
         (transform, before, after)
+    }
+
+    /// Notify request-accounting hooks at the real provider boundary.
+    /// Currently payload mutation remains on the native Rust stream path.
+    pub async fn before_provider_request(&self) -> Result<()> {
+        if self.host.has_handlers("before_provider_request") {
+            self.host
+                .emit(json!({"type":"before_provider_request","payload":{}}), None)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Extension tools as `AgentTool` wrappers (`list_tools` -> `call_tool`).
@@ -644,7 +740,10 @@ impl Extensions {
         model: &str,
     ) -> Result<()> {
         {
-            let mut ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ctx = self
+                .ctx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             ctx.session_id = session_id.to_string();
             ctx.session_file = session_file.map(Path::to_path_buf);
             ctx.model = model.to_string();
@@ -663,7 +762,10 @@ impl Extensions {
     /// Transport failure.
     pub async fn set_session_name(&self, name: Option<String>) -> Result<()> {
         let ready = {
-            let mut ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ctx = self
+                .ctx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             ctx.session_name = name;
             !ctx.session_id.is_empty()
         };
@@ -679,7 +781,10 @@ impl Extensions {
     /// Transport failure.
     async fn send_ctx(&self) -> Result<()> {
         let body = {
-            let ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ctx = self
+                .ctx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             json!({
                 "sessionId": ctx.session_id,
                 "sessionFile": ctx.session_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
@@ -715,7 +820,10 @@ impl Extensions {
                 .prompt_override
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            applied.take().filter(|(_, set)| base == *set).map(|(orig, _)| orig)
+            applied
+                .take()
+                .filter(|(_, set)| base == *set)
+                .map(|(orig, _)| orig)
         };
         if let Some(orig) = restore {
             agent.set_system_prompt(orig.clone()).await;
@@ -735,7 +843,11 @@ impl Extensions {
         }
         // Injected messages ride the prompt (TS `#promptAgent`: `[user, ...injected]`), so they get
         // message events and are persisted like any prompt message.
-        Ok(outcome.messages.iter().filter_map(injected_message).collect())
+        Ok(outcome
+            .messages
+            .iter()
+            .filter_map(injected_message)
+            .collect())
     }
 
     /// TS `input` gate (interactive input-controller / rpc ordered-input dispatch; never print
@@ -762,7 +874,10 @@ impl Extensions {
     /// lifecycle forwarding (`agent_*`, `turn_*`, `message_*`,
     /// `tool_execution_*`, `session_stop`).
     pub fn attach(self: &Arc<Self>, rt: Arc<Runtime>) {
-        *self.rt.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rt.clone());
+        *self
+            .rt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rt.clone());
         self.serve_incoming(&rt);
         rt.set_compaction_hooks(Some(Arc::new(CompactBridge {
             host: self.host.clone(),
@@ -770,18 +885,22 @@ impl Extensions {
         // `before_agent_start` runs inside every prompt admission, like TS `#promptAgent`.
         let ext = self.clone();
         let weak = Arc::downgrade(&rt);
-        rt.set_before_start_hook(Some(Arc::new(move |prompt: String, images: Option<Value>| {
-            let (ext, weak) = (ext.clone(), weak.clone());
-            Box::pin(async move {
-                let Some(rt) = weak.upgrade() else { return Vec::new() };
-                ext.before_agent_start(&rt.agent, &prompt, images)
-                    .await
-                    .unwrap_or_else(|e| {
-                        eprintln!("omp-rs: extension before_agent_start: {e:#}");
-                        Vec::new()
-                    })
-            })
-        })));
+        rt.set_before_start_hook(Some(Arc::new(
+            move |prompt: String, images: Option<Value>| {
+                let (ext, weak) = (ext.clone(), weak.clone());
+                Box::pin(async move {
+                    let Some(rt) = weak.upgrade() else {
+                        return Vec::new();
+                    };
+                    ext.before_agent_start(&rt.agent, &prompt, images)
+                        .await
+                        .unwrap_or_else(|e| {
+                            eprintln!("omp-rs: extension before_agent_start: {e:#}");
+                            Vec::new()
+                        })
+                })
+            },
+        )));
         let ext = self.clone();
         tokio::spawn(async move {
             ext.refresh_live(&rt, true).await;
@@ -799,19 +918,34 @@ impl Extensions {
     /// host has a fresh channel; the previous consumer's task ends when its
     /// sender drops).
     fn responder(&self, rt: &Arc<Runtime>) -> Arc<dyn omp_ext::lifecycle::HostResponder> {
-        let mode = *self.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        Arc::new(RuntimeResponder { rt: Arc::downgrade(rt), mode })
+        let mode = *self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::new(RuntimeResponder {
+            rt: Arc::downgrade(rt),
+            mode,
+        })
     }
 
     /// Declare the serving mode before [`Self::attach`]: sets `ctx.mode` / `hasUI` like TS
     /// (`print`/`json`: no UI; `rpc` and `tui`: a UI context exists).
     fn mode(&self) -> ExtMode {
-        *self.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn set_mode(&self, mode: ExtMode) {
-        *self.mode.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
-        let mut ctx = self.ctx.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        *self
+            .mode
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
+        let mut ctx = self
+            .ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         ctx.has_ui = mode.has_ui();
         ctx.mode = mode.name();
     }
@@ -840,9 +974,7 @@ impl Extensions {
             if generations.changed().await.is_err() {
                 return;
             }
-            eprintln!(
-                "omp-rs: extension host reconnected; reloading extensions and session ctx"
-            );
+            eprintln!("omp-rs: extension host reconnected; reloading extensions and session ctx");
             if let Err(e) = self.recover().await {
                 eprintln!("omp-rs: extension host recovery: {e:#}");
             }
@@ -1015,7 +1147,11 @@ impl Extensions {
         let model = rt.agent.model().await;
         let model_ref = format!("{}/{}", model.provider, model.id);
         if let Err(e) = self
-            .set_session_ctx(&rt.session_id(), rt.live_session_file().as_deref(), &model_ref)
+            .set_session_ctx(
+                &rt.session_id(),
+                rt.live_session_file().as_deref(),
+                &model_ref,
+            )
             .await
         {
             eprintln!("omp-rs: extension ctx: {e:#}");
@@ -1431,6 +1567,13 @@ fn forward_event(
                 messages: messages.iter().map(message_value).collect(),
                 will_continue: None,
             });
+            if host.has_handlers("agent_settled") {
+                if let Err(e) =
+                    host.emit_nowait(&json!({"type":"agent_settled"}), None, emit_silent)
+                {
+                    eprintln!("omp-rs: extension agent_settled: {e:#}");
+                }
+            }
         }
         AgentEvent::TurnStart => {
             let index = turn.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1605,7 +1748,11 @@ mod tests {
     use super::*;
     use pa_agent::abort::AbortController;
 
-    async fn sh_host(dir: &std::path::Path, body: &str, env: Vec<(String, String)>) -> Arc<ExtHost> {
+    async fn sh_host(
+        dir: &std::path::Path,
+        body: &str,
+        env: Vec<(String, String)>,
+    ) -> Arc<ExtHost> {
         let script = dir.join("fake-host.sh");
         std::fs::write(&script, body).unwrap();
         ExtHost::spawn(&HostConfig {
@@ -1771,9 +1918,13 @@ mod tests {
     #[test]
     fn injected_message_follows_ts_custom_message_normalization() {
         // Object payload: role custom, explicit fields kept, attribution defaults to "user".
-        let m = injected_message(&json!({"customType": "memory-recall", "content": "hi", "display": false}))
-            .expect("object payload");
-        let AgentMessage::Custom(c) = m else { panic!("custom message") };
+        let m = injected_message(
+            &json!({"customType": "memory-recall", "content": "hi", "display": false}),
+        )
+        .expect("object payload");
+        let AgentMessage::Custom(c) = m else {
+            panic!("custom message")
+        };
         assert_eq!(c.role, "custom");
         assert_eq!(c.payload["customType"], "memory-recall");
         assert_eq!(c.payload["content"], "hi");
@@ -1782,7 +1933,9 @@ mod tests {
         // Explicit attribution wins; array content stays an array.
         let m = injected_message(&json!({"customType": "x", "content": [{"type": "text", "text": "t"}], "attribution": "agent"}))
             .expect("explicit attribution");
-        let AgentMessage::Custom(c) = m else { panic!("custom message") };
+        let AgentMessage::Custom(c) = m else {
+            panic!("custom message")
+        };
         assert_eq!(c.payload["attribution"], "agent");
         assert!(c.payload["content"].is_array());
         // A bare string becomes a displayed default-type message; other shapes are dropped.

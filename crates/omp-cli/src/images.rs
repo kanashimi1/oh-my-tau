@@ -95,8 +95,16 @@ fn base64(bytes: &[u8]) -> String {
             | u32::from(c.get(2).copied().unwrap_or(0));
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -111,7 +119,8 @@ fn detect_format(bytes: &[u8]) -> Option<image::ImageFormat> {
 
 fn encode_png(rgb: &image::DynamicImage) -> Vec<u8> {
     let mut out = Vec::new();
-    let encoder = PngEncoder::new_with_quality(&mut out, CompressionType::Fast, PngFilter::Adaptive);
+    let encoder =
+        PngEncoder::new_with_quality(&mut out, CompressionType::Fast, PngFilter::Adaptive);
     let _ = rgb.write_with_encoder(encoder);
     out
 }
@@ -139,7 +148,10 @@ fn smallest(candidates: Vec<(Vec<u8>, &'static str)>) -> (Vec<u8>, String) {
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // result is min-clamped against the u32 caps by every caller
 fn scaled(width: u32, height: u32, scale: f64) -> (u32, u32) {
-    ((f64::from(width) * scale).round() as u32, (f64::from(height) * scale).round() as u32)
+    (
+        (f64::from(width) * scale).round() as u32,
+        (f64::from(height) * scale).round() as u32,
+    )
 }
 
 /// Resize and recompress an image to fit the caps, following omp's strategy:
@@ -149,10 +161,13 @@ fn scaled(width: u32, height: u32, scale: f64) -> (u32, u32) {
 #[allow(clippy::cast_possible_truncation)] // u64 intermediates are bounded by the u32 caps (max_width/max_height)
 pub fn resize_image(bytes: &[u8], fallback_mime: &str, opts: &ImageResizeOptions) -> ResizedImage {
     let fmt = detect_format(bytes);
-    let source_mime = fmt
-        .map_or_else(|| fallback_mime.to_string(), |f| f.to_mime_type().to_string());
+    let source_mime = fmt.map_or_else(
+        || fallback_mime.to_string(),
+        |f| f.to_mime_type().to_string(),
+    );
     let (original_width, original_height) = match fmt {
-        Some(f) => match ImageReader::with_format(std::io::Cursor::new(bytes), f).into_dimensions() {
+        Some(f) => match ImageReader::with_format(std::io::Cursor::new(bytes), f).into_dimensions()
+        {
             Ok(d) => d,
             Err(_) => return ResizedImage::original(base64(bytes), fallback_mime, 0, 0),
         },
@@ -167,11 +182,21 @@ pub fn resize_image(bytes: &[u8], fallback_mime: &str, opts: &ImageResizeOptions
         && original_height <= opts.max_height
         && bytes.len() <= opts.max_bytes / 4
     {
-        return ResizedImage::original(base64(bytes), &source_mime, original_width, original_height);
+        return ResizedImage::original(
+            base64(bytes),
+            &source_mime,
+            original_width,
+            original_height,
+        );
     }
 
     let Ok(decoded) = image::load_from_memory(bytes) else {
-        return ResizedImage::original(base64(bytes), fallback_mime, original_width, original_height);
+        return ResizedImage::original(
+            base64(bytes),
+            fallback_mime,
+            original_width,
+            original_height,
+        );
     };
 
     // Target dimensions: clamp to caps, then lift undersized inputs uniformly.
@@ -197,7 +222,8 @@ pub fn resize_image(bytes: &[u8], fallback_mime: &str, opts: &ImageResizeOptions
         }
     }
 
-    let resized_of = |w: u32, h: u32| decoded.resize_exact(w.max(1), h.max(1), FilterType::Triangle);
+    let resized_of =
+        |w: u32, h: u32| decoded.resize_exact(w.max(1), h.max(1), FilterType::Triangle);
     let encode_smallest = |img: &image::DynamicImage| {
         smallest(vec![
             (encode_png(img), "image/png"),
@@ -347,7 +373,13 @@ mod tests {
     #[test]
     fn oversized_image_is_downscaled_and_encoded() {
         // 3000x2000 gradient PNG — large enough that re-encode is mandatory.
-        let img = image::RgbImage::from_fn(3000, 2000, |x, y| image::Rgb([u8::try_from(x % 256).unwrap(), u8::try_from(y % 256).unwrap(), 128]));
+        let img = image::RgbImage::from_fn(3000, 2000, |x, y| {
+            image::Rgb([
+                u8::try_from(x % 256).unwrap(),
+                u8::try_from(y % 256).unwrap(),
+                128,
+            ])
+        });
         let mut png = Vec::new();
         image::DynamicImage::ImageRgb8(img)
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -387,7 +419,11 @@ mod tests {
     fn read_image_rejects_oversized_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("big.png");
-        std::fs::write(&path, vec![0u8; usize::try_from(MAX_IMAGE_SIZE + 1).unwrap()]).unwrap();
+        std::fs::write(
+            &path,
+            vec![0u8; usize::try_from(MAX_IMAGE_SIZE + 1).unwrap()],
+        )
+        .unwrap();
         assert!(read_image(&path).is_err());
     }
 

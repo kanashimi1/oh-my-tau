@@ -12,7 +12,7 @@
 //      OMP_EXT_TIMEOUT_MS handler budget (default 30000); OMP_PKG_ROOT omp's pi-coding-agent package dir (for typebox/zod).
 import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, appendFileSync, readdirSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 
@@ -157,6 +157,7 @@ const sm = () => ({
   getCwd: () => state.cwd,
   getSessionId: () => state.sessionId,
   getSessionFile: () => state.sessionFile,
+  getSessionDir: () => state.sessionFile ? dirname(String(state.sessionFile)) : undefined,
   getLeafId: () => state.leafId ?? null,
   getBranch: () => (state.branch as Json[]) ?? [],
   getEntries: () => (state.branch as Json[]) ?? [],
@@ -220,7 +221,14 @@ function makeCtx() {
       return { kind: state.agentKind ?? "main", ...((state.agent as Json) ?? {}) };
     },
     sessionManager: sm(),
-    modelRegistry: { getApiKey: async () => undefined, getAvailable: () => [], getAll: () => [] },
+    modelRegistry: {
+      getApiKey: async () => undefined,
+      getAvailable: () => [],
+      getAll: () => [],
+      complete: async (model: Json, context: Json, options: Json) => request("model_complete", {
+        provider: String(model.provider), model: String(model.id), context, options,
+      }),
+    },
     getContextUsage: () => state.contextUsage,
     getAsyncJobSnapshot: () => (state.asyncJobs as Json) ?? null,
     compact: (o?: unknown) => request("compact", { options: o as Json }).then(() => undefined),

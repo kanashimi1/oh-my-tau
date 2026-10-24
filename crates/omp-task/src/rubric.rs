@@ -70,12 +70,17 @@ impl FrozenRubric {
     /// Not an array, empty, over [`MAX_CRITERIA`], blank criterion, negative or
     /// non-finite weight, or all-zero weights.
     pub fn freeze(raw: &Value) -> Result<Self, String> {
-        let list = raw.as_array().ok_or("rubric must be an array of {criterion, weight}")?;
+        let list = raw
+            .as_array()
+            .ok_or("rubric must be an array of {criterion, weight}")?;
         if list.is_empty() {
             return Err("rubric must contain at least one criterion".into());
         }
         if list.len() > MAX_CRITERIA {
-            return Err(format!("rubric has {} criteria; max is {MAX_CRITERIA}", list.len()));
+            return Err(format!(
+                "rubric has {} criteria; max is {MAX_CRITERIA}",
+                list.len()
+            ));
         }
         let mut parsed = Vec::with_capacity(list.len());
         for (i, item) in list.iter().enumerate() {
@@ -87,7 +92,9 @@ impl FrozenRubric {
                 .ok_or_else(|| format!("rubric[{i}].criterion must be a non-empty string"))?;
             let weight = match item.get("weight") {
                 None | Some(Value::Null) => 1.0,
-                Some(w) => w.as_f64().ok_or_else(|| format!("rubric[{i}].weight must be a number"))?,
+                Some(w) => w
+                    .as_f64()
+                    .ok_or_else(|| format!("rubric[{i}].weight must be a number"))?,
             };
             if !weight.is_finite() || weight < 0.0 {
                 return Err(format!("rubric[{i}].weight must be a finite number ≥ 0"));
@@ -100,14 +107,21 @@ impl FrozenRubric {
         }
         let criteria: Vec<Criterion> = parsed
             .into_iter()
-            .map(|(criterion, w)| Criterion { criterion, weight: w / total })
+            .map(|(criterion, w)| Criterion {
+                criterion,
+                weight: w / total,
+            })
             .collect();
         let canon = criteria
             .iter()
             .map(|c| format!("{}\u{1f}{:.9}", c.criterion, c.weight))
             .collect::<Vec<_>>()
             .join("\u{1e}");
-        Ok(Self { id: format!("rb-{:016x}", fnv1a(canon.as_bytes())), criteria, frozen_ms: now_ms() })
+        Ok(Self {
+            id: format!("rb-{:016x}", fnv1a(canon.as_bytes())),
+            criteria,
+            frozen_ms: now_ms(),
+        })
     }
 
     /// Node score `g · Σ w_j c_j`; the gate zeroes the score exactly.
@@ -116,7 +130,11 @@ impl FrozenRubric {
     /// `c` length differs from the criteria count.
     pub fn score(&self, gate: bool, c: &[f64]) -> Result<f64, String> {
         if c.len() != self.criteria.len() {
-            return Err(format!("expected {} criterion scores, got {}", self.criteria.len(), c.len()));
+            return Err(format!(
+                "expected {} criterion scores, got {}",
+                self.criteria.len(),
+                c.len()
+            ));
         }
         if !gate {
             return Ok(0.0);
@@ -141,7 +159,12 @@ impl FrozenRubric {
              each c_j in [0,1] grades criterion j in order.\n\n<rubric>\n",
         );
         for (i, k) in self.criteria.iter().enumerate() {
-            p.push_str(&format!("{}. {} (weight {:.3})\n", i + 1, k.criterion, k.weight));
+            p.push_str(&format!(
+                "{}. {} (weight {:.3})\n",
+                i + 1,
+                k.criterion,
+                k.weight
+            ));
         }
         p.push_str("</rubric>\n\n<task>\n");
         p.push_str(task);
@@ -173,10 +196,17 @@ pub fn parse_scorer_reply(text: &str, n: usize) -> Result<(bool, Vec<f64>), Stri
         .and_then(Value::as_array)
         .ok_or("scorer reply lacks `scores` array")?
         .iter()
-        .map(|v| v.as_f64().filter(|f| f.is_finite()).ok_or("scores must be finite numbers"))
+        .map(|v| {
+            v.as_f64()
+                .filter(|f| f.is_finite())
+                .ok_or("scores must be finite numbers")
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if scores.len() != n {
-        return Err(format!("scorer returned {} scores for {n} criteria", scores.len()));
+        return Err(format!(
+            "scorer returned {} scores for {n} criteria",
+            scores.len()
+        ));
     }
     Ok((gate, scores))
 }
@@ -253,8 +283,14 @@ impl RubricRecord {
 
     /// Append to the `OMP_RUBRIC_LOG` JSONL file (failures ignored, like the RLM ledger log).
     pub fn append_log(&self) {
-        let Some(path) = std::env::var_os(LOG_ENV) else { return };
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let Some(path) = std::env::var_os(LOG_ENV) else {
+            return;
+        };
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{}", json!(self));
         }
     }
@@ -262,7 +298,10 @@ impl RubricRecord {
 
 /// Provider seam: run the scorer model on a prompt and return its text.
 pub trait RubricScorer: Send + Sync {
-    fn complete<'a>(&'a self, prompt: &'a str) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
+    fn complete<'a>(
+        &'a self,
+        prompt: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>>;
 }
 
 /// Verified outcome from a child's schema verdict: the only external check the
@@ -290,12 +329,23 @@ pub async fn score_output(
     let verified = verified_from_schema(&out.schema);
     let usable = out.status == RunStatus::Completed && !out.output.trim().is_empty();
     let (gate, per) = if usable {
-        let reply = scorer.complete(&rubric.scorer_prompt(task, &out.output)).await?;
+        let reply = scorer
+            .complete(&rubric.scorer_prompt(task, &out.output))
+            .await?;
         parse_scorer_reply(&reply, rubric.criteria.len())?
     } else {
         (false, vec![0.0; rubric.criteria.len()])
     };
-    let rec = RubricRecord::from_verdict("task", rubric, &out.id, task.len(), out.output.len(), gate, per, verified)?;
+    let rec = RubricRecord::from_verdict(
+        "task",
+        rubric,
+        &out.id,
+        task.len(),
+        out.output.len(),
+        gate,
+        per,
+        verified,
+    )?;
     rec.append_log();
     Ok(rec)
 }
@@ -314,7 +364,9 @@ pub async fn spawn_all_with_rubrics(
     let mut scored = Vec::with_capacity(outputs.len());
     for (i, out) in outputs.into_iter().enumerate() {
         let rec = match rubrics.get(i).and_then(Option::as_ref) {
-            Some(r) => Some(score_output(r, scorer, prompts.get(i).map_or("", String::as_str), &out).await),
+            Some(r) => {
+                Some(score_output(r, scorer, prompts.get(i).map_or("", String::as_str), &out).await)
+            }
             None => None,
         };
         scored.push((out, rec));
@@ -357,7 +409,11 @@ mod tests {
         ] {
             assert!(FrozenRubric::freeze(&bad).is_err(), "{bad}");
         }
-        let many = Value::Array((0..13).map(|i| json!({"criterion": format!("c{i}")})).collect());
+        let many = Value::Array(
+            (0..13)
+                .map(|i| json!({"criterion": format!("c{i}")}))
+                .collect(),
+        );
         assert!(FrozenRubric::freeze(&many).is_err());
     }
 
@@ -372,7 +428,11 @@ mod tests {
 
     #[test]
     fn scorer_reply_parsing() {
-        let (g, s) = parse_scorer_reply("Sure:\n```json\n{\"success\": true, \"scores\": [1, 0.5]}\n```", 2).unwrap();
+        let (g, s) = parse_scorer_reply(
+            "Sure:\n```json\n{\"success\": true, \"scores\": [1, 0.5]}\n```",
+            2,
+        )
+        .unwrap();
         assert!(g);
         assert_eq!(s, vec![1.0, 0.5]);
         assert!(parse_scorer_reply("{\"success\": true, \"scores\": [1]}", 2).is_err());
@@ -399,7 +459,10 @@ mod tests {
 
     struct Fixed(&'static str);
     impl RubricScorer for Fixed {
-        fn complete<'a>(&'a self, _p: &'a str) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+        fn complete<'a>(
+            &'a self,
+            _p: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
             Box::pin(async move { Ok(self.0.to_string()) })
         }
     }
@@ -420,9 +483,14 @@ mod tests {
 
     #[tokio::test]
     async fn failed_child_scores_zero_without_scorer_call() {
-        let rec = score_output(&rb(), &Fixed("{\"success\":true,\"scores\":[1,1]}"), "t", &out(RunStatus::Failed, "x"))
-            .await
-            .unwrap();
+        let rec = score_output(
+            &rb(),
+            &Fixed("{\"success\":true,\"scores\":[1,1]}"),
+            "t",
+            &out(RunStatus::Failed, "x"),
+        )
+        .await
+        .unwrap();
         assert!(!rec.gate);
         assert_eq!(rec.score, 0.0);
         assert_eq!(rec.verified, Some(1.0));
@@ -435,9 +503,14 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let log = dir.join("r.jsonl");
         std::env::set_var(LOG_ENV, &log);
-        let rec = score_output(&rb(), &Fixed("{\"success\":true,\"scores\":[1,0]}"), "t", &out(RunStatus::Completed, "ans"))
-            .await
-            .unwrap();
+        let rec = score_output(
+            &rb(),
+            &Fixed("{\"success\":true,\"scores\":[1,0]}"),
+            "t",
+            &out(RunStatus::Completed, "ans"),
+        )
+        .await
+        .unwrap();
         std::env::remove_var(LOG_ENV);
         assert!((rec.score - 0.75).abs() < 1e-12);
         let line = std::fs::read_to_string(&log).unwrap();

@@ -269,7 +269,8 @@ impl StreamingRevealController {
                 Some(old) if old.total > 0 => units_from(text, old.total - 1, old.last_start),
                 _ => units_from(text, 0, 0),
             });
-            if self.cursor.block == idx && !grown.is_some_and(|old| self.cursor.byte <= old.last_start)
+            if self.cursor.block == idx
+                && !grown.is_some_and(|old| self.cursor.byte <= old.last_start)
             {
                 self.cursor = RevealCursor {
                     block: idx,
@@ -532,8 +533,25 @@ mod tests {
         // Appends that split grapheme clusters: combining marks, ZWJ emoji,
         // skin tones, flags (regional-indicator pairs), CRLF, Hangul jamo.
         const PIECES: &[&str] = &[
-            "a", "e\u{301}", "\u{301}", "\u{200d}", "👩", "\u{200d}💻", "🏽", "🇯", "🇵", "\r", "\n",
-            "\r\n", "日本", "ᄀ", "ᅡ", "ᆨ", " ", "naïve ", "x\u{20e3}",
+            "a",
+            "e\u{301}",
+            "\u{301}",
+            "\u{200d}",
+            "👩",
+            "\u{200d}💻",
+            "🏽",
+            "🇯",
+            "🇵",
+            "\r",
+            "\n",
+            "\r\n",
+            "日本",
+            "ᄀ",
+            "ᅡ",
+            "ᆨ",
+            " ",
+            "naïve ",
+            "x\u{20e3}",
         ];
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
         let mut rand = |n: usize| {

@@ -144,9 +144,13 @@ async fn local_compact_does_not_carry_remote_preserve_data_forward() {
         keep_recent_tokens: 30,
         ..CompactionSettings::default()
     };
-    let prep = plan_compaction(&entries.iter().collect::<Vec<_>>(), &settings, &ByteEstimate)
-        .unwrap()
-        .unwrap();
+    let prep = plan_compaction(
+        &entries.iter().collect::<Vec<_>>(),
+        &settings,
+        &ByteEstimate,
+    )
+    .unwrap()
+    .unwrap();
     assert!(prep.previous_preserve_data.is_some());
 
     let completer = |req: SummaryRequest| {
@@ -178,9 +182,13 @@ async fn compact_runs_summary_flow_through_injected_completer() {
         keep_recent_tokens: 30,
         ..CompactionSettings::default()
     };
-    let prep = plan_compaction(&entries.iter().collect::<Vec<_>>(), &settings, &ByteEstimate)
-        .unwrap()
-        .unwrap();
+    let prep = plan_compaction(
+        &entries.iter().collect::<Vec<_>>(),
+        &settings,
+        &ByteEstimate,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(prep.first_kept_entry_id, "u2");
     assert!(!prep.is_split_turn);
     assert_eq!(prep.tokens_before, 110);
@@ -330,7 +338,9 @@ fn owned_rebuild_matches_borrowed() {
     ] {
         let borrowed =
             omp_compact::build_session_context(&fixture, omp_compact::Leaf::Last).unwrap();
-        let owned = omp_compact::build_session_context_owned(fixture.clone(), omp_compact::Leaf::Last).unwrap();
+        let owned =
+            omp_compact::build_session_context_owned(fixture.clone(), omp_compact::Leaf::Last)
+                .unwrap();
         assert_eq!(borrowed, owned, "owned rebuild diverged: {fixture:?}");
     }
 }

@@ -24,8 +24,8 @@ pub mod diff;
 pub mod help;
 pub mod large_paste;
 pub mod models;
-pub mod sessions;
 pub mod session_info;
+pub mod sessions;
 pub mod settings;
 pub mod thinking;
 pub mod tree;
@@ -206,7 +206,11 @@ impl Overlays {
     /// Open the `/session` info panel with a fresh report (replacing an
     /// open one, which moves back to the top of the stack). `title` names
     /// the panel (`None` = "Session Info"; `/usage` passes "Usage").
-    pub fn open_session_info(&mut self, title: Option<&str>, lines: Vec<session_info::SessionInfoLine>) {
+    pub fn open_session_info(
+        &mut self,
+        title: Option<&str>,
+        lines: Vec<session_info::SessionInfoLine>,
+    ) {
         self.session_info.set_title(title);
         self.session_info.set_lines(lines);
         self.close(OpenOverlay::SessionInfo);
@@ -402,7 +406,12 @@ impl Overlays {
     #[must_use]
     pub fn wants_mouse(&self) -> bool {
         match self.open() {
-            Some(OpenOverlay::Models | OpenOverlay::Settings | OpenOverlay::Sessions | OpenOverlay::Diff) => true,
+            Some(
+                OpenOverlay::Models
+                | OpenOverlay::Settings
+                | OpenOverlay::Sessions
+                | OpenOverlay::Diff,
+            ) => true,
             Some(OpenOverlay::Tree) => self.tree.mode == tree::TreeMode::Rewind,
             _ => false,
         }
@@ -490,7 +499,11 @@ mod tests {
 
     #[test]
     fn ts_fullscreen_set_and_mouse_scope() {
-        for o in [OpenOverlay::Models, OpenOverlay::Settings, OpenOverlay::Sessions] {
+        for o in [
+            OpenOverlay::Models,
+            OpenOverlay::Settings,
+            OpenOverlay::Sessions,
+        ] {
             assert!(o.is_fullscreen(), "{o:?} is a TS fullscreen:true mount");
         }
         for o in [OpenOverlay::Help, OpenOverlay::CommandPalette] {

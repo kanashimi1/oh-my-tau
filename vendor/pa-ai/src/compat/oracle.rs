@@ -6,7 +6,10 @@ use serde_json::Value;
 
 use super::resolve::{resolve_model_policy, ModelSpec};
 
-const DUMP: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../runs/omp-rust/compat-oracle/dump.jsonl");
+const DUMP: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../runs/omp-rust/compat-oracle/dump.jsonl"
+);
 
 fn spec_of(v: &Value) -> ModelSpec {
     let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
@@ -49,12 +52,20 @@ fn resolver_matches_ts_for_every_catalog_and_cache_row() {
     for line in text.lines().filter(|l| !l.is_empty()) {
         let case: Value = serde_json::from_str(line).expect("dump line parses");
         let spec = spec_of(&case["spec"]);
-        let label = format!("{}:{} [{}/{}]", case["source"].as_str().unwrap_or("?"), case["variant"], spec.provider, spec.id);
+        let label = format!(
+            "{}:{} [{}/{}]",
+            case["source"].as_str().unwrap_or("?"),
+            case["variant"],
+            spec.provider,
+            spec.id
+        );
         total += 1;
         let rust = resolve_model_policy(&spec, None);
         match (case.get("error").and_then(Value::as_str), rust) {
             (Some(_), Err(_)) => {}
-            (Some(e), Ok(_)) => mismatches.push(format!("{label}: TS threw ({e}) but Rust resolved")),
+            (Some(e), Ok(_)) => {
+                mismatches.push(format!("{label}: TS threw ({e}) but Rust resolved"))
+            }
             (None, Err(e)) => mismatches.push(format!("{label}: Rust error {e}")),
             (None, Ok(r)) => {
                 let want = &case["result"];
@@ -74,9 +85,16 @@ fn resolver_matches_ts_for_every_catalog_and_cache_row() {
             }
         }
     }
-    eprintln!("compat oracle: {total} cases, {} mismatches", mismatches.len());
+    eprintln!(
+        "compat oracle: {total} cases, {} mismatches",
+        mismatches.len()
+    );
     for m in mismatches.iter().take(40) {
         eprintln!("  MISMATCH {m}");
     }
-    assert!(mismatches.is_empty(), "{} of {total} cases differ from TS", mismatches.len());
+    assert!(
+        mismatches.is_empty(),
+        "{} of {total} cases differ from TS",
+        mismatches.len()
+    );
 }

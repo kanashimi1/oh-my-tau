@@ -101,7 +101,11 @@ pub fn get_frustration_overall(cutoff: Option<i64>) -> Result<FrustrationCounts>
 		LEFT JOIN frustration_verdicts v ON v.prose_hash = u.prose_hash
 		WHERE u.prose != ''{range}",
             counts = frustration_counts_sql(),
-            range = if cutoff.is_some() { " AND u.timestamp >= ?" } else { "" },
+            range = if cutoff.is_some() {
+                " AND u.timestamp >= ?"
+            } else {
+                ""
+            },
         );
         let mut stmt = conn.prepare(&sql)?;
         let binds: Vec<i64> = cutoff.into_iter().collect();
@@ -148,7 +152,11 @@ fn pending_prose_sql(has_cutoff: bool) -> String {
 		WHERE u.prose != ''{}
 		  AND NOT EXISTS (SELECT 1 FROM frustration_verdicts v WHERE v.prose_hash = u.prose_hash)
 		GROUP BY u.prose_hash",
-        if has_cutoff { " AND u.timestamp >= ?" } else { "" }
+        if has_cutoff {
+            " AND u.timestamp >= ?"
+        } else {
+            ""
+        }
     )
 }
 

@@ -9,7 +9,10 @@ use std::path::{Path, PathBuf};
 
 use crate::{InternalResource, InternalUrl, UrlCompletion, UrlCtx, UrlProvider};
 
-use super::{SkillEntry, content_type_for_path, decode_component, format_directory_listing, validate_relative_path};
+use super::{
+    content_type_for_path, decode_component, format_directory_listing, validate_relative_path,
+    SkillEntry,
+};
 
 /// Discover skills the way omp-rs renders them (TS `extensibility/skills.ts`):
 /// project `.omp/skills` walk-up (closest first), then the agent dir's `skills/`.
@@ -57,8 +60,16 @@ fn load_skills_dir(dir: &Path, skills: &mut Vec<SkillEntry>) {
 
 /// On-disk target of a `skill://` URL. `directory` maps a bare `skill://<name>`
 /// to the skill base dir (TS `skillTargetPath`).
-pub fn skill_target_path(url: &InternalUrl, skills: &[SkillEntry], directory: bool) -> Result<PathBuf, String> {
-    let skill_name = url.host.is_empty().then_some(()).map_or(url.host.as_str(), |_| "");
+pub fn skill_target_path(
+    url: &InternalUrl,
+    skills: &[SkillEntry],
+    directory: bool,
+) -> Result<PathBuf, String> {
+    let skill_name = url
+        .host
+        .is_empty()
+        .then_some(())
+        .map_or(url.host.as_str(), |_| "");
     if url.host.is_empty() {
         let _ = skill_name;
         return Err("skill:// URL requires a skill name: skill://<name>".to_string());
@@ -72,7 +83,11 @@ pub fn skill_target_path(url: &InternalUrl, skills: &[SkillEntry], directory: bo
         let namespaced = format!("{}/{}", url.host, decode_component(&path_part[..slash]));
         if let Some(s) = skills.iter().find(|s| s.name == namespaced) {
             skill = Some(s);
-            path_part = if slash == path_part.len() { "" } else { &path_part[slash + 1..] };
+            path_part = if slash == path_part.len() {
+                ""
+            } else {
+                &path_part[slash + 1..]
+            };
         }
     }
     let skill = match skill.or_else(|| skills.iter().find(|s| s.name == url.host)) {
@@ -80,13 +95,24 @@ pub fn skill_target_path(url: &InternalUrl, skills: &[SkillEntry], directory: bo
         None => {
             let mut available = skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>();
             available.sort();
-            let available_str = if available.is_empty() { "none".to_string() } else { available.join(", ") };
-            return Err(format!("Unknown skill: {}\nAvailable: {available_str}", url.host));
+            let available_str = if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.join(", ")
+            };
+            return Err(format!(
+                "Unknown skill: {}\nAvailable: {available_str}",
+                url.host
+            ));
         }
     };
 
     let resolved = if path_part.is_empty() {
-        PathBuf::from(if directory { &skill.base_dir } else { &skill.file_path })
+        PathBuf::from(if directory {
+            &skill.base_dir
+        } else {
+            &skill.file_path
+        })
     } else {
         let relative = decode_component(path_part);
         validate_relative_path(&relative, "skill")?;
@@ -124,27 +150,50 @@ pub fn resolve(url: &InternalUrl, skills: &[SkillEntry]) -> Result<InternalResou
     // A trailing slash lists the skill's base directory (TS `skill://demo/`).
     let directory = url.pathname == "/";
     let target = skill_target_path(url, skills, directory)?;
-    let meta = std::fs::metadata(&target).map_err(|_| format!("File not found: {}", target.display()))?;
+    let meta =
+        std::fs::metadata(&target).map_err(|_| format!("File not found: {}", target.display()))?;
     let path_str = target.to_string_lossy().into_owned();
     if meta.is_dir() {
         let entries: Vec<(String, bool)> = std::fs::read_dir(&target)
             .map_err(|e| e.to_string())?
             .flatten()
-            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path().is_dir()))
+            .map(|e| {
+                (
+                    e.file_name().to_string_lossy().into_owned(),
+                    e.path().is_dir(),
+                )
+            })
             .collect();
         let content = format_directory_listing(entries);
-        return Ok(InternalResource { content, is_directory: true, immutable: Some(true), path: Some(path_str) });
+        return Ok(InternalResource {
+            content,
+            is_directory: true,
+            immutable: Some(true),
+            path: Some(path_str),
+        });
     }
     if !meta.is_file() {
-        return Err(format!("skill:// URL must resolve to a file or directory: {}", url.raw_href));
+        return Err(format!(
+            "skill:// URL must resolve to a file or directory: {}",
+            url.raw_href
+        ));
     }
     let content = std::fs::read_to_string(&target).map_err(|e| e.to_string())?;
     let _ = content_type_for_path(&path_str);
-    Ok(InternalResource { content, is_directory: false, immutable: Some(true), path: Some(path_str) })
+    Ok(InternalResource {
+        content,
+        is_directory: false,
+        immutable: Some(true),
+        path: Some(path_str),
+    })
 }
 
 /// Skill file or directory path; `None` for a missing entry (TS `locate`).
-pub fn locate(url: &InternalUrl, skills: &[SkillEntry], directory: bool) -> Result<Option<PathBuf>, String> {
+pub fn locate(
+    url: &InternalUrl,
+    skills: &[SkillEntry],
+    directory: bool,
+) -> Result<Option<PathBuf>, String> {
     let target = skill_target_path(url, skills, directory)?;
     Ok(target.exists().then_some(target))
 }
@@ -153,7 +202,10 @@ pub fn locate(url: &InternalUrl, skills: &[SkillEntry], directory: bool) -> Resu
 pub fn complete(skills: &[SkillEntry]) -> Vec<UrlCompletion> {
     skills
         .iter()
-        .map(|s| UrlCompletion { label: s.name.clone(), detail: Some(s.description.clone()) })
+        .map(|s| UrlCompletion {
+            label: s.name.clone(),
+            detail: Some(s.description.clone()),
+        })
         .collect()
 }
 
@@ -201,7 +253,10 @@ impl UrlProvider for SkillProvider {
 /// and the caller's cwd (TS `getActiveSkills()`).
 fn active_skills(ctx: &UrlCtx) -> Vec<SkillEntry> {
     let agent_dir = omp_providers::AgentDir::default().0;
-    let cwd = ctx.cwd.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let cwd = ctx
+        .cwd
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     discover_skills(&agent_dir, &cwd)
 }
 
@@ -250,7 +305,10 @@ mod tests {
         // An in-package file resolves (to its canonical path).
         let url = parse_internal_url("skill://demo/SKILL.md").unwrap();
         let got = skill_target_path(&url, &[entry.clone()], false).unwrap();
-        assert_eq!(got, std::fs::canonicalize(skill_dir.join("SKILL.md")).unwrap());
+        assert_eq!(
+            got,
+            std::fs::canonicalize(skill_dir.join("SKILL.md")).unwrap()
+        );
         // Missing target surfaces as not-found, not as a containment pass.
         let url = parse_internal_url("skill://demo/nope.md").unwrap();
         assert!(skill_target_path(&url, &[entry], false).is_err());
@@ -287,7 +345,10 @@ mod tests {
             "Unknown skill: zzz\nAvailable: a, b"
         );
         let url = parse_internal_url("skill://zzz").unwrap();
-        assert_eq!(skill_target_path(&url, &[], false).unwrap_err(), "Unknown skill: zzz\nAvailable: none");
+        assert_eq!(
+            skill_target_path(&url, &[], false).unwrap_err(),
+            "Unknown skill: zzz\nAvailable: none"
+        );
     }
 
     #[test]
@@ -297,7 +358,10 @@ mod tests {
             skill_target_path(&url, &[skill("foo")], false).unwrap(),
             PathBuf::from("/tmp/skills/foo/SKILL.md")
         );
-        assert_eq!(skill_target_path(&url, &[skill("foo")], true).unwrap(), PathBuf::from("/tmp/skills/foo"));
+        assert_eq!(
+            skill_target_path(&url, &[skill("foo")], true).unwrap(),
+            PathBuf::from("/tmp/skills/foo")
+        );
     }
 
     #[test]
@@ -322,7 +386,11 @@ mod tests {
     fn resource_reads_file() {
         let dir = std::env::temp_dir().join(format!("ompurls-skill-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".omp/skills/demo")).unwrap();
-        std::fs::write(dir.join(".omp/skills/demo/SKILL.md"), "---\nname: demo\ndescription: A demo\n---\nBody").unwrap();
+        std::fs::write(
+            dir.join(".omp/skills/demo/SKILL.md"),
+            "---\nname: demo\ndescription: A demo\n---\nBody",
+        )
+        .unwrap();
         let skills = discover_skills(&dir, &dir);
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "demo");

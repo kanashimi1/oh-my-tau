@@ -10,8 +10,8 @@ use crate::event_stream::{
 };
 use crate::registry::Provider;
 use crate::types::{
-    AssistantMessage, Context, Model, ModelThinkingLevel,
-    SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage,
+    AssistantMessage, Context, Model, ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice,
+    StopReason, StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
 
@@ -147,7 +147,9 @@ pub(crate) fn should_use_fine_grained_tool_streaming_beta(
 /// accompany `thinking.block_binding`, which the API rejects without it.
 pub(crate) fn control_betas(view: &crate::compat::ModelView) -> Vec<&'static str> {
     let mut betas = Vec::new();
-    if view.thinking_flag("prefixBinding") == Some(true) && view.is("supportsThinkingBindingControls") {
+    if view.thinking_flag("prefixBinding") == Some(true)
+        && view.is("supportsThinkingBindingControls")
+    {
         betas.push(THINKING_BINDING_CONTROLS_BETA);
     }
     if view.is("supportsTurnScopedSystem") {
@@ -357,7 +359,9 @@ pub(crate) fn map_tool_choice(choice: Option<&SimpleToolChoice>) -> Option<Anthr
         SimpleToolChoice::None => AnthropicToolChoice::None,
         // The anthropic wire has no "required": a forced call is `any`.
         SimpleToolChoice::Any | SimpleToolChoice::Required => AnthropicToolChoice::Any,
-        SimpleToolChoice::Function { name } if !name.is_empty() => AnthropicToolChoice::Tool { name: name.clone() },
+        SimpleToolChoice::Function { name } if !name.is_empty() => {
+            AnthropicToolChoice::Tool { name: name.clone() }
+        }
         SimpleToolChoice::Function { .. } => return None,
     })
 }
@@ -369,7 +373,11 @@ pub(crate) fn normalize_mandatory_reasoning(
     view: &crate::compat::ModelView,
     options: &SimpleStreamOptions,
 ) -> SimpleStreamOptions {
-    let explicit = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off).is_some() && !options.disable_reasoning;
+    let explicit = options
+        .reasoning
+        .filter(|l| *l != ModelThinkingLevel::Off)
+        .is_some()
+        && !options.disable_reasoning;
     if !model.reasoning
         || view.thinking_flag("requiresEffort") != Some(true)
         || view.thinking_flag("suppressWhenOff") == Some(true)
@@ -378,8 +386,12 @@ pub(crate) fn normalize_mandatory_reasoning(
         return options.clone();
     }
     let efforts = view.efforts();
-    let floor = ["minimal", "low", "medium", "high", "xhigh", "max"].into_iter().find(|e| efforts.contains(e));
-    let Some(floor) = floor.and_then(crate::models::thinking_level_from_str) else { return options.clone() };
+    let floor = ["minimal", "low", "medium", "high", "xhigh", "max"]
+        .into_iter()
+        .find(|e| efforts.contains(e));
+    let Some(floor) = floor.and_then(crate::models::thinking_level_from_str) else {
+        return options.clone();
+    };
     let mut next = options.clone();
     next.reasoning = Some(floor);
     next.disable_reasoning = false;
@@ -401,7 +413,8 @@ pub(crate) fn map_simple_options(
     base.max_tokens = options.base.max_tokens.or(model_max);
     let tool_choice = map_tool_choice(options.tool_choice.as_ref());
     let wire_id = |effort: Option<ModelThinkingLevel>| -> Option<String> {
-        view.effort_routing(effort.map(ModelThinkingLevel::wire_name)).map(str::to_string)
+        view.effort_routing(effort.map(ModelThinkingLevel::wire_name))
+            .map(str::to_string)
     };
     let off = |base: StreamOptions| {
         let mut o = AnthropicOptions::from_base(base);
@@ -411,7 +424,8 @@ pub(crate) fn map_simple_options(
         o
     };
     let reasoning = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off);
-    let Some(reasoning) = reasoning.filter(|_| model.reasoning && !options.disable_reasoning) else {
+    let Some(reasoning) = reasoning.filter(|_| model.reasoning && !options.disable_reasoning)
+    else {
         return Ok(off(base));
     };
     let mut budget = thinking_budget_for(&options, reasoning) as i64;
@@ -420,7 +434,11 @@ pub(crate) fn map_simple_options(
     }
     let mode = view.thinking_str("mode");
     let effort = if matches!(mode, Some("anthropic-adaptive" | "anthropic-budget-effort")) {
-        AnthropicEffort::from_wire(&request::map_effort_to_adaptive(model, view, reasoning.wire_name())?)
+        AnthropicEffort::from_wire(&request::map_effort_to_adaptive(
+            model,
+            view,
+            reasoning.wire_name(),
+        )?)
     } else {
         None
     };
@@ -474,7 +492,13 @@ pub(crate) fn build_request_body(
     options: &AnthropicOptions,
     api_key: &str,
 ) -> Result<Value, String> {
-    request::build_body(&request::BodyInput { model, view, context, is_oauth: is_oauth_token(api_key), options })
+    request::build_body(&request::BodyInput {
+        model,
+        view,
+        context,
+        is_oauth: is_oauth_token(api_key),
+        options,
+    })
 }
 
 pub(crate) fn error_stream_for(model: &Model, message: String) -> AssistantMessageEventStream {
@@ -588,8 +612,15 @@ mod subscription_identity_tests {
 
     #[test]
     fn oauth_requests_claim_the_claude_code_identity() {
-        let (headers, is_oauth) =
-            build_request_headers(&test_model(), "sk-ant-oat-test", false, false, &[], None, None);
+        let (headers, is_oauth) = build_request_headers(
+            &test_model(),
+            "sk-ant-oat-test",
+            false,
+            false,
+            &[],
+            None,
+            None,
+        );
         assert!(is_oauth);
         let header = |name: &str| {
             headers
@@ -613,14 +644,31 @@ mod subscription_identity_tests {
         model.reasoning = true;
         let view = crate::compat::ModelView::of(&model);
         let betas = super::body_betas(&view, &serde_json::json!({}));
-        assert!(betas.contains(&"thinking-binding-controls-2026-08-01"), "{betas:?}");
-        let (headers, _) = build_request_headers(&model, "sk-ant-oat-test", false, false, &betas, None, None);
-        let beta = headers.iter().find(|(k, _)| k == "anthropic-beta").map(|(_, v)| v.as_str()).unwrap();
-        assert!(beta.contains("thinking-binding-controls-2026-08-01"), "{beta}");
-        let body = serde_json::json!({"context_management": {}, "output_config": {"effort": "high"}});
+        assert!(
+            betas.contains(&"thinking-binding-controls-2026-08-01"),
+            "{betas:?}"
+        );
+        let (headers, _) =
+            build_request_headers(&model, "sk-ant-oat-test", false, false, &betas, None, None);
+        let beta = headers
+            .iter()
+            .find(|(k, _)| k == "anthropic-beta")
+            .map(|(_, v)| v.as_str())
+            .unwrap();
+        assert!(
+            beta.contains("thinking-binding-controls-2026-08-01"),
+            "{beta}"
+        );
+        let body =
+            serde_json::json!({"context_management": {}, "output_config": {"effort": "high"}});
         let betas = super::body_betas(&crate::compat::ModelView::of(&test_model()), &body);
-        assert!(betas.contains(&"context-management-2025-06-27") && betas.contains(&"effort-2025-11-24"), "{betas:?}");
+        assert!(
+            betas.contains(&"context-management-2025-06-27")
+                && betas.contains(&"effort-2025-11-24"),
+            "{betas:?}"
+        );
         let plain = crate::compat::ModelView::of(&test_model());
-        assert!(!super::body_betas(&plain, &serde_json::json!({})).contains(&"thinking-binding-controls-2026-08-01"));
+        assert!(!super::body_betas(&plain, &serde_json::json!({}))
+            .contains(&"thinking-binding-controls-2026-08-01"));
     }
 }

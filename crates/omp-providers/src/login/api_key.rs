@@ -5,7 +5,9 @@
 
 use std::sync::LazyLock;
 
-use pa_ai::oauth::{OAuthLoginUi, OAuthPrompt, ProviderHttp, ProviderHttpMethod, ProviderHttpRequest};
+use pa_ai::oauth::{
+    OAuthLoginUi, OAuthPrompt, ProviderHttp, ProviderHttpMethod, ProviderHttpRequest,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -44,8 +46,10 @@ pub struct ApiKeyProvider {
     pub validate: Option<Validate>,
 }
 
-static TABLE: LazyLock<Vec<ApiKeyProvider>> =
-    LazyLock::new(|| serde_json::from_str(include_str!("api_key_providers.json")).expect("api_key_providers.json parses"));
+static TABLE: LazyLock<Vec<ApiKeyProvider>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("api_key_providers.json"))
+        .expect("api_key_providers.json parses")
+});
 
 /// The api-key rule of `id`, if the provider logs in by pasted key.
 #[must_use]
@@ -60,7 +64,9 @@ pub fn ids() -> impl Iterator<Item = &'static str> {
 
 /// TS `rule.normalize "strip-bearer"`: `/^bearer\b\s*/i`.
 fn strip_bearer(value: &str) -> &str {
-    let Some(head) = value.get(..6) else { return value };
+    let Some(head) = value.get(..6) else {
+        return value;
+    };
     if !head.eq_ignore_ascii_case("bearer") {
         return value;
     }
@@ -101,21 +107,34 @@ pub async fn login(
     if rule.normalize.as_deref() == Some("strip-bearer") && !key.is_empty() {
         key = strip_bearer(&key).to_string();
         if key.is_empty() {
-            return Err(format!("{} API key is empty after stripping Bearer prefix", rule.name));
+            return Err(format!(
+                "{} API key is empty after stripping Bearer prefix",
+                rule.name
+            ));
         }
     }
     if key.is_empty() {
-        return rule.empty_fallback.clone().ok_or_else(|| "API key is required".to_string());
+        return rule
+            .empty_fallback
+            .clone()
+            .ok_or_else(|| "API key is required".to_string());
     }
     if let Some(validate) = &rule.validate {
-        ui.on_progress(if validate.optional { "Validating API key (optional)..." } else { "Validating API key..." });
+        ui.on_progress(if validate.optional {
+            "Validating API key (optional)..."
+        } else {
+            "Validating API key..."
+        });
         if let Err(error) = run_validation(validate, &rule.name, &key, http, env).await {
             let trusts_forbidden = validate.trust_forbidden && error.status == Some(403);
             let auth_failed = matches!(error.status, Some(401 | 403));
             if !validate.optional || (auth_failed && !trusts_forbidden) {
                 return Err(error.message);
             }
-            ui.on_progress(&format!("Skipping {} validation endpoint; continuing with provided API key.", rule.name));
+            ui.on_progress(&format!(
+                "Skipping {} validation endpoint; continuing with provided API key.",
+                rule.name
+            ));
         }
     }
     Ok(key)
@@ -126,8 +145,15 @@ struct ValidationError {
     message: String,
 }
 
-fn headers_for_hook(hook: Option<&str>, env: &(dyn Fn(&str) -> Option<String> + Sync), provider: &str) -> Result<Vec<(String, String)>, ValidationError> {
-    let fail = |message: String| ValidationError { status: None, message };
+fn headers_for_hook(
+    hook: Option<&str>,
+    env: &(dyn Fn(&str) -> Option<String> + Sync),
+    provider: &str,
+) -> Result<Vec<(String, String)>, ValidationError> {
+    let fail = |message: String| ValidationError {
+        status: None,
+        message,
+    };
     match hook {
         None => Ok(Vec::new()),
         Some("cline-pass-client") => Ok([
@@ -144,14 +170,20 @@ fn headers_for_hook(hook: Option<&str>, env: &(dyn Fn(&str) -> Option<String> + 
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .to_vec()),
         Some("coreweave-project") => {
-            let clean = |k: &str| env(k).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
-            let project = clean("COREWEAVE_PROJECT").or_else(|| clean("WANDB_INFERENCE_PROJECT")).or_else(|| {
-                let wandb = clean("WANDB_PROJECT")?;
-                if wandb.contains('/') {
-                    return Some(wandb);
-                }
-                clean("WANDB_ENTITY").map(|entity| format!("{entity}/{wandb}"))
-            });
+            let clean = |k: &str| {
+                env(k)
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            let project = clean("COREWEAVE_PROJECT")
+                .or_else(|| clean("WANDB_INFERENCE_PROJECT"))
+                .or_else(|| {
+                    let wandb = clean("WANDB_PROJECT")?;
+                    if wandb.contains('/') {
+                        return Some(wandb);
+                    }
+                    clean("WANDB_ENTITY").map(|entity| format!("{entity}/{wandb}"))
+                });
             match project {
                 Some(project) => Ok(vec![("OpenAI-Project".to_string(), project)]),
                 None => Err(fail(format!(
@@ -171,10 +203,16 @@ async fn run_validation(
     env: &(dyn Fn(&str) -> Option<String> + Sync),
 ) -> Result<(), ValidationError> {
     let label = validate.label.as_deref().unwrap_or(login_label);
-    let fail = |message: String| ValidationError { status: None, message };
+    let fail = |message: String| ValidationError {
+        status: None,
+        message,
+    };
     let (method, url, headers, body) = match validate.kind.as_str() {
         "chat-completions" => {
-            let base = validate.base_url.as_deref().ok_or_else(|| fail("missing base-url".into()))?;
+            let base = validate
+                .base_url
+                .as_deref()
+                .ok_or_else(|| fail("missing base-url".into()))?;
             let field = validate.max_tokens_field.as_deref().unwrap_or("max_tokens");
             // TS key order: model, messages, <max tokens field>, temperature.
             let ordered = json!({
@@ -186,12 +224,18 @@ async fn run_validation(
             (
                 ProviderHttpMethod::Post,
                 format!("{base}/chat/completions"),
-                vec![("Content-Type".to_string(), "application/json".to_string()), ("Authorization".to_string(), format!("Bearer {key}"))],
+                vec![
+                    ("Content-Type".to_string(), "application/json".to_string()),
+                    ("Authorization".to_string(), format!("Bearer {key}")),
+                ],
                 Some(ordered.to_string()),
             )
         }
         "anthropic-messages" => {
-            let base = validate.base_url.as_deref().ok_or_else(|| fail("missing base-url".into()))?;
+            let base = validate
+                .base_url
+                .as_deref()
+                .ok_or_else(|| fail("missing base-url".into()))?;
             let trimmed = base.trim().trim_end_matches('/');
             let base = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
             (
@@ -206,10 +250,18 @@ async fn run_validation(
             )
         }
         "models-endpoint" => {
-            let env_base = validate.base_url_env.as_deref().and_then(env).map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+            let env_base = validate
+                .base_url_env
+                .as_deref()
+                .and_then(env)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
             let url = match env_base {
                 Some(base) => format!("{}/models", base.trim_end_matches('/')),
-                None => validate.url.clone().ok_or_else(|| fail("missing url".into()))?,
+                None => validate
+                    .url
+                    .clone()
+                    .ok_or_else(|| fail("missing url".into()))?,
             };
             let mut headers = headers_for_hook(validate.headers_hook.as_deref(), env, login_label)?;
             headers.push(("Authorization".to_string(), format!("Bearer {key}")));
@@ -218,7 +270,16 @@ async fn run_validation(
         other => return Err(fail(format!("unknown validation kind {other}"))),
     };
     let response = http
-        .request(ProviderHttpRequest { method, url, headers, body, follow_redirects: true }, VALIDATION_TIMEOUT_MS)
+        .request(
+            ProviderHttpRequest {
+                method,
+                url,
+                headers,
+                body,
+                follow_redirects: true,
+            },
+            VALIDATION_TIMEOUT_MS,
+        )
         .await
         .map_err(|message| fail(message))?;
     if response.ok() {
@@ -227,7 +288,10 @@ async fn run_validation(
     let details = response.body.trim();
     if validate.tolerate_model_denied && response.status == 401 {
         let code = serde_json::from_str::<Value>(details).ok().and_then(|v| {
-            v.pointer("/error/code").or_else(|| v.get("code")).and_then(Value::as_str).map(str::to_string)
+            v.pointer("/error/code")
+                .or_else(|| v.get("code"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
         });
         if code.as_deref() == Some("invalid_model") {
             return Ok(());
@@ -236,9 +300,15 @@ async fn run_validation(
     let message = if details.is_empty() {
         format!("{label} API key validation failed ({})", response.status)
     } else {
-        format!("{label} API key validation failed ({}): {details}", response.status)
+        format!(
+            "{label} API key validation failed ({}): {details}",
+            response.status
+        )
     };
-    Err(ValidationError { status: Some(response.status), message })
+    Err(ValidationError {
+        status: Some(response.status),
+        message,
+    })
 }
 
 #[cfg(test)]
@@ -258,7 +328,13 @@ mod tests {
         assert_eq!(TABLE.len(), 57);
         let exa = provider("exa").unwrap();
         assert!(exa.validate.is_none());
-        assert_eq!(provider("llama.cpp").unwrap().empty_fallback.as_deref(), Some("llama-cpp-local"));
-        assert_eq!(provider("ollama").unwrap().empty_fallback.as_deref(), Some(""));
+        assert_eq!(
+            provider("llama.cpp").unwrap().empty_fallback.as_deref(),
+            Some("llama-cpp-local")
+        );
+        assert_eq!(
+            provider("ollama").unwrap().empty_fallback.as_deref(),
+            Some("")
+        );
     }
 }

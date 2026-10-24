@@ -1,0 +1,42 @@
+[package]
+name = "omp-collab"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# OS CSPRNG for room ids, keys, write tokens and seal IVs (TS `crypto.getRandomValues`).
+rand = "0.8"
+# AES-256-GCM for frame sealing (TS `crypto.subtle` AES-GCM in collab/crypto.ts).
+# Already resolved in the workspace lock (0.17.14 via rustls/quinn) — no new
+# lock entry, so this stays a plain direct dependency like `base64 = "0.22"`
+# in omp-urls.
+ring = "0.17"
+# WHATWG-URL parser matching the TS `new URL` semantics link handling relies on
+# (origin, hostname canonicalization, default-port elision).
+url = "2"
+# Collab transport (relay-client.ts / local-relay.ts ports) and registry IPC.
+anyhow = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+# preserve_order keeps JSONL registry envelopes in TS `JSON.stringify`
+# insertion order (registry.rs wire-format parity).
+# float_roundtrip matches omp-session's session-JSONL float formatting —
+# replication.rs golden tests pin TS `JSON.stringify` bytes.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+# WebSocket transport for the collab relay (lock already resolves 0.28.0).
+tokio-tungstenite = "0.28"
+
+# Safe wrappers for getuid/kill(2) — registry owner checks and PID liveness
+# (workspace `unsafe_code = "forbid"` rules out raw libc calls; same crate and
+# feature set omp-eval/omp-task already use).
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", default-features = false, features = ["user", "signal"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

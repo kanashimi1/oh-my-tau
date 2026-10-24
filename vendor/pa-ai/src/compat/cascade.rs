@@ -89,9 +89,11 @@ impl TryFrom<RawCascade> for Cascade {
                 Some(terms) => {
                     let mut out = Vec::new();
                     for t in terms {
-                        let revision = parse_revision(&t.revision)
-                            .ok_or_else(|| format!("invalid compiled revision term in {}", r.source))?;
-                        let op = RevisionOp::parse(&t.op).ok_or_else(|| format!("bad revision op in {}", r.source))?;
+                        let revision = parse_revision(&t.revision).ok_or_else(|| {
+                            format!("invalid compiled revision term in {}", r.source)
+                        })?;
+                        let op = RevisionOp::parse(&t.op)
+                            .ok_or_else(|| format!("bad revision op in {}", r.source))?;
                         out.push(RevisionTerm { op, revision });
                     }
                     Some(out)
@@ -105,7 +107,10 @@ impl TryFrom<RawCascade> for Cascade {
                 + i64::from(r.family.is_some())
                 + i64::from(r.revision.is_some())
                 + i64::from(r.models.is_some());
-            let has_exact_efforts_rule = r.thinking.as_ref().is_some_and(|t| t.contains_key("efforts"));
+            let has_exact_efforts_rule = r
+                .thinking
+                .as_ref()
+                .is_some_and(|t| t.contains_key("efforts"));
             rules.push(Rule {
                 source: r.source,
                 class: r.class,
@@ -185,7 +190,11 @@ fn rank_rule(rule: &Rule, p: &Prepared<'_>) -> Option<Rank> {
     if rule.class.as_ref().is_some_and(|c| *c != t.class) {
         return None;
     }
-    if rule.providers.as_ref().is_some_and(|ps| !ps.contains(&t.provider)) {
+    if rule
+        .providers
+        .as_ref()
+        .is_some_and(|ps| !ps.contains(&t.provider))
+    {
         return None;
     }
     if rule.apis.as_ref().is_some_and(|a| !a.contains(&t.api)) {
@@ -197,7 +206,11 @@ fn rank_rule(rule: &Rule, p: &Prepared<'_>) -> Option<Rank> {
             _ => return None,
         }
     }
-    if rule.family.as_ref().is_some_and(|f| t.family.as_ref() != Some(f)) {
+    if rule
+        .family
+        .as_ref()
+        .is_some_and(|f| t.family.as_ref() != Some(f))
+    {
         return None;
     }
     if let Some(terms) = &rule.revision {
@@ -277,7 +290,10 @@ fn contest<'a>(
     Ok(())
 }
 
-fn collect(winners: &Winners<'_>, pick: impl Fn(&Rule) -> Option<&Map<String, Value>>) -> Map<String, Value> {
+fn collect(
+    winners: &Winners<'_>,
+    pick: impl Fn(&Rule) -> Option<&Map<String, Value>>,
+) -> Map<String, Value> {
     let mut out = Map::new();
     for (axis, (_, rule)) in winners {
         if let Some(v) = pick(rule).and_then(|m| m.get(axis)) {
@@ -304,7 +320,9 @@ pub fn resolve_cascade(rules: &Rules, target: &Target) -> Result<ResolvedAxes, A
         let mut upgrade: Winners<'_> = BTreeMap::new();
         let mut has_efforts = false;
         for (rule, rank) in &ranked {
-            let Some(thinking) = &rule.thinking else { continue };
+            let Some(thinking) = &rule.thinking else {
+                continue;
+            };
             if thinking.contains_key("upgradeNeutral") {
                 contest_axis(&mut upgrade, "upgradeNeutral", *rank, rule, target)?;
             }
@@ -346,11 +364,16 @@ pub fn resolve_cascade(rules: &Rules, target: &Target) -> Result<ResolvedAxes, A
 }
 
 /// Whether the effort ladder a target resolves to comes from a rule scoped to the model's identity.
-pub fn has_model_scoped_efforts_rule(rules: &Rules, target: &Target) -> Result<bool, AmbiguousOverlap> {
+pub fn has_model_scoped_efforts_rule(
+    rules: &Rules,
+    target: &Target,
+) -> Result<bool, AmbiguousOverlap> {
     let prepared = prepare(target);
     let mut winners: Winners<'_> = BTreeMap::new();
     for (rule, rank) in ranked(&rules.cascade, &prepared) {
         contest(&mut winners, rule.thinking.as_ref(), rank, rule, target)?;
     }
-    Ok(winners.get("efforts").is_some_and(|(_, r)| identity_scoped(r)))
+    Ok(winners
+        .get("efforts")
+        .is_some_and(|(_, r)| identity_scoped(r)))
 }

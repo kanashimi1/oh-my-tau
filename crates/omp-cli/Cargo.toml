@@ -36,6 +36,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde_yaml_ng = "0.10"
 rand = "0.8"
 parking_lot = "0.12"
+sha2 = "0.10"
 async-trait = "0.1"
 grep-matcher = "0.1"
 grep-regex = "0.1"
@@ -52,6 +53,12 @@ omp-collab = { path = "../omp-collab" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 flate2 = "1"
+# `omp-rs web`: browser UI server (HTTP + WebSocket bridge to `--mode rpc` children).
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-tungstenite = "0.28"
+futures.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

@@ -25,13 +25,14 @@ use crate::parser::get_session_entry;
 pub use crate::rollup::get_time_range_config;
 use crate::rollup::{
     get_cost_time_series, get_model_performance_series, get_model_time_series, get_overall_stats,
-    get_provider_hourly_burn, get_provider_time_series, get_stats_by_agent_type, get_stats_by_folder,
-    get_stats_by_model, get_stats_by_provider, get_time_series, get_tool_stats, get_tool_stats_by_model, get_tool_time_series,
+    get_provider_hourly_burn, get_provider_time_series, get_stats_by_agent_type,
+    get_stats_by_folder, get_stats_by_model, get_stats_by_provider, get_time_series,
+    get_tool_stats, get_tool_stats_by_model, get_tool_time_series,
 };
 use crate::types::{
-    AgentTypeStats, AggregatedStats, CostTimeSeriesPoint, DashboardStats, FolderStats, MessageStats,
-    ModelPerformancePoint, ModelStats, ModelTimeSeriesPoint, ProviderDashboardStats, ProviderWindowStats,
-    RequestDetails, TimeSeriesPoint, ToolDashboardStats,
+    AgentTypeStats, AggregatedStats, CostTimeSeriesPoint, DashboardStats, FolderStats,
+    MessageStats, ModelPerformancePoint, ModelStats, ModelTimeSeriesPoint, ProviderDashboardStats,
+    ProviderWindowStats, RequestDetails, TimeSeriesPoint, ToolDashboardStats,
 };
 
 pub use lock::with_stats_sync_lock;
@@ -120,7 +121,9 @@ pub fn get_model_dashboard_stats(range: Option<&str>) -> Result<ModelDashboardSt
 /// DB failure.
 pub fn get_cost_dashboard_stats(range: Option<&str>) -> Result<CostDashboardStats> {
     init_db()?;
-    Ok(CostDashboardStats { cost_series: get_cost_time_series(get_time_range_config(range).cutoff)? })
+    Ok(CostDashboardStats {
+        cost_series: get_cost_time_series(get_time_range_config(range).cutoff)?,
+    })
 }
 
 /// Projects page payload (busiest [`FOLDER_LIMIT`] folders).
@@ -147,7 +150,10 @@ pub fn get_recent_requests(limit: Option<i64>) -> Result<Vec<MessageStats>> {
 /// DB failure.
 pub fn get_recent_errors(range: Option<&str>, limit: Option<i64>) -> Result<Vec<MessageStats>> {
     init_db()?;
-    db_query::get_recent_errors(limit.unwrap_or(DEFAULT_RECENT_LIMIT), get_time_range_config(range).cutoff)
+    db_query::get_recent_errors(
+        limit.unwrap_or(DEFAULT_RECENT_LIMIT),
+        get_time_range_config(range).cutoff,
+    )
 }
 
 /// One request with its journaled entry; `None` = TS `null` (unknown id, or
@@ -157,16 +163,30 @@ pub fn get_recent_errors(range: Option<&str>, limit: Option<i64>) -> Result<Vec<
 /// DB failure or a non-ENOENT read error on the transcript.
 pub fn get_request_details(id: i64) -> Result<Option<RequestDetails>> {
     init_db()?;
-    let Some(msg) = db_query::get_message_by_id(id)? else { return Ok(None) };
-    let Some(entry) = get_session_entry(&msg.session_file, &msg.entry_id)? else { return Ok(None) };
+    let Some(msg) = db_query::get_message_by_id(id)? else {
+        return Ok(None);
+    };
+    let Some(entry) = get_session_entry(&msg.session_file, &msg.entry_id)? else {
+        return Ok(None);
+    };
     let entry = serde_json::to_value(entry)?;
     // Role-model attempts (judge, auto-thinking, …) journal only a `model_usage`
     // record: usage and outcome, no request or response payload.
     match entry.get("type").and_then(serde_json::Value::as_str) {
-        Some("model_usage") => Ok(Some(RequestDetails { base: msg, messages: vec![entry], output: serde_json::Value::Null })),
+        Some("model_usage") => Ok(Some(RequestDetails {
+            base: msg,
+            messages: vec![entry],
+            output: serde_json::Value::Null,
+        })),
         Some("message") => {
-            let Some(output) = entry.get("message").cloned() else { return Ok(None) };
-            Ok(Some(RequestDetails { base: msg, messages: vec![entry], output }))
+            let Some(output) = entry.get("message").cloned() else {
+                return Ok(None);
+            };
+            Ok(Some(RequestDetails {
+                base: msg,
+                messages: vec![entry],
+                output,
+            }))
         }
         _ => Ok(None),
     }
@@ -223,21 +243,29 @@ pub fn get_provider_dashboard_stats(range: Option<&str>) -> Result<ProviderDashb
 ///
 /// # Errors
 /// DB failure.
-pub fn get_provider_window_stats(range: Option<&str>, provider: Option<&str>) -> Result<ProviderWindowStats> {
+pub fn get_provider_window_stats(
+    range: Option<&str>,
+    provider: Option<&str>,
+) -> Result<ProviderWindowStats> {
     init_db()?;
     let cutoff = get_time_range_config(range).cutoff;
     let usage = usage_windows::cached_usage_data(cutoff.unwrap_or(0));
     let tokens_by_provider = match usage.fleet_tokens_by_provider {
         Some(fleet) => fleet,
-        None => get_stats_by_provider(cutoff)?.into_iter().map(|p| (p.provider, p.total_tokens as f64)).collect(),
+        None => get_stats_by_provider(cutoff)?
+            .into_iter()
+            .map(|p| (p.provider, p.total_tokens as f64))
+            .collect(),
     };
     let stats = usage_windows::compute_usage_window_stats(&usage.rows, &tokens_by_provider);
     Ok(ProviderWindowStats {
         window_insights: stats.window_insights,
         usage_series: match provider {
-            Some(provider) if !provider.is_empty() => {
-                stats.usage_series.into_iter().filter(|series| series.provider == provider).collect()
-            }
+            Some(provider) if !provider.is_empty() => stats
+                .usage_series
+                .into_iter()
+                .filter(|series| series.provider == provider)
+                .collect(),
             _ => Vec::new(),
         },
     })

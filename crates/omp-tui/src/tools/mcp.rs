@@ -70,12 +70,7 @@ impl ToolRenderer for Mcp {
         paint(frame, area, lines);
     }
 
-    fn render_frame(
-        &self,
-        frame: &Value,
-        expanded: bool,
-        theme: &Theme,
-    ) -> Vec<Line<'static>> {
+    fn render_frame(&self, frame: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
         let name = frame
             .get("toolName")
             .and_then(Value::as_str)
@@ -101,7 +96,11 @@ impl ToolRenderer for Mcp {
         if !settled {
             let inline = args_inline(args, INLINE_BUDGET);
             if !inline.is_empty() && inline != "{}" {
-                lines.push(Line::from(styled(theme, "text_muted", format!(" └─ {inline}"))));
+                lines.push(Line::from(styled(
+                    theme,
+                    "text_muted",
+                    format!(" └─ {inline}"),
+                )));
             }
             return lines;
         }
@@ -322,11 +321,11 @@ mod tests {
         let lines = Mcp.render_frame(&frame, false, &Theme::default());
         let flat = flat(&lines);
         assert!(flat[0].contains("fs/read"), "{flat:?}");
+        assert!(flat.iter().any(|l| l == "  no such file"), "{flat:?}");
         assert!(
-            flat.iter().any(|l| l == "  no such file"),
+            !flat.iter().any(|l| l.contains("Error: no such")),
             "{flat:?}"
         );
-        assert!(!flat.iter().any(|l| l.contains("Error: no such")), "{flat:?}");
     }
 
     #[test]

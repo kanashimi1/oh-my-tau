@@ -78,15 +78,14 @@ fn to_aggregated_stats(row: &Row) -> AggregatedStats {
 /// # Errors
 /// DB failure.
 pub fn get_overall_stats(cutoff: Option<i64>) -> Result<AggregatedStats> {
-    Ok(query_messages(
-        &RangeWindow::since(cutoff),
-        AGGREGATE_COLUMNS,
-        "",
-        |row| Ok(to_aggregated_stats(row)),
-    )?
-    .into_iter()
-    .next()
-    .unwrap_or_default())
+    Ok(
+        query_messages(&RangeWindow::since(cutoff), AGGREGATE_COLUMNS, "", |row| {
+            Ok(to_aggregated_stats(row))
+        })?
+        .into_iter()
+        .next()
+        .unwrap_or_default(),
+    )
 }
 
 /// Aggregates per (model, provider), busiest first.

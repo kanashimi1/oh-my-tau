@@ -51,13 +51,19 @@ fn unknown_protocol(scheme: &str, handlers: &[Registered]) -> anyhow::Error {
         .join(", ");
     anyhow::anyhow!(
         "Unknown protocol: {scheme}://\nSupported: {}",
-        if available.is_empty() { "none" } else { &available }
+        if available.is_empty() {
+            "none"
+        } else {
+            &available
+        }
     )
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Self { handlers: Vec::new() }
+        Self {
+            handlers: Vec::new(),
+        }
     }
 
     /// Install (or replace) the provider for its scheme, checking write-policy
@@ -69,10 +75,16 @@ impl Registry {
         let spec = provider.spec().clone();
         match spec.write.as_ref().map(|w| w.via) {
             Some(WriteVia::Handler) if !provider.impl_write() => {
-                anyhow::bail!("{}:// spec.write.via is \"handler\" but the provider lacks write()", provider.scheme());
+                anyhow::bail!(
+                    "{}:// spec.write.via is \"handler\" but the provider lacks write()",
+                    provider.scheme()
+                );
             }
             None if provider.impl_write() => {
-                anyhow::bail!("{}:// provider has write() but spec.write is absent", provider.scheme());
+                anyhow::bail!(
+                    "{}:// provider has write() but spec.write is absent",
+                    provider.scheme()
+                );
             }
             _ => {}
         }
@@ -82,8 +94,16 @@ impl Registry {
                 "{}:// spec.write.via \"file\" requires backing \"file\"",
                 provider.scheme()
             );
-            anyhow::ensure!(provider.impl_locate(), "{}:// spec.write.via \"file\" requires a locate hook", provider.scheme());
-            anyhow::ensure!(!spec.immutable, "{}:// spec.write.via \"file\" contradicts spec.immutable", provider.scheme());
+            anyhow::ensure!(
+                provider.impl_locate(),
+                "{}:// spec.write.via \"file\" requires a locate hook",
+                provider.scheme()
+            );
+            anyhow::ensure!(
+                !spec.immutable,
+                "{}:// spec.write.via \"file\" contradicts spec.immutable",
+                provider.scheme()
+            );
         }
         let scheme = provider.scheme();
         self.handlers.retain(|r| r.scheme != scheme);
@@ -145,7 +165,8 @@ impl Registry {
                 {
                     let mut j = i + 1;
                     while j < bytes.len()
-                        && (bytes[j].is_ascii_alphanumeric() || matches!(bytes[j], b'+' | b'-' | b'.'))
+                        && (bytes[j].is_ascii_alphanumeric()
+                            || matches!(bytes[j], b'+' | b'-' | b'.'))
                     {
                         j += 1;
                     }
@@ -212,7 +233,12 @@ impl Registry {
         let spec = provider.spec().clone();
         if matches!(spec.backing, crate::spec::SchemeBacking::File) {
             if let Some(path) = provider.locate(&url, ctx) {
-                return Ok(Some(UrlTarget::File { url, spec, path, sel }));
+                return Ok(Some(UrlTarget::File {
+                    url,
+                    spec,
+                    path,
+                    sel,
+                }));
             }
         }
         Ok(Some(UrlTarget::Resource { url, spec, sel }))
@@ -225,12 +251,18 @@ impl Registry {
     /// Unknown protocol or provider resolve failure.
     pub fn resolve(&self, input: &str, ctx: &UrlCtx) -> anyhow::Result<InternalResource> {
         let normalized = self.normalize(input);
-        let url = parse_internal_url(&normalized)
-            .map_err(|_| unknown_protocol(extract_uri_scheme(&normalized).as_deref().unwrap_or(""), &self.handlers))?;
+        let url = parse_internal_url(&normalized).map_err(|_| {
+            unknown_protocol(
+                extract_uri_scheme(&normalized).as_deref().unwrap_or(""),
+                &self.handlers,
+            )
+        })?;
         let Some(provider) = self.get(&url.scheme) else {
             anyhow::bail!(unknown_protocol(&url.scheme, &self.handlers));
         };
-        provider.read(&url, ctx).map(|r| r.with_scheme_default(provider.spec()))
+        provider
+            .read(&url, ctx)
+            .map(|r| r.with_scheme_default(provider.spec()))
     }
 
     /// Write an internal URL through its registered provider.
@@ -239,8 +271,12 @@ impl Registry {
     /// Unknown protocol, read-only scheme, or provider write failure.
     pub fn write(&self, input: &str, content: &str, ctx: &UrlCtx) -> anyhow::Result<()> {
         let normalized = self.normalize(input);
-        let url = parse_internal_url(&normalized)
-            .map_err(|_| unknown_protocol(extract_uri_scheme(&normalized).as_deref().unwrap_or(""), &self.handlers))?;
+        let url = parse_internal_url(&normalized).map_err(|_| {
+            unknown_protocol(
+                extract_uri_scheme(&normalized).as_deref().unwrap_or(""),
+                &self.handlers,
+            )
+        })?;
         let Some(provider) = self.get(&url.scheme) else {
             anyhow::bail!(unknown_protocol(&url.scheme, &self.handlers));
         };
@@ -254,7 +290,11 @@ impl Registry {
             WriteVia::Handler => provider.write(&url, content, ctx),
             WriteVia::File => {
                 let Some(path) = provider.locate_create(&url, ctx) else {
-                    anyhow::bail!("Cannot write {}: no local file backs {}", url.raw_href, url.raw_href);
+                    anyhow::bail!(
+                        "Cannot write {}: no local file backs {}",
+                        url.raw_href,
+                        url.raw_href
+                    );
                 };
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;

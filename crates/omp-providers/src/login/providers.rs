@@ -12,9 +12,15 @@ pub const PROVIDERS: [(&str, &str); 80] = [
     ("github-copilot", "GitHub Copilot"),
     ("cursor", "Cursor (Claude, GPT, etc.)"),
     ("devin", "Devin"),
-    ("google-antigravity", "Antigravity (Gemini 3, Claude, GPT-OSS)"),
+    (
+        "google-antigravity",
+        "Antigravity (Gemini 3, Claude, GPT-OSS)",
+    ),
     ("google-gemini-cli", "Google Cloud Code Assist (Gemini CLI)"),
-    ("openai-codex-device", "ChatGPT Plus/Pro (Codex, headless/device)"),
+    (
+        "openai-codex-device",
+        "ChatGPT Plus/Pro (Codex, headless/device)",
+    ),
     ("xai", "xAI API"),
     ("xai-oauth", "xAI Grok OAuth (SuperGrok or X Premium+)"),
     ("gitlab-duo", "GitLab Duo Non-Agentic"),

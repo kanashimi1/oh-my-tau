@@ -118,14 +118,20 @@ fn now_millis() -> i64 {
 impl LspClient {
     /// Registry key: command + cwd + config identity (omp `clientKey`).
     fn name_for(config: &ServerConfig, cwd: &Path) -> String {
-        let spawn = config.resolved_command.as_deref().unwrap_or(&config.command);
+        let spawn = config
+            .resolved_command
+            .as_deref()
+            .unwrap_or(&config.command);
         let identity = json!([
             config.args.clone().unwrap_or_default(),
             config.init_options.clone().unwrap_or(Value::Null),
             config.settings.clone().unwrap_or(Value::Null),
             config.language_id.clone(),
         ]);
-        format!("{spawn}:{}:{identity}", crate::utils::normalize_path(cwd).display())
+        format!(
+            "{spawn}:{}:{identity}",
+            crate::utils::normalize_path(cwd).display()
+        )
     }
 
     #[must_use]
@@ -142,7 +148,11 @@ impl LspClient {
     }
     #[must_use]
     pub fn status(&self) -> ClientStatus {
-        *self.inner.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self
+            .inner
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     #[must_use]
     pub fn server_capabilities(&self) -> Value {
@@ -232,21 +242,29 @@ impl LspClient {
 impl LspClient {
     /// Write one framed JSON-RPC message to the server's stdin.
     async fn write_message(&self, message: &Value) -> Result<(), LspError> {
-        let body = serde_json::to_string(message)
-            .map_err(|e| LspError { message: e.to_string(), cancelled: false })?;
+        let body = serde_json::to_string(message).map_err(|e| LspError {
+            message: e.to_string(),
+            cancelled: false,
+        })?;
         let frame = format!("Content-Length: {}\r\n\r\n{body}", body.len());
         let mut guard = self.inner.stdin.lock().await;
         let Some(stdin) = guard.as_mut() else {
-            return Err(LspError { message: "LSP server stdin closed".to_string(), cancelled: false });
+            return Err(LspError {
+                message: "LSP server stdin closed".to_string(),
+                cancelled: false,
+            });
         };
         stdin
             .write_all(frame.as_bytes())
             .await
-            .map_err(|e| LspError { message: format!("LSP write failed: {e}"), cancelled: false })?;
-        stdin
-            .flush()
-            .await
-            .map_err(|e| LspError { message: format!("LSP flush failed: {e}"), cancelled: false })?;
+            .map_err(|e| LspError {
+                message: format!("LSP write failed: {e}"),
+                cancelled: false,
+            })?;
+        stdin.flush().await.map_err(|e| LspError {
+            message: format!("LSP flush failed: {e}"),
+            cancelled: false,
+        })?;
         Ok(())
     }
 
@@ -269,7 +287,10 @@ impl LspClient {
         let id = self.inner.request_id.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(c) = cancel {
             if c.is_cancelled() {
-                return Err(LspError { message: "operation cancelled".to_string(), cancelled: true });
+                return Err(LspError {
+                    message: "operation cancelled".to_string(),
+                    cancelled: true,
+                });
             }
         }
         let (tx, rx) = oneshot::channel::<Result<Value, LspError>>();
@@ -278,13 +299,19 @@ impl LspClient {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, PendingEntry { tx });
-        self.inner.last_activity.store(now_millis(), Ordering::SeqCst);
+        self.inner
+            .last_activity
+            .store(now_millis(), Ordering::SeqCst);
 
         let result = self
             .write_message(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
             .await;
         if let Err(e) = result {
-            self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+            self.inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
             return Err(e);
         }
 
@@ -315,19 +342,28 @@ impl LspClient {
             Some(t) => match tokio::time::timeout(t, wait).await {
                 Ok(r) => r,
                 Err(_elapsed) => {
-                    self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                    self.inner
+                        .pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&id);
                     let _ = self
                         .write_message(&json!({"jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": id}}))
                         .await;
                     Err(LspError {
-                        message: format!("LSP request {method} timed out after {}ms", t.as_millis()),
+                        message: format!(
+                            "LSP request {method} timed out after {}ms",
+                            t.as_millis()
+                        ),
                         cancelled: false,
                     })
                 }
             },
             None => wait.await,
         };
-        self.inner.last_activity.store(now_millis(), Ordering::SeqCst);
+        self.inner
+            .last_activity
+            .store(now_millis(), Ordering::SeqCst);
         outcome
     }
 
@@ -337,13 +373,21 @@ impl LspClient {
     ///
     /// Returns `Err` when the frame cannot be written to the server stdin.
     pub async fn send_notification(&self, method: &str, params: Value) -> Result<(), LspError> {
-        self.inner.last_activity.store(now_millis(), Ordering::SeqCst);
+        self.inner
+            .last_activity
+            .store(now_millis(), Ordering::SeqCst);
         self.write_message(&json!({"jsonrpc": "2.0", "method": method, "params": params}))
             .await
     }
 
     fn resolve_pending(&self, id: i64, result: Result<Value, LspError>) {
-        if let Some(entry) = self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id) {
+        if let Some(entry) = self
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id)
+        {
             let _ = entry.tx.send(result);
         }
     }
@@ -376,7 +420,9 @@ impl Framer {
                 let line = line.strip_suffix(b"\r").unwrap_or(line);
                 if let Some((name, value)) = split_header(line) {
                     if name.eq_ignore_ascii_case(b"content-length") {
-                        content_length = std::str::from_utf8(value).ok().and_then(|v| v.trim().parse().ok());
+                        content_length = std::str::from_utf8(value)
+                            .ok()
+                            .and_then(|v| v.trim().parse().ok());
                     }
                 } else if !line.is_empty() {
                     ok = false;
@@ -402,9 +448,7 @@ impl Framer {
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn split_header(line: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -441,7 +485,10 @@ impl LspClient {
         if let Some(method) = message.get("method").and_then(Value::as_str) {
             let id = message.get("id").cloned();
             match id {
-                Some(id) => self.handle_server_request(method, id, message.get("params").cloned()).await,
+                Some(id) => {
+                    self.handle_server_request(method, id, message.get("params").cloned())
+                        .await
+                }
                 None => self.handle_server_notification(method, message.get("params").cloned()),
             }
             return;
@@ -449,14 +496,26 @@ impl LspClient {
         if let Some(id) = message.get("id").and_then(Value::as_i64) {
             if let Some(error) = message.get("error") {
                 let code = error.get("code").and_then(Value::as_i64);
-                let msg = error.get("message").and_then(Value::as_str).unwrap_or("unknown error");
+                let msg = error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error");
                 let text = match code {
                     Some(c) => format!("LSP error {c}: {msg}"),
                     None => format!("LSP error: {msg}"),
                 };
-                self.resolve_pending(id, Err(LspError { message: text, cancelled: false }));
+                self.resolve_pending(
+                    id,
+                    Err(LspError {
+                        message: text,
+                        cancelled: false,
+                    }),
+                );
             } else {
-                self.resolve_pending(id, Ok(message.get("result").cloned().unwrap_or(Value::Null)));
+                self.resolve_pending(
+                    id,
+                    Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+                );
             }
         }
     }
@@ -477,7 +536,9 @@ impl LspClient {
                                 version: published.version,
                             },
                         );
-                    self.inner.diagnostics_version.fetch_add(1, Ordering::SeqCst);
+                    self.inner
+                        .diagnostics_version
+                        .fetch_add(1, Ordering::SeqCst);
                 }
             }
             ("$/progress", Some(params)) => {
@@ -520,17 +581,28 @@ impl LspClient {
             }
             "workspace/applyEdit" => {
                 let applied = match params.as_ref().and_then(|p| p.get("edit")) {
-                    Some(edit) => match crate::edits::apply_workspace_edit_value(edit, &self.inner.cwd).await {
-                        Ok(_) => json!({ "applied": true }),
-                        Err(e) => json!({ "applied": false, "failureReason": e.to_string() }),
-                    },
+                    Some(edit) => {
+                        match crate::edits::apply_workspace_edit_value(edit, &self.inner.cwd).await
+                        {
+                            Ok(_) => json!({ "applied": true }),
+                            Err(e) => json!({ "applied": false, "failureReason": e.to_string() }),
+                        }
+                    }
                     None => json!({ "applied": false, "failureReason": "No edit provided" }),
                 };
                 respond(applied).await;
             }
             "client/registerCapability" => {
-                if let Some(regs) = params.as_ref().and_then(|p| p.get("registrations")).and_then(Value::as_array) {
-                    let mut map = self.inner.dynamic_registrations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if let Some(regs) = params
+                    .as_ref()
+                    .and_then(|p| p.get("registrations"))
+                    .and_then(Value::as_array)
+                {
+                    let mut map = self
+                        .inner
+                        .dynamic_registrations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     for reg in regs {
                         if let (Some(id), Some(m)) = (
                             reg.get("id").and_then(Value::as_str),
@@ -545,10 +617,17 @@ impl LspClient {
             "client/unregisterCapability" => {
                 if let Some(regs) = params
                     .as_ref()
-                    .and_then(|p| p.get("unregistrations").or_else(|| p.get("unregisterations")))
+                    .and_then(|p| {
+                        p.get("unregistrations")
+                            .or_else(|| p.get("unregisterations"))
+                    })
                     .and_then(Value::as_array)
                 {
-                    let mut map = self.inner.dynamic_registrations.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut map = self
+                        .inner
+                        .dynamic_registrations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     for reg in regs {
                         if let Some(id) = reg.get("id").and_then(Value::as_str) {
                             map.remove(id);
@@ -604,23 +683,54 @@ impl LspClient {
     fn on_reader_exit(&self) {
         let _ = self.inner.project_loaded_tx.send(true);
         self.inner.transport_dead.notify_waiters();
-        *self.inner.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
-        let stderr = String::from_utf8_lossy(&self.inner.stderr.lock().unwrap_or_else(std::sync::PoisonError::into_inner)).trim().to_string();
+        *self
+            .inner
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
+        let stderr = String::from_utf8_lossy(
+            &self
+                .inner
+                .stderr
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+        .trim()
+        .to_string();
         let code = self
             .inner
             .child
             .lock()
-            .map(|mut c| c.as_mut().and_then(|ch| ch.try_wait().ok().flatten()).map(|s| s.code()))
+            .map(|mut c| {
+                c.as_mut()
+                    .and_then(|ch| ch.try_wait().ok().flatten())
+                    .map(|s| s.code())
+            })
             .ok()
             .flatten()
             .flatten();
         let message = if stderr.is_empty() {
-            format!("LSP server exited unexpectedly (code {})", code.map_or("?".to_string(), |c| c.to_string()))
+            format!(
+                "LSP server exited unexpectedly (code {})",
+                code.map_or("?".to_string(), |c| c.to_string())
+            )
         } else {
-            format!("LSP server exited (code {}): {stderr}", code.map_or("?".to_string(), |c| c.to_string()))
+            format!(
+                "LSP server exited (code {}): {stderr}",
+                code.map_or("?".to_string(), |c| c.to_string())
+            )
         };
-        let err = LspError { message, cancelled: false };
-        let pending = std::mem::take(&mut *self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let err = LspError {
+            message,
+            cancelled: false,
+        };
+        let pending = std::mem::take(
+            &mut *self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         for (_, entry) in pending {
             let _ = entry.tx.send(Err(err.clone()));
         }
@@ -727,21 +837,30 @@ pub async fn get_or_create_client(
 
     if let Ok(guard) = reg.clients.lock() {
         if let Some(existing) = guard.get(&key) {
-            existing.inner.last_activity.store(now_millis(), Ordering::SeqCst);
+            existing
+                .inner
+                .last_activity
+                .store(now_millis(), Ordering::SeqCst);
             maybe_start_idle_checker();
             return Ok(existing.clone());
         }
     }
 
     let cell: SharedInit = {
-        let mut guard = reg.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = reg
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cell) = guard.get(&key) {
             let cell = Arc::clone(cell);
             drop(guard);
             return match cell.get() {
                 Some(Ok(client)) => Ok(client.clone()),
                 Some(Err(e)) => Err((**e).clone()),
-                None => Err(LspError { message: "LSP initialization aborted".to_string(), cancelled: false }),
+                None => Err(LspError {
+                    message: "LSP initialization aborted".to_string(),
+                    cancelled: false,
+                }),
             };
         }
         let cell: SharedInit = Arc::new(tokio::sync::OnceCell::new());
@@ -753,14 +872,19 @@ pub async fn get_or_create_client(
     let result = match result {
         Ok(client) => {
             registry_insert(&client);
-            reg.init_failures.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
+            reg.init_failures
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&key);
             Ok(client)
         }
         Err(e) => {
             // Negative-cache deterministic failures (not caller aborts/short deadlines).
             let transient = e.cancelled
-                || init_timeout
-                    .is_some_and(|t| e.message.contains("timed out") && t < Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS));
+                || init_timeout.is_some_and(|t| {
+                    e.message.contains("timed out")
+                        && t < Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS)
+                });
             if !transient {
                 reg.init_failures
                     .lock()
@@ -770,12 +894,18 @@ pub async fn get_or_create_client(
             Err(e)
         }
     };
-    reg.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
+    reg.pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&key);
     let _ = cell.set(result.map_err(Arc::new));
     match cell.get() {
         Some(Ok(client)) => Ok(client.clone()),
         Some(Err(e)) => Err((**e).clone()),
-        None => Err(LspError { message: "LSP initialization aborted".to_string(), cancelled: false }),
+        None => Err(LspError {
+            message: "LSP initialization aborted".to_string(),
+            cancelled: false,
+        }),
     }
 }
 
@@ -789,11 +919,19 @@ pub async fn get_active_or_pending_client(
     let reg = registry();
     if let Ok(guard) = reg.clients.lock() {
         if let Some(client) = guard.get(&key) {
-            client.inner.last_activity.store(now_millis(), Ordering::SeqCst);
+            client
+                .inner
+                .last_activity
+                .store(now_millis(), Ordering::SeqCst);
             return Some(client.clone());
         }
     }
-    let cell = reg.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key).cloned()?;
+    let cell = reg
+        .pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+        .cloned()?;
     // Poll the shared init cell; tokio's OnceCell has no wait-on-set, so poll
     // with a short sleep until the in-flight initialization publishes.
     loop {
@@ -879,8 +1017,15 @@ async fn open_server_transport(
     cwd: &Path,
 ) -> Result<(ServerWriter, ServerReader, Option<Child>, Option<u32>), LspError> {
     if crate::mux::shared_lsp_enabled() {
-        if let Some(transport) = crate::mux::connect_shared_lsp_transport(command, args, cwd, None).await {
-            return Ok((Box::new(transport.writer), Box::new(transport.reader), None, transport.pid));
+        if let Some(transport) =
+            crate::mux::connect_shared_lsp_transport(command, args, cwd, None).await
+        {
+            return Ok((
+                Box::new(transport.writer),
+                Box::new(transport.reader),
+                None,
+                transport.pid,
+            ));
         }
     }
     let mut child = Command::new(command)
@@ -891,15 +1036,18 @@ async fn open_server_transport(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|e| LspError { message: format!("failed to spawn LSP server {command}: {e}"), cancelled: false })?;
+        .map_err(|e| LspError {
+            message: format!("failed to spawn LSP server {command}: {e}"),
+            cancelled: false,
+        })?;
     let stdin = child.stdin.take().ok_or_else(|| LspError {
         message: "LSP server stdin unavailable".to_string(),
         cancelled: false,
     })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| LspError { message: "LSP server stdout unavailable".to_string(), cancelled: false })?;
+    let stdout = child.stdout.take().ok_or_else(|| LspError {
+        message: "LSP server stdout unavailable".to_string(),
+        cancelled: false,
+    })?;
     Ok((Box::new(stdin), Box::new(stdout), Some(child), None))
 }
 
@@ -915,7 +1063,10 @@ async fn init_client(
         if let Some((at, message)) = failures.get(key) {
             if at.elapsed() < Duration::from_millis(INIT_FAILURE_BACKOFF_MS) {
                 return Err(LspError {
-                    message: format!("LSP server {} failed to initialize recently: {message}", config.command),
+                    message: format!(
+                        "LSP server {} failed to initialize recently: {message}",
+                        config.command
+                    ),
                     cancelled: false,
                 });
             }
@@ -923,7 +1074,10 @@ async fn init_client(
     }
     if let Some(c) = cancel {
         if c.is_cancelled() {
-            return Err(LspError { message: "operation cancelled".to_string(), cancelled: true });
+            return Err(LspError {
+                message: "operation cancelled".to_string(),
+                cancelled: true,
+            });
         }
     }
 
@@ -984,7 +1138,11 @@ async fn init_client(
 
     run_initialize_handshake(&client, config, cwd, cancel, init_timeout).await?;
 
-    *client.inner.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Ready;
+    *client
+        .inner
+        .status
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Ready;
     maybe_start_idle_checker();
     Ok(client)
 }
@@ -996,7 +1154,10 @@ fn drain_stderr(mut pipe: tokio::process::ChildStderr, sink: Arc<Mutex<Vec<u8>>>
         loop {
             match pipe.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
-                Ok(n) => sink.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(&buf[..n]),
+                Ok(n) => sink
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend_from_slice(&buf[..n]),
             }
         }
     });
@@ -1038,7 +1199,10 @@ async fn run_initialize_handshake(
         Ok(r) if !r.is_null() => r,
         Ok(_) => {
             client.fail_init();
-            return Err(LspError { message: "Failed to initialize LSP: no response".to_string(), cancelled: false });
+            return Err(LspError {
+                message: "Failed to initialize LSP: no response".to_string(),
+                cancelled: false,
+            });
         }
         Err(e) => {
             client.fail_init();
@@ -1046,8 +1210,14 @@ async fn run_initialize_handshake(
         }
     };
 
-    *client.inner.server_capabilities.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
-        init_result.get("capabilities").cloned().unwrap_or(Value::Null);
+    *client
+        .inner
+        .server_capabilities
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = init_result
+        .get("capabilities")
+        .cloned()
+        .unwrap_or(Value::Null);
 
     if let Err(e) = client.send_notification("initialized", json!({})).await {
         client.fail_init();
@@ -1068,7 +1238,11 @@ async fn run_initialize_handshake(
 
 impl LspClient {
     fn fail_init(&self) {
-        *self.inner.status.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
+        *self
+            .inner
+            .status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ClientStatus::Error;
         if let Ok(mut guard) = self.inner.stdin.try_lock() {
             *guard = None;
         }
@@ -1077,9 +1251,18 @@ impl LspClient {
                 let _ = child.start_kill();
             }
         }
-        let pending = std::mem::take(&mut *self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let pending = std::mem::take(
+            &mut *self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         for (_, entry) in pending {
-            let _ = entry.tx.send(Err(LspError { message: "LSP initialization failed".to_string(), cancelled: false }));
+            let _ = entry.tx.send(Err(LspError {
+                message: "LSP initialization failed".to_string(),
+                cancelled: false,
+            }));
         }
     }
 }
@@ -1106,11 +1289,18 @@ impl LspClient {
             .diagnostics
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, crate::types::PublishedDiagnostics { diagnostics, version });
-        self.inner.diagnostics_version.fetch_add(1, Ordering::SeqCst);
+            .insert(
+                key,
+                crate::types::PublishedDiagnostics {
+                    diagnostics,
+                    version,
+                },
+            );
+        self.inner
+            .diagnostics_version
+            .fetch_add(1, Ordering::SeqCst);
     }
 }
-
 
 // =============================================================================
 // Project-Loaded Waiting / Shutdown / Idle Reaping
@@ -1140,7 +1330,11 @@ impl LspClient {
 
     async fn wait_for_rust_analyzer_workspace(&self, cancel: Option<&dyn Cancel>) {
         {
-            let ready = self.inner.rust_analyzer_ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ready = self
+                .inner
+                .rust_analyzer_ready
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if *ready {
                 return;
             }
@@ -1170,13 +1364,22 @@ impl LspClient {
                 return;
             }
             match self
-                .send_request("rust-analyzer/analyzerStatus", json!({}), cancel, Some(status_timeout))
+                .send_request(
+                    "rust-analyzer/analyzerStatus",
+                    json!({}),
+                    cancel,
+                    Some(status_timeout),
+                )
                 .await
             {
                 Ok(Value::String(status)) => {
                     let ready = !status.starts_with("No workspaces");
                     if ready && started.elapsed() >= Duration::from_millis(settle_ms) {
-                        *self.inner.rust_analyzer_ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+                        *self
+                            .inner
+                            .rust_analyzer_ready
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
                         return;
                     }
                     if started.elapsed() >= Duration::from_millis(timeout_ms) {
@@ -1184,7 +1387,9 @@ impl LspClient {
                     }
                 }
                 Err(e) => {
-                    let timed_out = e.message.starts_with("LSP request rust-analyzer/analyzerStatus timed out after ");
+                    let timed_out = e
+                        .message
+                        .starts_with("LSP request rust-analyzer/analyzerStatus timed out after ");
                     if !timed_out || started.elapsed() >= Duration::from_millis(timeout_ms) {
                         return;
                     }
@@ -1202,17 +1407,34 @@ impl LspClient {
     /// Returns `true` once the process is confirmed exited.
     pub async fn shutdown_instance(&self) -> bool {
         registry_remove(&self.inner.name);
-        let pending = std::mem::take(&mut *self.inner.pending.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+        let pending = std::mem::take(
+            &mut *self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         for (_, entry) in pending {
-            let _ = entry.tx.send(Err(LspError { message: "LSP client shutdown".to_string(), cancelled: false }));
+            let _ = entry.tx.send(Err(LspError {
+                message: "LSP client shutdown".to_string(),
+                cancelled: false,
+            }));
         }
         let shutdown_completed = self
-            .send_request("shutdown", Value::Null, None, Some(Duration::from_millis(SHUTDOWN_TIMEOUT_MS)))
+            .send_request(
+                "shutdown",
+                Value::Null,
+                None,
+                Some(Duration::from_millis(SHUTDOWN_TIMEOUT_MS)),
+            )
             .await
             .is_ok();
         if shutdown_completed {
             let _ = self.send_notification("exit", Value::Null).await;
-            if self.wait_for_exit(Duration::from_millis(EXIT_TIMEOUT_MS)).await {
+            if self
+                .wait_for_exit(Duration::from_millis(EXIT_TIMEOUT_MS))
+                .await
+            {
                 return true;
             }
         }
@@ -1221,7 +1443,8 @@ impl LspClient {
                 let _ = child.start_kill();
             }
         }
-        self.wait_for_exit(Duration::from_millis(EXIT_TIMEOUT_MS)).await
+        self.wait_for_exit(Duration::from_millis(EXIT_TIMEOUT_MS))
+            .await
     }
 
     async fn wait_for_exit(&self, timeout: Duration) -> bool {
@@ -1239,7 +1462,11 @@ impl LspClient {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             {
-                let mut guard = self.inner.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = self
+                    .inner
+                    .child
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(child) = guard.as_mut() {
                     match child.try_wait() {
                         Ok(Some(_)) => {
@@ -1285,12 +1512,17 @@ fn idle_handle() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
 
 /// Configure a global fallback idle timeout (used by tests/overrides).
 pub fn set_idle_timeout(ms: Option<u64>) {
-    *idle_override().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = ms;
+    *idle_override()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = ms;
     reconcile_idle_checker();
 }
 
 fn effective_idle_timeout(client: Option<&LspClient>, config: Option<&LspConfig>) -> Option<u64> {
-    if let Some(ms) = *idle_override().lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+    if let Some(ms) = *idle_override()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    {
         if ms > 0 {
             return Some(ms);
         }
@@ -1317,19 +1549,22 @@ fn has_configured_idle_timeout() -> bool {
     if effective_idle_timeout(None, None).is_some() {
         return true;
     }
-    registry()
-        .clients
-        .lock()
-        .is_ok_and(|g| g.values().any(|c| effective_idle_timeout(Some(c), None).is_some()))
+    registry().clients.lock().is_ok_and(|g| {
+        g.values()
+            .any(|c| effective_idle_timeout(Some(c), None).is_some())
+    })
 }
 
 /// Reconcile the background idle checker against configured timeouts.
 pub fn reconcile_idle_checker() {
     if has_configured_idle_timeout() {
-        let mut guard = idle_handle().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = idle_handle()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.is_none() {
             *guard = Some(tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(IDLE_CHECK_INTERVAL_MS));
+                let mut interval =
+                    tokio::time::interval(Duration::from_millis(IDLE_CHECK_INTERVAL_MS));
                 loop {
                     interval.tick().await;
                     check_idle_clients().await;
@@ -1337,7 +1572,9 @@ pub fn reconcile_idle_checker() {
             }));
         }
     } else {
-        let mut guard = idle_handle().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = idle_handle()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(handle) = guard.take() {
             handle.abort();
         }
@@ -1413,13 +1650,24 @@ impl LspClient {
     ///
     /// # Errors
     ///
-/// Write failure on the server pipe.
+    /// Write failure on the server pipe.
     pub async fn close_file(&self, uri: &str) -> Result<(), LspError> {
-        self.send_notification("textDocument/didClose", json!({ "textDocument": { "uri": uri } }))
-            .await?;
+        self.send_notification(
+            "textDocument/didClose",
+            json!({ "textDocument": { "uri": uri } }),
+        )
+        .await?;
         let key = uri_key(uri);
-        self.inner.open_files.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
-        self.inner.diagnostics.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key);
+        self.inner
+            .open_files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key);
+        self.inner
+            .diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key);
         Ok(())
     }
 
@@ -1429,8 +1677,17 @@ impl LspClient {
     pub async fn refresh_file(&self, path: &Path) {
         let uri = file_to_uri(path);
         // Drop cached diagnostics so waiters don't accept stale unversioned rows.
-        self.inner.diagnostics.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&uri_key(&uri));
-        let open = self.inner.open_files.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(&uri_key(&uri));
+        self.inner
+            .diagnostics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&uri_key(&uri));
+        let open = self
+            .inner
+            .open_files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(&uri_key(&uri));
         if !open {
             let Ok(text) = std::fs::read_to_string(path) else {
                 return;
@@ -1457,15 +1714,28 @@ impl LspClient {
                 .open_files
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(uri_key(&uri), OpenFile { version: 1, language_id, synced_text: text });
-            self.inner.last_activity.store(now_millis(), Ordering::SeqCst);
+                .insert(
+                    uri_key(&uri),
+                    OpenFile {
+                        version: 1,
+                        language_id,
+                        synced_text: text,
+                    },
+                );
+            self.inner
+                .last_activity
+                .store(now_millis(), Ordering::SeqCst);
             return;
         }
         let Ok(content) = std::fs::read_to_string(path) else {
             return;
         };
         let version = {
-            let mut files = self.inner.open_files.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut files = self
+                .inner
+                .open_files
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(info) = files.get_mut(&uri_key(&uri)) else {
                 return;
             };
@@ -1492,6 +1762,8 @@ impl LspClient {
                 json!({ "textDocument": { "uri": uri }, "text": content }),
             )
             .await;
-        self.inner.last_activity.store(now_millis(), Ordering::SeqCst);
+        self.inner
+            .last_activity
+            .store(now_millis(), Ordering::SeqCst);
     }
 }

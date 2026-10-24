@@ -265,7 +265,11 @@ fn block_skeleton(block: &AssistantContent) -> Value {
 /// holds. Streams only append (the TS stream contract), so an unchanged length
 /// means unchanged text; `delta` is the event's own fragment, if it targets
 /// this block.
-fn string_op(live: &str, prev_len: Option<usize>, delta: Option<&str>) -> (&'static str, Option<Value>) {
+fn string_op(
+    live: &str,
+    prev_len: Option<usize>,
+    delta: Option<&str>,
+) -> (&'static str, Option<Value>) {
     match prev_len {
         Some(n) if live.len() == n => ("k", None),
         Some(n) if delta.is_some_and(|d| live.len() == n + d.len() && live.ends_with(d)) => {
@@ -832,7 +836,10 @@ mod tests {
         let d = &frame["delta"];
         let stream = d["s"].as_u64().expect("encoder id");
         if let Some(msg) = frame.get("message") {
-            chains.insert(stream, (d["id"].as_u64().expect("full frame id"), 0, msg.clone()));
+            chains.insert(
+                stream,
+                (d["id"].as_u64().expect("full frame id"), 0, msg.clone()),
+            );
             return msg.clone();
         }
         let (id, seq, prev) = chains.get_mut(&stream).expect("delta without a base");
@@ -854,7 +861,9 @@ mod tests {
             // Like host.ts: the previous value only counts for a block of the
             // same type.
             let old_val = || {
-                let old = old.filter(|o| o["type"] == nb["type"]).expect("previous block of this type");
+                let old = old
+                    .filter(|o| o["type"] == nb["type"])
+                    .expect("previous block of this type");
                 old[key].clone()
             };
             let old_str = || old_val().as_str().unwrap().to_owned();
@@ -873,7 +882,11 @@ mod tests {
                 content[i] = nb;
             }
         }
-        assert_eq!(content.len() as u64, d["n"].as_u64().unwrap(), "content length");
+        assert_eq!(
+            content.len() as u64,
+            d["n"].as_u64().unwrap(),
+            "content length"
+        );
         let mut msg = d.get("hdr").cloned().unwrap_or_else(|| prev.clone());
         msg["content"] = Value::Array(content);
         *seq += 1;
@@ -898,7 +911,10 @@ mod tests {
         }
         if let Some(a) = p.get("a") {
             let mut out = prev.as_array().unwrap().clone();
-            out.resize(usize::try_from(p["n"].as_u64().unwrap()).unwrap(), Value::Null);
+            out.resize(
+                usize::try_from(p["n"].as_u64().unwrap()).unwrap(),
+                Value::Null,
+            );
             for item in a.as_array().unwrap() {
                 let i = usize::try_from(item[0].as_u64().unwrap()).unwrap();
                 out[i] = apply_patch(prev.get(i).unwrap_or(&Value::Null), &item[1]);
@@ -953,7 +969,11 @@ mod tests {
         }
 
         /// [`Self::send`] against a host shared with other encoders.
-        fn send_to(&mut self, host: &mut Chains, make: impl FnOnce(AssistantMessage) -> Ev) -> Value {
+        fn send_to(
+            &mut self,
+            host: &mut Chains,
+            make: impl FnOnce(AssistantMessage) -> Ev,
+        ) -> Value {
             let (frame, message) = self.encode(make);
             let rebuilt = rebuild(host, &frame);
             assert_eq!(
@@ -985,12 +1005,17 @@ mod tests {
     #[test]
     fn deltas_rebuild_the_full_message() {
         let mut h = Harness::new();
-        h.live.content.push(AssistantContent::Thinking(ThinkingContent {
-            thinking: String::new(),
-            thinking_signature: None,
-            redacted: None,
-        }));
-        let f = h.send(|partial| Ev::ThinkingStart { content_index: 0, partial });
+        h.live
+            .content
+            .push(AssistantContent::Thinking(ThinkingContent {
+                thinking: String::new(),
+                thinking_signature: None,
+                redacted: None,
+            }));
+        let f = h.send(|partial| Ev::ThinkingStart {
+            content_index: 0,
+            partial,
+        });
         assert!(is_full(&f), "first update of a message is full");
         for chunk in ["plan ", "the ", "reads"] {
             h.text(0).push_str(chunk);
@@ -1000,13 +1025,22 @@ mod tests {
                 partial,
             });
             assert!(!is_full(&f));
-            assert_eq!(f["delta"]["b"][0]["v"], "a", "append from the event's delta");
-            assert!(f["delta"]["b"][0].get("x").is_none(), "fragment not duplicated");
+            assert_eq!(
+                f["delta"]["b"][0]["v"], "a",
+                "append from the event's delta"
+            );
+            assert!(
+                f["delta"]["b"][0].get("x").is_none(),
+                "fragment not duplicated"
+            );
         }
         if let AssistantContent::Thinking(t) = &mut h.live.content[0] {
             t.thinking_signature = Some("sig".into());
         }
-        let f = h.send(|partial| Ev::ThinkingEnd { content_index: 0, partial });
+        let f = h.send(|partial| Ev::ThinkingEnd {
+            content_index: 0,
+            partial,
+        });
         assert_eq!(f["delta"]["b"][0]["v"], "k");
         assert_eq!(f["delta"]["b"][0]["blk"]["thinkingSignature"], "sig");
 
@@ -1014,7 +1048,10 @@ mod tests {
             text: String::new(),
             text_signature: None,
         }));
-        h.send(|partial| Ev::TextStart { content_index: 1, partial });
+        h.send(|partial| Ev::TextStart {
+            content_index: 1,
+            partial,
+        });
         for chunk in ["Hello", ", wörld"] {
             h.text(1).push_str(chunk);
             let f = h.send(|partial| Ev::TextDelta {
@@ -1027,7 +1064,11 @@ mod tests {
             assert!(!f.to_string().contains("plan the reads"));
         }
         let text = h.text(1).clone();
-        h.send(|partial| Ev::TextEnd { content_index: 1, content: text, partial });
+        h.send(|partial| Ev::TextEnd {
+            content_index: 1,
+            content: text,
+            partial,
+        });
 
         h.live.content.push(AssistantContent::ToolCall(ToolCall {
             id: "call-1".into(),
@@ -1035,7 +1076,10 @@ mod tests {
             arguments: json!({}),
             thought_signature: None,
         }));
-        h.send(|partial| Ev::ToolCallStart { content_index: 2, partial });
+        h.send(|partial| Ev::ToolCallStart {
+            content_index: 2,
+            partial,
+        });
         for args in [
             json!({"path": "src"}),
             json!({"path": "src/main.rs"}),
@@ -1057,13 +1101,21 @@ mod tests {
             AssistantContent::ToolCall(tc) => tc.clone(),
             _ => unreachable!(),
         };
-        h.send(|partial| Ev::ToolCallEnd { content_index: 2, tool_call, partial });
+        h.send(|partial| Ev::ToolCallEnd {
+            content_index: 2,
+            tool_call,
+            partial,
+        });
 
         // A header-only move (usage update) ships `hdr`, no content entry.
         h.live.usage.output = 42;
         h.live.stop_reason = pa_agent::types::StopReason::ToolUse;
         let text = h.text(1).clone();
-        let f = h.send(|partial| Ev::TextEnd { content_index: 1, content: text, partial });
+        let f = h.send(|partial| Ev::TextEnd {
+            content_index: 1,
+            content: text,
+            partial,
+        });
         assert_eq!(f["delta"]["hdr"]["usage"]["output"], 42);
         assert_eq!(f["delta"]["hdr"]["content"], json!([]));
         assert_eq!(h.frames.iter().filter(|f| is_full(f)).count(), 1);
@@ -1076,7 +1128,10 @@ mod tests {
             text: String::new(),
             text_signature: None,
         }));
-        h.send(|partial| Ev::TextStart { content_index: 0, partial });
+        h.send(|partial| Ev::TextStart {
+            content_index: 0,
+            partial,
+        });
         // An update the host never saw (no frame), then one whose own delta
         // does not cover the gap: the missing suffix travels explicitly.
         h.text(0).push_str("skipped ");
@@ -1103,7 +1158,10 @@ mod tests {
             arguments: json!({"b": 1}),
             thought_signature: None,
         }));
-        h.send(|partial| Ev::ToolCallStart { content_index: 1, partial });
+        h.send(|partial| Ev::ToolCallStart {
+            content_index: 1,
+            partial,
+        });
         if let AssistantContent::ToolCall(tc) = &mut h.live.content[1] {
             tc.arguments = json!({"a": 1, "b": 1});
         }
@@ -1162,16 +1220,27 @@ mod tests {
             text: String::new(),
             text_signature: None,
         }));
-        let old = h.send(|partial| Ev::TextStart { content_index: 0, partial });
+        let old = h.send(|partial| Ev::TextStart {
+            content_index: 0,
+            partial,
+        });
         let old = ExtUpdateEncoder::chain_id(&old).unwrap();
         h.enc.resync_flag().fetch_max(old, Ordering::SeqCst);
         h.text(0).push_str("a");
-        let f = h.send(|partial| Ev::TextDelta { content_index: 0, delta: "a".into(), partial });
+        let f = h.send(|partial| Ev::TextDelta {
+            content_index: 0,
+            delta: "a".into(),
+            partial,
+        });
         assert!(is_full(&f), "rejected chain restarts full");
         // A second rejection of the old chain arrives late.
         h.enc.resync_flag().fetch_max(old, Ordering::SeqCst);
         h.text(0).push_str("b");
-        let f = h.send(|partial| Ev::TextDelta { content_index: 0, delta: "b".into(), partial });
+        let f = h.send(|partial| Ev::TextDelta {
+            content_index: 0,
+            delta: "b".into(),
+            partial,
+        });
         assert!(!is_full(&f), "late answer about an old chain: {f}");
     }
 
@@ -1190,9 +1259,18 @@ mod tests {
     fn interleaved_encoders_never_share_a_chain() {
         let mut host = Chains::new();
         let (mut a, mut b) = (text_message_harness(), text_message_harness());
-        let fa = a.send_to(&mut host, |partial| Ev::TextStart { content_index: 0, partial });
-        let fb = b.send_to(&mut host, |partial| Ev::TextStart { content_index: 0, partial });
-        assert_ne!(ExtUpdateEncoder::chain_id(&fa), ExtUpdateEncoder::chain_id(&fb));
+        let fa = a.send_to(&mut host, |partial| Ev::TextStart {
+            content_index: 0,
+            partial,
+        });
+        let fb = b.send_to(&mut host, |partial| Ev::TextStart {
+            content_index: 0,
+            partial,
+        });
+        assert_ne!(
+            ExtUpdateEncoder::chain_id(&fa),
+            ExtUpdateEncoder::chain_id(&fb)
+        );
         assert_ne!(fa["delta"]["s"], fb["delta"]["s"]);
         for (ca, cb) in [("A1", "b1"), ("A2", "b2"), ("A3", "b3")] {
             a.text(0).push_str(ca);
@@ -1202,7 +1280,11 @@ mod tests {
                 partial,
             })));
             b.text(0).push_str(cb);
-            b.send_to(&mut host, |partial| Ev::TextDelta { content_index: 0, delta: cb.into(), partial });
+            b.send_to(&mut host, |partial| Ev::TextDelta {
+                content_index: 0,
+                delta: cb.into(),
+                partial,
+            });
         }
     }
 
@@ -1217,32 +1299,55 @@ mod tests {
         cfg.handler_timeout_ms = Some(5_000);
         let host = omp_ext::ExtHost::spawn(&cfg).await.unwrap();
         let fixture = root.join("crates/omp-ext/tests/fixtures/mutating.ts");
-        let r = host.load(Some(&[fixture]), None, "/tmp", None).await.unwrap();
+        let r = host
+            .load(Some(&[fixture]), None, "/tmp", None)
+            .await
+            .unwrap();
         assert_eq!(r.loaded.len(), 1, "{r:?}");
         // JSON.stringify writes `0.0` as `0`: compare numbers by value.
         fn norm(v: &Value) -> Value {
             match v {
                 Value::Number(n) => json!(n.as_f64()),
                 Value::Array(a) => Value::Array(a.iter().map(norm).collect()),
-                Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), norm(v))).collect()),
+                Value::Object(o) => {
+                    Value::Object(o.iter().map(|(k, v)| (k.clone(), norm(v))).collect())
+                }
                 v => v.clone(),
             }
         }
         let check = |r: omp_ext::EmitResult, want: &Value, frame: &Value| {
             assert_ne!(r.result, json!({"resync": true}), "frame rejected: {frame}");
             let seen: Value = serde_json::from_str(r.errors[0]["error"].as_str().unwrap()).unwrap();
-            assert_eq!(norm(&seen), norm(want), "rebuilt message differs after frame {frame}");
+            assert_eq!(
+                norm(&seen),
+                norm(want),
+                "rebuilt message differs after frame {frame}"
+            );
         };
         let (mut a, mut b) = (text_message_harness(), text_message_harness());
-        let (fa, wa) = a.encode(|partial| Ev::TextStart { content_index: 0, partial });
-        let (fb, wb) = b.encode(|partial| Ev::TextStart { content_index: 0, partial });
+        let (fa, wa) = a.encode(|partial| Ev::TextStart {
+            content_index: 0,
+            partial,
+        });
+        let (fb, wb) = b.encode(|partial| Ev::TextStart {
+            content_index: 0,
+            partial,
+        });
         check(host.emit(fa.clone(), None).await.unwrap(), &wa, &fa);
         check(host.emit(fb.clone(), None).await.unwrap(), &wb, &fb);
         for (ca, cb) in [("A1", "b1"), ("A2", "b2"), ("A3", "b3")] {
             a.text(0).push_str(ca);
-            let (fa, wa) = a.encode(|partial| Ev::TextDelta { content_index: 0, delta: ca.into(), partial });
+            let (fa, wa) = a.encode(|partial| Ev::TextDelta {
+                content_index: 0,
+                delta: ca.into(),
+                partial,
+            });
             b.text(0).push_str(cb);
-            let (fb, wb) = b.encode(|partial| Ev::TextDelta { content_index: 0, delta: cb.into(), partial });
+            let (fb, wb) = b.encode(|partial| Ev::TextDelta {
+                content_index: 0,
+                delta: cb.into(),
+                partial,
+            });
             assert!(!is_full(&fa) && !is_full(&fb));
             check(host.emit(fa.clone(), None).await.unwrap(), &wa, &fa);
             check(host.emit(fb.clone(), None).await.unwrap(), &wb, &fb);
@@ -1256,7 +1361,10 @@ mod tests {
             (json!({}), json!({"a": "x"})),
             (json!({"a": "x"}), json!({"a": "xyz"})),
             (json!({"a": [1]}), json!({"a": [1, {"b": "c"}]})),
-            (json!({"a": [1, {"b": "c"}]}), json!({"a": [1, {"b": "cd", "e": null}]})),
+            (
+                json!({"a": [1, {"b": "c"}]}),
+                json!({"a": [1, {"b": "cd", "e": null}]}),
+            ),
             (json!({"a": 1, "b": 2}), json!({"b": 2})),
             (json!([1, 2]), json!([1])),
             (json!("ab"), json!(3)),

@@ -55,7 +55,10 @@ pub fn format_content(content: &[Content]) -> String {
 /// Serialize structured content as omp's fenced JSON block.
 #[must_use]
 pub fn format_structured_content(structured: &Value) -> String {
-    format!("```json\n{}\n```", serde_json::to_string_pretty(structured).unwrap_or_default())
+    format!(
+        "```json\n{}\n```",
+        serde_json::to_string_pretty(structured).unwrap_or_default()
+    )
 }
 
 /// True when a text block already carries the structured payload verbatim.
@@ -86,7 +89,10 @@ pub fn format_tool_result(result: &ToolCallResult) -> String {
         body
     };
     match &result.structured_content {
-        Some(structured) if !structured.is_null() && !structured_already_in_text(structured, &result.content) => {
+        Some(structured)
+            if !structured.is_null()
+                && !structured_already_in_text(structured, &result.content) =>
+        {
             let rendered = format_structured_content(structured);
             if body.is_empty() {
                 rendered

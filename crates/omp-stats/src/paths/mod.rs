@@ -2,13 +2,14 @@
 //! stats package uses). `HOME` and `PI_CONFIG_DIR` are honoured like TS, so
 //! tests point everything at a fixture home.
 
-mod ts_dirs;
 mod roots;
+mod ts_dirs;
 
 use std::path::PathBuf;
 
 pub use roots::{
-    omp_rs_sessions_dir, relative_to_session_root, session_project_dir, session_root_of, session_roots,
+    omp_rs_sessions_dir, relative_to_session_root, session_project_dir, session_root_of,
+    session_roots,
 };
 pub use ts_dirs::{ts_session_dir_name, ts_sessions_root, ts_tmpdir, TsDirsEnv};
 
@@ -16,7 +17,10 @@ pub use ts_dirs::{ts_session_dir_name, ts_sessions_root, ts_tmpdir, TsDirsEnv};
 #[must_use]
 pub fn config_root_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
-    let name = std::env::var("PI_CONFIG_DIR").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| ".omp".into());
+    let name = std::env::var("PI_CONFIG_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ".omp".into());
     home.join(name)
 }
 

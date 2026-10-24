@@ -35,7 +35,10 @@ pub fn run(args: &[String]) -> Result<i32> {
             println!("{}", omp_providers::AgentDir::default().0.display());
         }
         "set" | "reset" => {
-            anyhow::bail!("config {} is not supported by omp-rs (read-only view)", positional[0]);
+            anyhow::bail!(
+                "config {} is not supported by omp-rs (read-only view)",
+                positional[0]
+            );
         }
         other => anyhow::bail!("Unknown config command: {other}\nValid commands: list, get, path"),
     }
@@ -53,7 +56,10 @@ fn list(json: bool) {
                     def.id.to_string(),
                     Value::Object(serde_json::Map::from_iter([
                         ("redacted".to_string(), Value::Bool(true)),
-                        ("type".to_string(), Value::String(def.ty.ts_name().to_string())),
+                        (
+                            "type".to_string(),
+                            Value::String(def.ty.ts_name().to_string()),
+                        ),
                     ])),
                 );
             } else {
@@ -61,12 +67,18 @@ fn list(json: bool) {
                     def.id.to_string(),
                     Value::Object(serde_json::Map::from_iter([
                         ("value".to_string(), value),
-                        ("type".to_string(), Value::String(def.ty.ts_name().to_string())),
+                        (
+                            "type".to_string(),
+                            Value::String(def.ty.ts_name().to_string()),
+                        ),
                     ])),
                 );
             }
         }
-        println!("{}", serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&Value::Object(out)).unwrap_or_default()
+        );
         return;
     }
 
@@ -82,7 +94,11 @@ fn list(json: bool) {
         }
         let value = settings.get(def.id);
         let is_secret_string = value.as_str().is_some_and(|s| !s.is_empty());
-        let rendered = if def.credential && is_secret_string { REDACTED.to_string() } else { format_value(&value) };
+        let rendered = if def.credential && is_secret_string {
+            REDACTED.to_string()
+        } else {
+            format_value(&value)
+        };
         println!("  {} = {} {}", def.id, rendered, type_display(def.ty));
     }
 }

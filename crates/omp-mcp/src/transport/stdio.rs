@@ -15,8 +15,8 @@ use tokio_util::sync::CancellationToken;
 use crate::config::McpServerConfig;
 use crate::errors::{Failure, McpError, McpTransportError, TransportKind};
 use crate::transport::{
-    NotificationCallback, PendingRequests, RequestHandler, RequestIdAllocator, RespondCallback, TransportFut,
-    await_with_timeout, default_handler, dispatch_message, McpTransport,
+    await_with_timeout, default_handler, dispatch_message, McpTransport, NotificationCallback,
+    PendingRequests, RequestHandler, RequestIdAllocator, RespondCallback, TransportFut,
 };
 
 /// Stdio transport state shared with the read loop.
@@ -92,7 +92,12 @@ impl McpTransport for StdioTransport {
         let frame = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         Box::pin(async move {
             let (tx, rx) = oneshot::channel();
-            shared.pending.lock().await.map.insert(PendingRequests::key(&id), tx);
+            shared
+                .pending
+                .lock()
+                .await
+                .map
+                .insert(PendingRequests::key(&id), tx);
             let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}\n".to_string());
             let mut guard = stdin.lock().await;
             let write_result = async {
@@ -103,7 +108,12 @@ impl McpTransport for StdioTransport {
             .await;
             drop(guard);
             if let Err(err) = write_result {
-                shared.pending.lock().await.map.remove(&PendingRequests::key(&id));
+                shared
+                    .pending
+                    .lock()
+                    .await
+                    .map
+                    .remove(&PendingRequests::key(&id));
                 return Err(McpError::Transport(McpTransportError {
                     transport: TransportKind::Stdio,
                     stage: Failure::Send,
@@ -133,16 +143,16 @@ impl McpTransport for StdioTransport {
             }
             .await
             .map_err(|err| {
-                    McpError::Transport(McpTransportError {
-                        transport: TransportKind::Stdio,
-                        stage: Failure::Send,
-                        failure: Failure::Send,
-                        retryable: true,
-                        message: format!("failed to write notification: {err}"),
-                        code: None,
-                        data: None,
-                    })
+                McpError::Transport(McpTransportError {
+                    transport: TransportKind::Stdio,
+                    stage: Failure::Send,
+                    failure: Failure::Send,
+                    retryable: true,
+                    message: format!("failed to write notification: {err}"),
+                    code: None,
+                    data: None,
                 })
+            })
         })
     }
 
@@ -155,7 +165,8 @@ impl McpTransport for StdioTransport {
                 // SIGTERM, brief grace, then SIGKILL — omp terminates the
                 // process group; we terminate the direct child.
                 let _ = child.start_kill();
-                let _ = tokio::time::timeout(std::time::Duration::from_millis(1000), child.wait()).await;
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(1000), child.wait())
+                    .await;
             }
         })
     }
@@ -169,7 +180,10 @@ impl StdioTransport {
             return Ok(());
         }
         let command = self.config.command.clone().ok_or_else(|| {
-            McpError::Config(format!("stdio MCP server \"{}\" has no command", self.server_name))
+            McpError::Config(format!(
+                "stdio MCP server \"{}\" has no command",
+                self.server_name
+            ))
         })?;
         // TS `detached: true` on Linux (setsid): the server tree has no
         // controlling terminal, so job-control signals cannot stop it and it
@@ -187,7 +201,12 @@ impl StdioTransport {
         };
         cmd.args(self.config.args.clone().unwrap_or_default())
             .envs(self.config.env.clone().unwrap_or_default())
-            .current_dir(self.config.cwd.clone().map_or_else(|| self.cwd.as_ref().clone(), PathBuf::from))
+            .current_dir(
+                self.config
+                    .cwd
+                    .clone()
+                    .map_or_else(|| self.cwd.as_ref().clone(), PathBuf::from),
+            )
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -207,7 +226,9 @@ impl StdioTransport {
         let stdin = child.stdin.take().ok_or_else(Self::not_connected)?;
         let stdin = Arc::new(Mutex::new(stdin));
 
-        let pending = Arc::new(Mutex::new(PendingRequests { map: HashMap::new() }));
+        let pending = Arc::new(Mutex::new(PendingRequests {
+            map: HashMap::new(),
+        }));
         let respond: RespondCallback = {
             let stdin = stdin.clone();
             Arc::new(move |msg: Value| {
@@ -221,10 +242,9 @@ impl StdioTransport {
                 });
             })
         };
-        let on_notification: NotificationCallback =
-            Arc::new(|method, params| {
-                tracing::debug!("MCP server notification: {method} {params}");
-            });
+        let on_notification: NotificationCallback = Arc::new(|method, params| {
+            tracing::debug!("MCP server notification: {method} {params}");
+        });
         let shared = Arc::new(Shared {
             pending: pending.clone(),
             handler: default_handler(self.cwd.clone()),

@@ -56,7 +56,10 @@ pub fn get_lsp_servers(config: &LspConfig) -> Vec<(String, ServerConfig)> {
 
 /// Non-linter servers that can handle `file_path`.
 #[must_use]
-pub fn get_lsp_servers_for_file(config: &LspConfig, file_path: &std::path::Path) -> Vec<(String, ServerConfig)> {
+pub fn get_lsp_servers_for_file(
+    config: &LspConfig,
+    file_path: &std::path::Path,
+) -> Vec<(String, ServerConfig)> {
     config::get_servers_for_file(config, file_path)
         .into_iter()
         .filter(|(_, c)| !is_custom_linter(c))
@@ -69,7 +72,9 @@ pub fn get_lsp_server_for_file(
     config: &LspConfig,
     file_path: &std::path::Path,
 ) -> Option<(String, ServerConfig)> {
-    get_lsp_servers_for_file(config, file_path).into_iter().next()
+    get_lsp_servers_for_file(config, file_path)
+        .into_iter()
+        .next()
 }
 
 /// Project-aware servers compute pull diagnostics on demand and need an index
@@ -110,7 +115,10 @@ pub async fn reload_server(
 ) -> Result<String, LspError> {
     if let Some(c) = cancel {
         if c.is_cancelled() {
-            return Err(LspError { message: "operation cancelled".to_string(), cancelled: true });
+            return Err(LspError {
+                message: "operation cancelled".to_string(),
+                cancelled: true,
+            });
         }
     }
     if lsp_client.is_rust_analyzer() || server_name == "rust-analyzer" {
@@ -122,7 +130,10 @@ pub async fn reload_server(
             Err(e) => {
                 if let Some(c) = cancel {
                     if c.is_cancelled() {
-                        return Err(LspError { message: "operation cancelled".to_string(), cancelled: true });
+                        return Err(LspError {
+                            message: "operation cancelled".to_string(),
+                            cancelled: true,
+                        });
                     }
                 }
                 if !is_method_not_found_error(&e) {
@@ -133,10 +144,17 @@ pub async fn reload_server(
         }
     }
     let params = reload_configuration_params(&lsp_client.config().clone());
-    if let Ok(()) = lsp_client.send_notification("workspace/didChangeConfiguration", params).await {} else {
+    if let Ok(()) = lsp_client
+        .send_notification("workspace/didChangeConfiguration", params)
+        .await
+    {
+    } else {
         if let Some(c) = cancel {
             if c.is_cancelled() {
-                return Err(LspError { message: "operation cancelled".to_string(), cancelled: true });
+                return Err(LspError {
+                    message: "operation cancelled".to_string(),
+                    cancelled: true,
+                });
             }
         }
         // On a broker-shared link a per-session teardown only detaches this
@@ -150,7 +168,9 @@ pub async fn reload_server(
         }
         if !lsp_client.shutdown_instance().await {
             return Err(LspError {
-                message: format!("Failed to restart {server_name}: server process did not exit after kill"),
+                message: format!(
+                    "Failed to restart {server_name}: server process did not exit after kill"
+                ),
                 cancelled: false,
             });
         }
@@ -201,7 +221,9 @@ pub async fn apply_workspace_edit_with_lsp(
     edit: &WorkspaceEdit,
     cwd: &std::path::Path,
 ) -> anyhow::Result<Vec<String>> {
-    crate::edits::apply_workspace_edit(edit, cwd).await.map_err(anyhow::Error::from)
+    crate::edits::apply_workspace_edit(edit, cwd)
+        .await
+        .map_err(anyhow::Error::from)
 }
 
 /// Notify servers that a file was renamed, closing the old URIs (used by
@@ -220,7 +242,9 @@ pub async fn notify_did_rename(
             lsp_client.close_file(old_uri).await?;
         }
     }
-    lsp_client.send_notification("workspace/didRenameFiles", params).await
+    lsp_client
+        .send_notification("workspace/didRenameFiles", params)
+        .await
 }
 
 /// Convert a willRenameFiles/didRenameFiles `files` entry pair back to paths.

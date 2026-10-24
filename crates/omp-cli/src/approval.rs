@@ -50,10 +50,22 @@ pub struct Decision {
 impl Decision {
     #[must_use]
     pub fn tier(tier: Tier) -> Self {
-        Self { tier, policy: None, reason: None, overridden: false, policy_key: None }
+        Self {
+            tier,
+            policy: None,
+            reason: None,
+            overridden: false,
+            policy_key: None,
+        }
     }
     fn with_policy(tier: Tier, policy: Policy, overridden: bool, reason: Option<String>) -> Self {
-        Self { tier, policy: Some(policy), reason, overridden, policy_key: None }
+        Self {
+            tier,
+            policy: Some(policy),
+            reason,
+            overridden,
+            policy_key: None,
+        }
     }
 }
 
@@ -104,8 +116,16 @@ fn normalize_policy(value: &Value) -> Option<Policy> {
 
 /// TS `resolveApproval`.
 #[must_use]
-pub fn resolve_approval(tool: &str, decision: &Decision, mode: ApprovalMode, user: &Map<String, Value>) -> Resolved {
-    let policy_key = decision.policy_key.clone().unwrap_or_else(|| tool.to_owned());
+pub fn resolve_approval(
+    tool: &str,
+    decision: &Decision,
+    mode: ApprovalMode,
+    user: &Map<String, Value>,
+) -> Resolved {
+    let policy_key = decision
+        .policy_key
+        .clone()
+        .unwrap_or_else(|| tool.to_owned());
     let user_policy = user.get(&policy_key).and_then(normalize_policy);
     let fallback = if policy_key != tool && user_policy.is_none() {
         user.get(tool).and_then(normalize_policy)
@@ -113,7 +133,13 @@ pub fn resolve_approval(tool: &str, decision: &Decision, mode: ApprovalMode, use
         None
     };
     let combined = user_policy.or(fallback);
-    let combined_key = combined.map(|_| if user_policy.is_some() { policy_key.clone() } else { tool.to_owned() });
+    let combined_key = combined.map(|_| {
+        if user_policy.is_some() {
+            policy_key.clone()
+        } else {
+            tool.to_owned()
+        }
+    });
     let tool_key = decision.policy_key.clone();
     let from_tool = |policy: Policy, overridden: bool| Resolved {
         policy,
@@ -146,12 +172,20 @@ pub fn resolve_approval(tool: &str, decision: &Decision, mode: ApprovalMode, use
             tier: decision.tier,
             reason: None,
             overridden: false,
-            source: if combined.is_some() { Source::User } else { Source::Mode },
+            source: if combined.is_some() {
+                Source::User
+            } else {
+                Source::Mode
+            },
             policy_key: combined_key,
         };
     }
     if decision.overridden {
-        let policy = if decision.policy == Some(Policy::Allow) { Policy::Allow } else { Policy::Prompt };
+        let policy = if decision.policy == Some(Policy::Allow) {
+            Policy::Allow
+        } else {
+            Policy::Prompt
+        };
         return from_tool(policy, true);
     }
     if let Some(policy @ (Policy::Allow | Policy::Prompt)) = decision.policy {
@@ -193,7 +227,10 @@ pub fn deny_message(resolved: &Resolved, tool: &str) -> String {
     if resolved.source == Source::Tool {
         return format!(
             "Tool \"{tool}\" is blocked by tool policy.{}",
-            resolved.reason.as_ref().map_or_else(String::new, |r| format!("\nReason: {r}"))
+            resolved
+                .reason
+                .as_ref()
+                .map_or_else(String::new, |r| format!("\nReason: {r}"))
         );
     }
     let key = resolved.policy_key.as_deref().unwrap_or(tool);
@@ -233,13 +270,16 @@ fn strictest(decisions: Vec<Decision>) -> Decision {
 
 fn scheme_of(input: &str) -> Option<String> {
     let (scheme, _) = input.split_once("://")?;
-    (!scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphabetic())).then(|| scheme.to_lowercase())
+    (!scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphabetic()))
+        .then(|| scheme.to_lowercase())
 }
 
 /// TS `InternalUrlRouter.writeTier`: non-URLs are `write`; a registered scheme's `spec.write.tier`;
 /// a registered scheme without a write policy is denied as read-only.
 fn write_tier(input: &str) -> Decision {
-    let Some(scheme) = scheme_of(input) else { return Decision::tier(Tier::Write) };
+    let Some(scheme) = scheme_of(input) else {
+        return Decision::tier(Tier::Write);
+    };
     match scheme.as_str() {
         "vault" | "cfg" | "conflict" => Decision::tier(Tier::Write),
         "agent" | "local" => Decision::tier(Tier::Read),
@@ -273,7 +313,9 @@ fn path_list(args: &Value) -> Vec<String> {
     for key in ["path", "paths"] {
         match args.get(key) {
             Some(Value::String(s)) => out.push(s.clone()),
-            Some(Value::Array(a)) => out.extend(a.iter().filter_map(Value::as_str).map(str::to_owned)),
+            Some(Value::Array(a)) => {
+                out.extend(a.iter().filter_map(Value::as_str).map(str::to_owned))
+            }
             _ => {}
         }
     }
@@ -304,9 +346,14 @@ fn edit_targets(args: &Value) -> Vec<String> {
                         targets.push(path.to_owned());
                     }
                 }
-            } else if let Some(p) = ["*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "]
-                .iter()
-                .find_map(|prefix| line.strip_prefix(prefix))
+            } else if let Some(p) = [
+                "*** Add File: ",
+                "*** Update File: ",
+                "*** Delete File: ",
+                "*** Move to: ",
+            ]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
             {
                 targets.push(p.trim().to_owned());
             }
@@ -358,11 +405,15 @@ static CRITICAL_BASH: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
-static REINTERPRETED_ARG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|[ \t])(?:-[^-]*[ce]|--(?:command|eval))(?:[= \t]|$)").expect("regex"));
+static REINTERPRETED_ARG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[ \t])(?:-[^-]*[ce]|--(?:command|eval))(?:[= \t]|$)").expect("regex")
+});
 
 fn is_shell_control(ch: char) -> bool {
-    matches!(ch, '\n' | '\r' | ';' | '&' | '|' | '<' | '>' | '`' | '$' | '(' | ')')
+    matches!(
+        ch,
+        '\n' | '\r' | ';' | '&' | '|' | '<' | '>' | '`' | '$' | '(' | ')'
+    )
 }
 
 /// TS `hasBashApprovalShellControl`.
@@ -429,7 +480,11 @@ fn bash_segments(command: &str) -> Vec<String> {
             current.push(std::mem::take(buffer));
         }
     }
-    fn push_segment(buffer: &mut String, current: &mut Vec<String>, segments: &mut Vec<Vec<String>>) {
+    fn push_segment(
+        buffer: &mut String,
+        current: &mut Vec<String>,
+        segments: &mut Vec<Vec<String>>,
+    ) {
         push_buffer(buffer, current);
         if !current.is_empty() {
             segments.push(std::mem::take(current));
@@ -472,13 +527,19 @@ fn bash_segments(command: &str) -> Vec<String> {
                 i += 1;
             }
             ' ' | '\t' => push_buffer(&mut buffer, &mut current),
-            '\n' | ';' | '&' | '|' | '(' | ')' => push_segment(&mut buffer, &mut current, &mut segments),
+            '\n' | ';' | '&' | '|' | '(' | ')' => {
+                push_segment(&mut buffer, &mut current, &mut segments)
+            }
             _ => buffer.push(ch),
         }
         i += 1;
     }
     push_segment(&mut buffer, &mut current, &mut segments);
-    segments.into_iter().map(|s| s.join(" ")).filter(|s| !s.is_empty()).collect()
+    segments
+        .into_iter()
+        .map(|s| s.join(" "))
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn normalize_pattern(value: &str) -> String {
@@ -486,7 +547,11 @@ fn normalize_pattern(value: &str) -> String {
 }
 
 fn pattern_regex(pattern: &str) -> Option<Regex> {
-    let escaped = normalize_pattern(pattern).split('*').map(regex::escape).collect::<Vec<_>>().join(".*");
+    let escaped = normalize_pattern(pattern)
+        .split('*')
+        .map(regex::escape)
+        .collect::<Vec<_>>()
+        .join(".*");
     Regex::new(&format!("^{escaped}$")).ok()
 }
 
@@ -496,7 +561,9 @@ struct BashRule {
 }
 
 fn bash_rules(settings: &omp_settings::Settings) -> Vec<BashRule> {
-    let Value::Array(items) = settings.get("bash.patterns") else { return Vec::new() };
+    let Value::Array(items) = settings.get("bash.patterns") else {
+        return Vec::new();
+    };
     items
         .iter()
         .filter_map(|item| {
@@ -509,7 +576,9 @@ fn bash_rules(settings: &omp_settings::Settings) -> Vec<BashRule> {
 }
 
 fn rule_matches(command: &str, rule: &BashRule) -> bool {
-    let Some(re) = pattern_regex(&rule.matcher) else { return false };
+    let Some(re) = pattern_regex(&rule.matcher) else {
+        return false;
+    };
     let normalized = normalize_pattern(command);
     if normalized.is_empty() {
         return false;
@@ -533,10 +602,18 @@ fn bash_decision(args: &Value, settings: &omp_settings::Settings) -> Decision {
         );
     }
     if !command.is_empty() && CRITICAL_BASH.iter().any(|p| p.is_match(command)) {
-        return Decision { tier: Tier::Exec, policy: None, reason: Some("Critical pattern detected".into()), overridden: true, policy_key: None };
+        return Decision {
+            tier: Tier::Exec,
+            policy: None,
+            reason: Some("Critical pattern detected".into()),
+            overridden: true,
+            policy_key: None,
+        };
     }
     match rule {
-        Some(r) if r.approval == Policy::Allow => Decision::with_policy(Tier::Write, Policy::Allow, false, None),
+        Some(r) if r.approval == Policy::Allow => {
+            Decision::with_policy(Tier::Write, Policy::Allow, false, None)
+        }
         Some(r) => Decision::with_policy(
             Tier::Exec,
             Policy::Prompt,
@@ -570,7 +647,9 @@ pub fn tool_decision(name: &str, args: &Value, settings: &omp_settings::Settings
             Some(paths) if !paths.is_empty() => {
                 let mut decisions = Vec::new();
                 for p in paths {
-                    let Some(p) = p.as_str() else { return Decision::tier(Tier::Exec) };
+                    let Some(p) = p.as_str() else {
+                        return Decision::tier(Tier::Exec);
+                    };
                     decisions.push(write_tier(p));
                 }
                 strictest(decisions)
@@ -578,11 +657,17 @@ pub fn tool_decision(name: &str, args: &Value, settings: &omp_settings::Settings
             _ => Decision::tier(Tier::Write),
         },
         "lsp" => {
-            let action = str_arg(args, "action").map(str::to_lowercase).unwrap_or_default();
-            Decision::tier(if LSP_READONLY_ACTIONS.contains(&action.as_str()) { Tier::Read } else { Tier::Write })
+            let action = str_arg(args, "action")
+                .map(str::to_lowercase)
+                .unwrap_or_default();
+            Decision::tier(if LSP_READONLY_ACTIONS.contains(&action.as_str()) {
+                Tier::Read
+            } else {
+                Tier::Write
+            })
         }
-        "glob" | "find" | "ast_grep" | "web_search" | "ask" | "think" | "wait" | "yield" | "todo"
-        | "checkpoint" | "rewind" | "context" => Decision::tier(Tier::Read),
+        "glob" | "find" | "ast_grep" | "web_search" | "ask" | "think" | "wait" | "yield"
+        | "todo" | "checkpoint" | "rewind" | "context" => Decision::tier(Tier::Read),
         n if n.starts_with("mcp__") => Decision::tier(Tier::Write),
         _ => Decision::tier(Tier::Exec),
     }
@@ -592,7 +677,10 @@ pub fn tool_decision(name: &str, args: &Value, settings: &omp_settings::Settings
 fn approval_details(name: &str, args: &Value) -> Vec<String> {
     let t = truncate_for_prompt;
     match name {
-        "bash" => vec![format!("Command: {}", t(str_arg(args, "command").unwrap_or("(missing)")))],
+        "bash" => vec![format!(
+            "Command: {}",
+            t(str_arg(args, "command").unwrap_or("(missing)"))
+        )],
         "write" => vec![
             format!("Path: {}", t(str_arg(args, "path").unwrap_or("(missing)"))),
             format!("Content:\n{}", t(str_arg(args, "content").unwrap_or(""))),
@@ -606,11 +694,18 @@ fn approval_details(name: &str, args: &Value) -> Vec<String> {
             }
         }
         "eval" => {
-            let language = str_arg(args, "language").map_or_else(|| "javascript (default)".to_owned(), str::to_owned);
-            vec![format!("Language: {language}"), format!("Code:\n{}", t(str_arg(args, "code").unwrap_or("")))]
+            let language = str_arg(args, "language")
+                .map_or_else(|| "javascript (default)".to_owned(), str::to_owned);
+            vec![
+                format!("Language: {language}"),
+                format!("Code:\n{}", t(str_arg(args, "code").unwrap_or(""))),
+            ]
         }
         "lsp" => {
-            let mut lines = vec![format!("Action: {}", str_arg(args, "action").unwrap_or("(missing)"))];
+            let mut lines = vec![format!(
+                "Action: {}",
+                str_arg(args, "action").unwrap_or("(missing)")
+            )];
             if let Some(file) = str_arg(args, "file").filter(|f| !f.is_empty()) {
                 lines.push(format!("File: {}", t(file)));
             }
@@ -618,16 +713,38 @@ fn approval_details(name: &str, args: &Value) -> Vec<String> {
         }
         "ast_edit" => {
             let mut lines = Vec::new();
-            let ops = args.get("ops").and_then(Value::as_array).cloned().unwrap_or_default();
+            let ops = args
+                .get("ops")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             if let Some(first) = ops.first() {
-                lines.push(format!("Pattern: {}", t(str_arg(first, "pat").unwrap_or("undefined"))));
-                lines.push(format!("Replacement: {}", t(str_arg(first, "out").unwrap_or("undefined"))));
+                lines.push(format!(
+                    "Pattern: {}",
+                    t(str_arg(first, "pat").unwrap_or("undefined"))
+                ));
+                lines.push(format!(
+                    "Replacement: {}",
+                    t(str_arg(first, "out").unwrap_or("undefined"))
+                ));
                 if ops.len() > 1 {
-                    lines.push(format!("+{} more op{}", ops.len() - 1, if ops.len() == 2 { "" } else { "s" }));
+                    lines.push(format!(
+                        "+{} more op{}",
+                        ops.len() - 1,
+                        if ops.len() == 2 { "" } else { "s" }
+                    ));
                 }
             }
-            if let Some(paths) = args.get("paths").and_then(Value::as_array).filter(|p| !p.is_empty()) {
-                let joined = paths.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
+            if let Some(paths) = args
+                .get("paths")
+                .and_then(Value::as_array)
+                .filter(|p| !p.is_empty())
+            {
+                let joined = paths
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 lines.push(format!("Paths: {}", t(&joined)));
             }
             lines
@@ -652,7 +769,11 @@ fn task_details(args: &Value) -> Vec<String> {
     if let Some(context) = str_arg(args, "context").filter(|c| !c.trim().is_empty()) {
         lines.push(format!("Context:\n{}", t(context)));
     }
-    let tasks = args.get("tasks").and_then(Value::as_array).cloned().unwrap_or_default();
+    let tasks = args
+        .get("tasks")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     if !tasks.is_empty() {
         let effective = |item: &Value| -> String {
             item.get("agent")
@@ -669,7 +790,11 @@ fn task_details(args: &Value) -> Vec<String> {
                 None => counts.push((agent, 1)),
             }
         }
-        let summary = counts.iter().map(|(a, n)| format!("{a} ×{n}")).collect::<Vec<_>>().join(", ");
+        let summary = counts
+            .iter()
+            .map(|(a, n)| format!("{a} ×{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         lines.push(format!("Batch agents: {}", t(&summary)));
         let first = &tasks[0];
         if first.is_object() {
@@ -682,7 +807,11 @@ fn task_details(args: &Value) -> Vec<String> {
             }
         }
         if tasks.len() > 1 {
-            lines.push(format!("+{} more task{}", tasks.len() - 1, if tasks.len() == 2 { "" } else { "s" }));
+            lines.push(format!(
+                "+{} more task{}",
+                tasks.len() - 1,
+                if tasks.len() == 2 { "" } else { "s" }
+            ));
         }
     }
     lines
@@ -695,7 +824,11 @@ pub fn format_prompt(name: &str, args: &Value, reason: Option<&str>) -> String {
     if let Some(reason) = reason.filter(|r| !r.is_empty()) {
         lines.push(format!("Reason: {reason}"));
     }
-    lines.extend(approval_details(name, args).into_iter().filter(|l| !l.is_empty()));
+    lines.extend(
+        approval_details(name, args)
+            .into_iter()
+            .filter(|l| !l.is_empty()),
+    );
     lines.join("\n")
 }
 
@@ -754,31 +887,51 @@ impl Gate {
     /// Whether the gate refused call `id` (consumed once).
     #[must_use]
     pub fn take_refused(&self, id: &str) -> bool {
-        self.refused.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(id)
+        self.refused
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id)
     }
 
     /// Bind the live runtime and whether the session has a UI (TS `hasUI()`).
     pub fn bind(&self, rt: &Arc<Runtime>, has_ui: bool) {
-        let mut b = self.binding.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut b = self
+            .binding
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         b.rt = Some(Arc::downgrade(rt));
         b.has_ui = has_ui;
     }
 
-    fn mode_and_policies(&self, settings: &omp_settings::Settings) -> (ApprovalMode, Map<String, Value>) {
+    fn mode_and_policies(
+        &self,
+        settings: &omp_settings::Settings,
+    ) -> (ApprovalMode, Map<String, Value>) {
         let policies = settings.get_record("tools.approval");
         if self.auto_approve {
             return (ApprovalMode::Yolo, policies);
         }
         let mode = self
             .mode_override
-            .or_else(|| settings.get_string("tools.approvalMode").as_deref().and_then(parse_mode))
+            .or_else(|| {
+                settings
+                    .get_string("tools.approvalMode")
+                    .as_deref()
+                    .and_then(parse_mode)
+            })
             .unwrap_or(ApprovalMode::Yolo);
         (mode, policies)
     }
 
     /// Run the gate for one call on its effective arguments. `Err(message)` blocks the call (the
     /// message is the tool error TS throws).
-    pub async fn check(&self, name: &str, call_id: &str, args: &Value, signal: &AbortSignal) -> Result<(), String> {
+    pub async fn check(
+        &self,
+        name: &str,
+        call_id: &str,
+        args: &Value,
+        signal: &AbortSignal,
+    ) -> Result<(), String> {
         let settings = omp_settings::Settings::load(&self.cwd);
         let (mode, policies) = self.mode_and_policies(&settings);
         let decision = tool_decision(name, args, &settings);
@@ -790,14 +943,17 @@ impl Gate {
             return Ok(());
         }
         let (rt, has_ui) = {
-            let b = self.binding.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let b = self
+                .binding
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (b.rt.as_ref().and_then(Weak::upgrade), b.has_ui)
         };
         let session_id = rt.as_ref().map(|r| r.session_id()).unwrap_or_default();
-        let observed = self
-            .ext
-            .as_ref()
-            .filter(|e| e.host.has_handlers("tool_approval_requested") || e.host.has_handlers("tool_approval_resolved"));
+        let observed = self.ext.as_ref().filter(|e| {
+            e.host.has_handlers("tool_approval_requested")
+                || e.host.has_handlers("tool_approval_resolved")
+        });
         if let Some(ext) = observed {
             let r = ext
                 .host
@@ -817,7 +973,13 @@ impl Gate {
             let (name, call_id) = (name.to_owned(), call_id.to_owned());
             async move {
                 if let Some(ext) = ext {
-                    report(ext.host.emit_tool_approval_resolved(session_id, name, call_id, approved, reason, None).await);
+                    report(
+                        ext.host
+                            .emit_tool_approval_resolved(
+                                session_id, name, call_id, approved, reason, None,
+                            )
+                            .await,
+                    );
                 }
             }
         };
@@ -856,7 +1018,12 @@ impl Gate {
     pub fn wrap_tools(self: &Arc<Self>, tools: Vec<Arc<dyn AgentTool>>) -> Vec<Arc<dyn AgentTool>> {
         tools
             .into_iter()
-            .map(|inner| Arc::new(GatedTool { inner, gate: self.clone() }) as Arc<dyn AgentTool>)
+            .map(|inner| {
+                Arc::new(GatedTool {
+                    inner,
+                    gate: self.clone(),
+                }) as Arc<dyn AgentTool>
+            })
             .collect()
     }
 }
@@ -893,7 +1060,11 @@ impl AgentTool for GatedTool {
         on_update: pa_agent::types::AgentToolUpdateCallback,
     ) -> pa_agent::BoxFut<'static, anyhow::Result<pa_agent::types::AgentToolResult>> {
         Box::pin(async move {
-            if let Err(message) = self.gate.check(self.inner.name(), &tool_call_id, &params, &signal).await {
+            if let Err(message) = self
+                .gate
+                .check(self.inner.name(), &tool_call_id, &params, &signal)
+                .await
+            {
                 self.gate
                     .refused
                     .lock()
@@ -901,7 +1072,10 @@ impl AgentTool for GatedTool {
                     .insert(tool_call_id);
                 return Err(anyhow::Error::msg(message));
             }
-            self.inner.clone().execute(tool_call_id, params, signal, on_update).await
+            self.inner
+                .clone()
+                .execute(tool_call_id, params, signal, on_update)
+                .await
         })
     }
 }
@@ -922,7 +1096,9 @@ fn report(r: anyhow::Result<omp_ext::EmitResult>) {
 async fn select(rt: &Arc<Runtime>, title: &str, options: &[&str]) -> Option<String> {
     let id = format!(
         "ext-ui-{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
     );
     let waiter = crate::rpc::register_pending_ui_request(&id);
     rt.send(json!({
@@ -936,7 +1112,10 @@ async fn select(rt: &Arc<Runtime>, title: &str, options: &[&str]) -> Option<Stri
     if answer.get("cancelled").and_then(Value::as_bool) == Some(true) {
         return None;
     }
-    answer.get("value").and_then(Value::as_str).map(str::to_owned)
+    answer
+        .get("value")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 #[cfg(test)]
@@ -954,8 +1133,16 @@ mod tests {
 
     #[test]
     fn yolo_allows_every_tier() {
-        for (t, a) in [("bash", json!({"command":"ls"})), ("write", json!({"path":"a","content":""})), ("read", json!({"path":"a"}))] {
-            assert_eq!(resolve(t, &a, ApprovalMode::Yolo, &json!({})).policy, Policy::Allow, "{t}");
+        for (t, a) in [
+            ("bash", json!({"command":"ls"})),
+            ("write", json!({"path":"a","content":""})),
+            ("read", json!({"path":"a"})),
+        ] {
+            assert_eq!(
+                resolve(t, &a, ApprovalMode::Yolo, &json!({})).policy,
+                Policy::Allow,
+                "{t}"
+            );
         }
     }
 
@@ -964,18 +1151,45 @@ mod tests {
         let w = json!({"path":"a","content":"x"});
         let b = json!({"command":"ls"});
         let r = json!({"path":"a"});
-        assert_eq!(resolve("read", &r, ApprovalMode::AlwaysAsk, &json!({})).policy, Policy::Allow);
-        assert_eq!(resolve("write", &w, ApprovalMode::AlwaysAsk, &json!({})).policy, Policy::Prompt);
-        assert_eq!(resolve("write", &w, ApprovalMode::Write, &json!({})).policy, Policy::Allow);
-        assert_eq!(resolve("bash", &b, ApprovalMode::Write, &json!({})).policy, Policy::Prompt);
-        assert_eq!(resolve("bash", &b, ApprovalMode::AlwaysAsk, &json!({})).policy, Policy::Prompt);
+        assert_eq!(
+            resolve("read", &r, ApprovalMode::AlwaysAsk, &json!({})).policy,
+            Policy::Allow
+        );
+        assert_eq!(
+            resolve("write", &w, ApprovalMode::AlwaysAsk, &json!({})).policy,
+            Policy::Prompt
+        );
+        assert_eq!(
+            resolve("write", &w, ApprovalMode::Write, &json!({})).policy,
+            Policy::Allow
+        );
+        assert_eq!(
+            resolve("bash", &b, ApprovalMode::Write, &json!({})).policy,
+            Policy::Prompt
+        );
+        assert_eq!(
+            resolve("bash", &b, ApprovalMode::AlwaysAsk, &json!({})).policy,
+            Policy::Prompt
+        );
     }
 
     #[test]
     fn user_policy_wins_over_mode_but_deny_wins_everywhere() {
         let b = json!({"command":"ls"});
-        assert_eq!(resolve("bash", &b, ApprovalMode::AlwaysAsk, &json!({"bash":"allow"})).policy, Policy::Allow);
-        assert_eq!(resolve("bash", &b, ApprovalMode::Yolo, &json!({"bash":"prompt"})).policy, Policy::Prompt);
+        assert_eq!(
+            resolve(
+                "bash",
+                &b,
+                ApprovalMode::AlwaysAsk,
+                &json!({"bash":"allow"})
+            )
+            .policy,
+            Policy::Allow
+        );
+        assert_eq!(
+            resolve("bash", &b, ApprovalMode::Yolo, &json!({"bash":"prompt"})).policy,
+            Policy::Prompt
+        );
         let d = resolve("bash", &b, ApprovalMode::Yolo, &json!({"bash":"deny"}));
         assert_eq!(d.policy, Policy::Deny);
         assert_eq!(
@@ -987,7 +1201,10 @@ mod tests {
     #[test]
     fn critical_bash_prompts_outside_yolo_only() {
         let rm = json!({"command":"rm -rf /"});
-        assert_eq!(resolve("bash", &rm, ApprovalMode::Yolo, &json!({})).policy, Policy::Allow);
+        assert_eq!(
+            resolve("bash", &rm, ApprovalMode::Yolo, &json!({})).policy,
+            Policy::Allow
+        );
         let r = resolve("bash", &rm, ApprovalMode::Write, &json!({"bash":"allow"}));
         assert_eq!(r.policy, Policy::Prompt);
         assert_eq!(r.reason.as_deref(), Some("Critical pattern detected"));
@@ -995,7 +1212,12 @@ mod tests {
 
     #[test]
     fn read_only_scheme_write_is_denied_by_tool_policy() {
-        let r = resolve("write", &json!({"path":"skill://x","content":""}), ApprovalMode::Yolo, &json!({}));
+        let r = resolve(
+            "write",
+            &json!({"path":"skill://x","content":""}),
+            ApprovalMode::Yolo,
+            &json!({}),
+        );
         assert_eq!(r.policy, Policy::Deny);
         assert_eq!(
             deny_message(&r, "write"),
@@ -1006,7 +1228,11 @@ mod tests {
     #[test]
     fn prompt_text_matches_ts_format() {
         assert_eq!(
-            format_prompt("bash", &json!({"command":"ls -la"}), Some("Critical pattern detected")),
+            format_prompt(
+                "bash",
+                &json!({"command":"ls -la"}),
+                Some("Critical pattern detected")
+            ),
             "Allow tool: bash\nReason: Critical pattern detected\nCommand: ls -la"
         );
         assert_eq!(
@@ -1019,7 +1245,10 @@ mod tests {
 
     #[test]
     fn bash_segments_split_on_operators() {
-        assert_eq!(bash_segments("cd x && rm -rf 'a b'; ls | wc"), vec!["cd x", "rm -rf a b", "ls", "wc"]);
+        assert_eq!(
+            bash_segments("cd x && rm -rf 'a b'; ls | wc"),
+            vec!["cd x", "rm -rf a b", "ls", "wc"]
+        );
         assert!(has_shell_control("ls; rm x"));
         assert!(!has_shell_control("git status"));
     }

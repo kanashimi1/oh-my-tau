@@ -15,7 +15,8 @@ use crate::providers::openai_responses_shared::ResponsesStreamHooks;
 use crate::providers::responses_request::{build_body, Flavor, ResponsesOptions};
 use crate::registry::Provider;
 use crate::types::{
-    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
+    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason,
+    StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
@@ -79,12 +80,19 @@ pub struct AzureOpenAIResponsesOptions {
 
 impl AzureOpenAIResponsesOptions {
     pub fn from_base(base: StreamOptions) -> Self {
-        Self { responses: ResponsesOptions::from_base(base), ..Self::default() }
+        Self {
+            responses: ResponsesOptions::from_base(base),
+            ..Self::default()
+        }
     }
 
     /// The options the transport table mapped, pinned to the resolved deployment.
     pub(crate) fn from_responses(responses: ResponsesOptions, deployment: String) -> Self {
-        Self { responses, azure_deployment_name: Some(deployment), ..Self::default() }
+        Self {
+            responses,
+            azure_deployment_name: Some(deployment),
+            ..Self::default()
+        }
     }
 }
 
@@ -229,7 +237,8 @@ async fn run_stream(
     let deployment_name = resolve_deployment_name(model, Some(&options));
 
     let api_key = options
-        .responses.base
+        .responses
+        .base
         .api_key
         .clone()
         .or_else(|| get_env_api_key(&model.provider))
@@ -238,8 +247,16 @@ async fn run_stream(
         resolve_azure_config(model, Some(&options)).map_err(ProviderError::Message)?;
 
     let view = crate::compat::ModelView::of(model);
-    let mut params = build_body(model, &view, context, &options.responses, &Flavor::Azure { deployment: deployment_name.clone() })
-        .map_err(ProviderError::Message)?;
+    let mut params = build_body(
+        model,
+        &view,
+        context,
+        &options.responses,
+        &Flavor::Azure {
+            deployment: deployment_name.clone(),
+        },
+    )
+    .map_err(ProviderError::Message)?;
     if let Some(on_payload) = &options.responses.base.on_payload {
         if let Some(next) = on_payload(params.clone(), model) {
             params = next;
@@ -345,7 +362,8 @@ async fn run_stream(
             }
             processor.finish()?;
             if options
-                .responses.base
+                .responses
+                .base
                 .signal
                 .as_ref()
                 .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
@@ -410,4 +428,3 @@ impl Provider for AzureOpenAIResponsesProvider {
         stream_simple_azure_openai_responses(model, context, options)
     }
 }
-

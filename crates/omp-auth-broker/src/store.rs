@@ -41,7 +41,10 @@ impl Entry {
     }
 
     pub fn expires(&self) -> Option<f64> {
-        self.credential.get("expires").and_then(Value::as_f64).filter(|e| e.is_finite())
+        self.credential
+            .get("expires")
+            .and_then(Value::as_f64)
+            .filter(|e| e.is_finite())
     }
 
     /// TS `snapshotEntry`: refresh token replaced by the remote sentinel, identity key resolved
@@ -49,7 +52,10 @@ impl Entry {
     pub fn wire(&self) -> Map<String, Value> {
         let mut credential = self.credential.clone();
         let identity = if self.is_oauth() {
-            credential.insert("refresh".into(), Value::String(REMOTE_REFRESH_SENTINEL.into()));
+            credential.insert(
+                "refresh".into(),
+                Value::String(REMOTE_REFRESH_SENTINEL.into()),
+            );
             let mut data = self.credential.clone();
             data.shift_remove("type");
             identity_key(&self.provider, &Credential::OAuth(data))
@@ -60,14 +66,19 @@ impl Entry {
         out.insert("id".into(), json!(self.id));
         out.insert("provider".into(), json!(self.provider));
         out.insert("credential".into(), Value::Object(credential));
-        out.insert("identityKey".into(), identity.map_or(Value::Null, Value::String));
+        out.insert(
+            "identityKey".into(),
+            identity.map_or(Value::Null, Value::String),
+        );
         out
     }
 }
 
 /// TS `deserializeCredential`.
 fn deserialize(kind: &str, data: &str) -> Option<Map<String, Value>> {
-    let Value::Object(parsed) = serde_json::from_str::<Value>(data).ok()? else { return None };
+    let Value::Object(parsed) = serde_json::from_str::<Value>(data).ok()? else {
+        return None;
+    };
     let mut out = Map::new();
     match kind {
         "api_key" => {
@@ -97,7 +108,10 @@ pub struct Block {
 
 impl Store {
     fn conn(&self) -> Result<MutexGuard<'_, Connection>> {
-        Ok(self.conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+        Ok(self
+            .conn
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
     /// Open the store, creating what TS `SqliteAuthCredentialStore` would on a fresh database
@@ -105,10 +119,16 @@ impl Store {
     /// `auth_change_revision` triggers peers poll).
     pub fn open(db: &Path) -> Result<Self> {
         drop(LocalStore::open(db)?);
-        let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
-            .with_context(|| format!("opening {}", db.display()))?;
+        let conn = Connection::open_with_flags(
+            db,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("opening {}", db.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
-        let store = Self { db: db.to_path_buf(), conn: Mutex::new(conn) };
+        let store = Self {
+            db: db.to_path_buf(),
+            conn: Mutex::new(conn),
+        };
         let conn = store.conn()?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
@@ -156,7 +176,8 @@ impl Store {
     /// The store-wide change counter every writer bumps through triggers.
     pub fn revision(&self) -> Result<i64> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare_cached("SELECT revision FROM auth_change_revision WHERE id = 1")?;
+        let mut stmt =
+            conn.prepare_cached("SELECT revision FROM auth_change_revision WHERE id = 1")?;
         Ok(stmt.query_row([], |r| r.get(0))?)
     }
 
@@ -168,13 +189,24 @@ impl Store {
             "SELECT id, provider, credential_type, data FROM auth_credentials WHERE disabled_cause IS NULL ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
         })?;
         let mut groups: Vec<(String, Vec<Entry>)> = Vec::new();
         for row in rows {
             let (id, provider, kind, data) = row?;
-            let Some(credential) = deserialize(&kind, &data) else { continue };
-            let entry = Entry { id, provider: provider.clone(), credential };
+            let Some(credential) = deserialize(&kind, &data) else {
+                continue;
+            };
+            let entry = Entry {
+                id,
+                provider: provider.clone(),
+                credential,
+            };
             match groups.iter_mut().find(|(p, _)| *p == provider) {
                 Some((_, list)) => list.push(entry),
                 None => groups.push((provider, vec![entry])),
@@ -210,11 +242,24 @@ impl Store {
             let mut s = Map::new();
             s.insert("id".into(), json!(id));
             s.insert("provider".into(), json!(provider));
-            s.insert("type".into(), json!(if kind == "api_key" { "api_key" } else { "oauth" }));
-            s.insert("cause".into(), json!(cause.unwrap_or_else(|| "disabled".into())));
+            s.insert(
+                "type".into(),
+                json!(if kind == "api_key" {
+                    "api_key"
+                } else {
+                    "oauth"
+                }),
+            );
+            s.insert(
+                "cause".into(),
+                json!(cause.unwrap_or_else(|| "disabled".into())),
+            );
             if let Some(cred) = deserialize(&kind, &data).filter(|_| kind == "oauth") {
                 for key in ["email", "accountId", "orgId", "orgName"] {
-                    if let Some(v) = cred.get(key).filter(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
+                    if let Some(v) = cred
+                        .get(key)
+                        .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
+                    {
                         s.insert(key.into(), v.clone());
                     }
                 }
@@ -232,14 +277,21 @@ impl Store {
         let mut data = credential.clone();
         let kind = data.shift_remove("type");
         let cred = match kind.as_ref().and_then(Value::as_str) {
-            Some("api_key") => Credential::ApiKey(data.get("key").and_then(Value::as_str).unwrap_or_default().to_string()),
+            Some("api_key") => Credential::ApiKey(
+                data.get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
             _ => Credential::OAuth(data),
         };
         let mut store = LocalStore::open(&self.db)?;
         let rows = store.upsert(provider, &cred)?;
         // omp-providers writes login keys as `{"key","source":"login"}`; TS `serializeCredential`
         // keeps `source` only when the caller sent it.
-        if kind.as_ref().and_then(Value::as_str) == Some("api_key") && credential.get("source").is_none() {
+        if kind.as_ref().and_then(Value::as_str) == Some("api_key")
+            && credential.get("source").is_none()
+        {
             let conn = self.conn()?;
             for r in &rows {
                 if let Credential::ApiKey(key) = &r.credential {
@@ -251,7 +303,10 @@ impl Store {
             }
         }
         let all = self.entries()?;
-        Ok(rows.iter().filter_map(|r| all.iter().find(|e| e.id == r.id).cloned()).collect())
+        Ok(rows
+            .iter()
+            .filter_map(|r| all.iter().find(|e| e.id == r.id).cloned())
+            .collect())
     }
 
     pub fn disable(&self, id: i64, cause: &str) -> Result<bool> {
@@ -263,7 +318,10 @@ impl Store {
     /// `auth_codex_*` triggers), as TS does.
     pub fn blocks(&self, now_ms: i64) -> Result<Vec<Block>> {
         let conn = self.conn()?;
-        conn.execute("DELETE FROM auth_credential_blocks WHERE blocked_until_ms <= ?1", [now_ms])?;
+        conn.execute(
+            "DELETE FROM auth_credential_blocks WHERE blocked_until_ms <= ?1",
+            [now_ms],
+        )?;
         let mut stmt = conn.prepare_cached(
             "SELECT credential_id, provider_key, block_scope, blocked_until_ms, updated_at FROM auth_credential_blocks
              WHERE blocked_until_ms > ?1 AND NOT (provider_key = 'openai-codex:oauth' AND block_scope = 'shared')
@@ -281,7 +339,13 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    pub fn block_upsert(&self, id: i64, provider_key: &str, scope: &str, until_ms: i64) -> Result<()> {
+    pub fn block_upsert(
+        &self,
+        id: i64,
+        provider_key: &str,
+        scope: &str,
+        until_ms: i64,
+    ) -> Result<()> {
         self.conn()?.execute(
             &format!(
                 "INSERT INTO auth_credential_blocks (credential_id, provider_key, block_scope, blocked_until_ms, updated_at)
@@ -303,7 +367,10 @@ impl Store {
     }
 
     pub fn blocks_delete_all(&self, id: i64) -> Result<()> {
-        self.conn()?.execute("DELETE FROM auth_credential_blocks WHERE credential_id = ?1", [id])?;
+        self.conn()?.execute(
+            "DELETE FROM auth_credential_blocks WHERE credential_id = ?1",
+            [id],
+        )?;
         Ok(())
     }
 
@@ -326,14 +393,38 @@ impl Store {
                 m.insert("recordedAt".into(), json!(r.get::<_, i64>(0)?));
                 m.insert("provider".into(), json!(r.get::<_, String>(1)?));
                 m.insert("accountKey".into(), json!(r.get::<_, String>(2)?));
-                opt(&mut m, "email", r.get::<_, Option<String>>(3)?.map(Value::String));
-                opt(&mut m, "accountId", r.get::<_, Option<String>>(4)?.map(Value::String));
+                opt(
+                    &mut m,
+                    "email",
+                    r.get::<_, Option<String>>(3)?.map(Value::String),
+                );
+                opt(
+                    &mut m,
+                    "accountId",
+                    r.get::<_, Option<String>>(4)?.map(Value::String),
+                );
                 m.insert("limitId".into(), json!(r.get::<_, String>(5)?));
                 m.insert("label".into(), json!(r.get::<_, String>(6)?));
-                opt(&mut m, "windowLabel", r.get::<_, Option<String>>(7)?.map(Value::String));
-                opt(&mut m, "usedFraction", r.get::<_, Option<f64>>(8)?.map(|f| json!(f)));
-                opt(&mut m, "status", r.get::<_, Option<String>>(9)?.map(Value::String));
-                opt(&mut m, "resetsAt", r.get::<_, Option<i64>>(10)?.map(|v| json!(v)));
+                opt(
+                    &mut m,
+                    "windowLabel",
+                    r.get::<_, Option<String>>(7)?.map(Value::String),
+                );
+                opt(
+                    &mut m,
+                    "usedFraction",
+                    r.get::<_, Option<f64>>(8)?.map(|f| json!(f)),
+                );
+                opt(
+                    &mut m,
+                    "status",
+                    r.get::<_, Option<String>>(9)?.map(Value::String),
+                );
+                opt(
+                    &mut m,
+                    "resetsAt",
+                    r.get::<_, Option<i64>>(10)?.map(|v| json!(v)),
+                );
                 Ok(Value::Object(m))
             })?;
             Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -417,9 +508,16 @@ impl Store {
                     m.insert("app".into(), json!(app));
                 }
                 m.insert("provider".into(), json!(r.get::<_, String>(2)?));
-                for (i, k) in ["requests", "inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "costUsd"]
-                    .iter()
-                    .enumerate()
+                for (i, k) in [
+                    "requests",
+                    "inputTokens",
+                    "outputTokens",
+                    "cacheReadTokens",
+                    "cacheWriteTokens",
+                    "costUsd",
+                ]
+                .iter()
+                .enumerate()
                 {
                     m.insert((*k).into(), num(r, i + 3)?);
                 }
@@ -448,7 +546,11 @@ impl Store {
         let mut out = Vec::new();
         for c in clients {
             let (install, mut m) = c?;
-            let providers = by_install.iter().find(|(i, _)| *i == install).map(|(_, l)| l.clone()).unwrap_or_default();
+            let providers = by_install
+                .iter()
+                .find(|(i, _)| *i == install)
+                .map(|(_, l)| l.clone())
+                .unwrap_or_default();
             m.insert("providers".into(), Value::Array(providers));
             out.push(Value::Object(m));
         }

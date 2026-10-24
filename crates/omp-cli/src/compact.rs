@@ -17,7 +17,7 @@ use omp_compact::settings::{calculate_context_tokens, compaction_context_tokens}
 use omp_compact::tokens::CountOptions;
 use omp_compact::{
     build_session_context_path, plan_boundary, plan_region, project_tokens_after, should_compact,
-    synthetic_compaction_entry, ApplyOptions, ByteEstimate, BoundaryEntry, CompactionResult,
+    synthetic_compaction_entry, ApplyOptions, BoundaryEntry, ByteEstimate, CompactionResult,
     CompactionSettings, Completer, Leaf, SummaryParams, SummaryRequest,
 };
 use pa_agent::types::AgentMessage;
@@ -387,7 +387,10 @@ fn scan_boundary_entries(
                 .is_some_and(|v| v.is_array()),
             summary: head.summary,
             timestamp: head.timestamp,
-            message_role: head.message.as_ref().and_then(|m| m.role.as_deref().map(str::to_owned)),
+            message_role: head
+                .message
+                .as_ref()
+                .and_then(|m| m.role.as_deref().map(str::to_owned)),
             stop_reason: head.message.as_ref().and_then(|m| m.stop_reason.clone()),
             usage: head.message.and_then(|m| m.usage),
         });
@@ -626,10 +629,7 @@ pub async fn compact_now(
         .map(|i| load_one(path, &index, branch[i]))
         .transpose()?;
     if let (Some(prev), b) = (&previous, &mut boundary) {
-        b.previous_preserve_data = prev
-            .get("preserveData")
-            .filter(|d| !d.is_null())
-            .cloned();
+        b.previous_preserve_data = prev.get("preserveData").filter(|d| !d.is_null()).cloned();
     }
     let tokenizer = ByteEstimate;
     let (prep, kept_entries) = plan_region(
@@ -679,8 +679,13 @@ pub async fn compact_now(
         guard.check_commit(persist)?;
     }
     let leaf_id = heads.last().map_or("", |h| h.id.as_str()).to_owned();
-    let (ts, view, tokens_after) =
-        build_rebuild_view(&leaf_id, &result, kept_entries, params.non_message_tokens, &tokenizer);
+    let (ts, view, tokens_after) = build_rebuild_view(
+        &leaf_id,
+        &result,
+        kept_entries,
+        params.non_message_tokens,
+        &tokenizer,
+    );
     let options = ApplyOptions {
         method: Some("soft".to_owned()),
         tokens_after,
@@ -715,7 +720,11 @@ fn build_rebuild_view(
     let ts = iso_from_ms(i64::try_from(now_ms()).unwrap_or(0));
     let rebuild_entry = synthetic_compaction_entry(
         &format!("{leaf_id}:compaction"),
-        if leaf_id.is_empty() { None } else { Some(leaf_id) },
+        if leaf_id.is_empty() {
+            None
+        } else {
+            Some(leaf_id)
+        },
         &ts,
         result,
         Some("soft"),
@@ -747,11 +756,7 @@ fn build_rebuild_view(
 }
 
 /// Parse one branch entry fully, on demand.
-fn load_one(
-    path: &Path,
-    index: &omp_session::index::SessionIndex,
-    at: u32,
-) -> Result<Value> {
+fn load_one(path: &Path, index: &omp_session::index::SessionIndex, at: u32) -> Result<Value> {
     let mut out = None;
     index.for_each_line(path, &[at], |_, raw| {
         out = Some(serde_json::from_str(raw).context("entry parse")?);
@@ -810,7 +815,11 @@ pub fn auto_check(
 ///
 /// # Errors
 /// An entry line cannot be read, rewritten or written.
-pub fn seed_branch(persist: &Persistence, index: &omp_session::index::SessionIndex, path: &std::path::Path) -> Result<()> {
+pub fn seed_branch(
+    persist: &Persistence,
+    index: &omp_session::index::SessionIndex,
+    path: &std::path::Path,
+) -> Result<()> {
     let branch = index.branch();
     let mut remap = std::collections::HashMap::<String, String>::new();
     index.for_each_line(path, &branch, |r, raw| {
@@ -832,7 +841,9 @@ fn seed_entry_dom(
     remap: &std::collections::HashMap<String, String>,
 ) -> Result<String> {
     let entry: Value = serde_json::from_str(raw)?;
-    let obj = entry.as_object().ok_or_else(|| anyhow::anyhow!("entry is not an object"))?;
+    let obj = entry
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("entry is not an object"))?;
     let kind = obj
         .get("type")
         .and_then(Value::as_str)
@@ -943,7 +954,9 @@ mod tests {
         });
         let cwd = std::env::temp_dir();
         let persist = match dir {
-            Some(d) => crate::persist::attach_in(&agent, &cwd, d, None, crate::persist::uuid_v7()).await,
+            Some(d) => {
+                crate::persist::attach_in(&agent, &cwd, d, None, crate::persist::uuid_v7()).await
+            }
             None => crate::persist::attach_with(&agent, &cwd, true).await,
         }
         .expect("session");
@@ -1008,7 +1021,13 @@ mod tests {
     fn jsonl_count(dir: &std::path::Path) -> usize {
         std::fs::read_dir(dir)
             .unwrap()
-            .filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "jsonl"))
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "jsonl")
+            })
             .count()
     }
 
@@ -1031,15 +1050,30 @@ mod tests {
         second.rt.load_session(&file, None).await.expect("resume");
         assert_eq!(second.rt.session_file(), file, "same file");
         assert_eq!(second.rt.session_id(), header["id"].as_str().unwrap());
-        assert_eq!(jsonl_count(dir.path()), 1, "startup file dropped, none forked");
-        assert_eq!(journal(&file).len(), before.len(), "resume itself appends nothing");
+        assert_eq!(
+            jsonl_count(dir.path()),
+            1,
+            "startup file dropped, none forked"
+        );
+        assert_eq!(
+            journal(&file).len(),
+            before.len(),
+            "resume itself appends nothing"
+        );
 
         talk(&mut second, 1).await;
         let after = journal(&file);
-        assert!(after.len() > before.len(), "new turn landed in the same file");
+        assert!(
+            after.len() > before.len(),
+            "new turn landed in the same file"
+        );
         assert_eq!(after[0], header, "header untouched");
         assert_eq!(&after[..before.len()], &before[..], "old entries untouched");
-        assert_eq!(after[before.len()]["parentId"], tip, "first new entry chains to the old tip");
+        assert_eq!(
+            after[before.len()]["parentId"],
+            tip,
+            "first new entry chains to the old tip"
+        );
         for pair in after[before.len()..].windows(2) {
             assert_eq!(pair[1]["parentId"], pair[0]["id"], "linear chain");
         }
@@ -1056,7 +1090,11 @@ mod tests {
         let before = journal(&file);
 
         let second = harness_in(1, Some(dir.path())).await;
-        second.rt.fork_session(&file, Some(dir.path())).await.expect("fork");
+        second
+            .rt
+            .fork_session(&file, Some(dir.path()))
+            .await
+            .expect("fork");
         assert_ne!(second.rt.session_file(), file, "fork writes a new file");
         assert_eq!(journal(&file), before, "source untouched");
         assert_eq!(jsonl_count(dir.path()), 2, "source + fork, no orphan");
@@ -1247,27 +1285,60 @@ mod tests {
         for i in 0..30 {
             let id = format!("pre{i:02}");
             let role = if i % 2 == 0 { "user" } else { "assistant" };
-            body.push(msg(&id, &prev, "2026-10-01T00:01:00.000Z", role, &format!("history turn {i} {}", "h".repeat(200))));
+            body.push(msg(
+                &id,
+                &prev,
+                "2026-10-01T00:01:00.000Z",
+                role,
+                &format!("history turn {i} {}", "h".repeat(200)),
+            ));
             prev = id;
         }
-        body.push(msg("kept1", &prev, "2026-10-01T00:02:00.000Z", "user", "kept request"));
-        body.push(msg("kept2", "kept1", "2026-10-01T00:02:05.000Z", "assistant", "kept reply"));
+        body.push(msg(
+            "kept1",
+            &prev,
+            "2026-10-01T00:02:00.000Z",
+            "user",
+            "kept request",
+        ));
+        body.push(msg(
+            "kept2",
+            "kept1",
+            "2026-10-01T00:02:05.000Z",
+            "assistant",
+            "kept reply",
+        ));
         body.push(
             r#"{"type":"compaction","id":"cmp1","parentId":"kept2","timestamp":"2026-10-01T00:03:00.000Z","summary":"SHIM SUMMARY","shortSummary":"shim","firstKeptEntryId":"kept1","tokensBefore":"9000","tokensAfter":"900","method":"soft","details":{"kind":"local"}}"#
                 .to_string(),
         );
-        body.push(msg("post1", "cmp1", "2026-10-01T00:04:00.000Z", "user", "post request"));
-        body.push(msg("post2", "post1", "2026-10-01T00:04:05.000Z", "assistant", "post reply"));
+        body.push(msg(
+            "post1",
+            "cmp1",
+            "2026-10-01T00:04:00.000Z",
+            "user",
+            "post request",
+        ));
+        body.push(msg(
+            "post2",
+            "post1",
+            "2026-10-01T00:04:05.000Z",
+            "assistant",
+            "post reply",
+        ));
         std::fs::write(&file, body.join("\n")).unwrap();
 
         let expected = rebuild_context(&crate::runtime::read_entries(&file).unwrap()).unwrap();
         let h = harness(0).await;
         h.rt.load_session(&file, None).await.expect("lazy resume");
         let live = h.rt.messages().await;
-        assert_eq!(live.len(), expected.len(), "shimmed rebuild == full-parse rebuild");
+        assert_eq!(
+            live.len(),
+            expected.len(),
+            "shimmed rebuild == full-parse rebuild"
+        );
         assert!(
-            live.iter()
-                .any(|m| m.to_string().contains("SHIM SUMMARY")),
+            live.iter().any(|m| m.to_string().contains("SHIM SUMMARY")),
             "summary first: {live:?}"
         );
         assert!(
@@ -1275,8 +1346,7 @@ mod tests {
             "post-compaction tail kept: {live:?}"
         );
         assert!(
-            live.iter()
-                .all(|m| !m.to_string().contains("history turn")),
+            live.iter().all(|m| !m.to_string().contains("history turn")),
             "pre-compaction history stays summarized: {live:?}"
         );
         // The seeded continuation file must rebuild to the same context.

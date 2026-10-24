@@ -227,21 +227,29 @@ impl crate::compact::CompactHook for HookWithBranch<'_> {
         preparation: Value,
         custom_instructions: Option<&'a str>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-        self.hooks.before(preparation, self.branch.clone(), custom_instructions)
+        self.hooks
+            .before(preparation, self.branch.clone(), custom_instructions)
     }
 }
 
 /// Hook run right before a prompt starts a run: `(prompt text, images JSON)`; returns the
 /// messages extensions inject after the user message.
 pub type BeforeStartHook = Arc<
-    dyn Fn(String, Option<Value>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
+    dyn Fn(
+            String,
+            Option<Value>,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<AgentMessage>> + Send>>
         + Send
         + Sync,
 >;
 
 /// Gate run before a session switch (`session_before_switch`): `true` cancels it.
 pub type SwitchGate = Arc<
-    dyn Fn(&'static str, Option<PathBuf>) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
+    dyn Fn(
+            &'static str,
+            Option<PathBuf>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>>
         + Send
         + Sync,
 >;
@@ -509,7 +517,12 @@ impl Runtime {
     pub fn send(&self, frame: Value) {
         if matches!(
             frame["type"].as_str(),
-            Some("auto_compaction_start" | "auto_compaction_end" | "auto_retry_start" | "auto_retry_end")
+            Some(
+                "auto_compaction_start"
+                    | "auto_compaction_end"
+                    | "auto_retry_start"
+                    | "auto_retry_end"
+            )
         ) {
             if let Some(tx) = lock(&self.ext_frames).as_ref() {
                 let _ = tx.send(frame.clone());
@@ -621,7 +634,10 @@ impl Runtime {
         let frame = lock(&self.framer).frame(event);
         if trace {
             let n = serde_json::to_string(&frame).map_or(0, |s| s.len());
-            turn_trace!("[turn-trace] framed={ev_kind} frame_json={n}B rss={}kB", rss_kb());
+            turn_trace!(
+                "[turn-trace] framed={ev_kind} frame_json={n}B rss={}kB",
+                rss_kb()
+            );
         }
         // context-usage frames are TUI chrome; rpc/print clients never read
         // them and each publish re-serializes the whole context. Skip in
@@ -632,7 +648,9 @@ impl Runtime {
                 event,
                 AgentEvent::AgentEnd { .. }
                     | AgentEvent::MessageEnd {
-                        message: AgentMessage::Standard(Message::Assistant(_) | Message::ToolResult(_))
+                        message: AgentMessage::Standard(
+                            Message::Assistant(_) | Message::ToolResult(_)
+                        )
                     }
             )
         {
@@ -643,11 +661,16 @@ impl Runtime {
             return;
         }
         let mut frame = frame;
-        if self.compaction_abort.load(std::sync::atomic::Ordering::SeqCst) {
+        if self
+            .compaction_abort
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             use std::sync::atomic::Ordering::SeqCst;
             match event {
                 // Failure path: the stub's own start/end pair — render neither.
-                AgentEvent::MessageStart { message } if crate::persist::is_empty_aborted(message) => {
+                AgentEvent::MessageStart { message }
+                    if crate::persist::is_empty_aborted(message) =>
+                {
                     self.compaction_stub_start.store(true, SeqCst);
                     return;
                 }
@@ -672,13 +695,19 @@ impl Runtime {
                 drop(p);
                 self.herdr_working();
             }
-            AgentEvent::ToolExecutionStart { tool_name, args, .. } if tool_name == "ask" => {
+            AgentEvent::ToolExecutionStart {
+                tool_name, args, ..
+            } if tool_name == "ask" => {
                 // Herdr: an ask dialog blocks on the user.
-                self.ask_blocked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.ask_blocked
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let message = args
                     .get("questions")
                     .and_then(Value::as_array)
-                    .and_then(|qs| qs.iter().find_map(|q| q.get("question").and_then(Value::as_str)))
+                    .and_then(|qs| {
+                        qs.iter()
+                            .find_map(|q| q.get("question").and_then(Value::as_str))
+                    })
                     .map(str::to_string);
                 if let (Some(h), Some(m)) = (&self.herdr, message) {
                     h.report(crate::herdr::State::Blocked, Some(&m));
@@ -689,7 +718,11 @@ impl Runtime {
             AgentEvent::ToolExecutionEnd { tool_name, .. } if tool_name == "ask" => {
                 let prev = self
                     .ask_blocked
-                    .fetch_update(std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst, |n| Some(n.saturating_sub(1)))
+                    .fetch_update(
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                        |n| Some(n.saturating_sub(1)),
+                    )
                     .unwrap_or(0);
                 if prev == 1 {
                     self.herdr_working();
@@ -808,7 +841,10 @@ impl Runtime {
         let Some(report) = lock(&self.pending_rewind_report).take() else {
             return;
         };
-        if crate::tools::checkpoint::shared().checkpoint_state().is_none() {
+        if crate::tools::checkpoint::shared()
+            .checkpoint_state()
+            .is_none()
+        {
             return;
         }
         let rt = self.clone();
@@ -821,7 +857,9 @@ impl Runtime {
             // Only the kept prefix is copied (not the whole transcript, twice).
             let prefix = rt
                 .agent
-                .with_messages(|m| (m.len() > count).then(|| m.iter().take(count).cloned().collect::<Vec<_>>()))
+                .with_messages(|m| {
+                    (m.len() > count).then(|| m.iter().take(count).cloned().collect::<Vec<_>>())
+                })
                 .await;
             if let Some(mut messages) = prefix {
                 // Carry the report into the cut context like the TS branch view's
@@ -889,9 +927,14 @@ impl Runtime {
     /// background worker. Never blocks or fails the turn: nothing is built when disabled, the
     /// queue is bounded and an overflowing turn is dropped (counted).
     fn shadow_judge_turn(&self, messages: &[AgentMessage]) {
-        let Some(worker) = omp_judge::shadow::global() else { return };
-        let entries = omp_judge::shadow::message_entries(messages.iter().map(crate::events::message_value));
-        let turn_index = self.judge_turns.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(worker) = omp_judge::shadow::global() else {
+            return;
+        };
+        let entries =
+            omp_judge::shadow::message_entries(messages.iter().map(crate::events::message_value));
+        let turn_index = self
+            .judge_turns
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         worker.submit(omp_judge::shadow::Job {
             session_id: self.persist.session_id(),
             turn_index,
@@ -953,7 +996,6 @@ impl Runtime {
 
     /// Final `agent_end` of a prompt: persist/close failure bookkeeping, then `prompt_result`s.
     fn settle_terminal(
-
         self: &Arc<Self>,
         mut frame: Value,
         messages: &[AgentMessage],
@@ -1002,13 +1044,13 @@ impl Runtime {
                 AgentMessage::Standard(Message::Assistant(a)) => Some(a),
                 _ => None,
             })
-            .is_some_and(|a| {
-                matches!(a.stop_reason, StopReason::Error | StopReason::Aborted)
-            });
+            .is_some_and(|a| matches!(a.stop_reason, StopReason::Error | StopReason::Aborted));
         let interrupted = self
             .user_interrupt
             .load(std::sync::atomic::Ordering::SeqCst);
-        if error_override.is_none() && !failed_turn && !interrupted
+        if error_override.is_none()
+            && !failed_turn
+            && !interrupted
             && self.maybe_todo_reminder(&messages, frame.clone())
         {
             return;
@@ -1239,7 +1281,9 @@ impl Runtime {
         let now = u64::try_from(pa_agent::now_ms()).unwrap_or(0);
         // The provider-level cooldown the fallback state just recorded decides whether a
         // recently-failed alternate may be retried already.
-        let cooldown_active = lock(&self.recovery).state_mut().is_suppressed(&selector, now);
+        let cooldown_active = lock(&self.recovery)
+            .state_mut()
+            .is_suppressed(&selector, now);
         let pool = match omp_providers::auth::credential_pool_async(
             omp_providers::AgentDir::default(),
             provider.clone(),
@@ -1249,9 +1293,10 @@ impl Runtime {
             Some(p) if p.has_alternates() => p,
             _ => return false,
         };
-        let Some(next) = lock(&self.recovery)
-            .accounts_mut()
-            .next(&provider, &model_id, &pool, cooldown_active)
+        let Some(next) =
+            lock(&self.recovery)
+                .accounts_mut()
+                .next(&provider, &model_id, &pool, cooldown_active)
         else {
             return false;
         };
@@ -1287,7 +1332,9 @@ impl Runtime {
                 rec.accounts_mut().burn(&provider, &model_id, from);
             }
         }
-        let from_label = from_id.map(|id| id.to_string()).unwrap_or_else(|| "?".into());
+        let from_label = from_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "?".into());
         self.emit_event(recovery::account_rotated_frame(
             &selector,
             &selector,
@@ -1418,9 +1465,14 @@ impl Runtime {
             (attempt, verdict)
         };
         let delay_ms = match verdict {
-            Verdict::GiveUp { frame, error_message } => {
+            Verdict::GiveUp {
+                frame,
+                error_message,
+            } => {
                 self.emit_event(frame);
-                return Recovered::Final { error: error_message };
+                return Recovered::Final {
+                    error: error_message,
+                };
             }
             Verdict::Retry { delay_ms } => delay_ms,
         };
@@ -1473,7 +1525,8 @@ impl Runtime {
             .and_then(|(_, tail)| parse_level(tail))
             .unwrap_or(current_level);
         let from_thinking = level_name(current_level).to_string();
-        self.swap_model(resolved, Some(EPHEMERAL_ROLE), true, true).await;
+        self.swap_model(resolved, Some(EPHEMERAL_ROLE), true, true)
+            .await;
         let applied = self.apply_thinking(requested).await;
         let applied_name = level_name(applied).to_string();
         let role = {
@@ -1683,13 +1736,21 @@ impl Runtime {
         }
         let settings = omp_settings::Settings::load(&self.cwd);
         if starts_turn
-            && self.auto_thinking.load(std::sync::atomic::Ordering::Relaxed)
+            && self
+                .auto_thinking
+                .load(std::sync::atomic::Ordering::Relaxed)
             && present.iter().any(|k| k.id == "ultrathink")
             && omp_tui::magic::enabled(&settings, "ultrathink")
         {
             self.ultrathink_auto().await;
         }
-        let tools = self.agent.tools().await.iter().map(|t| t.name().to_owned()).collect();
+        let tools = self
+            .agent
+            .tools()
+            .await
+            .iter()
+            .map(|t| t.name().to_owned())
+            .collect();
         let ctx = crate::notices::Context::new(tools, &settings);
         crate::notices::build(message, &settings, &ctx, mode, pa_agent::now_ms())
     }
@@ -1704,7 +1765,9 @@ impl Runtime {
         let name = level_name(effective);
         if self.agent.thinking_level().await != effective {
             self.agent.set_thinking_level(effective).await;
-            let _ = self.persist.append_thinking_level_change(Some(name), Some("auto"), None);
+            let _ = self
+                .persist
+                .append_thinking_level_change(Some(name), Some("auto"), None);
         }
         self.emit_event(json!({
             "type": "thinking_level_changed",
@@ -1914,7 +1977,11 @@ impl Runtime {
         }
         let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
         let window = s.model.context_window;
-        if let Some(usage) = self.agent.with_messages(|m| context_usage(m.iter(), window, base)).await {
+        if let Some(usage) = self
+            .agent
+            .with_messages(|m| context_usage(m.iter(), window, base))
+            .await
+        {
             out.insert("contextUsage".into(), usage);
         }
         Value::Object(out)
@@ -1925,7 +1992,9 @@ impl Runtime {
         let (s, _) = self.agent.status().await;
         let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
         let window = s.model.context_window;
-        self.agent.with_messages(|m| context_usage(m.iter(), window, base)).await
+        self.agent
+            .with_messages(|m| context_usage(m.iter(), window, base))
+            .await
     }
 
     /// Whether steering/follow-up messages are queued (TS `ctx.hasPendingMessages()`).
@@ -1942,7 +2011,10 @@ impl Runtime {
         let (s, _) = self.agent.status().await;
         let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
         let window = s.model.context_window;
-        let usage = self.agent.with_messages(|m| context_usage(m.iter(), window, base)).await;
+        let usage = self
+            .agent
+            .with_messages(|m| context_usage(m.iter(), window, base))
+            .await;
         let mut frame = json!({
             "type": "context_usage",
             "model": format!("{}/{}", s.model.provider, s.model.id),
@@ -1987,7 +2059,10 @@ impl Runtime {
     /// caller's task: the agent's state lock must not be re-entered from an
     /// event callback).
     pub fn publish_context_usage(self: &Arc<Self>) {
-        if !self.ui_context_frames.load(std::sync::atomic::Ordering::Relaxed) {
+        if !self
+            .ui_context_frames
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             return;
         }
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
@@ -2029,33 +2104,45 @@ impl Runtime {
         let base = prompt_overhead_chars(&s.system_prompt, &s.tools);
         let window = s.model.context_window;
         // One in-place pass over the transcript under the state lock (no copy).
-        let (user, assistant, calls, results, input, output, cache_read, cache_write, cost, usage) = self
-            .agent
-            .with_messages(|messages| {
-                let (mut user, mut assistant, mut calls, mut results) = (0u64, 0u64, 0u64, 0u64);
-                let (mut input, mut output, mut cache_read, mut cache_write, mut cost) =
-                    (0u64, 0u64, 0u64, 0u64, 0.0f64);
-                for m in messages.iter() {
-                    match m {
-                        AgentMessage::Standard(Message::User(_)) => user += 1,
-                        AgentMessage::Standard(Message::Developer(_)) => {}
-                        AgentMessage::Standard(Message::Assistant(a)) => {
-                            assistant += 1;
-                            calls += a.tool_calls().len() as u64;
-                            input += a.usage.input;
-                            output += a.usage.output;
-                            cache_read += a.usage.cache_read;
-                            cache_write += a.usage.cache_write;
-                            cost += a.usage.cost.total;
+        let (user, assistant, calls, results, input, output, cache_read, cache_write, cost, usage) =
+            self.agent
+                .with_messages(|messages| {
+                    let (mut user, mut assistant, mut calls, mut results) =
+                        (0u64, 0u64, 0u64, 0u64);
+                    let (mut input, mut output, mut cache_read, mut cache_write, mut cost) =
+                        (0u64, 0u64, 0u64, 0u64, 0.0f64);
+                    for m in messages.iter() {
+                        match m {
+                            AgentMessage::Standard(Message::User(_)) => user += 1,
+                            AgentMessage::Standard(Message::Developer(_)) => {}
+                            AgentMessage::Standard(Message::Assistant(a)) => {
+                                assistant += 1;
+                                calls += a.tool_calls().len() as u64;
+                                input += a.usage.input;
+                                output += a.usage.output;
+                                cache_read += a.usage.cache_read;
+                                cache_write += a.usage.cache_write;
+                                cost += a.usage.cost.total;
+                            }
+                            AgentMessage::Standard(Message::ToolResult(_)) => results += 1,
+                            AgentMessage::Custom(_) => {}
                         }
-                        AgentMessage::Standard(Message::ToolResult(_)) => results += 1,
-                        AgentMessage::Custom(_) => {}
                     }
-                }
-                let usage = context_usage(messages.iter(), window, base);
-                (user, assistant, calls, results, input, output, cache_read, cache_write, cost, usage)
-            })
-            .await;
+                    let usage = context_usage(messages.iter(), window, base);
+                    (
+                        user,
+                        assistant,
+                        calls,
+                        results,
+                        input,
+                        output,
+                        cache_read,
+                        cache_write,
+                        cost,
+                        usage,
+                    )
+                })
+                .await;
         let mut v = json!({
             "sessionId": self.persist.session_id(),
             "userMessages": user,
@@ -2079,7 +2166,6 @@ impl Runtime {
         }
         v
     }
-
 
     // ------------------------------------------------------------ session
 
@@ -2131,7 +2217,10 @@ impl Runtime {
         // scrollback (TS `#runNewSessionFlow`: `resetTranscript()` +
         // `requestRender(true, { clearScrollback: true })`). RPC clients never
         // see this frame.
-        if self.ui_context_frames.load(std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .ui_context_frames
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             self.send(json!({"type": "session_reset"}));
         }
         self.notify_session_switch("new", previous);
@@ -2165,9 +2254,19 @@ impl Runtime {
     /// `SessionEntryIndex.pathTo(leaf)`, root → leaf — is materialized, parsed
     /// on demand from the raw lines. Non-compacted sessions never build the
     /// entry DOM at all: messages deserialize straight from the line text.
-    async fn load_session_as(&self, path: &Path, dir: Option<&Path>, fork: bool, branched: bool) -> Result<()> {
+    async fn load_session_as(
+        &self,
+        path: &Path,
+        dir: Option<&Path>,
+        fork: bool,
+        branched: bool,
+    ) -> Result<()> {
         if !branched {
-            self.check_switch(if fork { "fork" } else { "resume" }, Some(path.to_path_buf())).await?;
+            self.check_switch(
+                if fork { "fork" } else { "resume" },
+                Some(path.to_path_buf()),
+            )
+            .await?;
         }
         let previous = self.persist.file();
         // An in-flight compaction must not write into the old session or swap
@@ -2181,8 +2280,14 @@ impl Runtime {
             ($label:expr) => {
                 if std::env::var_os("OMP_RS_RESUME_TRACE").is_some() {
                     if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
-                        let rss = status.lines().find_map(|l| l.strip_prefix("VmRSS:")).unwrap_or("?");
-                        let hwm = status.lines().find_map(|l| l.strip_prefix("VmHWM:")).unwrap_or("?");
+                        let rss = status
+                            .lines()
+                            .find_map(|l| l.strip_prefix("VmRSS:"))
+                            .unwrap_or("?");
+                        let hwm = status
+                            .lines()
+                            .find_map(|l| l.strip_prefix("VmHWM:"))
+                            .unwrap_or("?");
                         eprintln!(
                             "[resume-trace] {} t={}ms rss={} hwm={}",
                             $label,
@@ -2219,15 +2324,10 @@ impl Runtime {
         // ranges become link-only shims, so the DOM the rebuild works on stays
         // the size of the context, not of the journal.
         if compacted {
-            let (full, notes_after, head_until) = reduced_branch_flags(&index, path, &branch, &brefs)?;
-            let entries = materialize_reduced_branch(
-                &index,
-                path,
-                &branch,
-                &full,
-                notes_after,
-                head_until,
-            )?;
+            let (full, notes_after, head_until) =
+                reduced_branch_flags(&index, path, &branch, &brefs)?;
+            let entries =
+                materialize_reduced_branch(&index, path, &branch, &full, notes_after, head_until)?;
             rss_trace!("materialized");
             // Rebuild first, then release the entry DOM before converting:
             // the context messages and the typed messages never coexist with
@@ -2296,7 +2396,8 @@ impl Runtime {
                 .find(|r| r.kind == omp_session::index::EntryKind::Header)
                 .map(|r| &*r.id);
             let tip = branch.last().map(|&i| &*index.refs[i as usize].id);
-            self.persist.bind_existing(path, header_id, tip.filter(|t| !t.is_empty()))?;
+            self.persist
+                .bind_existing(path, header_id, tip.filter(|t| !t.is_empty()))?;
             self.publish_session_file();
         }
         // New session identity: in-flight compaction guards captured before the
@@ -2306,7 +2407,12 @@ impl Runtime {
         rss_trace!("pre-set");
         if std::env::var_os("OMP_RS_RESUME_TRACE").is_some() {
             let json = serde_json::to_string(&messages).unwrap_or_default();
-            eprintln!("[resume-trace] messages: n={} json={}B sizeof={}B", messages.len(), json.len(), std::mem::size_of_val(&messages));
+            eprintln!(
+                "[resume-trace] messages: n={} json={}B sizeof={}B",
+                messages.len(),
+                json.len(),
+                std::mem::size_of_val(&messages)
+            );
         }
         rss_trace!("swapped");
         let session_file = self.persist.file().map(|p| p.display().to_string());
@@ -2395,10 +2501,11 @@ impl Runtime {
         if let Some(mode) = saved.ultra.as_deref().and_then(parse_ultra_name) {
             // The mode comes back with its effects (max thinking, CLM), not journaled.
             let prev = lock(&self.ultra).replace(mode);
-            self.auto_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
-            let effective = self
-                .live_model()
-                .map_or(ThinkingLevel::Max, |m| crate::model::clamp_level(&m, ThinkingLevel::Max));
+            self.auto_thinking
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            let effective = self.live_model().map_or(ThinkingLevel::Max, |m| {
+                crate::model::clamp_level(&m, ThinkingLevel::Max)
+            });
             if self.agent.thinking_level().await != effective {
                 self.agent.set_thinking_level(effective).await;
             }
@@ -2424,7 +2531,8 @@ impl Runtime {
             .as_ref()
             .map(|t| t.model.clone());
         let effective = model.map_or(requested, |m| crate::model::clamp_level(&m, requested));
-        self.auto_thinking.store(auto, std::sync::atomic::Ordering::Relaxed);
+        self.auto_thinking
+            .store(auto, std::sync::atomic::Ordering::Relaxed);
         if self.agent.thinking_level().await != effective {
             self.agent.set_thinking_level(effective).await;
         }
@@ -2460,7 +2568,9 @@ impl Runtime {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
             tokio::spawn(async move {
                 while let Some(frame) = rx.recv().await {
-                    let Some(ty) = frame["type"].as_str().map(str::to_owned) else { continue };
+                    let Some(ty) = frame["type"].as_str().map(str::to_owned) else {
+                        continue;
+                    };
                     if !host.has_handlers(&ty) {
                         continue;
                     }
@@ -2531,9 +2641,11 @@ fn seed_resumed_message(
         let _ = persist.append_message(&c, m.timestamp());
         return;
     }
-    let map = raw
-        .cloned()
-        .or_else(|| serde_json::to_value(m).ok().and_then(|v| v.as_object().cloned()));
+    let map = raw.cloned().or_else(|| {
+        serde_json::to_value(m)
+            .ok()
+            .and_then(|v| v.as_object().cloned())
+    });
     if let Some(map) = map {
         let ts = map
             .get("timestamp")
@@ -2656,8 +2768,7 @@ fn materialize_reduced_branch(
             message_head_shim(r, raw)
         } else if r.kind == omp_session::index::EntryKind::Custom
             && pos >= notes_after
-            && custom_type(raw).as_deref()
-                == Some(omp_compact::context::CONTEXT_NOTES_ENTRY_TYPE)
+            && custom_type(raw).as_deref() == Some(omp_compact::context::CONTEXT_NOTES_ENTRY_TYPE)
         {
             serde_json::from_str::<Value>(raw)
                 .with_context(|| format!("{}:{}: entry parse", path.display(), r.line_no))?
@@ -2779,7 +2890,9 @@ impl Runtime {
         let rt = self.clone();
         let message = message.to_string();
         let handle = tokio::spawn(async move {
-            let Some(title) = rt.generate_auto_title(&message).await else { return };
+            let Some(title) = rt.generate_auto_title(&message).await else {
+                return;
+            };
             let _ = rt.set_session_name(&title, "auto");
         });
         *lock(&self.title_task) = Some(handle);
@@ -2843,6 +2956,26 @@ impl Runtime {
     /// Raw JSON entries of the live session file (header excluded), append order.
     pub fn entries(&self) -> Result<Vec<Value>> {
         read_entries(&self.persist.path())
+    }
+
+    /// Root-to-leaf entries of the active branch (TS `sessionManager.getBranch()`): the writer's
+    /// live append point after a `/tree` move, else the last journaled entry.
+    pub fn branch_entries(&self) -> Vec<Value> {
+        let Ok(entries) = self.entries() else {
+            return Vec::new();
+        };
+        let leaf = match self.persist.leaf_divergence() {
+            Some(Some(id)) => Some(id),
+            Some(None) => None,
+            None => omp_session::tree::leaf_id(&entries).map(str::to_owned),
+        };
+        leaf.map(|leaf| {
+            omp_session::tree::branch_path(&entries, &leaf)
+                .into_iter()
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     // ---------------------------------------------------------- compaction
@@ -2922,7 +3055,9 @@ impl Runtime {
         // does not (TS `rejectedAsNoOp`).
         let committed_or_noop = match &out {
             Ok(_) => true,
-            Err(e) => e.message.starts_with("Nothing to compact") || e.message == "Already compacted",
+            Err(e) => {
+                e.message.starts_with("Nothing to compact") || e.message == "Already compacted"
+            }
         };
         if interrupted
             && committed_or_noop
@@ -3088,7 +3223,9 @@ impl Runtime {
         if let Some(h) = hooks.as_deref() {
             // TS `session_compact`: the committed `compaction` entry (last journal entry).
             if let Some(entry) = self.entries().ok().and_then(|e| {
-                e.into_iter().rev().find(|e| e.get("type").and_then(Value::as_str) == Some("compaction"))
+                e.into_iter()
+                    .rev()
+                    .find(|e| e.get("type").and_then(Value::as_str) == Some("compaction"))
             }) {
                 h.after(entry).await;
             }
@@ -3280,7 +3417,10 @@ impl Runtime {
         }
         if changing {
             self.emit_event(json!({"type": "model_changed"}));
-            if self.ui_context_frames.load(std::sync::atomic::Ordering::Relaxed) {
+            if self
+                .ui_context_frames
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
                 let usage = self.context_usage_frame().await;
                 self.send(usage);
             }
@@ -3312,22 +3452,29 @@ impl Runtime {
             let _ = self
                 .persist
                 .append_thinking_level_change(Some(name), Some(name), ultra);
-            self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "ultra": ultra}));
+            self.emit_event(
+                json!({"type": "thinking_level_changed", "thinkingLevel": name, "ultra": ultra}),
+            );
         }
         effective
     }
 
     pub async fn set_thinking_level(&self, level: ThinkingLevel) {
         // Pinning a concrete level leaves `auto` (TS `setThinkingLevel`) and any ultra mode.
-        self.auto_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.auto_thinking
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         let left_ultra = self.leave_ultra().await;
         let before = self.agent.thinking_level().await;
         let effective = self.apply_thinking(level).await;
         if left_ultra && effective == before {
             // Same level, but the mode is gone: journal and announce that.
             let name = level_name(effective);
-            let _ = self.persist.append_thinking_level_change(Some(name), Some(name), None);
-            self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "ultra": null}));
+            let _ = self
+                .persist
+                .append_thinking_level_change(Some(name), Some(name), None);
+            self.emit_event(
+                json!({"type": "thinking_level_changed", "thinkingLevel": name, "ultra": null}),
+            );
         }
     }
 
@@ -3351,7 +3498,8 @@ impl Runtime {
         }
         let name = match mode {
             Some(_) => {
-                self.auto_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                self.auto_thinking
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
                 let effective = self.live_model().map_or(ThinkingLevel::Max, |m| {
                     crate::model::clamp_level(&m, ThinkingLevel::Max)
                 });
@@ -3363,7 +3511,9 @@ impl Runtime {
             None => level_name(self.agent.thinking_level().await),
         };
         let ultra = mode.map(Ultra::name);
-        let _ = self.persist.append_thinking_level_change(Some(name), Some(name), ultra);
+        let _ = self
+            .persist
+            .append_thinking_level_change(Some(name), Some(name), ultra);
         self.emit_event(json!({
             "type": "thinking_level_changed",
             "thinkingLevel": name,
@@ -3432,11 +3582,16 @@ impl Runtime {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
-            .map_or(ThinkingLevel::Medium, |t| crate::model::clamp_level(&t.model, ThinkingLevel::Medium));
+            .map_or(ThinkingLevel::Medium, |t| {
+                crate::model::clamp_level(&t.model, ThinkingLevel::Medium)
+            });
         self.apply_thinking(provisional).await;
         let name = level_name(provisional);
-        let _ = self.persist.append_thinking_level_change(Some(name), Some("auto"), None);
-        self.auto_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = self
+            .persist
+            .append_thinking_level_change(Some(name), Some("auto"), None);
+        self.auto_thinking
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.emit_event(json!({"type": "thinking_level_changed", "thinkingLevel": name, "configured": "auto", "ultra": null}));
     }
 
@@ -3455,7 +3610,11 @@ impl Runtime {
             return Vec::new();
         };
         match crate::model::catalog_efforts(&t.model.provider, &t.model.id) {
-            Some(efforts) => efforts.into_iter().map(level_name).filter(|l| *l != "off").collect(),
+            Some(efforts) => efforts
+                .into_iter()
+                .map(level_name)
+                .filter(|l| *l != "off")
+                .collect(),
             // No catalog entry: offer the ladder levels the runtime would not
             // clamp away, so every selector value actually takes effect.
             None => ["minimal", "low", "medium", "high", "xhigh", "max"]
@@ -3653,7 +3812,9 @@ static QUESTION_PROMPT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLo
     .expect("valid regex")
 });
 static USER_DIRECTED_PROMPT_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\b(?:you|your|we|our)\b").expect("valid regex"));
+    std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(?:you|your|we|our)\b").expect("valid regex")
+    });
 static NON_ASCII_TEXT_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"[^\x00-\x7F]").expect("valid regex"));
 static USER_RESPONSE_CUE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
@@ -3695,7 +3856,10 @@ fn is_question_prompt_line(line: &str) -> bool {
 /// TS `isResponseCueLine`.
 fn is_response_cue_line(line: &str) -> bool {
     let (text, _) = prompt_line(line);
-    let candidate = TRAILING_PUNCT_RE.replace(text.trim(), "").trim().to_string();
+    let candidate = TRAILING_PUNCT_RE
+        .replace(text.trim(), "")
+        .trim()
+        .to_string();
     USER_RESPONSE_CUE_RE.is_match(&candidate)
 }
 
@@ -3715,9 +3879,9 @@ fn todo_reminder_list(phases: &Value) -> String {
                             tasks
                                 .iter()
                                 .filter(|t| {
-                                    t.get("status").and_then(Value::as_str).is_some_and(|s| {
-                                        s == "pending" || s == "in_progress"
-                                    })
+                                    t.get("status")
+                                        .and_then(Value::as_str)
+                                        .is_some_and(|s| s == "pending" || s == "in_progress")
                                 })
                                 .filter_map(|t| {
                                     t.get("content").and_then(Value::as_str).map(str::to_owned)
@@ -3806,12 +3970,17 @@ pub fn prompt_input(
     injected: Vec<AgentMessage>,
 ) -> pa_agent::agent::AgentPromptInput {
     if prepend.is_empty() && injected.is_empty() {
-        return pa_agent::agent::AgentPromptInput::Text { text: text.to_string(), images };
+        return pa_agent::agent::AgentPromptInput::Text {
+            text: text.to_string(),
+            images,
+        };
     }
-    let mut content = vec![pa_agent::types::UserPart::Text(pa_agent::types::TextContent {
-        text: text.to_string(),
-        text_signature: None,
-    })];
+    let mut content = vec![pa_agent::types::UserPart::Text(
+        pa_agent::types::TextContent {
+            text: text.to_string(),
+            text_signature: None,
+        },
+    )];
     content.extend(images.into_iter().map(pa_agent::types::UserPart::Image));
     let user = AgentMessage::Standard(Message::User(pa_agent::types::UserMessage {
         content: UserContent::Parts(content),
@@ -3979,7 +4148,8 @@ struct MessageEnvelope {
 /// the startup resume keeps the explicit choice instead of the session's
 /// (TS `hasExplicitModel`); cleared by the first `load_session`.
 pub static MODEL_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-pub static THINKING_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static THINKING_PINNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 /// Model/thinking bookkeeping of a session branch (TS `buildSessionContext`
 /// `models` + `getLastModelChangeRole` + thinking fields).
@@ -4039,7 +4209,10 @@ fn session_model_state(
             }
             st.last_role = Some(role);
         } else {
-            st.thinking = Some((h.thinking_level.unwrap_or_else(|| "off".to_owned()), h.configured));
+            st.thinking = Some((
+                h.thinking_level.unwrap_or_else(|| "off".to_owned()),
+                h.configured,
+            ));
             st.ultra = h.ultra;
         }
         Ok(())
@@ -4051,7 +4224,9 @@ fn session_model_state(
             }
             let mut found = None;
             index.for_each_line(path, &[i], |_, raw| {
-                if let Ok(MessageHead { message: Some(m) }) = serde_json::from_str::<MessageHead>(raw) {
+                if let Ok(MessageHead { message: Some(m) }) =
+                    serde_json::from_str::<MessageHead>(raw)
+                {
                     if m.role.as_deref() == Some("assistant") {
                         found = Some(format!(
                             "{}/{}",
@@ -4298,9 +4473,7 @@ mod todo_reminder_tests {
     use serde_json::json;
 
     fn phases(open: &[(&str, &str)], done: &[(&str, &str)]) -> Value {
-        let task = |(content, status): &(&str, &str)| {
-            json!({"content": content, "status": status})
-        };
+        let task = |(content, status): &(&str, &str)| json!({"content": content, "status": status});
         json!([{
             "name": "Tasks",
             "tasks": open.iter().map(task).chain(done.iter().map(task)).collect::<Vec<_>>(),
@@ -4309,7 +4482,10 @@ mod todo_reminder_tests {
 
     #[test]
     fn incomplete_todos_flattens_open_tasks() {
-        let v = phases(&[("a", "pending"), ("b", "in_progress")], &[("c", "completed")]);
+        let v = phases(
+            &[("a", "pending"), ("b", "in_progress")],
+            &[("c", "completed")],
+        );
         let inc = incomplete_todos(&v);
         assert_eq!(
             inc,
@@ -4328,9 +4504,13 @@ mod todo_reminder_tests {
     #[test]
     fn awaiting_user_answer_question_lines() {
         assert!(is_awaiting_user_answer("Which approach should I take?"));
-        assert!(is_awaiting_user_answer("Done so far.\nDo you want me to continue?"));
+        assert!(is_awaiting_user_answer(
+            "Done so far.\nDo you want me to continue?"
+        ));
         assert!(!is_awaiting_user_answer("All tasks are complete."));
-        assert!(!is_awaiting_user_answer("Refactored the parser and updated tests."));
+        assert!(!is_awaiting_user_answer(
+            "Refactored the parser and updated tests."
+        ));
     }
 
     #[test]
@@ -4340,12 +4520,15 @@ mod todo_reminder_tests {
         assert!(is_awaiting_user_answer("Q: what is your pick?"));
         // TS `isQuestionPromptLine`: any trailing question starting with an
         // interrogative counts, even a rhetorical one about the code.
-        assert!(is_awaiting_user_answer("Why does the parser reject this input?"));
+        assert!(is_awaiting_user_answer(
+            "Why does the parser reject this input?"
+        ));
     }
 
     #[test]
     fn notice_and_stream_frames_match_ts_shape() {
-        let n = crate::events::notice_frame("warning", "disk almost full", Some("session-persistence"));
+        let n =
+            crate::events::notice_frame("warning", "disk almost full", Some("session-persistence"));
         assert_eq!(n["type"], json!("notice"));
         assert_eq!(n["level"], json!("warning"));
         assert_eq!(n["source"], json!("session-persistence"));
@@ -4358,15 +4541,21 @@ mod todo_reminder_tests {
         assert_eq!(t["toolName"], json!("edit"));
         assert_eq!(t["update"]["kind"], json!("diff"));
 
-        let r = crate::events::todo_reminder_frame(&json!([{"content": "a", "status": "pending"}]), 1, 3);
+        let r = crate::events::todo_reminder_frame(
+            &json!([{"content": "a", "status": "pending"}]),
+            1,
+            3,
+        );
         assert_eq!(r["type"], json!("todo_reminder"));
         assert_eq!(r["attempt"], json!(1));
         assert_eq!(r["maxAttempts"], json!(3));
         assert_eq!(r["todos"][0]["content"], json!("a"));
-        assert_eq!(crate::events::todo_auto_clear_frame()["type"], json!("todo_auto_clear"));
+        assert_eq!(
+            crate::events::todo_auto_clear_frame()["type"],
+            json!("todo_auto_clear")
+        );
     }
 }
-
 
 #[cfg(test)]
 mod context_usage_tests {
@@ -4415,14 +4604,32 @@ mod context_usage_tests {
         let cases: Vec<Vec<AgentMessage>> = vec![
             vec![],
             vec![u("hello there")],
-            vec![u("q"), assistant("a1", 120, "stop"), u("follow up question")],
-            vec![u("q"), assistant("a1", 120, "stop"), assistant("a2", 0, "stop"), u("x")],
-            vec![u("q"), assistant("a1", 120, "stop"), assistant("aborted", 999, "aborted"), u("y")],
+            vec![
+                u("q"),
+                assistant("a1", 120, "stop"),
+                u("follow up question"),
+            ],
+            vec![
+                u("q"),
+                assistant("a1", 120, "stop"),
+                assistant("a2", 0, "stop"),
+                u("x"),
+            ],
+            vec![
+                u("q"),
+                assistant("a1", 120, "stop"),
+                assistant("aborted", 999, "aborted"),
+                u("y"),
+            ],
             vec![assistant("only", 50, "stop")],
         ];
         for (k, msgs) in cases.iter().enumerate() {
             for window in [0u64, 1000] {
-                assert_eq!(context_usage(msgs.iter(), window, 37), reference(msgs, window, 37), "case {k} window {window}");
+                assert_eq!(
+                    context_usage(msgs.iter(), window, 37),
+                    reference(msgs, window, 37),
+                    "case {k} window {window}"
+                );
             }
         }
     }
@@ -4450,7 +4657,9 @@ mod resume_seed_tests {
 
     /// The non-compacted `load_session` path: context messages plus the raw
     /// `message` JSON of custom-role messages, straight from the journal lines.
-    fn load_like_resume(path: &std::path::Path) -> (Vec<AgentMessage>, Vec<Option<Map<String, Value>>>) {
+    fn load_like_resume(
+        path: &std::path::Path,
+    ) -> (Vec<AgentMessage>, Vec<Option<Map<String, Value>>>) {
         let index = omp_session::index::SessionIndex::load(path).expect("index");
         let branch = index.branch();
         let mut messages = Vec::new();
@@ -4575,7 +4784,10 @@ mod resume_seed_tests {
     /// context messages, plus `seed_branch` copying the raw branch lines into
     /// the fresh session file. A custom-role (`developer`) message in the kept
     /// range must survive in both the context and the seeded file, byte-identical.
-    fn compacted_resume_once(path: &std::path::Path, dir: &std::path::Path) -> (Vec<AgentMessage>, std::path::PathBuf) {
+    fn compacted_resume_once(
+        path: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> (Vec<AgentMessage>, std::path::PathBuf) {
         let index = omp_session::index::SessionIndex::load(path).expect("index");
         let branch = index.branch();
         let brefs: Vec<&omp_session::index::EntryRef> =
@@ -4626,12 +4838,14 @@ mod resume_seed_tests {
         .unwrap();
         let first_kept = w
             .append_omp_message(
-                omp_session::OmpMessage::Agent(serde_json::from_value(json!({
-                    "role": "user",
-                    "content": [{"type": "text", "text": "before compaction"}],
-                    "timestamp": 1757890000000i64,
-                }))
-                .expect("user map")),
+                omp_session::OmpMessage::Agent(
+                    serde_json::from_value(json!({
+                        "role": "user",
+                        "content": [{"type": "text", "text": "before compaction"}],
+                        "timestamp": 1757890000000i64,
+                    }))
+                    .expect("user map"),
+                ),
                 "2026-10-10T00:00:01.000Z",
             )
             .unwrap();
@@ -4656,12 +4870,14 @@ mod resume_seed_tests {
         )
         .unwrap();
         w.append_omp_message(
-            omp_session::OmpMessage::Agent(serde_json::from_value(json!({
-                "role": "user",
-                "content": [{"type": "text", "text": "after compaction"}],
-                "timestamp": 1757890001000i64,
-            }))
-            .expect("user map")),
+            omp_session::OmpMessage::Agent(
+                serde_json::from_value(json!({
+                    "role": "user",
+                    "content": [{"type": "text", "text": "after compaction"}],
+                    "timestamp": 1757890001000i64,
+                }))
+                .expect("user map"),
+            ),
             "2026-10-10T00:00:04.000Z",
         )
         .unwrap();
@@ -4678,13 +4894,19 @@ mod resume_seed_tests {
         std::fs::create_dir_all(&dir_b).unwrap();
         let (messages_b, file_b) = compacted_resume_once(&original, &dir_b);
         assert!(
-            messages_b.iter().any(|m| matches!(m, AgentMessage::Custom(_))),
+            messages_b
+                .iter()
+                .any(|m| matches!(m, AgentMessage::Custom(_))),
             "compacted context keeps the developer message (n={})",
             messages_b.len()
         );
         // ...and the seeded file carries it byte-identically.
         let counts_b = entry_type_counts(&file_b);
-        assert_eq!(counts_b.get("compaction").copied(), Some(1), "compaction entry is re-seeded");
+        assert_eq!(
+            counts_b.get("compaction").copied(),
+            Some(1),
+            "compaction entry is re-seeded"
+        );
         let payloads_b = message_payloads(&file_b);
         assert_eq!(payloads_b.len(), 3, "every branch message is re-seeded");
         let seeded_developer = payloads_b
@@ -4701,9 +4923,15 @@ mod resume_seed_tests {
         let dir_c = base.join("c");
         std::fs::create_dir_all(&dir_c).unwrap();
         let (messages_c, file_c) = compacted_resume_once(&file_b, &dir_c);
-        assert_eq!(messages_c.len(), messages_b.len(), "double resume keeps the same context");
+        assert_eq!(
+            messages_c.len(),
+            messages_b.len(),
+            "double resume keeps the same context"
+        );
         assert!(
-            messages_c.iter().any(|m| matches!(m, AgentMessage::Custom(_))),
+            messages_c
+                .iter()
+                .any(|m| matches!(m, AgentMessage::Custom(_))),
             "second compacted context keeps the developer message"
         );
         assert_eq!(
@@ -4763,7 +4991,8 @@ mod turn_outcome_tests {
         if let Some(status) = error_status {
             value["errorStatus"] = json!(status);
         }
-        let a: pa_agent::types::AssistantMessage = serde_json::from_value(value).expect("assistant json");
+        let a: pa_agent::types::AssistantMessage =
+            serde_json::from_value(value).expect("assistant json");
         AgentMessage::Standard(Message::Assistant(a))
     }
 
@@ -4825,7 +5054,10 @@ mod session_model_state_tests {
             r#"{"type":"model_change","id":"d","parentId":"c","timestamp":"t","model":"kimi-code/kimi-for-coding","role":"default"}"#,
             r#"{"type":"thinking_level_change","id":"e","parentId":"d","timestamp":"t","thinkingLevel":"medium","configured":"max"}"#,
         ]);
-        assert_eq!(st.models.get("default").map(String::as_str), Some("kimi-code/kimi-for-coding"));
+        assert_eq!(
+            st.models.get("default").map(String::as_str),
+            Some("kimi-code/kimi-for-coding")
+        );
         assert_eq!(st.last_role.as_deref(), Some("default"));
         assert_eq!(st.thinking, Some(("medium".into(), Some("max".into()))));
     }
@@ -4840,7 +5072,10 @@ mod session_model_state_tests {
             r#"{"type":"message","id":"b","parentId":"a","timestamp":"t","message":{"role":"assistant","provider":"anthropic","model":"claude-opus-5-5","content":[]}}"#,
             r#"{"type":"message","id":"c","parentId":"b","timestamp":"t","message":{"role":"user","content":"hi"}}"#,
         ]);
-        assert_eq!(st.models.get("default").map(String::as_str), Some("anthropic/claude-opus-5-5"));
+        assert_eq!(
+            st.models.get("default").map(String::as_str),
+            Some("anthropic/claude-opus-5-5")
+        );
         assert_eq!(st.last_role, None);
         assert_eq!(st.thinking, None);
     }
@@ -4917,7 +5152,12 @@ mod ultra_tests {
                 system_prompt: Some("test".into()),
                 model: json_round_trip(&model),
                 thinking_level: Some(ThinkingLevel::Medium),
-                tools: Some(tools.iter().map(|n| Arc::new(Named(n)) as Arc<dyn pa_agent::types::AgentTool>).collect()),
+                tools: Some(
+                    tools
+                        .iter()
+                        .map(|n| Arc::new(Named(n)) as Arc<dyn pa_agent::types::AgentTool>)
+                        .collect(),
+                ),
                 messages: None,
             },
             convert_to_llm: Some(crate::agent::convert_to_llm()),
@@ -4928,7 +5168,10 @@ mod ultra_tests {
         std::fs::create_dir_all(cwd.path().join(".omp")).unwrap();
         std::fs::write(cwd.path().join(".omp/config.yml"), config).unwrap();
         let persist = match dir {
-            Some(d) => crate::persist::attach_in(&agent, cwd.path(), d, None, crate::persist::uuid_v7()).await,
+            Some(d) => {
+                crate::persist::attach_in(&agent, cwd.path(), d, None, crate::persist::uuid_v7())
+                    .await
+            }
             None => crate::persist::attach_with(&agent, cwd.path(), true).await,
         }
         .expect("session");
@@ -4940,8 +5183,20 @@ mod ultra_tests {
             credential_id: None,
         })));
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let rt = Runtime::start(Arc::new(agent), target, cwd.path().to_path_buf(), persist, tx).await;
-        Harness { rt, rx, provider, _cwd: cwd }
+        let rt = Runtime::start(
+            Arc::new(agent),
+            target,
+            cwd.path().to_path_buf(),
+            persist,
+            tx,
+        )
+        .await;
+        Harness {
+            rt,
+            rx,
+            provider,
+            _cwd: cwd,
+        }
     }
 
     async fn until_settled(rx: &mut UnboundedReceiver<Value>) -> Vec<Value> {
@@ -4986,7 +5241,11 @@ mod ultra_tests {
                 let v = serde_json::to_value(m).unwrap();
                 let text = match &v["content"] {
                     Value::String(s) => s.clone(),
-                    Value::Array(parts) => parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join(""),
+                    Value::Array(parts) => parts
+                        .iter()
+                        .filter_map(|p| p["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(""),
                     _ => String::new(),
                 };
                 (v["role"].as_str().unwrap_or_default().to_owned(), text)
@@ -4995,7 +5254,9 @@ mod ultra_tests {
     }
 
     async fn prompt(h: &mut Harness, text: &str) -> Vec<Value> {
-        h.rt.prompt(None, text, None, Vec::new()).await.expect("prompt");
+        h.rt.prompt(None, text, None, Vec::new())
+            .await
+            .expect("prompt");
         until_settled(&mut h.rx).await
     }
 
@@ -5012,7 +5273,10 @@ mod ultra_tests {
         assert_eq!(changed.len(), 1, "{frames:?}");
         assert_eq!(changed[0]["ultra"], "ultracode");
         let level = h.rt.agent.thinking_level().await;
-        assert_eq!(level, crate::model::clamp_level(&model(), ThinkingLevel::Max));
+        assert_eq!(
+            level,
+            crate::model::clamp_level(&model(), ThinkingLevel::Max)
+        );
         assert_eq!(changed[0]["thinkingLevel"], level_name(level));
         assert_eq!(h.rt.state().await["ultra"], "ultracode");
         assert_eq!(h.rt.context_usage_frame().await["ultra"], "ultracode");
@@ -5022,7 +5286,10 @@ mod ultra_tests {
         let entries = thinking_entries(&file);
         let last = entries.last().expect("thinking entry");
         assert_eq!(last["ultra"], "ultracode", "{last}");
-        assert!(parse_level(last["thinkingLevel"].as_str().unwrap()).is_some(), "TS-readable level: {last}");
+        assert!(
+            parse_level(last["thinkingLevel"].as_str().unwrap()).is_some(),
+            "TS-readable level: {last}"
+        );
         assert_eq!(last["configured"], last["thinkingLevel"]);
         // Entries without a mode stay TS-shaped (no `ultra` key at all).
         assert!(entries[0].get("ultra").is_none(), "{}", entries[0]);
@@ -5034,7 +5301,9 @@ mod ultra_tests {
         assert_eq!(second.rt.state().await["ultra"], "ultracode");
         let frames = drain(&mut second.rx);
         assert!(
-            of_type(&frames, "thinking_level_changed").iter().any(|f| f["ultra"] == "ultracode"),
+            of_type(&frames, "thinking_level_changed")
+                .iter()
+                .any(|f| f["ultra"] == "ultracode"),
             "{frames:?}"
         );
     }
@@ -5057,30 +5326,61 @@ mod ultra_tests {
         h.rt.set_ultra(Some(Ultra::Code)).await;
         h.rt.set_auto_thinking().await;
         assert_eq!(h.rt.ultra(), None);
-        assert!(of_type(&drain(&mut h.rx), "thinking_level_changed").iter().all(|f| f.get("ultra").is_some()));
+        assert!(of_type(&drain(&mut h.rx), "thinking_level_changed")
+            .iter()
+            .all(|f| f.get("ultra").is_some()));
         h.rt.set_ultra(Some(Ultra::Code)).await;
         let level = h.rt.agent.thinking_level().await;
         h.rt.set_ultra(None).await;
         assert_eq!(h.rt.ultra(), None);
         assert_eq!(h.rt.agent.thinking_level().await, level);
         let frames = drain(&mut h.rx);
-        assert_eq!(of_type(&frames, "thinking_level_changed").last().unwrap()["ultra"], Value::Null);
+        assert_eq!(
+            of_type(&frames, "thinking_level_changed").last().unwrap()["ultra"],
+            Value::Null
+        );
+    }
+
+    /// Bare `/modelpreset` used to index `tokens[1..]` of an empty arg list and kill the process.
+    #[tokio::test]
+    async fn bare_modelpreset_reports_instead_of_panicking() {
+        let mut h = harness(&[], "", None).await;
+        drain(&mut h.rx);
+        let outcome = crate::rpc::slash::try_dispatch(&h.rt, "/modelpreset").await;
+        assert!(matches!(outcome, crate::rpc::slash::Outcome::Handled { agent_invoked: false }));
+        assert_eq!(of_type(&drain(&mut h.rx), "command_output").len(), 1);
     }
 
     #[tokio::test]
     async fn ultra_notice_prepended_on_every_prompt() {
         let mut h = harness(&["task", "eval"], "", None).await;
         prompt(&mut h, "plain question").await;
-        assert!(last_wire(&h.provider).iter().all(|(role, _)| role != "developer"), "no notice without a mode");
+        assert!(
+            last_wire(&h.provider)
+                .iter()
+                .all(|(role, _)| role != "developer"),
+            "no notice without a mode"
+        );
         h.rt.set_ultra(Some(Ultra::Code)).await;
         for text in ["fix the parser", "ultracode it"] {
             prompt(&mut h, text).await;
             let wire = last_wire(&h.provider);
             let n = wire.len();
             assert_eq!(wire[n - 1].0, "user", "{wire:?}");
-            assert_eq!(wire[n - 2].0, "developer", "notice right before the user message: {wire:?}");
-            assert!(wire[n - 2].1.contains("Ultra mode **ultracode** is active"), "{}", wire[n - 2].1);
-            assert!(!wire[n - 3].1.contains("ultracode"), "exactly one notice: {wire:?}");
+            assert_eq!(
+                wire[n - 2].0,
+                "developer",
+                "notice right before the user message: {wire:?}"
+            );
+            assert!(
+                wire[n - 2].1.contains("Ultra mode **ultracode** is active"),
+                "{}",
+                wire[n - 2].1
+            );
+            assert!(
+                !wire[n - 3].1.contains("ultracode"),
+                "exactly one notice: {wire:?}"
+            );
         }
     }
 
@@ -5092,21 +5392,33 @@ mod ultra_tests {
         let n = wire.len();
         assert_eq!(wire[n - 2].0, "developer", "{wire:?}");
         assert!(wire[n - 2].1.contains("**jevify**"), "{}", wire[n - 2].1);
-        assert_eq!(wire[n - 1], ("user".to_owned(), "please jevify these files".to_owned()));
+        assert_eq!(
+            wire[n - 1],
+            ("user".to_owned(), "please jevify these files".to_owned())
+        );
         // Persisted as a hidden custom message.
-        let notice = h.rt.messages().await.into_iter().find(|m| m["customType"] == "jevify-notice").expect("journaled");
+        let notice =
+            h.rt.messages()
+                .await
+                .into_iter()
+                .find(|m| m["customType"] == "jevify-notice")
+                .expect("journaled");
         assert_eq!(notice["display"], false);
         assert_eq!(notice["attribution"], "user");
 
         // Required tool missing.
         let mut h = harness(&["task"], "", None).await;
         prompt(&mut h, "please jevify these files").await;
-        assert!(last_wire(&h.provider).iter().all(|(role, _)| role != "developer"));
+        assert!(last_wire(&h.provider)
+            .iter()
+            .all(|(role, _)| role != "developer"));
 
         // Disabled by setting.
         let mut h = harness(&["task", "eval"], "magicKeywords:\n  jevify: false\n", None).await;
         prompt(&mut h, "please jevify these files").await;
-        assert!(last_wire(&h.provider).iter().all(|(role, _)| role != "developer"));
+        assert!(last_wire(&h.provider)
+            .iter()
+            .all(|(role, _)| role != "developer"));
     }
 
     #[tokio::test]
@@ -5115,15 +5427,28 @@ mod ultra_tests {
         let mut h = harness(&["task", "eval"], "", None).await;
         let names = |rt: &Arc<Runtime>| {
             let rt = rt.clone();
-            async move { rt.agent.tools().await.iter().map(|t| t.name().to_owned()).collect::<Vec<_>>() }
+            async move {
+                rt.agent
+                    .tools()
+                    .await
+                    .iter()
+                    .map(|t| t.name().to_owned())
+                    .collect::<Vec<_>>()
+            }
         };
         h.rt.set_ultra(Some(Ultra::Code)).await;
-        assert!(!names(&h.rt).await.iter().any(|n| n == crate::context::TOOL_NAME));
+        assert!(!names(&h.rt)
+            .await
+            .iter()
+            .any(|n| n == crate::context::TOOL_NAME));
         assert!(crate::context::live().is_none());
         drain(&mut h.rx);
 
         h.rt.set_ultra(Some(Ultra::Long)).await;
-        assert!(names(&h.rt).await.iter().any(|n| n == crate::context::TOOL_NAME));
+        assert!(names(&h.rt)
+            .await
+            .iter()
+            .any(|n| n == crate::context::TOOL_NAME));
         let live = crate::context::live().expect("clm live");
         assert_eq!(live.kind, crate::context::Kind::ClmHost);
         assert_eq!(crate::context::skip_extensions(), ["context-slim"]);
@@ -5131,16 +5456,29 @@ mod ultra_tests {
         let notices = of_type(&frames, "notice");
         assert_eq!(notices.len(), 1, "{frames:?}");
         assert_eq!(notices[0]["level"], "warning");
-        assert!(notices[0]["message"].as_str().unwrap().contains("prompt cache"));
+        assert!(notices[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("prompt cache"));
 
         // Long -> Hyper keeps CLM: no second switch.
         h.rt.set_ultra(Some(Ultra::Hyper)).await;
         assert!(of_type(&drain(&mut h.rx), "notice").is_empty());
-        assert_eq!(names(&h.rt).await.iter().filter(|n| *n == crate::context::TOOL_NAME).count(), 1);
+        assert_eq!(
+            names(&h.rt)
+                .await
+                .iter()
+                .filter(|n| *n == crate::context::TOOL_NAME)
+                .count(),
+            1
+        );
 
         // Leaving CLM (here via a plain thinking level) removes the tool again.
         h.rt.set_thinking_level(ThinkingLevel::High).await;
-        assert!(!names(&h.rt).await.iter().any(|n| n == crate::context::TOOL_NAME));
+        assert!(!names(&h.rt)
+            .await
+            .iter()
+            .any(|n| n == crate::context::TOOL_NAME));
         assert!(crate::context::live().is_none());
         assert!(crate::context::skip_extensions().is_empty());
         assert_eq!(of_type(&drain(&mut h.rx), "notice").len(), 1);
@@ -5449,7 +5787,8 @@ mod compaction_guard_tests {
         let resumed = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let f = h.rx.recv().await.expect("open");
-                let done = f.to_string().contains("resumed after summary") && f["type"] == "message_end";
+                let done =
+                    f.to_string().contains("resumed after summary") && f["type"] == "message_end";
                 frames.push(f);
                 if done {
                     return;
@@ -5459,19 +5798,31 @@ mod compaction_guard_tests {
         .await;
         assert!(resumed.is_ok(), "the interrupted run resumes: {frames:?}");
         assert!(
-            !frames.iter().any(|f| f.to_string().contains("Request was aborted")
-                && matches!(f["type"].as_str(), Some("message_start" | "message_end"))),
+            !frames
+                .iter()
+                .any(|f| f.to_string().contains("Request was aborted")
+                    && matches!(f["type"].as_str(), Some("message_start" | "message_end"))),
             "no aborted stub is rendered"
         );
         let entries = journal(&h.rt.session_file());
-        assert_eq!(entries.iter().filter(|e| e["type"] == "compaction").count(), 1);
+        assert_eq!(
+            entries.iter().filter(|e| e["type"] == "compaction").count(),
+            1
+        );
         assert!(
-            !entries.iter().any(|e| e.to_string().contains("Request was aborted")),
+            !entries
+                .iter()
+                .any(|e| e.to_string().contains("Request was aborted")),
             "no aborted stub is journaled: {entries:?}"
         );
-        let after = entries.iter().position(|e| e["type"] == "compaction").unwrap();
+        let after = entries
+            .iter()
+            .position(|e| e["type"] == "compaction")
+            .unwrap();
         assert!(
-            entries[after..].iter().any(|e| e.to_string().contains("Resume the user's latest intent")),
+            entries[after..]
+                .iter()
+                .any(|e| e.to_string().contains("Resume the user's latest intent")),
             "auto-continue prompt journaled after the summary"
         );
     }
@@ -5496,7 +5847,11 @@ mod compaction_guard_tests {
         .await
         .expect("turn in flight");
         let err = h.rt.compact(None).await.expect_err("too small");
-        assert!(err.message.starts_with("Nothing to compact"), "{}", err.message);
+        assert!(
+            err.message.starts_with("Nothing to compact"),
+            "{}",
+            err.message
+        );
         let resumed = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let f = h.rx.recv().await.expect("open");

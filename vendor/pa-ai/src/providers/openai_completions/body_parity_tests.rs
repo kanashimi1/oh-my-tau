@@ -11,7 +11,10 @@ use crate::providers::openai_completions::params::build_params;
 use crate::providers::openai_completions::{resolve_compat, OpenAICompletionsOptions, ToolChoice};
 use crate::types::{CacheRetention, Context, Model, ModelThinkingLevel, StreamOptions};
 
-const BODIES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../runs/omp-rust/compat-oracle/bodies.jsonl");
+const BODIES: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../runs/omp-rust/compat-oracle/bodies.jsonl"
+);
 
 fn model_of(spec: &Value) -> Model {
     let mut model: Model = serde_json::from_value(spec.clone()).expect("spec parses as a Model");
@@ -24,7 +27,10 @@ fn options_of(case: &Value) -> OpenAICompletionsOptions {
     let mut base = StreamOptions::default();
     base.max_tokens = o.get("maxTokens").and_then(Value::as_u64);
     base.temperature = o.get("temperature").and_then(Value::as_f64);
-    base.session_id = o.get("sessionId").and_then(Value::as_str).map(str::to_string);
+    base.session_id = o
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let mut opts = OpenAICompletionsOptions::from_base(base);
     opts.reasoning_effort = o
         .get("reasoning")
@@ -34,8 +40,13 @@ fn options_of(case: &Value) -> OpenAICompletionsOptions {
     if o.get("disableReasoning") == Some(&json!(true)) {
         opts.reasoning_enabled = Some(false);
     }
-    if let Some(name) = o.pointer("/toolChoice/function/name").and_then(Value::as_str) {
-        opts.tool_choice = Some(ToolChoice::Function { name: name.to_string() });
+    if let Some(name) = o
+        .pointer("/toolChoice/function/name")
+        .and_then(Value::as_str)
+    {
+        opts.tool_choice = Some(ToolChoice::Function {
+            name: name.to_string(),
+        });
     }
     opts
 }
@@ -46,7 +57,15 @@ fn rust_body(case: &Value) -> Value {
     let options = options_of(case);
     let compat = resolve_compat(&model).expect("compat resolves");
     let transformed = transform_for_request(&model, &context, &compat);
-    build_params(&model, &context, &transformed, Some(&options), &compat, CacheRetention::Short).to_value()
+    build_params(
+        &model,
+        &context,
+        &transformed,
+        Some(&options),
+        &compat,
+        CacheRetention::Short,
+    )
+    .to_value()
 }
 
 #[test]
@@ -73,16 +92,28 @@ fn rust_body_matches_ts_body_for_every_case() {
             let keys: std::collections::BTreeSet<_> = g.keys().chain(w.keys()).collect();
             for k in keys {
                 if g.get(k) != w.get(k) {
-                    diffs.push(format!("{k}: rust={} ts={}", g.get(k).map_or("<absent>".into(), ToString::to_string), w.get(k).map_or("<absent>".into(), ToString::to_string)));
+                    diffs.push(format!(
+                        "{k}: rust={} ts={}",
+                        g.get(k).map_or("<absent>".into(), ToString::to_string),
+                        w.get(k).map_or("<absent>".into(), ToString::to_string)
+                    ));
                 }
             }
             failures.push(format!("{name}: {}", diffs.join(" | ")));
             let _ = &name;
         }
     }
-    eprintln!("body parity: {total} cases over {} providers, {} mismatches", providers.len(), failures.len());
+    eprintln!(
+        "body parity: {total} cases over {} providers, {} mismatches",
+        providers.len(),
+        failures.len()
+    );
     for f in failures.iter().take(25) {
         eprintln!("  MISMATCH {}", &f[..f.len().min(420)]);
     }
-    assert!(failures.is_empty(), "{} of {total} request bodies differ from TS", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} of {total} request bodies differ from TS",
+        failures.len()
+    );
 }

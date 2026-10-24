@@ -8,7 +8,9 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
 
-use pa_types::ai::{AssistantContentBlock, Context, Message, Model, StopReason, UserContent, UserMessage};
+use pa_types::ai::{
+    AssistantContentBlock, Context, Message, Model, StopReason, UserContent, UserMessage,
+};
 
 /// Bundled `title-system.md`, verbatim (TS default path sends only this prompt).
 pub const TITLE_SYSTEM_PROMPT: &str = "You name coding-agent sessions. Write a 3-6 word title for the task in the next message.\n\nOutput exactly one line: the title inside `<title>` tags, or `<title/>` when there is no task to name.\n\nRules:\n- Name the user's goal as a short imperative phrase built from the user's own key words (the feature, component, or error they name). Avoid vague filler like \"logic\", \"issues\", \"functionality\".\n- `[Image #N, WxH]` marks an image you cannot see. Never mention it or guess what it shows; title the task the surrounding words name.\n- Answer `<title/>` for greetings, acknowledgements, gibberish, or requests too vague to name without context you cannot see (\"help\", \"fix this\", \"what's wrong?\").\n- A `<chat>` block summarizes a longer session: its first `<user>` turn is the opening request, followed by recent turns (often the assistant's working notes). Title the goal the session is working on, using the opening request unless later turns clearly moved to a new task; never title the current micro-step, and ignore file names and symbols unless they are the subject.\n- No quotes, trailing punctuation, or explanations.\n\nExamples:\n- \"the retry queue drops jobs when redis restarts, can u look\" → `<title>Fix retry queue dropping jobs</title>`\n- \"can we get rid of the npm run build warning about peer deps\" → `<title>Remove peer dependency build warning</title>`\n- `<chat>` with only assistant notes like \"adding a backoff field to RetryPolicy… now wiring jitter into schedule()\" → `<title>Add retry backoff with jitter</title>`";
@@ -31,29 +33,37 @@ static MARKER_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|
 });
 
 static THINKING_TAG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<(?:think|thinking|reasoning)>\s*[\s\S]*?</(?:think|thinking|reasoning)>").unwrap()
+    regex::Regex::new(
+        r"(?is)<(?:think|thinking|reasoning)>\s*[\s\S]*?</(?:think|thinking|reasoning)>",
+    )
+    .unwrap()
 });
 
 static THINKING_FENCE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(?is)```(?:thinking|reasoning)\b[\s\S]*?```").unwrap()
 });
 
-static LEADING_THINKING_TAG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?is)^\s*<(?:think|thinking|reasoning)>\s*[\s\S]*?</(?:think|thinking|reasoning)>\s*").unwrap()
-});
+static LEADING_THINKING_TAG_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?is)^\s*<(?:think|thinking|reasoning)>\s*[\s\S]*?</(?:think|thinking|reasoning)>\s*",
+        )
+        .unwrap()
+    });
 
 static LEADING_THINKING_FENCE_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?is)^\s*```(?:thinking|reasoning)\b[\s\S]*?```\s*").unwrap()
     });
 
-static PROSE_THINKING_PREAMBLE_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| {
+static PROSE_THINKING_PREAMBLE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
+    || {
         regex::Regex::new(
             r"(?i)^[ \t]*(?:(?:here(?:['\u{2019}]s| is)[ \t]+(?:a|the|my)[ \t]+)|my[ \t]+)?(?:thinking|thought|reasoning)[ \t]+process[ \t]*:?[ \t]*(?:\r?\n|$)",
         )
         .unwrap()
-    });
+    },
+);
 
 static TITLE_TAG_FRAGMENT_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)</?title>").unwrap());
@@ -61,30 +71,93 @@ static TITLE_TAG_FRAGMENT_RE: std::sync::LazyLock<regex::Regex> =
 static WORD_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"[\p{L}\p{N}]+").unwrap());
 
-static QUOTED_TITLE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r#""title"\s*:\s*("(?:[^"\\]|\\.)*")"#).unwrap()
-});
+static QUOTED_TITLE_RE: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r#""title"\s*:\s*("(?:[^"\\]|\\.)*")"#).unwrap());
 
 /// Greeting / acknowledgement / filler tokens (TS `FILLER_TITLE_TOKENS`).
 const FILLER_TITLE_TOKENS: &[&str] = &[
     // greetings
-    "hi", "hii", "hiii", "hiya", "hey", "heya", "hello", "helo", "hullo", "yo", "ya", "sup",
-    "wassup", "whatsup", "howdy", "greetings", "hola", "ciao", "aloha", "gm", "gn", "good",
-    "morning", "afternoon", "evening", "night", "day",
+    "hi",
+    "hii",
+    "hiii",
+    "hiya",
+    "hey",
+    "heya",
+    "hello",
+    "helo",
+    "hullo",
+    "yo",
+    "ya",
+    "sup",
+    "wassup",
+    "whatsup",
+    "howdy",
+    "greetings",
+    "hola",
+    "ciao",
+    "aloha",
+    "gm",
+    "gn",
+    "good",
+    "morning",
+    "afternoon",
+    "evening",
+    "night",
+    "day",
     // politeness / acknowledgement
-    "thanks", "thank", "thx", "ty", "tysm", "cheers", "please", "pls", "plz", "ok", "okay",
-    "okey", "k", "kk", "yep", "yes", "yeah", "yup", "nope", "no", "nah", "sure", "cool",
-    "nice", "great", "awesome", "perfect", "lol", "lmao", "haha", "hehe",
+    "thanks",
+    "thank",
+    "thx",
+    "ty",
+    "tysm",
+    "cheers",
+    "please",
+    "pls",
+    "plz",
+    "ok",
+    "okay",
+    "okey",
+    "k",
+    "kk",
+    "yep",
+    "yes",
+    "yeah",
+    "yup",
+    "nope",
+    "no",
+    "nah",
+    "sure",
+    "cool",
+    "nice",
+    "great",
+    "awesome",
+    "perfect",
+    "lol",
+    "lmao",
+    "haha",
+    "hehe",
     // poking the agent / fillers
-    "test", "tests", "testing", "ping", "pong", "there", "you", "u", "hmm", "hmmm", "um",
-    "uh", "so", "well", "anyway",
+    "test",
+    "tests",
+    "testing",
+    "ping",
+    "pong",
+    "there",
+    "you",
+    "u",
+    "hmm",
+    "hmmm",
+    "um",
+    "uh",
+    "so",
+    "well",
+    "anyway",
 ];
 
 /// Common technical acronyms restored verbatim (TS `COMMON_TITLE_ACRONYMS`).
 const COMMON_TITLE_ACRONYMS: &[&str] = &[
-    "API", "CLI", "CPU", "CRUD", "CSS", "DNS", "ETL", "GPU", "HTML", "HTTP", "HTTPS", "ID",
-    "JSON", "LLM", "REST", "SDK", "SSH", "TCP", "TLS", "TUI", "UI", "URI", "URL", "UX",
-    "XML", "YAML",
+    "API", "CLI", "CPU", "CRUD", "CSS", "DNS", "ETL", "GPU", "HTML", "HTTP", "HTTPS", "ID", "JSON",
+    "LLM", "REST", "SDK", "SSH", "TCP", "TLS", "TUI", "UI", "URI", "URL", "UX", "XML", "YAML",
 ];
 
 /// True when a first user message is too low-signal to title (greeting, ack,
@@ -92,7 +165,8 @@ const COMMON_TITLE_ACRONYMS: &[&str] = &[
 /// of latching onto "hi" (TS `isLowSignalTitleInput`, deterministic pre-filter).
 #[must_use]
 pub fn is_low_signal_title_input(message: &str) -> bool {
-    let tokens: Vec<String> = WORD_RE.find_iter(message)
+    let tokens: Vec<String> = WORD_RE
+        .find_iter(message)
         .map(|m| m.as_str().to_lowercase())
         .collect();
     if tokens.is_empty() {
@@ -130,7 +204,10 @@ pub fn normalize_generated_title(value: Option<&str>, source_text: Option<&str>)
         return None;
     }
     let mut title = TITLE_TAG_FRAGMENT_RE.replace_all(unquoted, "").into_owned();
-    title = title.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+    title = title
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_string();
     if title.ends_with(['.', '!', '?']) {
         title.pop();
     }
@@ -161,9 +238,13 @@ fn reconcile_title_casing(title: &str, source_text: &str) -> String {
         let token = m.as_str();
         verbatim.insert(token);
         if is_distinctive_casing(token) {
-            distinctive.entry(token.to_lowercase()).or_insert_with(|| token.to_string());
+            distinctive
+                .entry(token.to_lowercase())
+                .or_insert_with(|| token.to_string());
         } else if !shouty && is_all_caps_acronym(token) {
-            acronyms.entry(token.to_lowercase()).or_insert_with(|| token.to_string());
+            acronyms
+                .entry(token.to_lowercase())
+                .or_insert_with(|| token.to_string());
         }
     }
     WORD_RE
@@ -193,11 +274,8 @@ fn reconcile_title_casing(title: &str, source_text: &str) -> String {
 fn is_distinctive_casing(token: &str) -> bool {
     let has_lower = token.chars().any(char::is_lowercase);
     let chars: Vec<char> = token.chars().collect();
-    let interior_upper = chars
-        .iter()
-        .skip(1)
-        .any(|c| c.is_uppercase())
-        || chars.iter().any(|c| c.is_uppercase());
+    let interior_upper =
+        chars.iter().skip(1).any(|c| c.is_uppercase()) || chars.iter().any(|c| c.is_uppercase());
     has_lower && interior_upper && token.chars().any(|c: char| c.is_uppercase())
 }
 
@@ -231,7 +309,9 @@ fn is_all_caps_word(token: &str) -> bool {
 /// letters, no interior uppercase (`PascalCase` proper nouns excluded).
 fn is_title_cased_artifact(token: &str) -> bool {
     let mut chars = token.chars();
-    let Some(first) = chars.next() else { return false };
+    let Some(first) = chars.next() else {
+        return false;
+    };
     if !first.is_uppercase() {
         return false;
     }
@@ -260,7 +340,8 @@ fn is_shouty_source(source_text: &str) -> bool {
 /// Lowercase word with a stray interior capital (`dAemon`, `cReate`).
 fn is_camel_artifact(token: &str) -> bool {
     let mut chars = token.chars();
-    matches!(chars.next(), Some(c) if c.is_lowercase()) && token.chars().any(|c: char| c.is_uppercase())
+    matches!(chars.next(), Some(c) if c.is_lowercase())
+        && token.chars().any(|c: char| c.is_uppercase())
 }
 
 /// Strip complete known thinking envelopes, iteratively (TS `stripLeakedThinkingMarkup`;
@@ -291,7 +372,9 @@ static THINKING_OPEN_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock
 fn is_visible_marker(text: &str, marker_index: usize) -> bool {
     const SENTINEL: &str = "\u{e000}omp-title-visible\u{e000}";
     let stripped = strip_thinking_markup(&format!("{}{SENTINEL}", &text[..marker_index]));
-    let Some(before) = stripped.strip_suffix(SENTINEL) else { return false };
+    let Some(before) = stripped.strip_suffix(SENTINEL) else {
+        return false;
+    };
     !THINKING_OPEN_RE.is_match(before)
 }
 
@@ -394,10 +477,7 @@ pub async fn generate_title_with_model(
         .then(|| crate::model::always_thinking_floor(&model.provider, &model.id))
         .flatten();
     let (reasoning, disable_reasoning) = match floor {
-        Some(level) => (
-            Some(crate::adapter::model_thinking_level(level)),
-            false,
-        ),
+        Some(level) => (Some(crate::adapter::model_thinking_level(level)), false),
         None => (None, true),
     };
     let options = pa_ai::types::SimpleStreamOptions {
@@ -417,12 +497,18 @@ pub async fn generate_title_with_model(
         Ok(r) => r,
         Err(e) => {
             if std::env::var_os("OMP_RS_TITLE_TRACE").is_some() {
-                eprintln!("[title] {}/{} completion error: {e:?}", model.provider, model.id);
+                eprintln!(
+                    "[title] {}/{} completion error: {e:?}",
+                    model.provider, model.id
+                );
             }
             return None;
         }
     };
-    if matches!(response.stop_reason, StopReason::Aborted | StopReason::Error) {
+    if matches!(
+        response.stop_reason,
+        StopReason::Aborted | StopReason::Error
+    ) {
         if std::env::var_os("OMP_RS_TITLE_TRACE").is_some() {
             let v = serde_json::to_value(&response).unwrap_or_default();
             eprintln!(
@@ -487,8 +573,11 @@ pub fn set_terminal_title(title: &str) {
     if !std::io::stdout().is_terminal() {
         return;
     }
-    let next = sanitize_terminal_title_part(Some(title)).unwrap_or_else(|| DEFAULT_TERMINAL_TITLE.to_string());
-    let mut last = LAST_TERMINAL_TITLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let next = sanitize_terminal_title_part(Some(title))
+        .unwrap_or_else(|| DEFAULT_TERMINAL_TITLE.to_string());
+    let mut last = LAST_TERMINAL_TITLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if last.as_deref() == Some(next.as_str()) {
         return;
     }
@@ -509,7 +598,9 @@ mod tests {
         assert!(is_low_signal_title_input("ok thanks"));
         assert!(is_low_signal_title_input("42"));
         assert!(is_low_signal_title_input("..."));
-        assert!(!is_low_signal_title_input("fix the retry queue dropping jobs"));
+        assert!(!is_low_signal_title_input(
+            "fix the retry queue dropping jobs"
+        ));
     }
 
     #[test]
@@ -518,8 +609,14 @@ mod tests {
             normalize_generated_title(Some("<title>Fix retry queue</title>"), None).as_deref(),
             Some("Fix retry queue")
         );
-        assert_eq!(normalize_generated_title(Some("\"Quoted title\""), None).as_deref(), Some("Quoted title"));
-        assert_eq!(normalize_generated_title(Some("Title."), None).as_deref(), Some("Title"));
+        assert_eq!(
+            normalize_generated_title(Some("\"Quoted title\""), None).as_deref(),
+            Some("Quoted title")
+        );
+        assert_eq!(
+            normalize_generated_title(Some("Title."), None).as_deref(),
+            Some("Title")
+        );
         assert_eq!(normalize_generated_title(Some("<title/>"), None), None);
         assert_eq!(normalize_generated_title(Some("none"), None), None);
         assert_eq!(normalize_generated_title(Some("None"), None), None);
@@ -530,7 +627,10 @@ mod tests {
             "over 80 chars"
         );
         assert_eq!(
-            normalize_generated_title(Some("one two three four five six seven eight nine ten eleven twelve thirteen"), None),
+            normalize_generated_title(
+                Some("one two three four five six seven eight nine ten eleven twelve thirteen"),
+                None
+            ),
             None,
             "over 12 words"
         );
@@ -547,22 +647,26 @@ mod tests {
         );
         // ALL-CAPS acronym restored from a title-cased artifact.
         assert_eq!(
-            normalize_generated_title(Some("Cnpg backup"), Some("configure CNPG backups")).as_deref(),
+            normalize_generated_title(Some("Cnpg backup"), Some("configure CNPG backups"))
+                .as_deref(),
             Some("CNPG backup")
         );
         // Stray camelCase artifact flattened.
         assert_eq!(
-            normalize_generated_title(Some("dAemon config"), Some("fix the daemon config")).as_deref(),
+            normalize_generated_title(Some("dAemon config"), Some("fix the daemon config"))
+                .as_deref(),
             Some("daemon config")
         );
         // A plain title-cased word with no acronym match is left alone.
         assert_eq!(
-            normalize_generated_title(Some("Daemon config"), Some("fix the daemon config")).as_deref(),
+            normalize_generated_title(Some("Daemon config"), Some("fix the daemon config"))
+                .as_deref(),
             Some("Daemon config")
         );
         // Shouty source: no acronym restoration.
         assert_eq!(
-            normalize_generated_title(Some("Error handling"), Some("ALL ERROR HANDLING IS BROKEN")).as_deref(),
+            normalize_generated_title(Some("Error handling"), Some("ALL ERROR HANDLING IS BROKEN"))
+                .as_deref(),
             Some("Error handling")
         );
         // Emphatic all-caps English word not restored.
@@ -572,14 +676,18 @@ mod tests {
         );
         // Model-cased proper noun left alone.
         assert_eq!(
-            normalize_generated_title(Some("GitHub OAuth setup"), Some("wire up github oauth")).as_deref(),
+            normalize_generated_title(Some("GitHub OAuth setup"), Some("wire up github oauth"))
+                .as_deref(),
             Some("GitHub OAuth setup")
         );
     }
 
     #[test]
     fn extracts_marked_title() {
-        assert_eq!(extract_generated_title("<title>Fix retry queue</title>"), "Fix retry queue");
+        assert_eq!(
+            extract_generated_title("<title>Fix retry queue</title>"),
+            "Fix retry queue"
+        );
         // Thinking envelope before the marker is stripped.
         assert_eq!(
             extract_generated_title("<thinking>let me think</thinking>\n<title>Title</title>"),
@@ -591,17 +699,32 @@ mod tests {
             "visible"
         );
         // JSON-shaped output unwrapped.
-        assert_eq!(extract_generated_title(r#"{"title": "Fix queue"}"#), "Fix queue");
-        assert_eq!(extract_generated_title("```json\n{\"title\": \"Fix queue\"}\n```"), "Fix queue");
+        assert_eq!(
+            extract_generated_title(r#"{"title": "Fix queue"}"#),
+            "Fix queue"
+        );
+        assert_eq!(
+            extract_generated_title("```json\n{\"title\": \"Fix queue\"}\n```"),
+            "Fix queue"
+        );
         // Truncated JSON salvaged (quoted value intact, object cut off).
-        assert_eq!(extract_generated_title(r#"{"title": "Fix queue", "#), "Fix queue");
+        assert_eq!(
+            extract_generated_title(r#"{"title": "Fix queue", "#),
+            "Fix queue"
+        );
         // Leading thinking preamble rejected on the markerless path.
-        assert_eq!(extract_generated_title("Here is my thinking process:\nthe title"), "");
+        assert_eq!(
+            extract_generated_title("Here is my thinking process:\nthe title"),
+            ""
+        );
     }
 
     #[test]
     fn terminal_title_shape_matches_ts() {
-        assert_eq!(format_session_terminal_title(Some("My Session"), None), "π: My Session");
+        assert_eq!(
+            format_session_terminal_title(Some("My Session"), None),
+            "π: My Session"
+        );
         assert_eq!(format_session_terminal_title(None, None), "π");
         assert_eq!(
             format_session_terminal_title(Some("bad\u{0007}title"), None),
@@ -610,7 +733,15 @@ mod tests {
         let dir = std::env::temp_dir();
         assert_eq!(
             format_session_terminal_title(None, Some(&dir)),
-            format!("π: {}", dir.canonicalize().unwrap().file_name().unwrap().to_str().unwrap())
+            format!(
+                "π: {}",
+                dir.canonicalize()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            )
         );
     }
 

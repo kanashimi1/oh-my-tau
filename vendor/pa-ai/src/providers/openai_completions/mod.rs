@@ -12,8 +12,8 @@ use crate::models::clamp_thinking_level;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
-    AssistantContent, AssistantMessage, CacheRetention, Context, Model,
-    ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage, UsageCost,
+    AssistantContent, AssistantMessage, CacheRetention, Context, Model, ModelThinkingLevel,
+    SimpleStreamOptions, SimpleToolChoice, StopReason, StreamOptions, Usage, UsageCost,
 };
 
 pub(crate) mod compat;
@@ -195,8 +195,8 @@ pub fn stream_simple_openai_completions(
         requested_reasoning.map(|reasoning| clamp_thinking_level(model, reasoning));
     // TS `disableReasoning`: wins over `reasoning` — no effort is sent and the toggle is
     // explicitly off, so effort-declared models do not fall back to their default.
-    let disable_reasoning =
-        options.is_some_and(|options| options.disable_reasoning) || clamped_reasoning == Some(ModelThinkingLevel::Off);
+    let disable_reasoning = options.is_some_and(|options| options.disable_reasoning)
+        || clamped_reasoning == Some(ModelThinkingLevel::Off);
     let reasoning_effort = if disable_reasoning {
         None
     } else {
@@ -209,7 +209,9 @@ pub fn stream_simple_openai_completions(
     } else {
         None
     };
-    let tool_choice = options.and_then(|options| options.tool_choice.as_ref()).map(map_tool_choice);
+    let tool_choice = options
+        .and_then(|options| options.tool_choice.as_ref())
+        .map(map_tool_choice);
 
     let stream_options = OpenAICompletionsOptions {
         base,
@@ -253,9 +255,21 @@ impl Provider for OpenAICompletionsProvider {
 ///
 /// # Errors
 /// The model's compat cannot be resolved.
-pub(crate) fn build_request_body(model: &Model, context: &Context, options: &OpenAICompletionsOptions) -> Result<Value, String> {
+pub(crate) fn build_request_body(
+    model: &Model,
+    context: &Context,
+    options: &OpenAICompletionsOptions,
+) -> Result<Value, String> {
     let compat = resolve_compat(model).map_err(|e| format!("{e:?}"))?;
     let retention = resolve_cache_retention(options.base.cache_retention);
     let transformed = convert::transform_for_request(model, context, &compat);
-    Ok(params::build_params(model, context, &transformed, Some(options), &compat, retention).to_value())
+    Ok(params::build_params(
+        model,
+        context,
+        &transformed,
+        Some(options),
+        &compat,
+        retention,
+    )
+    .to_value())
 }

@@ -45,21 +45,20 @@ mod provider;
 mod runtime;
 mod types;
 
-
 pub use dir::{DirEntry, ReadDir};
 pub use error::{
-	cancelled, crosses_devices, invalid_argument, is_a_directory, is_cancelled, no_provider,
-	not_a_directory, permission_denied, read_only_filesystem, unsupported,
+    cancelled, crosses_devices, invalid_argument, is_a_directory, is_cancelled, no_provider,
+    not_a_directory, permission_denied, read_only_filesystem, unsupported,
 };
 pub use file::{File, FileHandle};
 pub use fs::{BlockingFs, Fs};
 pub use metadata::Metadata;
 pub use options::{
-	CanonicalizeOptions, DirOptions, MissingHandling, OpenOptions, ResolveMode, TempOptions,
+    CanonicalizeOptions, DirOptions, MissingHandling, OpenOptions, ResolveMode, TempOptions,
 };
 pub use path::{
-	absolute_path, child_path, decode_segment, encode_segment, file_name, is_virtual_path,
-	join_path, normalize_lexically, parent_path, relative_path, url_scheme, with_file_name,
+    absolute_path, child_path, decode_segment, encode_segment, file_name, is_virtual_path,
+    join_path, normalize_lexically, parent_path, relative_path, url_scheme, with_file_name,
 };
 pub use provider::FileSystem;
 pub use types::{FileId, FileKind, FileTime, FileType, NodeKind, Permissions, StatFs, SymlinkKind};

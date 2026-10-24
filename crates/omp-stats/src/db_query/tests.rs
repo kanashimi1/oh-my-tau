@@ -127,14 +127,29 @@ fn recent_requests_newest_first_and_limited() {
     let _home = fresh_home();
     let base = now_ms() - 10_000_000;
     let rows: Vec<(String, i64, &str)> = (0..8)
-        .map(|i| (format!("e{i}"), base + i * 1000, if i == 3 { "error" } else { "stop" }))
+        .map(|i| {
+            (
+                format!("e{i}"),
+                base + i * 1000,
+                if i == 3 { "error" } else { "stop" },
+            )
+        })
         .collect();
     seed_messages(&rows);
 
     let recent = get_recent_requests(5).expect("recent");
     assert_eq!(recent.len(), 5);
     let stamps: Vec<i64> = recent.iter().map(|m| m.timestamp).collect();
-    assert_eq!(stamps, vec![base + 7000, base + 6000, base + 5000, base + 4000, base + 3000]);
+    assert_eq!(
+        stamps,
+        vec![
+            base + 7000,
+            base + 6000,
+            base + 5000,
+            base + 4000,
+            base + 3000
+        ]
+    );
     assert_eq!(recent[0].entry_id, "e7");
     assert_eq!(recent[0].usage.total_tokens, 18);
     assert_eq!(recent[0].cost_unpriced, Some(false));
@@ -144,15 +159,26 @@ fn recent_requests_newest_first_and_limited() {
 fn unknown_stop_reason_is_preserved_not_collapsed_to_stop() {
     let _home = fresh_home();
     let base = now_ms() - 1_000_000;
-    seed_messages(&[("odd".into(), base, "contentFilter"), ("known".into(), base + 1000, "tool_calls")]);
+    seed_messages(&[
+        ("odd".into(), base, "contentFilter"),
+        ("known".into(), base + 1000, "tool_calls"),
+    ]);
     let recent = get_recent_requests(2).expect("recent");
     assert_eq!(recent[0].entry_id, "known");
-    assert_eq!(recent[0].stop_reason, StopReason::ToolUse, "legacy alias maps to toolUse");
-    assert_eq!(recent[1].stop_reason, StopReason::Other("contentFilter".into()));
+    assert_eq!(
+        recent[0].stop_reason,
+        StopReason::ToolUse,
+        "legacy alias maps to toolUse"
+    );
+    assert_eq!(
+        recent[1].stop_reason,
+        StopReason::Other("contentFilter".into())
+    );
     // The wire form is the stored string, so the API and a re-read agree.
     let json = serde_json::to_value(&recent[1]).expect("serialize");
     assert!(json.to_string().contains("\"contentFilter\""), "{json}");
-    let back: StopReason = serde_json::from_value(serde_json::json!("contentFilter")).expect("deserialize");
+    let back: StopReason =
+        serde_json::from_value(serde_json::json!("contentFilter")).expect("deserialize");
     assert_eq!(back, StopReason::Other("contentFilter".into()));
 }
 
@@ -180,7 +206,10 @@ fn recent_errors_filters_stop_reason_and_cutoff() {
         ("c".into(), base + 2000, "error"),
     ]);
     let all = get_recent_errors(10, None).expect("errors");
-    assert_eq!(all.iter().map(|m| m.entry_id.as_str()).collect::<Vec<_>>(), vec!["c", "a"]);
+    assert_eq!(
+        all.iter().map(|m| m.entry_id.as_str()).collect::<Vec<_>>(),
+        vec!["c", "a"]
+    );
     let late = get_recent_errors(10, Some(base + 1500)).expect("errors cutoff");
     assert_eq!(late.len(), 1);
     assert_eq!(late[0].entry_id, "c");
@@ -191,7 +220,9 @@ fn recent_errors_filters_stop_reason_and_cutoff() {
 fn daily_activity_from_raw_rows_is_non_empty() {
     let _home = fresh_home();
     let now = now_ms();
-    let rows: Vec<(String, i64, &str)> = (0..48).map(|i| (format!("h{i}"), now - i * 3_600_000, "stop")).collect();
+    let rows: Vec<(String, i64, &str)> = (0..48)
+        .map(|i| (format!("h{i}"), now - i * 3_600_000, "stop"))
+        .collect();
     seed_messages(&rows);
 
     let days = get_daily_activity(371).expect("daily");
@@ -220,7 +251,10 @@ fn tool_calls_insert_then_update_results() {
 
     assert_eq!(insert_tool_calls(calls()).expect("insert"), 3);
     // Same assistant entry copied into a forked session: first write wins.
-    assert_eq!(insert_tool_calls(vec![call("s2", "c1"), call("s2", "c2")]).expect("fork"), 0);
+    assert_eq!(
+        insert_tool_calls(vec![call("s2", "c1"), call("s2", "c2")]).expect("fork"),
+        0
+    );
 
     let link = |id: &str, chars: i64, err: bool| ToolResultLink {
         session_file: "s1".into(),
@@ -228,7 +262,13 @@ fn tool_calls_insert_then_update_results() {
         result_chars: chars,
         is_error: err,
     };
-    let links = || vec![link("c1", 100, false), link("c2", 0, true), link("missing", 5, false)];
+    let links = || {
+        vec![
+            link("c1", 100, false),
+            link("c2", 0, true),
+            link("missing", 5, false),
+        ]
+    };
     assert_eq!(update_tool_results(links()).expect("update"), 2);
     // `result_chars IS NULL` guard: a re-sync changes nothing.
     assert_eq!(update_tool_results(links()).expect("resync"), 0);
@@ -268,7 +308,10 @@ fn user_messages_insert_link_and_frustration_cache() {
     ];
     assert_eq!(insert_user_message_stats(msgs).expect("insert"), 2);
     // Same (entry_id, timestamp) owned by another session: skipped.
-    assert_eq!(insert_user_message_stats(vec![user_msg("s2", "u1", base, "x", "h1")]).expect("dup"), 0);
+    assert_eq!(
+        insert_user_message_stats(vec![user_msg("s2", "u1", base, "x", "h1")]).expect("dup"),
+        0
+    );
 
     let link = |entry: &str| UserMessageLink {
         session_file: "s1".into(),
@@ -276,8 +319,14 @@ fn user_messages_insert_link_and_frustration_cache() {
         model: "m1".into(),
         provider: "anthropic".into(),
     };
-    assert_eq!(update_user_message_links(vec![link("u1")]).expect("link"), 1);
-    assert_eq!(update_user_message_links(vec![link("u1")]).expect("relink"), 0);
+    assert_eq!(
+        update_user_message_links(vec![link("u1")]).expect("link"),
+        1
+    );
+    assert_eq!(
+        update_user_message_links(vec![link("u1")]).expect("relink"),
+        0
+    );
 
     let by_model = get_frustration_by_model(None).expect("by model");
     assert_eq!(by_model.len(), 1);
@@ -290,8 +339,16 @@ fn user_messages_insert_link_and_frustration_cache() {
 
     let pending = get_pending_frustration_totals(None).expect("totals");
     assert_eq!(pending.messages, 2);
-    assert_eq!(pending.chars, "why is this broken".len() as i64 + "thanks a lot".len() as i64);
-    assert_eq!(get_pending_frustration_prose(Some(base + 1)).expect("prose").len(), 1);
+    assert_eq!(
+        pending.chars,
+        "why is this broken".len() as i64 + "thanks a lot".len() as i64
+    );
+    assert_eq!(
+        get_pending_frustration_prose(Some(base + 1))
+            .expect("prose")
+            .len(),
+        1
+    );
 
     upsert_frustration_verdicts(&[FrustrationVerdict {
         prose_hash: "h1".into(),
@@ -303,6 +360,14 @@ fn user_messages_insert_link_and_frustration_cache() {
     }])
     .expect("upsert");
     let judged = get_frustration_overall(None).expect("overall after verdict");
-    assert_eq!((judged.judged, judged.annoyed, judged.at_assistant), (1, 1, 1));
-    assert_eq!(get_pending_frustration_totals(None).expect("totals").messages, 1);
+    assert_eq!(
+        (judged.judged, judged.annoyed, judged.at_assistant),
+        (1, 1, 1)
+    );
+    assert_eq!(
+        get_pending_frustration_totals(None)
+            .expect("totals")
+            .messages,
+        1
+    );
 }

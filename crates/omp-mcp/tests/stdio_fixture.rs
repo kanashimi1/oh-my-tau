@@ -60,7 +60,8 @@ for line in sys.stdin:
 fn write_fake_server(dir: &std::path::Path) -> PathBuf {
     let path = dir.join("fake_mcp_server.py");
     let mut file = std::fs::File::create(&path).expect("create fake server script");
-    file.write_all(FAKE_SERVER_PY.as_bytes()).expect("write fake server script");
+    file.write_all(FAKE_SERVER_PY.as_bytes())
+        .expect("write fake server script");
     path
 }
 
@@ -81,7 +82,11 @@ fn stdio_config(command: &str) -> McpServerConfig {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stdio_server_roundtrip_and_failure_isolation() {
-    if std::process::Command::new("python3").arg("--version").output().is_err() {
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("python3 not available; skipping stdio fixture test");
         return;
     }
@@ -96,7 +101,10 @@ async fn stdio_server_roundtrip_and_failure_isolation() {
             ..stdio_config("python3")
         },
     );
-    configs.insert("dead".to_string(), stdio_config("/nonexistent/mcp-server-xyz"));
+    configs.insert(
+        "dead".to_string(),
+        stdio_config("/nonexistent/mcp-server-xyz"),
+    );
 
     let manager = McpManager::new(Arc::new(dir.path().to_path_buf()), configs);
 
@@ -115,17 +123,29 @@ async fn stdio_server_roundtrip_and_failure_isolation() {
         .await
         .expect("echo call");
     let formatted = format_tool_result(&result);
-    assert!(formatted.contains("\"text\": \"hello\""), "formatted: {formatted}");
-    assert!(formatted.contains("```json"), "structured content block: {formatted}");
+    assert!(
+        formatted.contains("\"text\": \"hello\""),
+        "formatted: {formatted}"
+    );
+    assert!(
+        formatted.contains("```json"),
+        "structured content block: {formatted}"
+    );
     assert!(formatted.contains("\"echoed\""));
 
     // tools/call: isError results get the `Error: ` prefix.
-    let failed = manager.call("fake", "fail", serde_json::json!({})).await.expect("fail call");
+    let failed = manager
+        .call("fake", "fail", serde_json::json!({}))
+        .await
+        .expect("fail call");
     assert!(failed.is_error);
     assert!(format_tool_result(&failed).starts_with("Error: boom"));
 
     // Unknown server surfaces a config error, not a panic.
-    assert!(manager.call("nope", "echo", serde_json::json!({})).await.is_err());
+    assert!(manager
+        .call("nope", "echo", serde_json::json!({}))
+        .await
+        .is_err());
 }
 
 #[test]
@@ -133,24 +153,39 @@ fn result_formatting_matches_omp_build_result() {
     // resource blocks and blank-line joining, port of formatMCPContent
     let result = ToolCallResult {
         content: vec![
-            Content::Text { text: "one".to_string() },
-            Content::Resource { uri: "file:///a".to_string(), text: Some("body".to_string()) },
-            Content::Text { text: "two".to_string() },
+            Content::Text {
+                text: "one".to_string(),
+            },
+            Content::Resource {
+                uri: "file:///a".to_string(),
+                text: Some("body".to_string()),
+            },
+            Content::Text {
+                text: "two".to_string(),
+            },
         ],
         ..ToolCallResult::default()
     };
-    assert_eq!(format_tool_result(&result), "one\n\n[Resource: file:///a]\nbody\n\ntwo");
+    assert_eq!(
+        format_tool_result(&result),
+        "one\n\n[Resource: file:///a]\nbody\n\ntwo"
+    );
 
     // structuredContent already present verbatim in a text block is not
     // duplicated.
     let dup = ToolCallResult {
-        content: vec![Content::Text { text: "{\"a\":1}".to_string() }],
+        content: vec![Content::Text {
+            text: "{\"a\":1}".to_string(),
+        }],
         structured_content: Some(serde_json::json!({"a": 1})),
         ..ToolCallResult::default()
     };
     assert_eq!(format_tool_result(&dup), "{\"a\":1}");
 
     // error without content still yields an `Error:` marker
-    let bare = ToolCallResult { is_error: true, ..ToolCallResult::default() };
+    let bare = ToolCallResult {
+        is_error: true,
+        ..ToolCallResult::default()
+    };
     assert_eq!(format_tool_result(&bare), "Error:");
 }

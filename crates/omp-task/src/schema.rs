@@ -26,8 +26,7 @@ impl SchemaValidation {
     /// Whether this outcome fails the run under `mode`.
     #[must_use]
     pub fn is_failure(&self, mode: SchemaMode) -> bool {
-        mode == SchemaMode::Strict
-            && matches!(self, Self::NotJson | Self::Invalid(_))
+        mode == SchemaMode::Strict && matches!(self, Self::NotJson | Self::Invalid(_))
     }
 
     /// Human-readable summary, for envelope error fields.
@@ -116,7 +115,8 @@ fn compile_schema(schema: &Value) -> Result<Option<Compiled>, String> {
 mod tests {
     use super::*;
 
-    const SCHEMA: &str = r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}"#;
+    const SCHEMA: &str =
+        r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}"#;
 
     #[test]
     fn no_schema_is_noop() {

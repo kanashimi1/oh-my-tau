@@ -298,7 +298,10 @@ fn fetch_result_lines(
     }
     let truncated = d.get("truncated").and_then(Value::as_bool).unwrap_or(false);
     if truncated {
-        meta_rows.push(format!("{} Output truncated", theme.symbol("status.warning")));
+        meta_rows.push(format!(
+            "{} Output truncated",
+            theme.symbol("status.warning")
+        ));
     }
     if !meta_rows.is_empty() {
         lines.push(label_line(theme, "Metadata:"));

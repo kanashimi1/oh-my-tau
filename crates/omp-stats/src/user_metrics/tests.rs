@@ -19,7 +19,10 @@ fn counts_multi_word_caps_as_yelling() {
 
 #[test]
 fn mostly_lowercase_sentence_is_not_yelling() {
-    assert_eq!(m("Hi there, please STOP doing THAT immediately, it is really annoying.").yelling, 0);
+    assert_eq!(
+        m("Hi there, please STOP doing THAT immediately, it is really annoying.").yelling,
+        0
+    );
 }
 
 #[test]
@@ -130,8 +133,14 @@ fn negation_ignores_words_sharing_a_prefix() {
 #[test]
 fn negation_anchors_only_at_the_start_of_the_message() {
     // Pasted error text / bullet lists tripped the old `^...$/m` anchor.
-    assert_eq!(m("i instantly get Finalizing ->\nNo speech detected").negation, 0);
-    assert_eq!(m("Authentication failed\n\nWrong user name or password").negation, 0);
+    assert_eq!(
+        m("i instantly get Finalizing ->\nNo speech detected").negation,
+        0
+    );
+    assert_eq!(
+        m("Authentication failed\n\nWrong user name or password").negation,
+        0
+    );
 }
 
 #[test]
@@ -161,7 +170,10 @@ fn repetition_counts_explicit_recall_verbs() {
 fn i_asked_requires_you_to_suppress_third_party_usage() {
     assert_eq!(m("i asked the committee to review").repetition, 0);
     assert_eq!(m("so i asked a bunch of experts").repetition, 0);
-    assert_eq!(m("you're not doing AST rewriting like i asked").repetition, 1);
+    assert_eq!(
+        m("you're not doing AST rewriting like i asked").repetition,
+        1
+    );
 }
 
 #[test]
@@ -250,7 +262,10 @@ fn judge_prose_strips_structured_content_and_caps_length() {
     assert_eq!(judge_prose("see `rm -rf /` now"), "see   now");
     assert_eq!(judge_prose("```\ncode\n```\n\nreal prose"), "real prose");
     assert_eq!(judge_prose("<tool><x/></tool>hello"), "hello");
-    assert_eq!(judge_prose("[Image #1]\n> quoted\nsee @file.rs and https://x.dev/y"), "see   and");
+    assert_eq!(
+        judge_prose("[Image #1]\n> quoted\nsee @file.rs and https://x.dev/y"),
+        "see   and"
+    );
 
     let long = "a".repeat(PROSE_MAX_CHARS + 500);
     let capped = judge_prose(&long);
@@ -261,4 +276,3 @@ fn judge_prose_strips_structured_content_and_caps_length() {
 fn markup_only_messages_yield_empty_prose() {
     assert_eq!(judge_prose("```\nall code\n```"), "");
 }
-

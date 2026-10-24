@@ -20,7 +20,9 @@ mod broker;
 mod cache;
 mod collate;
 
-pub use broker::{set_usage_broker, sum_fleet_tokens, ClientProviderUsage, ClientUsageClientSummary, UsageBroker};
+pub use broker::{
+    set_usage_broker, sum_fleet_tokens, ClientProviderUsage, ClientUsageClientSummary, UsageBroker,
+};
 pub use cache::cached_usage_data;
 #[cfg(test)]
 mod tests;
@@ -132,7 +134,10 @@ pub fn fetch_usage_data(since_ms: i64) -> UsageDataSnapshot {
         match broker.usage_history(since_ms) {
             Ok(rows) => {
                 let fleet_tokens_by_provider = broker::fetch_fleet_tokens(&broker, since_ms);
-                return UsageDataSnapshot { rows, fleet_tokens_by_provider };
+                return UsageDataSnapshot {
+                    rows,
+                    fleet_tokens_by_provider,
+                };
             }
             Err(err) => {
                 tracing::debug!(error = %err, "broker usage history unavailable, falling back to local");

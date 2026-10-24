@@ -19,7 +19,9 @@ pub(crate) struct TestHome {
 
 impl TestHome {
     pub(crate) fn new() -> Self {
-        let guard = DB_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = DB_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         #[cfg(feature = "db")]
         crate::db::close_db();
         let dir = tempfile::tempdir().expect("temp home");

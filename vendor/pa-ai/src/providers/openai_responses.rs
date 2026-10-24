@@ -9,14 +9,14 @@ use crate::event_stream::{
     create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
     AssistantMessageEventWriter,
 };
-use crate::providers::openai_responses_shared::{
-    apply_service_tier_pricing,
-    ResponsesStreamHooks,
+use crate::providers::openai_responses_shared::{apply_service_tier_pricing, ResponsesStreamHooks};
+use crate::providers::responses_request::{
+    build_body, responses_headers, Flavor, ResponsesOptions,
 };
-use crate::providers::responses_request::{build_body, responses_headers, Flavor, ResponsesOptions};
 use crate::registry::Provider;
 use crate::types::{
-    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
+    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason,
+    StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
@@ -111,7 +111,8 @@ async fn run_stream(
         .or_else(|| get_env_api_key(&model.provider))
         .unwrap_or_default();
     let view = crate::compat::ModelView::of(model);
-    let mut params = build_body(model, &view, context, &options, &Flavor::OpenAi).map_err(ProviderError::Message)?;
+    let mut params = build_body(model, &view, context, &options, &Flavor::OpenAi)
+        .map_err(ProviderError::Message)?;
     if let Some(on_payload) = &options.base.on_payload {
         if let Some(next) = on_payload(params.clone(), model) {
             params = next;
@@ -119,7 +120,13 @@ async fn run_stream(
     }
 
     let url = format!("{}/responses", model.base_url.trim_end_matches('/'));
-    let headers = responses_headers(model, &view, &api_key, options.base.headers.as_ref(), options.base.session_id.as_deref());
+    let headers = responses_headers(
+        model,
+        &view,
+        &api_key,
+        options.base.headers.as_ref(),
+        options.base.session_id.as_deref(),
+    );
     let body = params.to_string();
     // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
     let request_dump = RawHttpRequestDump {
@@ -276,4 +283,3 @@ impl Provider for OpenAIResponsesProvider {
         stream_simple_openai_responses(model, context, options)
     }
 }
-

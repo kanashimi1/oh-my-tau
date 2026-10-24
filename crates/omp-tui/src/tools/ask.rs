@@ -239,17 +239,22 @@ pub fn result_lines(
                 let any = selected.map_or(0, Vec::len) + usize::from(custom.is_some());
                 if timed_out && any == 0 {
                     lines.push(Line::from(Span::styled(
-                        format!("    {} timed out — no answer", theme.symbol("status.warning")),
+                        format!(
+                            "    {} timed out — no answer",
+                            theme.symbol("status.warning")
+                        ),
                         Style::new().fg(theme.color("warning")),
                     )));
                     continue;
                 }
                 for s in selected.map_or(vec![], |s| {
                     s.iter()
-                        .map(|v| sanitize(&match v {
-                            Value::String(t) => t.clone(),
-                            other => other.to_string(),
-                        }))
+                        .map(|v| {
+                            sanitize(&match v {
+                                Value::String(t) => t.clone(),
+                                other => other.to_string(),
+                            })
+                        })
                         .collect::<Vec<_>>()
                 }) {
                     lines.push(Line::from(Span::styled(
@@ -300,23 +305,20 @@ fn head_line<'a>(
 #[must_use]
 pub fn status_summary(result: &Value) -> String {
     let d = result.get("details").unwrap_or(result);
-    let n = d
-        .get("results")
-        .and_then(Value::as_array)
-        .map_or(0, |rs| {
-            rs.iter()
-                .map(|r| {
-                    r.get("selectedOptions")
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len)
-                        + usize::from(
-                            r.get("customInput")
-                                .and_then(Value::as_str)
-                                .is_some_and(|s| !s.is_empty()),
-                        )
-                })
-                .sum::<usize>()
-        });
+    let n = d.get("results").and_then(Value::as_array).map_or(0, |rs| {
+        rs.iter()
+            .map(|r| {
+                r.get("selectedOptions")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+                    + usize::from(
+                        r.get("customInput")
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.is_empty()),
+                    )
+            })
+            .sum::<usize>()
+    });
     if n == 0 {
         "asked".into()
     } else {

@@ -20,7 +20,9 @@ use serde_json::Value;
 
 use crate::db_query::{get_frustration_by_model, get_frustration_overall, FrustrationModelRow};
 use crate::rollup::get_time_range_config;
-use crate::taxonomy::{classify_model, compare_revision, parse_revision, ClassifyOptions, ModelIdentity};
+use crate::taxonomy::{
+    classify_model, compare_revision, parse_revision, ClassifyOptions, ModelIdentity,
+};
 use crate::types::{FrustrationCounts, FrustrationDashboardStats, FrustrationModelStats};
 
 /// The judge questions, one judge request per prose text (TS `prompts/judge/frustration.json`).
@@ -28,24 +30,33 @@ const QUESTION_FILE: &str = include_str!("../data/frustration.json");
 
 mod run;
 
-pub use run::{
-    cancel_frustration_run, estimate_frustration_run, get_frustration_job_status, judge_available,
-    set_stats_judge_provider, start_frustration_run, wait_frustration_run_finished, JudgeAnswer, JudgeFuture,
-    JudgeModel, StartFrustrationRunResult, StatsJudge, StatsJudgeProvider,
-};
 #[cfg(test)]
 pub(crate) use run::reset_for_tests;
+pub use run::{
+    cancel_frustration_run, estimate_frustration_run, get_frustration_job_status, judge_available,
+    set_stats_judge_provider, start_frustration_run, wait_frustration_run_finished, JudgeAnswer,
+    JudgeFuture, JudgeModel, StartFrustrationRunResult, StatsJudge, StatsJudgeProvider,
+};
 
 /// One question as the judge sees it. Kind follows the shape of `criteria`,
 /// the same rule as TS `judgeQuestions` (`ai/src/judgment/question-file.ts`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Question {
     /// `criteria` is a list of levels, lowest first.
-    Score { instructions: String, criteria: Vec<String> },
+    Score {
+        instructions: String,
+        criteria: Vec<String>,
+    },
     /// Yes/no rubric (`true`/`false` labels only); `None` when the file has no criteria.
-    Noul { instructions: String, criteria: Option<BTreeMap<String, String>> },
+    Noul {
+        instructions: String,
+        criteria: Option<BTreeMap<String, String>>,
+    },
     /// Any other labels; `null` labels are kept as-is.
-    Choice { instructions: String, criteria: BTreeMap<String, Option<String>> },
+    Choice {
+        instructions: String,
+        criteria: BTreeMap<String, Option<String>>,
+    },
 }
 
 /// Every question of a question file, keyed by id.
@@ -74,9 +85,17 @@ pub fn judge_questions(text: &str) -> Result<Questions> {
 }
 
 fn to_question(id: &str, spec: QuestionSpec) -> Result<Question> {
-    let QuestionSpec { instructions, criteria } = spec;
+    let QuestionSpec {
+        instructions,
+        criteria,
+    } = spec;
     let criteria = match criteria {
-        None | Some(Value::Null) => return Ok(Question::Noul { instructions, criteria: None }),
+        None | Some(Value::Null) => {
+            return Ok(Question::Noul {
+                instructions,
+                criteria: None,
+            })
+        }
         Some(criteria) => criteria,
     };
     match criteria {
@@ -85,17 +104,30 @@ fn to_question(id: &str, spec: QuestionSpec) -> Result<Question> {
             if levels.len() < 2 {
                 bail!("score question \"{id}\" needs at least two levels");
             }
-            Ok(Question::Score { instructions, criteria: levels })
+            Ok(Question::Score {
+                instructions,
+                criteria: levels,
+            })
         }
         Value::Object(_) => {
             let labels: BTreeMap<String, Option<String>> = serde_json::from_value(criteria)?;
             // `{}` and any label besides true/false are a choice; only a true/false rubric is yes/no.
-            let is_rubric = !labels.is_empty() && labels.keys().all(|k| k == "true" || k == "false");
+            let is_rubric =
+                !labels.is_empty() && labels.keys().all(|k| k == "true" || k == "false");
             if is_rubric {
-                let rubric = labels.into_iter().filter_map(|(k, v)| v.map(|v| (k, v))).collect();
-                Ok(Question::Noul { instructions, criteria: Some(rubric) })
+                let rubric = labels
+                    .into_iter()
+                    .filter_map(|(k, v)| v.map(|v| (k, v)))
+                    .collect();
+                Ok(Question::Noul {
+                    instructions,
+                    criteria: Some(rubric),
+                })
             } else {
-                Ok(Question::Choice { instructions, criteria: labels })
+                Ok(Question::Choice {
+                    instructions,
+                    criteria: labels,
+                })
             }
         }
         _ => bail!("question \"{id}\": criteria must be a list or an object"),
@@ -117,7 +149,11 @@ pub fn merge_frustration_rows(rows: &[FrustrationModelRow]) -> Vec<FrustrationMo
         let classified = identity.class != "unknown" && identity.revision.is_some();
         let family = identity.family.clone();
         let key = match (&identity.revision, classified) {
-            (Some(revision), true) => format!("{}/{}/{revision}", identity.class, family.as_deref().unwrap_or("")),
+            (Some(revision), true) => format!(
+                "{}/{}/{revision}",
+                identity.class,
+                family.as_deref().unwrap_or("")
+            ),
             _ => row.model.clone(),
         };
         if let Some(&slot) = index.get(&key) {
@@ -129,7 +165,11 @@ pub fn merge_frustration_rows(rows: &[FrustrationModelRow]) -> Vec<FrustrationMo
             }
             continue;
         }
-        let revision = if classified { identity.revision.clone() } else { None };
+        let revision = if classified {
+            identity.revision.clone()
+        } else {
+            None
+        };
         let label = match revision.as_deref().map(short_revision) {
             Some(short) => [family.as_deref(), Some(short)]
                 .into_iter()
@@ -157,8 +197,16 @@ pub fn merge_frustration_rows(rows: &[FrustrationModelRow]) -> Vec<FrustrationMo
 
 /// Lenient classification never fails in practice; an error counts as unclassified.
 fn identify(row: &FrustrationModelRow) -> ModelIdentity {
-    let opts = ClassifyOptions { lenient: true, ..ClassifyOptions::default() };
-    classify_model(row.provider.as_deref().unwrap_or(""), &row.model, Some(opts)).unwrap_or_else(|_| ModelIdentity {
+    let opts = ClassifyOptions {
+        lenient: true,
+        ..ClassifyOptions::default()
+    };
+    classify_model(
+        row.provider.as_deref().unwrap_or(""),
+        &row.model,
+        Some(opts),
+    )
+    .unwrap_or_else(|_| ModelIdentity {
         class: "unknown".to_owned(),
         ..ModelIdentity::default()
     })
@@ -195,7 +243,12 @@ fn compare_model_stats(a: &FrustrationModelStats, b: &FrustrationModelStats) -> 
     a.model_class
         .cmp(&b.model_class)
         .then_with(|| compare_revision(a_rev, b_rev).cmp(&0))
-        .then_with(|| a.family.as_deref().unwrap_or("").cmp(b.family.as_deref().unwrap_or("")))
+        .then_with(|| {
+            a.family
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.family.as_deref().unwrap_or(""))
+        })
 }
 
 /// Payload of `GET /api/stats/frustration`.

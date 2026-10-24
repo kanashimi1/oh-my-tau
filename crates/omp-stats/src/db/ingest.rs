@@ -39,7 +39,11 @@ fn decode_file_offset(offset: i64, last_modified: f64, parser_state: Option<Stri
         let state: SessionParserState = serde_json::from_str(&json).ok()?;
         (state.version == 1 && state.offset == offset).then_some(state)
     });
-    FileOffset { offset, last_modified, parser_state }
+    FileOffset {
+        offset,
+        last_modified,
+        parser_state,
+    }
 }
 
 /// TS `getFileOffset`: one persisted cursor for an individual transcript.
@@ -53,7 +57,11 @@ pub fn get_file_offset(session_file: &str) -> Result<Option<FileOffset>> {
         )?;
         let mut rows = stmt.query(rusqlite::params![session_file])?;
         if let Some(row) = rows.next()? {
-            return Ok(Some(decode_file_offset(row.get(1)?, row.get(2)?, row.get(3)?)));
+            return Ok(Some(decode_file_offset(
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            )));
         }
         Ok(None)
     })
@@ -69,12 +77,19 @@ pub fn get_file_offsets(session_files: &[String]) -> Result<HashMap<String, File
         return Ok(out);
     }
     with_db(|conn| {
-        let placeholders = session_files.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = session_files
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let sql = format!(
             "SELECT session_file, offset, last_modified, parser_state FROM file_offsets WHERE session_file IN ({placeholders})"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let values: Vec<&dyn rusqlite::ToSql> = session_files.iter().map(|f| f as &dyn rusqlite::ToSql).collect();
+        let values: Vec<&dyn rusqlite::ToSql> = session_files
+            .iter()
+            .map(|f| f as &dyn rusqlite::ToSql)
+            .collect();
         let mut rows = stmt.query(&values[..])?;
         while let Some(row) = rows.next()? {
             let file: String = row.get(0)?;
@@ -95,9 +110,7 @@ pub fn set_file_offset(
     last_modified: f64,
     parser_state: Option<&SessionParserState>,
 ) -> Result<()> {
-    with_db(|conn| {
-        write::set_file_offset(conn, session_file, offset, last_modified, parser_state)
-    })
+    with_db(|conn| write::set_file_offset(conn, session_file, offset, last_modified, parser_state))
 }
 
 /// TS `ParsedSession`: a parsed transcript queued by the sync loop for an
@@ -130,14 +143,16 @@ pub struct ApplySessionOutcome {
 pub fn apply_session_parse_results(sessions: &[ParsedSession]) -> Result<ApplySessionOutcome> {
     with_db(|conn| {
         let tx = conn.unchecked_transaction()?;
-        let outcome = apply_in_transaction(&tx, sessions)
-            .context("apply session parse results")?;
+        let outcome = apply_in_transaction(&tx, sessions).context("apply session parse results")?;
         tx.commit()?;
         Ok(outcome)
     })
 }
 
-fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession]) -> Result<ApplySessionOutcome> {
+fn apply_in_transaction(
+    conn: &rusqlite::Connection,
+    sessions: &[ParsedSession],
+) -> Result<ApplySessionOutcome> {
     let mut processed: i64 = 0;
     let mut files: i64 = 0;
     let mut reconcile = false;
@@ -145,7 +160,12 @@ fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession])
     let mut writes: Vec<ParseSessionResult> = Vec::new();
 
     for session in sessions {
-        let ParsedSession { session_file, result, rebuild, replay } = session;
+        let ParsedSession {
+            session_file,
+            result,
+            rebuild,
+            replay,
+        } = session;
         if result.parser_state.is_none() {
             continue;
         }
@@ -158,11 +178,21 @@ fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession])
             if replace {
                 // Only removed owners require another full replay, not an
                 // identity-only file replacement.
-                if !reconcile && (!stored_messages.is_empty() || !stored_users.is_empty() || !stored_tools.is_empty()) {
-                    let retained_messages: std::collections::HashSet<String> =
-                        result.stats.iter().map(|r| format!("[{:?},{}]", r.entry_id, r.timestamp)).collect();
-                    let retained_users: std::collections::HashSet<String> =
-                        result.user_stats.iter().map(|r| format!("[{:?},{}]", r.entry_id, r.timestamp)).collect();
+                if !reconcile
+                    && (!stored_messages.is_empty()
+                        || !stored_users.is_empty()
+                        || !stored_tools.is_empty())
+                {
+                    let retained_messages: std::collections::HashSet<String> = result
+                        .stats
+                        .iter()
+                        .map(|r| format!("[{:?},{}]", r.entry_id, r.timestamp))
+                        .collect();
+                    let retained_users: std::collections::HashSet<String> = result
+                        .user_stats
+                        .iter()
+                        .map(|r| format!("[{:?},{}]", r.entry_id, r.timestamp))
+                        .collect();
                     let retained_tools: std::collections::HashSet<String> = result
                         .tool_calls
                         .iter()
@@ -179,26 +209,34 @@ fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession])
                     });
                     reconcile = removed_messages || removed_users || removed_tools;
                 }
-                changes += write::delete_all_messages(conn, session_file, !stored_messages.is_empty())?;
+                changes +=
+                    write::delete_all_messages(conn, session_file, !stored_messages.is_empty())?;
                 changes += write::delete_all_users(conn, session_file, !stored_users.is_empty())?;
                 changes += write::delete_all_tools(conn, session_file, !stored_tools.is_empty())?;
             } else {
                 // A reconciliation replay only needs missing rows and
                 // unfinished links; repair stale owners without invalidating
                 // IDs of records still present in the transcript.
-                let message_ts: HashMap<&str, i64> =
-                    stored_messages.iter().map(|(id, ts)| (id.as_str(), *ts)).collect();
+                let message_ts: HashMap<&str, i64> = stored_messages
+                    .iter()
+                    .map(|(id, ts)| (id.as_str(), *ts))
+                    .collect();
                 let user_by_id: HashMap<&str, (i64, bool)> = stored_users
                     .iter()
                     .map(|(id, ts, has_model)| (id.as_str(), (*ts, *has_model)))
                     .collect();
                 let tool_by_id: HashMap<&str, (String, i64, bool)> = stored_tools
                     .iter()
-                    .map(|(entry_id, ts, tc, has_result)| (tc.as_str(), (entry_id.clone(), *ts, *has_result)))
+                    .map(|(entry_id, ts, tc, has_result)| {
+                        (tc.as_str(), (entry_id.clone(), *ts, *has_result))
+                    })
                     .collect();
-                let mut absent_messages: std::collections::HashSet<&str> = message_ts.keys().copied().collect();
-                let mut absent_users: std::collections::HashSet<&str> = user_by_id.keys().copied().collect();
-                let mut absent_tools: std::collections::HashSet<&str> = tool_by_id.keys().copied().collect();
+                let mut absent_messages: std::collections::HashSet<&str> =
+                    message_ts.keys().copied().collect();
+                let mut absent_users: std::collections::HashSet<&str> =
+                    user_by_id.keys().copied().collect();
+                let mut absent_tools: std::collections::HashSet<&str> =
+                    tool_by_id.keys().copied().collect();
                 rows.stats.retain(|row| {
                     if message_ts.get(row.entry_id.as_str()) != Some(&row.timestamp) {
                         return true;
@@ -207,31 +245,43 @@ fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession])
                     false
                 });
                 rows.user_stats.retain(|row| {
-                    if user_by_id.get(row.entry_id.as_str()).map(|(ts, _)| *ts) != Some(row.timestamp) {
+                    if user_by_id.get(row.entry_id.as_str()).map(|(ts, _)| *ts)
+                        != Some(row.timestamp)
+                    {
                         return true;
                     }
                     absent_users.remove(row.entry_id.as_str());
                     false
                 });
-                rows.tool_calls.retain(|row| {
-                    match tool_by_id.get(row.tool_call_id.as_str()) {
-                        Some((entry_id, ts, _)) if *entry_id == row.entry_id && *ts == row.timestamp => {
+                rows.tool_calls
+                    .retain(|row| match tool_by_id.get(row.tool_call_id.as_str()) {
+                        Some((entry_id, ts, _))
+                            if *entry_id == row.entry_id && *ts == row.timestamp =>
+                        {
                             absent_tools.remove(row.tool_call_id.as_str());
                             false
                         }
                         _ => true,
-                    }
-                });
+                    });
                 // A reused ID needs fresh linkage after its old identity is removed.
                 rows.user_links.retain(|row| {
                     absent_users.contains(row.entry_id.as_str())
-                        || !user_by_id.get(row.entry_id.as_str()).map(|(_, m)| *m).unwrap_or(false)
+                        || !user_by_id
+                            .get(row.entry_id.as_str())
+                            .map(|(_, m)| *m)
+                            .unwrap_or(false)
                 });
                 rows.tool_results.retain(|row| {
                     absent_tools.contains(row.tool_call_id.as_str())
-                        || !tool_by_id.get(row.tool_call_id.as_str()).map(|(_, _, r)| *r).unwrap_or(false)
+                        || !tool_by_id
+                            .get(row.tool_call_id.as_str())
+                            .map(|(_, _, r)| *r)
+                            .unwrap_or(false)
                 });
-                if !absent_messages.is_empty() || !absent_users.is_empty() || !absent_tools.is_empty() {
+                if !absent_messages.is_empty()
+                    || !absent_users.is_empty()
+                    || !absent_tools.is_empty()
+                {
                     reconcile = true;
                     for id in &absent_messages {
                         changes += write::delete_message(conn, session_file, id)?;
@@ -255,15 +305,36 @@ fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession])
 
     // Remove replaced rows before choosing new fork owners, then write each
     // table once per batch.
-    changes += write::insert_message_stats_conn(conn, writes.iter().flat_map(|w| w.stats.iter().cloned()))?;
-    changes += super::rows::insert_user_message_stats_conn(conn, writes.iter().flat_map(|w| w.user_stats.iter().cloned()))? as i64;
-    changes += super::rows::update_user_message_links_conn(conn, writes.iter().flat_map(|w| w.user_links.iter().cloned()))? as i64;
-    changes += super::rows::insert_tool_calls_conn(conn, writes.iter().flat_map(|w| w.tool_calls.iter().cloned()))? as i64;
-    changes += super::rows::update_tool_results_conn(conn, writes.iter().flat_map(|w| w.tool_results.iter().cloned()))? as i64;
+    changes += write::insert_message_stats_conn(
+        conn,
+        writes.iter().flat_map(|w| w.stats.iter().cloned()),
+    )?;
+    changes += super::rows::insert_user_message_stats_conn(
+        conn,
+        writes.iter().flat_map(|w| w.user_stats.iter().cloned()),
+    )? as i64;
+    changes += super::rows::update_user_message_links_conn(
+        conn,
+        writes.iter().flat_map(|w| w.user_links.iter().cloned()),
+    )? as i64;
+    changes += super::rows::insert_tool_calls_conn(
+        conn,
+        writes.iter().flat_map(|w| w.tool_calls.iter().cloned()),
+    )? as i64;
+    changes += super::rows::update_tool_results_conn(
+        conn,
+        writes.iter().flat_map(|w| w.tool_results.iter().cloned()),
+    )? as i64;
 
     for session in sessions {
         if let Some(state) = &session.result.parser_state {
-            write::set_file_offset(conn, &session.session_file, session.result.new_offset, state.mtime_ms, Some(state))?;
+            write::set_file_offset(
+                conn,
+                &session.session_file,
+                session.result.new_offset,
+                state.mtime_ms,
+                Some(state),
+            )?;
         }
     }
     if reconcile {
@@ -272,7 +343,12 @@ fn apply_in_transaction(conn: &rusqlite::Connection, sessions: &[ParsedSession])
             [],
         )?;
     }
-    Ok(ApplySessionOutcome { processed, files, reconcile, changes })
+    Ok(ApplySessionOutcome {
+        processed,
+        files,
+        reconcile,
+        changes,
+    })
 }
 
 /// TS `getDataVersion`: `PRAGMA data_version` moves only when another
@@ -362,7 +438,8 @@ pub fn mark_session_backfills_complete() -> Result<()> {
     with_db(|conn| {
         let tx = conn.unchecked_transaction()?;
         {
-            let mut mark = tx.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, 'complete')")?;
+            let mut mark =
+                tx.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, 'complete')")?;
             for key in KEYS {
                 mark.execute(rusqlite::params![key])?;
             }
@@ -507,7 +584,10 @@ mod tests {
         rebuilt.rebuild = true;
         rebuilt.result.stats.retain(|m| m.entry_id != "e2");
         let outcome = apply_session_parse_results(&[rebuilt])?;
-        assert!(outcome.reconcile, "removed owner row must trigger reconcile");
+        assert!(
+            outcome.reconcile,
+            "removed owner row must trigger reconcile"
+        );
         assert_eq!(get_message_count()?, 1);
         assert!(prepare_session_sync()?);
         // TS completeSessionSync: reconcile=true keeps the sentinel.
@@ -540,18 +620,29 @@ mod tests {
         let mut batch = Vec::new();
         for file in &files {
             let result = crate::parser::parse_session_file(file, 0, None, false)?;
-            batch.push(ParsedSession { session_file: file.clone(), result, rebuild: false, replay: false });
+            batch.push(ParsedSession {
+                session_file: file.clone(),
+                result,
+                rebuild: false,
+                replay: false,
+            });
         }
         let outcome = apply_session_parse_results(&batch)?;
         assert!(outcome.changes > 0);
 
         let messages = get_message_count()?;
-        let tool_calls: i64 =
-            super::with_db(|c| -> Result<i64> { c.query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0)).map_err(Into::into) })?;
-        let user_messages: i64 =
-            super::with_db(|c| -> Result<i64> { c.query_row("SELECT COUNT(*) FROM user_messages", [], |r| r.get(0)).map_err(Into::into) })?;
-        let offsets: i64 =
-            super::with_db(|c| -> Result<i64> { c.query_row("SELECT COUNT(*) FROM file_offsets", [], |r| r.get(0)).map_err(Into::into) })?;
+        let tool_calls: i64 = super::with_db(|c| -> Result<i64> {
+            c.query_row("SELECT COUNT(*) FROM tool_calls", [], |r| r.get(0))
+                .map_err(Into::into)
+        })?;
+        let user_messages: i64 = super::with_db(|c| -> Result<i64> {
+            c.query_row("SELECT COUNT(*) FROM user_messages", [], |r| r.get(0))
+                .map_err(Into::into)
+        })?;
+        let offsets: i64 = super::with_db(|c| -> Result<i64> {
+            c.query_row("SELECT COUNT(*) FROM file_offsets", [], |r| r.get(0))
+                .map_err(Into::into)
+        })?;
         assert_eq!(messages, 900, "messages vs golden/_stats.full.db");
         assert_eq!(tool_calls, 1113, "tool_calls vs golden/_stats.full.db");
         assert_eq!(user_messages, 41, "user_messages vs golden/_stats.full.db");
@@ -570,8 +661,16 @@ mod tests {
                 offset.parser_state.as_ref(),
                 false,
             )?;
-            assert!(result.stats.is_empty() && result.tool_calls.is_empty(), "tail is drained");
-            second.push(ParsedSession { session_file: file.clone(), result, rebuild: false, replay: false });
+            assert!(
+                result.stats.is_empty() && result.tool_calls.is_empty(),
+                "tail is drained"
+            );
+            second.push(ParsedSession {
+                session_file: file.clone(),
+                result,
+                rebuild: false,
+                replay: false,
+            });
         }
         let again = apply_session_parse_results(&second)?;
         assert_eq!(get_message_count()?, 900);

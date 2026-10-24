@@ -5,38 +5,46 @@
 //! as-is by `server`. Modules are feature-gated along the TS import graph so
 //! each can be built alone; `default` enables everything.
 
-pub mod paths;
-#[cfg(all(test, any(feature = "parser", feature = "db_ingest", feature = "db_query", feature = "rollup")))]
-pub(crate) mod testutil;
-#[cfg(feature = "types")]
-pub mod types;
-#[cfg(feature = "taxonomy")]
-pub mod taxonomy;
+#[cfg(feature = "aggregator")]
+pub mod aggregator;
 #[cfg(feature = "catalog")]
 pub mod catalog;
-#[cfg(feature = "user_metrics")]
-pub mod user_metrics;
-#[cfg(feature = "port_conflict")]
-pub mod port_conflict;
-#[cfg(feature = "parser")]
-pub mod parser;
 #[cfg(feature = "db")]
 pub mod db;
 #[cfg(feature = "db_query")]
 pub mod db_query;
-#[cfg(feature = "rollup")]
-pub mod rollup;
-#[cfg(feature = "aggregator")]
-pub mod aggregator;
-#[cfg(feature = "aggregator")]
-pub mod usage_windows;
-#[cfg(feature = "trace")]
-pub mod trace;
-#[cfg(feature = "gain")]
-pub mod gain;
 #[cfg(feature = "frustration")]
 pub mod frustration;
+#[cfg(feature = "gain")]
+pub mod gain;
 #[cfg(feature = "live")]
 pub mod live;
+#[cfg(feature = "parser")]
+pub mod parser;
+pub mod paths;
+#[cfg(feature = "port_conflict")]
+pub mod port_conflict;
+#[cfg(feature = "rollup")]
+pub mod rollup;
 #[cfg(feature = "server")]
 pub mod server;
+#[cfg(feature = "taxonomy")]
+pub mod taxonomy;
+#[cfg(all(
+    test,
+    any(
+        feature = "parser",
+        feature = "db_ingest",
+        feature = "db_query",
+        feature = "rollup"
+    )
+))]
+pub(crate) mod testutil;
+#[cfg(feature = "trace")]
+pub mod trace;
+#[cfg(feature = "types")]
+pub mod types;
+#[cfg(feature = "aggregator")]
+pub mod usage_windows;
+#[cfg(feature = "user_metrics")]
+pub mod user_metrics;

@@ -26,9 +26,8 @@ fn ts_normalize_profile(profile: Option<&str>) -> Option<String> {
     let first_ok = chars
         .next()
         .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-    let rest_ok = chars.all(|c| {
-        c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-')
-    });
+    let rest_ok =
+        chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'));
     if !first_ok || !rest_ok || p.len() > 64 {
         return None;
     }
@@ -58,7 +57,12 @@ pub fn ts_sessions_root(env: &TsDirsEnv, exists: impl Fn(&Path) -> bool) -> Path
         Some(p) => ts_normalize_profile(Some(p)),
         None => ts_normalize_profile(env.pi_profile.as_deref()),
     };
-    let base = env.home.join(env.config_dir.as_deref().filter(|s| !s.is_empty()).unwrap_or(".omp"));
+    let base = env.home.join(
+        env.config_dir
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(".omp"),
+    );
     let config_root = match &profile {
         Some(p) => base.join("profiles").join(p),
         None => base.clone(),
@@ -108,10 +112,7 @@ pub fn ts_tmpdir(get: impl Fn(&str) -> Option<String>) -> String {
 /// temp root first (`-tmp[-rel]`), then home (`-[rel]`), else the legacy
 /// absolute form `--<abs>--`; `/`, `\` and `:` become `-`.
 pub fn ts_session_dir_name(cwd: &Path, home: &Path, tmp: &Path) -> String {
-    let encode = |rel: &Path| {
-        rel.to_string_lossy()
-            .replace(['/', '\\', ':'], "-")
-    };
+    let encode = |rel: &Path| rel.to_string_lossy().replace(['/', '\\', ':'], "-");
     let relative = |prefix: &str, rel: &Path| {
         let encoded = encode(rel);
         if encoded.is_empty() {
@@ -178,13 +179,22 @@ mod tests {
     fn sessions_root_default_and_overrides() {
         let none = |_: &Path| false;
         let mut e = env("/home/u");
-        assert_eq!(ts_sessions_root(&e, none), Path::new("/home/u/.omp/agent/sessions"));
+        assert_eq!(
+            ts_sessions_root(&e, none),
+            Path::new("/home/u/.omp/agent/sessions")
+        );
         e.config_dir = Some("cfg".into());
-        assert_eq!(ts_sessions_root(&e, none), Path::new("/home/u/cfg/agent/sessions"));
+        assert_eq!(
+            ts_sessions_root(&e, none),
+            Path::new("/home/u/cfg/agent/sessions")
+        );
         e.agent_dir = Some("/custom".into());
         assert_eq!(ts_sessions_root(&e, none), Path::new("/custom/sessions"));
         e.agent_dir = Some(String::new());
-        assert_eq!(ts_sessions_root(&e, none), Path::new("/home/u/cfg/agent/sessions"));
+        assert_eq!(
+            ts_sessions_root(&e, none),
+            Path::new("/home/u/cfg/agent/sessions")
+        );
         e.agent_dir = Some("rel".into());
         assert_eq!(ts_sessions_root(&e, none), Path::new("/work/rel/sessions"));
     }
@@ -200,7 +210,10 @@ mod tests {
         );
         // OMP_PROFILE wins, even when empty (selects the default profile).
         e.omp_profile = Some(String::new());
-        assert_eq!(ts_sessions_root(&e, none), Path::new("/home/u/.omp/agent/sessions"));
+        assert_eq!(
+            ts_sessions_root(&e, none),
+            Path::new("/home/u/.omp/agent/sessions")
+        );
         e.omp_profile = Some("work".into());
         e.agent_dir = Some("/custom".into());
         assert_eq!(
@@ -212,11 +225,17 @@ mod tests {
         d.omp_profile = Some(String::new());
         d.pi_profile = Some("old".into());
         d.agent_dir = Some("/home/u/.omp/profiles/old/agent".into());
-        assert_eq!(ts_sessions_root(&d, none), Path::new("/home/u/.omp/agent/sessions"));
+        assert_eq!(
+            ts_sessions_root(&d, none),
+            Path::new("/home/u/.omp/agent/sessions")
+        );
         // Invalid names fall back to the default profile.
         let mut bad = env("/home/u");
         bad.omp_profile = Some("Bad Name".into());
-        assert_eq!(ts_sessions_root(&bad, none), Path::new("/home/u/.omp/agent/sessions"));
+        assert_eq!(
+            ts_sessions_root(&bad, none),
+            Path::new("/home/u/.omp/agent/sessions")
+        );
     }
 
     #[test]
@@ -234,7 +253,10 @@ mod tests {
         e.agent_dir = None;
         e.omp_profile = Some("work".into());
         let prof = |p: &Path| p == Path::new("/x/omp/profiles/work");
-        assert_eq!(ts_sessions_root(&e, prof), Path::new("/x/omp/profiles/work/sessions"));
+        assert_eq!(
+            ts_sessions_root(&e, prof),
+            Path::new("/x/omp/profiles/work/sessions")
+        );
         assert_eq!(
             ts_sessions_root(&e, present),
             Path::new("/home/u/.omp/profiles/work/agent/sessions")
@@ -244,7 +266,12 @@ mod tests {
     #[test]
     fn tmpdir_follows_node_rules() {
         let with = |pairs: &'static [(&'static str, &'static str)]| {
-            ts_tmpdir(move |k| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned()))
+            ts_tmpdir(move |k| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_owned())
+            })
         };
         assert_eq!(with(&[]), "/tmp");
         assert_eq!(with(&[("TMPDIR", "/var/t/")]), "/var/t");

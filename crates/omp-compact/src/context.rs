@@ -547,15 +547,9 @@ pub fn build_session_context_owned(
             } else {
                 None
             };
-            let first_retained = (first_kept_idx
-                .filter(|&i| i < ci)
-                .map(|i| &path[i]))
-            .or_else(|| {
-                snapshot_idx
-                    .filter(|&i| i + 1 < ci)
-                    .map(|i| &path[i + 1])
-            })
-            .or(path.get(ci + 1));
+            let first_retained = (first_kept_idx.filter(|&i| i < ci).map(|i| &path[i]))
+                .or_else(|| snapshot_idx.filter(|&i| i + 1 < ci).map(|i| &path[i + 1]))
+                .or(path.get(ci + 1));
             first_retained
                 .and_then(|e| str_field(e, "timestamp"))
                 .and_then(parse_iso_ms)
@@ -597,9 +591,8 @@ pub fn build_session_context_owned(
                     take_context_message(e, &mut messages);
                 }
             }
-        } else if let Some(replay_through) =
-            str_field(&path[ci], "providerReplayThroughEntryId")
-                .and_then(|id| path.iter().position(|e| entry_id(e) == id))
+        } else if let Some(replay_through) = str_field(&path[ci], "providerReplayThroughEntryId")
+            .and_then(|id| path.iter().position(|e| entry_id(e) == id))
         {
             if replay_through < ci {
                 for e in path.iter_mut().take(ci).skip(replay_through + 1) {
@@ -869,7 +862,12 @@ fn drop_failed_assistant_turns(messages: &mut Vec<Value>) {
             }
         }
         kill(&mut alive, &mut next, i);
-        for block in messages[i].get("content").and_then(Value::as_array).into_iter().flatten() {
+        for block in messages[i]
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             if str_field(block, "type") != Some("toolCall") {
                 continue;
             }
@@ -904,7 +902,10 @@ mod drop_tests {
             if i >= messages.len() || message_role(&messages[i]) != "assistant" {
                 continue;
             }
-            if !matches!(str_field(&messages[i], "stopReason"), Some("aborted" | "error")) {
+            if !matches!(
+                str_field(&messages[i], "stopReason"),
+                Some("aborted" | "error")
+            ) {
                 continue;
             }
             if let Some(next) = messages.get(i + 1) {
@@ -928,7 +929,8 @@ mod drop_tests {
                 while j > i {
                     j -= 1;
                     if message_role(&messages[j]) == "toolResult"
-                        && str_field(&messages[j], "toolCallId").is_some_and(|id| dropped.contains(id))
+                        && str_field(&messages[j], "toolCallId")
+                            .is_some_and(|id| dropped.contains(id))
                     {
                         messages.remove(j);
                     }

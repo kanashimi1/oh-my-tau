@@ -32,12 +32,16 @@ pub fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
 
 /// Servers connected by the latest discovery, with their tool counts (TS
 /// `MCPManager.getConnectedServers` + `getConnection(name).tools.length`).
-static CONNECTED_SERVERS: std::sync::Mutex<Vec<(String, usize)>> = std::sync::Mutex::new(Vec::new());
+static CONNECTED_SERVERS: std::sync::Mutex<Vec<(String, usize)>> =
+    std::sync::Mutex::new(Vec::new());
 
 /// `(server, tool count)` for every MCP server connected by the latest discovery.
 #[must_use]
 pub fn connected_servers() -> Vec<(String, usize)> {
-    CONNECTED_SERVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    CONNECTED_SERVERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 #[allow(clippy::unnecessary_wraps)]
@@ -59,7 +63,9 @@ fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
                 omp_mcp::ServerStatus::Pending => {}
             }
         }
-        *CONNECTED_SERVERS.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = connected;
+        *CONNECTED_SERVERS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = connected;
         discovered
             .into_iter()
             .map(|tool| {
@@ -94,7 +100,8 @@ fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
         Ok(_current_thread) => {
             let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<Arc<dyn AgentTool>>>>();
             std::thread::spawn(move || {
-                let result: Option<Vec<Arc<dyn AgentTool>>> = Some(fallback_runtime().block_on(discover()));
+                let result: Option<Vec<Arc<dyn AgentTool>>> =
+                    Some(fallback_runtime().block_on(discover()));
                 let _ = tx.send(result);
             });
             rx.recv().unwrap_or(None)

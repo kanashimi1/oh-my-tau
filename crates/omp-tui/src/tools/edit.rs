@@ -336,9 +336,7 @@ pub fn hashline_rows(text: &str) -> Vec<String> {
             match bytes.first().copied() {
                 Some(b'*') => Some(format!("+{}", &line[1..])),
                 Some(b'+' | b'-') => Some(line.to_owned()),
-                Some(b' ') if bytes.get(1).is_some_and(u8::is_ascii_digit) => {
-                    Some(line.to_owned())
-                }
+                Some(b' ') if bytes.get(1).is_some_and(u8::is_ascii_digit) => Some(line.to_owned()),
                 _ => None,
             }
         })
@@ -440,7 +438,14 @@ fn header_line(
     let icon = match phase {
         Phase::Pending => Some(("status.pending", "muted")),
         Phase::Partial => Some(("status.running", "accent")),
-        Phase::Success => Some((if op == "Delete" { "tool.delete" } else { "tool.edit" }, "accent")),
+        Phase::Success => Some((
+            if op == "Delete" {
+                "tool.delete"
+            } else {
+                "tool.edit"
+            },
+            "accent",
+        )),
         Phase::Error => Some(("status.error", "error")),
     }
     .map(|(key, tok)| {
@@ -458,7 +463,10 @@ fn header_line(
         Span::styled(path.to_owned(), Style::default().fg(theme.color("accent"))),
     ];
     if let Some((a, r)) = stats.filter(|(a, r)| a + r > 0) {
-        description.push(Span::styled(format!(" {}", theme.symbol("format.bracketLeft")), dim));
+        description.push(Span::styled(
+            format!(" {}", theme.symbol("format.bracketLeft")),
+            dim,
+        ));
         let mut parts: Vec<Span<'static>> = Vec::new();
         if a > 0 {
             parts.push(Span::styled(
@@ -476,7 +484,10 @@ fn header_line(
             ));
         }
         description.extend(parts);
-        description.push(Span::styled(theme.symbol("format.bracketRight").to_owned(), dim));
+        description.push(Span::styled(
+            theme.symbol("format.bracketRight").to_owned(),
+            dim,
+        ));
     }
     status_header(theme, icon, op, "accent", description, Vec::new())
 }
@@ -840,7 +851,10 @@ mod tests {
         let theme = Theme::default();
         let lines = build_card_lines(&call, None, false, 40, &theme);
         let text = render_to_string(lines, 40, 12);
-        assert!(text.contains("Edit: ") && text.contains("src/lib.rs"), "got:\n{text}");
+        assert!(
+            text.contains("Edit: ") && text.contains("src/lib.rs"),
+            "got:\n{text}"
+        );
         assert!(text.contains("line3"), "got:\n{text}");
         assert!(text.contains("(streaming)"), "got:\n{text}");
         assert!(text.contains('╭'), "framed card expected:\n{text}");
@@ -853,7 +867,10 @@ mod tests {
         let theme = Theme::default();
         let lines = build_card_lines(&call, Some(&result), false, 40, &theme);
         let text = render_to_string(lines, 40, 12);
-        assert!(text.contains("Edit: ") && text.contains("src/lib.rs"), "got:\n{text}");
+        assert!(
+            text.contains("Edit: ") && text.contains("src/lib.rs"),
+            "got:\n{text}"
+        );
         assert!(text.contains("⟦+1/-1⟧"), "stats missing:\n{text}");
         assert!(text.contains("-2|old"), "got:\n{text}");
         assert!(text.contains("+2|new"), "got:\n{text}");
@@ -907,7 +924,10 @@ mod tests {
         let theme = Theme::default();
         let lines = build_card_lines(&call, Some(&result), false, 40, &theme);
         let text = render_to_string(lines, 40, 16);
-        assert!(text.contains("Edit: ") && text.contains("a.rs"), "got:\n{text}");
+        assert!(
+            text.contains("Edit: ") && text.contains("a.rs"),
+            "got:\n{text}"
+        );
         assert!(text.contains("b.rs"), "got:\n{text}");
         assert!(text.contains("1 more files pending"), "got:\n{text}");
     }

@@ -105,7 +105,9 @@ fn is_prose_in_buffer(lines: &[String], cursor_line: usize, start: usize, end: u
     let text = lines.join("\n");
     let mask = mask_non_prose(&text);
     let offset: usize = lines[..cursor_line].iter().map(|l| l.len() + 1).sum();
-    !mask[offset + start..offset + end].trim_matches(is_js_space).is_empty()
+    !mask[offset + start..offset + end]
+        .trim_matches(is_js_space)
+        .is_empty()
 }
 
 #[cfg(test)]
@@ -137,7 +139,11 @@ mod tests {
         assert_eq!(q("hello "), None);
         assert_eq!(q(""), None);
         let lines = vec!["hello world".to_owned()];
-        assert_eq!(word_completion_query(&lines, 0, 8), None, "cursor inside a word");
+        assert_eq!(
+            word_completion_query(&lines, 0, 8),
+            None,
+            "cursor inside a word"
+        );
     }
 
     #[test]
@@ -153,7 +159,11 @@ mod tests {
         // when it closes on a later line.
         assert!(q("see `inl").is_some(), "unmatched backtick");
         let lines = vec!["see `inl".to_owned(), "more` text".to_owned()];
-        assert_eq!(word_completion_query(&lines, 0, 8), None, "inline code span");
+        assert_eq!(
+            word_completion_query(&lines, 0, 8),
+            None,
+            "inline code span"
+        );
     }
 
     #[test]

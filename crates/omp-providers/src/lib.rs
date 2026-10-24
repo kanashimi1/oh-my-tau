@@ -11,11 +11,11 @@
 //!   per lookup, and request paths re-resolve per request and retry once after a 401).
 
 pub mod auth;
-pub mod login;
-pub mod usage;
 mod command;
 mod fallback;
 mod judge;
+pub mod login;
+pub mod usage;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -32,17 +32,18 @@ pub use command::{
 
 mod discovery;
 pub use discovery::{
-    append_models_path, extract_model_ids, models_hash, refresh, refresh_async, MATERIALIZATION_POLICY,
-    ProviderRefresh,
+    append_models_path, extract_model_ids, models_hash, refresh, refresh_async, ProviderRefresh,
+    MATERIALIZATION_POLICY,
 };
 pub use fallback::{
-    fallback_cooldown_ms, is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms, ActiveFallback,
-    CandidateOptions, FallbackConfig, FallbackState, FallbackWalker, ModelLookup, RateLimitReason, RestorePlan,
-    RetryConfig, RevertPolicy,
+    fallback_cooldown_ms, is_retryable_error, parse_rate_limit_reason, rate_limit_backoff_ms,
+    ActiveFallback, CandidateOptions, FallbackConfig, FallbackState, FallbackWalker, ModelLookup,
+    RateLimitReason, RestorePlan, RetryConfig, RevertPolicy,
 };
 pub use judge::{
-    judge, judge_native, judge_online, judgment_route, resolve_judge, resolve_judge_chain, JudgeCandidate, JudgeKind,
-    JudgeRequest, JudgeResult, JudgeUsage, CachedAnswers, JudgmentCache, judgment_cache_path, stable_json,
+    judge, judge_native, judge_online, judgment_cache_path, judgment_route, resolve_judge,
+    resolve_judge_chain, stable_json, CachedAnswers, JudgeCandidate, JudgeKind, JudgeRequest,
+    JudgeResult, JudgeUsage, JudgmentCache,
 };
 
 /// Where the effective thinking level came from (omp `pickInitialThinkingLevel` order).
@@ -182,7 +183,8 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     let cfg = Config::load(&dir.0)?;
     let (provider, id, selected) = parse_ref(&cfg, model_ref, 0)?;
     let (mut model, meta) = find_model(&dir.0, &cfg, &provider, &id)?;
-    let (thinking, thinking_auto, thinking_source) = pick_thinking(selected, &model, meta.as_ref(), cfg.default_thinking);
+    let (thinking, thinking_auto, thinking_source) =
+        pick_thinking(selected, &model, meta.as_ref(), cfg.default_thinking);
     let role = {
         let base = split_level(model_ref.trim()).0;
         (!base.contains('/')).then(|| base.to_string())
@@ -191,7 +193,8 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
     let fallbacks = cfg.fallback(&dir.0).candidates(&selector, role.as_deref());
     // `api: "openrouter"` stays as is: the pa-ai transport table streams it through the Responses
     // API (or chat completions with `PI_OPENROUTER_RESPONSES=0`), exactly as TS does.
-    let (api_key, credential_id) = match cfg.provider_key(&provider).or_else(|| env_key(&provider)) {
+    let (api_key, credential_id) = match cfg.provider_key(&provider).or_else(|| env_key(&provider))
+    {
         Some(key) => (Some(key), None),
         None => match auth::credential(dir, &provider) {
             Some(auth::Credential { key, id }) => {
@@ -212,7 +215,11 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
         .provider(&provider)
         .and_then(|p| p.get("headers"))
         .and_then(Value::as_object)
-        .map(|h| h.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect())
+        .map(|h| {
+            h.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
         .unwrap_or_default();
     if let Some(h) = &model.headers {
         for (k, v) in h {
@@ -221,8 +228,10 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
         }
     }
     // `!command` header values run through the shell; empty / failed values are omitted.
-    let headers: Vec<(String, String)> =
-        headers.into_iter().filter_map(|(k, v)| Some((k, resolve_config_value(&v)?))).collect();
+    let headers: Vec<(String, String)> = headers
+        .into_iter()
+        .filter_map(|(k, v)| Some((k, resolve_config_value(&v)?)))
+        .collect();
     model.headers = (!headers.is_empty()).then(|| headers.iter().cloned().collect());
     Ok(ResolvedModel {
         provider: model.provider.clone(),
@@ -320,10 +329,12 @@ fn parse_ref(cfg: &Config, model_ref: &str, depth: u8) -> Result<Parsed> {
     if depth > 4 {
         bail!("modelRoles alias loop at '{model_ref}'");
     }
-    let target = cfg
-        .roles
-        .get(base)
-        .ok_or_else(|| anyhow!("'{model_ref}' is neither 'provider/id' nor a modelRoles role ({:?})", cfg.roles.keys().collect::<Vec<_>>()))?;
+    let target = cfg.roles.get(base).ok_or_else(|| {
+        anyhow!(
+            "'{model_ref}' is neither 'provider/id' nor a modelRoles role ({:?})",
+            cfg.roles.keys().collect::<Vec<_>>()
+        )
+    })?;
     let (p, i, t) = parse_ref(cfg, target, depth + 1)?;
     Ok((p, i, thinking_override.or(t)))
 }
@@ -336,7 +347,11 @@ fn role_selector(cfg: &Config, model_ref: &str) -> String {
             let mut s = role_selector(cfg, target);
             if level.is_some() {
                 // an explicit suffix on the role ref replaces the role's own level
-                s = format!("{}:{}", split_level(&s).0, model_ref.trim().rsplit(':').next().unwrap_or_default());
+                s = format!(
+                    "{}:{}",
+                    split_level(&s).0,
+                    model_ref.trim().rsplit(':').next().unwrap_or_default()
+                );
             }
             s
         }
@@ -362,7 +377,8 @@ impl Config {
             let path = dir.join(name);
             match std::fs::read_to_string(&path) {
                 Ok(s) if s.trim().is_empty() => Ok(Value::Null),
-                Ok(s) => serde_yaml_ng::from_str::<Value>(&s).with_context(|| format!("parsing {}", path.display())),
+                Ok(s) => serde_yaml_ng::from_str::<Value>(&s)
+                    .with_context(|| format!("parsing {}", path.display())),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Value::Null),
                 Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
             }
@@ -376,7 +392,11 @@ impl Config {
             &dir.join(".no-project-layer"),
         );
         let roles: std::collections::BTreeMap<String, String> = settings.model_roles();
-        let providers = models.get("providers").and_then(Value::as_object).cloned().unwrap_or_default();
+        let providers = models
+            .get("providers")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         let default_thinking = settings
             .get_string("defaultThinkingLevel")
             .as_deref()
@@ -387,7 +407,11 @@ impl Config {
             .get_record("retry.fallbackChains")
             .iter()
             .filter_map(|(k, v)| {
-                let list = v.as_array()?.iter().filter_map(|e| e.as_str().map(str::to_string)).collect();
+                let list = v
+                    .as_array()?
+                    .iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect();
                 Some((k.clone(), list))
             })
             .collect();
@@ -403,9 +427,24 @@ impl Config {
     fn fallback(&self, dir: &Path) -> FallbackConfig {
         let mut known_providers: BTreeSet<String> = self.providers.keys().cloned().collect();
         known_providers.extend(
-            ["anthropic", "openai", "openai-codex", "google", "zai", "kimi-code", "openrouter", "opencode-zen"].map(String::from),
+            [
+                "anthropic",
+                "openai",
+                "openai-codex",
+                "google",
+                "zai",
+                "kimi-code",
+                "openrouter",
+                "opencode-zen",
+            ]
+            .map(String::from),
         );
-        FallbackConfig { chains: self.chains.clone(), roles: self.roles.clone(), known_providers, model_exists: Some(fallback::ModelLookup::catalog(dir)) }
+        FallbackConfig {
+            chains: self.chains.clone(),
+            roles: self.roles.clone(),
+            known_providers,
+            model_exists: Some(fallback::ModelLookup::catalog(dir)),
+        }
     }
 
     fn provider(&self, p: &str) -> Option<&Map<String, Value>> {
@@ -448,13 +487,21 @@ fn base_url_for(provider: &str) -> Option<&'static str> {
     })
 }
 
-fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Model, Option<Value>)> {
+fn find_model(
+    dir: &Path,
+    cfg: &Config,
+    provider: &str,
+    id: &str,
+) -> Result<(Model, Option<Value>)> {
     let pcfg = cfg.provider(provider);
     // 1. custom model from models.yml
     if let Some(entry) = pcfg
         .and_then(|p| p.get("models"))
         .and_then(Value::as_array)
-        .and_then(|a| a.iter().find(|m| m.get("id").and_then(Value::as_str) == Some(id)))
+        .and_then(|a| {
+            a.iter()
+                .find(|m| m.get("id").and_then(Value::as_str) == Some(id))
+        })
     {
         let mut model = custom_model(provider, pcfg.expect("checked"), entry)?;
         let authored = entry.get("thinking").cloned();
@@ -464,7 +511,10 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
     // 2. omp's dynamic catalog cache, 3. pa-ai compiled catalog
     let (mut model, meta) = match cache_model(&dir.join("models.db"), provider, id) {
         Some((m, t)) => (Some(m), t),
-        None => (pa_ai::models_generated::get_model(provider, id).cloned(), None),
+        None => (
+            pa_ai::models_generated::get_model(provider, id).cloned(),
+            None,
+        ),
     };
     // 4. provider configured in models.yml (baseUrl) but model unknown: synthesize.
     if model.is_none() {
@@ -476,7 +526,9 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
         }
     }
     let mut model = model.ok_or_else(|| {
-        anyhow!("model '{provider}/{id}' not found in models.yml, models.db cache or built-in catalog")
+        anyhow!(
+            "model '{provider}/{id}' not found in models.yml, models.db cache or built-in catalog"
+        )
     })?;
     // provider-level overrides apply to catalog models too. A provider-level `baseUrl`
     // may be a sandbox/relay override; model rows pinned to a googleapis CCA host keep
@@ -504,7 +556,12 @@ fn find_model(dir: &Path, cfg: &Config, provider: &str, id: &str) -> Result<(Mod
 ///
 /// Returns the resolved thinking config (TS `model.thinking`): the ladder every effort clamp and
 /// request builder reads, whatever stale `thinking` a cached row stored.
-fn finish_model(cfg: &Config, provider: &str, model: &mut Model, thinking: Option<&Value>) -> Result<Option<Value>> {
+fn finish_model(
+    cfg: &Config,
+    provider: &str,
+    model: &mut Model,
+    thinking: Option<&Value>,
+) -> Result<Option<Value>> {
     // TS `mergeCompat(model.compatConfig, providerOverride.compat)`: the provider-level `compat:`
     // block (and `disableStrictTools`) layers over the model's authored overrides.
     if let Some(p) = cfg.provider(provider) {
@@ -533,7 +590,10 @@ fn pick_thinking(
     meta: Option<&Value>,
     config_default: Sel,
 ) -> (Option<ModelThinkingLevel>, bool, ThinkingSource) {
-    let model_default = meta.and_then(|m| m.get("defaultLevel")).and_then(Value::as_str).and_then(effort);
+    let model_default = meta
+        .and_then(|m| m.get("defaultLevel"))
+        .and_then(Value::as_str)
+        .and_then(effort);
     let (sel, source) = match selected {
         Some(Sel::Inherit) | None => match model_default {
             Some(l) => (Sel::Level(l), ThinkingSource::ModelDefault),
@@ -547,49 +607,92 @@ fn pick_thinking(
     match sel {
         Sel::Auto => {
             let level = provisional_auto(meta, model_default);
-            (level, true, if level.is_some() { source } else { ThinkingSource::None })
+            (
+                level,
+                true,
+                if level.is_some() {
+                    source
+                } else {
+                    ThinkingSource::None
+                },
+            )
         }
         Sel::Inherit => (None, false, ThinkingSource::None),
         Sel::Level(l) => {
             let level = clamp_level(l, meta, model_default);
-            (level, false, if level.is_some() { source } else { ThinkingSource::None })
+            (
+                level,
+                false,
+                if level.is_some() {
+                    source
+                } else {
+                    ThinkingSource::None
+                },
+            )
         }
     }
 }
 
 fn efforts_of(meta: Option<&Value>) -> Option<Vec<ModelThinkingLevel>> {
     let a = meta?.get("efforts")?.as_array()?;
-    Some(a.iter().filter_map(|e| effort(e.as_str()?)).filter(|l| *l != ModelThinkingLevel::Off).collect())
+    Some(
+        a.iter()
+            .filter_map(|e| effort(e.as_str()?))
+            .filter(|l| *l != ModelThinkingLevel::Off)
+            .collect(),
+    )
 }
 
 /// `clampThinkingLevelForModel`: the highest supported effort not above the request, else the lowest
 /// supported. `off` stays `off` unless the model `requiresEffort`. Without catalog metadata the
 /// level passes through; with an empty effort list there is nothing to control.
-fn clamp_level(l: ModelThinkingLevel, meta: Option<&Value>, model_default: Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel> {
+fn clamp_level(
+    l: ModelThinkingLevel,
+    meta: Option<&Value>,
+    model_default: Option<ModelThinkingLevel>,
+) -> Option<ModelThinkingLevel> {
     use ModelThinkingLevel as L;
-    let requires = meta.and_then(|m| m.get("requiresEffort")).and_then(Value::as_bool).unwrap_or(false);
+    let requires = meta
+        .and_then(|m| m.get("requiresEffort"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let efforts = efforts_of(meta);
-    let l = if l == L::Off && requires { model_default.or_else(|| efforts.as_ref().and_then(|e| e.iter().copied().min()))? } else { l };
+    let l = if l == L::Off && requires {
+        model_default.or_else(|| efforts.as_ref().and_then(|e| e.iter().copied().min()))?
+    } else {
+        l
+    };
     if l == L::Off {
         return Some(l);
     }
-    let Some(mut efforts) = efforts else { return Some(l) };
+    let Some(mut efforts) = efforts else {
+        return Some(l);
+    };
     efforts.sort();
     if efforts.contains(&l) {
         return Some(l);
     }
-    efforts.iter().copied().filter(|e| *e < l).max().or_else(|| efforts.first().copied())
+    efforts
+        .iter()
+        .copied()
+        .filter(|e| *e < l)
+        .max()
+        .or_else(|| efforts.first().copied())
 }
 
 /// `resolveProvisionalAutoLevel`: model default (max → xhigh, fallback high), floored at `low`,
 /// capped at `xhigh`, within the model's efforts.
-fn provisional_auto(meta: Option<&Value>, model_default: Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel> {
+fn provisional_auto(
+    meta: Option<&Value>,
+    model_default: Option<ModelThinkingLevel>,
+) -> Option<ModelThinkingLevel> {
     use ModelThinkingLevel as L;
     let preferred = match model_default.unwrap_or(L::High) {
         L::Max => L::Xhigh,
         o => o,
     };
-    let mut pool: Vec<L> = efforts_of(meta).unwrap_or_else(|| vec![L::Minimal, L::Low, L::Medium, L::High, L::Xhigh, L::Max]);
+    let mut pool: Vec<L> = efforts_of(meta)
+        .unwrap_or_else(|| vec![L::Minimal, L::Low, L::Medium, L::High, L::Xhigh, L::Max]);
     pool.sort();
     let floored: Vec<L> = pool.iter().copied().filter(|e| *e >= L::Low).collect();
     let floored = if floored.is_empty() { pool } else { floored };
@@ -611,7 +714,11 @@ fn custom_model(provider: &str, pcfg: &Map<String, Value>, entry: &Value) -> Res
         .or_else(|| pcfg.get("api").and_then(Value::as_str).map(str::to_string))
         .unwrap_or_else(|| default_api_for(provider).to_string());
     let base_url = s(entry, "baseUrl")
-        .or_else(|| pcfg.get("baseUrl").and_then(Value::as_str).map(str::to_string))
+        .or_else(|| {
+            pcfg.get("baseUrl")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .or_else(|| base_url_for(provider).map(str::to_string))
         .ok_or_else(|| anyhow!("provider '{provider}' has no baseUrl"))?;
     let u = |k: &str, d: u64| entry.get(k).and_then(Value::as_u64).unwrap_or(d);
@@ -633,7 +740,8 @@ fn custom_model(provider: &str, pcfg: &Map<String, Value>, entry: &Value) -> Res
             v[k] = x.clone();
         }
     }
-    serde_json::from_value(v).with_context(|| format!("invalid model entry {provider}/{id} in models.yml"))
+    serde_json::from_value(v)
+        .with_context(|| format!("invalid model entry {provider}/{id} in models.yml"))
 }
 
 /// TS `mergeCompat`: `over` layered over the model's sparse compat, nested objects merged
@@ -684,7 +792,10 @@ fn apply_overrides(cfg: &Config, provider: &str, m: &mut Model) {
             }
         }
     }
-    if let Some(c) = o.get("cost").and_then(|c| serde_json::from_value(c.clone()).ok()) {
+    if let Some(c) = o
+        .get("cost")
+        .and_then(|c| serde_json::from_value(c.clone()).ok())
+    {
         m.cost = c;
     }
     if let Some(c) = o.get("compat").and_then(Value::as_object) {
@@ -707,15 +818,26 @@ fn cache_model(db: &Path, provider: &str, id: &str) -> Option<(Model, Option<Val
     let mut stmt = conn
         .prepare("SELECT models FROM model_cache WHERE provider_id = ?1 OR provider_id LIKE ?2 ESCAPE '\\' ORDER BY updated_at DESC")
         .ok()?;
-    let like = format!("{}:%", provider.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+    let like = format!(
+        "{}:%",
+        provider
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
     let rows: Vec<String> = stmt
         .query_map([provider, like.as_str()], |r| r.get::<_, String>(0))
         .ok()?
         .filter_map(std::result::Result::ok)
         .collect();
     for json in rows {
-        let Ok(Value::Array(models)) = serde_json::from_str::<Value>(&json) else { continue };
-        if let Some(entry) = models.into_iter().find(|m| m.get("id").and_then(Value::as_str) == Some(id)) {
+        let Ok(Value::Array(models)) = serde_json::from_str::<Value>(&json) else {
+            continue;
+        };
+        if let Some(entry) = models
+            .into_iter()
+            .find(|m| m.get("id").and_then(Value::as_str) == Some(id))
+        {
             // The stored resolved `compat` may predate the current rules; the policy resolver
             // re-derives it from the row's authored `compatConfig` (see `materialize`).
             if let Some((model, thinking)) = pa_ai::compat::model_from_catalog_row(entry) {
@@ -737,7 +859,10 @@ fn env_key(provider: &str) -> Option<String> {
         "atria" => Some("ATRIA_API_KEY"),
         _ => None,
     };
-    if let Some(v) = alias.and_then(|a| std::env::var(a).ok()).filter(|v| !v.is_empty()) {
+    if let Some(v) = alias
+        .and_then(|a| std::env::var(a).ok())
+        .filter(|v| !v.is_empty())
+    {
         return Some(v);
     }
     pa_ai::env_api_keys::get_env_api_key(provider)
@@ -762,9 +887,12 @@ pub struct AuthDetails {
 /// enabled `agent.db` `auth_credentials` rows (the omp `AuthStorage` strata).
 #[must_use]
 pub fn auth_details(dir: &AgentDir, provider: &str) -> AuthDetails {
-    let config_key = Config::load(&dir.0)
-        .ok()
-        .is_some_and(|cfg| cfg.provider(provider).and_then(|p| p.get("apiKey")).and_then(Value::as_str).is_some());
+    let config_key = Config::load(&dir.0).ok().is_some_and(|cfg| {
+        cfg.provider(provider)
+            .and_then(|p| p.get("apiKey"))
+            .and_then(Value::as_str)
+            .is_some()
+    });
     // (type, data, id) of every enabled stored credential, in pool order.
     let rows: Vec<(String, Value, i64)> = open_ro(&dir.0.join("agent.db"))
         .and_then(|conn| {
@@ -853,7 +981,10 @@ mod tests {
     fn custom_provider_with_override_and_headers() {
         let (_t, dir) = fixture();
         let m = resolve_in(&dir, "zz/m1").unwrap();
-        assert_eq!((m.provider.as_str(), m.id.as_str(), m.api.as_str()), ("zz", "m1", "openai-completions"));
+        assert_eq!(
+            (m.provider.as_str(), m.id.as_str(), m.api.as_str()),
+            ("zz", "m1", "openai-completions")
+        );
         assert_eq!(m.base_url, "http://127.0.0.1:1/v1");
         assert_eq!(m.api_key.as_deref(), Some("literal-key"));
         assert_eq!(m.context_window, 32768);
@@ -888,7 +1019,11 @@ mod tests {
     #[test]
     fn provider_base_url_override_and_effort_clamp() {
         let t = tempfile::tempdir().unwrap();
-        std::fs::write(t.path().join("models.yml"), "providers:\n  groq:\n    baseUrl: http://localhost:9/v1\n").unwrap();
+        std::fs::write(
+            t.path().join("models.yml"),
+            "providers:\n  groq:\n    baseUrl: http://localhost:9/v1\n",
+        )
+        .unwrap();
         let dir = AgentDir(t.path().to_path_buf());
         let id = pa_ai::models_generated::get_models("groq")[0].id.clone();
         let m = resolve_in(&dir, &format!("groq/{id}")).unwrap();
@@ -898,7 +1033,8 @@ mod tests {
     #[test]
     fn clamp_follows_omp_semantics() {
         use ModelThinkingLevel as L;
-        let meta = json!({"efforts":["low","high","max"],"requiresEffort":true,"defaultLevel":"max"});
+        let meta =
+            json!({"efforts":["low","high","max"],"requiresEffort":true,"defaultLevel":"max"});
         let m = Some(&meta);
         let dm = Some(L::Max);
         assert_eq!(clamp_level(L::Off, m, dm), Some(L::Max));
@@ -917,12 +1053,21 @@ mod tests {
         let (_t, dir) = fixture();
         // no suffix, no catalog default -> config default (omp default: high), reasoning model
         let m = resolve_in(&dir, "zz/m1").unwrap();
-        assert_eq!((m.thinking, m.thinking_source), (Some(L::High), ThinkingSource::ConfigDefault));
+        assert_eq!(
+            (m.thinking, m.thinking_source),
+            (Some(L::High), ThinkingSource::ConfigDefault)
+        );
         // selector beats everything
         let m = resolve_in(&dir, "zz/m1:low").unwrap();
-        assert_eq!((m.thinking, m.thinking_source), (Some(L::Low), ThinkingSource::Selector));
+        assert_eq!(
+            (m.thinking, m.thinking_source),
+            (Some(L::Low), ThinkingSource::Selector)
+        );
         // abbreviations as in omp
-        assert_eq!(resolve_in(&dir, "zz/m1:med").unwrap().thinking, Some(L::Medium));
+        assert_eq!(
+            resolve_in(&dir, "zz/m1:med").unwrap().thinking,
+            Some(L::Medium)
+        );
         // explicit auto -> provisional level + flag
         let m = resolve_in(&dir, "zz/m1:auto").unwrap();
         assert_eq!((m.thinking, m.thinking_auto), (Some(L::High), true));
@@ -933,7 +1078,10 @@ mod tests {
         )
         .unwrap();
         let m = resolve_in(&dir, "zz/plain:high").unwrap();
-        assert_eq!((m.thinking, m.thinking_source), (None, ThinkingSource::None));
+        assert_eq!(
+            (m.thinking, m.thinking_source),
+            (None, ThinkingSource::None)
+        );
     }
 
     #[test]
@@ -950,7 +1098,10 @@ mod tests {
         assert_eq!(m.retry.max_retries, 3);
         assert_eq!(m.fallbacks, ["zz/m2", "zz/m3"]); // m1 is smol's primary: its chain follows the model
         let m = resolve_in(&dir, "smol").unwrap();
-        assert_eq!((m.role.as_deref(), m.selector.as_str()), (Some("smol"), "zz/m1:minimal"));
+        assert_eq!(
+            (m.role.as_deref(), m.selector.as_str()),
+            (Some("smol"), "zz/m1:minimal")
+        );
         assert_eq!(m.fallbacks, ["zz/m2", "zz/m3"]);
         let mut w = fallback_walker(&dir, &m);
         assert_eq!(w.next_model().unwrap().id, "m2"); // synthesized from provider baseUrl
@@ -971,10 +1122,23 @@ mod tests {
         )
         .unwrap();
         let chain = resolve_judge_chain(&dir).unwrap();
-        let got: Vec<_> = chain.iter().map(|c| (c.kind, c.model.id.as_str())).collect();
+        let got: Vec<_> = chain
+            .iter()
+            .map(|c| (c.kind, c.model.id.as_str()))
+            .collect();
         // chat/c1 (online), then first native j1; chat/c2 dropped by the native cutoff, nokey skipped.
-        assert_eq!(got, [(JudgeKind::Online, "c1"), (JudgeKind::Native, "j1"), (JudgeKind::Native, "j2")]);
-        assert_eq!(chain[1].url.as_deref(), Some("https://x.test/api/alpha/decisions"));
+        assert_eq!(
+            got,
+            [
+                (JudgeKind::Online, "c1"),
+                (JudgeKind::Native, "j1"),
+                (JudgeKind::Native, "j2")
+            ]
+        );
+        assert_eq!(
+            chain[1].url.as_deref(),
+            Some("https://x.test/api/alpha/decisions")
+        );
     }
 
     #[test]
@@ -1093,7 +1257,11 @@ mod tests {
                         head_text = head.to_string();
                         let len = head
                             .lines()
-                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
                             .unwrap_or(0);
                         if rest.len() >= len {
                             break rest[..len].to_string();
@@ -1119,15 +1287,28 @@ mod tests {
             while s.next().await.is_some() {}
             let (head, body) = server.await.unwrap();
             let body: Value = serde_json::from_str(&body).unwrap();
-            assert!(head.starts_with("POST /coding/v1/messages "), "{source}: {head}");
-            assert!(head.to_ascii_lowercase().contains("x-msh-platform: kimi_cli"), "{source}: {head}");
+            assert!(
+                head.starts_with("POST /coding/v1/messages "),
+                "{source}: {head}"
+            );
+            assert!(
+                head.to_ascii_lowercase()
+                    .contains("x-msh-platform: kimi_cli"),
+                "{source}: {head}"
+            );
             assert_eq!(body["system"][0]["text"], "SYS PROMPT", "{source}: {body}");
             assert_eq!(body["messages"][0]["role"], "user", "{source}: {body}");
             assert!(body.get("max_tokens").is_some(), "{source}: {body}");
             assert!(body.get("store").is_none(), "{source}");
             if source != "synthesized" {
                 // Synthesized models are non-reasoning (as in TS); the others enable thinking.
-                assert!(matches!(body["thinking"]["type"].as_str(), Some("enabled" | "adaptive")), "{source}: {body}");
+                assert!(
+                    matches!(
+                        body["thinking"]["type"].as_str(),
+                        Some("enabled" | "adaptive")
+                    ),
+                    "{source}: {body}"
+                );
             }
         }
     }
@@ -1165,7 +1346,12 @@ mod tests {
     }
 
     fn resolved_flag(m: &ResolvedModel, key: &str) -> Option<Value> {
-        pa_ai::compat::resolve_for_model(&m.model).unwrap().compat.unwrap().get(key).cloned()
+        pa_ai::compat::resolve_for_model(&m.model)
+            .unwrap()
+            .compat
+            .unwrap()
+            .get(key)
+            .cloned()
     }
 
     /// A cache row's stored `compat` is the TS-resolved record as of the row's write: it can be
@@ -1173,17 +1359,31 @@ mod tests {
     #[test]
     fn cache_rows_resolve_from_compat_config_not_the_stale_stored_record() {
         let stale = json!({"supportsDeveloperRole": true, "supportsStore": true});
-        let (_t, dir) = cache_dir(groq_row(stale.clone(), None), "providers:\n  groq:\n    apiKey: k\n");
+        let (_t, dir) = cache_dir(
+            groq_row(stale.clone(), None),
+            "providers:\n  groq:\n    apiKey: k\n",
+        );
         let m = resolve_in(&dir, "groq/llama-3.3-70b-versatile").unwrap();
-        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(false)), "groq takes `system`");
-        assert_eq!(resolved_flag(&m, "supportsMultipleSystemMessages"), Some(json!(true)));
+        assert_eq!(
+            resolved_flag(&m, "supportsDeveloperRole"),
+            Some(json!(false)),
+            "groq takes `system`"
+        );
+        assert_eq!(
+            resolved_flag(&m, "supportsMultipleSystemMessages"),
+            Some(json!(true))
+        );
 
         let (_t, dir) = cache_dir(
             groq_row(stale, Some(json!({"supportsDeveloperRole": true}))),
             "providers:\n  groq:\n    apiKey: k\n",
         );
         let m = resolve_in(&dir, "groq/llama-3.3-70b-versatile").unwrap();
-        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(true)), "authored override wins");
+        assert_eq!(
+            resolved_flag(&m, "supportsDeveloperRole"),
+            Some(json!(true)),
+            "authored override wins"
+        );
     }
 
     /// TS `mergeCompat(model.compatConfig, providerOverride.compat)`: a provider-level `compat:`
@@ -1191,11 +1391,22 @@ mod tests {
     #[test]
     fn models_yml_provider_and_model_override_compat_layer_over_the_row() {
         let yml = "providers:\n  groq:\n    apiKey: k\n    compat:\n      supportsStore: true\n      extraBody:\n        a: 1\n    modelOverrides:\n      llama-3.3-70b-versatile:\n        compat:\n          extraBody:\n            b: 2\n";
-        let (_t, dir) = cache_dir(groq_row(json!({}), Some(json!({"supportsDeveloperRole": true}))), yml);
+        let (_t, dir) = cache_dir(
+            groq_row(json!({}), Some(json!({"supportsDeveloperRole": true}))),
+            yml,
+        );
         let m = resolve_in(&dir, "groq/llama-3.3-70b-versatile").unwrap();
         assert_eq!(resolved_flag(&m, "supportsStore"), Some(json!(true)));
-        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(true)), "row override survives");
-        assert_eq!(resolved_flag(&m, "extraBody"), Some(json!({"a": 1, "b": 2})), "nested objects merge");
+        assert_eq!(
+            resolved_flag(&m, "supportsDeveloperRole"),
+            Some(json!(true)),
+            "row override survives"
+        );
+        assert_eq!(
+            resolved_flag(&m, "extraBody"),
+            Some(json!({"a": 1, "b": 2})),
+            "nested objects merge"
+        );
     }
 
     /// A custom `models.yml` model resolves through the same resolver: a loopback endpoint is a
@@ -1211,9 +1422,18 @@ mod tests {
         .unwrap();
         let dir = AgentDir(t.path().to_path_buf());
         let m = resolve_in(&dir, "local/qwen3-coder").unwrap();
-        assert_eq!(resolved_flag(&m, "toolSchemaFlavor"), Some(json!("grammar")));
-        assert_eq!(resolved_flag(&m, "streamFirstEventTimeoutMs"), Some(json!(0)));
-        assert_eq!(resolved_flag(&m, "supportsDeveloperRole"), Some(json!(true)));
+        assert_eq!(
+            resolved_flag(&m, "toolSchemaFlavor"),
+            Some(json!("grammar"))
+        );
+        assert_eq!(
+            resolved_flag(&m, "streamFirstEventTimeoutMs"),
+            Some(json!(0))
+        );
+        assert_eq!(
+            resolved_flag(&m, "supportsDeveloperRole"),
+            Some(json!(true))
+        );
         assert_eq!(resolved_flag(&m, "thinkingFormat"), Some(json!("qwen")));
         // The resolved ladder is materialized onto the model (qwen: reasoning effort ladder).
         assert!(m.model.thinking_level_map.is_some());
@@ -1243,7 +1463,9 @@ mod tests {
         drop(conn);
         let dir = AgentDir(t.path().to_path_buf());
         let m = resolve_in(&dir, "anthropic/claude-haiku-9-9").unwrap();
-        assert_eq!((m.api.as_str(), m.context_window, m.max_tokens, m.reasoning), ("anthropic-messages", 0, 0, false));
+        assert_eq!(
+            (m.api.as_str(), m.context_window, m.max_tokens, m.reasoning),
+            ("anthropic-messages", 0, 0, false)
+        );
     }
-
 }

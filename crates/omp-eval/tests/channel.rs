@@ -18,7 +18,10 @@ struct Recorder {
 
 impl HostBridge for Recorder {
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
-        self.calls.lock().unwrap().push((op.to_string(), args.clone()));
+        self.calls
+            .lock()
+            .unwrap()
+            .push((op.to_string(), args.clone()));
         Ok(json!({ "echo": args }))
     }
     fn notify(&self, op: &str, args: Value) {
@@ -48,8 +51,16 @@ fn js(tag: &str) -> Option<JsKernel> {
 }
 
 fn assert_no_bridge_traffic(b: &Recorder) {
-    assert!(b.calls.lock().unwrap().is_empty(), "forged calls reached the bridge: {:?}", b.calls.lock().unwrap());
-    assert!(b.notes.lock().unwrap().is_empty(), "forged notifies reached the bridge: {:?}", b.notes.lock().unwrap());
+    assert!(
+        b.calls.lock().unwrap().is_empty(),
+        "forged calls reached the bridge: {:?}",
+        b.calls.lock().unwrap()
+    );
+    assert!(
+        b.notes.lock().unwrap().is_empty(),
+        "forged notifies reached the bridge: {:?}",
+        b.notes.lock().unwrap()
+    );
 }
 
 /// The cell recovers its real request id from the runner frame, so the
@@ -75,14 +86,23 @@ print('after-child')
 fn py_subprocess_output_cannot_forge_frames() {
     let k = py("forge");
     let b = Recorder::default();
-    let r = k.execute_with(PY_FORGE_FROM_SUBPROCESS, opts(&b)).expect("cell");
+    let r = k
+        .execute_with(PY_FORGE_FROM_SUBPROCESS, opts(&b))
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{r:?}");
     assert_no_bridge_traffic(&b);
     // The child's bytes surface as plain cell stdout, in order.
-    let forged = r.output.find("\"op\": \"echo\"").unwrap_or_else(|| panic!("child output missing: {r:?}"));
+    let forged = r
+        .output
+        .find("\"op\": \"echo\"")
+        .unwrap_or_else(|| panic!("child output missing: {r:?}"));
     let after = r.output.find("after-child").expect("after-child");
     assert!(forged < after, "{:?}", r.output);
-    assert!(!r.output.contains("FORGED-RESULT\n"), "forged result frame accepted: {:?}", r.output);
+    assert!(
+        !r.output.contains("FORGED-RESULT\n"),
+        "forged result frame accepted: {:?}",
+        r.output
+    );
 }
 
 #[test]
@@ -105,7 +125,12 @@ fn py_large_subprocess_output_is_complete() {
     let b = Recorder::default();
     let code = "import subprocess\nsubprocess.run(['sh', '-c', 'head -c 400000 /dev/zero | tr \"\\\\0\" x; echo'], check=True)\nprint('end')";
     let r = k.execute_with(code, opts(&b)).expect("cell");
-    assert_eq!(r.status, CellStatus::Ok, "{:?}", &r.output[r.output.len().saturating_sub(200)..]);
+    assert_eq!(
+        r.status,
+        CellStatus::Ok,
+        "{:?}",
+        &r.output[r.output.len().saturating_sub(200)..]
+    );
     assert_eq!(r.output, format!("{}\nend\n", "x".repeat(400_000)));
 }
 
@@ -142,7 +167,9 @@ fn py_non_json_frame_lines_do_not_wedge_the_reader() {
     let r = k.execute_with(PY_JUNK_ON_FRAME_FD, opts(&b)).expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{r:?}");
     assert_eq!(r.output, "still-alive\n");
-    let r = k.execute_with("print('next-cell')", opts(&b)).expect("cell");
+    let r = k
+        .execute_with("print('next-cell')", opts(&b))
+        .expect("cell");
     assert_eq!(r.output, "next-cell\n");
 }
 
@@ -191,7 +218,10 @@ console.log("after-child");
     let r = k.execute_with(code, opts(&b)).expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{r:?}");
     assert_no_bridge_traffic(&b);
-    let forged = r.output.find("\"op\":\"echo\"").unwrap_or_else(|| panic!("child output missing: {r:?}"));
+    let forged = r
+        .output
+        .find("\"op\":\"echo\"")
+        .unwrap_or_else(|| panic!("child output missing: {r:?}"));
     let after = r.output.find("after-child").expect("after-child");
     assert!(forged < after, "{:?}", r.output);
 }
@@ -224,9 +254,22 @@ fn js_large_child_output_does_not_deadlock() {
     // runner's event loop is blocked in spawnSync.
     let code = "const r = require('child_process').spawnSync('sh', ['-c', 'head -c 400000 /dev/zero | tr \"\\\\0\" x; echo'], { stdio: 'inherit', timeout: 5000 });\nr.signal";
     let r = k.execute_with(code, opts(&b)).expect("cell");
-    assert_eq!(r.status, CellStatus::Ok, "{:?}", &r.output[r.output.len().saturating_sub(200)..]);
-    assert!(r.output.starts_with(&"x".repeat(400_000)), "len {}", r.output.len());
-    assert!(r.output.ends_with("\nnull\n"), "{:?}", &r.output[r.output.len().saturating_sub(50)..]);
+    assert_eq!(
+        r.status,
+        CellStatus::Ok,
+        "{:?}",
+        &r.output[r.output.len().saturating_sub(200)..]
+    );
+    assert!(
+        r.output.starts_with(&"x".repeat(400_000)),
+        "len {}",
+        r.output.len()
+    );
+    assert!(
+        r.output.ends_with("\nnull\n"),
+        "{:?}",
+        &r.output[r.output.len().saturating_sub(50)..]
+    );
 }
 
 #[test]

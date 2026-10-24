@@ -32,16 +32,24 @@ fn orphan_helper_entry() {
     let worker = std::thread::spawn(move || match kind.as_str() {
         "py" => {
             let k = PythonKernel::start("python3", &dir).expect("kernel starts");
-            write!(std::fs::File::create(&pid_file).expect("pid file"), "{}", k.pid().expect("pid"))
-                .expect("write pid");
+            write!(
+                std::fs::File::create(&pid_file).expect("pid file"),
+                "{}",
+                k.pid().expect("pid")
+            )
+            .expect("write pid");
             // Let the busy cell actually start spinning before the parent kills us.
             std::thread::sleep(Duration::from_millis(500));
             let _ = k.execute("while True: pass", None);
         }
         "js" => {
             let k = JsKernel::start(default_runtime(), &dir).expect("kernel starts");
-            write!(std::fs::File::create(&pid_file).expect("pid file"), "{}", k.pid().expect("pid"))
-                .expect("write pid");
+            write!(
+                std::fs::File::create(&pid_file).expect("pid file"),
+                "{}",
+                k.pid().expect("pid")
+            )
+            .expect("write pid");
             std::thread::sleep(Duration::from_millis(500));
             let _ = k.execute("for(;;){}", None);
         }
@@ -53,8 +61,7 @@ fn orphan_helper_entry() {
 }
 
 fn run_orphan_case(kind: &'static str) {
-    let dir =
-        std::env::temp_dir().join(format!("omp-eval-orphan-{}-{}", kind, std::process::id()));
+    let dir = std::env::temp_dir().join(format!("omp-eval-orphan-{}-{}", kind, std::process::id()));
     std::fs::create_dir_all(&dir).expect("cwd");
     let mut helper = Command::new(std::env::current_exe().expect("test exe"))
         .args(["orphan_helper_entry", "--exact", "--nocapture"])
@@ -70,11 +77,17 @@ fn run_orphan_case(kind: &'static str) {
     let pid_file = dir.join("kernel.pid");
     let deadline = Instant::now() + Duration::from_secs(30);
     let kernel_pid: u32 = loop {
-        assert!(helper.try_wait().expect("helper poll").is_none(), "helper died early");
+        assert!(
+            helper.try_wait().expect("helper poll").is_none(),
+            "helper died early"
+        );
         if let Ok(text) = std::fs::read_to_string(&pid_file) {
             break text.trim().parse().expect("kernel pid");
         }
-        assert!(Instant::now() < deadline, "helper never reported the kernel pid");
+        assert!(
+            Instant::now() < deadline,
+            "helper never reported the kernel pid"
+        );
         std::thread::sleep(Duration::from_millis(50));
     };
     // Make sure the busy cell is actually running.

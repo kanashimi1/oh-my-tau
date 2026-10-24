@@ -40,18 +40,28 @@ pub struct StoredRow {
 impl StoredRow {
     fn from_parts(id: i64, provider: String, kind: &str, data: &str) -> Option<Self> {
         let parsed: Value = serde_json::from_str(data).ok()?;
-        let Value::Object(map) = parsed else { return None };
+        let Value::Object(map) = parsed else {
+            return None;
+        };
         let credential = match kind {
             "api_key" => Credential::ApiKey(map.get("key")?.as_str()?.to_string()),
             "oauth" => Credential::OAuth(map),
             _ => return None,
         };
-        Some(Self { id, provider, credential })
+        Some(Self {
+            id,
+            provider,
+            credential,
+        })
     }
 
     fn str_field(&self, key: &str) -> Option<&str> {
         match &self.credential {
-            Credential::OAuth(map) => map.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()),
+            Credential::OAuth(map) => map
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
             Credential::ApiKey(_) => None,
         }
     }
@@ -74,7 +84,9 @@ impl StoredRow {
 }
 
 fn norm_account(v: Option<&str>) -> Option<String> {
-    v.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
+    v.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 fn norm_email(v: Option<&str>) -> Option<String> {
@@ -88,7 +100,9 @@ pub fn jwt_payload(token: &str) -> Option<Map<String, Value>> {
     let (_, payload, _, None) = (parts.next()?, parts.next()?, parts.next()?, parts.next()) else {
         return None;
     };
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
     match serde_json::from_slice(&bytes).ok()? {
         Value::Object(map) => Some(map),
         _ => None,
@@ -97,7 +111,9 @@ pub fn jwt_payload(token: &str) -> Option<Map<String, Value>> {
 
 /// TS `extractOAuthTokenIdentifiers`.
 fn token_identifiers(token: Option<&str>) -> Vec<String> {
-    let Some(payload) = token.and_then(jwt_payload) else { return Vec::new() };
+    let Some(payload) = token.and_then(jwt_payload) else {
+        return Vec::new();
+    };
     let mut out: Vec<String> = Vec::new();
     let mut push = |id: String| {
         if !out.contains(&id) {
@@ -152,7 +168,10 @@ fn oauth_identifiers(data: &Map<String, Value>) -> Vec<String> {
     if let Some(v) = norm_account(get("orgId")) {
         push(format!("org:{v}"));
     }
-    for id in token_identifiers(get("access")).into_iter().chain(token_identifiers(get("refresh"))) {
+    for id in token_identifiers(get("access"))
+        .into_iter()
+        .chain(token_identifiers(get("refresh")))
+    {
         push(id);
     }
     out
@@ -167,7 +186,9 @@ fn org_scoped(provider: &str) -> bool {
 fn provider_identity_key(provider: &str, ids: &[String]) -> Option<String> {
     let find = |prefix: &str| ids.iter().find(|i| i.starts_with(prefix));
     if org_scoped(provider) {
-        let base = find("email:").or_else(|| find("account:")).or_else(|| find("project:"));
+        let base = find("email:")
+            .or_else(|| find("account:"))
+            .or_else(|| find("project:"));
         let org = find("org:");
         return match (base, org) {
             (Some(base), Some(org)) => Some(format!("{base}|{org}")),
@@ -175,7 +196,10 @@ fn provider_identity_key(provider: &str, ids: &[String]) -> Option<String> {
             (None, org) => org.cloned(),
         };
     }
-    find("account:").or_else(|| find("email:")).or_else(|| find("project:")).cloned()
+    find("account:")
+        .or_else(|| find("email:"))
+        .or_else(|| find("project:"))
+        .cloned()
 }
 
 /// TS `resolveCredentialIdentityKey`.
@@ -210,7 +234,9 @@ fn matches_replacement(
     existing_key: Option<&str>,
     incoming: &Credential,
 ) -> bool {
-    let Some(existing) = existing else { return false };
+    let Some(existing) = existing else {
+        return false;
+    };
     if kind_of(existing) != kind_of(incoming) {
         return false;
     }
@@ -218,12 +244,18 @@ fn matches_replacement(
         return existing == incoming;
     };
     let incoming_ids = oauth_identifiers(incoming_data);
-    let Some(incoming_key) = provider_identity_key(provider, &incoming_ids) else { return false };
+    let Some(incoming_key) = provider_identity_key(provider, &incoming_ids) else {
+        return false;
+    };
     if Some(incoming_key.as_str()) == existing_key {
         return true;
     }
-    let Some(existing_key) = existing_key else { return false };
-    let Some(org) = incoming_ids.iter().find(|i| i.starts_with("org:")) else { return false };
+    let Some(existing_key) = existing_key else {
+        return false;
+    };
+    let Some(org) = incoming_ids.iter().find(|i| i.starts_with("org:")) else {
+        return false;
+    };
     if incoming_key != *org && !incoming_key.ends_with(&format!("|{org}")) {
         return false;
     }
@@ -231,12 +263,15 @@ fn matches_replacement(
         return true;
     }
     let existing_ids = match existing {
-        Credential::OAuth(data) if existing_key.ends_with(&format!("|{org}")) => Some(oauth_identifiers(data)),
+        Credential::OAuth(data) if existing_key.ends_with(&format!("|{org}")) => {
+            Some(oauth_identifiers(data))
+        }
         _ => None,
     };
     let org_id = &org["org:".len()..];
     for id in &incoming_ids {
-        let is_base = id.starts_with("email:") || id.starts_with("account:") || id.starts_with("project:");
+        let is_base =
+            id.starts_with("email:") || id.starts_with("account:") || id.starts_with("project:");
         if !is_base {
             continue;
         }
@@ -256,7 +291,11 @@ fn matches_replacement(
 
 fn normalize_cause(cause: &str) -> String {
     let trimmed = cause.trim();
-    if trimmed.is_empty() { "disabled".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "disabled".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// The local `agent.db` store.
@@ -273,7 +312,8 @@ impl LocalStore {
     pub fn open(db: &Path) -> Result<Self> {
         if let Some(dir) = db.parent() {
             if !dir.is_dir() {
-                std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+                std::fs::create_dir_all(dir)
+                    .with_context(|| format!("creating {}", dir.display()))?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt as _;
@@ -283,7 +323,9 @@ impl LocalStore {
         }
         let conn = Connection::open_with_flags(
             db,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+                | OpenFlags::SQLITE_OPEN_CREATE
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )
         .with_context(|| format!("opening {}", db.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
@@ -293,7 +335,11 @@ impl LocalStore {
             let _ = std::fs::set_permissions(db, std::fs::Permissions::from_mode(0o600));
         }
         let present: bool = conn
-            .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_credentials'", [], |_| Ok(true))
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'auth_credentials'",
+                [],
+                |_| Ok(true),
+            )
             .unwrap_or(false);
         if !present {
             conn.execute_batch(&format!(
@@ -331,9 +377,18 @@ impl LocalStore {
              WHERE disabled_cause IS NULL AND (?1 IS NULL OR provider = ?1) ORDER BY id ASC",
         )?;
         let rows = stmt
-            .query_map([provider], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)))?
+            .query_map([provider], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?
             .filter_map(std::result::Result::ok)
-            .filter_map(|(id, provider, kind, data)| StoredRow::from_parts(id, provider, &kind, &data))
+            .filter_map(|(id, provider, kind, data)| {
+                StoredRow::from_parts(id, provider, &kind, &data)
+            })
             .collect();
         Ok(rows)
     }
@@ -360,7 +415,9 @@ impl LocalStore {
     pub fn upsert(&mut self, provider: &str, credential: &Credential) -> Result<Vec<StoredRow>> {
         let data = serialize(credential);
         let key = identity_key(provider, credential);
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let existing: Vec<(i64, Option<Credential>, Option<String>)> = {
             let mut stmt = tx.prepare(
                 "SELECT id, credential_type, data, identity_key FROM auth_credentials \
@@ -368,11 +425,17 @@ impl LocalStore {
             )?;
             let rows = stmt
                 .query_map([provider], |r| {
-                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?))
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
                 })?
                 .filter_map(std::result::Result::ok)
                 .map(|(id, kind, data, stored_key)| {
-                    let credential = StoredRow::from_parts(id, provider.to_string(), &kind, &data).map(|r| r.credential);
+                    let credential = StoredRow::from_parts(id, provider.to_string(), &kind, &data)
+                        .map(|r| r.credential);
                     let key = stored_key
                         .map(|k| k.trim().to_string())
                         .filter(|k| !k.is_empty())
@@ -391,7 +454,12 @@ impl LocalStore {
         }
         let mut target: Option<i64> = None;
         for (id, existing, existing_key) in &existing {
-            if !matches_replacement(provider, existing.as_ref(), existing_key.as_deref(), credential) {
+            if !matches_replacement(
+                provider,
+                existing.as_ref(),
+                existing_key.as_deref(),
+                credential,
+            ) {
                 continue;
             }
             if target.is_none() {
@@ -422,9 +490,18 @@ impl LocalStore {
 
     /// TS `#purgeSupersededDisabledRows`: best-effort.
     fn purge_superseded(&self, provider: &str, active: &[StoredRow]) -> Result<()> {
-        let has_api_key = active.iter().any(|r| matches!(r.credential, Credential::ApiKey(_)));
-        let oauth: Vec<&Credential> = active.iter().map(|r| &r.credential).filter(|c| matches!(c, Credential::OAuth(_))).collect();
-        let active_keys: Vec<String> = oauth.iter().filter_map(|c| identity_key(provider, c)).collect();
+        let has_api_key = active
+            .iter()
+            .any(|r| matches!(r.credential, Credential::ApiKey(_)));
+        let oauth: Vec<&Credential> = active
+            .iter()
+            .map(|r| &r.credential)
+            .filter(|c| matches!(c, Credential::OAuth(_)))
+            .collect();
+        let active_keys: Vec<String> = oauth
+            .iter()
+            .filter_map(|c| identity_key(provider, c))
+            .collect();
         if !has_api_key && active_keys.is_empty() {
             return Ok(());
         }
@@ -432,26 +509,36 @@ impl LocalStore {
             "SELECT id, credential_type, data, identity_key FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NOT NULL ORDER BY id ASC",
         )?;
         let disabled: Vec<(i64, String, String, Option<String>)> = stmt
-            .query_map([provider], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .query_map([provider], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
             .filter_map(std::result::Result::ok)
             .collect();
         for (id, kind, data, stored_key) in disabled {
             if has_api_key && kind == "api_key" {
-                self.conn.execute("DELETE FROM auth_credentials WHERE id = ?", [id])?;
+                self.conn
+                    .execute("DELETE FROM auth_credentials WHERE id = ?", [id])?;
                 continue;
             }
-            let credential = StoredRow::from_parts(id, provider.to_string(), &kind, &data).map(|r| r.credential);
+            let credential =
+                StoredRow::from_parts(id, provider.to_string(), &kind, &data).map(|r| r.credential);
             let key = stored_key
                 .map(|k| k.trim().to_string())
                 .filter(|k| !k.is_empty())
                 .or_else(|| credential.as_ref().and_then(|c| identity_key(provider, c)));
             if key.as_ref().is_some_and(|k| active_keys.contains(k)) {
-                self.conn.execute("DELETE FROM auth_credentials WHERE id = ?", [id])?;
+                self.conn
+                    .execute("DELETE FROM auth_credentials WHERE id = ?", [id])?;
                 continue;
             }
-            let Some(credential) = credential else { continue };
-            if oauth.iter().any(|active| matches_replacement(provider, Some(&credential), key.as_deref(), active)) {
-                self.conn.execute("DELETE FROM auth_credentials WHERE id = ?", [id])?;
+            let Some(credential) = credential else {
+                continue;
+            };
+            if oauth.iter().any(|active| {
+                matches_replacement(provider, Some(&credential), key.as_deref(), active)
+            }) {
+                self.conn
+                    .execute("DELETE FROM auth_credentials WHERE id = ?", [id])?;
             }
         }
         Ok(())
@@ -487,7 +574,12 @@ fn disable_on(conn: &Connection, id: i64, cause: &str) -> Result<usize> {
 
 // ------------------------------------------------------------------ broker
 
-async fn broker_call(cfg: &BrokerConfig, method: reqwest::Method, path: &str, body: Option<&Value>) -> Result<Value> {
+async fn broker_call(
+    cfg: &BrokerConfig,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value> {
     let url = format!("{}{path}", cfg.url.trim_end_matches('/'));
     let client = reqwest::Client::builder().timeout(BROKER_TIMEOUT).build()?;
     let mut request = client
@@ -498,11 +590,17 @@ async fn broker_call(cfg: &BrokerConfig, method: reqwest::Method, path: &str, bo
     if let Some(body) = body {
         request = request.json(body);
     }
-    let response = request.send().await.map_err(|e| anyhow!("Auth broker request failed: {e}"))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| anyhow!("Auth broker request failed: {e}"))?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        bail!("Auth broker request failed: {status}: {}", text.chars().take(300).collect::<String>());
+        bail!(
+            "Auth broker request failed: {status}: {}",
+            text.chars().take(300).collect::<String>()
+        );
     }
     serde_json::from_str(&text).map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"))
 }
@@ -523,7 +621,11 @@ fn credential_wire(credential: &Credential) -> Value {
 ///
 /// # Errors
 /// Transport or HTTP failure.
-pub async fn broker_upload(cfg: &BrokerConfig, provider: &str, credential: &Credential) -> Result<()> {
+pub async fn broker_upload(
+    cfg: &BrokerConfig,
+    provider: &str,
+    credential: &Credential,
+) -> Result<()> {
     let body = json!({"provider": provider, "credential": credential_wire(credential)});
     broker_call(cfg, reqwest::Method::POST, "/v1/credential", Some(&body)).await?;
     Ok(())
@@ -585,11 +687,19 @@ struct ClientUsageSummaryResponse {
 ///
 /// # Errors
 /// Transport, HTTP or schema failure.
-pub async fn broker_usage_history(cfg: &BrokerConfig, since_ms: i64) -> Result<Vec<BrokerUsageHistoryEntry>> {
-    let body =
-        broker_call(cfg, reqwest::Method::GET, &format!("/v1/usage/history?sinceMs={since_ms}"), None).await?;
-    let response: UsageHistoryResponse =
-        serde_json::from_value(body).map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"))?;
+pub async fn broker_usage_history(
+    cfg: &BrokerConfig,
+    since_ms: i64,
+) -> Result<Vec<BrokerUsageHistoryEntry>> {
+    let body = broker_call(
+        cfg,
+        reqwest::Method::GET,
+        &format!("/v1/usage/history?sinceMs={since_ms}"),
+        None,
+    )
+    .await?;
+    let response: UsageHistoryResponse = serde_json::from_value(body)
+        .map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"))?;
     Ok(response.entries)
 }
 
@@ -602,10 +712,15 @@ pub async fn broker_client_usage_summary(
     cfg: &BrokerConfig,
     since_ms: i64,
 ) -> Result<Vec<BrokerClientUsageClientSummary>> {
-    let body =
-        broker_call(cfg, reqwest::Method::GET, &format!("/v1/usage/clients?sinceMs={since_ms}"), None).await?;
-    let response: ClientUsageSummaryResponse =
-        serde_json::from_value(body).map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"))?;
+    let body = broker_call(
+        cfg,
+        reqwest::Method::GET,
+        &format!("/v1/usage/clients?sinceMs={since_ms}"),
+        None,
+    )
+    .await?;
+    let response: ClientUsageSummaryResponse = serde_json::from_value(body)
+        .map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"))?;
     Ok(response.clients)
 }
 
@@ -643,7 +758,13 @@ pub async fn broker_list(cfg: &BrokerConfig, provider: Option<&str>) -> Result<V
 /// Transport or HTTP failure.
 pub async fn broker_disable(cfg: &BrokerConfig, id: i64, cause: &str) -> Result<()> {
     let body = json!({"cause": cause});
-    broker_call(cfg, reqwest::Method::POST, &format!("/v1/credential/{id}/disable"), Some(&body)).await?;
+    broker_call(
+        cfg,
+        reqwest::Method::POST,
+        &format!("/v1/credential/{id}/disable"),
+        Some(&body),
+    )
+    .await?;
     Ok(())
 }
 
@@ -657,7 +778,9 @@ mod usage_tests {
 
     /// Canned HTTP/1.1 server (the `auth/tests.rs` pattern): records the
     /// request line and headers of every request, replies from `reply`.
-    fn serve(reply: impl Fn(&str) -> (u16, String) + Send + 'static) -> (String, Arc<Mutex<Vec<String>>>) {
+    fn serve(
+        reply: impl Fn(&str) -> (u16, String) + Send + 'static,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -692,7 +815,10 @@ mod usage_tests {
     }
 
     fn cfg(url: &str) -> BrokerConfig {
-        BrokerConfig { url: url.to_string(), token: "tok".to_string() }
+        BrokerConfig {
+            url: url.to_string(),
+            token: "tok".to_string(),
+        }
     }
 
     #[tokio::test]
@@ -710,7 +836,9 @@ mod usage_tests {
                 .to_string(),
             )
         });
-        let entries = broker_usage_history(&cfg(&url), 1_728_000_000_000).await.unwrap();
+        let entries = broker_usage_history(&cfg(&url), 1_728_000_000_000)
+            .await
+            .unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].provider, "google-antigravity");
         assert_eq!(entries[0].recorded_at, 1_728_000_001_000);
@@ -758,7 +886,10 @@ mod usage_tests {
     #[tokio::test]
     async fn usage_history_http_error_bails() {
         let (url, _seen) = serve(|_| (500, r#"{"error":"boom"}"#.to_string()));
-        let err = broker_usage_history(&cfg(&url), 0).await.unwrap_err().to_string();
+        let err = broker_usage_history(&cfg(&url), 0)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("500"), "{err}");
     }
 }

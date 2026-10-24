@@ -9,9 +9,7 @@ use serde_json::Value;
 
 use crate::types::{TraceMarker, TraceMarkerKind, TraceSpan, TraceSpanKind, TraceTrack};
 
-use super::{
-    compact_tokens, content_head, head_text, js_truthy, to_ms, DETAIL_MAX, LABEL_MAX,
-};
+use super::{compact_tokens, content_head, head_text, js_truthy, to_ms, DETAIL_MAX, LABEL_MAX};
 
 /// `tool_execution_start` marker facts joined to tool spans by call id.
 struct ToolStartFact {
@@ -78,7 +76,9 @@ fn active_chain(views: &[Value]) -> Vec<&Value> {
             }
         }
     }
-    let Some(mut cursor) = last else { return Vec::new() };
+    let Some(mut cursor) = last else {
+        return Vec::new();
+    };
     let mut keep = std::collections::HashSet::new();
     while let Some(id) = cursor.get("id").and_then(Value::as_str) {
         if !keep.insert(id) {
@@ -94,7 +94,12 @@ fn active_chain(views: &[Value]) -> Vec<&Value> {
     }
     views
         .iter()
-        .filter(|e| e.get("id").and_then(Value::as_str).map(|id| keep.contains(id)).unwrap_or(false))
+        .filter(|e| {
+            e.get("id")
+                .and_then(Value::as_str)
+                .map(|id| keep.contains(id))
+                .unwrap_or(false)
+        })
         .collect()
 }
 
@@ -117,7 +122,9 @@ fn tool_start_detail(data: &Value) -> Option<String> {
 fn args_preview(args: Option<&Value>) -> Option<String> {
     // TS: `if (args === undefined || args === null) return undefined`.
     let args = args.filter(|a| !a.is_null())?;
-    serde_json::to_string(args).ok().map(|s| head_text(&s, DETAIL_MAX))
+    serde_json::to_string(args)
+        .ok()
+        .map(|s| head_text(&s, DETAIL_MAX))
 }
 
 /// A finite JS number field (`typeof x === "number" && Number.isFinite(x)`).
@@ -203,7 +210,10 @@ pub(crate) fn scan_transcript(
                             if let Some(start) = start {
                                 tool_starts.insert(
                                     call_id.to_string(),
-                                    ToolStartFact { start, detail: tool_start_detail(&data) },
+                                    ToolStartFact {
+                                        start,
+                                        detail: tool_start_detail(&data),
+                                    },
                                 );
                             }
                         }
@@ -211,7 +221,9 @@ pub(crate) fn scan_transcript(
                     Some("session_exit") => {
                         let recorded_at = to_ms(data.get("recordedAt")).or(envelope_ts);
                         let mut pending_ids = std::collections::HashSet::new();
-                        if let Some(pending) = data.get("pendingToolCalls").and_then(Value::as_array) {
+                        if let Some(pending) =
+                            data.get("pendingToolCalls").and_then(Value::as_array)
+                        {
                             for p in pending {
                                 if let Some(id) = p.get("toolCallId").and_then(Value::as_str) {
                                     pending_ids.insert(id.to_string());
@@ -279,7 +291,11 @@ pub(crate) fn scan_transcript(
             }
             Some("reset_boundary") => {
                 if let Some(ts) = envelope_ts {
-                    markers.push(TraceMarker { time: ts, kind: TraceMarkerKind::Reset, label: "reset".into() });
+                    markers.push(TraceMarker {
+                        time: ts,
+                        kind: TraceMarkerKind::Reset,
+                        label: "reset".into(),
+                    });
                 }
                 continue;
             }
@@ -289,8 +305,13 @@ pub(crate) fn scan_transcript(
         if entry.get("type").and_then(Value::as_str) != Some("message") {
             continue;
         }
-        let Some(msg) = entry.get("message") else { continue };
-        let entry_id = entry.get("id").and_then(Value::as_str).map(ToString::to_string);
+        let Some(msg) = entry.get("message") else {
+            continue;
+        };
+        let entry_id = entry
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
 
         match msg.get("role").and_then(Value::as_str) {
             Some("assistant") => {
@@ -315,9 +336,13 @@ pub(crate) fn scan_transcript(
                             unpriced_requests += 1;
                         }
                     } else if cost_obj.is_none() && !provider.is_empty() && !model.is_empty() {
-                        let has_timestamp = finite_number(msg.get("timestamp")).map(|t| t > 0.0).unwrap_or(false)
+                        let has_timestamp = finite_number(msg.get("timestamp"))
+                            .map(|t| t > 0.0)
+                            .unwrap_or(false)
                             || envelope_ts.is_some();
-                        if !has_timestamp && crate::catalog::is_scheduled_catalog_model(provider, model) {
+                        if !has_timestamp
+                            && crate::catalog::is_scheduled_catalog_model(provider, model)
+                        {
                             unpriced_requests += 1;
                         }
                     }
@@ -325,18 +350,33 @@ pub(crate) fn scan_transcript(
                 let mut start = finite_number(msg.get("timestamp")).map(|t| t as i64);
                 let mut end = finite_number(msg.get("completedAt"))
                     .map(|t| t as i64)
-                    .or_else(|| start.and_then(|s| finite_number(msg.get("duration")).map(|d| s.saturating_add(d as i64))));
+                    .or_else(|| {
+                        start.and_then(|s| {
+                            finite_number(msg.get("duration")).map(|d| s.saturating_add(d as i64))
+                        })
+                    });
                 if start.is_none() {
                     let fallback_end = end.or(envelope_ts);
-                    let Some(fallback_end) = fallback_end else { continue };
+                    let Some(fallback_end) = fallback_end else {
+                        continue;
+                    };
                     end = Some(fallback_end);
-                    start = Some(fallback_end.saturating_sub(finite_number(msg.get("duration")).map(|d| d as i64).unwrap_or(0)));
+                    start = Some(
+                        fallback_end.saturating_sub(
+                            finite_number(msg.get("duration"))
+                                .map(|d| d as i64)
+                                .unwrap_or(0),
+                        ),
+                    );
                 }
                 let mut end = end.unwrap_or_else(|| envelope_ts.unwrap_or(start.unwrap()));
                 let start = start.unwrap();
                 end = end.max(start);
                 if first_assistant_model.is_none() {
-                    first_assistant_model = msg.get("model").and_then(Value::as_str).map(ToString::to_string);
+                    first_assistant_model = msg
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(ToString::to_string);
                 }
 
                 let mut span = TraceSpan {
@@ -344,12 +384,18 @@ pub(crate) fn scan_transcript(
                     kind: TraceSpanKind::Model,
                     start,
                     end,
-                    label: head_text(msg.get("model").and_then(Value::as_str).unwrap_or("model"), LABEL_MAX),
+                    label: head_text(
+                        msg.get("model").and_then(Value::as_str).unwrap_or("model"),
+                        LABEL_MAX,
+                    ),
                     ..TraceSpan::default()
                 };
                 span.detail = content_head(msg.get("content"), DETAIL_MAX);
                 span.entry_id = entry_id.clone();
-                span.model = msg.get("model").and_then(Value::as_str).map(ToString::to_string);
+                span.model = msg
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
                 if total_tokens > 0.0 {
                     span.tokens = Some(total_tokens as i64);
                 }
@@ -357,7 +403,9 @@ pub(crate) fn scan_transcript(
                     span.cost = Some(cost);
                 }
                 span.ttft = finite_number(msg.get("ttft"));
-                if msg.get("stopReason").and_then(Value::as_str) == Some("error") || js_truthy(msg.get("errorMessage")) {
+                if msg.get("stopReason").and_then(Value::as_str) == Some("error")
+                    || js_truthy(msg.get("errorMessage"))
+                {
                     span.is_error = Some(true);
                 }
                 let span_end = span.end;
@@ -367,8 +415,12 @@ pub(crate) fn scan_transcript(
                         if block.get("type").and_then(Value::as_str) != Some("toolCall") {
                             continue;
                         }
-                        let Some(call_id) = block.get("id").and_then(Value::as_str) else { continue };
-                        let Some(name) = block.get("name").and_then(Value::as_str) else { continue };
+                        let Some(call_id) = block.get("id").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let Some(name) = block.get("name").and_then(Value::as_str) else {
+                            continue;
+                        };
                         pending_tools.push(PendingToolCall {
                             call_id: call_id.to_string(),
                             name: name.to_string(),
@@ -380,13 +432,27 @@ pub(crate) fn scan_transcript(
                 }
             }
             Some("toolResult") => {
-                let Some(call_id) = msg.get("toolCallId").and_then(Value::as_str) else { continue };
-                let Some(end) = finite_number(msg.get("timestamp")).map(|t| t as i64).or(envelope_ts) else {
+                let Some(call_id) = msg.get("toolCallId").and_then(Value::as_str) else {
                     continue;
                 };
-                let tool_name = msg.get("toolName").and_then(Value::as_str).unwrap_or("tool");
-                tool_results
-                    .insert(call_id.to_string(), (end, msg.get("isError") == Some(&Value::Bool(true)), entry_id.clone()));
+                let Some(end) = finite_number(msg.get("timestamp"))
+                    .map(|t| t as i64)
+                    .or(envelope_ts)
+                else {
+                    continue;
+                };
+                let tool_name = msg
+                    .get("toolName")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool");
+                tool_results.insert(
+                    call_id.to_string(),
+                    (
+                        end,
+                        msg.get("isError") == Some(&Value::Bool(true)),
+                        entry_id.clone(),
+                    ),
+                );
 
                 let details = msg.get("details");
                 let async_info = details.and_then(|d| d.get("async"));
@@ -396,7 +462,13 @@ pub(crate) fn scan_transcript(
                     .and_then(Value::as_str)
                     .is_some()
                 {
-                    let job_id = async_info.unwrap().get("jobId").unwrap().as_str().unwrap().to_string();
+                    let job_id = async_info
+                        .unwrap()
+                        .get("jobId")
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .to_string();
                     let job = PendingBackgroundJob {
                         job_id: job_id.clone(),
                         start: end,
@@ -408,14 +480,26 @@ pub(crate) fn scan_transcript(
                     background_jobs.push(job);
                 }
                 if tool_name == "task" {
-                    if let Some(results) = details.and_then(|d| d.get("results")).and_then(Value::as_array) {
+                    if let Some(results) = details
+                        .and_then(|d| d.get("results"))
+                        .and_then(Value::as_array)
+                    {
                         for result in results {
-                            let Some(child_id) = result.get("id").and_then(Value::as_str) else { continue };
+                            let Some(child_id) = result.get("id").and_then(Value::as_str) else {
+                                continue;
+                            };
                             task_results.push(TaskResultFact {
                                 child_id: child_id.to_string(),
-                                agent: result.get("agent").and_then(Value::as_str).map(ToString::to_string),
-                                task: result.get("task").and_then(Value::as_str).map(ToString::to_string),
-                                duration_ms: finite_number(result.get("durationMs")).map(|d| d as i64),
+                                agent: result
+                                    .get("agent")
+                                    .and_then(Value::as_str)
+                                    .map(ToString::to_string),
+                                task: result
+                                    .get("task")
+                                    .and_then(Value::as_str)
+                                    .map(ToString::to_string),
+                                duration_ms: finite_number(result.get("durationMs"))
+                                    .map(|d| d as i64),
                                 result_entry_id: entry_id.clone(),
                                 tool_span_end: end,
                             });
@@ -423,13 +507,24 @@ pub(crate) fn scan_transcript(
                     }
                 }
             }
-            Some("custom") if msg.get("customType").and_then(Value::as_str) == Some("async-result") => {
-                let close_at = finite_number(msg.get("timestamp")).map(|t| t as i64).or(envelope_ts);
-                let jobs = msg.get("details").and_then(|d| d.get("jobs")).and_then(Value::as_array);
+            Some("custom")
+                if msg.get("customType").and_then(Value::as_str) == Some("async-result") =>
+            {
+                let close_at = finite_number(msg.get("timestamp"))
+                    .map(|t| t as i64)
+                    .or(envelope_ts);
+                let jobs = msg
+                    .get("details")
+                    .and_then(|d| d.get("jobs"))
+                    .and_then(Value::as_array);
                 if let (Some(close_at), Some(jobs)) = (close_at, jobs) {
                     for job in jobs {
-                        let Some(job_id) = job.get("jobId").and_then(Value::as_str) else { continue };
-                        let Some(&idx) = active_background_jobs.get(job_id) else { continue };
+                        let Some(job_id) = job.get("jobId").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let Some(&idx) = active_background_jobs.get(job_id) else {
+                            continue;
+                        };
                         if background_jobs[idx].end.is_some() {
                             continue;
                         }
@@ -439,12 +534,16 @@ pub(crate) fn scan_transcript(
                 }
             }
             Some("user") if msg.get("synthetic") != Some(&Value::Bool(true)) => {
-                let Some(time) = finite_number(msg.get("timestamp")).map(|t| t as i64).or(envelope_ts) else {
+                let Some(time) = finite_number(msg.get("timestamp"))
+                    .map(|t| t as i64)
+                    .or(envelope_ts)
+                else {
                     continue;
                 };
                 turns.push((
                     time,
-                    content_head(msg.get("content"), LABEL_MAX).unwrap_or_else(|| "user".to_string()),
+                    content_head(msg.get("content"), LABEL_MAX)
+                        .unwrap_or_else(|| "user".to_string()),
                     entry_id.clone(),
                 ));
             }
@@ -463,11 +562,22 @@ pub(crate) fn scan_transcript(
                 Some((recorded_at, pending_ids)) if pending_ids.contains(&pending.call_id) => {
                     (*recorded_at, true)
                 }
-                _ => (if last_chain_ts != 0 { last_chain_ts } else { start }, true),
+                _ => (
+                    if last_chain_ts != 0 {
+                        last_chain_ts
+                    } else {
+                        start
+                    },
+                    true,
+                ),
             },
         };
         let mut span = TraceSpan {
-            id: format!("{track_id}:{}:{}", pending.assistant_entry_id.as_deref().unwrap_or(""), pending.call_id),
+            id: format!(
+                "{track_id}:{}:{}",
+                pending.assistant_entry_id.as_deref().unwrap_or(""),
+                pending.call_id
+            ),
             kind: TraceSpanKind::Tool,
             start,
             end: end.max(start),
@@ -475,8 +585,12 @@ pub(crate) fn scan_transcript(
             ..TraceSpan::default()
         };
         span.tool_call_id = Some(pending.call_id.clone());
-        span.detail = marker.and_then(|m| m.detail.clone()).or_else(|| pending.args_preview.clone());
-        span.entry_id = result.and_then(|(_, _, e)| e.clone()).or_else(|| pending.assistant_entry_id.clone());
+        span.detail = marker
+            .and_then(|m| m.detail.clone())
+            .or_else(|| pending.args_preview.clone());
+        span.entry_id = result
+            .and_then(|(_, _, e)| e.clone())
+            .or_else(|| pending.assistant_entry_id.clone());
         if let Some((_, true, _)) = result {
             span.is_error = Some(true);
         }
@@ -488,7 +602,11 @@ pub(crate) fn scan_transcript(
 
     // Background spans: opened by an async-running tool result, closed by the async-result delivery.
     for (background_index, job) in background_jobs.iter().enumerate() {
-        let end = job.end.unwrap_or(if last_chain_ts != 0 { last_chain_ts } else { job.start });
+        let end = job.end.unwrap_or(if last_chain_ts != 0 {
+            last_chain_ts
+        } else {
+            job.start
+        });
         let mut span = TraceSpan {
             id: format!("{track_id}:bg:{background_index}:{}", job.job_id),
             kind: TraceSpanKind::Background,
@@ -515,7 +633,10 @@ pub(crate) fn scan_transcript(
             }
         }
         let mut span = TraceSpan {
-            id: format!("{track_id}:{}", entry_id.as_deref().unwrap_or(&format!("turn{i}"))),
+            id: format!(
+                "{track_id}:{}",
+                entry_id.as_deref().unwrap_or(&format!("turn{i}"))
+            ),
             kind: TraceSpanKind::Turn,
             start: *time,
             end,

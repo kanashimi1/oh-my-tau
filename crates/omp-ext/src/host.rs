@@ -277,7 +277,11 @@ fn private_command(cfg: &HostConfig) -> Command {
     // Opt out with OMP_EXT_NO_SMOL=1 (e.g. older bun without the flag).
     // Only passed to a real `bun` binary — tests substitute fake runners.
     if std::env::var_os("OMP_EXT_NO_SMOL").is_none()
-        && cfg.bun.rsplit('/').next().is_some_and(|b| b == "bun" || b.starts_with("bun-"))
+        && cfg
+            .bun
+            .rsplit('/')
+            .next()
+            .is_some_and(|b| b == "bun" || b.starts_with("bun-"))
     {
         cmd.arg("--smol");
     }
@@ -540,7 +544,12 @@ impl ExtHost {
     ///
     /// # Errors
     /// Transport failure.
-    pub async fn emit_skipping(&self, event: Value, ctx: Option<Value>, skip: &[String]) -> Result<EmitResult> {
+    pub async fn emit_skipping(
+        &self,
+        event: Value,
+        ctx: Option<Value>,
+        skip: &[String],
+    ) -> Result<EmitResult> {
         if self.skip_emit(&event, ctx.is_some()) {
             return Ok(EmitResult::default());
         }
@@ -644,11 +653,8 @@ impl ExtHost {
     /// # Errors
     /// Transport failure.
     pub async fn cancel_tool(&self, tool_call_id: &str) -> Result<()> {
-        self.request(
-            "cancel_tool",
-            json!({"toolCallId": tool_call_id}),
-        )
-        .await?;
+        self.request("cancel_tool", json!({"toolCallId": tool_call_id}))
+            .await?;
         Ok(())
     }
 
@@ -709,8 +715,16 @@ impl ExtHost {
     /// # Errors
     /// No daemon accepted a connection within ~10 s.
     async fn spawn_shared(cfg: &HostConfig, sock: &Path) -> Result<Arc<Self>> {
-        if cfg.bun.rsplit('/').next().is_some_and(|b| b != "bun" && !b.starts_with("bun-")) {
-            bail!("shared ext host requires a real `bun` binary, got {}", cfg.bun);
+        if cfg
+            .bun
+            .rsplit('/')
+            .next()
+            .is_some_and(|b| b != "bun" && !b.starts_with("bun-"))
+        {
+            bail!(
+                "shared ext host requires a real `bun` binary, got {}",
+                cfg.bun
+            );
         }
         let stream = Self::connect_daemon(cfg, sock).await?;
 
@@ -888,7 +902,10 @@ impl ExtHost {
             "{}\n",
             json!({"jsonrpc": "2.0", "method": "omp-rs-env", "params": {"env": env}})
         );
-        stream.write_all(line.as_bytes()).await.context("shared ext host: env handshake")?;
+        stream
+            .write_all(line.as_bytes())
+            .await
+            .context("shared ext host: env handshake")?;
         Ok(stream)
     }
 
@@ -925,7 +942,10 @@ impl ExtHost {
                     waited += 1;
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                Err(e) => bail!("shared ext host: start lock {}: {e}", Path::new(&lock_path).display()),
+                Err(e) => bail!(
+                    "shared ext host: start lock {}: {e}",
+                    Path::new(&lock_path).display()
+                ),
             }
         }
         // Another client may have started it while we waited for the lock.
@@ -940,7 +960,10 @@ impl ExtHost {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        bail!("shared ext host: no daemon on {} after 10 s", sock.display())
+        bail!(
+            "shared ext host: no daemon on {} after 10 s",
+            sock.display()
+        )
     }
 
     fn start_daemon(cfg: &HostConfig, shard: &std::path::Path, sock: &Path) -> Result<()> {
@@ -966,7 +989,9 @@ impl ExtHost {
         // Only bun's own `BUN_*` knobs and the idle timeout carry over.
         cmd.env_clear();
         for (k, v) in std::env::vars_os() {
-            let keep = k.to_str().is_some_and(|k| k.starts_with("BUN_") || k == "OMP_RS_EXT_SHARED_IDLE_MS");
+            let keep = k
+                .to_str()
+                .is_some_and(|k| k.starts_with("BUN_") || k == "OMP_RS_EXT_SHARED_IDLE_MS");
             if keep {
                 cmd.env(k, v);
             }
@@ -1235,14 +1260,18 @@ mod tests {
     #[tokio::test]
     async fn late_failure_of_a_replaced_connection_spares_the_new_one() {
         let dir = tempfile::tempdir().unwrap();
-        let host = ExtHost::spawn(&fake_host(dir.path(), "sleep 60\n")).await.unwrap();
+        let host = ExtHost::spawn(&fake_host(dir.path(), "sleep 60\n"))
+            .await
+            .unwrap();
 
         // Old connection: its writer blocks on a full 16-byte pipe until the
         // peer goes away, then fails (a dead daemon socket / stdin).
         let (old_w, old_peer) = tokio::io::duplex(16);
         let (old_r, _old_r_peer) = tokio::io::duplex(16);
         host.install(Box::new(old_w), old_r, None).await;
-        let old = host.send_request("emit", json!({"queued": "on the old connection"})).unwrap();
+        let old = host
+            .send_request("emit", json!({"queued": "on the old connection"}))
+            .unwrap();
 
         let ((new_w, new_r), (mut sent, mut answer)) = pipe_conn();
         host.install(new_w, new_r, None).await;
@@ -1255,14 +1284,28 @@ mod tests {
         let id = serde_json::from_str::<Value>(&line).unwrap()["id"].clone();
 
         drop(old_peer);
-        let old = tokio::time::timeout(Duration::from_secs(5), old).await.unwrap().unwrap();
-        assert!(old.is_err(), "old request fails with its connection: {old:?}");
+        let old = tokio::time::timeout(Duration::from_secs(5), old)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            old.is_err(),
+            "old request fails with its connection: {old:?}"
+        );
 
-        let mut reply = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"result":"ok"})).unwrap();
+        let mut reply =
+            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"result":"ok"})).unwrap();
         reply.push(b'\n');
         answer.write_all(&reply).await.unwrap();
-        let new = tokio::time::timeout(Duration::from_secs(5), new).await.unwrap().unwrap();
-        assert_eq!(new, Ok(json!("ok")), "new request must get the new host's answer");
+        let new = tokio::time::timeout(Duration::from_secs(5), new)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            new,
+            Ok(json!("ok")),
+            "new request must get the new host's answer"
+        );
     }
 
     /// Writer failure: every queued request resolves, and a request issued
@@ -1271,7 +1314,9 @@ mod tests {
     #[tokio::test]
     async fn failed_writer_resolves_queued_and_refuses_new_requests() {
         let dir = tempfile::tempdir().unwrap();
-        let host = ExtHost::spawn(&fake_host(dir.path(), "sleep 60\n")).await.unwrap();
+        let host = ExtHost::spawn(&fake_host(dir.path(), "sleep 60\n"))
+            .await
+            .unwrap();
         let (w, peer) = tokio::io::duplex(16);
         let (r, _r_peer) = tokio::io::duplex(16);
         host.install(Box::new(w), r, None).await;
@@ -1280,7 +1325,10 @@ mod tests {
             .collect();
         drop(peer);
         for rx in queued {
-            let r = tokio::time::timeout(Duration::from_secs(5), rx).await.unwrap().unwrap();
+            let r = tokio::time::timeout(Duration::from_secs(5), rx)
+                .await
+                .unwrap()
+                .unwrap();
             assert_eq!(r, Err("extension host stdin closed".into()));
         }
         // The table is closed with the failure: no window where a new waiter

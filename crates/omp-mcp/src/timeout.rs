@@ -11,11 +11,16 @@ const TIMEOUT_ENV: &str = "OMP_MCP_TIMEOUT_MS";
 /// Resolve the effective timeout in milliseconds.
 #[must_use]
 pub fn resolve_timeout_ms(config_timeout: Option<u64>) -> u64 {
-    if let Some(raw) = std::env::var(TIMEOUT_ENV).ok().filter(|v| !v.trim().is_empty()) {
+    if let Some(raw) = std::env::var(TIMEOUT_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    {
         if let Ok(value) = raw.trim().parse::<u64>() {
             return value;
         }
-        tracing::warn!("ignoring invalid {TIMEOUT_ENV} env value; expected a non-negative number: {raw}");
+        tracing::warn!(
+            "ignoring invalid {TIMEOUT_ENV} env value; expected a non-negative number: {raw}"
+        );
     }
     config_timeout.unwrap_or(DEFAULT_TIMEOUT_MS)
 }

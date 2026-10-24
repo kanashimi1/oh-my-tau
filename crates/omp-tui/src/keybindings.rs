@@ -28,7 +28,10 @@ pub struct KeybindingDef {
 }
 
 const fn def(default_keys: &'static [&'static str], description: &'static str) -> KeybindingDef {
-    KeybindingDef { default_keys, description }
+    KeybindingDef {
+        default_keys,
+        description,
+    }
 }
 
 /// Base TUI editor/input bindings (TS `TUI_KEYBINDINGS`).
@@ -123,8 +126,8 @@ pub fn keybindings() -> Vec<(&'static str, KeybindingDef)> {
 /// matches when the terminal reports the shifted key with a SHIFT modifier
 /// (TS `SHIFTED_SYMBOL_KEYS`).
 const SHIFTED_SYMBOL_KEYS: &[&str] = &[
-    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "{", "}", "|", ":", "<", ">",
-    "?", "~",
+    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", "_", "+", "{", "}", "|", ":", "<", ">", "?",
+    "~",
 ];
 
 const MODIFIER_ORDER: [&str; 4] = ["ctrl", "shift", "alt", "super"];
@@ -178,7 +181,12 @@ pub fn canonical_key_id(key: &str) -> String {
     if modifiers.is_empty() {
         return base;
     }
-    modifiers.sort_by_key(|m| MODIFIER_ORDER.iter().position(|o| o == m).unwrap_or(usize::MAX));
+    modifiers.sort_by_key(|m| {
+        MODIFIER_ORDER
+            .iter()
+            .position(|o| o == m)
+            .unwrap_or(usize::MAX)
+    });
     format!("{}+{}", modifiers.join("+"), base)
 }
 
@@ -267,7 +275,12 @@ impl KeybindingsManager {
             match_keys_by_id.insert(*id, aliases);
         }
 
-        Self { keys_by_id, match_keys_by_id, conflicts, user }
+        Self {
+            keys_by_id,
+            match_keys_by_id,
+            conflicts,
+            user,
+        }
     }
 
     /// Build with default (no-user-override) bindings.
@@ -303,13 +316,18 @@ impl KeybindingsManager {
     /// First key for `id`, if any (for hint rendering).
     #[must_use]
     pub fn first_key(&self, id: &str) -> Option<String> {
-        self.keys_by_id.get(id).and_then(|keys| keys.first().cloned())
+        self.keys_by_id
+            .get(id)
+            .and_then(|keys| keys.first().cloned())
     }
 
     /// Definition metadata for `id`.
     #[must_use]
     pub fn get_definition(&self, id: &str) -> Option<KeybindingDef> {
-        keybindings().into_iter().find(|(key, _)| *key == id).map(|(_, def)| def)
+        keybindings()
+            .into_iter()
+            .find(|(key, _)| *key == id)
+            .map(|(_, def)| def)
     }
 
     /// Detected user-override conflicts.
@@ -520,7 +538,10 @@ mod tests {
     #[test]
     fn user_override_replaces_default_keys() {
         let mut user = UserBindings::new();
-        user.insert("app.exit".into(), vec!["ctrl+q".into(), "ctrl+alt+q".into()]);
+        user.insert(
+            "app.exit".into(),
+            vec!["ctrl+q".into(), "ctrl+alt+q".into()],
+        );
         let km = KeybindingsManager::new(user);
         assert!(km.matches_event(&ev(KeyCode::Char('q'), CtMods::CONTROL), "app.exit"));
         assert!(!km.matches_event(&ev(KeyCode::Char('d'), CtMods::CONTROL), "app.exit"));
@@ -585,8 +606,7 @@ mod tests {
 
     #[test]
     fn missing_yaml_means_no_overrides() {
-        let user =
-            load_user_bindings(&PathBuf::from("/nonexistent/omp-keybindings.yml")).unwrap();
+        let user = load_user_bindings(&PathBuf::from("/nonexistent/omp-keybindings.yml")).unwrap();
         assert!(user.is_empty());
     }
 

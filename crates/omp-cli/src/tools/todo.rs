@@ -867,9 +867,15 @@ mod tests {
     fn storage_reflects_session_file_presence() {
         let init = json!({"op": "init", "list": [{"phase": "P", "items": ["a"]}]});
         let with_file = TodoTool::with_session(Vec::new(), Some("/tmp/s.jsonl"));
-        assert_eq!(with_file.run(&init).unwrap().details["storage"], json!("session"));
+        assert_eq!(
+            with_file.run(&init).unwrap().details["storage"],
+            json!("session")
+        );
         let no_file = TodoTool::with_session(Vec::new(), None);
-        assert_eq!(no_file.run(&init).unwrap().details["storage"], json!("memory"));
+        assert_eq!(
+            no_file.run(&init).unwrap().details["storage"],
+            json!("memory")
+        );
     }
 
     #[test]

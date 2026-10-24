@@ -19,8 +19,15 @@ fn find_rule<'a>(url: &InternalUrl, rules: &'a [RuleEntry]) -> Result<&'a RuleEn
         None => {
             let mut available: Vec<&str> = rules.iter().map(|r| r.name.as_str()).collect();
             available.sort();
-            let available_str = if available.is_empty() { "none".to_string() } else { available.join(", ") };
-            Err(format!("Unknown rule: {}\nAvailable: {available_str}", url.host))
+            let available_str = if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.join(", ")
+            };
+            Err(format!(
+                "Unknown rule: {}\nAvailable: {available_str}",
+                url.host
+            ))
         }
     }
 }
@@ -137,12 +144,21 @@ mod tests {
     #[test]
     fn errors_match_ts() {
         let url = parse_internal_url("rule://").unwrap();
-        assert_eq!(resolve(&url, &[]).unwrap_err(), "rule:// URL requires a rule name: rule://<name>");
+        assert_eq!(
+            resolve(&url, &[]).unwrap_err(),
+            "rule:// URL requires a rule name: rule://<name>"
+        );
         let rules = [rule("a", "x")];
         let url = parse_internal_url("rule://zzz").unwrap();
-        assert_eq!(resolve(&url, &rules).unwrap_err(), "Unknown rule: zzz\nAvailable: a");
+        assert_eq!(
+            resolve(&url, &rules).unwrap_err(),
+            "Unknown rule: zzz\nAvailable: a"
+        );
         let url = parse_internal_url("rule://zzz").unwrap();
-        assert_eq!(resolve(&url, &[]).unwrap_err(), "Unknown rule: zzz\nAvailable: none");
+        assert_eq!(
+            resolve(&url, &[]).unwrap_err(),
+            "Unknown rule: zzz\nAvailable: none"
+        );
     }
 
     #[test]
@@ -151,6 +167,9 @@ mod tests {
         let url = parse_internal_url("rule://ghost").unwrap();
         assert_eq!(locate(&url, &rules).unwrap(), None);
         let url = parse_internal_url("rule://").unwrap();
-        assert_eq!(locate(&url, &rules).unwrap_err(), "rule:// URL requires a rule name: rule://<name>");
+        assert_eq!(
+            locate(&url, &rules).unwrap_err(),
+            "rule:// URL requires a rule name: rule://<name>"
+        );
     }
 }

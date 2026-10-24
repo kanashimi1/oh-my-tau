@@ -119,7 +119,10 @@ pub fn ensure_rollup_schema(conn: &Connection) -> Result<()> {
         for (event, body) in [
             ("insert", mark_dirty("NEW")),
             ("delete", mark_dirty("OLD")),
-            ("update", format!("{} {}", mark_dirty("OLD"), mark_dirty("NEW"))),
+            (
+                "update",
+                format!("{} {}", mark_dirty("OLD"), mark_dirty("NEW")),
+            ),
         ] {
             let name = format!("rollup_dirty_{table}_{event}");
             conn.execute_batch(&format!("DROP TRIGGER IF EXISTS {name}"))?;

@@ -160,23 +160,41 @@ async fn shared_daemon_sessions_are_isolated() {
         let paths = paths.clone();
         tokio::spawn(async move {
             let host = ExtHost::spawn(&cfg).await.unwrap();
-            host.load(Some(&paths), None, "/tmp", Some(json!({"sessionId": label})))
-                .await
-                .unwrap();
+            host.load(
+                Some(&paths),
+                None,
+                "/tmp",
+                Some(json!({"sessionId": label})),
+            )
+            .await
+            .unwrap();
             host
         })
     };
     let (ta, tb) = (spawn_session("a"), spawn_session("b"));
     let (a, b) = (ta.await.unwrap(), tb.await.unwrap());
 
-    assert_eq!(daemon_pids(&sock).len(), 1, "two sessions share exactly one bun daemon");
+    assert_eq!(
+        daemon_pids(&sock).len(),
+        1,
+        "two sessions share exactly one bun daemon"
+    );
 
     let n = |v: &Value| v["details"]["n"].as_u64().unwrap();
-    let a1 = a.call_tool("fx_echo", "a1", json!({"text":"x"}), None).await.unwrap();
-    let a2 = a.call_tool("fx_echo", "a2", json!({"text":"x"}), None).await.unwrap();
+    let a1 = a
+        .call_tool("fx_echo", "a1", json!({"text":"x"}), None)
+        .await
+        .unwrap();
+    let a2 = a
+        .call_tool("fx_echo", "a2", json!({"text":"x"}), None)
+        .await
+        .unwrap();
     assert_eq!(n(&a1), 1);
     assert_eq!(n(&a2), 2, "session A counts its own calls");
-    let b1 = b.call_tool("fx_echo", "b1", json!({"text":"x"}), None).await.unwrap();
+    let b1 = b
+        .call_tool("fx_echo", "b1", json!({"text":"x"}), None)
+        .await
+        .unwrap();
     assert_eq!(n(&b1), 1, "session B state is not affected by session A");
 
     // `list_flags`/`list_tools` are per session too.
@@ -196,7 +214,10 @@ async fn shared_daemon_sessions_are_isolated() {
         }
     })
     .await;
-    assert!(gone.is_ok(), "shared daemon did not exit after last session");
+    assert!(
+        gone.is_ok(),
+        "shared daemon did not exit after last session"
+    );
 }
 
 /// Find the shared-daemon pid by its `OMP_RS_EXT_SOCKET` env var (the daemon's
@@ -209,19 +230,22 @@ fn daemon_pid(sock: &std::path::Path) -> Option<u32> {
 fn daemon_pids(sock: &std::path::Path) -> Vec<u32> {
     let mut out = Vec::new();
     let needle = format!("OMP_RS_EXT_SOCKET={}", sock.display());
-    let Ok(rd) = std::fs::read_dir("/proc") else { return out };
+    let Ok(rd) = std::fs::read_dir("/proc") else {
+        return out;
+    };
     for entry in rd {
         let Ok(entry) = entry else { continue };
-        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
             continue;
         };
         let Ok(env) = std::fs::read(format!("/proc/{pid}/environ")) else {
             continue;
         };
-        if env
-            .windows(needle.len())
-            .any(|w| w == needle.as_bytes())
-        {
+        if env.windows(needle.len()).any(|w| w == needle.as_bytes()) {
             out.push(pid);
         }
     }
@@ -266,7 +290,10 @@ async fn shared_daemon_death_falls_back_to_private_host() {
     )
     .await
     .unwrap();
-    let r = host.call_tool("fx_echo", "e1", json!({"text":"x"}), None).await.unwrap();
+    let r = host
+        .call_tool("fx_echo", "e1", json!({"text":"x"}), None)
+        .await
+        .unwrap();
     assert_eq!(r["content"][0]["text"], "echo:x");
     let pid = daemon_pid(&sock).expect("shared daemon running");
 
@@ -277,9 +304,7 @@ async fn shared_daemon_death_falls_back_to_private_host() {
     // Kill the daemon while an RPC is in flight: it must error, not hang.
     let in_flight = {
         let host = host.clone();
-        tokio::spawn(
-            async move { host.call_tool("fx_slow", "h", json!({}), None).await },
-        )
+        tokio::spawn(async move { host.call_tool("fx_slow", "h", json!({}), None).await })
     };
     tokio::time::sleep(Duration::from_millis(300)).await;
     let killed = std::process::Command::new("kill")
@@ -313,7 +338,9 @@ async fn shared_daemon_death_falls_back_to_private_host() {
     .unwrap();
 
     // Hooks fire again: session_start -> append_entry from the reloaded ext.
-    host.emit(json!({"type":"session_start"}), None).await.unwrap();
+    host.emit(json!({"type":"session_start"}), None)
+        .await
+        .unwrap();
     let mut seen = None;
     while let Ok(Some(m)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
         if let HostMessage::Notification { method, params } = m {
@@ -330,11 +357,20 @@ async fn shared_daemon_death_falls_back_to_private_host() {
 
     // The next prompt works: tool calls on the private fallback host. Fresh
     // module state means the per-session counter restarted at 1.
-    let r = host.call_tool("fx_echo", "e2", json!({"text":"z"}), None).await.unwrap();
+    let r = host
+        .call_tool("fx_echo", "e2", json!({"text":"z"}), None)
+        .await
+        .unwrap();
     assert_eq!(r["content"][0]["text"], "echo:z");
-    assert_eq!(r["details"]["n"], 1, "fallback host has fresh extension state");
+    assert_eq!(
+        r["details"]["n"], 1,
+        "fallback host has fresh extension state"
+    );
     let new_pid = daemon_pid(&sock).expect("shared daemon restarted");
-    assert_ne!(new_pid, pid, "reconnected to a new shared daemon, not a private host");
+    assert_ne!(
+        new_pid, pid,
+        "reconnected to a new shared daemon, not a private host"
+    );
 
     host.shutdown().await.unwrap();
 }
@@ -379,20 +415,40 @@ async fn context_emit_skips_listed_extensions() {
     use pa_agent::types::AgentMessage;
     let host = ExtHost::spawn(&config()).await.unwrap();
     let r = host
-        .load(Some(&[fixture("fixture.ts"), fixture("context-slim.ts")]), None, "/tmp", Some(json!({"sessionId": "s1"})))
+        .load(
+            Some(&[fixture("fixture.ts"), fixture("context-slim.ts")]),
+            None,
+            "/tmp",
+            Some(json!({"sessionId": "s1"})),
+        )
         .await
         .unwrap();
     assert_eq!(r.loaded.len(), 2, "{r:?}");
     let msgs: Vec<AgentMessage> = vec![AgentMessage::user("hi")];
-    let texts = |m: &[AgentMessage]| m.iter().map(|m| serde_json::to_value(m).unwrap()["content"].clone()).collect::<Vec<_>>();
-    let slimmed = hooks::context_owned(&host, msgs.clone(), None).await.unwrap();
-    assert_eq!(slimmed.len(), 2, "context-slim ran: {:?}", texts(&slimmed));
-    let skipped = hooks::context_owned_skipping(&host, msgs.clone(), None, &["context-slim".to_owned()])
+    let texts = |m: &[AgentMessage]| {
+        m.iter()
+            .map(|m| serde_json::to_value(m).unwrap()["content"].clone())
+            .collect::<Vec<_>>()
+    };
+    let slimmed = hooks::context_owned(&host, msgs.clone(), None)
         .await
         .unwrap();
-    assert_eq!(skipped.len(), 1, "context-slim skipped: {:?}", texts(&skipped));
+    assert_eq!(slimmed.len(), 2, "context-slim ran: {:?}", texts(&slimmed));
+    let skipped =
+        hooks::context_owned_skipping(&host, msgs.clone(), None, &["context-slim".to_owned()])
+            .await
+            .unwrap();
+    assert_eq!(
+        skipped.len(),
+        1,
+        "context-slim skipped: {:?}",
+        texts(&skipped)
+    );
     // Per emit only: the next plain emit runs it again.
-    assert_eq!(hooks::context_owned(&host, msgs, None).await.unwrap().len(), 2);
+    assert_eq!(
+        hooks::context_owned(&host, msgs, None).await.unwrap().len(),
+        2
+    );
     host.shutdown().await.unwrap();
 }
 
@@ -504,7 +560,10 @@ async fn ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop
         }),
         _ => false,
     });
-    assert!(rewritten, "assistant tool call must carry the revised arguments");
+    assert!(
+        rewritten,
+        "assistant tool call must carry the revised arguments"
+    );
     host.shutdown().await.unwrap();
 }
 
@@ -519,7 +578,8 @@ async fn message_update_deltas_are_isolated_from_handler_mutations() {
         .await
         .unwrap();
     assert_eq!(r.loaded.len(), 1, "{r:?}");
-    let header = json!({"role": "assistant", "api": "a", "usage": {"input": 1, "cost": {"total": 0}}});
+    let header =
+        json!({"role": "assistant", "api": "a", "usage": {"input": 1, "cost": {"total": 0}}});
     let message = |text: &str, x: &str| {
         let mut m = header.clone();
         m["content"] = json!([
@@ -622,7 +682,11 @@ async fn concurrent_first_clients_start_one_daemon() {
     for t in tasks {
         hosts.push(t.await.unwrap());
     }
-    assert_eq!(daemon_pids(&sock).len(), 1, "racing first clients must share one daemon");
+    assert_eq!(
+        daemon_pids(&sock).len(),
+        1,
+        "racing first clients must share one daemon"
+    );
     for h in hosts {
         h.shutdown().await.unwrap();
     }
@@ -657,14 +721,20 @@ export default function (pi: any): void {
     for (mark, home) in [("a", "/tmp/fx-home-a"), ("b", "/tmp/fx-home-b")] {
         let mut cfg = config();
         cfg.shared_socket = Some(sock.clone());
-        cfg.env = vec![("FX_MARK".into(), mark.into()), ("HOME".into(), home.into())];
+        cfg.env = vec![
+            ("FX_MARK".into(), mark.into()),
+            ("HOME".into(), home.into()),
+        ];
         let host = ExtHost::spawn(&cfg).await.unwrap();
         host.load(Some(&paths), None, "/tmp", None).await.unwrap();
         hosts.push((mark, home, host));
     }
     assert_eq!(daemon_pids(&sock).len(), 1);
     for (mark, home, host) in &hosts {
-        let r = host.call_tool("fx_env", "e", json!({}), None).await.unwrap();
+        let r = host
+            .call_tool("fx_env", "e", json!({}), None)
+            .await
+            .unwrap();
         assert_eq!(r["content"][0]["text"], format!("{mark}|{home}|0"));
     }
     for (_, _, h) in hosts {
@@ -711,17 +781,31 @@ export default function (pi: any): void {
     .unwrap();
     let mut cfg = config();
     cfg.shared_socket = Some(sock.clone());
-    cfg.env = vec![("FX_MARK".into(), "m".into()), ("HOME".into(), "/tmp/fx-home-big".into())];
+    cfg.env = vec![
+        ("FX_MARK".into(), "m".into()),
+        ("HOME".into(), "/tmp/fx-home-big".into()),
+    ];
     let host = ExtHost::spawn(&cfg).await.unwrap();
-    host.load(Some(&[ext]), None, work.to_str().unwrap(), None).await.unwrap();
-
-    let big = tokio::time::timeout(Duration::from_secs(20), host.call_tool("fx_big", "b", json!({}), None))
+    host.load(Some(&[ext]), None, work.to_str().unwrap(), None)
         .await
-        .expect("3 MB frame must arrive whole, not hang on a truncated line")
         .unwrap();
-    assert_eq!(big["content"][0]["text"].as_str().map(str::len), Some(3_000_000));
 
-    let child = host.call_tool("fx_child", "c", json!({}), None).await.unwrap();
+    let big = tokio::time::timeout(
+        Duration::from_secs(20),
+        host.call_tool("fx_big", "b", json!({}), None),
+    )
+    .await
+    .expect("3 MB frame must arrive whole, not hang on a truncated line")
+    .unwrap();
+    assert_eq!(
+        big["content"][0]["text"].as_str().map(str::len),
+        Some(3_000_000)
+    );
+
+    let child = host
+        .call_tool("fx_child", "c", json!({}), None)
+        .await
+        .unwrap();
     assert_eq!(
         child["content"][0]["text"],
         format!("m|/tmp/fx-home-big|{}", work.display()),

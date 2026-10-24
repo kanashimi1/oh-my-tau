@@ -6,7 +6,13 @@ fn row(provider: &str, model: &str, first_seen: i64, messages: i64) -> Frustrati
         model: model.to_owned(),
         provider: Some(provider.to_owned()),
         first_seen,
-        counts: FrustrationCounts { messages, judged: 0, annoyed: 1, at_assistant: 1, angry: 0 },
+        counts: FrustrationCounts {
+            messages,
+            judged: 0,
+            annoyed: 1,
+            at_assistant: 1,
+            angry: 0,
+        },
     }
 }
 
@@ -37,7 +43,13 @@ fn judge_questions_true_false_labels_make_a_rubric() {
     let text = r#"{"q": {"instructions": "x", "criteria": {"true": "yes", "false": "no"}},
                    "e": {"instructions": "y", "criteria": {}}}"#;
     let questions = judge_questions(text).expect("parse");
-    assert!(matches!(questions["q"], Question::Noul { criteria: Some(_), .. }));
+    assert!(matches!(
+        questions["q"],
+        Question::Noul {
+            criteria: Some(_),
+            ..
+        }
+    ));
     assert!(matches!(questions["e"], Question::Choice { .. }));
 }
 
@@ -75,7 +87,10 @@ fn merge_keeps_unclassified_rows_by_raw_model_id_in_first_use_order() {
 
 #[test]
 fn merge_sorts_classified_before_unclassified() {
-    let rows = [row("nowhere", "mystery", 1, 1), row("anthropic", "claude-opus-4-5", 999, 1)];
+    let rows = [
+        row("nowhere", "mystery", 1, 1),
+        row("anthropic", "claude-opus-4-5", 999, 1),
+    ];
     let merged = merge_frustration_rows(&rows);
     assert_eq!(merged[0].model_class, "anthropic");
     assert_eq!(merged[1].key, "mystery");
@@ -133,7 +148,12 @@ impl Drop for InFlight {
 impl FakeJudge {
     fn new(quick: usize) -> Self {
         Self {
-            model: Some(JudgeModel { provider: "fake".into(), id: "fake-1".into(), cost_input: 2.0, cost_output: 10.0 }),
+            model: Some(JudgeModel {
+                provider: "fake".into(),
+                id: "fake-1".into(),
+                cost_input: 2.0,
+                cost_output: 10.0,
+            }),
             quick: AtomicUsize::new(quick),
             calls: AtomicUsize::new(0),
             in_flight: Arc::new(AtomicUsize::new(0)),
@@ -143,7 +163,10 @@ impl FakeJudge {
 
     fn answer(text: &str) -> JudgeAnswer {
         let (levels, target): (&[(&str, f64)], &str) = match text.len() % 3 {
-            0 => (&[("0", 0.0), ("1", 0.1), ("2", 0.1), ("3", 0.8)], "assistant"),
+            0 => (
+                &[("0", 0.0), ("1", 0.1), ("2", 0.1), ("3", 0.8)],
+                "assistant",
+            ),
             1 => (&[("0", 0.1), ("1", 0.2), ("2", 0.7), ("3", 0.0)], "other"),
             _ => (&[("0", 0.9), ("1", 0.1), ("2", 0.0), ("3", 0.0)], "none"),
         };
@@ -173,7 +196,9 @@ impl StatsJudge for FakeJudge {
             let _guard = InFlight(Arc::clone(&self.in_flight));
             let quick = self
                 .quick
-                .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |n| n.checked_sub(1))
+                .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |n| {
+                    n.checked_sub(1)
+                })
                 .is_ok();
             if !quick {
                 std::future::pending::<()>().await;
@@ -185,7 +210,9 @@ impl StatsJudge for FakeJudge {
 
 fn provide(judge: &Arc<FakeJudge>) {
     let judge = Arc::clone(judge);
-    set_stats_judge_provider(Some(Arc::new(move || Ok(Arc::clone(&judge) as Arc<dyn StatsJudge>))));
+    set_stats_judge_provider(Some(Arc::new(move || {
+        Ok(Arc::clone(&judge) as Arc<dyn StatsJudge>)
+    })));
 }
 
 fn refusal(result: StartFrustrationRunResult) -> (u16, String) {
@@ -198,9 +225,12 @@ fn refusal(result: StartFrustrationRunResult) -> (u16, String) {
 #[test]
 fn standalone_reports_no_judge() {
     let _iso = Isolated::new(TestHome::new());
-    let value = serde_json::to_value(estimate_frustration_run(Some("all")).expect("estimate")).expect("serialize");
+    let value = serde_json::to_value(estimate_frustration_run(Some("all")).expect("estimate"))
+        .expect("serialize");
     assert_eq!(value["available"], false);
-    assert!(value["reason"].as_str().is_some_and(|r| r.contains("without a judge")));
+    assert!(value["reason"]
+        .as_str()
+        .is_some_and(|r| r.contains("without a judge")));
     let (status, error) = refusal(start_frustration_run(None).expect("start"));
     assert_eq!(status, 503);
     assert!(error.contains("without a judge"));
@@ -213,9 +243,16 @@ fn provider_failure_and_missing_model_refuse_with_503() {
     set_stats_judge_provider(Some(Arc::new(|| anyhow::bail!("no credentials"))));
     assert!(judge_available());
     let (status, error) = refusal(start_frustration_run(None).expect("start"));
-    assert_eq!((status, error.as_str()), (503, "The judge could not be loaded: no credentials"));
-    let estimate = serde_json::to_value(estimate_frustration_run(None).expect("estimate")).expect("serialize");
-    assert_eq!(estimate["reason"], "The judge could not be loaded: no credentials");
+    assert_eq!(
+        (status, error.as_str()),
+        (503, "The judge could not be loaded: no credentials")
+    );
+    let estimate =
+        serde_json::to_value(estimate_frustration_run(None).expect("estimate")).expect("serialize");
+    assert_eq!(
+        estimate["reason"],
+        "The judge could not be loaded: no credentials"
+    );
 
     let mut judge = FakeJudge::new(0);
     judge.model = None;
@@ -243,9 +280,16 @@ fn adaptive_limit_slow_starts_then_halves_once_per_cooldown() {
     limit.failed();
     assert_eq!(limit.value(), 16);
     limit.failed();
-    assert_eq!(limit.value(), 16, "second failure inside the cooldown does not halve again");
+    assert_eq!(
+        limit.value(),
+        16,
+        "second failure inside the cooldown does not halve again"
+    );
     limit.succeeded();
-    assert!(limit.limit < 17.0, "congestion avoidance grows by 4/limit, not 1");
+    assert!(
+        limit.limit < 17.0,
+        "congestion avoidance grows by 4/limit, not 1"
+    );
 }
 
 #[cfg(feature = "db_ingest")]
@@ -303,21 +347,38 @@ mod golden {
         assert!(before.judge_available);
         assert_eq!(before.overall.judged, 0);
         let pending = get_pending_frustration_prose(None).expect("pending");
-        assert!(pending.len() >= 4, "fixture needs unjudged prose, got {}", pending.len());
+        assert!(
+            pending.len() >= 4,
+            "fixture needs unjudged prose, got {}",
+            pending.len()
+        );
 
         let estimate = estimate_frustration_run(Some("all")).expect("estimate");
         let totals = get_pending_frustration_totals(None).expect("totals");
-        let FrustrationEstimate::Available { messages, chars, input_tokens, cost, judge: label, .. } = estimate else {
+        let FrustrationEstimate::Available {
+            messages,
+            chars,
+            input_tokens,
+            cost,
+            judge: label,
+            ..
+        } = estimate
+        else {
             panic!("estimate should be available");
         };
         assert_eq!((messages, chars), (totals.messages, totals.chars));
-        assert_eq!(input_tokens, messages * 561 + (chars as f64 / 5.9).ceil() as i64);
+        assert_eq!(
+            input_tokens,
+            messages * 561 + (chars as f64 / 5.9).ceil() as i64
+        );
         let expected_cost = input_tokens as f64 * 2.0 / 1e6 + (messages * 8) as f64 * 10.0 / 1e6;
         assert!((cost - expected_cost).abs() < 1e-12);
         assert_eq!(label, "fake/fake-1");
 
         let started = start_frustration_run(Some("all")).expect("start");
-        let StartFrustrationRunResult::Started { job } = started else { panic!("expected start, got {started:?}") };
+        let StartFrustrationRunResult::Started { job } = started else {
+            panic!("expected start, got {started:?}")
+        };
         assert_eq!(job.state, FrustrationJobState::Running);
         assert_eq!(job.total as usize, pending.len());
         assert!(wait_frustration_run_finished(Duration::from_secs(30)));
@@ -332,13 +393,19 @@ mod golden {
 
         let rows = verdict_rows();
         assert_eq!(rows.len(), pending.len());
-        let by_hash: std::collections::HashMap<_, _> = pending.iter().map(|p| (p.hash.clone(), p.prose.clone())).collect();
+        let by_hash: std::collections::HashMap<_, _> = pending
+            .iter()
+            .map(|p| (p.hash.clone(), p.prose.clone()))
+            .collect();
         for (hash, p_annoyed, p_angry, target, label) in &rows {
             let expected = FakeJudge::answer(&by_hash[hash]);
             assert_eq!(label, "fake/fake-1");
             assert_eq!(target, &expected.target);
             assert!((p_angry - expected.annoyed_levels["3"]).abs() < 1e-12);
-            assert!((p_annoyed - (expected.annoyed_levels["2"] + expected.annoyed_levels["3"])).abs() < 1e-12);
+            assert!(
+                (p_annoyed - (expected.annoyed_levels["2"] + expected.annoyed_levels["3"])).abs()
+                    < 1e-12
+            );
         }
 
         // Nothing left to judge, and the dashboard now classifies by verdict.
@@ -357,10 +424,15 @@ mod golden {
         })
         .expect("annoyed rows");
         assert_eq!(after.overall.annoyed, annoyed_rows);
-        assert!(after.overall.angry <= after.overall.at_assistant && after.overall.at_assistant <= after.overall.annoyed);
+        assert!(
+            after.overall.angry <= after.overall.at_assistant
+                && after.overall.at_assistant <= after.overall.annoyed
+        );
 
         // A second run has nothing to do and finishes immediately.
-        let StartFrustrationRunResult::Started { job } = start_frustration_run(Some("all")).expect("start") else {
+        let StartFrustrationRunResult::Started { job } =
+            start_frustration_run(Some("all")).expect("start")
+        else {
             panic!("second start");
         };
         assert_eq!((job.state, job.total), (FrustrationJobState::Done, 0));
@@ -376,38 +448,61 @@ mod golden {
         let total = pending_total();
         assert!(total > 3);
 
-        let StartFrustrationRunResult::Started { .. } = start_frustration_run(Some("all")).expect("start") else {
+        let StartFrustrationRunResult::Started { .. } =
+            start_frustration_run(Some("all")).expect("start")
+        else {
             panic!("expected start");
         };
         let (status, error) = refusal(start_frustration_run(Some("all")).expect("second start"));
         assert_eq!(status, 409);
         assert!(error.contains("already in progress"));
 
-        wait_until("three quick verdicts", || get_frustration_job_status().done == 3);
-        wait_until("in-flight requests", || judge.in_flight.load(AtomicOrdering::SeqCst) > 0);
+        wait_until("three quick verdicts", || {
+            get_frustration_job_status().done == 3
+        });
+        wait_until("in-flight requests", || {
+            judge.in_flight.load(AtomicOrdering::SeqCst) > 0
+        });
         assert!(get_frustration_job_status().concurrency >= 4);
 
         let cancelled = cancel_frustration_run();
         assert_eq!(cancelled.state, FrustrationJobState::Cancelled);
         assert!(cancelled.finished_at.is_some());
         assert!(wait_frustration_run_finished(Duration::from_secs(10)));
-        assert_eq!(judge.in_flight.load(AtomicOrdering::SeqCst), 0, "in-flight judge requests were dropped");
+        assert_eq!(
+            judge.in_flight.load(AtomicOrdering::SeqCst),
+            0,
+            "in-flight judge requests were dropped"
+        );
 
         let status = get_frustration_job_status();
-        assert_eq!(status.state, FrustrationJobState::Cancelled, "a finished worker does not overwrite a cancel");
+        assert_eq!(
+            status.state,
+            FrustrationJobState::Cancelled,
+            "a finished worker does not overwrite a cancel"
+        );
         assert_eq!((status.done, status.failed), (3, 0));
-        assert_eq!(verdict_rows().len(), 3, "verdicts already paid for are flushed on cancel");
+        assert_eq!(
+            verdict_rows().len(),
+            3,
+            "verdicts already paid for are flushed on cancel"
+        );
         assert_eq!(pending_total(), total - 3);
 
         // After a cancel a new run is accepted and resumes with the rest.
         let fresh = Arc::new(FakeJudge::new(usize::MAX));
         provide(&fresh);
-        let StartFrustrationRunResult::Started { job } = start_frustration_run(Some("all")).expect("restart") else {
+        let StartFrustrationRunResult::Started { job } =
+            start_frustration_run(Some("all")).expect("restart")
+        else {
             panic!("restart");
         };
         assert_eq!(job.total as usize, total - 3);
         assert!(wait_frustration_run_finished(Duration::from_secs(30)));
-        assert_eq!(get_frustration_job_status().state, FrustrationJobState::Done);
+        assert_eq!(
+            get_frustration_job_status().state,
+            FrustrationJobState::Done
+        );
         assert_eq!(verdict_rows().len(), total);
     }
 
@@ -424,12 +519,18 @@ mod golden {
             eprintln!("fixture has only {total} pending texts; circuit breaker needs 25");
             return;
         }
-        let StartFrustrationRunResult::Started { .. } = start_frustration_run(Some("all")).expect("start") else {
+        let StartFrustrationRunResult::Started { .. } =
+            start_frustration_run(Some("all")).expect("start")
+        else {
             panic!("expected start");
         };
         assert!(wait_frustration_run_finished(Duration::from_secs(30)));
         let status = get_frustration_job_status();
-        assert_eq!(status.state, FrustrationJobState::Failed, "total={total} status={status:?}");
+        assert_eq!(
+            status.state,
+            FrustrationJobState::Failed,
+            "total={total} status={status:?}"
+        );
         assert_eq!(status.error.as_deref(), Some("rate limited"));
         assert_eq!(status.done, 0);
         assert!(status.failed >= 25);
@@ -448,13 +549,20 @@ mod golden {
         let mut action = hyper::HeaderMap::new();
         action.insert(STATS_ACTION_HEADER, "1".parse().expect("header"));
 
-        let estimate = handle_api("GET", "/api/frustration/estimate?range=all", &plain).expect("estimate");
+        let estimate =
+            handle_api("GET", "/api/frustration/estimate?range=all", &plain).expect("estimate");
         let body = estimate.body_json().expect("json");
         assert_eq!(body["available"], true);
         assert_eq!(body["judge"], "fake/fake-1");
-        assert_eq!(handle_api("POST", "/api/frustration/judge?range=all", &plain).expect("no header").status, 403);
+        assert_eq!(
+            handle_api("POST", "/api/frustration/judge?range=all", &plain)
+                .expect("no header")
+                .status,
+            403
+        );
 
-        let started = handle_api("POST", "/api/frustration/judge?range=all", &action).expect("start");
+        let started =
+            handle_api("POST", "/api/frustration/judge?range=all", &action).expect("start");
         assert_eq!(started.status, 202);
         assert_eq!(started.body_json().expect("json")["state"], "running");
         assert!(wait_frustration_run_finished(Duration::from_secs(30)));
@@ -466,6 +574,10 @@ mod golden {
         assert_eq!(body["overall"]["judged"], body["overall"]["messages"]);
 
         let cancel = handle_api("POST", "/api/frustration/cancel", &action).expect("cancel");
-        assert_eq!(cancel.body_json().expect("json")["state"], "done", "cancel of a finished run is a no-op");
+        assert_eq!(
+            cancel.body_json().expect("json")["state"],
+            "done",
+            "cancel of a finished run is a no-op"
+        );
     }
 }

@@ -20,7 +20,10 @@ struct Recorder {
 
 impl HostBridge for Recorder {
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
-        self.calls.lock().unwrap().push((op.to_string(), args.clone()));
+        self.calls
+            .lock()
+            .unwrap()
+            .push((op.to_string(), args.clone()));
         match op {
             "echo" => Ok(json!({ "echo": args })),
             "fail" => Err("nope from host".to_string()),
@@ -29,7 +32,9 @@ impl HostBridge for Recorder {
                 Ok(json!("late"))
             }
             "write" => Ok(json!("Delivered.")),
-            op if op.starts_with("__") => Ok(json!({"status": "running", "cancelled": true, "spent": 5, "ids": ["wp#1"]})),
+            op if op.starts_with("__") => {
+                Ok(json!({"status": "running", "cancelled": true, "spent": 5, "ids": ["wp#1"]}))
+            }
             other => Err(format!("unknown op {other}")),
         }
     }
@@ -51,14 +56,19 @@ fn js(tag: &str) -> Option<JsKernel> {
 }
 
 fn run<'a>(bridge: &'a dyn HostBridge) -> ExecOptions<'a> {
-    ExecOptions { bridge: Some(bridge), ..Default::default() }
+    ExecOptions {
+        bridge: Some(bridge),
+        ..Default::default()
+    }
 }
 
 #[test]
 fn py_host_call_round_trip_and_error() {
     let k = py("call");
     let b = Recorder::default();
-    let r = k.execute_with("__omp_host_call('echo', {'x': 1})", run(&b)).expect("cell");
+    let r = k
+        .execute_with("__omp_host_call('echo', {'x': 1})", run(&b))
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
     assert!(r.output.contains("'echo': {'x': 1}"), "{}", r.output);
     assert_eq!(b.calls.lock().unwrap()[0].0, "echo");
@@ -76,7 +86,9 @@ fn py_host_call_round_trip_and_error() {
 #[test]
 fn py_without_bridge_raises_in_cell() {
     let k = py("nobridge");
-    let r = k.execute("__omp_host_call('echo', {})", None).expect("cell");
+    let r = k
+        .execute("__omp_host_call('echo', {})", None)
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Error);
     assert!(r.output.contains("host bridge unavailable"), "{}", r.output);
 }
@@ -85,23 +97,38 @@ fn py_without_bridge_raises_in_cell() {
 fn py_notify_is_delivered() {
     let k = py("notify");
     let b = Recorder::default();
-    let r = k.execute_with("__omp_host_notify('phase', {'title': 'x'})\n1", run(&b)).expect("cell");
+    let r = k
+        .execute_with("__omp_host_notify('phase', {'title': 'x'})\n1", run(&b))
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
-    assert_eq!(b.notes.lock().unwrap().as_slice(), &[("phase".to_string(), json!({"title": "x"}))]);
+    assert_eq!(
+        b.notes.lock().unwrap().as_slice(),
+        &[("phase".to_string(), json!({"title": "x"}))]
+    );
 }
 
 #[test]
 fn py_idle_timeout_pauses_during_host_call_but_fires_on_busy_loop() {
     let k = py("idle");
-    let b = Recorder { slow: Duration::from_millis(2500), ..Default::default() };
+    let b = Recorder {
+        slow: Duration::from_millis(2500),
+        ..Default::default()
+    };
     let opts = ExecOptions {
         timeout: Some(Duration::from_secs(1)),
         idle_timeout: true,
         bridge: Some(&b),
         cancel: None,
     };
-    let r = k.execute_with("__omp_host_call('slow', {})", opts).expect("cell");
-    assert_eq!(r.status, CellStatus::Ok, "host time must not count: {}", r.output);
+    let r = k
+        .execute_with("__omp_host_call('slow', {})", opts)
+        .expect("cell");
+    assert_eq!(
+        r.status,
+        CellStatus::Ok,
+        "host time must not count: {}",
+        r.output
+    );
 
     let opts = ExecOptions {
         timeout: Some(Duration::from_secs(1)),
@@ -126,7 +153,10 @@ fn py_cancel_interrupts_and_kernel_survives() {
     let r = k
         .execute_with(
             "import time\ntime.sleep(20)",
-            ExecOptions { cancel: Some(token), ..Default::default() },
+            ExecOptions {
+                cancel: Some(token),
+                ..Default::default()
+            },
         )
         .expect("cell");
     assert!(r.cancelled, "status {:?}", r.status);
@@ -161,10 +191,24 @@ print(budget.spent(), budget.hard)";
     let r = k.execute_with(code, run(&b)).expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
     assert!(r.output.contains("running True Delivered."), "{}", r.output);
-    assert!(r.output.contains("['wp#1'] running running running"), "{}", r.output);
+    assert!(
+        r.output.contains("['wp#1'] running running running"),
+        "{}",
+        r.output
+    );
     assert!(r.output.contains("5 False"), "{}", r.output);
-    let ops: Vec<String> = b.calls.lock().unwrap().iter().map(|(op, _)| op.clone()).collect();
-    assert_eq!(ops.iter().filter(|op| *op == "__workpool__").count(), 4, "{ops:?}");
+    let ops: Vec<String> = b
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(op, _)| op.clone())
+        .collect();
+    assert_eq!(
+        ops.iter().filter(|op| *op == "__workpool__").count(),
+        4,
+        "{ops:?}"
+    );
 }
 
 #[test]
@@ -175,9 +219,18 @@ fn py_failed_cell_rolls_back_new_and_rebound_names() {
     let k = py("txn");
     let r = k.execute("keep = 'original'\nkeep", None).expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
-    let r = k.execute("keep = 'clobbered'\nnew_name = 1\nraise ValueError('x')", None).expect("cell");
+    let r = k
+        .execute(
+            "keep = 'clobbered'\nnew_name = 1\nraise ValueError('x')",
+            None,
+        )
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Error);
-    assert!(r.output.contains("[omp-txn] rolled back: keep, new_name"), "{}", r.output);
+    assert!(
+        r.output.contains("[omp-txn] rolled back: keep, new_name"),
+        "{}",
+        r.output
+    );
     // New name is gone ...
     let r = k.execute("'new_name' in globals()", None).expect("cell");
     assert_eq!(r.output.trim(), "False", "{}", r.output);
@@ -197,7 +250,9 @@ fn py_omp_eval_txn_zero_keeps_ts_behavior() {
     std::fs::create_dir_all(&dir).expect("cwd");
     let k = PythonKernel::start_with_env("python3", &dir, &[("OMP_EVAL_TXN".into(), "0".into())])
         .expect("kernel starts");
-    let r = k.execute("a = 1\nraise ValueError('x')", None).expect("cell");
+    let r = k
+        .execute("a = 1\nraise ValueError('x')", None)
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Error);
     assert!(!r.output.contains("[omp-txn]"), "{}", r.output);
     let r = k.execute("a", None).expect("cell");
@@ -211,7 +266,9 @@ fn js_host_call_round_trip_and_cancel() {
         return;
     };
     let b = Recorder::default();
-    let r = k.execute_with("await __ompHostCall('echo', { x: 1 })", run(&b)).expect("cell");
+    let r = k
+        .execute_with("await __ompHostCall('echo', { x: 1 })", run(&b))
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
     assert!(r.output.contains("echo"), "{}", r.output);
     let r = k
@@ -231,7 +288,10 @@ fn js_host_call_round_trip_and_cancel() {
     let r = k
         .execute_with(
             "await new Promise(r => setTimeout(r, 20000))",
-            ExecOptions { cancel: Some(token), ..Default::default() },
+            ExecOptions {
+                cancel: Some(token),
+                ..Default::default()
+            },
         )
         .expect("cell");
     assert!(r.cancelled);
@@ -244,7 +304,9 @@ fn js_failed_cell_rolls_back_new_global_names() {
         eprintln!("skipping: JS runtime unavailable");
         return;
     };
-    let r = k.execute("globalThis.keep = 'original'\nkeep", None).expect("cell");
+    let r = k
+        .execute("globalThis.keep = 'original'\nkeep", None)
+        .expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
     let r = k
         .execute(
@@ -253,7 +315,11 @@ fn js_failed_cell_rolls_back_new_global_names() {
         )
         .expect("cell");
     assert_eq!(r.status, CellStatus::Error);
-    assert!(r.output.contains("[omp-txn] rolled back: keep, newName"), "{}", r.output);
+    assert!(
+        r.output.contains("[omp-txn] rolled back: keep, newName"),
+        "{}",
+        r.output
+    );
     let r = k.execute("'newName' in globalThis", None).expect("cell");
     assert_eq!(r.output.trim(), "false", "{}", r.output);
     let r = k.execute("keep", None).expect("cell");

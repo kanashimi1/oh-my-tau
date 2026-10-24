@@ -29,7 +29,9 @@ fn is_type(v: &Value, ty: &str) -> bool {
 }
 
 fn id_nonempty(v: &Value) -> bool {
-    v.get("id").and_then(Value::as_str).is_some_and(|s| !s.is_empty())
+    v.get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
 }
 
 fn msg_role(v: &Value) -> Option<&str> {
@@ -89,7 +91,12 @@ pub(crate) fn extract_user_stats(
     entry: &Value,
 ) -> Option<UserMessageStats> {
     let msg = entry.get("message")?;
-    if msg_role(entry) != Some("user") || msg.get("synthetic").and_then(Value::as_bool).unwrap_or(false) {
+    if msg_role(entry) != Some("user")
+        || msg
+            .get("synthetic")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
         return None;
     }
     let text = extract_user_text(msg.get("content").unwrap_or(&Value::Null));
@@ -106,7 +113,11 @@ pub(crate) fn extract_user_stats(
     Some(UserMessageStats {
         id: None,
         session_file: session_file.to_owned(),
-        entry_id: entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        entry_id: entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         folder: folder.to_owned(),
         timestamp,
         model: None,
@@ -120,7 +131,11 @@ pub(crate) fn extract_user_stats(
         repetition: metrics.repetition,
         blame: metrics.blame,
         prose: prose.clone(),
-        prose_hash: if prose.is_empty() { String::new() } else { wyhash_hex(prose.as_bytes()) },
+        prose_hash: if prose.is_empty() {
+            String::new()
+        } else {
+            wyhash_hex(prose.as_bytes())
+        },
     })
 }
 
@@ -242,11 +257,23 @@ pub(crate) fn extract_stats(
     // premium but the usage payload predates `premiumRequests`. Trust any
     // non-zero value already there (Copilot multipliers are fractional).
     let recorded = finite_count(raw_usage.get("premiumRequests")).unwrap_or(0.0);
-    let identity: ModelIdentity = classify_model(provider, model, Some(ClassifyOptions { lenient: true, ..ClassifyOptions::default() }))
-        .unwrap_or_default();
-    let tier_model = TierModel { provider, api, identity_class: &identity.class };
+    let identity: ModelIdentity = classify_model(
+        provider,
+        model,
+        Some(ClassifyOptions {
+            lenient: true,
+            ..ClassifyOptions::default()
+        }),
+    )
+    .unwrap_or_default();
+    let tier_model = TierModel {
+        provider,
+        api,
+        identity_class: &identity.class,
+    };
     let served_tier = msg.get("serviceTier").and_then(parse_service_tier);
-    let tier = served_tier.or_else(|| resolve_model_service_tier(current_service_tier, &tier_model));
+    let tier =
+        served_tier.or_else(|| resolve_model_service_tier(current_service_tier, &tier_model));
     let derived = if recorded > 0.0 {
         recorded
     } else {
@@ -266,7 +293,9 @@ pub(crate) fn extract_stats(
     let orchestration = raw_usage
         .get("orchestration")
         .filter(|v| v.is_object())
-        .and_then(|v| serde_json::from_value::<crate::types::UsageOrchestration>(lenient_counts(v)).ok());
+        .and_then(|v| {
+            serde_json::from_value::<crate::types::UsageOrchestration>(lenient_counts(v)).ok()
+        });
     let cttl = raw_usage
         .get("cttl")
         .filter(|v| v.is_object())
@@ -304,7 +333,11 @@ pub(crate) fn extract_stats(
     Some(MessageStatsInput {
         id: None,
         session_file: session_file.to_owned(),
-        entry_id: entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        entry_id: entry
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         folder: folder.to_owned(),
         model: model.to_owned(),
         provider: provider.to_owned(),
@@ -313,7 +346,10 @@ pub(crate) fn extract_stats(
         duration: msg.get("duration").and_then(Value::as_f64),
         ttft: msg.get("ttft").and_then(Value::as_f64),
         stop_reason: parse_stop_reason(msg),
-        error_message: msg.get("errorMessage").and_then(Value::as_str).map(str::to_owned),
+        error_message: msg
+            .get("errorMessage")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         usage,
         agent_type,
         service_tier: served_tier,
@@ -374,7 +410,10 @@ pub(crate) fn extract_tool_calls(
     entry: &Value,
     agent_type: AgentType,
 ) -> Vec<ToolCallStats> {
-    let Some(content) = entry.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
+    let Some(content) = entry
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
     else {
         return vec![];
     };
@@ -405,18 +444,32 @@ pub(crate) fn extract_tool_calls(
         // Names reduced to nothing by sanitization carry no tool identity:
         // skip them rather than attributing usage to garbage. callsInTurn
         // still counts the raw block total.
-        let name = block.get("name").and_then(Value::as_str).unwrap_or_default();
+        let name = block
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let Some(tool_name) = sanitize_tool_name(name) else {
             continue;
         };
         // TS `block.arguments ?? {}`: a null/absent payload sizes as "{}".
         let empty = Value::Object(serde_json::Map::new());
-        let arguments = block.get("arguments").filter(|a| !a.is_null()).unwrap_or(&empty);
+        let arguments = block
+            .get("arguments")
+            .filter(|a| !a.is_null())
+            .unwrap_or(&empty);
         let args_chars = js_len(&serde_json::to_string(arguments).unwrap_or_else(|_| "{}".into()));
         calls.push(ToolCallStats {
             session_file: session_file.to_owned(),
-            entry_id: entry.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
-            tool_call_id: block.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            entry_id: entry
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            tool_call_id: block
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
             folder: folder.to_owned(),
             tool_name,
             model: model.to_owned(),
@@ -443,7 +496,10 @@ pub fn sanitize_tool_name(name: &str) -> Option<String> {
     if trimmed.chars().all(TOOL_NAME_ALLOWED) {
         return Some(trimmed.to_owned());
     }
-    let candidate = trimmed.split(|c| !TOOL_NAME_ALLOWED(c)).next().unwrap_or("");
+    let candidate = trimmed
+        .split(|c| !TOOL_NAME_ALLOWED(c))
+        .next()
+        .unwrap_or("");
     if candidate.is_empty() {
         None
     } else {
@@ -453,7 +509,10 @@ pub fn sanitize_tool_name(name: &str) -> Option<String> {
 
 /// Build the result linkage for a `toolResult` entry: text characters fed
 /// back into context plus the error flag, keyed to the originating call.
-pub(crate) fn extract_tool_result_link(session_file: &str, entry: &Value) -> Option<ToolResultLink> {
+pub(crate) fn extract_tool_result_link(
+    session_file: &str,
+    entry: &Value,
+) -> Option<ToolResultLink> {
     let msg = entry.get("message")?;
     if msg_role(entry) != Some("toolResult") {
         return None;

@@ -9,8 +9,8 @@ use serde_json::{json, Map, Value};
 
 use crate::compat::ModelView;
 use crate::types::{
-    AssistantContent, AssistantMessage, Message, Model, StopReason, TextContent, ThinkingContent, ToolCall,
-    ToolResultMessage, UserMessage, UserMessageContent, UserOrToolContent,
+    AssistantContent, AssistantMessage, Message, Model, StopReason, TextContent, ThinkingContent,
+    ToolCall, ToolResultMessage, UserMessage, UserMessageContent, UserOrToolContent,
 };
 
 /// Marker key on a synthesized user message (TS `kSyntheticUser`).
@@ -28,7 +28,10 @@ fn is_malformed_tool_call(call: &ToolCall) -> bool {
     call.id.trim().is_empty()
         || call.name.is_empty()
         || call.name.chars().count() > MAX_TOOL_CALL_NAME_LENGTH
-        || call.name.chars().any(|c| c.is_whitespace() || c.is_control())
+        || call
+            .name
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
 }
 
 fn sanitize_malformed_tool_calls(messages: &[Message]) -> Vec<Message> {
@@ -49,7 +52,10 @@ fn sanitize_malformed_tool_calls(messages: &[Message]) -> Vec<Message> {
                 for block in &a.content {
                     if let AssistantContent::ToolCall(call) = block {
                         let malformed = is_malformed_tool_call(call);
-                        drop_queues.entry(call.id.clone()).or_default().push(malformed);
+                        drop_queues
+                            .entry(call.id.clone())
+                            .or_default()
+                            .push(malformed);
                         if malformed {
                             continue;
                         }
@@ -87,19 +93,32 @@ fn sanitize_malformed_tool_calls(messages: &[Message]) -> Vec<Message> {
 }
 
 fn should_drop_truncated_thinking_only(a: &AssistantMessage) -> bool {
-    matches!(a.stop_reason, StopReason::Length | StopReason::Error | StopReason::Aborted)
-        && !a.content.iter().any(|b| matches!(b, AssistantContent::ToolCall(_) | AssistantContent::Text(_)))
+    matches!(
+        a.stop_reason,
+        StopReason::Length | StopReason::Error | StopReason::Aborted
+    ) && !a
+        .content
+        .iter()
+        .any(|b| matches!(b, AssistantContent::ToolCall(_) | AssistantContent::Text(_)))
 }
 
 fn latest_surviving_assistant_index(messages: &[Message]) -> Option<usize> {
-    messages.iter().enumerate().rev().find_map(|(i, m)| match m {
-        Message::Assistant(a) if !should_drop_truncated_thinking_only(a) => Some(i),
-        _ => None,
-    })
+    messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, m)| match m {
+            Message::Assistant(a) if !should_drop_truncated_thinking_only(a) => Some(i),
+            _ => None,
+        })
 }
 
 fn is_valid_anthropic_tool_call_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 fn normalize_anthropic_target_tool_call_id(
@@ -113,7 +132,13 @@ fn normalize_anthropic_target_tool_call_id(
     }
     let normalized = normalize(id, model, source).unwrap_or_else(|| {
         id.chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .take(MAX_TOOL_CALL_ID_LENGTH)
             .collect()
     });
@@ -144,7 +169,9 @@ fn target_reads_foreign_thinking(model: &Model, view: &ModelView) -> bool {
     match model.api.as_str() {
         "anthropic-messages" => view.is("replayUnsignedThinking"),
         "openai-completions" => {
-            !view.is("requiresThinkingAsText") && model.reasoning && view.compat_str("thinkingFormat") == Some("zai")
+            !view.is("requiresThinkingAsText")
+                && model.reasoning
+                && view.compat_str("thinkingFormat") == Some("zai")
         }
         _ => false,
     }
@@ -198,17 +225,20 @@ pub(crate) fn transform_messages(
         .map(|(index, msg)| match msg {
             Message::User(_) | Message::Developer(_) => msg.clone(),
             Message::ToolResult(r) => match tool_call_id_map.get(&r.tool_call_id) {
-                Some(id) if id != &r.tool_call_id => {
-                    Message::ToolResult(ToolResultMessage { tool_call_id: id.clone(), ..r.clone() })
-                }
+                Some(id) if id != &r.tool_call_id => Message::ToolResult(ToolResultMessage {
+                    tool_call_id: id.clone(),
+                    ..r.clone()
+                }),
                 _ => msg.clone(),
             },
             Message::Assistant(a) => {
-                let is_same_model = a.provider == model.provider && a.api == model.api && a.model == model.id;
+                let is_same_model =
+                    a.provider == model.provider && a.api == model.api && a.model == model.id;
                 let is_anthropic_replay = is_anthropic_target && a.api == "anthropic-messages";
                 let same_anthropic_deployment = is_anthropic_replay
                     && a.provider == model.provider
-                    && (view.is("officialEndpoint") || view.thinking_flag("prefixBinding") == Some(true));
+                    && (view.is("officialEndpoint")
+                        || view.thinking_flag("prefixBinding") == Some(true));
                 let is_latest_surviving = Some(index) == latest_surviving;
                 let is_official_anthropic_source = is_anthropic_replay && a.provider == "anthropic";
                 let is_signing_target = is_anthropic_target && view.is("signingEndpoint");
@@ -217,11 +247,14 @@ pub(crate) fn transform_messages(
                 let invalid_stop = matches!(a.stop_reason, StopReason::Aborted | StopReason::Error);
                 let abandoned_tool_use = !invalid_stop
                     && a.stop_reason != StopReason::ToolUse
-                    && a.content.iter().any(|b| matches!(b, AssistantContent::ToolCall(_)));
+                    && a.content
+                        .iter()
+                        .any(|b| matches!(b, AssistantContent::ToolCall(_)));
                 let last_block_index = a.content.len().saturating_sub(1);
 
                 let signature_of = |t: &ThinkingContent, idx: usize| -> Option<String> {
-                    let untrustworthy = abandoned_tool_use || (invalid_stop && idx == last_block_index);
+                    let untrustworthy =
+                        abandoned_tool_use || (invalid_stop && idx == last_block_index);
                     if untrustworthy {
                         None
                     } else {
@@ -229,7 +262,9 @@ pub(crate) fn transform_messages(
                     }
                 };
                 let visible_thinking_survives = |block: &AssistantContent, idx: usize| -> bool {
-                    let AssistantContent::Thinking(t) = block else { return false };
+                    let AssistantContent::Thinking(t) = block else {
+                        return false;
+                    };
                     if t.redacted.unwrap_or(false) || !is_anthropic_replay {
                         return false;
                     }
@@ -240,18 +275,26 @@ pub(crate) fn transform_messages(
                     if sig.is_none() && t.thinking.trim().is_empty() {
                         return false;
                     }
-                    if is_same_model && is_signing_target && sig.as_deref().is_none_or(|s| s.trim().is_empty()) {
+                    if is_same_model
+                        && is_signing_target
+                        && sig.as_deref().is_none_or(|s| s.trim().is_empty())
+                    {
                         return false;
                     }
                     true
                 };
-                let has_visible_thinking =
-                    a.content.iter().any(|b| matches!(b, AssistantContent::Thinking(t) if !t.redacted.unwrap_or(false)));
+                let has_visible_thinking = a.content.iter().any(
+                    |b| matches!(b, AssistantContent::Thinking(t) if !t.redacted.unwrap_or(false)),
+                );
                 let drops_all_same_model_visible_thinking = is_anthropic_replay
                     && is_same_model
                     && is_signing_target
                     && has_visible_thinking
-                    && !a.content.iter().enumerate().any(|(i, b)| visible_thinking_survives(b, i));
+                    && !a
+                        .content
+                        .iter()
+                        .enumerate()
+                        .any(|(i, b)| visible_thinking_survives(b, i));
 
                 let mut out: Vec<AssistantContent> = Vec::new();
                 for (block_index, block) in a.content.iter().enumerate() {
@@ -275,21 +318,37 @@ pub(crate) fn transform_messages(
                             }
                         }
                         AssistantContent::Thinking(t) => {
-                            let signature_untrustworthy =
-                                abandoned_tool_use || (invalid_stop && block_index == last_block_index);
+                            let signature_untrustworthy = abandoned_tool_use
+                                || (invalid_stop && block_index == last_block_index);
                             let mut sanitized = t.clone();
-                            if signature_untrustworthy && sanitized.thinking_signature.as_deref().is_some_and(|s| !s.is_empty()) {
+                            if signature_untrustworthy
+                                && sanitized
+                                    .thinking_signature
+                                    .as_deref()
+                                    .is_some_and(|s| !s.is_empty())
+                            {
                                 sanitized.thinking_signature = None;
                             }
-                            let has_sig = |t: &ThinkingContent| t.thinking_signature.as_deref().is_some_and(|s| !s.is_empty());
+                            let has_sig = |t: &ThinkingContent| {
+                                t.thinking_signature
+                                    .as_deref()
+                                    .is_some_and(|s| !s.is_empty())
+                            };
                             if is_anthropic_replay {
                                 let cross_provider_source = a.provider != model.provider;
-                                if is_latest_surviving && abandoned_tool_use && !cross_provider_source {
+                                if is_latest_surviving
+                                    && abandoned_tool_use
+                                    && !cross_provider_source
+                                {
                                     out.push(block.clone());
                                     continue;
                                 }
                                 let stale_signature = !same_anthropic_deployment
-                                    && if is_latest_surviving { cross_provider_source } else { !is_same_model };
+                                    && if is_latest_surviving {
+                                        cross_provider_source
+                                    } else {
+                                        !is_same_model
+                                    };
                                 if stale_signature && signing_involved && has_sig(&sanitized) {
                                     sanitized.thinking_signature = None;
                                 }
@@ -298,7 +357,10 @@ pub(crate) fn transform_messages(
                                 }
                                 if is_same_model
                                     && is_signing_target
-                                    && sanitized.thinking_signature.as_deref().is_none_or(|s| s.trim().is_empty())
+                                    && sanitized
+                                        .thinking_signature
+                                        .as_deref()
+                                        .is_none_or(|s| s.trim().is_empty())
                                 {
                                     continue;
                                 }
@@ -333,7 +395,12 @@ pub(crate) fn transform_messages(
                             }
                             let normalized_id = if is_anthropic_target {
                                 (!is_same_model || view.is("officialEndpoint")).then(|| {
-                                    normalize_anthropic_target_tool_call_id(&call.id, model, a, normalize_tool_call_id)
+                                    normalize_anthropic_target_tool_call_id(
+                                        &call.id,
+                                        model,
+                                        a,
+                                        normalize_tool_call_id,
+                                    )
                                 })
                             } else if !is_same_model {
                                 normalize_tool_call_id(&call.id, model, a)
@@ -379,10 +446,16 @@ pub(crate) fn transform_messages(
     let mut real_results: HashMap<String, Vec<(usize, ToolResultMessage, bool)>> = HashMap::new();
     for (i, m) in normalized.iter().enumerate() {
         if let Message::ToolResult(r) = m {
-            real_results.entry(r.tool_call_id.clone()).or_default().push((i, r.clone(), false));
+            real_results
+                .entry(r.tool_call_id.clone())
+                .or_default()
+                .push((i, r.clone(), false));
         }
     }
-    let take_real = |real: &mut HashMap<String, Vec<(usize, ToolResultMessage, bool)>>, id: &str, after: i64| -> Option<ToolResultMessage> {
+    let take_real = |real: &mut HashMap<String, Vec<(usize, ToolResultMessage, bool)>>,
+                     id: &str,
+                     after: i64|
+     -> Option<ToolResultMessage> {
         let entries = real.get_mut(id)?;
         for entry in entries.iter_mut() {
             if entry.2 || (entry.0 as i64) <= after {
@@ -445,7 +518,8 @@ pub(crate) fn transform_messages(
                     if status.contains(&tc.id) {
                         continue;
                     }
-                    if let Some(real) = take_real(&mut real_results, &tc.id, pending_aborted_start) {
+                    if let Some(real) = take_real(&mut real_results, &tc.id, pending_aborted_start)
+                    {
                         result.push(Message::ToolResult(real));
                     } else {
                         result.push(synthetic!(tc, "aborted", ts));
@@ -509,14 +583,18 @@ pub(crate) fn transform_messages(
                     continue;
                 }
                 if !valid_tool_use_ids.contains(key) {
-                    if pending_calls.iter().any(|tc| !status.contains(&tc.id)) || !pending_aborted.is_empty() {
+                    if pending_calls.iter().any(|tc| !status.contains(&tc.id))
+                        || !pending_aborted.is_empty()
+                    {
                         continue;
                     }
                     let parts: Vec<&str> = r
                         .content
                         .iter()
                         .filter_map(|p| match p {
-                            UserOrToolContent::Text(t) if !t.text.trim().is_empty() => Some(t.text.as_str()),
+                            UserOrToolContent::Text(t) if !t.text.trim().is_empty() => {
+                                Some(t.text.as_str())
+                            }
                             _ => None,
                         })
                         .collect();

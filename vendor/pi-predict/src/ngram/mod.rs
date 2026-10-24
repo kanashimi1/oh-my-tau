@@ -85,8 +85,8 @@ mod vocab;
 mod web;
 
 use std::{
-	io::Write,
-	path::{Path, PathBuf},
+    io::Write,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Context;
@@ -99,12 +99,12 @@ const SNAPSHOT_FILE: &str = "ngram.snapshot";
 
 /// The n-gram engine.
 pub struct NgramPredictor {
-	model:     model::Model,
-	query:     query::QueryState,
-	/// Caller override of [`Params::show_threshold`] (see
-	/// [`Config::show_threshold`]).
-	gate:      Option<f32>,
-	state_dir: PathBuf,
+    model: model::Model,
+    query: query::QueryState,
+    /// Caller override of [`Params::show_threshold`] (see
+    /// [`Config::show_threshold`]).
+    gate: Option<f32>,
+    state_dir: PathBuf,
 }
 
 /// Open the n-gram engine with the tuned [`Params`], restoring persisted
@@ -114,85 +114,85 @@ pub struct NgramPredictor {
 /// Returns an error when the snapshot exists but cannot be read, has an
 /// unknown version, or is corrupt.
 pub fn open(config: &Config) -> anyhow::Result<Box<dyn Predictor>> {
-	Ok(Box::new(NgramPredictor::open(config, Params::default())?))
+    Ok(Box::new(NgramPredictor::open(config, Params::default())?))
 }
 
 impl NgramPredictor {
-	/// Open with explicit `params` (tuning and benchmarks), restoring
-	/// persisted state from `config.state_dir`.
-	///
-	/// # Errors
-	/// Returns an error when the snapshot exists but cannot be read, has an
-	/// unknown version, or is corrupt.
-	pub fn open(config: &Config, params: Params) -> anyhow::Result<Self> {
-		let web = web::web_prior()?;
-		let gate = config.show_threshold;
-		let path = config.state_dir.join(SNAPSHOT_FILE);
-		let model = match std::fs::read(&path) {
-			Ok(bytes) => snapshot::decode(&bytes, params, web)
-				.with_context(|| format!("restore {}", path.display()))?,
-			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-				model::Model::new(params, web)
-			},
-			Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
-		};
-		Ok(Self {
-			model,
-			query: query::QueryState::default(),
-			gate,
-			state_dir: config.state_dir.clone(),
-		})
-	}
+    /// Open with explicit `params` (tuning and benchmarks), restoring
+    /// persisted state from `config.state_dir`.
+    ///
+    /// # Errors
+    /// Returns an error when the snapshot exists but cannot be read, has an
+    /// unknown version, or is corrupt.
+    pub fn open(config: &Config, params: Params) -> anyhow::Result<Self> {
+        let web = web::web_prior()?;
+        let gate = config.show_threshold;
+        let path = config.state_dir.join(SNAPSHOT_FILE);
+        let model = match std::fs::read(&path) {
+            Ok(bytes) => snapshot::decode(&bytes, params, web)
+                .with_context(|| format!("restore {}", path.display()))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                model::Model::new(params, web)
+            }
+            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+        };
+        Ok(Self {
+            model,
+            query: query::QueryState::default(),
+            gate,
+            state_dir: config.state_dir.clone(),
+        })
+    }
 
-	/// Heap bytes of the learned model and query scratch, plus the shared
-	/// static web prior.
-	pub fn heap_bytes(&self) -> usize {
-		self.model.heap_bytes() + self.query.heap_bytes() + self.model.web.heap_bytes()
-	}
+    /// Heap bytes of the learned model and query scratch, plus the shared
+    /// static web prior.
+    pub fn heap_bytes(&self) -> usize {
+        self.model.heap_bytes() + self.query.heap_bytes() + self.model.web.heap_bytes()
+    }
 }
 
 /// Write `bytes` to `dir/name` atomically: a temp file in the same directory,
 /// then a rename over the target.
 fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<()> {
-	std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-	let target = dir.join(name);
-	let temp = dir.join(format!("{name}.{}.tmp", std::process::id()));
-	let written = (|| {
-		let mut file = std::fs::File::create(&temp)?;
-		file.write_all(bytes)?;
-		file.sync_all()?;
-		drop(file);
-		std::fs::rename(&temp, &target)
-	})();
-	if let Err(error) = written {
-		let _ = std::fs::remove_file(&temp);
-		return Err(error).with_context(|| format!("write {}", target.display()));
-	}
-	Ok(())
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let target = dir.join(name);
+    let temp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, &target)
+    })();
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error).with_context(|| format!("write {}", target.display()));
+    }
+    Ok(())
 }
 
 impl Predictor for NgramPredictor {
-	fn complete(&mut self, query: &Query<'_>) -> Option<Suggestion> {
-		let (suffix, confidence) = self
-			.query
-			.complete(&self.model, query.before, query.prefix)?;
-		let confidence = confidence as f32;
-		let gate = self.gate.unwrap_or(self.model.params.show_threshold);
-		(confidence >= gate).then_some(Suggestion { suffix, confidence })
-	}
+    fn complete(&mut self, query: &Query<'_>) -> Option<Suggestion> {
+        let (suffix, confidence) = self
+            .query
+            .complete(&self.model, query.before, query.prefix)?;
+        let confidence = confidence as f32;
+        let gate = self.gate.unwrap_or(self.model.params.show_threshold);
+        (confidence >= gate).then_some(Suggestion { suffix, confidence })
+    }
 
-	fn observe(&mut self, prompt: &str) {
-		self.model.learn(prompt);
-	}
+    fn observe(&mut self, prompt: &str) {
+        self.model.learn(prompt);
+    }
 
-	fn feedback(&mut self, _query: &Query<'_>, _suggestion: &str, _accepted: bool) {
-		// Accepted words are learned when the prompt is submitted. A calibrated
-		// per-(prefix, word) feedback bias measured no gain.
-	}
+    fn feedback(&mut self, _query: &Query<'_>, _suggestion: &str, _accepted: bool) {
+        // Accepted words are learned when the prompt is submitted. A calibrated
+        // per-(prefix, word) feedback bias measured no gain.
+    }
 
-	fn persist(&mut self) -> anyhow::Result<()> {
-		self.model.prune_trigrams();
-		let bytes = snapshot::encode(&self.model)?;
-		write_atomic(&self.state_dir, SNAPSHOT_FILE, &bytes)
-	}
+    fn persist(&mut self) -> anyhow::Result<()> {
+        self.model.prune_trigrams();
+        let bytes = snapshot::encode(&self.model)?;
+        write_atomic(&self.state_dir, SNAPSHOT_FILE, &bytes)
+    }
 }

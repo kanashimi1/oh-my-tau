@@ -419,13 +419,17 @@ impl App {
         if !self.word_started {
             return;
         }
-        let value = settings.get_string("spelling.autocomplete").unwrap_or_else(|| "auto".to_owned());
+        let value = settings
+            .get_string("spelling.autocomplete")
+            .unwrap_or_else(|| "auto".to_owned());
         let Some(method) = crate::word_completion::host::method_for_setting(&value) else {
             self.editor.set_word_completion(None);
             return;
         };
         if self.word_host.is_none() {
-            let Some(dir) = crate::word_completion::host::agent_dir() else { return };
+            let Some(dir) = crate::word_completion::host::agent_dir() else {
+                return;
+            };
             self.word_host = Some(crate::word_completion::host::WordHost::spawn(&dir, method));
         }
         if !self.editor.word_completion_enabled() {
@@ -454,7 +458,11 @@ impl App {
     /// without thinking shows no level (TS `thinkingLevelWord`).
     fn apply_thinking_state(&mut self, frame: &Value) {
         if let Some(levels) = frame.get("thinkingLevels").and_then(Value::as_array) {
-            self.thinking_levels = levels.iter().filter_map(Value::as_str).map(str::to_owned).collect();
+            self.thinking_levels = levels
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
         }
         if let Some(auto) = frame.get("autoThinking").and_then(Value::as_bool) {
             self.status.auto_thinking = auto;
@@ -506,7 +514,10 @@ impl App {
         } else if self.status.auto_thinking {
             "auto".to_owned()
         } else {
-            self.status.thinking.clone().unwrap_or_else(|| "off".to_owned())
+            self.status
+                .thinking
+                .clone()
+                .unwrap_or_else(|| "off".to_owned())
         }
     }
 
@@ -536,7 +547,8 @@ impl App {
         }
         // TS lists `off, auto, …`; the selector shows the same order.
         let current = self.current_effort_selector();
-        self.overlays.open_thinking(std::mem::take(&mut levels), &current);
+        self.overlays
+            .open_thinking(std::mem::take(&mut levels), &current);
     }
 
     /// Apply a `context_usage` frame: model identity plus the context gauge
@@ -672,11 +684,15 @@ impl App {
             });
         self.editor.set_shape(shape);
         self.status
-            .apply_config(crate::status_line::StatusLineConfig::from_settings(settings));
+            .apply_config(crate::status_line::StatusLineConfig::from_settings(
+                settings,
+            ));
         // Input settings with a live consumer here (TS `#applyUiSettingChanges`).
-        self.editor.set_vim_mode(settings.get_bool("tui.vimMode").unwrap_or(false));
-        self.status.vim_text_display =
-            settings.get_string("tui.vimModeDisplay").is_none_or(|mode| mode == "text");
+        self.editor
+            .set_vim_mode(settings.get_bool("tui.vimMode").unwrap_or(false));
+        self.status.vim_text_display = settings
+            .get_string("tui.vimModeDisplay")
+            .is_none_or(|mode| mode == "text");
         self.apply_word_completion(settings);
         if let Some(max) = settings.get("autocompleteMaxVisible").as_u64() {
             self.autocomplete.max_visible = usize::try_from(max).unwrap_or(8).clamp(3, 20);
@@ -822,13 +838,21 @@ impl App {
     /// Startup shimmer phase of the clean welcome while it is still held in
     /// the live region (not yet committed), `None` once it froze.
     fn welcome_shimmer(&self, now: Instant) -> Option<f64> {
-        let w = self.welcome.as_ref().filter(|w| !w.emitted && self.theme.clean())?;
-        welcome::shimmer_phase(w.started.map_or(Duration::ZERO, |s| now.saturating_duration_since(s)))
+        let w = self
+            .welcome
+            .as_ref()
+            .filter(|w| !w.emitted && self.theme.clean())?;
+        welcome::shimmer_phase(
+            w.started
+                .map_or(Duration::ZERO, |s| now.saturating_duration_since(s)),
+        )
     }
 
     /// Welcome block rows at `width` (clean: OMRS logo at `phase`).
     fn welcome_rows(&self, width: u16, phase: f64) -> Vec<Line<'static>> {
-        let Some(w) = &self.welcome else { return Vec::new() };
+        let Some(w) = &self.welcome else {
+            return Vec::new();
+        };
         if self.theme.clean() {
             welcome::clean_welcome_lines(&w.version, &w.tip, usize::from(width), &self.theme, phase)
         } else {
@@ -882,7 +906,8 @@ impl App {
                 self.spinner_start = Instant::now();
                 self.status.streaming = true;
                 self.pending_submission = false;
-                self.title.set_state(TitleState::Working, Some(&self.title_label));
+                self.title
+                    .set_state(TitleState::Working, Some(&self.title_label));
             }
             AppEvent::TurnStart => {
                 self.status.streaming = true;
@@ -890,26 +915,32 @@ impl App {
             }
             AppEvent::AgentEnd(_) | AppEvent::TurnEnd(_) => {
                 self.status.streaming = false;
-                self.title.set_state(TitleState::Idle, Some(&self.title_label));
+                self.title
+                    .set_state(TitleState::Idle, Some(&self.title_label));
             }
             AppEvent::SessionSettled => {
                 self.status.streaming = false;
-                self.title.set_state(TitleState::Idle, Some(&self.title_label));
+                self.title
+                    .set_state(TitleState::Idle, Some(&self.title_label));
                 self.notify_turn_settled(false);
             }
             AppEvent::PromptResult { success, error, .. } => {
                 if !success {
                     // The transcript row is drawn by `messages.apply` below;
                     // here only the title and the settle notification.
-                    self.title.set_state(TitleState::Idle, Some(&self.title_label));
+                    self.title
+                        .set_state(TitleState::Idle, Some(&self.title_label));
                     self.notify_turn_settled(true);
                 }
             }
             AppEvent::MessageEnd(frame) => {
                 let message = frame.get("message");
-                if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant") {
-                    self.last_stop_reason =
-                        message.and_then(|m| m.get("stopReason")).and_then(Value::as_str).map(str::to_owned);
+                if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant")
+                {
+                    self.last_stop_reason = message
+                        .and_then(|m| m.get("stopReason"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned);
                 }
                 if let Some(entry) = journal_entry(frame) {
                     self.journal.push(entry);
@@ -948,7 +979,8 @@ impl App {
                 picker.models = models.clone();
             }
             AppEvent::ThinkingLevelChanged(frame) => {
-                let configured_auto = frame.get("configured").and_then(Value::as_str) == Some("auto");
+                let configured_auto =
+                    frame.get("configured").and_then(Value::as_str) == Some("auto");
                 self.status.auto_thinking = configured_auto;
                 if let Some(level) = frame.get("thinkingLevel").and_then(Value::as_str) {
                     self.set_thinking_display(level);
@@ -981,7 +1013,34 @@ impl App {
                 }
                 self.messages.apply(event);
             }
-            AppEvent::ExtensionUiRequest(frame) => self.extension_ui.push(frame),
+            AppEvent::ExtensionUiRequest(frame) => {
+                // TS rpc `set_editor_text` (fire-and-forget): replace the prompt draft.
+                if frame.get("method").and_then(Value::as_str) == Some("set_editor_text") {
+                    let text = frame
+                        .get("text")
+                        .or_else(|| frame.pointer("/params/text"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    self.set_editor_text(&text);
+                } else {
+                    self.extension_ui.push(frame);
+                }
+            }
+            AppEvent::ClipboardCopy(text) => {
+                // TS `copyToClipboard`: OSC 52 + platform tools, best effort, off the
+                // render thread.
+                {
+                    use std::io::{IsTerminal as _, Write as _};
+                    let mut out = std::io::stdout();
+                    if out.is_terminal() {
+                        let _ = out.write_all(crate::clipboard::osc52(text).as_bytes());
+                        let _ = out.flush();
+                    }
+                }
+                let text = text.clone();
+                std::thread::spawn(move || crate::clipboard::write_text(&text));
+            }
             AppEvent::AvailableCommands(frame) => {
                 self.autocomplete.update_commands(frame);
                 // Merge the TUI-local entries (`/settings`, `/hotkeys`) into
@@ -1020,7 +1079,8 @@ impl App {
                     self.title_label.clone_from(name);
                     self.session_name = Some(name.clone()).filter(|n| !n.is_empty());
                 }
-                self.title.set_state(TitleState::Idle, Some(&self.title_label));
+                self.title
+                    .set_state(TitleState::Idle, Some(&self.title_label));
             }
             AppEvent::SessionReset => {
                 self.journal.clear();
@@ -1029,7 +1089,8 @@ impl App {
                 self.clear_scrollback = true;
             }
             AppEvent::SessionInfo { title, lines } => {
-                self.overlays.open_session_info(title.as_deref(), lines.clone());
+                self.overlays
+                    .open_session_info(title.as_deref(), lines.clone());
             }
             _ => {}
         }
@@ -1044,13 +1105,20 @@ impl App {
     fn notify_turn_settled(&mut self, failed: bool) {
         let settings = omp_settings::Settings::load(&self.cwd);
         let on = |id: &str| settings.get_string(id).as_deref() != Some("off");
-        let Some((body, kind)) =
-            turn_notification(failed, self.last_stop_reason.as_deref(), on("error.notify"), on("completion.notify"))
-        else {
+        let Some((body, kind)) = turn_notification(
+            failed,
+            self.last_stop_reason.as_deref(),
+            on("error.notify"),
+            on("completion.notify"),
+        ) else {
             return;
         };
         let mut n = TerminalNotification::body(body);
-        n.title = Some(self.session_name.clone().unwrap_or_else(|| "omp".to_owned()));
+        n.title = Some(
+            self.session_name
+                .clone()
+                .unwrap_or_else(|| "omp".to_owned()),
+        );
         n.kind = kind;
         self.notify.fire(&n);
     }
@@ -1264,8 +1332,11 @@ impl App {
                         &item,
                         &prefix,
                     );
-                    self.editor
-                        .apply_completion(applied.lines, applied.cursor_line, applied.cursor_col);
+                    self.editor.apply_completion(
+                        applied.lines,
+                        applied.cursor_line,
+                        applied.cursor_col,
+                    );
                     let is_slash = crate::autocomplete::find_leading_slash_command_start(&prefix)
                         .is_some()
                         && !item.value.starts_with('/');
@@ -1413,7 +1484,8 @@ impl App {
             self.push_system("Failed to save clipboard image".to_owned());
             return;
         }
-        self.editor.attach_image(&path.display().to_string(), None, None);
+        self.editor
+            .attach_image(&path.display().to_string(), None, None);
     }
 
     /// Apply the large-paste menu choice (`presentLargePasteMenu` switch):
@@ -1443,12 +1515,17 @@ impl App {
                         .map_or(0, |d| d.as_millis())
                 ));
                 if std::fs::write(&path, &text).is_ok() {
-                    self.editor.insert_str_at_cursor(&format!("{} ", path.display()));
-                    self.push_system(format!("Saved {line_count} pasted lines to {}", path.display()));
+                    self.editor
+                        .insert_str_at_cursor(&format!("{} ", path.display()));
+                    self.push_system(format!(
+                        "Saved {line_count} pasted lines to {}",
+                        path.display()
+                    ));
                 } else {
                     self.editor.attach_text("paste.md", &text);
                     self.push_system(
-                        "Failed to save paste to a file — attached as a text chip instead".to_owned(),
+                        "Failed to save paste to a file — attached as a text chip instead"
+                            .to_owned(),
                     );
                 }
             }
@@ -1529,7 +1606,8 @@ impl App {
             if self.journal.is_empty() {
                 self.push_system("nothing to rewind yet".into());
             } else {
-                self.overlays.open_tree(&self.journal.clone(), TreeMode::Rewind);
+                self.overlays
+                    .open_tree(&self.journal.clone(), TreeMode::Rewind);
             }
         } else {
             self.last_esc = Some(now);
@@ -1752,14 +1830,16 @@ impl App {
             "exit" => self.quit_requested = true,
             "help" | "hotkeys" => self.overlays.toggle(OpenOverlay::Help),
             "settings" => self.slash_settings(port),
-            "model" => self.slash_model(args, port),
+            // TS `/switch` opens the same model selector (session-only pick).
+            "model" | "switch" => self.slash_model(name, args, port),
             "effort" if args.is_empty() => self.open_thinking_selector(),
             "resume" => self.slash_resume(),
             "tree" => {
                 if self.journal.is_empty() {
                     self.push_system("no session tree yet".into());
                 } else {
-                    self.overlays.open_tree(&self.journal.clone(), TreeMode::Tree);
+                    self.overlays
+                        .open_tree(&self.journal.clone(), TreeMode::Tree);
                 }
             }
             "theme" => self.slash_theme(args),
@@ -1784,7 +1864,7 @@ impl App {
     /// an exact `provider/id` that exists in the catalogue still goes
     /// through the runtime slash dispatch (TS `setModel` path). Picking a
     /// row drains `Action::SetModel` → `port.set_model`.
-    fn slash_model(&mut self, args: &str, port: &impl RuntimePort) {
+    fn slash_model(&mut self, name: &str, args: &str, port: &impl RuntimePort) {
         let exact = parse_model_string(args).is_some_and(|(provider, id, _)| {
             let selector = format!("{provider}/{id}").to_lowercase();
             self.overlays
@@ -1796,7 +1876,7 @@ impl App {
         if exact {
             self.dispatch(
                 Action::Slash {
-                    name: "model".to_owned(),
+                    name: name.to_owned(),
                     args: args.to_owned(),
                 },
                 port,
@@ -1826,7 +1906,10 @@ impl App {
         let values = port.settings_get(&ids);
         overlay.seed(&values);
         overlay.set_available_themes(
-            crate::theme::available_themes().into_iter().map(|t| t.name).collect(),
+            crate::theme::available_themes()
+                .into_iter()
+                .map(|t| t.name)
+                .collect(),
         );
         overlay.set_thinking_levels(port.available_thinking_levels());
     }
@@ -1860,11 +1943,15 @@ impl App {
                     port.set_thinking_level(level.to_string());
                 }
             }
-            "display.showTokenUsage" | "display.showTurnTime" | "read.toolResultPreview" | "tui.mouse" => {
+            "display.showTokenUsage"
+            | "display.showTurnTime"
+            | "read.toolResultPreview"
+            | "tui.mouse" => {
                 self.reload_display_prefs();
             }
             id if id.starts_with("magicKeywords.") => {
-                self.magic_off = crate::magic::disabled_mask(&omp_settings::Settings::load(&self.cwd));
+                self.magic_off =
+                    crate::magic::disabled_mask(&omp_settings::Settings::load(&self.cwd));
                 let theme = self.theme.clone();
                 self.set_theme(theme);
             }
@@ -1951,7 +2038,9 @@ impl App {
     /// the active composer shape (`ComposerStyle.bottomBar`).
     fn bottom_bar_rows(&self, width: u16) -> u16 {
         let shape = self.editor.shape();
-        if crate::composer::bottom_bar(shape, &self.status, &self.theme, usize::from(width)).is_none() {
+        if crate::composer::bottom_bar(shape, &self.status, &self.theme, usize::from(width))
+            .is_none()
+        {
             return 0;
         }
         1 + u16::from(shape.bottom_bar_gap())
@@ -1968,13 +2057,21 @@ impl App {
     /// Paint the standalone bar (and its spacer row) under the editor.
     fn render_bottom_bar(&self, frame: &mut Frame<'_>, area: Rect) {
         let shape = self.editor.shape();
-        let Some(bar) = crate::composer::bottom_bar(shape, &self.status, &self.theme, usize::from(area.width))
+        let Some(bar) =
+            crate::composer::bottom_bar(shape, &self.status, &self.theme, usize::from(area.width))
         else {
             return;
         };
         let y = area.y + u16::from(shape.bottom_bar_gap());
         if y < area.y + area.height {
-            frame.render_widget(ratatui::widgets::Paragraph::new(bar), Rect { y, height: 1, ..area });
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(bar),
+                Rect {
+                    y,
+                    height: 1,
+                    ..area
+                },
+            );
         }
     }
 
@@ -1982,7 +2079,8 @@ impl App {
     /// between the queued-messages band and the loader); 0 when none.
     fn error_banner_height(&self, width: u16) -> u16 {
         self.messages.pinned_error().map_or(0, |message| {
-            let lines = crate::chat::blocks::error_banner_lines(message, usize::from(width), &self.theme);
+            let lines =
+                crate::chat::blocks::error_banner_lines(message, usize::from(width), &self.theme);
             u16::try_from(lines.len()).unwrap_or(u16::MAX)
         })
     }
@@ -1992,7 +2090,11 @@ impl App {
             return;
         }
         if let Some(message) = self.messages.pinned_error() {
-            let lines = crate::chat::blocks::error_banner_lines(message, usize::from(area.width), &self.theme);
+            let lines = crate::chat::blocks::error_banner_lines(
+                message,
+                usize::from(area.width),
+                &self.theme,
+            );
             frame.render_widget(ratatui::widgets::Paragraph::new(lines), area);
         }
     }
@@ -2039,7 +2141,8 @@ impl App {
         } else {
             self.messages.take_committed_rows(width)
         };
-        let hold = !rebuild && transcript.is_empty() && self.welcome_shimmer(Instant::now()).is_some();
+        let hold =
+            !rebuild && transcript.is_empty() && self.welcome_shimmer(Instant::now()).is_some();
         let mut rows = Vec::new();
         if !hold && self.welcome.as_ref().is_some_and(|w| rebuild || !w.emitted) {
             rows = self.welcome_rows(width, 0.0);
@@ -2187,7 +2290,8 @@ impl App {
             return;
         }
         use ratatui::widgets::Paragraph;
-        let frame_idx = (self.spinner_start.elapsed().as_millis() / u128::from(SPINNER_ADVANCE_MS)) as usize
+        let frame_idx = (self.spinner_start.elapsed().as_millis() / u128::from(SPINNER_ADVANCE_MS))
+            as usize
             % SPINNER.len();
         let label = match self.maintenance {
             Some(Maintenance::Compaction) => " compacting… (esc to cancel)",
@@ -2228,7 +2332,10 @@ impl App {
         let pink = Style::default().fg(ratatui::style::Color::Rgb(236, 112, 214));
         Line::from(vec![
             Span::styled(format!("{} ", SPINNER[frame_idx]), accent),
-            Span::styled(label.to_owned(), accent.add_modifier(ratatui::style::Modifier::BOLD)),
+            Span::styled(
+                label.to_owned(),
+                accent.add_modifier(ratatui::style::Modifier::BOLD),
+            ),
             Span::raw(" "),
             Span::styled(face(mood, tick).to_owned(), pink),
             Span::styled(format!("  {}s · esc to interrupt", elapsed.as_secs()), dim),
@@ -2247,14 +2354,20 @@ impl App {
         self.messages.tick_reveal();
         let mut area = area;
         let now = Instant::now();
-        if let Some(w) = self.welcome.as_mut().filter(|w| !w.emitted && w.started.is_none()) {
+        if let Some(w) = self
+            .welcome
+            .as_mut()
+            .filter(|w| !w.emitted && w.started.is_none())
+        {
             w.started = Some(now);
         }
         if let Some(phase) = self.welcome_shimmer(now) {
             // Startup shimmer: the welcome sits at the top of the live
             // region — exactly where its rows land when they commit.
             let rows = self.welcome_rows(area.width, phase);
-            let h = u16::try_from(rows.len()).unwrap_or(u16::MAX).min(area.height);
+            let h = u16::try_from(rows.len())
+                .unwrap_or(u16::MAX)
+                .min(area.height);
             frame.render_widget(Paragraph::new(rows), Rect { height: h, ..area });
             area.y += h;
             area.height -= h;
@@ -2262,7 +2375,9 @@ impl App {
         let height = area.height as usize;
         let width = usize::from(area.width).max(8);
         // Bottom-anchored: the last `height + scroll` rows of the tail.
-        let lines = self.messages.tail_rows(width, height + self.scroll as usize);
+        let lines = self
+            .messages
+            .tail_rows(width, height + self.scroll as usize);
         frame.render_widget(Paragraph::new(lines), area);
     }
 }
@@ -2291,7 +2406,8 @@ fn turn_notification(
     if failed || stop_reason == Some("error") {
         return error_notify.then_some(("Stopped with error", NotifyKind::Error));
     }
-    (completion_notify && stop_reason != Some("aborted")).then_some(("Complete", NotifyKind::Completion))
+    (completion_notify && stop_reason != Some("aborted"))
+        .then_some(("Complete", NotifyKind::Completion))
 }
 
 fn journal_entry(frame: &Value) -> Option<Value> {
@@ -2500,7 +2616,9 @@ mod tests {
             let calls = log(&port);
             assert_eq!(calls[0], "set_model(zai, glm)", "{calls:?}");
             assert!(
-                calls.iter().any(|c| c.starts_with("settings_set(modelRoles")),
+                calls
+                    .iter()
+                    .any(|c| c.starts_with("settings_set(modelRoles")),
                 "{calls:?}"
             );
             // The browser stays open (TS model hub); Esc closes it.
@@ -2551,12 +2669,26 @@ mod tests {
         })));
         type_text(&mut app, &port, "/session");
         assert!(enter(&mut app, &port));
-        assert!(log(&port).contains(&"request_session_info()".to_owned()), "{:?}", log(&port));
-        assert!(!log(&port).iter().any(|c| c.starts_with("run_slash")), "{:?}", log(&port));
+        assert!(
+            log(&port).contains(&"request_session_info()".to_owned()),
+            "{:?}",
+            log(&port)
+        );
+        assert!(
+            !log(&port).iter().any(|c| c.starts_with("run_slash")),
+            "{:?}",
+            log(&port)
+        );
         // Other verbs still reach the runtime.
         type_text(&mut app, &port, "/session delete");
         assert!(enter(&mut app, &port));
-        assert!(log(&port).iter().any(|c| c.starts_with("run_slash(session")), "{:?}", log(&port));
+        assert!(
+            log(&port)
+                .iter()
+                .any(|c| c.starts_with("run_slash(session")),
+            "{:?}",
+            log(&port)
+        );
         // The runtime's report frame opens the full-screen panel; Esc closes it.
         app.apply_event(&crate::events::parse_frame(&json!({
             "type": "session_info",
@@ -2579,18 +2711,33 @@ mod tests {
         })));
         type_text(&mut app, &port, "/usage");
         assert!(enter(&mut app, &port));
-        assert!(log(&port).contains(&"request_usage()".to_owned()), "{:?}", log(&port));
-        assert!(!log(&port).iter().any(|c| c.starts_with("run_slash")), "{:?}", log(&port));
+        assert!(
+            log(&port).contains(&"request_usage()".to_owned()),
+            "{:?}",
+            log(&port)
+        );
+        assert!(
+            !log(&port).iter().any(|c| c.starts_with("run_slash")),
+            "{:?}",
+            log(&port)
+        );
         type_text(&mut app, &port, "/usage reset");
         assert!(enter(&mut app, &port));
-        assert!(log(&port).iter().any(|c| c.starts_with("run_slash(usage")), "{:?}", log(&port));
+        assert!(
+            log(&port).iter().any(|c| c.starts_with("run_slash(usage")),
+            "{:?}",
+            log(&port)
+        );
         app.apply_event(&crate::events::parse_frame(&json!({
             "type": "session_info", "title": "Usage",
             "lines": [{"head": "Provider limits (anthropic)"}, {"k": "5h", "v": "6%"}]
         })));
         assert_eq!(app.overlays.open(), Some(OpenOverlay::SessionInfo));
         let s = screen(&mut app, 120, 40);
-        assert!(s.contains("Usage") && !s.contains("Session Info") && s.contains("5h: 6%"), "{s}");
+        assert!(
+            s.contains("Usage") && !s.contains("Session Info") && s.contains("5h: 6%"),
+            "{s}"
+        );
         assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
         assert_eq!(app.overlays.open(), None);
     }
@@ -2631,10 +2778,12 @@ mod tests {
     }
 
     /// Serialize the HOME-mutating settings tests (env is process-global).
-    static HOME_LOCK: LazyLock<parking_lot::Mutex<()>> = LazyLock::new(|| parking_lot::Mutex::new(()));
+    static HOME_LOCK: LazyLock<parking_lot::Mutex<()>> =
+        LazyLock::new(|| parking_lot::Mutex::new(()));
 
     fn with_temp_home(test: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("omp-tui-settings-{test}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("omp-tui-settings-{test}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("HOME", &dir);
         std::env::remove_var("OMP_PROFILE");
@@ -2683,7 +2832,9 @@ mod tests {
             );
             let logged = log(&port);
             assert!(
-                logged.iter().any(|entry| entry.starts_with("settings_set(colorBlindMode")),
+                logged
+                    .iter()
+                    .any(|entry| entry.starts_with("settings_set(colorBlindMode")),
                 "{logged:?}"
             );
         }
@@ -2706,8 +2857,10 @@ mod tests {
             // Submenu row: Enter opens the theme select field with the
             // current theme highlighted; ↓ to "light", Enter picks.
             assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
-            let names: Vec<String> =
-                crate::theme::available_themes().into_iter().map(|t| t.name).collect();
+            let names: Vec<String> = crate::theme::available_themes()
+                .into_iter()
+                .map(|t| t.name)
+                .collect();
             let from = names.iter().position(|n| n == "titanium").unwrap();
             let to = names.iter().position(|n| n == "light").unwrap();
             for _ in 0..(to + names.len() - from) % names.len() {
@@ -2761,7 +2914,11 @@ mod tests {
             type_text(&mut app, &port, "/settings");
             assert!(enter(&mut app, &port));
             let rows = app.overlays.settings_mut().shown_rows();
-            assert!(rows.len() > 300, "TS panel lists ~380 rows, got {}", rows.len());
+            assert!(
+                rows.len() > 300,
+                "TS panel lists ~380 rows, got {}",
+                rows.len()
+            );
             let kinds: std::collections::BTreeSet<&str> = rows.iter().map(|(_, k)| *k).collect();
             for kind in ["bool", "enum", "submenu", "text", "multi", "limits"] {
                 assert!(kinds.contains(kind), "no {kind} row in the panel");
@@ -2777,14 +2934,24 @@ mod tests {
                     "bool" | "enum" => {}
                     // Submenu: ↓ moves to another choice, Enter picks it.
                     "submenu" => {
-                        assert!(app.overlays.settings_mut().is_editing(), "{id}: submenu did not open");
+                        assert!(
+                            app.overlays.settings_mut().is_editing(),
+                            "{id}: submenu did not open"
+                        );
                         assert!(press(&mut app, &port, key(CtKeyCode::Down)));
                         assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
                     }
                     // Text field: type a value of the right shape, Enter saves.
                     "text" | "limits" => {
-                        assert!(app.overlays.settings_mut().is_editing(), "{id}: text field did not open");
-                        let schema = if *kind == "limits" { "record" } else { text_schema(id) };
+                        assert!(
+                            app.overlays.settings_mut().is_editing(),
+                            "{id}: text field did not open"
+                        );
+                        let schema = if *kind == "limits" {
+                            "record"
+                        } else {
+                            text_schema(id)
+                        };
                         // The field opens pre-filled: clear it first.
                         for _ in 0..400 {
                             press(&mut app, &port, key(CtKeyCode::Backspace));
@@ -2800,7 +2967,10 @@ mod tests {
                     }
                     // Multiselect: Enter toggles the first choice, Esc goes back.
                     "multi" => {
-                        assert!(app.overlays.settings_mut().is_editing(), "{id}: multiselect did not open");
+                        assert!(
+                            app.overlays.settings_mut().is_editing(),
+                            "{id}: multiselect did not open"
+                        );
                         assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
                         assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
                     }
@@ -2885,7 +3055,10 @@ mod tests {
             let port = port();
             type_text(&mut app, &port, "/settings");
             assert!(enter(&mut app, &port));
-            assert!(app.overlays.settings_mut().select("statusLine.compactThinkingLevel"));
+            assert!(app
+                .overlays
+                .settings_mut()
+                .select("statusLine.compactThinkingLevel"));
             assert!(app.status.config.compact_thinking);
             assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
             assert!(!app.status.config.compact_thinking);
@@ -2893,7 +3066,10 @@ mod tests {
             assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
             assert!(press(&mut app, &port, key(CtKeyCode::Down)));
             assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
-            assert_ne!(app.status.config.separator, crate::status_line::SeparatorStyle::PowerlineThin);
+            assert_ne!(
+                app.status.config.separator,
+                crate::status_line::SeparatorStyle::PowerlineThin
+            );
         }
         let _ = std::fs::remove_dir_all(&home);
         restore_home(old_home);
@@ -2908,7 +3084,9 @@ mod tests {
         // A model without thinking: nothing to cycle.
         let shift_tab = KeyEvent::new(CtKeyCode::BackTab, CtMods::SHIFT);
         assert!(press(&mut app, &port, shift_tab));
-        assert!(!log(&port).iter().any(|c| c.starts_with("set_thinking_level")));
+        assert!(!log(&port)
+            .iter()
+            .any(|c| c.starts_with("set_thinking_level")));
         // Reasoning model: context_usage announces the supported efforts.
         app.apply_event(&AppEvent::ContextUsage(json!({
             "type": "context_usage", "model": "p/m", "thinkingLevel": "high",
@@ -2920,9 +3098,16 @@ mod tests {
         for _ in 0..7 {
             assert!(press(&mut app, &port, shift_tab));
             let last = log(&port).last().cloned().unwrap();
-            let level = last.trim_start_matches("set_thinking_level(").trim_end_matches(')').to_owned();
+            let level = last
+                .trim_start_matches("set_thinking_level(")
+                .trim_end_matches(')')
+                .to_owned();
             // The runtime echoes the change (ultra keeps the effort level).
-            let configured = if level == "auto" { json!("auto") } else { json!(level) };
+            let configured = if level == "auto" {
+                json!("auto")
+            } else {
+                json!(level)
+            };
             let ultra = (level == "ultracode").then_some("ultracode");
             app.apply_event(&AppEvent::ThinkingLevelChanged(json!({
                 "type": "thinking_level_changed",
@@ -2932,7 +3117,18 @@ mod tests {
             })));
             seen.push(level);
         }
-        assert_eq!(seen, ["ultracode", "off", "auto", "minimal", "low", "medium", "high"]);
+        assert_eq!(
+            seen,
+            [
+                "ultracode",
+                "off",
+                "auto",
+                "minimal",
+                "low",
+                "medium",
+                "high"
+            ]
+        );
         assert_eq!(app.status.thinking.as_deref(), Some("high"));
     }
 
@@ -2950,7 +3146,11 @@ mod tests {
         assert_eq!(app.overlays.open(), Some(OpenOverlay::Thinking));
         assert!(press(&mut app, &port, key(CtKeyCode::Down)));
         assert!(press(&mut app, &port, key(CtKeyCode::Enter)));
-        assert!(log(&port).iter().any(|c| c == "set_thinking_level(medium)"), "{:?}", log(&port));
+        assert!(
+            log(&port).iter().any(|c| c == "set_thinking_level(medium)"),
+            "{:?}",
+            log(&port)
+        );
         assert_eq!(app.overlays.open(), None);
     }
 
@@ -2975,7 +3175,10 @@ mod tests {
         assert!(enter(&mut app, &port));
         assert_eq!(app.overlays.open(), Some(OpenOverlay::Settings));
         assert!(app.has_fullscreen_overlay());
-        assert!(app.wants_mouse(), "TS fullscreen overlays enable 1000/1003/1006");
+        assert!(
+            app.wants_mouse(),
+            "TS fullscreen overlays enable 1000/1003/1006"
+        );
         // The alt-screen frame paints the overlay over the whole terminal.
         let mut t = Terminal::new(TestBackend::new(60, 20)).unwrap();
         t.draw(|f| app.render_fullscreen(f)).unwrap();
@@ -2983,7 +3186,10 @@ mod tests {
         let used = (0..20u16)
             .filter(|&y| (0..60u16).any(|x| buf[(x, y)].symbol() != " "))
             .count();
-        assert!(used >= 18, "fullscreen overlay should fill the screen, used {used}/20");
+        assert!(
+            used >= 18,
+            "fullscreen overlay should fill the screen, used {used}/20"
+        );
         // Mouse reports go to the overlay, never to the editor as input.
         let wheel = Event::Mouse(MouseEvent {
             kind: MouseEventKind::ScrollDown,
@@ -3011,7 +3217,10 @@ mod tests {
         with_catalog(&mut app);
         type_text(&mut app, &port, "/");
         let s = screen(&mut app, 60, 14);
-        assert!(s.contains("help") && s.contains("model") && s.contains("compact"), "{s}");
+        assert!(
+            s.contains("help") && s.contains("model") && s.contains("compact"),
+            "{s}"
+        );
         type_text(&mut app, &port, "mo");
         let s = screen(&mut app, 60, 14);
         // Best match first and selected (lower-ranked fuzzy hits may follow).
@@ -3054,7 +3263,11 @@ mod tests {
         type_text(&mut app, &port, "/info");
         app.autocomplete.close();
         assert!(enter(&mut app, &port));
-        assert!(log(&port).iter().any(|l| l.contains("info")), "{:?}", log(&port));
+        assert!(
+            log(&port).iter().any(|l| l.contains("info")),
+            "{:?}",
+            log(&port)
+        );
     }
 
     #[test]
@@ -3068,7 +3281,10 @@ mod tests {
         ));
         let s = screen(&mut app, 60, 14);
         assert!(s.contains("Session: abc") && !s.contains("abcTitle"), "{s}");
-        assert!(s.lines().any(|l| l.trim_start().starts_with("CWD: /tmp")), "line breaks kept: {s}");
+        assert!(
+            s.lines().any(|l| l.trim_start().starts_with("CWD: /tmp")),
+            "line breaks kept: {s}"
+        );
         assert!(s.contains("Unknown command: /zz"), "{s}");
     }
 
@@ -3139,13 +3355,30 @@ mod tests {
         let mut app = app();
         let port = port();
         start_streaming(&mut app);
-        let users_before = app.messages.entries().iter().filter(|e| e.role == ChatRole::User).count();
+        let users_before = app
+            .messages
+            .entries()
+            .iter()
+            .filter(|e| e.role == ChatRole::User)
+            .count();
         type_text(&mut app, &port, "steer me");
         assert!(enter(&mut app, &port));
         assert_eq!(app.steering, vec!["steer me".to_string()]);
-        let users_after = app.messages.entries().iter().filter(|e| e.role == ChatRole::User).count();
-        assert_eq!(users_after, users_before, "queued prompt must not be echoed into the chat");
-        assert!(log(&port).iter().any(|c| c.contains("steer me")), "{:?}", log(&port));
+        let users_after = app
+            .messages
+            .entries()
+            .iter()
+            .filter(|e| e.role == ChatRole::User)
+            .count();
+        assert_eq!(
+            users_after, users_before,
+            "queued prompt must not be echoed into the chat"
+        );
+        assert!(
+            log(&port).iter().any(|c| c.contains("steer me")),
+            "{:?}",
+            log(&port)
+        );
     }
 
     #[test]
@@ -3176,7 +3409,11 @@ mod tests {
         assert!(press(&mut app, &port, key(CtKeyCode::Esc)));
         let calls = log(&port);
         assert_eq!(
-            calls.iter().filter(|c| c.as_str() != "abort()").cloned().collect::<Vec<_>>(),
+            calls
+                .iter()
+                .filter(|c| c.as_str() != "abort()")
+                .cloned()
+                .collect::<Vec<_>>(),
             vec![format!("remove_queued({:?}, Steering)", "как успехи")]
         );
         assert_eq!(calls.last().map(String::as_str), Some("abort()"));
@@ -3491,7 +3728,12 @@ mod tests {
                  "stopReason": "stop"},
             ],
         })));
-        let texts: Vec<String> = app.messages.entries().iter().map(|e| e.text.clone()).collect();
+        let texts: Vec<String> = app
+            .messages
+            .entries()
+            .iter()
+            .map(|e| e.text.clone())
+            .collect();
         assert_eq!(texts.len(), 2, "history replaces the transcript: {texts:?}");
         assert!(texts[0].contains("old question"), "{texts:?}");
         assert!(texts[1].contains("old answer"), "{texts:?}");
@@ -3520,7 +3762,10 @@ mod tests {
         let _ = app.take_scrollback_lines(80, false);
         assert!(!app.take_clear_scrollback());
         app.apply_event(&parse_frame(&json!({"type": "session_reset"})));
-        assert!(app.messages.entries().is_empty(), "transcript must be empty after /new");
+        assert!(
+            app.messages.entries().is_empty(),
+            "transcript must be empty after /new"
+        );
         assert!(app.take_clear_scrollback(), "scrollback erase requested");
         assert!(!app.take_clear_scrollback(), "erase is one-shot");
         let joined: String = app
@@ -3536,7 +3781,10 @@ mod tests {
         let mut app = app();
         let before = app.title_label.clone();
         // No name: label unchanged.
-        app.push_frame_owned(json!({"type": "session_loaded", "messages": [], "name": null}), Instant::now());
+        app.push_frame_owned(
+            json!({"type": "session_loaded", "messages": [], "name": null}),
+            Instant::now(),
+        );
         app.pump_events(Instant::now());
         assert_eq!(app.title_label, before);
         // Named: label follows the restored name; history moved, not lost.
@@ -3585,10 +3833,7 @@ mod tests {
             app.theme.color("accent"),
             app.messages.theme().color("accent")
         );
-        assert_ne!(
-            app.theme.color("accent"),
-            Theme::default().color("accent")
-        );
+        assert_ne!(app.theme.color("accent"), Theme::default().color("accent"));
     }
 
     #[test]
@@ -3675,12 +3920,24 @@ mod tests {
     #[test]
     fn turn_notification_follows_ts_gates() {
         use crate::chrome::notify::NotifyKind;
-        assert_eq!(turn_notification(false, Some("stop"), false, true), Some(("Complete", NotifyKind::Completion)));
-        assert_eq!(turn_notification(false, None, false, true), Some(("Complete", NotifyKind::Completion)));
+        assert_eq!(
+            turn_notification(false, Some("stop"), false, true),
+            Some(("Complete", NotifyKind::Completion))
+        );
+        assert_eq!(
+            turn_notification(false, None, false, true),
+            Some(("Complete", NotifyKind::Completion))
+        );
         assert_eq!(turn_notification(false, Some("aborted"), true, true), None);
         assert_eq!(turn_notification(false, Some("stop"), true, false), None);
-        assert_eq!(turn_notification(false, Some("error"), true, true), Some(("Stopped with error", NotifyKind::Error)));
-        assert_eq!(turn_notification(true, None, true, true), Some(("Stopped with error", NotifyKind::Error)));
+        assert_eq!(
+            turn_notification(false, Some("error"), true, true),
+            Some(("Stopped with error", NotifyKind::Error))
+        );
+        assert_eq!(
+            turn_notification(true, None, true, true),
+            Some(("Stopped with error", NotifyKind::Error))
+        );
         // error.notify defaults to off: an errored turn is silent, and never reads as "Complete".
         assert_eq!(turn_notification(true, Some("error"), false, true), None);
     }
@@ -3695,7 +3952,11 @@ mod tests {
             frame: json!({"type":"prompt_result","status":"error","error":{"message":"kaboom"}}),
         });
         // `error.notify` defaults to off (TS): silent, and never a "Complete" toast.
-        assert!(app.notify_sink().record().iter().all(|l| l != "omp: Complete"));
+        assert!(app
+            .notify_sink()
+            .record()
+            .iter()
+            .all(|l| l != "omp: Complete"));
     }
 
     #[test]
@@ -3809,8 +4070,15 @@ mod tests {
         reasoning(&mut app, &json!("ultradeep"));
         assert_eq!(app.status.ultra, Some(crate::magic::Ultra::Deep));
         assert_eq!(app.current_effort_selector(), "ultradeep");
-        assert!(press(&mut app, &port, KeyEvent::new(CtKeyCode::BackTab, CtMods::SHIFT)));
-        assert_eq!(log(&port).last().map(String::as_str), Some("set_thinking_level(off)"));
+        assert!(press(
+            &mut app,
+            &port,
+            KeyEvent::new(CtKeyCode::BackTab, CtMods::SHIFT)
+        ));
+        assert_eq!(
+            log(&port).last().map(String::as_str),
+            Some("set_thinking_level(off)")
+        );
         // Frames without the key leave it; `null` clears it.
         app.apply_event(&AppEvent::ThinkingLevelChanged(json!({
             "type": "thinking_level_changed", "thinkingLevel": "high"
@@ -3826,7 +4094,10 @@ mod tests {
             "type": "context_usage", "model": "p/m", "thinkingLevels": []
         })));
         assert!(plain.effort_selectors().is_empty());
-        assert_eq!(app.effort_selectors().last().map(String::as_str), Some("ultracode"));
+        assert_eq!(
+            app.effort_selectors().last().map(String::as_str),
+            Some("ultracode")
+        );
     }
 
     /// `/ultra …` is a runtime slash command once the catalog lists it.
@@ -3837,11 +4108,19 @@ mod tests {
         app.apply_event(&AppEvent::AvailableCommands(json!({
             "commands": [{"name": "ultra", "description": "Ultra mode", "source": "builtin"}]
         })));
-        assert!(app.autocomplete.commands().iter().any(|c| c.name == "ultra"));
+        assert!(app
+            .autocomplete
+            .commands()
+            .iter()
+            .any(|c| c.name == "ultra"));
         type_text(&mut app, &port, "/ultra deep");
         app.autocomplete.close();
         assert!(enter(&mut app, &port));
-        assert!(log(&port).iter().any(|l| l == "run_slash(ultra, \"deep\")"), "{:?}", log(&port));
+        assert!(
+            log(&port).iter().any(|l| l == "run_slash(ultra, \"deep\")"),
+            "{:?}",
+            log(&port)
+        );
     }
 
     /// Clean style renders the ultra mode in the status line.
@@ -3890,13 +4169,24 @@ mod tests {
     fn clean_welcome_shimmers_live_then_commits_static_rows() {
         let mut app = clean_app();
         app.set_welcome("9.9.9");
-        assert!(app.take_scrollback_lines(100, false).is_empty(), "held while shimmering");
-        assert_eq!(app.animation_interval(), Some(Duration::from_millis(crate::chat::reveal::FRAME_MS)));
+        assert!(
+            app.take_scrollback_lines(100, false).is_empty(),
+            "held while shimmering"
+        );
+        assert_eq!(
+            app.animation_interval(),
+            Some(Duration::from_millis(crate::chat::reveal::FRAME_MS))
+        );
         let s = screen(&mut app, 100, 14);
-        assert!(s.lines().nth(1).is_some_and(|l| l.contains("OMRS")), "drawn at the top of the live region:\n{s}");
+        assert!(
+            s.lines().nth(1).is_some_and(|l| l.contains("OMRS")),
+            "drawn at the top of the live region:\n{s}"
+        );
         // Time is up: the static rows commit, the live region drops them.
         let w = app.welcome.as_mut().unwrap();
-        w.started = w.started.map(|s| s - Duration::from_millis(welcome::SHIMMER_MS));
+        w.started = w
+            .started
+            .map(|s| s - Duration::from_millis(welcome::SHIMMER_MS));
         assert!(w.started.is_some(), "the clock starts at the first paint");
         assert_eq!(app.animation_interval(), None);
         let rows = app.take_scrollback_lines(100, false);
@@ -3929,7 +4219,9 @@ mod tests {
         app.apply_event(&AppEvent::SessionReset);
         assert!(app.take_clear_scrollback());
         let rows = app.take_scrollback_lines(100, true);
-        assert!(rows.iter().any(|l| l.spans.iter().any(|s| s.content == "O")));
+        assert!(rows
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content == "O")));
     }
 
     /// Classic keeps committing the TS lockup at once (no shimmer).
@@ -3945,9 +4237,18 @@ mod tests {
     #[test]
     fn title_brand_follows_the_style() {
         let app = clean_app();
-        assert!(app.title().current_title().is_some_and(|t| t.starts_with("τ > ")), "{:?}", app.title().current_title());
+        assert!(
+            app.title()
+                .current_title()
+                .is_some_and(|t| t.starts_with("τ > ")),
+            "{:?}",
+            app.title().current_title()
+        );
         let classic = self::app();
-        assert!(classic.title().current_title().is_some_and(|t| t.starts_with("π > ")));
+        assert!(classic
+            .title()
+            .current_title()
+            .is_some_and(|t| t.starts_with("π > ")));
     }
 
     /// The editor paints magic keywords and shimmers only while one is typed.
@@ -3968,12 +4269,16 @@ mod tests {
         let (x, y) = (0..10u16)
             .find_map(|y| {
                 let row: String = (0..60u16).map(|x| buf[(x, y)].symbol()).collect();
-                row.find("ultrathink").map(|b| (u16::try_from(row[..b].chars().count()).unwrap(), y))
+                row.find("ultrathink")
+                    .map(|b| (u16::try_from(row[..b].chars().count()).unwrap(), y))
             })
             .expect("keyword on screen");
         assert!(matches!(buf[(x, y)].fg, ratatui::style::Color::Rgb(..)));
         assert!(matches!(buf[(x + 9, y)].fg, ratatui::style::Color::Rgb(..)));
-        assert!(!matches!(buf[(x - 2, y)].fg, ratatui::style::Color::Rgb(..)));
+        assert!(!matches!(
+            buf[(x - 2, y)].fg,
+            ratatui::style::Color::Rgb(..)
+        ));
         // Disabled by settings: no paint, no timer.
         app.magic_off = 1;
         let theme = app.theme.clone();
@@ -3990,17 +4295,28 @@ mod tests {
             "display": false, "attribution": "user", "timestamp": 1
         });
         let mut app = app();
-        app.apply_event(&AppEvent::MessageStart(json!({"type": "message_start", "message": notice})));
-        app.apply_event(&AppEvent::MessageEnd(json!({"type": "message_end", "message": notice})));
+        app.apply_event(&AppEvent::MessageStart(
+            json!({"type": "message_start", "message": notice}),
+        ));
+        app.apply_event(&AppEvent::MessageEnd(
+            json!({"type": "message_end", "message": notice}),
+        ));
         let live: Vec<String> = app
             .take_scrollback_lines(80, true)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert!(live.iter().all(|r| !r.contains("SECRET") && !r.contains("ultracode-notice")), "{live:#?}");
+        assert!(
+            live.iter()
+                .all(|r| !r.contains("SECRET") && !r.contains("ultracode-notice")),
+            "{live:#?}"
+        );
         assert!(!screen(&mut app, 80, 12).contains("SECRET"));
         app.apply_event(&AppEvent::SessionLoaded {
-            messages: vec![json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}), notice],
+            messages: vec![
+                json!({"role": "user", "content": [{"type": "text", "text": "hi"}]}),
+                notice,
+            ],
             name: None,
         });
         let rebuilt: Vec<String> = app
@@ -4009,7 +4325,12 @@ mod tests {
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
         assert!(rebuilt.iter().any(|r| r.contains("hi")));
-        assert!(rebuilt.iter().all(|r| !r.contains("SECRET") && !r.contains("ultracode-notice")), "{rebuilt:#?}");
+        assert!(
+            rebuilt
+                .iter()
+                .all(|r| !r.contains("SECRET") && !r.contains("ultracode-notice")),
+            "{rebuilt:#?}"
+        );
     }
 }
 
@@ -4017,7 +4338,9 @@ mod tests {
 mod paste_tests {
     use super::*;
     use crate::clipboard::ClipboardOutcome;
-    use crossterm::event::{Event, KeyCode as CtKeyCode, KeyEvent as CtKeyEvent, KeyModifiers as CtMods};
+    use crossterm::event::{
+        Event, KeyCode as CtKeyCode, KeyEvent as CtKeyEvent, KeyModifiers as CtMods,
+    };
     use std::path::Path;
     use std::time::Instant;
 
@@ -4051,7 +4374,10 @@ mod paste_tests {
         app.clipboard_rx = None;
         let csi_u = CtKeyEvent::new(CtKeyCode::Char('v'), CtMods::CONTROL | CtMods::SHIFT);
         assert!(app.handle_key(csi_u, &port, Instant::now()).is_some());
-        assert!(app.clipboard_rx.is_some(), "ctrl+shift+v arms the clipboard read");
+        assert!(
+            app.clipboard_rx.is_some(),
+            "ctrl+shift+v arms the clipboard read"
+        );
     }
 
     #[test]
@@ -4083,7 +4409,10 @@ mod paste_tests {
         // `leadingEnter` splits bytes after `\x1b[201~`).
         assert!(app.handle_terminal_event(&Event::Paste("hi there\n".into()), &port));
         assert_eq!(app.editor.text(), "hi there\n");
-        assert!(!log(&port).iter().any(|l| l.contains("hi there")), "no auto-submit");
+        assert!(
+            !log(&port).iter().any(|l| l.contains("hi there")),
+            "no auto-submit"
+        );
     }
 
     #[test]
@@ -4111,7 +4440,11 @@ mod paste_tests {
     fn clipboard_image_attaches_chip() {
         let mut app = app();
         app.apply_clipboard_outcome(ClipboardOutcome::Image(b"png".to_vec()));
-        assert!(app.editor.text().starts_with("[Image #1]"), "{}", app.editor.text());
+        assert!(
+            app.editor.text().starts_with("[Image #1]"),
+            "{}",
+            app.editor.text()
+        );
         assert_eq!(app.editor.attachments().len(), 1);
     }
 
@@ -4126,8 +4459,16 @@ mod paste_tests {
         // default threshold (100 lines) and use a 120-line paste.
         let payload = "line\n".repeat(119) + "line";
         assert!(app.handle_terminal_event(&Event::Paste(payload.clone()), &port));
-        assert_eq!(app.overlays.open(), Some(OpenOverlay::LargePaste), "menu gate");
-        assert_eq!(app.editor.text(), "", "insert deferred while the menu is open");
+        assert_eq!(
+            app.overlays.open(),
+            Some(OpenOverlay::LargePaste),
+            "menu gate"
+        );
+        assert_eq!(
+            app.editor.text(),
+            "",
+            "insert deferred while the menu is open"
+        );
         // Choose "Paste inline" (third row) → collapse to the inline marker.
         app.overlays.handle_key(key(CtKeyCode::Down));
         app.overlays.handle_key(key(CtKeyCode::Down));
@@ -4153,7 +4494,11 @@ mod paste_tests {
         assert!(app.handle_terminal_event(&Event::Key(key(CtKeyCode::Esc)), &port));
         app.poll_deadlines(Instant::now(), &port);
         assert_eq!(app.overlays.open(), None);
-        assert!(app.editor.text().starts_with("[Text #1, paste.md]"), "{}", app.editor.text());
+        assert!(
+            app.editor.text().starts_with("[Text #1, paste.md]"),
+            "{}",
+            app.editor.text()
+        );
     }
 
     #[test]
@@ -4164,7 +4509,11 @@ mod paste_tests {
         let payload = "line\n".repeat(20);
         assert!(app.handle_terminal_event(&Event::Paste(payload), &port));
         assert_eq!(app.overlays.open(), None, "below gate: no menu");
-        assert!(app.editor.text().starts_with("[Text #1, paste.md]"), "{}", app.editor.text());
+        assert!(
+            app.editor.text().starts_with("[Text #1, paste.md]"),
+            "{}",
+            app.editor.text()
+        );
     }
 }
 

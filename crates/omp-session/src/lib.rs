@@ -78,7 +78,10 @@ pub fn load(path: &Path) -> Result<Loaded> {
         }
         match serde_json::from_str::<FileEntry>(&raw) {
             Ok(entry) => lines.push(Line { raw, entry }),
-            Err(_) => malformed.push(Malformed { line_no: n + 1, raw }),
+            Err(_) => malformed.push(Malformed {
+                line_no: n + 1,
+                raw,
+            }),
         }
     }
     let title_slot = lines.first().and_then(|l| match l.omp() {
@@ -90,7 +93,12 @@ pub fn load(path: &Path) -> Result<Loaded> {
         Some(l) => !matches!(&l.entry, FileEntry::Header { header } if !header.id.is_empty()),
         None => !malformed.is_empty(),
     };
-    Ok(Loaded { lines, malformed, title_slot, invalid_header })
+    Ok(Loaded {
+        lines,
+        malformed,
+        title_slot,
+        invalid_header,
+    })
 }
 
 /// [`load`] without the diagnostics: the parsed lines, malformed records skipped.
@@ -150,9 +158,18 @@ impl SessionWriter {
         std::fs::create_dir_all(dir)?;
         let stamp = timestamp_iso.replace([':', '.'], "-");
         let path = dir.join(format!("{stamp}_{session_id}.jsonl"));
-        let file = OpenOptions::new().create(true).append(true).open(&path)
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
             .with_context(|| format!("open {}", path.display()))?;
-        let mut w = Self { file, path, last_id: None, leaf: None, ids: HashSet::new() };
+        let mut w = Self {
+            file,
+            path,
+            last_id: None,
+            leaf: None,
+            ids: HashSet::new(),
+        };
         if w.file.metadata()?.len() == 0 {
             w.write_value(&json!({"type": "session", "version": SESSION_VERSION, "id": session_id, "timestamp": timestamp_iso, "cwd": cwd}))?;
         } else {
@@ -169,10 +186,22 @@ impl SessionWriter {
     /// I/O failure, a missing file, or `leaf` is not an entry of the file.
     pub fn open(path: &Path, leaf: Option<&str>) -> Result<Self> {
         anyhow::ensure!(path.is_file(), "session file not found: {}", path.display());
-        let file = OpenOptions::new().append(true).open(path).with_context(|| format!("open {}", path.display()))?;
-        let mut w = Self { file, path: path.to_path_buf(), last_id: None, leaf: None, ids: HashSet::new() };
+        let file = OpenOptions::new()
+            .append(true)
+            .open(path)
+            .with_context(|| format!("open {}", path.display()))?;
+        let mut w = Self {
+            file,
+            path: path.to_path_buf(),
+            last_id: None,
+            leaf: None,
+            ids: HashSet::new(),
+        };
         w.load_existing()?;
-        if std::fs::read(path).map(|b| b.last().is_some_and(|&c| c != b'\n')).unwrap_or(false) {
+        if std::fs::read(path)
+            .map(|b| b.last().is_some_and(|&c| c != b'\n'))
+            .unwrap_or(false)
+        {
             w.file.write_all(b"\n")?;
         }
         if let Some(leaf) = leaf {
@@ -183,10 +212,15 @@ impl SessionWriter {
 
     /// Record ids of an existing file (skipping lines that are not JSON objects) and its last entry.
     fn load_existing(&mut self) -> Result<()> {
-        let file = File::open(&self.path).with_context(|| format!("open {}", self.path.display()))?;
+        let file =
+            File::open(&self.path).with_context(|| format!("open {}", self.path.display()))?;
         for line in BufReader::new(file).split(b'\n') {
-            let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(&line?) else { continue };
-            let Some(id) = obj.get("id").and_then(Value::as_str) else { continue };
+            let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(&line?) else {
+                continue;
+            };
+            let Some(id) = obj.get("id").and_then(Value::as_str) else {
+                continue;
+            };
             self.ids.insert(id.to_owned());
             if obj.get("type").and_then(Value::as_str) != Some("session") {
                 self.last_id = Some(id.to_owned());
@@ -205,7 +239,11 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_message(&mut self, message: &AgentMessage, timestamp_iso: &str) -> Result<String> {
+    pub fn append_message(
+        &mut self,
+        message: &AgentMessage,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_omp_message(OmpMessage::from_agent(message)?, timestamp_iso)
     }
 
@@ -214,9 +252,19 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_omp_message(&mut self, message: OmpMessage, timestamp_iso: &str) -> Result<String> {
+    pub fn append_omp_message(
+        &mut self,
+        message: OmpMessage,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
-            OmpEntry::Message(Box::new(entries::MessageEntry { id, parent_id, timestamp, message, rest: Map::new() }))
+            OmpEntry::Message(Box::new(entries::MessageEntry {
+                id,
+                parent_id,
+                timestamp,
+                message,
+                rest: Map::new(),
+            }))
         })
     }
 
@@ -224,10 +272,18 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_model_change(&mut self, model: &str, role: Option<&str>, resolved_model_is_fallback: bool, timestamp_iso: &str) -> Result<String> {
+    pub fn append_model_change(
+        &mut self,
+        model: &str,
+        role: Option<&str>,
+        resolved_model_is_fallback: bool,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
             OmpEntry::ModelChange(entries::ModelChange {
-                id, parent_id, timestamp,
+                id,
+                parent_id,
+                timestamp,
                 model: model.to_owned(),
                 role: role.map(str::to_owned),
                 resolved_model_is_fallback: Some(resolved_model_is_fallback),
@@ -240,10 +296,17 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_thinking_level_change(&mut self, thinking_level: Option<&str>, configured: Option<&str>, timestamp_iso: &str) -> Result<String> {
+    pub fn append_thinking_level_change(
+        &mut self,
+        thinking_level: Option<&str>,
+        configured: Option<&str>,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
             OmpEntry::ThinkingLevelChange(entries::ThinkingLevelChange {
-                id, parent_id, timestamp,
+                id,
+                parent_id,
+                timestamp,
                 thinking_level: Some(thinking_level.map(str::to_owned)),
                 configured: Some(configured.map(str::to_owned)),
                 rest: Map::new(),
@@ -255,9 +318,21 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_mode_change(&mut self, mode: &str, data: Option<Value>, timestamp_iso: &str) -> Result<String> {
+    pub fn append_mode_change(
+        &mut self,
+        mode: &str,
+        data: Option<Value>,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
-            OmpEntry::ModeChange(entries::ModeChange { id, parent_id, timestamp, mode: mode.to_owned(), data, rest: Map::new() })
+            OmpEntry::ModeChange(entries::ModeChange {
+                id,
+                parent_id,
+                timestamp,
+                mode: mode.to_owned(),
+                data,
+                rest: Map::new(),
+            })
         })
     }
 
@@ -265,10 +340,19 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_title_change(&mut self, title: &str, source: &str, previous_title: Option<&str>, trigger: Option<&str>, timestamp_iso: &str) -> Result<String> {
+    pub fn append_title_change(
+        &mut self,
+        title: &str,
+        source: &str,
+        previous_title: Option<&str>,
+        trigger: Option<&str>,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
             OmpEntry::TitleChange(entries::TitleChange {
-                id, parent_id, timestamp,
+                id,
+                parent_id,
+                timestamp,
                 title: title.to_owned(),
                 previous_title: previous_title.filter(|p| !p.is_empty()).map(str::to_owned),
                 source: source.to_owned(),
@@ -286,7 +370,12 @@ impl SessionWriter {
     ///
     /// # Errors
     /// I/O or serialization failure.
-    pub fn update_title_slot(&mut self, title: &str, source: Option<&str>, timestamp_iso: &str) -> Result<()> {
+    pub fn update_title_slot(
+        &mut self,
+        title: &str,
+        source: Option<&str>,
+        timestamp_iso: &str,
+    ) -> Result<()> {
         use std::os::unix::fs::FileExt;
 
         let slot = entries::serialize_title_slot(title, source, timestamp_iso)?;
@@ -328,9 +417,19 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_ttsr_injection(&mut self, injected_rules: &[String], timestamp_iso: &str) -> Result<String> {
+    pub fn append_ttsr_injection(
+        &mut self,
+        injected_rules: &[String],
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
-            OmpEntry::TtsrInjection(entries::TtsrInjection { id, parent_id, timestamp, injected_rules: injected_rules.to_vec(), rest: Map::new() })
+            OmpEntry::TtsrInjection(entries::TtsrInjection {
+                id,
+                parent_id,
+                timestamp,
+                injected_rules: injected_rules.to_vec(),
+                rest: Map::new(),
+            })
         })
     }
 
@@ -338,9 +437,21 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_credential_pin(&mut self, provider: &str, hash: &str, timestamp_iso: &str) -> Result<String> {
+    pub fn append_credential_pin(
+        &mut self,
+        provider: &str,
+        hash: &str,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
-            OmpEntry::CredentialPin(entries::CredentialPin { id, parent_id, timestamp, provider: provider.to_owned(), hash: hash.to_owned(), rest: Map::new() })
+            OmpEntry::CredentialPin(entries::CredentialPin {
+                id,
+                parent_id,
+                timestamp,
+                provider: provider.to_owned(),
+                hash: hash.to_owned(),
+                rest: Map::new(),
+            })
         })
     }
 
@@ -350,7 +461,12 @@ impl SessionWriter {
     /// Serialization or I/O failure.
     pub fn append_reset_boundary(&mut self, timestamp_iso: &str) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
-            OmpEntry::ResetBoundary(entries::ResetBoundary { id, parent_id, timestamp, rest: Map::new() })
+            OmpEntry::ResetBoundary(entries::ResetBoundary {
+                id,
+                parent_id,
+                timestamp,
+                rest: Map::new(),
+            })
         })
     }
 
@@ -359,7 +475,11 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_model_usage(&mut self, mut entry: entries::ModelUsage, timestamp_iso: &str) -> Result<String> {
+    pub fn append_model_usage(
+        &mut self,
+        mut entry: entries::ModelUsage,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
             entry.id = id;
             entry.parent_id = parent_id;
@@ -373,7 +493,11 @@ impl SessionWriter {
     ///
     /// # Errors
     /// Serialization or I/O failure.
-    pub fn append_session_init(&mut self, mut entry: entries::SessionInit, timestamp_iso: &str) -> Result<String> {
+    pub fn append_session_init(
+        &mut self,
+        mut entry: entries::SessionInit,
+        timestamp_iso: &str,
+    ) -> Result<String> {
         self.append_typed(timestamp_iso, |id, parent_id, timestamp| {
             entry.id = id;
             entry.parent_id = parent_id;
@@ -389,15 +513,29 @@ impl SessionWriter {
     /// # Errors
     /// `payload` is not a JSON object, an omp-modeled kind whose payload does not match its schema,
     /// or I/O failure.
-    pub fn append_entry(&mut self, kind: &str, payload: Value, timestamp_iso: &str) -> Result<String> {
-        let Value::Object(fields) = payload else { anyhow::bail!("entry payload must be an object") };
+    pub fn append_entry(
+        &mut self,
+        kind: &str,
+        payload: Value,
+        timestamp_iso: &str,
+    ) -> Result<String> {
+        let Value::Object(fields) = payload else {
+            anyhow::bail!("entry payload must be an object")
+        };
         let id = self.fresh_id();
         let mut obj = Map::new();
         obj.insert("type".into(), Value::String(kind.into()));
         obj.insert("id".into(), Value::String(id.clone()));
-        obj.insert("parentId".into(), self.leaf.clone().map_or(Value::Null, Value::String));
+        obj.insert(
+            "parentId".into(),
+            self.leaf.clone().map_or(Value::Null, Value::String),
+        );
         obj.insert("timestamp".into(), Value::String(timestamp_iso.into()));
-        obj.extend(fields.into_iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "id" | "parentId" | "timestamp")));
+        obj.extend(
+            fields
+                .into_iter()
+                .filter(|(k, _)| !matches!(k.as_str(), "type" | "id" | "parentId" | "timestamp")),
+        );
         let obj = Value::Object(obj);
         // Through a typed entry (never a Value detour) so field order matches omp's writer: omp
         // kinds via `OmpEntry`; the rest via `FileEntry` (unmodeled kinds keep construction order).
@@ -406,10 +544,12 @@ impl SessionWriter {
         let line = match <OmpEntry as serde::Deserialize>::deserialize(&obj) {
             Ok(entry) => entries::to_js_string(&entry)?,
             Err(e) if entries::STRICT_KINDS.contains(&kind) => {
-                return Err(anyhow::Error::from(e).context(format!("{kind} entry payload does not match its schema")));
+                return Err(anyhow::Error::from(e)
+                    .context(format!("{kind} entry payload does not match its schema")));
             }
             Err(_) => {
-                let entry: FileEntry = serde_json::from_value(obj).with_context(|| format!("{kind} entry payload does not match its schema"))?;
+                let entry: FileEntry = serde_json::from_value(obj)
+                    .with_context(|| format!("{kind} entry payload does not match its schema"))?;
                 entries::to_js_string(&entry)?
             }
         };
@@ -425,11 +565,18 @@ impl SessionWriter {
     ///
     /// # Errors
     /// `raw` is not a JSON object line whose top-level fields can be rewritten.
-    pub fn append_seeded_line(&mut self, raw: &str, remap: &std::collections::HashMap<String, String>) -> Result<String> {
+    pub fn append_seeded_line(
+        &mut self,
+        raw: &str,
+        remap: &std::collections::HashMap<String, String>,
+    ) -> Result<String> {
         let members = top_level_string_members(raw)
             .ok_or_else(|| anyhow::anyhow!("entry line is not a rewriteable JSON object"))?;
         let new_id = self.fresh_id();
-        let parent = self.leaf.clone().map_or_else(|| "null".to_owned(), |l| format!("\"{l}\""));
+        let parent = self
+            .leaf
+            .clone()
+            .map_or_else(|| "null".to_owned(), |l| format!("\"{l}\""));
         let mut replacements: Vec<(usize, usize, String)> = Vec::with_capacity(3);
         for (key, vs, ve, escaped) in members {
             if escaped {
@@ -460,7 +607,11 @@ impl SessionWriter {
     }
 
     /// Build an entry with a fresh id chained to the previous one, write it, advance the chain.
-    fn append_typed(&mut self, timestamp_iso: &str, build: impl FnOnce(String, Option<String>, String) -> OmpEntry) -> Result<String> {
+    fn append_typed(
+        &mut self,
+        timestamp_iso: &str,
+        build: impl FnOnce(String, Option<String>, String) -> OmpEntry,
+    ) -> Result<String> {
         let id = self.fresh_id();
         let entry = build(id.clone(), self.leaf.clone(), timestamp_iso.to_owned());
         let line = entry.to_line()?;
@@ -516,7 +667,14 @@ impl SessionWriter {
         }
         self.branch_to(branch_from.map(str::to_owned))?;
         let id = self.fresh_id();
-        let entry = tree::branch_summary_entry(&id, branch_from, timestamp_iso, summary, details, from_extension);
+        let entry = tree::branch_summary_entry(
+            &id,
+            branch_from,
+            timestamp_iso,
+            summary,
+            details,
+            from_extension,
+        );
         let line = entries::to_js_string(&entry)?;
         self.push_line(&line, &id)?;
         Ok(id)
@@ -682,7 +840,12 @@ fn unescape(s: &str) -> String {
             Some('f') => out.push('\u{c}'),
             Some('u') => {
                 let hex: String = chars.by_ref().take(4).collect();
-                out.push(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                out.push(
+                    u32::from_str_radix(&hex, 16)
+                        .ok()
+                        .and_then(char::from_u32)
+                        .unwrap_or('\u{fffd}'),
+                );
             }
             Some(other) => out.push(other),
             None => out.push('\\'),
@@ -695,7 +858,11 @@ fn rand_u32() -> u32 {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     let mut h = RandomState::new().build_hasher();
-    h.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+    h.write_u128(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos()),
+    );
     #[allow(clippy::cast_possible_truncation)]
     let v = h.finish() as u32;
     v
@@ -726,7 +893,9 @@ pub fn reserialize(line: &Line) -> Option<String> {
 
 #[must_use]
 pub fn round_trip(line: &Line) -> RoundTrip {
-    let Some(back) = reserialize(line) else { return RoundTrip::Changed };
+    let Some(back) = reserialize(line) else {
+        return RoundTrip::Changed;
+    };
     if back == line.raw {
         return RoundTrip::Exact;
     }
@@ -735,7 +904,11 @@ pub fn round_trip(line: &Line) -> RoundTrip {
     }
     let a: Option<Value> = serde_json::from_str(&line.raw).ok();
     let b: Option<Value> = serde_json::from_str(&back).ok();
-    if a.is_some() && a == b { RoundTrip::SameValue } else { RoundTrip::Changed }
+    if a.is_some() && a == b {
+        RoundTrip::SameValue
+    } else {
+        RoundTrip::Changed
+    }
 }
 
 /// For an `Unknown` line whose `type` IS a modeled kind: why the typed parse failed.
@@ -745,7 +918,9 @@ pub fn unknown_reason(raw: &str) -> Option<String> {
     let kind = v.get("type")?.as_str()?.to_owned();
     if kind == "message" {
         let msg = v.get("message")?.clone();
-        return serde_json::from_value::<OmpMessage>(msg).err().map(|e| format!("message: {e}"));
+        return serde_json::from_value::<OmpMessage>(msg)
+            .err()
+            .map(|e| format!("message: {e}"));
     }
     Some(format!("type={kind}"))
 }
@@ -800,20 +975,35 @@ mod tests {
     }
 
     fn raws(w: &SessionWriter) -> Vec<String> {
-        std::fs::read_to_string(w.path()).unwrap().lines().map(str::to_owned).collect()
+        std::fs::read_to_string(w.path())
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     fn line(raw: &str) -> Line {
-        Line { raw: raw.to_owned(), entry: serde_json::from_str(raw).unwrap() }
+        Line {
+            raw: raw.to_owned(),
+            entry: serde_json::from_str(raw).unwrap(),
+        }
     }
 
     #[test]
     fn writer_output_reads_back_and_chains_parents() {
         let dir = tmp();
         let mut w = writer(&dir);
-        let msg: AgentMessage = serde_json::from_value(json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1})).unwrap();
+        let msg: AgentMessage = serde_json::from_value(
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1}),
+        )
+        .unwrap();
         let first = w.append_message(&msg, T1).unwrap();
-        w.append_entry("custom_message", json!({"customType": "note", "content": "x", "display": false}), "2026-10-11T00:00:02.000Z").unwrap();
+        w.append_entry(
+            "custom_message",
+            json!({"customType": "note", "content": "x", "display": false}),
+            "2026-10-11T00:00:02.000Z",
+        )
+        .unwrap();
         let lines = read(w.path()).unwrap();
         assert_eq!(lines.len(), 3);
         assert!(matches!(lines[0].entry, FileEntry::Header { .. }));
@@ -831,24 +1021,69 @@ mod tests {
     fn typed_helpers_write_omp_field_order() {
         let dir = tmp();
         let mut w = writer(&dir);
-        let a = w.append_model_change("zai/glm-5.3-flash", None, false, T1).unwrap();
+        let a = w
+            .append_model_change("zai/glm-5.3-flash", None, false, T1)
+            .unwrap();
         w.append_thinking_level_change(None, None, T1).unwrap();
-        w.append_mode_change("plan", Some(json!({"planFilePath": "/p.md"})), T1).unwrap();
-        w.append_title_change("Name", "user", Some("Old"), None, T1).unwrap();
-        w.append_ttsr_injection(&["ts-no-any".to_owned()], T1).unwrap();
+        w.append_mode_change("plan", Some(json!({"planFilePath": "/p.md"})), T1)
+            .unwrap();
+        w.append_title_change("Name", "user", Some("Old"), None, T1)
+            .unwrap();
+        w.append_ttsr_injection(&["ts-no-any".to_owned()], T1)
+            .unwrap();
         w.append_credential_pin("anthropic", "ab12", T1).unwrap();
         w.append_reset_boundary(T1).unwrap();
         let got = raws(&w);
-        let id = |i: usize| serde_json::from_str::<Value>(&got[i]).unwrap()["id"].as_str().unwrap().to_owned();
-        assert_eq!(got[1], format!(r#"{{"type":"model_change","id":"{a}","parentId":null,"timestamp":"{T1}","model":"zai/glm-5.3-flash","resolvedModelIsFallback":false}}"#));
-        assert_eq!(got[2], format!(r#"{{"type":"thinking_level_change","id":"{}","parentId":"{a}","timestamp":"{T1}","thinkingLevel":null,"configured":null}}"#, id(2)));
-        assert!(got[3].ends_with(r#""mode":"plan","data":{"planFilePath":"/p.md"}}"#), "{}", got[3]);
-        assert!(got[4].ends_with(r#""title":"Name","previousTitle":"Old","source":"user"}"#), "{}", got[4]);
-        assert!(got[5].ends_with(r#""injectedRules":["ts-no-any"]}"#), "{}", got[5]);
-        assert!(got[6].ends_with(r#""provider":"anthropic","hash":"ab12"}"#), "{}", got[6]);
-        assert!(got[7].ends_with(&format!(r#""timestamp":"{T1}"}}"#)), "{}", got[7]);
+        let id = |i: usize| {
+            serde_json::from_str::<Value>(&got[i]).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(
+            got[1],
+            format!(
+                r#"{{"type":"model_change","id":"{a}","parentId":null,"timestamp":"{T1}","model":"zai/glm-5.3-flash","resolvedModelIsFallback":false}}"#
+            )
+        );
+        assert_eq!(
+            got[2],
+            format!(
+                r#"{{"type":"thinking_level_change","id":"{}","parentId":"{a}","timestamp":"{T1}","thinkingLevel":null,"configured":null}}"#,
+                id(2)
+            )
+        );
+        assert!(
+            got[3].ends_with(r#""mode":"plan","data":{"planFilePath":"/p.md"}}"#),
+            "{}",
+            got[3]
+        );
+        assert!(
+            got[4].ends_with(r#""title":"Name","previousTitle":"Old","source":"user"}"#),
+            "{}",
+            got[4]
+        );
+        assert!(
+            got[5].ends_with(r#""injectedRules":["ts-no-any"]}"#),
+            "{}",
+            got[5]
+        );
+        assert!(
+            got[6].ends_with(r#""provider":"anthropic","hash":"ab12"}"#),
+            "{}",
+            got[6]
+        );
+        assert!(
+            got[7].ends_with(&format!(r#""timestamp":"{T1}"}}"#)),
+            "{}",
+            got[7]
+        );
         for l in read(w.path()).unwrap() {
-            assert!(l.omp().is_some() || matches!(l.entry, FileEntry::Header { .. }), "{}", l.raw);
+            assert!(
+                l.omp().is_some() || matches!(l.entry, FileEntry::Header { .. }),
+                "{}",
+                l.raw
+            );
             assert_eq!(round_trip(&l), RoundTrip::Exact, "{}", l.raw);
         }
         std::fs::remove_dir_all(dir).ok();
@@ -901,8 +1136,14 @@ mod tests {
         assert_eq!(lines.next().unwrap().len() + 1, entries::TITLE_SLOT_BYTES);
         assert!(lines.next().unwrap().contains("\"type\":\"session\""));
         // Appending after the rewrite still chains to the last entry.
-        w.append_title_change("Second", "user", Some("First"), None, "2026-10-11T00:00:02.000Z")
-            .unwrap();
+        w.append_title_change(
+            "Second",
+            "user",
+            Some("First"),
+            None,
+            "2026-10-11T00:00:02.000Z",
+        )
+        .unwrap();
         // Second update patches the slot in place without growing the file.
         let before = std::fs::metadata(&w.path).unwrap().len();
         w.update_title_slot("Second", Some("user"), "2026-10-11T00:00:02.000Z")
@@ -910,11 +1151,29 @@ mod tests {
         let after = std::fs::metadata(&w.path).unwrap().len();
         assert_eq!(before, after, "in-place patch keeps the file size");
         let loaded = load(&w.path).unwrap();
-        assert_eq!(loaded.title_slot.as_ref().map(|s| s.title.as_str()), Some("Second"));
-        assert_eq!(loaded.title_slot.as_ref().and_then(|s| s.source.as_deref()), Some("user"));
+        assert_eq!(
+            loaded.title_slot.as_ref().map(|s| s.title.as_str()),
+            Some("Second")
+        );
+        assert_eq!(
+            loaded.title_slot.as_ref().and_then(|s| s.source.as_deref()),
+            Some("user")
+        );
         let raw = std::fs::read_to_string(&w.path).unwrap();
-        assert!(raw.lines().nth(2).unwrap().ends_with("\"title\":\"First\",\"source\":\"auto\"}"), "{raw}");
-        assert!(raw.lines().nth(3).unwrap().ends_with("\"title\":\"Second\",\"previousTitle\":\"First\",\"source\":\"user\"}"), "{raw}");
+        assert!(
+            raw.lines()
+                .nth(2)
+                .unwrap()
+                .ends_with("\"title\":\"First\",\"source\":\"auto\"}"),
+            "{raw}"
+        );
+        assert!(
+            raw.lines()
+                .nth(3)
+                .unwrap()
+                .ends_with("\"title\":\"Second\",\"previousTitle\":\"First\",\"source\":\"user\"}"),
+            "{raw}"
+        );
     }
 
     #[test]
@@ -922,9 +1181,11 @@ mod tests {
         let dir = tmp();
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("s.jsonl");
-        let slot = entries::serialize_title_slot("T", Some("auto"), "2026-10-11T00:00:00.000Z").unwrap();
+        let slot =
+            entries::serialize_title_slot("T", Some("auto"), "2026-10-11T00:00:00.000Z").unwrap();
         let header = r#"{"type":"session","version":3,"id":"s1","timestamp":"t","cwd":"/"}"#;
-        let ok = r#"{"type":"model_change","id":"a","parentId":null,"timestamp":"t","model":"zai/glm"}"#;
+        let ok =
+            r#"{"type":"model_change","id":"a","parentId":null,"timestamp":"t","model":"zai/glm"}"#;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(slot.as_bytes());
         bytes.extend_from_slice(format!("{header}\n\n").as_bytes());
@@ -935,38 +1196,67 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.lines.len(), 4, "slot + header + 2 valid");
-        assert_eq!(loaded.malformed.iter().map(|m| m.line_no).collect::<Vec<_>>(), vec![4, 7, 8, 9]);
-        assert_eq!(loaded.title_slot.as_ref().map(|s| s.title.as_str()), Some("T"));
+        assert_eq!(
+            loaded
+                .malformed
+                .iter()
+                .map(|m| m.line_no)
+                .collect::<Vec<_>>(),
+            vec![4, 7, 8, 9]
+        );
+        assert_eq!(
+            loaded.title_slot.as_ref().map(|s| s.title.as_str()),
+            Some("T")
+        );
         assert!(!loaded.invalid_header);
         assert_eq!(read(&path).unwrap().len(), 4);
         std::fs::write(&path, "garbage\n").unwrap();
         let bad = load(&path).unwrap();
         assert!(bad.lines.is_empty() && bad.invalid_header);
         std::fs::write(&path, format!("{ok}\n")).unwrap();
-        assert!(load(&path).unwrap().invalid_header, "first record is not a session header");
+        assert!(
+            load(&path).unwrap().invalid_header,
+            "first record is not a session header"
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn from_agent_writes_omp_key_order() {
-        let msg: AgentMessage = serde_json::from_value(json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1})).unwrap();
+        let msg: AgentMessage = serde_json::from_value(
+            json!({"role": "user", "content": [{"type": "text", "text": "hi"}], "timestamp": 1}),
+        )
+        .unwrap();
         let line = OmpEntry::Message(Box::new(entries::MessageEntry {
-            id: "a".into(), parent_id: None, timestamp: "t".into(), message: OmpMessage::from_agent(&msg).unwrap(), rest: Map::new(),
+            id: "a".into(),
+            parent_id: None,
+            timestamp: "t".into(),
+            message: OmpMessage::from_agent(&msg).unwrap(),
+            rest: Map::new(),
         }))
         .to_line()
         .unwrap();
-        assert_eq!(line, r#"{"type":"message","id":"a","parentId":null,"timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1}}"#);
+        assert_eq!(
+            line,
+            r#"{"type":"message","id":"a","parentId":null,"timestamp":"t","message":{"role":"user","content":[{"type":"text","text":"hi"}],"timestamp":1}}"#
+        );
         assert_eq!(OmpEntry::parse(&line).unwrap().to_line().unwrap(), line);
-        let Some(OmpEntry::Message(m)) = OmpEntry::parse(&line) else { panic!("not a message") };
+        let Some(OmpEntry::Message(m)) = OmpEntry::parse(&line) else {
+            panic!("not a message")
+        };
         assert_eq!(m.message.to_agent(), Some(msg));
     }
 
     #[test]
     fn title_slot_is_256_bytes() {
-        let s = entries::serialize_title_slot("Заголовок", Some("auto"), "2026-10-09T22:09:38.413Z").unwrap();
+        let s =
+            entries::serialize_title_slot("Заголовок", Some("auto"), "2026-10-09T22:09:38.413Z")
+                .unwrap();
         assert_eq!(s.len(), entries::TITLE_SLOT_BYTES);
         assert!(s.ends_with('\n'));
-        let long = entries::serialize_title_slot(&"я".repeat(500), None, "2026-10-09T22:09:38.413Z").unwrap();
+        let long =
+            entries::serialize_title_slot(&"я".repeat(500), None, "2026-10-09T22:09:38.413Z")
+                .unwrap();
         assert_eq!(long.len(), entries::TITLE_SLOT_BYTES);
         assert!(OmpEntry::parse(long.trim_end_matches('\n')).is_some());
     }
@@ -975,7 +1265,9 @@ mod tests {
     fn strict_kind_with_bad_payload_is_an_error() {
         let dir = tmp();
         let mut w = writer(&dir);
-        assert!(w.append_entry("model_change", json!({"provider": "zai"}), T1).is_err());
+        assert!(w
+            .append_entry("model_change", json!({"provider": "zai"}), T1)
+            .is_err());
         std::fs::remove_dir_all(dir).ok();
     }
 
@@ -983,7 +1275,9 @@ mod tests {
     fn append_entry_generated_fields_win_over_payload() {
         let dir = tmp();
         let mut w = writer(&dir);
-        let first = w.append_entry("mode_change", json!({"mode": "plan"}), T1).unwrap();
+        let first = w
+            .append_entry("mode_change", json!({"mode": "plan"}), T1)
+            .unwrap();
         let id = w
             .append_entry("mode_change", json!({"type": "message", "id": "evil", "parentId": "evil", "timestamp": "evil", "mode": "none"}), "2026-10-11T00:00:02.000Z")
             .unwrap();
@@ -999,9 +1293,14 @@ mod tests {
 
     #[test]
     fn append_seeded_line_rewrites_links_and_keeps_payload_bytes() {
-        let dir = std::env::temp_dir().join(format!("omp-rs-seed-{}-{:08x}", std::process::id(), rand_u32()));
+        let dir = std::env::temp_dir().join(format!(
+            "omp-rs-seed-{}-{:08x}",
+            std::process::id(),
+            rand_u32()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut w = SessionWriter::create(&dir, "/tmp", "sess", "2026-10-12T00-00-00-000Z").unwrap();
+        let mut w =
+            SessionWriter::create(&dir, "/tmp", "sess", "2026-10-12T00-00-00-000Z").unwrap();
         let first = w
             .append_seeded_line(
                 r#"{"type":"message","id":"old1","parentId":"hdr","timestamp":"t1","message":{"role":"user","content":[{"type":"text","text":"kept \u00e9 verbatim"}]}}"#,
@@ -1021,18 +1320,34 @@ mod tests {
         drop(w);
         let text = std::fs::read_to_string(path).unwrap();
         let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines[0], r#"{"type":"session","version":3,"id":"sess","timestamp":"2026-10-12T00-00-00-000Z","cwd":"/tmp"}"#);
+        assert_eq!(
+            lines[0],
+            r#"{"type":"session","version":3,"id":"sess","timestamp":"2026-10-12T00-00-00-000Z","cwd":"/tmp"}"#
+        );
         let a: Value = serde_json::from_str(lines[1]).unwrap();
         assert_eq!(a["id"], first);
-        assert_eq!(a["parentId"], Value::Null, "first seeded entry is a root, like the old DOM seeder");
+        assert_eq!(
+            a["parentId"],
+            Value::Null,
+            "first seeded entry is a root, like the old DOM seeder"
+        );
         assert_eq!(a["timestamp"], "t1");
         assert_eq!(a["message"]["content"][0]["text"], "kept é verbatim");
         let b: Value = serde_json::from_str(lines[2]).unwrap();
         assert_eq!(b["id"], second);
         assert_eq!(b["parentId"], first);
-        assert_eq!(b["firstKeptEntryId"], first, "remapped through the copy map");
-        assert_eq!(b["providerReplayThroughEntryId"], "x", "mapped links follow the copy map");
-        assert_eq!(b["preserveData"]["nested"]["id"], "not-top-level", "nested ids untouched");
+        assert_eq!(
+            b["firstKeptEntryId"], first,
+            "remapped through the copy map"
+        );
+        assert_eq!(
+            b["providerReplayThroughEntryId"], "x",
+            "mapped links follow the copy map"
+        );
+        assert_eq!(
+            b["preserveData"]["nested"]["id"], "not-top-level",
+            "nested ids untouched"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1042,7 +1357,10 @@ mod tests {
             r#"{"type":"custom","id":"a","data":{"k":"v"},"list":[{"id":"inner"}],"note":"q\"x","n":42,"b":true,"z":null}"#,
         )
         .expect("scans");
-        let by_key: std::collections::HashMap<_, _> = m.iter().map(|(k, s, e, _)| (k.as_str(), (*s, *e))).collect();
+        let by_key: std::collections::HashMap<_, _> = m
+            .iter()
+            .map(|(k, s, e, _)| (k.as_str(), (*s, *e)))
+            .collect();
         assert_eq!(by_key["id"], (22, 25));
         assert_eq!(by_key["note"], (74, 80));
         assert!(top_level_string_members("[1,2]").is_none());
@@ -1054,11 +1372,23 @@ mod tests {
     fn generate_id_retries_on_collision_then_falls_back_to_longer_id() {
         let calls = Cell::new(0u32);
         // First two draws collide, the third is free.
-        let id = generate_id(|id| id == "00000001" || id == "00000002", || { calls.set(calls.get() + 1); calls.get() });
+        let id = generate_id(
+            |id| id == "00000001" || id == "00000002",
+            || {
+                calls.set(calls.get() + 1);
+                calls.get()
+            },
+        );
         assert_eq!(id, "00000003");
         // Every 8-hex id is taken: 100 draws, then a 16-hex fallback.
         let draws = Cell::new(0u32);
-        let id = generate_id(|id| id.len() == 8, || { draws.set(draws.get() + 1); 7 });
+        let id = generate_id(
+            |id| id.len() == 8,
+            || {
+                draws.set(draws.get() + 1);
+                7
+            },
+        );
         assert_eq!(id.len(), 16);
         assert_eq!(draws.get(), 102);
     }
@@ -1083,7 +1413,9 @@ mod tests {
         let mut again = writer(&dir);
         assert_eq!(again.path(), w.path());
         assert_eq!(raws(&again), before, "header must not be rewritten");
-        let next = again.append_reset_boundary("2026-10-11T00:00:02.000Z").unwrap();
+        let next = again
+            .append_reset_boundary("2026-10-11T00:00:02.000Z")
+            .unwrap();
         assert!(again.ids.contains(&last));
         let v: Value = serde_json::from_str(raws(&again).last().unwrap()).unwrap();
         assert_eq!(v["parentId"], json!(last));

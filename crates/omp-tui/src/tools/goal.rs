@@ -53,7 +53,11 @@ impl ToolRenderer for Goal {
             let text = text.trim();
             if !text.is_empty() {
                 if text.to_lowercase().contains("no active goal") {
-                    lines.push(Line::from(styled(theme, "warning", format!("{} no active goal", theme.symbol("status.warning")))));
+                    lines.push(Line::from(styled(
+                        theme,
+                        "warning",
+                        format!("{} no active goal", theme.symbol("status.warning")),
+                    )));
                 } else {
                     for line in text.lines().take(3) {
                         lines.push(Line::from(styled(theme, "text_muted", line.to_owned())));

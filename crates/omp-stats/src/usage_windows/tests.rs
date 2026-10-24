@@ -141,20 +141,24 @@ fn window_label_suffix_rules() {
 
 use crate::testutil::TestHome;
 
-use super::broker::{set_usage_broker, sum_fleet_tokens, ClientProviderUsage, ClientUsageClientSummary, UsageBroker};
+use super::broker::{
+    set_usage_broker, sum_fleet_tokens, ClientProviderUsage, ClientUsageClientSummary, UsageBroker,
+};
 
 fn client(install: &str, providers: &[(&str, f64, f64, f64, f64)]) -> ClientUsageClientSummary {
     ClientUsageClientSummary {
         install_id: install.to_string(),
         providers: providers
             .iter()
-            .map(|(provider, input, output, cache_read, cache_write)| ClientProviderUsage {
-                provider: provider.to_string(),
-                input_tokens: *input,
-                output_tokens: *output,
-                cache_read_tokens: *cache_read,
-                cache_write_tokens: *cache_write,
-            })
+            .map(
+                |(provider, input, output, cache_read, cache_write)| ClientProviderUsage {
+                    provider: provider.to_string(),
+                    input_tokens: *input,
+                    output_tokens: *output,
+                    cache_read_tokens: *cache_read,
+                    cache_write_tokens: *cache_write,
+                },
+            )
             .collect(),
     }
 }
@@ -162,7 +166,13 @@ fn client(install: &str, providers: &[(&str, f64, f64, f64, f64)]) -> ClientUsag
 #[test]
 fn sum_fleet_tokens_folds_all_token_kinds_per_provider() {
     let clients = vec![
-        client("a", &[("google-antigravity", 10.0, 5.0, 2.0, 1.0), ("kimi", 3.0, 1.0, 0.0, 0.0)]),
+        client(
+            "a",
+            &[
+                ("google-antigravity", 10.0, 5.0, 2.0, 1.0),
+                ("kimi", 3.0, 1.0, 0.0, 0.0),
+            ],
+        ),
         client("b", &[("google-antigravity", 1.0, 1.0, 1.0, 1.0)]),
         client("c", &[]),
     ];
@@ -195,11 +205,22 @@ impl FakeBroker {
 
 impl UsageBroker for FakeBroker {
     fn usage_history(&self, _since_ms: i64) -> anyhow::Result<Vec<UsageSnapshotRow>> {
-        self.history.lock().unwrap().pop().unwrap_or_else(|| Err(anyhow::anyhow!("no scripted history")))
+        self.history
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Err(anyhow::anyhow!("no scripted history")))
     }
 
-    fn client_usage_summary(&self, _since_ms: i64) -> anyhow::Result<Vec<ClientUsageClientSummary>> {
-        self.summary.lock().unwrap().pop().unwrap_or_else(|| Err(anyhow::anyhow!("no scripted summary")))
+    fn client_usage_summary(
+        &self,
+        _since_ms: i64,
+    ) -> anyhow::Result<Vec<ClientUsageClientSummary>> {
+        self.summary
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Err(anyhow::anyhow!("no scripted summary")))
     }
 }
 

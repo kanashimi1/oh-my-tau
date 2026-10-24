@@ -16,8 +16,9 @@ async fn main() -> Result<()> {
     let dir = args.next();
     let n: u32 = args.next().map_or(50, |s| s.parse().unwrap_or(50));
 
-    let mut cfg =
-        HostConfig::new(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ext-host/host.ts"));
+    let mut cfg = HostConfig::new(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../ext-host/host.ts"),
+    );
     cfg.handler_timeout_ms = Some(30_000);
     if std::env::var_os("OMP_EXT_TEST_SHARED").is_some_and(|v| v != "0") {
         let d = std::env::temp_dir().join(format!("omp-ext-shared-bench-{}", std::process::id()));

@@ -890,12 +890,10 @@ mod tests {
         let lines = result_lines(&args, &result, false, &theme);
         let flat: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert_eq!(flat[1], "  file not found", "{flat:?}");
-        assert!(
-            lines[1]
-                .spans
-                .iter()
-                .all(|s| s.style.fg == Some(theme.color("error")))
-        );
+        assert!(lines[1]
+            .spans
+            .iter()
+            .all(|s| s.style.fg == Some(theme.color("error"))));
     }
 
     #[test]

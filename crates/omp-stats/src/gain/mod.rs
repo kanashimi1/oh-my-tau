@@ -20,15 +20,23 @@ const BYTES_PER_TOKEN_ESTIMATE: i64 = 4;
 const DAY_MS: i64 = 86_400_000;
 
 /// Paths that carry no dashboard signal — temp/internal locations.
-static TEMP_PATH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?:^|/)(?:T|tmp|pi-bash-exec|omp-bash-exec|pi-bash-detach)(?:/|$)|^/var/folders(?:/|$)"#).expect("temp path regex"));
+static TEMP_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:^|/)(?:T|tmp|pi-bash-exec|omp-bash-exec|pi-bash-detach)(?:/|$)|^/var/folders(?:/|$)"#,
+    )
+    .expect("temp path regex")
+});
 
 /// Strip trailing separators and normalize backslashes; empty becomes "/".
 #[must_use]
 pub(crate) fn canonical_project_path(p: &str) -> String {
     let normalized = p.replace('\\', "/");
     let trimmed = normalized.trim_end_matches('/');
-    if trimmed.is_empty() { "/".into() } else { trimmed.into() }
+    if trimmed.is_empty() {
+        "/".into()
+    } else {
+        trimmed.into()
+    }
 }
 
 /// True when `candidate` exactly equals `parent` or is a separator-bounded
@@ -81,8 +89,10 @@ pub fn normalize_project_path(p: &str) -> Option<String> {
 fn matches_project(cwd: Option<&str>, project: &str) -> bool {
     let Some(cwd) = cwd else { return false };
     let normalized_cwd = normalize_project_path(cwd).unwrap_or_else(|| canonical_project_path(cwd));
-    let normalized_project = normalize_project_path(project).unwrap_or_else(|| canonical_project_path(project));
-    is_same_or_sub_path(&normalized_cwd, &normalized_project) || is_same_or_sub_path(cwd, &normalized_project)
+    let normalized_project =
+        normalize_project_path(project).unwrap_or_else(|| canonical_project_path(project));
+    is_same_or_sub_path(&normalized_cwd, &normalized_project)
+        || is_same_or_sub_path(cwd, &normalized_project)
 }
 
 /// Normalize worktree paths and remove sub-paths already covered by a shorter
@@ -122,7 +132,8 @@ fn to_date_bucket(epoch_ms: i64) -> String {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
-    let yoe = (doe - doe.div_euclid(1460) + doe.div_euclid(36_524) - doe.div_euclid(146_096)).div_euclid(365);
+    let yoe = (doe - doe.div_euclid(1460) + doe.div_euclid(36_524) - doe.div_euclid(146_096))
+        .div_euclid(365);
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe.div_euclid(4) - yoe.div_euclid(100));
     let mp = (5 * doy + 2).div_euclid(153);
@@ -134,7 +145,10 @@ fn to_date_bucket(epoch_ms: i64) -> String {
 
 /// Aggregate the Gain dashboard payload for `range` (optional `?range=` value)
 /// and an optional project selector.
-pub fn get_gain_dashboard_stats(range: Option<&str>, project: Option<&str>) -> Result<GainDashboardStats> {
+pub fn get_gain_dashboard_stats(
+    range: Option<&str>,
+    project: Option<&str>,
+) -> Result<GainDashboardStats> {
     let window = crate::rollup::get_time_range_config(range);
     let effective_project = project.map(str::trim).filter(|s| !s.is_empty());
 
@@ -182,7 +196,9 @@ pub fn get_gain_dashboard_stats(range: Option<&str>, project: Option<&str>) -> R
 
 /// Distinct project folders for the given session files (chunked like the TS
 /// SQLite variable limit).
-pub(crate) fn read_projects_by_session(sessions: &[String]) -> Result<HashMap<String, HashSet<String>>> {
+pub(crate) fn read_projects_by_session(
+    sessions: &[String],
+) -> Result<HashMap<String, HashSet<String>>> {
     let mut unique: Vec<String> = Vec::new();
     let mut seen: HashSet<&str> = HashSet::new();
     for s in sessions {

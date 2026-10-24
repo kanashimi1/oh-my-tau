@@ -107,7 +107,12 @@ pub async fn fresh_stored_key(
     if credential_id.is_none() {
         return (api_key, None);
     }
-    match omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider.to_string()).await {
+    match omp_providers::auth::credential_async(
+        omp_providers::AgentDir::default(),
+        provider.to_string(),
+    )
+    .await
+    {
         Some(c) => (Some(c.key), Some(c.id)),
         None => (api_key, credential_id),
     }
@@ -122,9 +127,7 @@ fn is_auth_failure(error: &pa_agent::types::AssistantMessage) -> bool {
             .is_some_and(|m| m.contains("401") && m.to_ascii_lowercase().contains("authentication"))
 }
 
-type Reopen = Box<
-    dyn FnOnce() -> pa_agent::BoxFut<'static, Option<Box<dyn ModelStream>>> + Send,
->;
+type Reopen = Box<dyn FnOnce() -> pa_agent::BoxFut<'static, Option<Box<dyn ModelStream>>> + Send>;
 
 /// TS `auth-retry`: a stream whose first failure is a provider 401, before any content, is
 /// re-opened once with a force-refreshed credential (`reopen` yields `None` when there is no
@@ -147,7 +150,9 @@ impl ModelStream for AuthRetryStream {
                     Some(E::Start { .. }) if !self.start_forwarded => self.start_forwarded = true,
                     // The replacement attempt re-emits `start`; the caller already saw one.
                     Some(E::Start { .. }) => continue,
-                    Some(E::Error { error, .. }) if self.reopen.is_some() && is_auth_failure(error) => {
+                    Some(E::Error { error, .. })
+                        if self.reopen.is_some() && is_auth_failure(error) =>
+                    {
                         if let Some(reopen) = self.reopen.take() {
                             if let Some(next) = reopen().await {
                                 self.inner = next;
@@ -224,7 +229,15 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
                         )
                         .await?;
                         let (context, options) = retry_inputs;
-                        stream_once(&model, Some(next.key), service_tier, headers, context, options).ok()
+                        stream_once(
+                            &model,
+                            Some(next.key),
+                            service_tier,
+                            headers,
+                            context,
+                            options,
+                        )
+                        .ok()
                     })
                 });
                 Ok(Box::new(AuthRetryStream {
@@ -323,9 +336,8 @@ pub fn stream_once(
             .into_iter()
             .filter_map(|m| json_round_trip(&m)),
     );
-    let tools: Vec<pa_types::ai::Tool> = json_round_trip(&context.tools).unwrap_or_else(|| {
-        context.tools.iter().filter_map(json_round_trip).collect()
-    });
+    let tools: Vec<pa_types::ai::Tool> = json_round_trip(&context.tools)
+        .unwrap_or_else(|| context.tools.iter().filter_map(json_round_trip).collect());
     let ai_context = pa_types::ai::Context {
         system_prompt: context.system_prompt,
         messages,
@@ -585,14 +597,22 @@ mod auth_retry_tests {
     /// A scripted stream: `start`, then either a 401 failure or a text answer.
     fn scripted(fail: bool) -> Box<dyn ModelStream> {
         let (handle, consumer) = event_stream();
-        handle.push(E::Start { partial: message("", "stop", None) });
+        handle.push(E::Start {
+            partial: message("", "stop", None),
+        });
         if fail {
             let error = message("", "error", Some(401));
-            handle.push(E::Error { reason: StopReason::Error, error: error.clone() });
+            handle.push(E::Error {
+                reason: StopReason::Error,
+                error: error.clone(),
+            });
             handle.end(Some(error));
         } else {
             let done = message("hello", "stop", None);
-            handle.push(E::Done { reason: StopReason::Stop, message: done.clone() });
+            handle.push(E::Done {
+                reason: StopReason::Stop,
+                message: done.clone(),
+            });
             handle.end(Some(done));
         }
         Box::new(consumer_wrapper(consumer))
@@ -624,14 +644,27 @@ mod auth_retry_tests {
         kinds
     }
 
-    fn retrying(first: Box<dyn ModelStream>, reopen: Option<Box<dyn ModelStream>>) -> (AuthRetryStream, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    fn retrying(
+        first: Box<dyn ModelStream>,
+        reopen: Option<Box<dyn ModelStream>>,
+    ) -> (
+        AuthRetryStream,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = calls.clone();
         let reopen: Reopen = Box::new(move || {
             counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(async move { reopen })
         });
-        (AuthRetryStream { inner: first, reopen: Some(reopen), start_forwarded: false }, calls)
+        (
+            AuthRetryStream {
+                inner: first,
+                reopen: Some(reopen),
+                start_forwarded: false,
+            },
+            calls,
+        )
     }
 
     #[tokio::test]

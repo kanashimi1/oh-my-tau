@@ -135,11 +135,17 @@ fn time_based_off_peak_and_peak() {
     };
     // Monday 02:00 is peak -> multiplier 1: 0.3/M * 1M = 0.3.
     let peak_ts = ts_for(1, 2, 0);
-    assert!(is_peak_pricing_period(cost.time_based.as_ref().unwrap(), peak_ts));
+    assert!(is_peak_pricing_period(
+        cost.time_based.as_ref().unwrap(),
+        peak_ts
+    ));
     assert!((calculate_uncached_input_cost(&cost, 1_000_000, Some(peak_ts)) - 0.3).abs() < 1e-9);
     // Sunday 02:00 is off-peak -> multiplier 0.5: 0.3 * 0.5 = 0.15.
     let off_ts = ts_for(0, 2, 0);
-    assert!(!is_peak_pricing_period(cost.time_based.as_ref().unwrap(), off_ts));
+    assert!(!is_peak_pricing_period(
+        cost.time_based.as_ref().unwrap(),
+        off_ts
+    ));
     assert!((calculate_uncached_input_cost(&cost, 1_000_000, Some(off_ts)) - 0.15).abs() < 1e-9);
 }
 
@@ -163,7 +169,10 @@ fn bundled_anthropic_sonnet() {
     assert!((cost.cache_write() - 3.75).abs() < 1e-12);
     assert!(cost.time_based.is_none());
     assert!(has_billable_cost(&cost));
-    assert!(!is_scheduled_catalog_model("anthropic", "claude-sonnet-4-5"));
+    assert!(!is_scheduled_catalog_model(
+        "anthropic",
+        "claude-sonnet-4-5"
+    ));
     // Prices a real request from the bundled card: 1k in + 500 out.
     let mut usage = Usage {
         input: 1_000,
@@ -189,5 +198,8 @@ fn unpriced_sql_matches_ts() {
 #[test]
 fn scheduled_catalog_detection() {
     assert!(is_scheduled_catalog_model("deepseek", "deepseek-flash"));
-    assert!(!is_scheduled_catalog_model("anthropic", "claude-sonnet-4-5"));
+    assert!(!is_scheduled_catalog_model(
+        "anthropic",
+        "claude-sonnet-4-5"
+    ));
 }

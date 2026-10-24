@@ -264,9 +264,12 @@ impl TaskRunner {
             Some(id) => id.clone(),
             None => self.alloc_id(),
         };
-        let permit = self.semaphore.clone().acquire_owned().await.expect(
-            "task runner semaphore is never closed by the runner itself",
-        );
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("task runner semaphore is never closed by the runner itself");
         self.run_child(id, spec, permit).await
     }
 
@@ -400,7 +403,11 @@ fn collect_output(
     let line_count = output.lines().count();
     let output = if line_count > MAX_OUTPUT_LINES {
         truncated = true;
-        output.lines().take(MAX_OUTPUT_LINES).collect::<Vec<_>>().join("\n")
+        output
+            .lines()
+            .take(MAX_OUTPUT_LINES)
+            .collect::<Vec<_>>()
+            .join("\n")
     } else {
         output
     };
@@ -425,7 +432,13 @@ fn collect_output(
 }
 
 /// The settled output of a child that never started.
-fn spawn_failure(id: String, spec: TaskSpec, binary: &Path, e: &std::io::Error, start: Instant) -> RunOutput {
+fn spawn_failure(
+    id: String,
+    spec: TaskSpec,
+    binary: &Path,
+    e: &std::io::Error,
+    start: Instant,
+) -> RunOutput {
     RunOutput {
         id,
         agent: spec.agent,
@@ -502,7 +515,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = fake_binary(dir.path(), r#"echo "$2""#);
         let runner = TaskRunner::new(&bin, 4);
-        let out = runner.spawn(spec("scout-glm", "count files", dir.path())).await;
+        let out = runner
+            .spawn(spec("scout-glm", "count files", dir.path()))
+            .await;
         assert_eq!(out.status, RunStatus::Completed);
         assert_eq!(out.exit_code, Some(0));
         // -p flag and prompt are passed through to the child ($1=-p, $2=prompt).
@@ -560,10 +575,7 @@ mod tests {
         let log = dir.path().join("pids");
         let bin = fake_binary(
             dir.path(),
-            &format!(
-                "echo $$ >> {}; sleep 0.2",
-                log.display()
-            ),
+            &format!("echo $$ >> {}; sleep 0.2", log.display()),
         );
         let runner = TaskRunner::new(&bin, 2);
         assert_eq!(runner.available_permits(), 2);

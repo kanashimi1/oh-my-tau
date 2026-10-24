@@ -52,13 +52,19 @@ pub fn paint_segment(
         let from = range.start.max(seg_off);
         let to = range.end.min(seg_end);
         if from > cursor {
-            spans.push(Span::styled(seg[cursor - seg_off..from - seg_off].to_owned(), base));
+            spans.push(Span::styled(
+                seg[cursor - seg_off..from - seg_off].to_owned(),
+                base,
+            ));
         }
         // The keyword words are ASCII: byte offset == char index.
         let len = range.len();
         for (pos, ch) in seg[from - seg_off..to - seg_off].char_indices() {
             let (red, green, blue) = magic::keyword_rgb(k, from + pos - range.start, len, phase);
-            spans.push(Span::styled(ch.to_string(), base.fg(Color::Rgb(red, green, blue))));
+            spans.push(Span::styled(
+                ch.to_string(),
+                base.fg(Color::Rgb(red, green, blue)),
+            ));
         }
         cursor = to;
     }
@@ -112,7 +118,12 @@ impl RenderedHits {
 
     /// Paint the next occurrences found in `content` (one rendered span);
     /// `None` when none of them is a prose hit (keep the span as is).
-    pub fn paint_span(&mut self, content: &str, base: Style, phase: f64) -> Option<Vec<Span<'static>>> {
+    pub fn paint_span(
+        &mut self,
+        content: &str,
+        base: Style,
+        phase: f64,
+    ) -> Option<Vec<Span<'static>>> {
         let mut found: Vec<(usize, usize)> = magic::KEYWORDS
             .iter()
             .enumerate()
@@ -150,7 +161,10 @@ mod tests {
         let spans = paint("go ultrathink now", base, 0, 0.0);
         assert_eq!(text(&spans), "go ultrathink now");
         let k = &magic::KEYWORDS[0];
-        let painted: Vec<_> = spans.iter().filter(|s| s.style.fg != Some(Color::White)).collect();
+        let painted: Vec<_> = spans
+            .iter()
+            .filter(|s| s.style.fg != Some(Color::White))
+            .collect();
         assert_eq!(painted.len(), 10);
         let (r, g, b) = magic::keyword_rgb(k, 0, 10, 0.0);
         assert_eq!(painted[0].content, "u");
@@ -178,8 +192,14 @@ mod tests {
     fn rendered_hits_skip_code_occurrences_in_order() {
         // Source: a code span first, then the prose hit; rendered without backticks.
         let mut hits = RenderedHits::new("`ultrathink` then ultrathink", 0).unwrap();
-        assert!(hits.paint_span("ultrathink", Style::default(), 0.0).is_none(), "code occurrence");
-        let painted = hits.paint_span(" then ultrathink", Style::default(), 0.0).unwrap();
+        assert!(
+            hits.paint_span("ultrathink", Style::default(), 0.0)
+                .is_none(),
+            "code occurrence"
+        );
+        let painted = hits
+            .paint_span(" then ultrathink", Style::default(), 0.0)
+            .unwrap();
         assert_eq!(text(&painted), " then ultrathink");
         assert!(RenderedHits::new("```\nultrathink\n```", 0).is_none());
     }

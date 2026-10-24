@@ -9,10 +9,12 @@ use std::sync::Arc;
 use serde_json::{json, Map, Value};
 
 use crate::providers::openai_completions::compat::{
-    apply_compat_policy, is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning, DisableReason,
-    ResolvedCompat,
+    apply_compat_policy, is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning,
+    DisableReason, ResolvedCompat,
 };
-use crate::providers::openai_completions::convert::{convert_message_range, convert_tools, push_system_messages};
+use crate::providers::openai_completions::convert::{
+    convert_message_range, convert_tools, push_system_messages,
+};
 use crate::providers::openai_completions::has_tool_history;
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
 use crate::types::{CacheRetention, Context, Message, Model};
@@ -72,7 +74,11 @@ fn wire_model_id(id: &str, mode: Option<&str>) -> String {
     }
     match mode {
         Some("cline-pass") => {
-            if id.starts_with("cline-pass/") { id.to_string() } else { format!("cline-pass/{id}") }
+            if id.starts_with("cline-pass/") {
+                id.to_string()
+            } else {
+                format!("cline-pass/{id}")
+            }
         }
         Some("firepass") => {
             let stripped = id.strip_prefix("accounts/fireworks/routers/").unwrap_or(id);
@@ -88,15 +94,20 @@ fn wire_model_id(id: &str, mode: Option<&str>) -> String {
 
 /// TS `resolveOpenAIOutputTokenParam` for Chat Completions: the output cap and the wire field it
 /// rides on, or `None` when the request carries no cap.
-fn output_token_param(model: &Model, compat: &ResolvedCompat, options: &OpenAICompletionsOptions) -> Option<(&'static str, u64)> {
+fn output_token_param(
+    model: &Model,
+    compat: &ResolvedCompat,
+    options: &OpenAICompletionsOptions,
+) -> Option<(&'static str, u64)> {
     if model.omit_max_output_tokens == Some(true) {
         return None;
     }
     let model_max = (model.max_tokens > 0).then_some(model.max_tokens);
-    let requested = options
-        .base
-        .max_tokens
-        .or_else(|| compat.always_send_max_tokens.then(|| model_max.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS)))?;
+    let requested = options.base.max_tokens.or_else(|| {
+        compat
+            .always_send_max_tokens
+            .then(|| model_max.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))
+    })?;
     let explicit = options.max_tokens_explicit;
     if compat.is_open_router_host && !compat.always_send_max_tokens && !explicit {
         return None;
@@ -109,24 +120,44 @@ fn output_token_param(model: &Model, compat: &ResolvedCompat, options: &OpenAICo
     } else {
         OPENAI_MAX_OUTPUT_TOKENS
     };
-    let value = requested.min(model_max.unwrap_or(u64::MAX)).min(provider_clamp);
+    let value = requested
+        .min(model_max.unwrap_or(u64::MAX))
+        .min(provider_clamp);
     if value == 0 {
         return None;
     }
-    Some((if compat.max_tokens_is_legacy_field() { "max_tokens" } else { "max_completion_tokens" }, value))
+    Some((
+        if compat.max_tokens_is_legacy_field() {
+            "max_tokens"
+        } else {
+            "max_completion_tokens"
+        },
+        value,
+    ))
 }
 
 /// TS `getOpenAIPromptCacheKey`: the cache identity, normalized to the 64-char wire limit.
-fn prompt_cache_key(options: &OpenAICompletionsOptions, cache_retention: CacheRetention) -> Option<String> {
+fn prompt_cache_key(
+    options: &OpenAICompletionsOptions,
+    cache_retention: CacheRetention,
+) -> Option<String> {
     if cache_retention == CacheRetention::None {
         return None;
     }
-    let value = options.base.session_id.as_deref().filter(|v| !v.is_empty())?;
+    let value = options
+        .base
+        .session_id
+        .as_deref()
+        .filter(|v| !v.is_empty())?;
     normalize_stable_id(value, 64, "pc_")
 }
 
 /// TS `normalizeOpenAIStableId`: identities past the wire limit hash down to `{prefix}{base36}`.
-pub(crate) fn normalize_stable_id(value: &str, max_len: usize, hash_prefix: &str) -> Option<String> {
+pub(crate) fn normalize_stable_id(
+    value: &str,
+    max_len: usize,
+    hash_prefix: &str,
+) -> Option<String> {
     if value.is_empty() {
         return None;
     }
@@ -161,7 +192,11 @@ fn should_send_service_tier(model: &Model, tier: crate::types::ServiceTier) -> b
     if model.provider == "openai" {
         return true;
     }
-    model.provider == "openrouter" && matches!(tier, ServiceTier::Flex | ServiceTier::Scale | ServiceTier::Priority)
+    model.provider == "openrouter"
+        && matches!(
+            tier,
+            ServiceTier::Flex | ServiceTier::Scale | ServiceTier::Priority
+        )
 }
 
 /// The request params for `context`, whose history was transformed into `transformed`
@@ -178,7 +213,17 @@ pub(crate) fn build_params<'a>(
     compat: &ResolvedCompat,
     cache_retention: CacheRetention,
 ) -> Wire<'a> {
-    build_params_streaming(model, context, transformed, options, compat, cache_retention, MsgsInput::Convert, ToolsInput::Convert, None)
+    build_params_streaming(
+        model,
+        context,
+        transformed,
+        options,
+        compat,
+        cache_retention,
+        MsgsInput::Convert,
+        ToolsInput::Convert,
+        None,
+    )
 }
 
 /// [`build_params`] with the wire-fragment cache hooks the stream layer drives: `msgs_in` /
@@ -216,7 +261,10 @@ pub(crate) fn build_params_streaming<'a>(
     let mut params = WireObject::new();
     params.insert(
         "model",
-        json!(wire_model_id(model.request_model_id.as_deref().unwrap_or(&model.id), compat.wire_model_id_mode.as_deref())),
+        json!(wire_model_id(
+            model.request_model_id.as_deref().unwrap_or(&model.id),
+            compat.wire_model_id_mode.as_deref()
+        )),
     );
     params.insert("messages", Wire::Array(Vec::new()));
     params.insert("stream", json!(true));
@@ -235,7 +283,10 @@ pub(crate) fn build_params_streaming<'a>(
     }
     if let Some(service_tier) = options.base.service_tier {
         if should_send_service_tier(model, service_tier) {
-            params.insert("service_tier", serde_json::to_value(service_tier).unwrap_or(Value::Null));
+            params.insert(
+                "service_tier",
+                serde_json::to_value(service_tier).unwrap_or(Value::Null),
+            );
         }
     }
 
@@ -267,9 +318,13 @@ pub(crate) fn build_params_streaming<'a>(
         _ => None,
     };
     let tools_contain = |tools: &Option<Vec<(&'a str, Wire<'a>)>>, name: &str| {
-        tools.as_ref().is_some_and(|t| t.iter().any(|(n, _)| *n == name))
+        tools
+            .as_ref()
+            .is_some_and(|t| t.iter().any(|(n, _)| *n == name))
     };
-    if matches!(tool_choice, Some(ToolChoice::Function { .. })) && !initial_compat.supports_named_tool_choice {
+    if matches!(tool_choice, Some(ToolChoice::Function { .. }))
+        && !initial_compat.supports_named_tool_choice
+    {
         // String-only hosts (llama.cpp, LM Studio) accept only none/auto/required: narrow the
         // advertised tools to the forced one so "required" still enforces that call.
         if let Some(name) = &forced_tool_name {
@@ -282,7 +337,10 @@ pub(crate) fn build_params_streaming<'a>(
         tool_choice = Some(ToolChoice::Required);
     }
     if let Some(name) = &forced_tool_name {
-        let k3_reasoning = initial_compat.native_kimi_k3_reasoning && model.reasoning && reasoning.is_some() && !disable_reasoning;
+        let k3_reasoning = initial_compat.native_kimi_k3_reasoning
+            && model.reasoning
+            && reasoning.is_some()
+            && !disable_reasoning;
         if tools_contain(&tools, name) && k3_reasoning {
             // Native K3 reasoning is incompatible with selecting a specific function.
             tool_choice = Some(ToolChoice::Required);
@@ -299,7 +357,9 @@ pub(crate) fn build_params_streaming<'a>(
         Some(raw) => raw.is_none(),
         None => tools.as_ref().is_none_or(Vec::is_empty),
     };
-    if tools_empty && (matches!(tool_choice, Some(ToolChoice::None)) || is_forced(tool_choice.as_ref())) {
+    if tools_empty
+        && (matches!(tool_choice, Some(ToolChoice::None)) || is_forced(tool_choice.as_ref()))
+    {
         // `tool_choice: "none"`/forced with no tools to gate is redundant (and trips LiteLLM → Bedrock).
         tool_choice = None;
     }
@@ -309,7 +369,13 @@ pub(crate) fn build_params_streaming<'a>(
             tool_choice = None;
         }
     }
-    if should_drop_auto_tool_choice_for_reasoning(model, initial_compat, tool_choice.as_ref(), reasoning, disable_reasoning) {
+    if should_drop_auto_tool_choice_for_reasoning(
+        model,
+        initial_compat,
+        tool_choice.as_ref(),
+        reasoning,
+        disable_reasoning,
+    ) {
         tool_choice = None;
     }
 
@@ -317,16 +383,34 @@ pub(crate) fn build_params_streaming<'a>(
         Some(raw) => raw.is_some(),
         None => tools.as_ref().is_some_and(|t| !t.is_empty()),
     };
-    let final_policy = resolve_policy(model, compat, reasoning, disable_reasoning, tool_choice.as_ref(), has_tools);
+    let final_policy = resolve_policy(
+        model,
+        compat,
+        reasoning,
+        disable_reasoning,
+        tool_choice.as_ref(),
+        has_tools,
+    );
     let final_compat = &final_policy.compat;
 
     let messages_wire = match msgs_in {
-        MsgsInput::Raw { prefix, count, last_role } => {
+        MsgsInput::Raw {
+            prefix,
+            count,
+            last_role,
+        } => {
             if transformed.len() == count {
                 Wire::Raw(prefix)
             } else {
                 let mut tail: Vec<Wire<'a>> = Vec::new();
-                convert_message_range(model, transformed, final_compat, count, last_role, &mut tail);
+                convert_message_range(
+                    model,
+                    transformed,
+                    final_compat,
+                    count,
+                    last_role,
+                    &mut tail,
+                );
                 if tail.is_empty() {
                     Wire::Raw(prefix)
                 } else {
@@ -336,8 +420,14 @@ pub(crate) fn build_params_streaming<'a>(
         }
         MsgsInput::Convert => {
             let mut wires: Vec<Wire<'a>> = Vec::new();
-            push_system_messages(model, context.system_prompt.as_deref().as_slice(), final_compat, &mut wires);
-            let last_role = convert_message_range(model, transformed, final_compat, 0, None, &mut wires);
+            push_system_messages(
+                model,
+                context.system_prompt.as_deref().as_slice(),
+                final_compat,
+                &mut wires,
+            );
+            let last_role =
+                convert_message_range(model, transformed, final_compat, 0, None, &mut wires);
             maybe_add_anthropic_cache_control(final_compat, &mut wires);
             if let Some(f) = frags.as_mut() {
                 // The caller caches the fragment: report it and splice the bytes we already
@@ -397,7 +487,14 @@ pub(crate) fn build_params_streaming<'a>(
     }
 
     // Reasoning parameters (TS `applyChatCompletionsReasoningParams` + the OpenRouter-Kimi drop).
-    let reasoning_policy = resolve_policy(model, compat, reasoning, disable_reasoning, tool_choice.as_ref(), has_tools);
+    let reasoning_policy = resolve_policy(
+        model,
+        compat,
+        reasoning,
+        disable_reasoning,
+        tool_choice.as_ref(),
+        has_tools,
+    );
     let mut reasoning_params = Map::new();
     apply_compat_policy(&mut reasoning_params, &reasoning_policy);
     if final_policy.reasoning.disable_reason == Some(DisableReason::ForcedToolChoice)
@@ -417,7 +514,11 @@ pub(crate) fn build_params_streaming<'a>(
         }
     }
     if final_compat.is_vercel_gateway_host {
-        if let Some(routing) = final_compat.vercel_gateway_routing.as_ref().and_then(Value::as_object) {
+        if let Some(routing) = final_compat
+            .vercel_gateway_routing
+            .as_ref()
+            .and_then(Value::as_object)
+        {
             let cache_enabled = cache_retention != CacheRetention::None;
             let mut gateway = Map::new();
             if let Some(only) = routing.get("only").filter(|v| !v.is_null()) {
@@ -432,7 +533,10 @@ pub(crate) fn build_params_streaming<'a>(
                 }
             }
             if !gateway.is_empty() {
-                params.insert("providerOptions", json!({ "gateway": Value::Object(gateway) }));
+                params.insert(
+                    "providerOptions",
+                    json!({ "gateway": Value::Object(gateway) }),
+                );
             }
         }
     }
@@ -448,14 +552,20 @@ pub(crate) fn build_params_streaming<'a>(
         }
         if let Some(encoded) = encoded_venice {
             if encoded.get("disable_thinking") == Some(&Value::Bool(true)) {
-                let mut merged = extra.get("venice_parameters").and_then(Value::as_object).cloned().unwrap_or_default();
+                let mut merged = extra
+                    .get("venice_parameters")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
                 for (k, v) in encoded {
                     merged.insert(k, v);
                 }
                 params.insert("venice_parameters", Wire::Owned(Value::Object(merged)));
             }
         }
-        if final_compat.drop_thinking_when_reasoning_effort && params.contains_key("reasoning_effort") {
+        if final_compat.drop_thinking_when_reasoning_effort
+            && params.contains_key("reasoning_effort")
+        {
             params.remove("thinking");
         }
     }
@@ -503,7 +613,9 @@ fn maybe_add_anthropic_cache_control(compat: &ResolvedCompat, messages: &mut [Wi
         if role != "user" && role != "assistant" && role != "developer" {
             continue;
         }
-        let Some(content) = message.as_object_mut().and_then(|m| m.get_mut("content")) else { continue };
+        let Some(content) = message.as_object_mut().and_then(|m| m.get_mut("content")) else {
+            continue;
+        };
         if let Some(is_empty) = content.string_is_empty() {
             let blank = content.as_str().is_some_and(|t| t.trim().is_empty()) || is_empty;
             if blank {
@@ -522,9 +634,14 @@ fn maybe_add_anthropic_cache_control(compat: &ResolvedCompat, messages: &mut [Wi
                 if part.get("type").and_then(Wire::as_str) != Some("text") {
                     continue;
                 }
-                let non_blank = part.get("text").and_then(Wire::as_str).is_some_and(|t| !t.trim().is_empty());
+                let non_blank = part
+                    .get("text")
+                    .and_then(Wire::as_str)
+                    .is_some_and(|t| !t.trim().is_empty());
                 if non_blank {
-                    part.as_object_mut().expect("text parts are objects").insert("cache_control", Wire::Owned(ephemeral()));
+                    part.as_object_mut()
+                        .expect("text parts are objects")
+                        .insert("cache_control", Wire::Owned(ephemeral()));
                     return;
                 }
             }
@@ -554,11 +671,17 @@ pub(crate) fn build_headers(
 
     // TS `setHeaderIfAbsent`: the compat-named session headers never override explicit ones.
     let mut set_if_absent = |name: &str, value: &str| {
-        if !headers.iter().any(|(existing, _)| existing.eq_ignore_ascii_case(name)) {
+        if !headers
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(name))
+        {
             headers.push((name.to_string(), value.to_string()));
         }
     };
-    if let (Some(name), Some(session_id)) = (compat.prompt_cache_session_header.as_deref(), cache_session_id) {
+    if let (Some(name), Some(session_id)) = (
+        compat.prompt_cache_session_header.as_deref(),
+        cache_session_id,
+    ) {
         set_if_absent(name, session_id);
     }
     if let (Some(name), Some(session_id)) = (compat.session_header.as_deref(), conversation_id) {
@@ -571,5 +694,3 @@ pub(crate) fn build_headers(
     }
     headers
 }
-
-

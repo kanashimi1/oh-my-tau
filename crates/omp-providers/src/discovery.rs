@@ -138,13 +138,22 @@ async fn refresh_run(dir: &AgentDir, only: Option<&str>) -> Result<Vec<ProviderR
         }
         let now = now_ms();
         if let Some(note) = fresh_skip(&db, &provider, now) {
-            out.push(ProviderRefresh { provider, discovered: Vec::new(), total: 0, note: Some(note) });
+            out.push(ProviderRefresh {
+                provider,
+                discovered: Vec::new(),
+                total: 0,
+                note: Some(note),
+            });
             continue;
         }
         let url = append_models_path(&base_url);
-        let mut req = client.get(&url).header("Accept", "application/json").timeout(FETCH_TIMEOUT);
+        let mut req = client
+            .get(&url)
+            .header("Accept", "application/json")
+            .timeout(FETCH_TIMEOUT);
         req = if base_url.contains("anthropic.com") {
-            req.header("x-api-key", &key).header("anthropic-version", "2023-06-01")
+            req.header("x-api-key", &key)
+                .header("anthropic-version", "2023-06-01")
         } else {
             req.header("Authorization", format!("Bearer {key}"))
         };
@@ -152,22 +161,42 @@ async fn refresh_run(dir: &AgentDir, only: Option<&str>) -> Result<Vec<ProviderR
             Ok(resp) if resp.status().is_success() => match resp.json::<Value>().await {
                 Ok(payload) => extract_model_ids(&payload),
                 Err(e) => {
-                    out.push(ProviderRefresh { provider, discovered: vec![], total: 0, note: Some(format!("bad payload: {e}")) });
+                    out.push(ProviderRefresh {
+                        provider,
+                        discovered: vec![],
+                        total: 0,
+                        note: Some(format!("bad payload: {e}")),
+                    });
                     continue;
                 }
             },
             Ok(resp) => {
                 let status = resp.status();
-                out.push(ProviderRefresh { provider, discovered: vec![], total: 0, note: Some(format!("HTTP {status} from {url}")) });
+                out.push(ProviderRefresh {
+                    provider,
+                    discovered: vec![],
+                    total: 0,
+                    note: Some(format!("HTTP {status} from {url}")),
+                });
                 continue;
             }
             Err(e) => {
-                out.push(ProviderRefresh { provider, discovered: vec![], total: 0, note: Some(format!("{e}")) });
+                out.push(ProviderRefresh {
+                    provider,
+                    discovered: vec![],
+                    total: 0,
+                    note: Some(format!("{e}")),
+                });
                 continue;
             }
         };
         let total = merge_and_write(&db, &provider, &base_url, &discovered, now);
-        out.push(ProviderRefresh { provider, discovered, total, note: None });
+        out.push(ProviderRefresh {
+            provider,
+            discovered,
+            total,
+            note: None,
+        });
     }
     Ok(out)
 }
@@ -192,8 +221,12 @@ fn discoverable_providers(dir: &AgentDir) -> Result<Vec<(String, String, String)
     };
     if let Some(map) = providers.as_object() {
         for (name, pcfg) in map {
-            let Some(base) = pcfg.get("baseUrl").and_then(Value::as_str) else { continue };
-            let Some(key) = provider_key(dir, name, pcfg) else { continue };
+            let Some(base) = pcfg.get("baseUrl").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(key) = provider_key(dir, name, pcfg) else {
+                continue;
+            };
             if seen.insert(name.clone()) {
                 out.push((name.clone(), base.trim_end_matches('/').to_owned(), key));
             }
@@ -217,7 +250,8 @@ fn provider_key(dir: &AgentDir, name: &str, pcfg: &Value) -> Option<String> {
             return Some(k);
         }
     }
-    pa_ai::env_api_keys::get_env_api_key(name).or_else(|| crate::auth::credential(dir, name).map(|c| c.key))
+    pa_ai::env_api_keys::get_env_api_key(name)
+        .or_else(|| crate::auth::credential(dir, name).map(|c| c.key))
 }
 
 /// Env var for providers whose omp id differs from pa-ai's, plus `agent.db`.
@@ -302,9 +336,17 @@ pub fn extract_model_ids(payload: &Value) -> Vec<String> {
 /// TS `KIND_API_KINDS` proxies for raw /models listings (no kind metadata).
 fn is_non_chat_id(id: &str) -> bool {
     let l = id.to_ascii_lowercase();
-    ["embed", "whisper", "tts", "rerank", "moderation", "dall-e", "image"]
-        .iter()
-        .any(|k| l.contains(k))
+    [
+        "embed",
+        "whisper",
+        "tts",
+        "rerank",
+        "moderation",
+        "dall-e",
+        "image",
+    ]
+    .iter()
+    .any(|k| l.contains(k))
 }
 
 /// Why the fetch was skipped: an authoritative row fresher than the TTL, or a
@@ -323,7 +365,11 @@ fn fresh_skip(db: &Path, provider: &str, now: u64) -> Option<String> {
         )
         .ok()?;
     let age = now.saturating_sub(u64::try_from(updated_at).unwrap_or(0));
-    let ttl = if authoritative == 1 { CACHE_TTL_MS } else { NON_AUTHORITATIVE_RETRY_MS };
+    let ttl = if authoritative == 1 {
+        CACHE_TTL_MS
+    } else {
+        NON_AUTHORITATIVE_RETRY_MS
+    };
     (age < ttl).then(|| format!("cache fresh ({age} ms old, ttl {ttl} ms)"))
 }
 
@@ -358,7 +404,13 @@ fn is_reasoning_id(id: &str) -> bool {
 /// Merge `discovered` ids with the provider's existing cached rows and write
 /// the `model_cache` row (TS `writeModelCache` schema, always a payload
 /// write). Returns the merged model count.
-fn merge_and_write(db: &Path, provider: &str, base_url: &str, discovered: &[String], now: u64) -> usize {
+fn merge_and_write(
+    db: &Path,
+    provider: &str,
+    base_url: &str,
+    discovered: &[String],
+    now: u64,
+) -> usize {
     // Existing rows are additive (TS `mergeDiscoveredModel`): previously
     // discovered / catalog-merged models survive a refresh that no longer
     // lists them.
@@ -384,8 +436,7 @@ fn db_models(db: &Path, provider: &str) -> Vec<String> {
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .ok()
-    else {
+    .ok() else {
         return Vec::new();
     };
     let Ok(serialized) = conn.query_row(
@@ -411,7 +462,9 @@ fn write_row(db: &Path, provider: &str, now: u64, serialized_models: &str) {
     if let Some(parent) = db.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let Ok(conn) = rusqlite::Connection::open(db) else { return };
+    let Ok(conn) = rusqlite::Connection::open(db) else {
+        return;
+    };
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS model_cache (
             provider_id TEXT PRIMARY KEY,
@@ -454,7 +507,10 @@ fn write_row(db: &Path, provider: &str, now: u64, serialized_models: &str) {
         ],
     );
     // A payload write invalidates the side-table freshness row (TS does the same).
-    let _ = conn.execute("DELETE FROM model_cache_refresh WHERE provider_id = ?1", [provider]);
+    let _ = conn.execute(
+        "DELETE FROM model_cache_refresh WHERE provider_id = ?1",
+        [provider],
+    );
 }
 
 fn now_ms() -> u64 {
@@ -474,7 +530,10 @@ mod tests {
     }
 
     /// Minimal HTTP/1.1 server for one request, serving `body` on `path`.
-    fn mock_server(path: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
+    fn mock_server(
+        path: &'static str,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
@@ -483,7 +542,10 @@ mod tests {
             let mut buf = [0u8; 4096];
             let _ = sock.read(&mut buf);
             let req = String::from_utf8_lossy(&buf);
-            assert!(req.starts_with(&format!("GET {path}")), "unexpected request: {req}");
+            assert!(
+                req.starts_with(&format!("GET {path}")),
+                "unexpected request: {req}"
+            );
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -496,7 +558,10 @@ mod tests {
     #[test]
     fn append_models_path_preserves_query() {
         assert_eq!(append_models_path("https://h/v1"), "https://h/v1/models");
-        assert_eq!(append_models_path("https://h/root?token=x"), "https://h/root/models?token=x");
+        assert_eq!(
+            append_models_path("https://h/root?token=x"),
+            "https://h/root/models?token=x"
+        );
         assert_eq!(append_models_path("https://h/v1/"), "https://h/v1/models");
     }
 
@@ -544,15 +609,32 @@ mod tests {
         let expected_len = u64::from_str_radix(prefix, 36).expect("base36 length");
         assert_eq!(expected_len, models.len() as u64, "hash prefix {hash}");
         let rows: Vec<Value> = serde_json::from_str(&models).expect("parse models");
-        let ids: Vec<&str> = rows.iter().filter_map(|m| m.get("id").and_then(Value::as_str)).collect();
+        let ids: Vec<&str> = rows
+            .iter()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+            .collect();
         assert_eq!(ids, vec!["mock-new-model", "mock-older"]);
         for row in &rows {
             // TS `isMaterializedModel` required fields.
-            for key in ["id", "name", "api", "provider", "baseUrl", "reasoning", "input", "identity", "cost", "supportsComputerUseConfig"] {
+            for key in [
+                "id",
+                "name",
+                "api",
+                "provider",
+                "baseUrl",
+                "reasoning",
+                "input",
+                "identity",
+                "cost",
+                "supportsComputerUseConfig",
+            ] {
                 assert!(row.get(key).is_some(), "row missing {key}: {row}");
             }
             assert_eq!(row["input"], json!(["text"]));
-            assert_eq!(row["cost"], json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}));
+            assert_eq!(
+                row["cost"],
+                json!({"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0})
+            );
         }
     }
 
@@ -570,7 +652,11 @@ mod tests {
         server.join().expect("server");
         let report = refresh(&dir, Some("mockprov")).expect("second refresh");
         assert_eq!(report[0].discovered, Vec::<String>::new());
-        assert!(report[0].note.as_deref().unwrap_or("").starts_with("cache fresh"));
+        assert!(report[0]
+            .note
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("cache fresh"));
     }
 
     #[test]

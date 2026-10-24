@@ -19,11 +19,18 @@ use serde_json::Value;
 use super::TestHome;
 
 /// The fixture `HOME` the goldens were recorded against.
-pub(crate) const FIXTURE_HOME: &str = "/home/kaneki/fleet-split/runs/omp-rust/webui-port/fixture/home";
+pub(crate) const FIXTURE_HOME: &str =
+    "/home/kaneki/fleet-split/runs/omp-rust/webui-port/fixture/home";
 /// `golden/_index.json` + `NNN.json` (`{request, status, body}`).
 pub(crate) const GOLDEN_DIR: &str = "/home/kaneki/fleet-split/runs/omp-rust/webui-port/golden";
 
-const RELATIVE_RANGES: [&str; 5] = ["range=1h", "range=24h", "range=7d", "range=30d", "range=90d"];
+const RELATIVE_RANGES: [&str; 5] = [
+    "range=1h",
+    "range=24h",
+    "range=7d",
+    "range=30d",
+    "range=90d",
+];
 
 /// A fresh temp `HOME` whose sessions dir links to the fixture, with every
 /// fixture session parsed and applied into its stats db. `None` (test should
@@ -41,8 +48,14 @@ pub(crate) fn fixture_home() -> Option<TestHome> {
     let batch: Vec<crate::db::ParsedSession> = crate::parser::list_all_session_files()
         .into_iter()
         .map(|file| {
-            let result = crate::parser::parse_session_file(&file, 0, None, false).expect("parse fixture session");
-            crate::db::ParsedSession { session_file: file, result, rebuild: false, replay: false }
+            let result = crate::parser::parse_session_file(&file, 0, None, false)
+                .expect("parse fixture session");
+            crate::db::ParsedSession {
+                session_file: file,
+                result,
+                rebuild: false,
+                replay: false,
+            }
         })
         .collect();
     crate::db::apply_session_parse_results(&batch).expect("apply fixture sessions");
@@ -56,10 +69,13 @@ pub(crate) fn fixture_home() -> Option<TestHome> {
 /// Unknown request or unreadable golden file.
 pub(crate) fn golden(request: &str) -> (u16, Value) {
     let index: Value = read_json(&Path::new(GOLDEN_DIR).join("_index.json"));
-    let entry = index.get(request).unwrap_or_else(|| panic!("no golden for {request}"));
+    let entry = index
+        .get(request)
+        .unwrap_or_else(|| panic!("no golden for {request}"));
     let file = entry["file"].as_str().expect("golden file name");
     let recorded = read_json(&Path::new(GOLDEN_DIR).join(file));
-    let status = u16::try_from(recorded["status"].as_u64().expect("status")).expect("status fits u16");
+    let status =
+        u16::try_from(recorded["status"].as_u64().expect("status")).expect("status fits u16");
     (status, recorded["body"].clone())
 }
 
@@ -68,7 +84,12 @@ pub(crate) fn golden_requests(path: &str) -> Vec<String> {
     let index: Value = read_json(&Path::new(GOLDEN_DIR).join("_index.json"));
     index
         .as_object()
-        .map(|o| o.keys().filter(|k| k.split('?').next() == Some(path)).cloned().collect())
+        .map(|o| {
+            o.keys()
+                .filter(|k| k.split('?').next() == Some(path))
+                .cloned()
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -83,11 +104,16 @@ pub(crate) fn assert_golden(request: &str, actual: &Value, home: &TestHome) {
     let shape_only = RELATIVE_RANGES.iter().any(|r| request.contains(r));
     let mut diffs = Vec::new();
     diff(&actual, &expected, "$", shape_only, &mut diffs);
-    assert!(diffs.is_empty(), "{request} differs from TS golden:\n{}", diffs.join("\n"));
+    assert!(
+        diffs.is_empty(),
+        "{request} differs from TS golden:\n{}",
+        diffs.join("\n")
+    );
 }
 
 fn read_json(path: &Path) -> Value {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
 }
 
@@ -95,7 +121,11 @@ fn remap(value: &Value, from: &str) -> Value {
     match value {
         Value::String(s) => Value::String(s.replace(from, FIXTURE_HOME)),
         Value::Array(items) => Value::Array(items.iter().map(|v| remap(v, from)).collect()),
-        Value::Object(map) => Value::Object(map.iter().map(|(k, v)| (k.replace(from, FIXTURE_HOME), remap(v, from))).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.replace(from, FIXTURE_HOME), remap(v, from)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -121,14 +151,21 @@ fn diff(actual: &Value, expected: &Value, path: &str, shape_only: bool, out: &mu
     }
     match (actual, expected) {
         (Value::Number(a), Value::Number(b)) => {
-            let (a, b) = (a.as_f64().unwrap_or(f64::NAN), b.as_f64().unwrap_or(f64::NAN));
+            let (a, b) = (
+                a.as_f64().unwrap_or(f64::NAN),
+                b.as_f64().unwrap_or(f64::NAN),
+            );
             if !shape_only && !same_num(a, b) {
                 out.push(format!("{path}: rust {a} != ts {b}"));
             }
         }
         (Value::Array(a), Value::Array(b)) => {
             if !shape_only && a.len() != b.len() {
-                out.push(format!("{path}: rust len {} != ts len {}", a.len(), b.len()));
+                out.push(format!(
+                    "{path}: rust len {} != ts len {}",
+                    a.len(),
+                    b.len()
+                ));
                 return;
             }
             for (i, (x, y)) in a.iter().zip(b).enumerate() {

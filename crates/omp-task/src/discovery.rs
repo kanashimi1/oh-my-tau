@@ -121,6 +121,9 @@ mod tests {
         assert_eq!(result.agent_count(), 1);
         assert_eq!(result.failure_count(), 1);
         assert!(result.get_agent("good").is_some());
-        assert_eq!(result.get_agent("good").unwrap().source, AgentSource::Project);
+        assert_eq!(
+            result.get_agent("good").unwrap().source,
+            AgentSource::Project
+        );
     }
 }

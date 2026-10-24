@@ -51,8 +51,8 @@ pub use context::{
 };
 pub use convert::{convert_message, convert_to_llm};
 pub use cut::{
-    find_cut_point, plan_boundary, plan_compaction, plan_region, BoundaryEntry,
-    CompactionBoundary, CompactionPreparation, CutPoint, PlanError,
+    find_cut_point, plan_boundary, plan_compaction, plan_region, BoundaryEntry, CompactionBoundary,
+    CompactionPreparation, CutPoint, PlanError,
 };
 pub use handoff::{
     append_handoff, generate_handoff_from_context, handoff_compaction_entry,

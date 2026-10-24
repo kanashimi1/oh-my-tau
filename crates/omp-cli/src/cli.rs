@@ -217,11 +217,7 @@ fn max_time_captures(s: &str) -> Option<(f64, f64)> {
     if num.is_empty() || !num.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         return None;
     }
-    if !num
-        .chars()
-        .all(|c| c.is_ascii_digit() || c == '.')
-        || num.matches('.').count() > 1
-    {
+    if !num.chars().all(|c| c.is_ascii_digit() || c == '.') || num.matches('.').count() > 1 {
         return None;
     }
     num.parse::<f64>().ok().map(|v| (v, mult))
@@ -362,7 +358,8 @@ pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
                 trusted_flag_count += 1;
             }
             if arg == "--goal"
-                && (i + 1 >= args.len() || (equals_value_index.is_none() && args[i + 1].starts_with('-')))
+                && (i + 1 >= args.len()
+                    || (equals_value_index.is_none() && args[i + 1].starts_with('-')))
             {
                 invalid.push("--goal requires an objective.".to_string());
                 if i + 1 < args.len() {
@@ -416,7 +413,9 @@ pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
                 "-p" | "--print" => a.print = true,
                 "--no-extensions" => a.no_extensions = true,
                 "--dump-system-prompt" => a.dump_system_prompt = true,
-                other if other.starts_with('@') => push_message(&mut messages, &mut images, other.to_string())?,
+                other if other.starts_with('@') => {
+                    push_message(&mut messages, &mut images, other.to_string())?
+                }
                 "-" => push_message(&mut messages, &mut images, "-".to_string())?,
                 other if !other.starts_with('-') => {
                     push_message(&mut messages, &mut images, other.to_string())?;
@@ -433,7 +432,14 @@ pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
         i += 1;
     }
 
-    finish(a, &messages, images, &invalid, &unrecognized, trusted_flag_count)
+    finish(
+        a,
+        &messages,
+        images,
+        &invalid,
+        &unrecognized,
+        trusted_flag_count,
+    )
 }
 
 /// Post-parse validation (TS end-of-`parseArgs` checks) and error reporting
@@ -627,7 +633,10 @@ mod tests {
 
     #[test]
     fn fork_takes_value() {
-        assert_eq!(parse(&["--fork", "f1"]).unwrap().fork.as_deref(), Some("f1"));
+        assert_eq!(
+            parse(&["--fork", "f1"]).unwrap().fork.as_deref(),
+            Some("f1")
+        );
         assert_eq!(parse(&["--fork=f2"]).unwrap().fork.as_deref(), Some("f2"));
     }
 
@@ -649,7 +658,10 @@ mod tests {
         assert_eq!(a.max_time, Some(600.0));
         assert_eq!(parse(&["--max-time", "5s"]).unwrap().max_time, Some(5.0));
         assert_eq!(parse(&["--max-time", "10m"]).unwrap().max_time, Some(600.0));
-        assert_eq!(parse(&["--max-time", "1.5h"]).unwrap().max_time, Some(5400.0));
+        assert_eq!(
+            parse(&["--max-time", "1.5h"]).unwrap().max_time,
+            Some(5400.0)
+        );
         let err = parse(&["--max-time", "abc"]).unwrap_err().to_string();
         assert_eq!(
             err,
@@ -695,14 +707,32 @@ mod tests {
 
     #[test]
     fn config_and_add_dir_repeatable() {
-        let a = parse(&["--config", "a.yml", "--config", "b.yml", "--add-dir", "/tmp", "--add-dir", "/var"]).unwrap();
+        let a = parse(&[
+            "--config",
+            "a.yml",
+            "--config",
+            "b.yml",
+            "--add-dir",
+            "/tmp",
+            "--add-dir",
+            "/var",
+        ])
+        .unwrap();
         assert_eq!(a.config, ["a.yml", "b.yml"]);
         assert_eq!(a.add_dir, [PathBuf::from("/tmp"), PathBuf::from("/var")]);
     }
 
     #[test]
     fn models_tools_skills_split_csv() {
-        let a = parse(&["--models", " a , b ,,c ", "--tools", "read, bash", "--skills", "git-*"]).unwrap();
+        let a = parse(&[
+            "--models",
+            " a , b ,,c ",
+            "--tools",
+            "read, bash",
+            "--skills",
+            "git-*",
+        ])
+        .unwrap();
         assert_eq!(a.models, ["a", "b", "", "c"]); // TS maps trim, keeps empty parts
         assert_eq!(a.tools_csv.as_deref(), Some("read,bash"));
         assert_eq!(a.skills, ["git-*"]);
@@ -711,7 +741,13 @@ mod tests {
     #[test]
     fn approval_mode_validated() {
         for m in ["always-ask", "write", "yolo"] {
-            assert_eq!(parse(&["--approval-mode", m]).unwrap().approval_mode.as_deref(), Some(m));
+            assert_eq!(
+                parse(&["--approval-mode", m])
+                    .unwrap()
+                    .approval_mode
+                    .as_deref(),
+                Some(m)
+            );
         }
         let err = parse(&["--approval-mode", "xx"]).unwrap_err().to_string();
         assert_eq!(
@@ -729,13 +765,24 @@ mod tests {
             err,
             "Invalid --service-tier value: \"xx\". Expected one of: none, auto, default, flex, scale, priority, ultrafast.\nRun `omp --help` for available flags."
         );
-        assert_eq!(parse(&["--service-tier", "flex"]).unwrap().service_tier.as_deref(), Some("flex"));
+        assert_eq!(
+            parse(&["--service-tier", "flex"])
+                .unwrap()
+                .service_tier
+                .as_deref(),
+            Some("flex")
+        );
     }
 
     #[test]
     fn thinking_validated() {
-        for t in ["off", "minimal", "low", "medium", "high", "xhigh", "max", "auto"] {
-            assert_eq!(parse(&["--thinking", t]).unwrap().thinking.as_deref(), Some(t));
+        for t in [
+            "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto",
+        ] {
+            assert_eq!(
+                parse(&["--thinking", t]).unwrap().thinking.as_deref(),
+                Some(t)
+            );
         }
         let err = parse(&["--thinking", "huge"]).unwrap_err().to_string();
         assert!(err.contains("Invalid --thinking value"), "{err}");
@@ -743,12 +790,16 @@ mod tests {
 
     #[test]
     fn trusted_extension_validations() {
-        let err = parse(&["--trusted-extension", "/abs/path", "-e", "/x"]).unwrap_err().to_string();
+        let err = parse(&["--trusted-extension", "/abs/path", "-e", "/x"])
+            .unwrap_err()
+            .to_string();
         assert_eq!(
             err,
             "--trusted-extension cannot be combined with --extension, -e, or --hook\nRun `omp --help` for available flags."
         );
-        let err = parse(&["--trusted-extension", "relative/path"]).unwrap_err().to_string();
+        let err = parse(&["--trusted-extension", "relative/path"])
+            .unwrap_err()
+            .to_string();
         assert_eq!(
             err,
             "--trusted-extension requires an absolute path: relative/path\nRun `omp --help` for available flags."
@@ -785,13 +836,28 @@ mod tests {
     #[test]
     fn valueless_flags_accepted() {
         let a = parse(&[
-            "--allow-home", "--no-tools", "--no-lsp", "--no-pty", "--hide-thinking",
-            "--advisor", "--external-thinking", "--prewalk", "--no-prewalk", "--plan-yolo",
-            "--print-thoughts", "--no-skills", "--no-rules", "--no-title", "--no-ui",
-        ]).unwrap();
+            "--allow-home",
+            "--no-tools",
+            "--no-lsp",
+            "--no-pty",
+            "--hide-thinking",
+            "--advisor",
+            "--external-thinking",
+            "--prewalk",
+            "--no-prewalk",
+            "--plan-yolo",
+            "--print-thoughts",
+            "--no-skills",
+            "--no-rules",
+            "--no-title",
+            "--no-ui",
+        ])
+        .unwrap();
         assert!(a.allow_home && a.no_tools && a.no_lsp && a.no_pty && a.hide_thinking);
         assert!(a.advisor && a.external_thinking && a.prewalk && a.no_prewalk);
-        assert!(a.plan_yolo && a.print_thoughts && a.no_skills && a.no_rules && a.no_title && a.no_ui);
+        assert!(
+            a.plan_yolo && a.print_thoughts && a.no_skills && a.no_rules && a.no_title && a.no_ui
+        );
     }
 
     #[test]
@@ -807,12 +873,18 @@ mod tests {
         let a = parse(&["--profile", "work", "--alias", "omp-work"]).unwrap();
         assert_eq!(a.profile.as_deref(), Some("work"));
         assert_eq!(a.alias.as_deref(), Some("omp-work"));
-        assert_eq!(parse(&["--profile=p2"]).unwrap().profile.as_deref(), Some("p2"));
+        assert_eq!(
+            parse(&["--profile=p2"]).unwrap().profile.as_deref(),
+            Some("p2")
+        );
     }
 
     #[test]
     fn export_and_fork_flags() {
-        assert_eq!(parse(&["--export", "s.jsonl"]).unwrap().export.as_deref(), Some("s.jsonl"));
+        assert_eq!(
+            parse(&["--export", "s.jsonl"]).unwrap().export.as_deref(),
+            Some("s.jsonl")
+        );
         assert!(parse(&["--from-claude"]).unwrap().from_claude);
         assert!(parse(&["--from-codex"]).unwrap().from_codex);
     }

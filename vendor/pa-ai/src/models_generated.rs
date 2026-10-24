@@ -4433,7 +4433,9 @@ fn model_from_raw(raw: &RawModel) -> Model {
         // Only the Prime Inference rows carry authored compat (a deliberate offline floor, see
         // `prime_inference_fallback_declares_no_reasoning_controls`); every other row resolves
         // through the shared policy resolver (`crate::compat`) from provider/id/baseUrl alone.
-        compat: (raw.provider == "prime-inference").then(|| raw.compat.as_ref().map(compat_from_raw)).flatten(),
+        compat: (raw.provider == "prime-inference")
+            .then(|| raw.compat.as_ref().map(compat_from_raw))
+            .flatten(),
     }
 }
 
@@ -4572,7 +4574,12 @@ mod tests {
         // The direct z.ai provider keeps the toggle: the resolver picks the zai dialect from the host.
         let glm = get_model("zai", "glm-4.7").expect("direct zai template is compiled");
         let resolved = crate::compat::resolve_for_model(glm).expect("policy resolves");
-        let compat = resolved.compat.expect("openai-completions has a compat record");
-        assert_eq!(compat.get("thinkingFormat"), Some(&serde_json::json!("zai")));
+        let compat = resolved
+            .compat
+            .expect("openai-completions has a compat record");
+        assert_eq!(
+            compat.get("thinkingFormat"),
+            Some(&serde_json::json!("zai"))
+        );
     }
 }

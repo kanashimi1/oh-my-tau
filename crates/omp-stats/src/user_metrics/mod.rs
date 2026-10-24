@@ -94,7 +94,10 @@ fn count_matches(text: &str, re: &Regex) -> i64 {
 /// run with a tripled letter ("CMOOON"), before its caps ratio can count as
 /// yelling. A lone acronym / identifier / env var never does.
 fn is_shouted_sentence(sentence: &str) -> bool {
-    let runs: Vec<&str> = UPPER_RUN_RE.find_iter(sentence).map(|m| m.as_str()).collect();
+    let runs: Vec<&str> = UPPER_RUN_RE
+        .find_iter(sentence)
+        .map(|m| m.as_str())
+        .collect();
     match runs.first() {
         None => false,
         Some(_) if runs.len() >= 2 => true,
@@ -112,7 +115,8 @@ fn count_yelling_sentences(text: &str) -> i64 {
         let letters = count_matches(sentence, &LETTER_RE);
         if letters >= YELLING_MIN_LETTERS {
             let upper = count_matches(sentence, &UPPER_LETTER_RE);
-            if (upper as f64 / letters as f64) > YELLING_THRESHOLD && is_shouted_sentence(sentence) {
+            if (upper as f64 / letters as f64) > YELLING_THRESHOLD && is_shouted_sentence(sentence)
+            {
                 count += 1;
             }
         }
@@ -164,7 +168,9 @@ fn truncate_utf16(text: &str, max: usize) -> String {
 }
 
 fn count_non_empty_lines(text: &str) -> i64 {
-    text.split('\n').filter(|line| line.chars().any(|c| !is_js_space(c))).count() as i64
+    text.split('\n')
+        .filter(|line| line.chars().any(|c| !is_js_space(c)))
+        .count() as i64
 }
 
 /// Compute behavioral metrics for a user message.
@@ -184,14 +190,19 @@ pub fn compute_user_message_metrics(text: &str) -> UserMessageMetrics {
     // emotional outbursts.
     let prose = js_trim(&strip_structured_content(&trimmed));
     if prose.is_empty() || count_non_empty_lines(&prose) >= MAX_PROSE_LINES {
-        return UserMessageMetrics { chars, words, ..EMPTY_USER_METRICS };
+        return UserMessageMetrics {
+            chars,
+            words,
+            ..EMPTY_USER_METRICS
+        };
     }
 
     let anguish = count_matches(&prose, &DRAMA_RE)
         + count_matches(&prose, &ANGUISH_RE)
         + count_matches(&prose, &DUDE_RE)
         + count_sad_emoticons(&prose) as i64;
-    let negation = i64::from(NEGATION_LEAD_RE.is_match(&prose).unwrap_or(false)) + count_matches(&prose, &NEGATION_PHRASE_RE);
+    let negation = i64::from(NEGATION_LEAD_RE.is_match(&prose).unwrap_or(false))
+        + count_matches(&prose, &NEGATION_PHRASE_RE);
     let repetition =
         count_matches(&prose, &REPETITION_RECALL_RE) + count_matches(&prose, &REPETITION_STILL_RE);
     let blame = count_matches(&prose, &BLAME_YOU_RE)

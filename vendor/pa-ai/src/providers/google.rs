@@ -350,7 +350,10 @@ async fn run_stream(
                     &sse.data[..sse.data.len().min(200)]
                 ))
             })?;
-            let parsed = match parsed.get("response").filter(|r| r.get("candidates").is_some()) {
+            let parsed = match parsed
+                .get("response")
+                .filter(|r| r.get("candidates").is_some())
+            {
                 Some(inner) => inner.clone(),
                 None => parsed,
             };
@@ -369,7 +372,10 @@ async fn run_stream(
                 &sse.data[..sse.data.len().min(200)]
             ))
         })?;
-        let parsed = match parsed.get("response").filter(|r| r.get("candidates").is_some()) {
+        let parsed = match parsed
+            .get("response")
+            .filter(|r| r.get("candidates").is_some())
+        {
             Some(inner) => inner.clone(),
             None => parsed,
         };

@@ -62,7 +62,10 @@ fn strip_and_fold(node: &Value) -> Value {
             let mut out = serde_json::Map::with_capacity(map.len());
             let folded_enum = const_fold(map);
             for (key, value) in map {
-                if key == "$schema" || key == "nullable" || (folded_enum.is_some() && COMBINERS.contains(&key.as_str())) {
+                if key == "$schema"
+                    || key == "nullable"
+                    || (folded_enum.is_some() && COMBINERS.contains(&key.as_str()))
+                {
                     continue;
                 }
                 out.insert(key.clone(), strip_and_fold(value));
@@ -86,11 +89,18 @@ fn const_fold(map: &serde_json::Map<String, Value>) -> Option<Vec<Value>> {
     for combiner in COMBINERS {
         if let Some(Value::Array(variants)) = map.get(combiner) {
             if !variants.is_empty()
-                && variants
-                    .iter()
-                    .all(|v| v.as_object().is_some_and(|o| o.len() == 1 && o.contains_key("const")))
+                && variants.iter().all(|v| {
+                    v.as_object()
+                        .is_some_and(|o| o.len() == 1 && o.contains_key("const"))
+                })
             {
-                return Some(variants.iter().filter_map(|v| v.get("const")).cloned().collect());
+                return Some(
+                    variants
+                        .iter()
+                        .filter_map(|v| v.get("const"))
+                        .cloned()
+                        .collect(),
+                );
             }
         }
     }

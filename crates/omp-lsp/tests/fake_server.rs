@@ -43,8 +43,11 @@ async fn fake_server_full_session() {
             }
         }
     });
-    std::fs::write(cwd.join("lsp.json"), serde_json::to_string_pretty(&lsp_json).unwrap())
-        .expect("write lsp.json");
+    std::fs::write(
+        cwd.join("lsp.json"),
+        serde_json::to_string_pretty(&lsp_json).unwrap(),
+    )
+    .expect("write lsp.json");
     let file_path = cwd.join("src").join("main.fake");
     std::fs::write(&file_path, "fake document body\n").expect("write source file");
 
@@ -59,7 +62,10 @@ async fn fake_server_full_session() {
         .resolved_command
         .as_deref()
         .unwrap_or_else(|| panic!("command should resolve: {}", server.command));
-    assert!(resolved.ends_with("fake_lsp"), "unexpected resolved command: {resolved}");
+    assert!(
+        resolved.ends_with("fake_lsp"),
+        "unexpected resolved command: {resolved}"
+    );
 
     // 2. Initialize handshake.
     let client = get_or_create_client(&server, &cwd, Some(Duration::from_secs(10)), None)

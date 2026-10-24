@@ -110,7 +110,11 @@ impl BridgePolicy {
     /// [`set_session_hooks`]).
     fn session(env: &Env) -> Self {
         let (before, after) = SESSION_HOOKS.read().expect("session hooks lock").clone();
-        Self { tools: session_tools(env), before, after }
+        Self {
+            tools: session_tools(env),
+            before,
+            after,
+        }
     }
 
     /// An enabled, bridge-callable tool by name.
@@ -122,7 +126,9 @@ impl BridgePolicy {
     }
 
     fn callable(&self) -> impl Iterator<Item = &Arc<dyn AgentTool>> {
-        self.tools.iter().filter(|t| refused_reason(t.name()).is_none())
+        self.tools
+            .iter()
+            .filter(|t| refused_reason(t.name()).is_none())
     }
 }
 
@@ -166,7 +172,12 @@ impl EvalBridge {
     #[must_use]
     pub fn new(env: Arc<Env>, ctx: OpCtx, rt: tokio::runtime::Handle) -> Self {
         let policy = BridgePolicy::session(&env);
-        Self { env, ctx, rt, policy }
+        Self {
+            env,
+            ctx,
+            rt,
+            policy,
+        }
     }
 
     #[cfg(test)]
@@ -194,10 +205,7 @@ impl EvalBridge {
         if op == "__prelude__" {
             // Kernel-side capability query: answer with the tool descriptor
             // when this host can serve `name`, else refuse explicitly.
-            let name = args
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            let name = args.get("name").and_then(Value::as_str).unwrap_or_default();
             return self.policy.find(name).map_or_else(
                 || Err(format!("prelude capability not supported: {name}")),
                 |tool| Ok(tool_descriptor(&tool)),
@@ -215,7 +223,9 @@ impl EvalBridge {
             "write" => self.write_helper(args).await,
             "output" => self.output_helper(&args),
             "env" => env_helper(&args),
-            "tool.list" => Ok(Value::Array(self.policy.callable().map(tool_descriptor).collect())),
+            "tool.list" => Ok(Value::Array(
+                self.policy.callable().map(tool_descriptor).collect(),
+            )),
             "tool.describe" => {
                 let name = args
                     .get("name")
@@ -354,8 +364,9 @@ impl EvalBridge {
                 let value = apply_query(&parsed, query).unwrap_or(Value::Null);
                 selected = match value {
                     Value::Null => "null".to_string(),
-                    other => serde_json::to_string_pretty(&other)
-                        .unwrap_or_else(|_| other.to_string()),
+                    other => {
+                        serde_json::to_string_pretty(&other).unwrap_or_else(|_| other.to_string())
+                    }
                 };
             } else if offset.is_some() || limit.is_some() {
                 let start = offset.unwrap_or(1).max(1);
@@ -463,7 +474,10 @@ impl EvalBridge {
             arguments: params.clone(),
             thought_signature: None,
         };
-        let context = || AgentContext { tools: self.policy.tools.clone(), ..AgentContext::default() };
+        let context = || AgentContext {
+            tools: self.policy.tools.clone(),
+            ..AgentContext::default()
+        };
         if let Some(before) = self.policy.before.as_ref() {
             let hook = before(
                 BeforeToolCallContext {
@@ -621,8 +635,8 @@ fn bridge_value(result: &AgentToolResult) -> Value {
             })),
         }
     }
-    let details_empty = result.details.is_null()
-        || result.details.as_object().is_some_and(|o| o.is_empty());
+    let details_empty =
+        result.details.is_null() || result.details.as_object().is_some_and(|o| o.is_empty());
     if result.is_error != Some(true) && images.is_empty() && details_empty {
         return Value::String(text);
     }
@@ -677,7 +691,12 @@ fn env_helper(args: &Value) -> Result<Value, String> {
         (None, _) => {
             let mut merged: BTreeMap<String, String> = std::env::vars().collect();
             merged.extend(overlay.iter().map(|(k, v)| (k.clone(), v.clone())));
-            Value::Object(merged.into_iter().map(|(k, v)| (k, Value::String(v))).collect())
+            Value::Object(
+                merged
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::String(v)))
+                    .collect(),
+            )
         }
         (Some(k), Some(v)) => {
             if k.is_empty() || k.contains(['=', '\0']) || v.contains('\0') {
@@ -782,8 +801,8 @@ mod tests {
     use pa_agent::types::{AfterToolCallResult, BeforeToolCallResult};
 
     fn env(tag: &str) -> Arc<Env> {
-        let dir = std::env::temp_dir()
-            .join(format!("omp-rs-bridge-test-{tag}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("omp-rs-bridge-test-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         Arc::new(Env::new(&dir, false))
     }
@@ -809,16 +828,28 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
         let before: BeforeToolCallFn = Arc::new(|ctx: BeforeToolCallContext, _| {
             Box::pin(async move {
-                Ok((ctx.tool_call.name == "bash").then(|| BeforeToolCallResult {
-                    block: true,
-                    reason: Some("bash denied by policy".into()),
-                    ..BeforeToolCallResult::default()
-                }))
+                Ok(
+                    (ctx.tool_call.name == "bash").then(|| BeforeToolCallResult {
+                        block: true,
+                        reason: Some("bash denied by policy".into()),
+                        ..BeforeToolCallResult::default()
+                    }),
+                )
             })
         });
-        let b = bridge(&env, BridgePolicy { tools: all_tools(&env), before: Some(before), after: None });
+        let b = bridge(
+            &env,
+            BridgePolicy {
+                tools: all_tools(&env),
+                before: Some(before),
+                after: None,
+            },
+        );
         for op in ["tool.bash", "bash"] {
-            let err = b.dispatch(op, json!({"command": "touch ran.txt"})).await.unwrap_err();
+            let err = b
+                .dispatch(op, json!({"command": "touch ran.txt"}))
+                .await
+                .unwrap_err();
             assert!(err.contains("bash denied by policy"), "{op}: {err}");
         }
         assert!(!marker.exists(), "blocked bash must not run");
@@ -835,8 +866,9 @@ mod tests {
         std::fs::write(env.cwd.join("public.txt"), "hello\n").unwrap();
         let before: BeforeToolCallFn = Arc::new(|ctx: BeforeToolCallContext, _| {
             Box::pin(async move {
-                let wants_secret =
-                    ctx.args["path"].as_str().is_some_and(|p| p.starts_with("secret.txt"));
+                let wants_secret = ctx.args["path"]
+                    .as_str()
+                    .is_some_and(|p| p.starts_with("secret.txt"));
                 Ok(wants_secret.then(|| BeforeToolCallResult {
                     args: Some(json!({"path": "public.txt"})),
                     ..BeforeToolCallResult::default()
@@ -845,17 +877,26 @@ mod tests {
         });
         let after: AfterToolCallFn = Arc::new(|ctx: AfterToolCallContext, _| {
             Box::pin(async move {
-                Ok((ctx.tool_call.name == "write").then(|| AfterToolCallResult {
-                    content: Some(vec![ToolResultContent::text("[redacted]")]),
-                    ..AfterToolCallResult::default()
-                }))
+                Ok(
+                    (ctx.tool_call.name == "write").then(|| AfterToolCallResult {
+                        content: Some(vec![ToolResultContent::text("[redacted]")]),
+                        ..AfterToolCallResult::default()
+                    }),
+                )
             })
         });
         let b = bridge(
             &env,
-            BridgePolicy { tools: all_tools(&env), before: Some(before), after: Some(after) },
+            BridgePolicy {
+                tools: all_tools(&env),
+                before: Some(before),
+                after: Some(after),
+            },
         );
-        let v = b.dispatch("tool.read", json!({"path": "secret.txt"})).await.unwrap();
+        let v = b
+            .dispatch("tool.read", json!({"path": "secret.txt"}))
+            .await
+            .unwrap();
         let text = bridge_text(&v);
         assert!(text.contains("hello") && !text.contains("TOKEN"), "{text}");
         let v = b
@@ -869,13 +910,29 @@ mod tests {
     async fn tools_not_enabled_for_the_session_are_refused() {
         let env = env("gate");
         std::fs::write(env.cwd.join("a.txt"), "a\n").unwrap();
-        let tools: Vec<_> = all_tools(&env).into_iter().filter(|t| t.name() == "read").collect();
-        let b = bridge(&env, BridgePolicy { tools, before: None, after: None });
+        let tools: Vec<_> = all_tools(&env)
+            .into_iter()
+            .filter(|t| t.name() == "read")
+            .collect();
+        let b = bridge(
+            &env,
+            BridgePolicy {
+                tools,
+                before: None,
+                after: None,
+            },
+        );
         for op in ["tool.bash", "bash", "tool.think", "think", "tool.yield"] {
-            let err = b.dispatch(op, json!({"command": "true"})).await.unwrap_err();
+            let err = b
+                .dispatch(op, json!({"command": "true"}))
+                .await
+                .unwrap_err();
             assert!(err.contains("unknown eval host op"), "{op}: {err}");
         }
-        assert!(b.dispatch("tool.describe", json!({"name": "bash"})).await.is_err());
+        assert!(b
+            .dispatch("tool.describe", json!({"name": "bash"}))
+            .await
+            .is_err());
         let listed = b.dispatch("tool.list", json!({})).await.unwrap();
         assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
         assert!(b.dispatch("read", json!({"path": "a.txt"})).await.is_ok());
@@ -884,10 +941,20 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn eval_checkpoint_and_rewind_are_refused_through_the_bridge() {
         let env = env("refuse");
-        let b = bridge(&env, BridgePolicy { tools: all_tools(&env), before: None, after: None });
+        let b = bridge(
+            &env,
+            BridgePolicy {
+                tools: all_tools(&env),
+                before: None,
+                after: None,
+            },
+        );
         let started = std::time::Instant::now();
         for op in ["eval", "tool.eval", "checkpoint", "tool.rewind"] {
-            let err = b.dispatch(op, json!({"language": "py", "code": "1"})).await.unwrap_err();
+            let err = b
+                .dispatch(op, json!({"language": "py", "code": "1"}))
+                .await
+                .unwrap_err();
             assert!(err.contains("cannot run"), "{op}: {err}");
         }
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
@@ -902,12 +969,28 @@ mod tests {
     #[tokio::test]
     async fn env_set_goes_to_the_session_overlay_not_the_host_environment() {
         let env = env("envop");
-        let b = bridge(&env, BridgePolicy { tools: Vec::new(), before: None, after: None });
+        let b = bridge(
+            &env,
+            BridgePolicy {
+                tools: Vec::new(),
+                before: None,
+                after: None,
+            },
+        );
         let key = format!("OMP_RS_BRIDGE_ENV_TEST_{}", std::process::id());
-        let set = b.dispatch("env", json!({"key": key, "value": "overlay"})).await.unwrap();
+        let set = b
+            .dispatch("env", json!({"key": key, "value": "overlay"}))
+            .await
+            .unwrap();
         assert_eq!(set, json!("overlay"));
-        assert!(std::env::var(&key).is_err(), "host environment must not change");
-        assert_eq!(b.dispatch("env", json!({"key": key})).await.unwrap(), json!("overlay"));
+        assert!(
+            std::env::var(&key).is_err(),
+            "host environment must not change"
+        );
+        assert_eq!(
+            b.dispatch("env", json!({"key": key})).await.unwrap(),
+            json!("overlay")
+        );
         let all = b.dispatch("env", json!({})).await.unwrap();
         assert_eq!(all[&key], json!("overlay"));
         assert!(env_overlay().contains(&(key.clone(), "overlay".to_string())));
@@ -915,7 +998,12 @@ mod tests {
         let path = b.dispatch("env", json!({"key": "PATH"})).await.unwrap();
         assert_eq!(path.as_str(), std::env::var("PATH").ok().as_deref());
         for bad in ["", "A=B", "A\0B"] {
-            assert!(b.dispatch("env", json!({"key": bad, "value": "v"})).await.is_err(), "{bad:?}");
+            assert!(
+                b.dispatch("env", json!({"key": bad, "value": "v"}))
+                    .await
+                    .is_err(),
+                "{bad:?}"
+            );
         }
     }
 }

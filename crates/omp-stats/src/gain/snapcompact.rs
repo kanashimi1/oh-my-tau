@@ -54,18 +54,27 @@ fn mtime_ms(meta: &fs::Metadata) -> i64 {
 }
 
 /// Read, cache and filter the snapcompact records.
-pub(crate) fn read_snapcompact_records(cutoff: Option<i64>, project: Option<&str>) -> Result<SnapcompactSets> {
+pub(crate) fn read_snapcompact_records(
+    cutoff: Option<i64>,
+    project: Option<&str>,
+) -> Result<SnapcompactSets> {
     let file_path = savings_file_path();
 
     let meta = match fs::metadata(&file_path) {
         Ok(meta) => meta,
         // Missing file → zero records, never an error.
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SnapcompactSets { records: Vec::new(), projects: HashSet::new() });
+            return Ok(SnapcompactSets {
+                records: Vec::new(),
+                projects: HashSet::new(),
+            });
         }
         Err(err) => {
             tracing::debug!(error = %err, "gain-aggregator: failed to stat snapcompact-savings.jsonl");
-            return Ok(SnapcompactSets { records: Vec::new(), projects: HashSet::new() });
+            return Ok(SnapcompactSets {
+                records: Vec::new(),
+                projects: HashSet::new(),
+            });
         }
     };
 
@@ -78,11 +87,17 @@ pub(crate) fn read_snapcompact_records(cutoff: Option<i64>, project: Option<&str
             let text = match fs::read_to_string(&file_path) {
                 Ok(text) => text,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(SnapcompactSets { records: Vec::new(), projects: HashSet::new() });
+                    return Ok(SnapcompactSets {
+                        records: Vec::new(),
+                        projects: HashSet::new(),
+                    });
                 }
                 Err(err) => {
                     tracing::debug!(error = %err, "gain-aggregator: failed to read snapcompact-savings.jsonl");
-                    return Ok(SnapcompactSets { records: Vec::new(), projects: HashSet::new() });
+                    return Ok(SnapcompactSets {
+                        records: Vec::new(),
+                        projects: HashSet::new(),
+                    });
                 }
             };
             let mut records = Vec::new();
@@ -95,7 +110,10 @@ pub(crate) fn read_snapcompact_records(cutoff: Option<i64>, project: Option<&str
                     records.push(rec);
                 }
             }
-            *cache = Some(SnapcompactCache { key: cache_key, records: records.clone() });
+            *cache = Some(SnapcompactCache {
+                key: cache_key,
+                records: records.clone(),
+            });
             records
         }
     };
@@ -126,7 +144,8 @@ pub(crate) fn read_snapcompact_records(cutoff: Option<i64>, project: Option<&str
             projects.extend(session_projects.iter().cloned());
         }
         if let Some(project) = project {
-            let matched = session_projects.is_some_and(|sp| sp.iter().any(|p| super::matches_project(Some(p), project)));
+            let matched = session_projects
+                .is_some_and(|sp| sp.iter().any(|p| super::matches_project(Some(p), project)));
             if !matched {
                 continue;
             }

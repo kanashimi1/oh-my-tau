@@ -130,19 +130,34 @@ pub fn project_dir_display(project_dir: &str) -> (bool, String) {
     let within = |root: &str, p: &str| -> Option<String> {
         let root = root.trim_end_matches('/');
         let rest = p.strip_prefix(root)?;
-        let rest = rest.strip_prefix('/').or(if rest.is_empty() { Some("") } else { None })?;
+        let rest = rest
+            .strip_prefix('/')
+            .or(if rest.is_empty() { Some("") } else { None })?;
         Some(rest.to_string())
     };
     let tmp = std::env::temp_dir().display().to_string();
-    let mut scratch_roots = vec![tmp, format!("{home}/tmp"), "/tmp".to_string(), "/var/tmp".to_string()];
+    let mut scratch_roots = vec![
+        tmp,
+        format!("{home}/tmp"),
+        "/tmp".to_string(),
+        "/var/tmp".to_string(),
+    ];
     scratch_roots.dedup();
     for root in &scratch_roots {
         if let Some(rel) = within(root, project_dir) {
-            let shown = if rel.is_empty() { project_dir.to_string() } else { rel };
+            let shown = if rel.is_empty() {
+                project_dir.to_string()
+            } else {
+                rel
+            };
             return (true, shown);
         }
     }
-    for root in [format!("{home}/Projects"), format!("{home}/repos"), "/work".to_string()] {
+    for root in [
+        format!("{home}/Projects"),
+        format!("{home}/repos"),
+        "/work".to_string(),
+    ] {
         if let Some(rel) = within(&root, project_dir) {
             if !rel.is_empty() {
                 return (false, rel);
@@ -207,7 +222,7 @@ pub fn format_billing_summary(part: &BillingPart) -> Option<String> {
 mod tests {
     use std::fmt::Write as _;
 
-use super::*;
+    use super::*;
 
     #[test]
     fn format_number_compacts() {
@@ -252,7 +267,10 @@ use super::*;
 
     #[test]
     fn project_dir_display_strips_scratch_and_project_roots() {
-        assert_eq!(project_dir_display("/tmp/e2e-home-x/work"), (true, "e2e-home-x/work".into()));
+        assert_eq!(
+            project_dir_display("/tmp/e2e-home-x/work"),
+            (true, "e2e-home-x/work".into())
+        );
         assert_eq!(project_dir_display("/work/repo"), (false, "repo".into()));
         assert_eq!(project_dir_display("/srv/app"), (false, "/srv/app".into()));
     }

@@ -12,7 +12,8 @@ pub(super) fn count_sad_emoticons(text: &str) -> usize {
     let mut count = 0usize;
     let mut i = 0usize;
     while i < chars.len() {
-        let lead_ok = i == 0 || is_js_space(chars[i - 1]) || matches!(chars[i - 1], '.' | '!' | '?');
+        let lead_ok =
+            i == 0 || is_js_space(chars[i - 1]) || matches!(chars[i - 1], '.' | '!' | '?');
         if lead_ok && matches!(chars[i], ':' | ';') {
             let mut j = i + 1;
             if chars.get(j) == Some(&'-') {
@@ -57,7 +58,9 @@ fn stop_ing_at(chars: &[char], start: usize) -> Option<usize> {
         i += 1;
     }
     for end in (word_start + 4..=i).rev() {
-        if chars[end - 3..end].iter().copied().eq("ing".chars()) && !(end < n && is_js_word(chars[end])) {
+        if chars[end - 3..end].iter().copied().eq("ing".chars())
+            && !(end < n && is_js_word(chars[end]))
+        {
             return Some(end);
         }
     }

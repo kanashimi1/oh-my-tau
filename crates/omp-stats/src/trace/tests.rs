@@ -43,17 +43,23 @@ mod golden_tests {
     /// Map the golden's absolute fixture path into this test's temp home.
     fn map_file(home: &crate::testutil::TestHome, file_param: &str) -> String {
         let decoded = percent_decode(file_param);
-        decoded.replace(crate::testutil::golden::FIXTURE_HOME, &home.path().to_string_lossy())
+        decoded.replace(
+            crate::testutil::golden::FIXTURE_HOME,
+            &home.path().to_string_lossy(),
+        )
     }
 
     #[test]
     fn trace_requests_match_golden() {
-        let Some(home) = golden::fixture_home() else { return };
+        let Some(home) = golden::fixture_home() else {
+            return;
+        };
         let requests = golden::golden_requests("/api/session/trace");
         assert_eq!(requests.len(), 6, "expected 6 recorded trace requests");
         for request in requests {
             let file_param = query_param(&request, "file").expect("file param");
-            let trace = build_session_trace(&map_file(&home, file_param), None).expect("build trace");
+            let trace =
+                build_session_trace(&map_file(&home, file_param), None).expect("build trace");
             let actual = serde_json::to_value(&trace).expect("serialize trace");
             golden::assert_golden(&request, &actual, &home);
         }
@@ -61,7 +67,9 @@ mod golden_tests {
 
     #[test]
     fn sessions_requests_match_golden() {
-        let Some(home) = golden::fixture_home() else { return };
+        let Some(home) = golden::fixture_home() else {
+            return;
+        };
         let requests = golden::golden_requests("/api/sessions");
         assert_eq!(requests.len(), 2, "expected 2 recorded sessions requests");
         for request in requests {
@@ -85,7 +93,9 @@ fn path_outside_sessions_dir_is_trace_path_error() {
     let path_err = err
         .downcast_ref::<TracePathError>()
         .expect("must downcast to TracePathError");
-    assert!(path_err.to_string().contains("outside the sessions directory"));
+    assert!(path_err
+        .to_string()
+        .contains("outside the sessions directory"));
 }
 
 #[test]
@@ -95,8 +105,12 @@ fn non_transcript_name_is_trace_path_error() {
     std::fs::create_dir_all(&sessions).expect("create sessions dir");
     let not_transcript = sessions.join("notes.txt");
     std::fs::write(&not_transcript, b"{}").expect("write file");
-    let err = build_session_trace(not_transcript.to_str().unwrap(), None).expect_err("non-transcript must fail");
-    assert!(err.downcast_ref::<TracePathError>().is_some(), "must be TracePathError");
+    let err = build_session_trace(not_transcript.to_str().unwrap(), None)
+        .expect_err("non-transcript must fail");
+    assert!(
+        err.downcast_ref::<TracePathError>().is_some(),
+        "must be TracePathError"
+    );
 }
 
 #[test]
@@ -105,7 +119,8 @@ fn fingerprint_changes_after_append() {
     let sessions = home.path().join(".omp/agent/sessions/proj");
     std::fs::create_dir_all(&sessions).expect("create sessions dir");
     let file = sessions.join("2026-10-15T10-24-49-741Z_01a2-fingerprint.jsonl");
-    let line = r#"{"type":"session","cwd":"/tmp","title":"t","timestamp":"2026-10-15T10:24:49.741Z"}"#;
+    let line =
+        r#"{"type":"session","cwd":"/tmp","title":"t","timestamp":"2026-10-15T10:24:49.741Z"}"#;
     std::fs::write(&file, format!("{line}\n")).expect("write session");
 
     let before = trace_fingerprint_for_etag(file.to_str().unwrap()).expect("fingerprint");
@@ -114,7 +129,10 @@ fn fingerprint_changes_after_append() {
     // change, and mtime is the load-bearing half of it.
     std::fs::write(&file, format!("{line}\n{line}\n")).expect("append session");
     let after = trace_fingerprint_for_etag(file.to_str().unwrap()).expect("fingerprint");
-    assert_ne!(before, after, "fingerprint must change after appending to the file");
+    assert_ne!(
+        before, after,
+        "fingerprint must change after appending to the file"
+    );
 }
 
 #[test]
@@ -130,7 +148,9 @@ fn get_trace_entry_roundtrip() {
     .expect("write session");
     let entry = get_trace_entry(file.to_str().unwrap(), "e1").expect("get entry");
     assert!(entry.is_some(), "entry e1 must be found");
-    assert!(get_trace_entry(file.to_str().unwrap(), "missing").expect("get entry").is_none());
+    assert!(get_trace_entry(file.to_str().unwrap(), "missing")
+        .expect("get entry")
+        .is_none());
 }
 
 #[test]
@@ -143,7 +163,9 @@ fn get_trace_entry_keeps_compaction_payload() {
     let file = sessions.join("2026-10-15T10-24-49-741Z_01a2-compact.jsonl");
     let line = "{\"type\":\"compaction\",\"id\":\"c9\",\"timestamp\":\"2026-10-15T10:25:00.000Z\",\"tokensBefore\":142000,\"tokensAfter\":42000,\"summary\":\"shrunk context\"}";
     std::fs::write(&file, format!("{line}\n")).expect("write session");
-    let entry = get_trace_entry(file.to_str().unwrap(), "c9").expect("get entry").expect("entry c9");
+    let entry = get_trace_entry(file.to_str().unwrap(), "c9")
+        .expect("get entry")
+        .expect("entry c9");
     let value = serde_json::to_value(&entry).expect("serialize entry");
     assert_eq!(value["type"], "compaction");
     assert_eq!(value["tokensBefore"], 142000);
@@ -153,7 +175,8 @@ fn get_trace_entry_keeps_compaction_payload() {
 /// Write a minimal transcript with one model call so it has activity bounds.
 fn write_transcript(path: &std::path::Path, agent: Option<&str>, start_ms: i64) {
     let mut lines = vec![
-        "{\"type\":\"session\",\"cwd\":\"/tmp\",\"timestamp\":\"2026-10-15T10:24:49.741Z\"}".to_string(),
+        "{\"type\":\"session\",\"cwd\":\"/tmp\",\"timestamp\":\"2026-10-15T10:24:49.741Z\"}"
+            .to_string(),
     ];
     if let Some(agent) = agent {
         lines.push(format!(
@@ -179,21 +202,40 @@ fn grandchild_track_labels_and_advisor_span() {
     std::fs::create_dir_all(&artifacts_g).expect("create dirs");
     let root = sessions.join("2026-10-15T10-24-49-741Z_01a2-root.jsonl");
     write_transcript(&root, Some("chief"), 1_700_000_000_000);
-    write_transcript(&artifacts_c.join("C.jsonl"), Some("explore"), 1_700_000_000_100);
+    write_transcript(
+        &artifacts_c.join("C.jsonl"),
+        Some("explore"),
+        1_700_000_000_100,
+    );
     write_transcript(&artifacts_g.join("G.jsonl"), None, 1_700_000_000_200);
-    write_transcript(&artifacts_c.join("__advisor.jsonl"), None, 1_700_000_000_300);
+    write_transcript(
+        &artifacts_c.join("__advisor.jsonl"),
+        None,
+        1_700_000_000_300,
+    );
 
     let trace = build_session_trace(root.to_str().unwrap(), None).expect("build trace");
     let track = |id: &str| trace.tracks.iter().find(|t| t.id == id).expect("track");
-    assert_eq!(track("C").label, "explore C", "child label must use its own agent");
-    assert_eq!(track("C/G").label, "agent G", "grandchild label must not be overwritten");
+    assert_eq!(
+        track("C").label,
+        "explore C",
+        "child label must use its own agent"
+    );
+    assert_eq!(
+        track("C/G").label,
+        "agent G",
+        "grandchild label must not be overwritten"
+    );
     assert_eq!(track("__advisor").label, "Advisor");
     let root_spans = &track("main").spans;
     let advisor_span = root_spans
         .iter()
         .find(|s| s.child_track_id.as_deref() == Some("__advisor"))
         .expect("advisor Agents-lane span");
-    assert_eq!(advisor_span.label, "Advisor", "unlinked advisor span falls back to the track label");
+    assert_eq!(
+        advisor_span.label, "Advisor",
+        "unlinked advisor span falls back to the track label"
+    );
 }
 
 #[test]

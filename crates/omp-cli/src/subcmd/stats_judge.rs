@@ -38,17 +38,26 @@ fn open() -> Result<Arc<dyn StatsJudge>> {
 /// The wire form of a question (the shape `eval`'s `judge()` bridge forwards).
 fn question_wire(question: &Question) -> Value {
     match question {
-        Question::Score { instructions, criteria } => {
+        Question::Score {
+            instructions,
+            criteria,
+        } => {
             json!({"type": "score", "instructions": instructions, "criteria": criteria})
         }
-        Question::Noul { instructions, criteria } => {
+        Question::Noul {
+            instructions,
+            criteria,
+        } => {
             let mut wire = json!({"type": "noul", "instructions": instructions});
             if let Some(criteria) = criteria {
                 wire["criteria"] = json!(criteria);
             }
             wire
         }
-        Question::Choice { instructions, criteria } => {
+        Question::Choice {
+            instructions,
+            criteria,
+        } => {
             json!({"type": "choice", "instructions": instructions, "criteria": criteria})
         }
     }
@@ -76,9 +85,14 @@ impl StatsJudge for HostJudge {
 
     fn judge<'a>(&'a self, text: &'a str, questions: &'a Questions) -> JudgeFuture<'a> {
         Box::pin(async move {
-            let wire: Map<String, Value> =
-                questions.iter().map(|(id, question)| (id.clone(), question_wire(question))).collect();
-            let request = JudgeRequest { state: Value::String(text.to_owned()), questions: wire };
+            let wire: Map<String, Value> = questions
+                .iter()
+                .map(|(id, question)| (id.clone(), question_wire(question)))
+                .collect();
+            let request = JudgeRequest {
+                state: Value::String(text.to_owned()),
+                questions: wire,
+            };
             let result = omp_providers::judge(&self.chain, &request, self.cache.as_ref()).await?;
             let annoyed_levels = result
                 .answers
@@ -120,7 +134,8 @@ mod tests {
 
     #[test]
     fn levels_reads_score_probabilities() {
-        let answer = json!({"type": "score", "score": 2.0, "probabilities": {"0": 0.1, "2": 0.7, "3": 0.2}});
+        let answer =
+            json!({"type": "score", "score": 2.0, "probabilities": {"0": 0.1, "2": 0.7, "3": 0.2}});
         let parsed = levels(&answer).expect("levels");
         assert_eq!(parsed["2"], 0.7);
         assert!(levels(&json!({"type": "choice"})).is_none());
@@ -128,7 +143,10 @@ mod tests {
 
     #[test]
     fn empty_chain_has_no_primary_model() {
-        let judge = HostJudge { chain: Vec::new(), cache: None };
+        let judge = HostJudge {
+            chain: Vec::new(),
+            cache: None,
+        };
         assert!(judge.primary_model().is_none());
     }
 }

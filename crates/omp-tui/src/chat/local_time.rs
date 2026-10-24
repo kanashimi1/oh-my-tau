@@ -122,7 +122,9 @@ fn block(data: &[u8], at: usize, counts: &Counts, time_size: usize) -> Option<Zo
     let types_at = idx_at + timecnt;
     let utoff = |ty: usize| -> Option<i64> {
         let off = types_at + ty * 6;
-        Some(i64::from(i32::from_be_bytes(data.get(off..off + 4)?.try_into().ok()?)))
+        Some(i64::from(i32::from_be_bytes(
+            data.get(off..off + 4)?.try_into().ok()?,
+        )))
     };
     let mut transitions = Vec::with_capacity(timecnt);
     for i in 0..timecnt {
@@ -185,7 +187,10 @@ mod tests {
     #[test]
     fn footer_offsets() {
         assert_eq!(footer_std_offset(b"\nMSK-3\n"), Some(3 * 3600));
-        assert_eq!(footer_std_offset(b"\n<+0530>-5:30\n"), Some(5 * 3600 + 1800));
+        assert_eq!(
+            footer_std_offset(b"\n<+0530>-5:30\n"),
+            Some(5 * 3600 + 1800)
+        );
         assert_eq!(footer_std_offset(b"\nUTC0\n"), Some(0));
         assert_eq!(footer_std_offset(b"\nEST5EDT,M3.2.0,M11.1.0\n"), None);
     }

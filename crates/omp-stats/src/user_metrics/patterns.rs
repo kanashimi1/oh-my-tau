@@ -20,7 +20,11 @@ fn compile(flags: &str, body: &str) -> Regex {
     } else {
         (flags.to_string(), body.to_string())
     };
-    let pat = if flags.is_empty() { body } else { format!("(?{flags}){body}") };
+    let pat = if flags.is_empty() {
+        body
+    } else {
+        format!("(?{flags}){body}")
+    };
     Regex::new(&pat).unwrap_or_else(|e| panic!("user_metrics regex {pat:?}: {e}"))
 }
 
@@ -120,8 +124,7 @@ const REPETITION_STILL: &str = concat!(
     r"failing|the\s+same|same)\b"
 );
 /// `you` alone is too generic, so it is anchored to accusatory verbs.
-const BLAME_YOU: &str =
-    r"\byou\s+(?:didn['\u{2019}]?t|did\s+not|broke|missed|forgot|keep|always|never|still|ignored)\b";
+const BLAME_YOU: &str = r"\byou\s+(?:didn['\u{2019}]?t|did\s+not|broke|missed|forgot|keep|always|never|still|ignored)\b";
 /// Only the past/conditional forms read as reproach; bare `why you` /
 /// `why are you` are dominated by neutral how-does-this-work questions.
 const BLAME_WHY: &str = r"\bwhy\s+(?:would|did)\s+(?:you|u)\b";
@@ -132,18 +135,25 @@ pub(super) static NEGATION_LEAD_RE: LazyLock<fancy_regex::Regex> = LazyLock::new
     let pat = format!("(?i){NEGATION_LEAD}");
     fancy_regex::Regex::new(&pat).unwrap_or_else(|e| panic!("user_metrics regex {pat:?}: {e}"))
 });
-pub(super) static NEGATION_PHRASE_RE: LazyLock<Regex> = LazyLock::new(|| compile("i-u", NEGATION_PHRASE));
-pub(super) static REPETITION_RECALL_RE: LazyLock<Regex> = LazyLock::new(|| compile("i-u", REPETITION_RECALL));
-pub(super) static REPETITION_STILL_RE: LazyLock<Regex> = LazyLock::new(|| compile("i-u", REPETITION_STILL));
+pub(super) static NEGATION_PHRASE_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile("i-u", NEGATION_PHRASE));
+pub(super) static REPETITION_RECALL_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile("i-u", REPETITION_RECALL));
+pub(super) static REPETITION_STILL_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile("i-u", REPETITION_STILL));
 pub(super) static BLAME_YOU_RE: LazyLock<Regex> = LazyLock::new(|| compile("i-u", BLAME_YOU));
 pub(super) static BLAME_WHY_RE: LazyLock<Regex> = LazyLock::new(|| compile("i-u", BLAME_WHY));
 
-pub(super) static FENCED_CODE_RE: LazyLock<Regex> = LazyLock::new(|| compile("", r"```[\s\S]*?```"));
+pub(super) static FENCED_CODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile("", r"```[\s\S]*?```"));
 pub(super) static XML_TAG_BARE_RE: LazyLock<Regex> =
     LazyLock::new(|| compile("-u", r"</?[A-Za-z][\w-]*\b[^>]*\/?>"));
 pub(super) static INLINE_CODE_RE: LazyLock<Regex> = LazyLock::new(|| compile("", r"`[^`\n]*`"));
 pub(super) static URL_RE: LazyLock<Regex> = LazyLock::new(|| compile("i", r"\bhttps?://\S+"));
-pub(super) static FILE_MENTION_RE: LazyLock<Regex> = LazyLock::new(|| compile("-u", r"(^|\s)@[\w./-]+"));
+pub(super) static FILE_MENTION_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile("-u", r"(^|\s)@[\w./-]+"));
 pub(super) static QUOTE_LINE_RE: LazyLock<Regex> = LazyLock::new(|| compile("m", r"^[ \t]*>.*$"));
-pub(super) static IMAGE_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| compile("", r"\[Image #[0-9]+\]"));
-pub(super) static ANSI_ESCAPE_RE: LazyLock<Regex> = LazyLock::new(|| compile("", r"\x1b\[[0-9;]*[A-Za-z]"));
+pub(super) static IMAGE_MARKER_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile("", r"\[Image #[0-9]+\]"));
+pub(super) static ANSI_ESCAPE_RE: LazyLock<Regex> =
+    LazyLock::new(|| compile("", r"\x1b\[[0-9;]*[A-Za-z]"));

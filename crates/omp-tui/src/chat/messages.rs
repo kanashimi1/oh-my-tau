@@ -547,7 +547,12 @@ impl Messages {
         let expanded = self.expanded;
         let mut rows = Vec::new();
         for entry in &self.entries[self.committed..end] {
-            rows.extend(blocks::entry_lines(entry, expanded, usize::from(width).max(8), theme));
+            rows.extend(blocks::entry_lines(
+                entry,
+                expanded,
+                usize::from(width).max(8),
+                theme,
+            ));
         }
         self.committed = end;
         rows
@@ -561,7 +566,12 @@ impl Messages {
         let expanded = self.expanded;
         let mut rows = Vec::new();
         for entry in &self.entries {
-            rows.extend(blocks::entry_lines(entry, expanded, usize::from(width).max(8), theme));
+            rows.extend(blocks::entry_lines(
+                entry,
+                expanded,
+                usize::from(width).max(8),
+                theme,
+            ));
         }
         self.committed = self.finished_len();
         rows
@@ -595,7 +605,9 @@ impl Messages {
     /// `ErrorBannerComponent`); cleared when the next run starts.
     #[must_use]
     pub fn pinned_error(&self) -> Option<&str> {
-        self.pinned_error.as_ref().map(|(_, message)| message.as_str())
+        self.pinned_error
+            .as_ref()
+            .map(|(_, message)| message.as_str())
     }
 
     /// Drop the pinned banner and restore its error inline in the
@@ -663,9 +675,13 @@ impl Messages {
             if a.live {
                 let mut cache = self.live_cache.borrow_mut();
                 return match &self.reveal_display {
-                    Some(snapshot) => {
-                        blocks::revealed_rows(snapshot, width, &self.theme, Some(&mut *cache), max_rows)
-                    }
+                    Some(snapshot) => blocks::revealed_rows(
+                        snapshot,
+                        width,
+                        &self.theme,
+                        Some(&mut *cache),
+                        max_rows,
+                    ),
                     None => blocks::assistant_rows(
                         a,
                         self.expanded,
@@ -717,12 +733,20 @@ impl Messages {
             AppEvent::ToolExecutionStart(frame) => self.tool_start(frame),
             AppEvent::ToolExecutionUpdate(frame) => self.tool_update(frame),
             AppEvent::ToolExecutionEnd(frame) => self.tool_end(frame),
-            AppEvent::PromptResult { success, error, frame, .. } => {
+            AppEvent::PromptResult {
+                success,
+                error,
+                frame,
+                ..
+            } => {
                 // A failed agent run already shows its error on the assistant
                 // block (TS event-controller: errorMessage on message_end); a
                 // second row would repeat it. Only failures that never reached
                 // the agent (unknown command, resume/rewind failure) need one.
-                let agent_invoked = frame.get("agentInvoked").and_then(Value::as_bool).unwrap_or(false);
+                let agent_invoked = frame
+                    .get("agentInvoked")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 if !success && !agent_invoked {
                     let msg = error.as_deref().unwrap_or("prompt failed");
                     self.push(ChatEntry::new(
@@ -1161,7 +1185,11 @@ impl Messages {
             waiting,
             read_ids: grouped_read_usage_call_ids(message),
         });
-        if self.pending_usage.as_ref().is_some_and(|p| p.waiting.is_empty()) {
+        if self
+            .pending_usage
+            .as_ref()
+            .is_some_and(|p| p.waiting.is_empty())
+        {
             self.flush_usage();
         }
     }
@@ -1694,7 +1722,10 @@ fn parse_usage(message: &Value) -> Option<Usage> {
         cache_write: count("cacheWrite"),
         duration_ms: ms("duration"),
         ttft_ms: ms("ttft"),
-        timestamp_ms: message.get("timestamp").and_then(Value::as_i64).filter(|t| *t > 0),
+        timestamp_ms: message
+            .get("timestamp")
+            .and_then(Value::as_i64)
+            .filter(|t| *t > 0),
         turn_elapsed_ms: None,
     };
     let premium = usage
@@ -1808,7 +1839,12 @@ fn compaction_text(method: &str, before: u64, after: Option<u64>) -> String {
     .to_owned();
     if let Some(after) = after {
         use std::fmt::Write as _;
-        let _ = write!(text, " · {}→{}", compact_number(before), compact_number(after));
+        let _ = write!(
+            text,
+            " · {}→{}",
+            compact_number(before),
+            compact_number(after)
+        );
     }
     text
 }
@@ -2014,7 +2050,8 @@ mod tests {
             .map(|l| l.to_string())
             .collect();
         assert!(
-            text.iter().any(|r| r.contains("⟦Wall: 0.45s | Timeout: 300s⟧")),
+            text.iter()
+                .any(|r| r.contains("⟦Wall: 0.45s | Timeout: 300s⟧")),
             "{text:?}"
         );
         assert!(!text.iter().any(|r| r.contains("Wall time:")), "{text:?}");
@@ -2075,7 +2112,9 @@ mod tests {
         call(&mut m, "g1", "grep", json!({"pattern": "beta"}));
         m.apply(&AppEvent::TurnEnd(json!({})));
         // The next turn's tool-call-only assistant message draws nothing.
-        m.apply(&AppEvent::MessageStart(json!({"message": {"role": "assistant", "content": []}})));
+        m.apply(&AppEvent::MessageStart(
+            json!({"message": {"role": "assistant", "content": []}}),
+        ));
         call(&mut m, "g2", "glob", json!({"pattern": "*.txt"}));
         call(&mut m, "r1", "read", json!({"path": "a.rs"}));
         let groups: Vec<&ReadGroup> = m
@@ -2086,14 +2125,23 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(groups.len(), 1, "{:?}", m.entries().iter().map(|e| &e.text).collect::<Vec<_>>());
+        assert_eq!(
+            groups.len(),
+            1,
+            "{:?}",
+            m.entries().iter().map(|e| &e.text).collect::<Vec<_>>()
+        );
         let tools: Vec<&str> = groups[0].reads.iter().map(|r| r.tool.as_str()).collect();
         assert_eq!(tools, ["grep", "glob", "read"]);
         assert_eq!(groups[0].reads[1].path, "*.txt");
         assert!(groups[0].open, "kept open across the soft turn end");
         // Visible text after the group closes it (and lets it commit).
         m.apply(&AppEvent::MessageUpdate(json!({"message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}})));
-        let group = m.entries().iter().find(|e| matches!(e.kind, ChatKind::ReadGroup(_))).unwrap();
+        let group = m
+            .entries()
+            .iter()
+            .find(|e| matches!(e.kind, ChatKind::ReadGroup(_)))
+            .unwrap();
         assert!(group.is_finished());
         // Collapsed render: one rail row naming every item.
         let rows: Vec<String> = blocks::entry_lines(group, false, 80, m.theme())
@@ -2152,22 +2200,34 @@ mod tests {
     fn usage_rows_off_by_default() {
         let mut m = Messages::new();
         m.apply(&AppEvent::AgentStart);
-        m.apply(&billed_end(&json!([{"type": "text", "text": "hi"}]), "stop"));
+        m.apply(&billed_end(
+            &json!([{"type": "text", "text": "hi"}]),
+            "stop",
+        ));
         m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
-        assert!(!m.entries().iter().any(|e| matches!(e.kind, ChatKind::Usage(_))));
+        assert!(!m
+            .entries()
+            .iter()
+            .any(|e| matches!(e.kind, ChatKind::Usage(_))));
     }
 
     #[test]
     fn usage_row_follows_each_billed_message() {
         let mut m = usage_on();
         m.apply(&AppEvent::AgentStart);
-        m.apply(&billed_end(&json!([{"type": "text", "text": "hi"}]), "stop"));
+        m.apply(&billed_end(
+            &json!([{"type": "text", "text": "hi"}]),
+            "stop",
+        ));
         // Placed at message_end (TS), not deferred to the turn end.
         let last = m.entries().last().unwrap();
         let ChatKind::Usage(u) = &last.kind else {
             panic!("expected usage row, got {last:?}");
         };
-        assert_eq!((u.input, u.output, u.ttft_ms, u.duration_ms), (100, 7, Some(41), Some(41)));
+        assert_eq!(
+            (u.input, u.output, u.ttft_ms, u.duration_ms),
+            (100, 7, Some(41), Some(41))
+        );
         assert_eq!(u.timestamp_ms, Some(1_792_111_302_143));
         assert_eq!(m.finished_len(), m.entries().len());
     }
@@ -2188,7 +2248,10 @@ mod tests {
             "type": "tool_execution_end", "toolCallId": "r1", "toolName": "read",
             "result": {"content": [{"type": "text", "text": "x"}]}, "isError": false
         })));
-        m.apply(&billed_end(&json!([{"type": "text", "text": "done"}]), "stop"));
+        m.apply(&billed_end(
+            &json!([{"type": "text", "text": "done"}]),
+            "stop",
+        ));
         m.apply(&AppEvent::TurnEnd(json!({"type": "turn_end"})));
         let kinds: Vec<&ChatKind> = m.entries().iter().map(|e| &e.kind).collect();
         let ChatKind::ReadGroup(g) = kinds[0] else {
@@ -2208,14 +2271,23 @@ mod tests {
         m.apply(&AppEvent::AgentStart);
         let call = json!([{"type": "toolCall", "id": "b1", "name": "bash", "arguments": {"command": "ls"}}]);
         m.apply(&billed_end(&call, "toolUse"));
-        assert!(!m.entries().iter().any(|e| matches!(e.kind, ChatKind::Usage(_))));
+        assert!(!m
+            .entries()
+            .iter()
+            .any(|e| matches!(e.kind, ChatKind::Usage(_))));
         m.apply(&AppEvent::ToolExecutionStart(json!({
             "type": "tool_execution_start", "toolCallId": "b1",
             "toolName": "bash", "args": {"command": "ls"}
         })));
         let kinds: Vec<&ChatKind> = m.entries().iter().map(|e| &e.kind).collect();
-        assert!(matches!(kinds[kinds.len() - 2], ChatKind::Bash(_)), "{kinds:?}");
-        assert!(matches!(kinds[kinds.len() - 1], ChatKind::Usage(_)), "{kinds:?}");
+        assert!(
+            matches!(kinds[kinds.len() - 2], ChatKind::Bash(_)),
+            "{kinds:?}"
+        );
+        assert!(
+            matches!(kinds[kinds.len() - 1], ChatKind::Usage(_)),
+            "{kinds:?}"
+        );
     }
 
     #[test]
@@ -2231,7 +2303,10 @@ mod tests {
             "message": {"role": "user", "content": "go", "timestamp": 1_792_111_300_000_i64}
         })));
         m.apply(&AppEvent::AgentStart);
-        m.apply(&billed_end(&json!([{"type": "text", "text": "hi"}]), "stop"));
+        m.apply(&billed_end(
+            &json!([{"type": "text", "text": "hi"}]),
+            "stop",
+        ));
         let ChatKind::Usage(u) = &m.entries().last().unwrap().kind else {
             panic!("expected usage row");
         };
@@ -2255,13 +2330,23 @@ mod tests {
         m.apply(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
         assert_eq!(m.pinned_error(), Some("400 E2E-PROVIDER-FAILURE"));
         let idx = m.entries().len() - 1;
-        assert!(m.entry_lines_at(idx, 80).is_empty(), "inline error suppressed while pinned");
+        assert!(
+            m.entry_lines_at(idx, 80).is_empty(),
+            "inline error suppressed while pinned"
+        );
         assert_eq!(m.finished_len(), idx, "pinned entry stays live");
         m.push_user("after failure");
         m.apply(&AppEvent::AgentStart);
         assert_eq!(m.pinned_error(), None);
-        let rows: Vec<String> = m.entry_lines_at(idx, 80).iter().map(ToString::to_string).collect();
-        assert!(rows.iter().any(|r| r == " Error: 400 E2E-PROVIDER-FAILURE"), "{rows:?}");
+        let rows: Vec<String> = m
+            .entry_lines_at(idx, 80)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(
+            rows.iter().any(|r| r == " Error: 400 E2E-PROVIDER-FAILURE"),
+            "{rows:?}"
+        );
         assert_eq!(m.finished_len(), m.entries().len());
     }
 
@@ -2308,7 +2393,11 @@ mod tests {
             "error": {"message": "Unknown command: /zz", "retryable": false}, "sessionSettled": true
         })));
         let last = m.entries().len() - 1;
-        let row: String = m.entry_lines_at(last, 100).iter().map(ToString::to_string).collect();
+        let row: String = m
+            .entry_lines_at(last, 100)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         assert!(row.contains("Unknown command: /zz"), "{row}");
     }
 
@@ -2392,7 +2481,12 @@ mod tests {
         let kinds: Vec<_> = m.entries().iter().map(|e| e.role).collect();
         assert_eq!(
             kinds,
-            [ChatRole::User, ChatRole::Assistant, ChatRole::Tool, ChatRole::Assistant]
+            [
+                ChatRole::User,
+                ChatRole::Assistant,
+                ChatRole::Tool,
+                ChatRole::Assistant
+            ]
         );
         // thinking renders as the settled assistant segment, no bare row
         let ChatKind::Assistant(a) = &m.entries()[1].kind else {
@@ -2440,8 +2534,10 @@ mod tests {
     #[test]
     fn rebuild_orphan_tool_result_stays_visible() {
         let mut m = Messages::new();
-        m.rebuild(&[json!({"role": "toolResult", "toolCallId": "zz", "toolName": "grep",
-                           "content": [{"type": "text", "text": "lonely"}]})]);
+        m.rebuild(&[
+            json!({"role": "toolResult", "toolCallId": "zz", "toolName": "grep",
+                           "content": [{"type": "text", "text": "lonely"}]}),
+        ]);
         assert_eq!(m.entries().len(), 1);
         let ChatKind::Tool(card) = &m.entries()[0].kind else {
             panic!("expected tool card");
@@ -2535,9 +2631,7 @@ mod tests {
         assert!(rows.len() > 1);
         assert!(rows[0].to_string().contains("Error:"));
         // Continuation rows hang under the prefix within the width budget.
-        assert!(rows[1..]
-            .iter()
-            .all(|r| r.to_string().len() <= 20));
+        assert!(rows[1..].iter().all(|r| r.to_string().len() <= 20));
     }
 
     #[test]
@@ -2575,7 +2669,11 @@ mod tests {
         m.apply(&AppEvent::AgentEnd(json!({"type": "agent_end"})));
         let rows = m.take_committed_rows(80);
         assert!(rows.len() > 1, "bash card must render multiple rows");
-        let joined = rows.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
+        let joined = rows
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(joined.contains("cargo test -p omp-tui"), "{joined}");
         assert!(joined.contains("7 passed"), "{joined}");
     }

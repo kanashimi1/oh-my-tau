@@ -14,11 +14,11 @@ pub mod spec;
 
 pub use parse::{extract_uri_scheme, parse_internal_url, InternalUrl};
 pub use registry::{Registry, UrlTarget};
+pub use selectors::{split_selectors, split_url_scheme};
 pub use spec::{
     InternalResource, SchemeBacking, SchemeSelectors, SchemeSpec, UrlCompletion, WritePolicy,
     WriteScope, WriteVia,
 };
-pub use selectors::{split_selectors, split_url_scheme};
 
 /// Caller-supplied context threaded into providers (TS `ResolveContext`/`WriteContext`).
 #[derive(Debug, Clone, Default)]

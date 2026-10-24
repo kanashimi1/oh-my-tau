@@ -9,16 +9,25 @@ use crate::providers::openai_completions::compat::ResolvedCompat;
 use crate::providers::openai_completions::decode_reasoning_details;
 use crate::providers::transform_messages::transform_messages_with_options;
 use crate::types::{
-    user_block_payload, AssistantContent, Context, Message, MessageExt, Model,
-    StopReason, TextContent, ThinkingContent, Tool, ToolCall, Usage, UsageCost, UserBlockPayload,
+    user_block_payload, AssistantContent, Context, Message, MessageExt, Model, StopReason,
+    TextContent, ThinkingContent, Tool, ToolCall, Usage, UsageCost, UserBlockPayload,
     UserMessageContent, UserOrToolContent,
 };
 use crate::utils_inner::wire_json::{obj, Wire, WireObject};
 
 /// The transformed history a request borrows from: tool-call IDs normalized for the provider,
 /// unanswered calls answered, errored turns dropped (TS `transformMessages`).
-pub(crate) fn transform_for_request(model: &Model, context: &Context, compat: &ResolvedCompat) -> Vec<Message> {
-    transform_messages_with_options(&context.messages, model, &|id, _, _| Some(normalize_tool_call_id(id, compat)), false)
+pub(crate) fn transform_for_request(
+    model: &Model,
+    context: &Context,
+    compat: &ResolvedCompat,
+) -> Vec<Message> {
+    transform_messages_with_options(
+        &context.messages,
+        model,
+        &|id, _, _| Some(normalize_tool_call_id(id, compat)),
+        false,
+    )
 }
 
 /// The `assistant` filler some providers need between tool results and a user turn.
@@ -89,19 +98,33 @@ pub(crate) fn push_system_messages<'a>(
     compat: &ResolvedCompat,
     params: &mut Vec<Wire<'a>>,
 ) {
-    let system_prompts: Vec<&'a str> = system_prompts.iter().copied().filter(|p| !p.trim().is_empty()).collect();
+    let system_prompts: Vec<&'a str> = system_prompts
+        .iter()
+        .copied()
+        .filter(|p| !p.trim().is_empty())
+        .collect();
     if system_prompts.is_empty() {
         return;
     }
-    let role = if model.reasoning && compat.supports_developer_role { "developer" } else { "system" };
+    let role = if model.reasoning && compat.supports_developer_role {
+        "developer"
+    } else {
+        "system"
+    };
     if compat.supports_multiple_system_messages.unwrap_or(true) {
         for prompt in &system_prompts {
-            params.push(obj([("role", Wire::str(role)), ("content", Wire::str(prompt))]));
+            params.push(obj([
+                ("role", Wire::str(role)),
+                ("content", Wire::str(prompt)),
+            ]));
         }
     } else {
         params.push(obj([
             ("role", Wire::str(role)),
-            ("content", Wire::join(system_prompts.iter().map(|p| Cow::Borrowed(*p)), "\n\n")),
+            (
+                "content",
+                Wire::join(system_prompts.iter().map(|p| Cow::Borrowed(*p)), "\n\n"),
+            ),
         ]));
     }
 }
@@ -144,12 +167,16 @@ pub(crate) fn convert_message_range<'a>(
                     }
                     // TS: only plain-string content keeps the `developer` role (and only when the host
                     // supports it); array content is always sent as `user`.
-                    let role = if matches!(msg, Message::Developer(_)) && compat.supports_developer_role {
-                        "developer"
-                    } else {
-                        "user"
-                    };
-                    params.push(obj([("role", Wire::str(role)), ("content", Wire::str(text))]));
+                    let role =
+                        if matches!(msg, Message::Developer(_)) && compat.supports_developer_role {
+                            "developer"
+                        } else {
+                            "user"
+                        };
+                    params.push(obj([
+                        ("role", Wire::str(role)),
+                        ("content", Wire::str(text)),
+                    ]));
                 }
                 UserMessageContent::Blocks(blocks) => {
                     let mut content_blocks: Vec<Wire<'a>> = Vec::new();
@@ -168,7 +195,9 @@ pub(crate) fn convert_message_range<'a>(
                                     omitted_images = true;
                                 }
                             }
-                            UserBlockPayload::Opaque(json) => content_blocks.push(text_part(Wire::from(json))),
+                            UserBlockPayload::Opaque(json) => {
+                                content_blocks.push(text_part(Wire::from(json)))
+                            }
                         }
                     }
                     if omitted_images {
@@ -178,7 +207,10 @@ pub(crate) fn convert_message_range<'a>(
                         index += 1;
                         continue;
                     }
-                    params.push(obj([("role", Wire::str("user")), ("content", Wire::Array(content_blocks))]));
+                    params.push(obj([
+                        ("role", Wire::str("user")),
+                        ("content", Wire::Array(content_blocks)),
+                    ]));
                 }
             },
             Message::Assistant(assistant) => {
@@ -195,10 +227,12 @@ pub(crate) fn convert_message_range<'a>(
                     })
                     .collect();
                 // Assistant text is always a plain string; adjacent blocks join without separator.
-                let assistant_text_pieces = || text_blocks.iter().map(|&b| Cow::Borrowed(b.text.as_str()));
+                let assistant_text_pieces =
+                    || text_blocks.iter().map(|&b| Cow::Borrowed(b.text.as_str()));
                 let has_assistant_text = !text_blocks.is_empty();
                 if has_assistant_text {
-                    assistant_msg.insert("content", Wire::Concat(assistant_text_pieces().collect()));
+                    assistant_msg
+                        .insert("content", Wire::Concat(assistant_text_pieces().collect()));
                 }
 
                 let replay_reasoning_details: Vec<Value> = assistant
@@ -214,7 +248,8 @@ pub(crate) fn convert_message_range<'a>(
                     .collect();
                 let has_replay_reasoning_details = !replay_reasoning_details.is_empty();
                 if has_replay_reasoning_details {
-                    assistant_msg.insert("reasoning_details", Value::Array(replay_reasoning_details));
+                    assistant_msg
+                        .insert("reasoning_details", Value::Array(replay_reasoning_details));
                 }
 
                 let all_thinking_blocks: Vec<&'a ThinkingContent> = assistant
@@ -222,7 +257,8 @@ pub(crate) fn convert_message_range<'a>(
                     .iter()
                     .filter_map(|block| match block {
                         AssistantContent::Thinking(thinking)
-                            if decode_reasoning_details(thinking.thinking_signature.as_deref()).is_none() =>
+                            if decode_reasoning_details(thinking.thinking_signature.as_deref())
+                                .is_none() =>
                         {
                             Some(thinking)
                         }
@@ -234,9 +270,18 @@ pub(crate) fn convert_message_range<'a>(
                     .copied()
                     .filter(|t| !t.thinking.trim().is_empty())
                     .collect();
-                let thinking_pieces = || non_empty_thinking_blocks.iter().map(|&b| Cow::Borrowed(b.thinking.as_str()));
-                let first_signature = non_empty_thinking_blocks.first().and_then(|t| t.thinking_signature.as_deref());
-                let reasoning_field_default = compat.reasoning_content_field.as_deref().unwrap_or("reasoning_content");
+                let thinking_pieces = || {
+                    non_empty_thinking_blocks
+                        .iter()
+                        .map(|&b| Cow::Borrowed(b.thinking.as_str()))
+                };
+                let first_signature = non_empty_thinking_blocks
+                    .first()
+                    .and_then(|t| t.thinking_signature.as_deref());
+                let reasoning_field_default = compat
+                    .reasoning_content_field
+                    .as_deref()
+                    .unwrap_or("reasoning_content");
 
                 // Reasoning wire fields the replay may set (`reasoning_content` / `reasoning` /
                 // `reasoning_text`), in first-set order.
@@ -249,15 +294,21 @@ pub(crate) fn convert_message_range<'a>(
                     }
                 };
 
-                if compat.mistral_reasoning_content_parts == Some(true) && !non_empty_thinking_blocks.is_empty() {
+                if compat.mistral_reasoning_content_parts == Some(true)
+                    && !non_empty_thinking_blocks.is_empty()
+                {
                     // Mistral reads thinking from ordered content parts, not a top-level field.
                     let mut parts: Vec<Wire<'a>> = Vec::new();
                     for block in &assistant.content {
                         match block {
-                            AssistantContent::Thinking(t) if !t.thinking.trim().is_empty() => parts.push(obj([
-                                ("type", Wire::str("thinking")),
-                                ("thinking", Wire::Array(vec![text_part(Wire::str(&t.thinking))])),
-                            ])),
+                            AssistantContent::Thinking(t) if !t.thinking.trim().is_empty() => parts
+                                .push(obj([
+                                    ("type", Wire::str("thinking")),
+                                    (
+                                        "thinking",
+                                        Wire::Array(vec![text_part(Wire::str(&t.thinking))]),
+                                    ),
+                                ])),
                             AssistantContent::Text(t) if !t.text.trim().is_empty() => {
                                 parts.push(text_part(Wire::str(&t.text)));
                             }
@@ -285,18 +336,23 @@ pub(crate) fn convert_message_range<'a>(
                         assistant_msg.insert("content", Wire::Concat(pieces));
                     } else if compat.requires_reasoning_content_for_tool_calls {
                         let wire_field = match first_signature {
-                            Some(sig) if is_reasoning_field(sig) => Some(if compat.allows_synthetic_reasoning_content_for_tool_calls {
-                                field_name(sig)
-                            } else {
-                                field_name(reasoning_field_default)
-                            }),
+                            Some(sig) if is_reasoning_field(sig) => Some(
+                                if compat.allows_synthetic_reasoning_content_for_tool_calls {
+                                    field_name(sig)
+                                } else {
+                                    field_name(reasoning_field_default)
+                                },
+                            ),
                             _ => None,
                         };
                         if let Some(field) = wire_field {
                             reasoning_fields.push((field, Wire::join(thinking_pieces(), "\n")));
                         }
                     } else if compat.thinking_format == "zai" && model.reasoning {
-                        reasoning_fields.push((field_name(reasoning_field_default), Wire::join(thinking_pieces(), "\n")));
+                        reasoning_fields.push((
+                            field_name(reasoning_field_default),
+                            Wire::join(thinking_pieces(), "\n"),
+                        ));
                     } else if compat.replay_reasoning_content {
                         let field = match first_signature {
                             Some(sig) if is_reasoning_field(sig) => field_name(sig),
@@ -307,25 +363,40 @@ pub(crate) fn convert_message_range<'a>(
                 }
 
                 if compat.requires_reasoning_content_for_tool_calls {
-                    let streamed = non_empty_thinking_blocks.first().and_then(|t| t.thinking_signature.as_deref());
+                    let streamed = non_empty_thinking_blocks
+                        .first()
+                        .and_then(|t| t.thinking_signature.as_deref());
                     let field = match streamed {
-                        Some(sig) if compat.allows_synthetic_reasoning_content_for_tool_calls && is_reasoning_field(sig) => {
+                        Some(sig)
+                            if compat.allows_synthetic_reasoning_content_for_tool_calls
+                                && is_reasoning_field(sig) =>
+                        {
                             field_name(sig)
                         }
                         _ => field_name(reasoning_field_default),
                     };
                     let present = |fields: &[(&'static str, Wire<'a>)], name: &str| {
-                        fields.iter().any(|(n, w)| *n == name && w.string_is_empty() != Some(true))
+                        fields
+                            .iter()
+                            .any(|(n, w)| *n == name && w.string_is_empty() != Some(true))
                     };
                     if !present(&reasoning_fields, field) {
                         if present(&reasoning_fields, "reasoning") && field != "reasoning" {
-                            let moved = reasoning_fields.iter().find(|(n, _)| *n == "reasoning").map(|(_, w)| w.clone());
+                            let moved = reasoning_fields
+                                .iter()
+                                .find(|(n, _)| *n == "reasoning")
+                                .map(|(_, w)| w.clone());
                             if let Some(w) = moved {
                                 reasoning_fields.retain(|(n, _)| *n != field);
                                 reasoning_fields.push((field, w));
                             }
-                        } else if present(&reasoning_fields, "reasoning_text") && field != "reasoning_text" {
-                            let moved = reasoning_fields.iter().find(|(n, _)| *n == "reasoning_text").map(|(_, w)| w.clone());
+                        } else if present(&reasoning_fields, "reasoning_text")
+                            && field != "reasoning_text"
+                        {
+                            let moved = reasoning_fields
+                                .iter()
+                                .find(|(n, _)| *n == "reasoning_text")
+                                .map(|(_, w)| w.clone());
                             if let Some(w) = moved {
                                 reasoning_fields.retain(|(n, _)| *n != field);
                                 reasoning_fields.push((field, w));
@@ -350,8 +421,13 @@ pub(crate) fn convert_message_range<'a>(
                 // thinking-mode history, in three tiers (see the TS `buildParams` notes).
                 let can_use_synthetic = compat.requires_reasoning_content_for_tool_calls
                     && compat.allows_synthetic_reasoning_content_for_tool_calls
-                    && matches!(compat.thinking_format.as_str(), "openai" | "openrouter" | "zai");
-                let needs_reasoning_field = compat.requires_reasoning_content_for_all_assistant_turns || !tool_calls.is_empty();
+                    && matches!(
+                        compat.thinking_format.as_str(),
+                        "openai" | "openrouter" | "zai"
+                    );
+                let needs_reasoning_field = compat
+                    .requires_reasoning_content_for_all_assistant_turns
+                    || !tool_calls.is_empty();
                 let mut has_reasoning_field = !reasoning_fields.is_empty();
                 if needs_reasoning_field
                     && !has_reasoning_field
@@ -361,17 +437,32 @@ pub(crate) fn convert_message_range<'a>(
                     // Tier 1: recover from ALL thinking blocks (including empty-text ones) whose
                     // signature names a recognized wire field.
                     if let Some(first) = all_thinking_blocks.first() {
-                        if first.thinking_signature.as_deref().is_some_and(is_reasoning_field) {
+                        if first
+                            .thinking_signature
+                            .as_deref()
+                            .is_some_and(is_reasoning_field)
+                        {
                             let field = field_name(reasoning_field_default);
-                            let joined = Wire::join(all_thinking_blocks.iter().map(|&b| Cow::Borrowed(b.thinking.as_str())), "\n");
+                            let joined = Wire::join(
+                                all_thinking_blocks
+                                    .iter()
+                                    .map(|&b| Cow::Borrowed(b.thinking.as_str())),
+                                "\n",
+                            );
                             reasoning_fields.push((field, joined));
                             has_reasoning_field = true;
                         }
                     }
                     // Tier 2: genuinely no thinking at all — the configured fallback (empty string).
                     if !has_reasoning_field {
-                        let fallback = compat.synthetic_reasoning_content_fallback.clone().unwrap_or_default();
-                        reasoning_fields.push((field_name(reasoning_field_default), Wire::from(Value::String(fallback))));
+                        let fallback = compat
+                            .synthetic_reasoning_content_fallback
+                            .clone()
+                            .unwrap_or_default();
+                        reasoning_fields.push((
+                            field_name(reasoning_field_default),
+                            Wire::from(Value::String(fallback)),
+                        ));
                         has_reasoning_field = true;
                     }
                 }
@@ -392,7 +483,14 @@ pub(crate) fn convert_message_range<'a>(
                                 .iter()
                                 .map(|&tool_call| {
                                     obj([
-                                        ("id", emit_tool_call_id(&tool_call.id, compat, Some((model, assistant)))),
+                                        (
+                                            "id",
+                                            emit_tool_call_id(
+                                                &tool_call.id,
+                                                compat,
+                                                Some((model, assistant)),
+                                            ),
+                                        ),
                                         ("type", Wire::str("function")),
                                         (
                                             "function",
@@ -435,10 +533,17 @@ pub(crate) fn convert_message_range<'a>(
                             (None, None) => true,
                         }
                 });
-                if !has_content && has_tool_calls && compat.requires_assistant_content_for_tool_calls {
+                if !has_content
+                    && has_tool_calls
+                    && compat.requires_assistant_content_for_tool_calls
+                {
                     assistant_msg.insert("content", Wire::str("."));
                 }
-                if !has_content && !has_tool_calls && !has_reasoning_field && !has_replay_reasoning_details {
+                if !has_content
+                    && !has_tool_calls
+                    && !has_reasoning_field
+                    && !has_replay_reasoning_details
+                {
                     index += 1;
                     continue;
                 }
@@ -454,19 +559,26 @@ pub(crate) fn convert_message_range<'a>(
 
                     let text_result = Wire::join(
                         tool_msg.content.iter().filter_map(|block| match block {
-                            UserOrToolContent::Text(text) => Some(Cow::Borrowed(text.text.as_str())),
+                            UserOrToolContent::Text(text) => {
+                                Some(Cow::Borrowed(text.text.as_str()))
+                            }
                             _ => None,
                         }),
                         "\n",
                     );
-                    let has_images = tool_msg.content.iter().any(|block| matches!(block, UserOrToolContent::Image(_)));
+                    let has_images = tool_msg
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, UserOrToolContent::Image(_)));
                     let omitted_images = has_images && !supports_images;
                     let has_text = text_result.string_is_empty() == Some(false);
                     let mut tool_result_msg = WireObject::new();
                     tool_result_msg.insert("role", Wire::str("tool"));
                     let content = if omitted_images {
                         if has_text {
-                            let Wire::Concat(mut pieces) = text_result else { unreachable!("Wire::join builds a Concat") };
+                            let Wire::Concat(mut pieces) = text_result else {
+                                unreachable!("Wire::join builds a Concat")
+                            };
                             pieces.push(Cow::Borrowed("\n"));
                             pieces.push(Cow::Borrowed(NON_VISION_IMAGE_PLACEHOLDER));
                             Wire::Concat(pieces)
@@ -481,7 +593,10 @@ pub(crate) fn convert_message_range<'a>(
                         Wire::str("")
                     };
                     tool_result_msg.insert("content", content);
-                    tool_result_msg.insert("tool_call_id", emit_tool_call_id(&tool_msg.tool_call_id, compat, None));
+                    tool_result_msg.insert(
+                        "tool_call_id",
+                        emit_tool_call_id(&tool_msg.tool_call_id, compat, None),
+                    );
                     if compat.requires_tool_result_name && !tool_msg.tool_name.is_empty() {
                         tool_result_msg.insert("name", Wire::str(&tool_msg.tool_name));
                     }
@@ -504,9 +619,13 @@ pub(crate) fn convert_message_range<'a>(
                     if compat.requires_assistant_after_tool_result {
                         params.push(processed_tool_results());
                     }
-                    let mut content_items = vec![text_part(Wire::str("Attached image(s) from tool result:"))];
+                    let mut content_items =
+                        vec![text_part(Wire::str("Attached image(s) from tool result:"))];
                     content_items.extend(image_blocks);
-                    params.push(obj([("role", Wire::str("user")), ("content", Wire::Array(content_items))]));
+                    params.push(obj([
+                        ("role", Wire::str("user")),
+                        ("content", Wire::Array(content_items)),
+                    ]));
                     last_role = Some("user");
                 }
                 continue;
@@ -531,13 +650,21 @@ fn emit_tool_call_id<'a>(
     if compat.requires_mistral_tool_ids {
         return Wire::from(normalize_mistral_tool_id(id));
     }
-    let same_model = source.is_some_and(|(model, a)| a.provider == model.provider && a.api == model.api && a.model == model.id);
+    let same_model = source.is_some_and(|(model, a)| {
+        a.provider == model.provider && a.api == model.api && a.model == model.id
+    });
     if !same_model && id.contains('|') {
         let call_id = id.split('|').next().unwrap_or("");
         return Wire::from(
             call_id
                 .chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .take(40)
                 .collect::<String>(),
         );
@@ -559,7 +686,13 @@ pub fn normalize_tool_call_id(id: &str, compat: &ResolvedCompat) -> String {
         let call_id = id.split('|').next().unwrap_or("");
         return call_id
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .take(40)
             .collect();
     }
@@ -591,8 +724,8 @@ pub(crate) struct BuiltTools<'a> {
 /// host-specific schema flavors.
 pub(crate) fn convert_tools<'a>(tools: &'a [Tool], compat: &ResolvedCompat) -> BuiltTools<'a> {
     use crate::providers::openai_completions::schema::{
-        adapt_schema_for_strict, flatten_exclusive_required_root_union, normalize_schema_for_moonshot,
-        sanitize_schema_for_grammar, tool_wire_schema,
+        adapt_schema_for_strict, flatten_exclusive_required_root_union,
+        normalize_schema_for_moonshot, sanitize_schema_for_grammar, tool_wire_schema,
     };
     struct Adapted<'t> {
         tool: &'t Tool,
@@ -604,10 +737,19 @@ pub(crate) fn convert_tools<'a>(tools: &'a [Tool], compat: &ResolvedCompat) -> B
         .iter()
         .map(|tool| {
             let wire = tool_wire_schema(&tool.parameters);
-            let base_parameters =
-                if compat.reject_root_object_union { flatten_exclusive_required_root_union(&wire) } else { wire };
-            let (parameters, strict) = adapt_schema_for_strict(&base_parameters, compat.strict_mode_allowed());
-            Adapted { tool, base_parameters, parameters, strict }
+            let base_parameters = if compat.reject_root_object_union {
+                flatten_exclusive_required_root_union(&wire)
+            } else {
+                wire
+            };
+            let (parameters, strict) =
+                adapt_schema_for_strict(&base_parameters, compat.strict_mode_allowed());
+            Adapted {
+                tool,
+                base_parameters,
+                parameters,
+                strict,
+            }
         })
         .collect();
     let requested = compat.tool_strict_mode.as_deref().unwrap_or("mixed");
@@ -624,8 +766,13 @@ pub(crate) fn convert_tools<'a>(tools: &'a [Tool], compat: &ResolvedCompat) -> B
     };
     let mut wire_tools = Vec::with_capacity(adapted.len());
     for a in adapted {
-        let include_strict = tool_strict_mode == "all_strict" || (tool_strict_mode == "mixed" && a.strict);
-        let wire_parameters = if include_strict { a.parameters } else { a.base_parameters };
+        let include_strict =
+            tool_strict_mode == "all_strict" || (tool_strict_mode == "mixed" && a.strict);
+        let wire_parameters = if include_strict {
+            a.parameters
+        } else {
+            a.base_parameters
+        };
         let emitted = match compat.tool_schema_flavor.as_deref() {
             Some("moonshot-mfjs") => normalize_schema_for_moonshot(&wire_parameters),
             Some("grammar") => sanitize_schema_for_grammar(&wire_parameters),
@@ -638,7 +785,13 @@ pub(crate) fn convert_tools<'a>(tools: &'a [Tool], compat: &ResolvedCompat) -> B
         if include_strict {
             function.insert("strict", true);
         }
-        wire_tools.push((a.tool.name.as_str(), obj([("type", Wire::str("function")), ("function", Wire::Object(function))])));
+        wire_tools.push((
+            a.tool.name.as_str(),
+            obj([
+                ("type", Wire::str("function")),
+                ("function", Wire::Object(function)),
+            ]),
+        ));
     }
     BuiltTools { tools: wire_tools }
 }
@@ -778,8 +931,8 @@ pub(crate) fn map_stop_reason(reason: &str) -> (StopReason, Option<String>) {
 mod tests {
     use super::*;
     use crate::types::{ModelCost, ModelInput};
-    use serde_json::json;
     use pa_types::JsNumber;
+    use serde_json::json;
 
     fn model(provider: &str, input: f64, output: f64) -> Model {
         Model {

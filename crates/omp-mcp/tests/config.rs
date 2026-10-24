@@ -51,7 +51,10 @@ fn config_loading_matches_omp_rules() {
     assert!(!configs.contains_key("user-a"));
     assert_eq!(configs["user-b"].command.as_deref(), Some("b-override"));
     assert_eq!(configs["proj"].kind, ServerKind::Http);
-    assert_eq!(configs["proj"].url.as_deref(), Some("http://127.0.0.1:9/mcp"));
+    assert_eq!(
+        configs["proj"].url.as_deref(),
+        Some("http://127.0.0.1:9/mcp")
+    );
 
     // Case 2: disabledServers hide; enabledServers force-enable.
     let user2 = root.path().join("user2");
@@ -79,7 +82,11 @@ fn config_loading_matches_omp_rules() {
     write(&user3.join(".omp").join("agent"), "mcp.json", "{ not json");
     let project3 = root.path().join("project3");
     std::fs::create_dir_all(&project3).unwrap();
-    write(&project3, "mcp.json", r#"{"mcpServers": {"ok": {"command": "ok"}}}"#);
+    write(
+        &project3,
+        "mcp.json",
+        r#"{"mcpServers": {"ok": {"command": "ok"}}}"#,
+    );
     std::env::set_var("OMP_CONFIG_DIR", &user3);
     let configs: BTreeMap<String, McpServerConfig> = load_configs(&project3);
     std::env::remove_var("OMP_CONFIG_DIR");

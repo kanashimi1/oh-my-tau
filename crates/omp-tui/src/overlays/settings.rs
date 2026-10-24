@@ -111,7 +111,15 @@ impl Tab {
     fn groups(self) -> &'static [&'static str] {
         match self {
             Self::Appearance => &["Theme", "Composer", "Status Line", "Display", "Images"],
-            Self::Model => &["Thinking", "Sampling", "Prompt", "Retry & Fallback", "Advisor", "Prewalk", "Vision"],
+            Self::Model => &[
+                "Thinking",
+                "Sampling",
+                "Prompt",
+                "Retry & Fallback",
+                "Advisor",
+                "Prewalk",
+                "Vision",
+            ],
             Self::Interaction => &[
                 "Input",
                 "Approvals",
@@ -127,7 +135,13 @@ impl Tab {
                 "Skills",
             ],
             Self::Context => &["General", "Compaction", "Rules (TTSR)", "Experimental"],
-            Self::Memory => &["General", "Auto-Learn", "Mnemopi", "Hindsight", "Sharpshooter"],
+            Self::Memory => &[
+                "General",
+                "Auto-Learn",
+                "Mnemopi",
+                "Hindsight",
+                "Sharpshooter",
+            ],
             Self::Files => &["Editing", "Reading", "Read Summaries", "LSP"],
             Self::Shell => &["Bash", "Eval & Runtimes"],
             Self::Tools => &[
@@ -144,7 +158,14 @@ impl Tab {
                 "Developer",
             ],
             Self::Tasks => &["Modes", "Subagents", "Isolation", "Commands & Skills"],
-            Self::Providers => &["Services", "Fireworks", "Tiny Model", "Protocol", "Timeouts", "Privacy"],
+            Self::Providers => &[
+                "Services",
+                "Fireworks",
+                "Tiny Model",
+                "Protocol",
+                "Timeouts",
+                "Privacy",
+            ],
         }
     }
 
@@ -309,8 +330,10 @@ impl SettingRow {
             Kind::Submenu => {
                 let raw = scalar_text(&self.value);
                 // TS `#getSubmenuCurrentValue`: -1 / unset reads "default".
-                if matches!(self.id, "compaction.thresholdPercent" | "compaction.thresholdTokens")
-                    && (raw == "-1" || raw.is_empty())
+                if matches!(
+                    self.id,
+                    "compaction.thresholdPercent" | "compaction.thresholdTokens"
+                ) && (raw == "-1" || raw.is_empty())
                 {
                     "default".to_string()
                 } else {
@@ -556,13 +579,19 @@ impl SettingsOverlay {
     /// [`Self::seed`]).
     #[must_use]
     pub fn new() -> Self {
-        let mut rows: Vec<SettingRow> = SETTING_DEFS.iter().filter_map(SettingRow::from_def).collect();
+        let mut rows: Vec<SettingRow> = SETTING_DEFS
+            .iter()
+            .filter_map(SettingRow::from_def)
+            .collect();
         // Display order: tab, then the tab's section order (TS
         // `getSettingsForTab` stable-sorts by group rank); panel order inside
         // a section is the generated table order (stable sort).
         rows.sort_by_key(|row| {
             (
-                Tab::ALL.iter().position(|tab| *tab == row.tab).unwrap_or(usize::MAX),
+                Tab::ALL
+                    .iter()
+                    .position(|tab| *tab == row.tab)
+                    .unwrap_or(usize::MAX),
                 group_rank(row.tab, row.group),
             )
         });
@@ -593,7 +622,6 @@ impl SettingsOverlay {
         }
     }
 
-
     // ---- host interface -------------------------------------------------
 
     /// Replace row values with the port's effective values (`ids` and
@@ -614,7 +642,10 @@ impl SettingsOverlay {
         let Some(idx) = self.rows.iter().position(|row| row.id == id) else {
             return false;
         };
-        self.tab = Tab::ALL.iter().position(|tab| *tab == self.rows[idx].tab).unwrap_or(0);
+        self.tab = Tab::ALL
+            .iter()
+            .position(|tab| *tab == self.rows[idx].tab)
+            .unwrap_or(0);
         self.selected = idx;
         self.section_focus = false;
         self.search = None;
@@ -694,7 +725,10 @@ impl SettingsOverlay {
             return false;
         };
         let flag = |id: &str| self.value_of(id).and_then(|v| v.as_bool()).unwrap_or(false);
-        let text = |id: &str| self.value_of(id).and_then(|v| v.as_str().map(str::to_owned));
+        let text = |id: &str| {
+            self.value_of(id)
+                .and_then(|v| v.as_str().map(str::to_owned))
+        };
         match row.def.condition {
             "" => true,
             "macOS" => cfg!(target_os = "macos"),
@@ -775,7 +809,9 @@ impl SettingsOverlay {
         let pos = in_tab
             .iter()
             .position(|idx| *idx == self.selected)
-            .map_or(0, |pos| (pos as isize + delta).rem_euclid(in_tab.len() as isize) as usize);
+            .map_or(0, |pos| {
+                (pos as isize + delta).rem_euclid(in_tab.len() as isize) as usize
+            });
         self.selected = in_tab[pos];
     }
 
@@ -811,8 +847,14 @@ impl SettingsOverlay {
         if sections.is_empty() {
             return;
         }
-        let current = self.rows.get(self.selected).map_or(sections[0], |row| row.group);
-        let pos = sections.iter().position(|name| *name == current).unwrap_or(0);
+        let current = self
+            .rows
+            .get(self.selected)
+            .map_or(sections[0], |row| row.group);
+        let pos = sections
+            .iter()
+            .position(|name| *name == current)
+            .unwrap_or(0);
         let next = sections[(pos as isize + dir).rem_euclid(sections.len() as isize) as usize];
         if let Some(idx) = self.first_shown(tab, Some(next)) {
             self.selected = idx;
@@ -851,11 +893,15 @@ impl SettingsOverlay {
             return std::iter::once("auto")
                 .chain(self.thinking_levels.iter().map(String::as_str))
                 .map(|level| {
-                    declared.iter().find(|o| o.value == level).cloned().unwrap_or_else(|| MenuOpt {
-                        value: level.to_string(),
-                        label: level.to_string(),
-                        description: String::new(),
-                    })
+                    declared
+                        .iter()
+                        .find(|o| o.value == level)
+                        .cloned()
+                        .unwrap_or_else(|| MenuOpt {
+                            value: level.to_string(),
+                            label: level.to_string(),
+                            description: String::new(),
+                        })
                 })
                 .collect();
         }
@@ -867,8 +913,12 @@ impl SettingsOverlay {
     fn previews_live(id: &str) -> bool {
         matches!(
             id,
-            "theme.dark" | "theme.light" | "statusLine.preset" | "statusLine.separator"
-                | "statusLine.contextLine" | "composer.shape"
+            "theme.dark"
+                | "theme.light"
+                | "statusLine.preset"
+                | "statusLine.separator"
+                | "statusLine.contextLine"
+                | "composer.shape"
         )
     }
 
@@ -911,7 +961,12 @@ impl SettingsOverlay {
                 if Self::previews_live(id) {
                     self.preview_override = Some((id.to_string(), key.clone()));
                 }
-                self.menu = Some(Menu::Select { row: idx, options, selected, base: key });
+                self.menu = Some(Menu::Select {
+                    row: idx,
+                    options,
+                    selected,
+                    base: key,
+                });
             }
             Kind::Multi => {
                 let options = self.options_for(idx);
@@ -927,7 +982,12 @@ impl SettingsOverlay {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.menu = Some(Menu::Multi { row: idx, options, cursor: 0, value });
+                self.menu = Some(Menu::Multi {
+                    row: idx,
+                    options,
+                    cursor: 0,
+                    value,
+                });
             }
             Kind::Text | Kind::Limits => {
                 self.menu = Some(Menu::Text {
@@ -944,7 +1004,13 @@ impl SettingsOverlay {
 
     /// Commit the highlighted submenu choice and close the field.
     fn confirm_select(&mut self) {
-        let Some(Menu::Select { row, options, selected, .. }) = self.menu.take() else {
+        let Some(Menu::Select {
+            row,
+            options,
+            selected,
+            ..
+        }) = self.menu.take()
+        else {
             return;
         };
         let Some(opt) = options.get(selected) else {
@@ -987,15 +1053,28 @@ impl SettingsOverlay {
                 _ => {
                     let kind = if want_array { "array" } else { "record" };
                     let error = format!("Invalid {kind} JSON for {}", r.id);
-                    self.menu = Some(Menu::Text { row, buf, error: Some(error) });
+                    self.menu = Some(Menu::Text {
+                        row,
+                        buf,
+                        error: Some(error),
+                    });
                     return;
                 }
             }
         } else if r.is_number() {
-            match buf.trim().parse::<f64>().ok().and_then(serde_json::Number::from_f64) {
+            match buf
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+            {
                 Some(n) => Value::Number(n),
                 None => {
-                    self.menu = Some(Menu::Text { row, buf, error: Some("Not a number".into()) });
+                    self.menu = Some(Menu::Text {
+                        row,
+                        buf,
+                        error: Some("Not a number".into()),
+                    });
                     return;
                 }
             }
@@ -1007,7 +1086,13 @@ impl SettingsOverlay {
 
     /// Toggle the multiselect choice under the cursor and persist.
     fn toggle_multi(&mut self) {
-        let Some(Menu::Multi { row, options, cursor, value }) = &mut self.menu else {
+        let Some(Menu::Multi {
+            row,
+            options,
+            cursor,
+            value,
+        }) = &mut self.menu
+        else {
             return;
         };
         let Some(opt) = options.get(*cursor) else {
@@ -1019,7 +1104,10 @@ impl SettingsOverlay {
             value.push(opt.value.clone());
         }
         let (row, next) = (*row, value.clone());
-        self.commit(row, Value::Array(next.into_iter().map(Value::String).collect()));
+        self.commit(
+            row,
+            Value::Array(next.into_iter().map(Value::String).collect()),
+        );
     }
 
     /// Keys while a value field is open.
@@ -1028,7 +1116,9 @@ impl SettingsOverlay {
             return EventOutcome::Ignored;
         };
         match menu {
-            Menu::Select { options, selected, .. } => {
+            Menu::Select {
+                options, selected, ..
+            } => {
                 let len = options.len();
                 let step = |cur: usize, delta: isize| -> usize {
                     if len == 0 {
@@ -1065,7 +1155,9 @@ impl SettingsOverlay {
                 }
                 _ => {}
             },
-            Menu::Multi { options, cursor, .. } => {
+            Menu::Multi {
+                options, cursor, ..
+            } => {
                 let len = options.len();
                 match key.code {
                     KeyCode::Esc => self.menu = None,
@@ -1081,7 +1173,13 @@ impl SettingsOverlay {
 
     /// The select field's highlight moved: refresh the live preview.
     fn menu_highlight_changed(&mut self) {
-        let Some(Menu::Select { row, options, selected, .. }) = &self.menu else {
+        let Some(Menu::Select {
+            row,
+            options,
+            selected,
+            ..
+        }) = &self.menu
+        else {
             return;
         };
         let id = self.rows[*row].id;
@@ -1132,7 +1230,9 @@ impl SettingsOverlay {
                 continue;
             }
             search.results.push(DispRow::Heading(tab.label()));
-            search.results.extend(matches.iter().map(|idx| DispRow::Row(*idx)));
+            search
+                .results
+                .extend(matches.iter().map(|idx| DispRow::Row(*idx)));
         }
         search.selected = search
             .results
@@ -1156,7 +1256,10 @@ impl SettingsOverlay {
         if rows.is_empty() {
             return;
         }
-        let pos = rows.iter().position(|idx| *idx == search.selected).unwrap_or(0);
+        let pos = rows
+            .iter()
+            .position(|idx| *idx == search.selected)
+            .unwrap_or(0);
         let next = (pos as isize + delta).rem_euclid(rows.len() as isize) as usize;
         search.selected = rows[next];
     }
@@ -1231,7 +1334,13 @@ impl SettingsOverlay {
         };
         let row = row_of(row_idx);
         let mut lines: Vec<(Line<'static>, Option<usize>)> = Vec::new();
-        lines.push((Line::from(Span::styled(row.label.clone(), text.add_modifier(Modifier::BOLD))), None));
+        lines.push((
+            Line::from(Span::styled(
+                row.label.clone(),
+                text.add_modifier(Modifier::BOLD),
+            )),
+            None,
+        ));
         lines.push((Line::default(), None));
         for wrapped in wrap_text(row.description, width.saturating_sub(2) as usize) {
             lines.push((Line::from(Span::styled(wrapped, dim)), None));
@@ -1240,12 +1349,20 @@ impl SettingsOverlay {
             lines.push((Line::default(), None));
         }
         match menu {
-            Menu::Select { options, selected, .. } => {
+            Menu::Select {
+                options, selected, ..
+            } => {
                 const MAX_VISIBLE: usize = 10;
                 let start = selected
                     .saturating_sub(MAX_VISIBLE / 2)
                     .min(options.len().saturating_sub(MAX_VISIBLE));
-                let label_w = options.iter().map(|o| o.label.chars().count()).max().unwrap_or(0).min(30) + 2;
+                let label_w = options
+                    .iter()
+                    .map(|o| o.label.chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    .min(30)
+                    + 2;
                 for (i, opt) in options.iter().enumerate().skip(start).take(MAX_VISIBLE) {
                     let current = i == *selected;
                     let prefix = if current { "❯ " } else { "  " };
@@ -1257,13 +1374,19 @@ impl SettingsOverlay {
                     ];
                     if !opt.description.is_empty() {
                         spans.push(Span::styled(" ".repeat(pad), style));
-                        spans.push(Span::styled(opt.description.clone(), if current { accent } else { dim }));
+                        spans.push(Span::styled(
+                            opt.description.clone(),
+                            if current { accent } else { dim },
+                        ));
                     }
                     lines.push((Line::from(spans), Some(i)));
                 }
                 if options.len() > MAX_VISIBLE {
                     lines.push((
-                        Line::from(Span::styled(format!("  ({}/{})", selected + 1, options.len()), dim)),
+                        Line::from(Span::styled(
+                            format!("  ({}/{})", selected + 1, options.len()),
+                            dim,
+                        )),
                         None,
                     ));
                 }
@@ -1284,12 +1407,20 @@ impl SettingsOverlay {
                 ));
                 if let Some(error) = error {
                     lines.push((
-                        Line::from(Span::styled(error.clone(), Style::default().fg(theme.color("error")))),
+                        Line::from(Span::styled(
+                            error.clone(),
+                            Style::default().fg(theme.color("error")),
+                        )),
                         None,
                     ));
                 }
             }
-            Menu::Multi { options, cursor, value, .. } => {
+            Menu::Multi {
+                options,
+                cursor,
+                value,
+                ..
+            } => {
                 let ordered = row.def.ordered;
                 for (i, opt) in options.iter().enumerate() {
                     let position = value.iter().position(|v| *v == opt.value);
@@ -1327,7 +1458,12 @@ impl SettingsOverlay {
             }
             frame.render_widget(
                 Paragraph::new(truncate_line(line, width as usize)),
-                Rect { x, y, width, height: 1 },
+                Rect {
+                    x,
+                    y,
+                    width,
+                    height: 1,
+                },
             );
             y += 1;
         }
@@ -1352,7 +1488,10 @@ impl SettingsOverlay {
         st.config = self.status_config();
         let mut out = vec![
             Line::default(),
-            Line::from(Span::styled("Preview:", Style::default().fg(theme.color("muted")))),
+            Line::from(Span::styled(
+                "Preview:",
+                Style::default().fg(theme.color("muted")),
+            )),
         ];
         out.extend(crate::composer::preview_lines(
             crate::composer::ComposerShape::from_name(&shape),
@@ -1372,16 +1511,21 @@ impl SettingsOverlay {
         let mut cfg = StatusLineConfig::default();
         let str_of = |id: &str| match &self.preview_override {
             Some((over, value)) if over == id => Some(value.clone()),
-            _ => self.value_of(id).and_then(|v| v.as_str().map(str::to_owned)),
+            _ => self
+                .value_of(id)
+                .and_then(|v| v.as_str().map(str::to_owned)),
         };
         let bool_of = |id: &str| self.value_of(id).and_then(|v| v.as_bool());
-        if let Some(name) = str_of("statusLine.preset") { let name = name.as_str();
+        if let Some(name) = str_of("statusLine.preset") {
+            let name = name.as_str();
             cfg.preset = Preset::from_name(name);
         }
-        if let Some(name) = str_of("statusLine.separator") { let name = name.as_str();
+        if let Some(name) = str_of("statusLine.separator") {
+            let name = name.as_str();
             cfg.separator = SeparatorStyle::from_name(name);
         }
-        if let Some(name) = str_of("statusLine.contextLine") { let name = name.as_str();
+        if let Some(name) = str_of("statusLine.contextLine") {
+            let name = name.as_str();
             cfg.context_line = ContextLineMode::from_name(name);
         }
         if let Some(v) = bool_of("statusLine.sessionAccent") {
@@ -1465,7 +1609,11 @@ impl SettingsOverlay {
     /// click on a choice picks (select) or toggles (multiselect) it.
     fn handle_menu_mouse(&mut self, ev: &SgrMouseEvent, map: &MouseMap) -> EventOutcome {
         if let Some(delta) = ev.wheel {
-            let code = if delta > 0 { KeyCode::Down } else { KeyCode::Up };
+            let code = if delta > 0 {
+                KeyCode::Down
+            } else {
+                KeyCode::Up
+            };
             return self.handle_menu_key(KeyEvent::from(code));
         }
         if ev.left_click {
@@ -1648,7 +1796,12 @@ impl Component for SettingsOverlay {
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(rule, border))),
-            Rect { x: area.x, y: divider_y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y: divider_y,
+                width: area.width,
+                height: 1,
+            },
         );
 
         // ── Bottom block: description, preview, divider, footer ────────────
@@ -1664,7 +1817,15 @@ impl Component for SettingsOverlay {
 
         let mut y: u16;
         if let Some(menu) = &self.menu {
-            y = self.render_menu(frame, menu, inner, content_start, content_end + 4, theme, &mut map);
+            y = self.render_menu(
+                frame,
+                menu,
+                inner,
+                content_start,
+                content_end + 4,
+                theme,
+                &mut map,
+            );
             *self.mouse.borrow_mut() = map;
         } else {
             let list = self.display_list();
@@ -1686,12 +1847,18 @@ impl Component for SettingsOverlay {
                 .max()
                 .unwrap_or(0);
             let sidebar_width = (max_name.min(22) + 4) as u16; // 2 indent + 2 gap
-            let split = !searching
-                && sections.len() >= 2
-                && inner.width >= sidebar_width + 2 + 60; // pane ≥ 60 (TS rule)
-            let pane_x = if split { content_x + sidebar_width + 2 } else { content_x };
+            let split = !searching && sections.len() >= 2 && inner.width >= sidebar_width + 2 + 60; // pane ≥ 60 (TS rule)
+            let pane_x = if split {
+                content_x + sidebar_width + 2
+            } else {
+                content_x
+            };
             let pane_width = content_x + content_w - pane_x;
-            map.sidebar_col = if split { content_x + sidebar_width } else { u16::MAX };
+            map.sidebar_col = if split {
+                content_x + sidebar_width
+            } else {
+                u16::MAX
+            };
             map.pane_end_col = content_x + content_w;
 
             // Scroll window: center the selection (TS `startRow`).
@@ -1700,7 +1867,11 @@ impl Component for SettingsOverlay {
                     .min(list.len().saturating_sub(height))
             });
             let overflow = list.len() > height;
-            let row_width = if overflow { pane_width.saturating_sub(1) } else { pane_width };
+            let row_width = if overflow {
+                pane_width.saturating_sub(1)
+            } else {
+                pane_width
+            };
             map.pane_end_col = pane_x + row_width;
 
             // Label column spans the whole list so the layout stays stable.
@@ -1765,11 +1936,7 @@ impl Component for SettingsOverlay {
                     let is_active = *name == active_section;
                     let focused = self.section_focus && is_active;
                     let prefix = if focused { "❯ " } else { "  " };
-                    let style = if is_active {
-                        accent
-                    } else {
-                        dim
-                    };
+                    let style = if is_active { accent } else { dim };
                     let field = sidebar_width.saturating_sub(4) as usize;
                     let label: String = if name.len() > field {
                         name.chars().take(field.saturating_sub(1)).collect()
@@ -1799,7 +1966,12 @@ impl Component for SettingsOverlay {
                 }
                 frame.render_widget(
                     Paragraph::new(lines),
-                    Rect { x: content_x, y: content_start, width: sidebar_width + 2, height: height as u16 },
+                    Rect {
+                        x: content_x,
+                        y: content_start,
+                        width: sidebar_width + 2,
+                        height: height as u16,
+                    },
                 );
             }
 
@@ -1813,17 +1985,21 @@ impl Component for SettingsOverlay {
                 };
                 match dr {
                     DispRow::Heading(name) => {
-                        let dimmed = active_range
-                            .is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
-                        let style = if dimmed { dim } else { dim.add_modifier(Modifier::BOLD) };
+                        let dimmed =
+                            active_range.is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
+                        let style = if dimmed {
+                            dim
+                        } else {
+                            dim.add_modifier(Modifier::BOLD)
+                        };
                         pane_lines.push(Line::from(Span::styled(format!("  {name}"), style)));
                         map.pane.push(None);
                     }
                     DispRow::Row(idx) => {
                         let row = &self.rows[*idx];
                         let is_selected = *idx == self.selected && !self.section_focus;
-                        let dimmed = active_range
-                            .is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
+                        let dimmed =
+                            active_range.is_some_and(|(lo, hi)| start + r < lo || start + r > hi);
                         let hovered = hover == Some(*idx) && !is_selected;
                         let prefix = if is_selected { "❯ " } else { "  " };
                         let label_pad = max_label.saturating_sub(row.label.len());
@@ -1881,7 +2057,12 @@ impl Component for SettingsOverlay {
             // the reserved last column, so render the full pane width.
             frame.render_widget(
                 Paragraph::new(pane_lines),
-                Rect { x: pane_x, y: content_start, width: pane_width, height: height as u16 },
+                Rect {
+                    x: pane_x,
+                    y: content_start,
+                    width: pane_width,
+                    height: height as u16,
+                },
             );
             *self.mouse.borrow_mut() = map;
 
@@ -1893,16 +2074,20 @@ impl Component for SettingsOverlay {
                     DispRow::Row(idx) => Some(*idx),
                     DispRow::Heading(_) => None,
                 })
-                .or(if searching {
-                    None
-                } else {
-                    Some(self.selected)
-                });
+                .or(if searching { None } else { Some(self.selected) });
             let desc: &str = desc_row
                 .and_then(|idx| self.rows.get(idx))
                 .map_or("", |row| row.description);
             y = content_end;
-            frame.render_widget(Paragraph::new(Line::from("")), Rect { x: inner.x, y, width: inner.width, height: 1 });
+            frame.render_widget(
+                Paragraph::new(Line::from("")),
+                Rect {
+                    x: inner.x,
+                    y,
+                    width: inner.width,
+                    height: 1,
+                },
+            );
             y += 1;
             for wrapped in wrap_text(desc, inner.width.saturating_sub(4) as usize)
                 .into_iter()
@@ -1914,12 +2099,25 @@ impl Component for SettingsOverlay {
                 }
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(line, dim))),
-                    Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 },
+                    Rect {
+                        x: inner.x + 1,
+                        y,
+                        width: inner.width.saturating_sub(1),
+                        height: 1,
+                    },
                 );
                 y += 1;
             }
             while y < content_end + 4 {
-                frame.render_widget(Paragraph::new(Line::from("")), Rect { x: inner.x, y, width: inner.width, height: 1 });
+                frame.render_widget(
+                    Paragraph::new(Line::from("")),
+                    Rect {
+                        x: inner.x,
+                        y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
                 y += 1;
             }
         }
@@ -1928,7 +2126,12 @@ impl Component for SettingsOverlay {
         if show_preview {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled("Preview:", dim))),
-                Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 },
+                Rect {
+                    x: inner.x + 1,
+                    y,
+                    width: inner.width.saturating_sub(1),
+                    height: 1,
+                },
             );
             y += 1;
             let preview = self
@@ -1937,7 +2140,12 @@ impl Component for SettingsOverlay {
                 .unwrap_or_else(|| "(preview not available)".to_owned());
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(preview, text))),
-                Rect { x: inner.x + 1, y, width: inner.width.saturating_sub(1), height: 1 },
+                Rect {
+                    x: inner.x + 1,
+                    y,
+                    width: inner.width.saturating_sub(1),
+                    height: 1,
+                },
             );
             y += 1;
         }
@@ -1950,7 +2158,12 @@ impl Component for SettingsOverlay {
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(rule, border))),
-            Rect { x: area.x, y, width: area.width, height: 1 },
+            Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height: 1,
+            },
         );
         y += 1;
         let hint = if let Some(menu) = &self.menu {
@@ -1970,7 +2183,12 @@ impl Component for SettingsOverlay {
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(format!(" {hint}"), dim))),
-            Rect { x: inner.x, y, width: inner.width, height: 1 },
+            Rect {
+                x: inner.x,
+                y,
+                width: inner.width,
+                height: 1,
+            },
         );
         let _ = tabs_line;
     }
@@ -2094,22 +2312,27 @@ impl Component for SettingsOverlay {
             return EventOutcome::Consumed;
         }
         if ev.motion {
-            let tab = if ev.row == map.tab_row { tab_at(&map, ev.col) } else { None };
-            *self.hover_tab.borrow_mut() = tab;
-            let row = if (map.content.0..map.content.1).contains(&ev.row) && ev.col >= map.sidebar_col {
-                map.pane
-                    .get((ev.row - map.content.0) as usize)
-                    .and_then(|hit| {
-                        // Only rows the pointer is visually on (hoverTest).
-                        if ev.col < map.pane_end_col {
-                            *hit
-                        } else {
-                            None
-                        }
-                    })
+            let tab = if ev.row == map.tab_row {
+                tab_at(&map, ev.col)
             } else {
                 None
             };
+            *self.hover_tab.borrow_mut() = tab;
+            let row =
+                if (map.content.0..map.content.1).contains(&ev.row) && ev.col >= map.sidebar_col {
+                    map.pane
+                        .get((ev.row - map.content.0) as usize)
+                        .and_then(|hit| {
+                            // Only rows the pointer is visually on (hoverTest).
+                            if ev.col < map.pane_end_col {
+                                *hit
+                            } else {
+                                None
+                            }
+                        })
+                } else {
+                    None
+                };
             *self.hover.borrow_mut() = row;
             return EventOutcome::Consumed;
         }
@@ -2177,7 +2400,10 @@ const CLEAN_TAB_SEP_W: u16 = 3;
 fn clean_tab_labels(active: usize, width: u16) -> Vec<&'static str> {
     let mut labels: Vec<&'static str> = Tab::ALL.iter().map(|tab| tab.label()).collect();
     let total = |labels: &[&str]| -> usize {
-        labels.iter().map(|l| UnicodeWidthStr::width(*l)).sum::<usize>()
+        labels
+            .iter()
+            .map(|l| UnicodeWidthStr::width(*l))
+            .sum::<usize>()
             + CLEAN_TAB_SEP.len() * labels.len().saturating_sub(1)
     };
     for idx in (0..labels.len()).rev() {
@@ -2281,8 +2507,6 @@ mod tests {
         KeyEvent::from(code)
     }
 
-
-
     #[test]
     fn rows_cover_every_tab_and_have_values() {
         let overlay = SettingsOverlay::new();
@@ -2311,7 +2535,10 @@ mod tests {
             .find(|row| row.id == "theme.dark")
             .unwrap();
         assert_eq!(dark.label, "Dark Theme");
-        assert_eq!(dark.description, "Theme used when the terminal has a dark background");
+        assert_eq!(
+            dark.description,
+            "Theme used when the terminal has a dark background"
+        );
         assert_eq!(dark.tab, Tab::Appearance);
         assert_eq!(dark.group, "Theme");
     }
@@ -2360,8 +2587,13 @@ mod tests {
             panic!("expected enum");
         };
         let next = row.cycled().unwrap();
-        let pos = values.iter().position(|v| *v == row.value.as_str().unwrap());
-        assert_eq!(next.as_str().unwrap(), values[(pos.unwrap() + 1) % values.len()]);
+        let pos = values
+            .iter()
+            .position(|v| *v == row.value.as_str().unwrap());
+        assert_eq!(
+            next.as_str().unwrap(),
+            values[(pos.unwrap() + 1) % values.len()]
+        );
     }
 
     #[test]
@@ -2374,7 +2606,10 @@ mod tests {
             .unwrap();
         let before = overlay.rows[idx].value.clone();
         overlay.commit(idx, Value::Bool(!before.as_bool().unwrap()));
-        assert_eq!(overlay.rows[idx].value, Value::Bool(!before.as_bool().unwrap()));
+        assert_eq!(
+            overlay.rows[idx].value,
+            Value::Bool(!before.as_bool().unwrap())
+        );
         let changes = overlay.take_changes();
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].1.as_bool(), Some(!before.as_bool().unwrap()));
@@ -2392,7 +2627,10 @@ mod tests {
         assert!(s.contains("Theme"), "{s}");
         assert!(s.contains("Dark Theme"), "{s}");
         assert!(s.contains("titanium"), "{s}");
-        assert!(s.contains("Theme used when the terminal has a dark background"), "{s}");
+        assert!(
+            s.contains("Theme used when the terminal has a dark background"),
+            "{s}"
+        );
         assert!(s.contains("Preview:"), "{s}");
         assert!(s.contains("⏎/␣ to change · ⇥ to jump sections"), "{s}");
         assert!(s.contains("Type to search"), "{s}");
@@ -2597,7 +2835,10 @@ mod tests {
         let theme = crate::theme::Theme::default();
         for tab in Tab::ALL {
             let icon = tab.icon(&theme);
-            assert!(icon.is_empty() || !row.contains(icon), "icon {icon:?} in {row:?}");
+            assert!(
+                icon.is_empty() || !row.contains(icon),
+                "icon {icon:?} in {row:?}"
+            );
         }
         let (start, end) = map.tabs[0];
         assert_eq!(cells(&buf, map.tab_row, start, end), "Appearance");
@@ -2608,7 +2849,10 @@ mod tests {
         let inactive = buf[(other, map.tab_row)].style();
         assert!(!inactive.add_modifier.contains(Modifier::UNDERLINED));
         for (idx, (start, end)) in map.tabs.iter().enumerate() {
-            assert_eq!(cells(&buf, map.tab_row, *start, *end), Tab::ALL[idx].label());
+            assert_eq!(
+                cells(&buf, map.tab_row, *start, *end),
+                Tab::ALL[idx].label()
+            );
         }
     }
 

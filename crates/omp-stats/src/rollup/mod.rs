@@ -34,9 +34,9 @@ mod schema;
 mod series;
 mod source;
 mod stats;
-mod tools;
 #[cfg(test)]
 mod tests;
+mod tools;
 
 use anyhow::Result;
 use rusqlite::{Connection, Row};
@@ -51,8 +51,9 @@ pub use series::{
     get_provider_time_series, get_time_series,
 };
 pub use stats::{
-    get_daily_activity_from_rollup, get_overall_stats, get_provider_hourly_burn, get_session_rollups,
-    get_stats_by_agent_type, get_stats_by_folder, get_stats_by_model, get_stats_by_provider,
+    get_daily_activity_from_rollup, get_overall_stats, get_provider_hourly_burn,
+    get_session_rollups, get_stats_by_agent_type, get_stats_by_folder, get_stats_by_model,
+    get_stats_by_provider,
 };
 pub use tools::{get_tool_stats, get_tool_stats_by_model, get_tool_time_series};
 
@@ -320,7 +321,10 @@ pub(crate) fn i64_col(row: &Row, name: &str) -> i64 {
 }
 
 pub(crate) fn f64_col(row: &Row, name: &str) -> f64 {
-    row.get::<_, Option<f64>>(name).ok().flatten().unwrap_or(0.0)
+    row.get::<_, Option<f64>>(name)
+        .ok()
+        .flatten()
+        .unwrap_or(0.0)
 }
 
 pub(crate) fn opt_f64_col(row: &Row, name: &str) -> Option<f64> {

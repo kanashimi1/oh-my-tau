@@ -54,7 +54,25 @@ fn percent_encode_path(path: &str) -> String {
     for byte in path.bytes() {
         let c = byte as char;
         let keep = c.is_ascii_alphanumeric()
-            || matches!(c, '-' | '.' | '_' | '~' | '/' | ':' | '@' | '+' | '=' | ',' | '&' | '$' | '!' | '\'' | '(' | ')' | '*');
+            || matches!(
+                c,
+                '-' | '.'
+                    | '_'
+                    | '~'
+                    | '/'
+                    | ':'
+                    | '@'
+                    | '+'
+                    | '='
+                    | ','
+                    | '&'
+                    | '$'
+                    | '!'
+                    | '\''
+                    | '('
+                    | ')'
+                    | '*'
+            );
         if keep {
             out.push(c);
         } else {
@@ -146,23 +164,52 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 // =============================================================================
 
 const EXTENSION_LANG: &[(&str, &str)] = &[
-    ("ts", "typescript"), ("cts", "typescript"), ("mts", "typescript"),
-    ("tsx", "typescriptreact"), ("js", "javascript"), ("jsx", "javascriptreact"),
-    ("mjs", "javascript"), ("cjs", "javascript"),
-    ("rs", "rust"), ("go", "go"), ("c", "c"), ("h", "c"),
-    ("cpp", "cpp"), ("cc", "cpp"), ("cxx", "cpp"), ("hh", "cpp"), ("hpp", "cpp"),
-    ("hxx", "cpp"), ("cu", "cpp"), ("cuh", "cpp"), ("ino", "cpp"),
+    ("ts", "typescript"),
+    ("cts", "typescript"),
+    ("mts", "typescript"),
+    ("tsx", "typescriptreact"),
+    ("js", "javascript"),
+    ("jsx", "javascriptreact"),
+    ("mjs", "javascript"),
+    ("cjs", "javascript"),
+    ("rs", "rust"),
+    ("go", "go"),
+    ("c", "c"),
+    ("h", "c"),
+    ("cpp", "cpp"),
+    ("cc", "cpp"),
+    ("cxx", "cpp"),
+    ("hh", "cpp"),
+    ("hpp", "cpp"),
+    ("hxx", "cpp"),
+    ("cu", "cpp"),
+    ("cuh", "cpp"),
+    ("ino", "cpp"),
     ("zig", "zig"),
-    ("py", "python"), ("pyi", "python"),
-    ("rb", "ruby"), ("rbw", "ruby"), ("gemspec", "ruby"),
+    ("py", "python"),
+    ("pyi", "python"),
+    ("rb", "ruby"),
+    ("rbw", "ruby"),
+    ("gemspec", "ruby"),
     ("lua", "lua"),
-    ("sh", "shellscript"), ("bash", "shellscript"), ("zsh", "shellscript"),
-    ("ksh", "shellscript"), ("bats", "shellscript"), ("tmux", "shellscript"),
-    ("cgi", "shellscript"), ("fcgi", "shellscript"), ("command", "shellscript"),
+    ("sh", "shellscript"),
+    ("bash", "shellscript"),
+    ("zsh", "shellscript"),
+    ("ksh", "shellscript"),
+    ("bats", "shellscript"),
+    ("tmux", "shellscript"),
+    ("cgi", "shellscript"),
+    ("fcgi", "shellscript"),
+    ("command", "shellscript"),
     ("tool", "shellscript"),
-    ("fish", "fish"), ("pl", "perl"), ("pm", "perl"), ("perl", "perl"),
+    ("fish", "fish"),
+    ("pl", "perl"),
+    ("pm", "perl"),
+    ("perl", "perl"),
     ("php", "php"),
-    ("java", "java"), ("kt", "kotlin"), ("ktm", "kotlin"),
+    ("java", "java"),
+    ("kt", "kotlin"),
+    ("ktm", "kotlin"),
 ];
 
 /// LSP language identifier for a file path (`plaintext` when unknown).
@@ -172,7 +219,10 @@ pub fn detect_language_id(file_path: &Path) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if base_name == "dockerfile" || base_name.starts_with("dockerfile.") || base_name == "containerfile" {
+    if base_name == "dockerfile"
+        || base_name.starts_with("dockerfile.")
+        || base_name == "containerfile"
+    {
         return "dockerfile".to_string();
     }
     if base_name == ".emacs" {
@@ -263,7 +313,9 @@ fn strip_diagnostic_noise(message: &str) -> String {
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            !trimmed.starts_with("for further information visit") && !trimmed.starts_with("http://") && !trimmed.starts_with("https://")
+            !trimmed.starts_with("for further information visit")
+                && !trimmed.starts_with("http://")
+                && !trimmed.starts_with("https://")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -371,7 +423,10 @@ pub fn format_symbol_information(symbol: &SymbolInformation, cwd: &Path) -> Stri
 }
 
 #[must_use]
-pub fn filter_workspace_symbols(symbols: &[SymbolInformation], query: &str) -> Vec<SymbolInformation> {
+pub fn filter_workspace_symbols(
+    symbols: &[SymbolInformation],
+    query: &str,
+) -> Vec<SymbolInformation> {
     let needle = query.trim().to_lowercase();
     if needle.is_empty() {
         return symbols.to_vec();
@@ -415,10 +470,18 @@ pub fn dedupe_workspace_symbols(symbols: &[SymbolInformation]) -> Vec<SymbolInfo
 
 /// Format a code action as `index: [kind] title (preferred)? (disabled: ..)?`.
 #[must_use]
-pub fn format_code_action(title: &str, kind: Option<&str>, is_preferred: bool, disabled_reason: Option<&str>, index: usize) -> String {
+pub fn format_code_action(
+    title: &str,
+    kind: Option<&str>,
+    is_preferred: bool,
+    disabled_reason: Option<&str>,
+    index: usize,
+) -> String {
     let kind = kind.unwrap_or("action");
     let preferred = if is_preferred { " (preferred)" } else { "" };
-    let disabled = disabled_reason.map(|r| format!(" (disabled: {r})")).unwrap_or_default();
+    let disabled = disabled_reason
+        .map(|r| format!(" (disabled: {r})"))
+        .unwrap_or_default();
     format!("{index}: [{kind}] {title}{preferred}{disabled}")
 }
 
@@ -445,7 +508,10 @@ fn split_diag_path(msg: &str) -> Option<(&str, &str)> {
             continue;
         }
         let col_part = &after_digits[1..];
-        let col_len = col_part.len() - col_part.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let col_len = col_part.len()
+            - col_part
+                .trim_start_matches(|c: char| c.is_ascii_digit())
+                .len();
         if col_len == 0 {
             continue;
         }
@@ -459,13 +525,17 @@ fn split_diag_path(msg: &str) -> Option<(&str, &str)> {
 
 struct PathNode {
     name: String,
-    files: Vec<String>,        // full path keys, in insertion order
+    files: Vec<String>, // full path keys, in insertion order
     subdirs: Vec<PathNode>,
 }
 
 impl PathNode {
     fn new(name: String) -> Self {
-        Self { name, files: Vec::new(), subdirs: Vec::new() }
+        Self {
+            name,
+            files: Vec::new(),
+            subdirs: Vec::new(),
+        }
     }
 }
 
@@ -479,7 +549,9 @@ fn build_path_tree(paths: &[String]) -> PathNode {
         }
         let mut node = &mut root;
         for seg in &segments[..segments.len() - 1] {
-            let idx = if let Some(i) = node.subdirs.iter().position(|d| d.name == *seg) { i } else {
+            let idx = if let Some(i) = node.subdirs.iter().position(|d| d.name == *seg) {
+                i
+            } else {
                 node.subdirs.push(PathNode::new((*seg).to_string()));
                 node.subdirs.len() - 1
             };
@@ -493,7 +565,6 @@ fn build_path_tree(paths: &[String]) -> PathNode {
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
-
 
 enum TreeEvent<'a> {
     File { depth: usize, path: &'a str },
@@ -511,7 +582,10 @@ fn walk_events<'a>(node: &'a PathNode, depth: usize, out: &mut Vec<TreeEvent<'a>
             cur = &cur.subdirs[0];
             parts.push(cur.name.clone());
         }
-        out.push(TreeEvent::Dir { depth, name: parts.join("/") });
+        out.push(TreeEvent::Dir {
+            depth,
+            name: parts.join("/"),
+        });
         walk_events(cur, depth + 1, out);
     }
 }
@@ -604,7 +678,8 @@ fn first_non_whitespace_column(line_text: &str) -> usize {
     line_text.find(|c: char| !c.is_whitespace()).unwrap_or(0)
 }
 
-const IDENTIFIER_CHAR: fn(char) -> bool = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+const IDENTIFIER_CHAR: fn(char) -> bool =
+    |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
 
 fn find_symbol_match_indexes(line_text: &str, symbol: &str, case_insensitive: bool) -> Vec<usize> {
     if symbol.is_empty() {
@@ -638,7 +713,8 @@ fn find_symbol_match_indexes(line_text: &str, symbol: &str, case_insensitive: bo
         if require_word_boundary {
             let before_ok = from == 0 || !IDENTIFIER_CHAR(haystack_char[from - 1]);
             let after_idx = from + needle_len;
-            let after_ok = after_idx >= haystack_char.len() || !IDENTIFIER_CHAR(haystack_char[after_idx]);
+            let after_ok =
+                after_idx >= haystack_char.len() || !IDENTIFIER_CHAR(haystack_char[after_idx]);
             if !before_ok || !after_ok {
                 from += 1;
                 continue;
@@ -668,7 +744,11 @@ fn parse_symbol_spec(spec: &str) -> (String, usize) {
 /// # Errors
 ///
 /// File missing, symbol not found, or occurrence out of bounds.
-pub async fn resolve_symbol_column(file_path: &Path, line: usize, symbol_spec: Option<&str>) -> anyhow::Result<usize> {
+pub async fn resolve_symbol_column(
+    file_path: &Path,
+    line: usize,
+    symbol_spec: Option<&str>,
+) -> anyhow::Result<usize> {
     let line_number = line.max(1);
     let file_text = tokio::fs::read_to_string(file_path)
         .await
@@ -698,7 +778,11 @@ pub async fn resolve_symbol_column(file_path: &Path, line: usize, symbol_spec: O
 }
 
 /// Read `context_lines` of context around a 1-indexed line as `N: text` rows.
-pub async fn read_location_context(file_path: &Path, line: usize, context_lines: usize) -> Vec<String> {
+pub async fn read_location_context(
+    file_path: &Path,
+    line: usize,
+    context_lines: usize,
+) -> Vec<String> {
     let Ok(file_text) = tokio::fs::read_to_string(file_path).await else {
         return Vec::new();
     };
@@ -711,7 +795,10 @@ pub async fn read_location_context(file_path: &Path, line: usize, context_lines:
     let end = (target + context_lines).min(lines.len());
     let mut out = Vec::new();
     for current in start..=end {
-        out.push(format!("{current}: {}", lines.get(current - 1).copied().unwrap_or("")));
+        out.push(format!(
+            "{current}: {}",
+            lines.get(current - 1).copied().unwrap_or("")
+        ));
     }
     out
 }

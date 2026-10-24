@@ -37,8 +37,8 @@
 #![allow(clippy::missing_errors_doc)] // single io::Error failure mode; per-call docs add noise
 
 use std::io::{self, BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
 use std::os::unix::process::CommandExt;
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
@@ -559,7 +559,12 @@ impl PythonKernel {
     /// `__omp_prelude_loaded__` flag, so no stamp cell precedes it. Loaded via
     /// `include_str!` so the runner needs no filesystem access to its source.
     fn run_preloads(&self) -> io::Result<()> {
-        for prelude in [PRELUDE_PY, PRELUDE_AGENTS_PY, PRELUDE_COMBINATORS_PY, PRELUDE_TXN_PY] {
+        for prelude in [
+            PRELUDE_PY,
+            PRELUDE_AGENTS_PY,
+            PRELUDE_COMBINATORS_PY,
+            PRELUDE_TXN_PY,
+        ] {
             self.run_startup(prelude)?;
         }
         Ok(())
@@ -1049,15 +1054,23 @@ mod reader_tests {
 
     #[test]
     fn oversized_lines_are_dropped_and_the_stream_resyncs() {
-        let big = format!("{{\"type\":\"stdout\",\"id\":\"big\",\"data\":\"{}\"}}\n", "x".repeat(500));
+        let big = format!(
+            "{{\"type\":\"stdout\",\"id\":\"big\",\"data\":\"{}\"}}\n",
+            "x".repeat(500)
+        );
         let input = format!("{big}{{\"type\":\"started\",\"id\":\"a\"}}\n{big}{{\"type\":\"started\",\"id\":\"b\"}}");
         assert_eq!(frames(input.as_bytes(), 64), ["a", "b"]);
 
         let mut reader = Cursor::new(big.into_bytes());
         let mut buf = Vec::new();
-        assert!(matches!(read_frame_line(&mut reader, &mut buf, 64), Ok(LineRead::Oversize(n)) if n > 500));
+        assert!(
+            matches!(read_frame_line(&mut reader, &mut buf, 64), Ok(LineRead::Oversize(n)) if n > 500)
+        );
         assert!(buf.is_empty());
-        assert_eq!(read_frame_line(&mut reader, &mut buf, 64).unwrap(), LineRead::Eof);
+        assert_eq!(
+            read_frame_line(&mut reader, &mut buf, 64).unwrap(),
+            LineRead::Eof
+        );
     }
 
     #[test]

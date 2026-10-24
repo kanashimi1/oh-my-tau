@@ -423,7 +423,10 @@ fn fence_marker(line: &str) -> Option<(&str, String)> {
 /// comment, or math block simply becomes a still-open block.
 fn parse_blocks(src: &str) -> Vec<Block> {
     let lines: Vec<&str> = src.lines().collect();
-    parse_block_spans(&lines).into_iter().map(|(block, _)| block).collect()
+    parse_block_spans(&lines)
+        .into_iter()
+        .map(|(block, _)| block)
+        .collect()
 }
 
 /// [`parse_blocks`] over pre-split lines, pairing every block with its end:
@@ -1500,7 +1503,9 @@ mod tests {
 
     fn random_doc(rng: &mut Rng) -> String {
         let n = 1 + rng.below(14);
-        (0..n).map(|_| FRAGMENTS[rng.below(FRAGMENTS.len())]).collect()
+        (0..n)
+            .map(|_| FRAGMENTS[rng.below(FRAGMENTS.len())])
+            .collect()
     }
 
     /// Random chunk boundaries on char boundaries (1..=12 chars per chunk).
@@ -1548,7 +1553,10 @@ mod tests {
         let mut stream = MarkdownStream::new();
         let _ = stream.render("# A\n\npara\n\n- x\n\nmore\n", 40, &theme);
         let other = "# B\n\nother text\n";
-        assert_eq!(stream.render(other, 40, &theme), render(other, 40, &theme).lines.as_slice());
+        assert_eq!(
+            stream.render(other, 40, &theme),
+            render(other, 40, &theme).lines.as_slice()
+        );
     }
 
     #[test]
@@ -1557,7 +1565,9 @@ mod tests {
         let mut stream = MarkdownStream::new();
         let mut doc = String::new();
         for n in 0..50 {
-            doc.push_str(&format!("## S{n}\n\nText {n}.\n\n```rs\nlet v = {n};\n```\n\n"));
+            doc.push_str(&format!(
+                "## S{n}\n\nText {n}.\n\n```rs\nlet v = {n};\n```\n\n"
+            ));
             let _ = stream.render(&doc, 60, &theme);
         }
         doc.push_str("tail");
@@ -1565,6 +1575,9 @@ mod tests {
         // Everything but the open paragraph is committed: a frame re-parses
         // only `tail`.
         assert_eq!(&doc[stream.committed_src.len()..], "\ntail");
-        assert_eq!(stream.render(&doc, 60, &theme), render(&doc, 60, &theme).lines.as_slice());
+        assert_eq!(
+            stream.render(&doc, 60, &theme),
+            render(&doc, 60, &theme).lines.as_slice()
+        );
     }
 }

@@ -33,16 +33,32 @@ impl TransportEnv {
 
 /// The wire request a simple stream resolves to.
 pub(crate) enum Resolved {
-    Anthropic { model: Model, view: ModelView, options: AnthropicOptions },
-    Responses { model: Model, view: ModelView, options: ResponsesOptions, flavor: Flavor },
-    Completions { model: Model, options: OpenAICompletionsOptions },
+    Anthropic {
+        model: Model,
+        view: ModelView,
+        options: AnthropicOptions,
+    },
+    Responses {
+        model: Model,
+        view: ModelView,
+        options: ResponsesOptions,
+        flavor: Flavor,
+    },
+    Completions {
+        model: Model,
+        options: OpenAICompletionsOptions,
+    },
     /// Every other api streams through its registered provider unchanged.
     Registry,
 }
 
 /// TS `streamSimple` preamble: a session id for every inference (`withInferenceSessionId`) and the
 /// sampling filter (`withSupportedSamplingParams`).
-pub(crate) fn prepare_options(model: &Model, options: Option<&SimpleStreamOptions>, fresh_id: &dyn Fn() -> String) -> SimpleStreamOptions {
+pub(crate) fn prepare_options(
+    model: &Model,
+    options: Option<&SimpleStreamOptions>,
+    fresh_id: &dyn Fn() -> String,
+) -> SimpleStreamOptions {
     let mut simple = options.cloned().unwrap_or_default();
     if simple.base.session_id.as_deref().is_none_or(str::is_empty) {
         simple.base.session_id = Some(fresh_id());
@@ -57,7 +73,11 @@ pub(crate) fn prepare_options(model: &Model, options: Option<&SimpleStreamOption
 ///
 /// # Errors
 /// The options cannot form a valid request for the chosen transport.
-pub(crate) fn resolve(model: &Model, options: &SimpleStreamOptions, env: &TransportEnv) -> Result<Resolved, String> {
+pub(crate) fn resolve(
+    model: &Model,
+    options: &SimpleStreamOptions,
+    env: &TransportEnv,
+) -> Result<Resolved, String> {
     let view = ModelView::of(model);
     if model.provider == kimi::PROVIDER {
         let simple = anthropic::normalize_mandatory_reasoning(model, &view, options);
@@ -65,31 +85,60 @@ pub(crate) fn resolve(model: &Model, options: &SimpleStreamOptions, env: &Transp
             let shim = kimi::anthropic_shim(model, &view, &simple)?;
             let mut options = shim.options;
             options.view = Some(shim.view.clone());
-            return Ok(Resolved::Anthropic { model: shim.model, view: shim.view, options });
+            return Ok(Resolved::Anthropic {
+                model: shim.model,
+                view: shim.view,
+                options,
+            });
         }
-        return Ok(Resolved::Completions { model: model.clone(), options: kimi::openai_options(model, &simple) });
+        return Ok(Resolved::Completions {
+            model: model.clone(),
+            options: kimi::openai_options(model, &simple),
+        });
     }
     match model.api.as_str() {
         "openrouter" if env.openrouter_responses => {
             let options = map_responses_options(model, &view, options)?;
-            Ok(Resolved::Responses { model: model.clone(), view, options, flavor: Flavor::OpenAi })
+            Ok(Resolved::Responses {
+                model: model.clone(),
+                view,
+                options,
+                flavor: Flavor::OpenAi,
+            })
         }
         "openrouter" => {
             let o = anthropic::normalize_mandatory_reasoning(model, &view, options);
-            Ok(Resolved::Completions { model: model.clone(), options: map_completions_options(model, &view, &o)? })
+            Ok(Resolved::Completions {
+                model: model.clone(),
+                options: map_completions_options(model, &view, &o)?,
+            })
         }
         "openai-responses" => {
             let options = map_responses_options(model, &view, options)?;
-            Ok(Resolved::Responses { model: model.clone(), view, options, flavor: Flavor::OpenAi })
+            Ok(Resolved::Responses {
+                model: model.clone(),
+                view,
+                options,
+                flavor: Flavor::OpenAi,
+            })
         }
         "azure-openai-responses" => {
             let mapped = map_responses_options(model, &view, options)?;
             let deployment = azure_deployment_name(model, env.azure_deployment_name_map.as_deref());
-            Ok(Resolved::Responses { model: model.clone(), view, options: mapped, flavor: Flavor::Azure { deployment } })
+            Ok(Resolved::Responses {
+                model: model.clone(),
+                view,
+                options: mapped,
+                flavor: Flavor::Azure { deployment },
+            })
         }
         "anthropic-messages" => {
             let mapped = anthropic::map_simple_options(model, &view, options)?;
-            Ok(Resolved::Anthropic { model: model.clone(), view, options: mapped })
+            Ok(Resolved::Anthropic {
+                model: model.clone(),
+                view,
+                options: mapped,
+            })
         }
         _ => Ok(Resolved::Registry),
     }
@@ -106,8 +155,14 @@ fn azure_deployment_name(model: &Model, map: Option<&str>) -> String {
 }
 
 /// TS `resolveOpenAiReasoningEffort`.
-fn resolve_openai_reasoning_effort(model: &Model, view: &ModelView, options: &SimpleStreamOptions) -> Result<Option<String>, String> {
-    let Some(reasoning) = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off) else { return Ok(None) };
+fn resolve_openai_reasoning_effort(
+    model: &Model,
+    view: &ModelView,
+    options: &SimpleStreamOptions,
+) -> Result<Option<String>, String> {
+    let Some(reasoning) = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off) else {
+        return Ok(None);
+    };
     if !model.reasoning || view.thinking.is_none() {
         return Ok(None);
     }
@@ -116,7 +171,11 @@ fn resolve_openai_reasoning_effort(model: &Model, view: &ModelView, options: &Si
     if efforts.contains(&name) {
         return Ok(Some(name.to_string()));
     }
-    let compat_mapped = view.compat.get("reasoningEffortMap").and_then(|m| m.get(name)).and_then(Value::as_str);
+    let compat_mapped = view
+        .compat
+        .get("reasoningEffortMap")
+        .and_then(|m| m.get(name))
+        .and_then(Value::as_str);
     if let Some(mapped) = compat_mapped.filter(|m| efforts.contains(m)) {
         return Ok(Some(mapped.to_string()));
     }
@@ -132,16 +191,25 @@ fn openai_tool_choice(choice: Option<&SimpleToolChoice>) -> Option<ToolChoice> {
         SimpleToolChoice::Auto => ToolChoice::Auto,
         SimpleToolChoice::None => ToolChoice::None,
         SimpleToolChoice::Any | SimpleToolChoice::Required => ToolChoice::Required,
-        SimpleToolChoice::Function { name } if !name.is_empty() => ToolChoice::Function { name: name.clone() },
+        SimpleToolChoice::Function { name } if !name.is_empty() => {
+            ToolChoice::Function { name: name.clone() }
+        }
         SimpleToolChoice::Function { .. } => return None,
     })
 }
 
 /// TS `mapOptionsForApi` for the Responses-family apis.
-fn map_responses_options(model: &Model, view: &ModelView, raw: &SimpleStreamOptions) -> Result<ResponsesOptions, String> {
+fn map_responses_options(
+    model: &Model,
+    view: &ModelView,
+    raw: &SimpleStreamOptions,
+) -> Result<ResponsesOptions, String> {
     let options = anthropic::normalize_mandatory_reasoning(model, view, raw);
     let mut base = options.base.clone();
-    base.max_tokens = options.base.max_tokens.or((model.max_tokens > 0).then_some(model.max_tokens));
+    base.max_tokens = options
+        .base
+        .max_tokens
+        .or((model.max_tokens > 0).then_some(model.max_tokens));
     Ok(ResponsesOptions {
         base,
         reasoning: resolve_openai_reasoning_effort(model, view, &options)?,
@@ -154,12 +222,21 @@ fn map_responses_options(model: &Model, view: &ModelView, raw: &SimpleStreamOpti
 }
 
 /// TS `mapOptionsForApi` for the `openrouter` chat-completions fallback.
-fn map_completions_options(model: &Model, view: &ModelView, options: &SimpleStreamOptions) -> Result<OpenAICompletionsOptions, String> {
+fn map_completions_options(
+    model: &Model,
+    view: &ModelView,
+    options: &SimpleStreamOptions,
+) -> Result<OpenAICompletionsOptions, String> {
     let mut base = options.base.clone();
-    base.max_tokens = options.base.max_tokens.or((model.max_tokens > 0).then_some(model.max_tokens));
+    base.max_tokens = options
+        .base
+        .max_tokens
+        .or((model.max_tokens > 0).then_some(model.max_tokens));
     let mut o = OpenAICompletionsOptions::from_base(base);
     o.max_tokens_explicit = options.base.max_tokens.is_some();
-    o.reasoning_effort = resolve_openai_reasoning_effort(model, view, options)?.as_deref().and_then(crate::models::thinking_level_from_str);
+    o.reasoning_effort = resolve_openai_reasoning_effort(model, view, options)?
+        .as_deref()
+        .and_then(crate::models::thinking_level_from_str);
     if options.disable_reasoning {
         o.reasoning_enabled = Some(false);
     }
@@ -187,11 +264,20 @@ pub fn plan_simple_request(
     let simple = prepare_options(model, options, fresh_id);
     let api_key = simple.base.api_key.clone().unwrap_or_default();
     match resolve(model, &simple, env)? {
-        Resolved::Anthropic { model, view, options } => Ok(PlannedRequest {
+        Resolved::Anthropic {
+            model,
+            view,
+            options,
+        } => Ok(PlannedRequest {
             api: model.api.clone(),
             body: anthropic::build_request_body(&model, &view, context, &options, &api_key)?,
         }),
-        Resolved::Responses { model, view, options, flavor } => Ok(PlannedRequest {
+        Resolved::Responses {
+            model,
+            view,
+            options,
+            flavor,
+        } => Ok(PlannedRequest {
             api: model.api.clone(),
             body: responses_request::build_body(&model, &view, context, &options, &flavor)?,
         }),
@@ -210,10 +296,17 @@ pub(crate) fn stream_simple_for_api(
     context: &Context,
     options: Option<&SimpleStreamOptions>,
 ) -> crate::event_stream::AssistantMessageEventStream {
-    let simple = prepare_options(model, options, &crate::providers::anthropic::request::uuid_v4);
+    let simple = prepare_options(
+        model,
+        options,
+        &crate::providers::anthropic::request::uuid_v4,
+    );
     match dispatch(model, context, &simple, &TransportEnv::from_process()) {
         Ok(Some(stream)) => stream,
-        Ok(None) => crate::providers::anthropic::error_stream_for(model, format!("no transport for {}", model.api)),
+        Ok(None) => crate::providers::anthropic::error_stream_for(
+            model,
+            format!("no transport for {}", model.api),
+        ),
         Err(message) => crate::providers::anthropic::error_stream_for(model, message),
     }
 }
@@ -231,11 +324,18 @@ pub(crate) fn dispatch(
 ) -> Result<Option<crate::event_stream::AssistantMessageEventStream>, String> {
     use crate::stream::clamp_output_budget;
     Ok(Some(match resolve(model, options, env)? {
-        Resolved::Anthropic { model, mut options, .. } => {
+        Resolved::Anthropic {
+            model, mut options, ..
+        } => {
             clamp_output_budget(&model, context, Some(&mut options.base));
             anthropic::stream_anthropic(&model, context, Some(&options))
         }
-        Resolved::Responses { model, mut options, flavor, .. } => {
+        Resolved::Responses {
+            model,
+            mut options,
+            flavor,
+            ..
+        } => {
             clamp_output_budget(&model, context, Some(&mut options.base));
             match flavor {
                 Flavor::OpenAi => crate::providers::openai_responses::stream_openai_responses(&model, context, Some(&options)),

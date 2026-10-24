@@ -15,10 +15,12 @@ use anyhow::Result;
 
 use super::lock::with_stats_sync_lock;
 use crate::db::{
-    apply_session_parse_results, complete_session_sync, get_file_offsets, init_db, mark_session_backfills_complete,
-    prepare_session_sync, FileOffset, ParsedSession,
+    apply_session_parse_results, complete_session_sync, get_file_offsets, init_db,
+    mark_session_backfills_complete, prepare_session_sync, FileOffset, ParsedSession,
 };
-use crate::parser::{list_all_session_files, matches_session_file, parse_session_file, ParseSessionResult};
+use crate::parser::{
+    list_all_session_files, matches_session_file, parse_session_file, ParseSessionResult,
+};
 
 // Bound queued results by both file count and derived rows.
 const SYNC_BATCH_FILES: usize = 512;
@@ -26,7 +28,10 @@ const SYNC_BATCH_ROWS: usize = 8192;
 const SYNC_METADATA_FILES: usize = 128;
 const SYNC_INLINE_READS: usize = 8;
 /// Recency tiers for [`order_for_ingest`], newest first.
-const INGEST_TIERS_MS: [f64; 2] = [24.0 * 60.0 * 60.0 * 1000.0, 7.0 * 24.0 * 60.0 * 60.0 * 1000.0];
+const INGEST_TIERS_MS: [f64; 2] = [
+    24.0 * 60.0 * 60.0 * 1000.0,
+    7.0 * 24.0 * 60.0 * 60.0 * 1000.0,
+];
 
 /// Progress event emitted after each session file is fully processed.
 /// `current` = files completed (skipped + parsed), `total` = work-set size,
@@ -95,7 +100,9 @@ fn default_worker_count() -> usize {
 }
 
 fn now_ms() -> f64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
 }
 
 /// Node `stat.mtimeMs`.
@@ -109,7 +116,9 @@ fn born_ms(meta: &Metadata) -> f64 {
         .created()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0.0, |d| (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0);
+        .map_or(0.0, |d| {
+            (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0
+        });
     if birth != 0.0 {
         return birth;
     }
@@ -128,7 +137,10 @@ pub(crate) fn order_for_ingest(files: Vec<String>) -> Vec<String> {
         .map(|(index, file)| {
             let stat = std::fs::metadata(&file).ok();
             let age = stat.as_ref().map_or(f64::INFINITY, |m| now - mtime_ms(m));
-            let tier = INGEST_TIERS_MS.iter().position(|&limit| age <= limit).unwrap_or(INGEST_TIERS_MS.len());
+            let tier = INGEST_TIERS_MS
+                .iter()
+                .position(|&limit| age <= limit)
+                .unwrap_or(INGEST_TIERS_MS.len());
             let born = stat.as_ref().map_or(0.0, born_ms);
             (tier, born, index, file)
         })
@@ -195,8 +207,11 @@ impl Pass<'_, '_> {
             return Ok(());
         };
         let r = &parsed.result;
-        self.pending_rows +=
-            r.stats.len() + r.user_stats.len() + r.user_links.len() + r.tool_calls.len() + r.tool_results.len();
+        self.pending_rows += r.stats.len()
+            + r.user_stats.len()
+            + r.user_links.len()
+            + r.tool_calls.len()
+            + r.tool_results.len();
         self.pending.push(parsed);
         if self.pending.len() >= SYNC_BATCH_FILES || self.pending_rows >= SYNC_BATCH_ROWS {
             self.flush()?;
@@ -206,7 +221,10 @@ impl Pass<'_, '_> {
 
     fn finish(mut self) -> Result<(SyncResult, bool)> {
         self.flush()?;
-        let result = SyncResult { processed: self.processed, files: self.files_processed };
+        let result = SyncResult {
+            processed: self.processed,
+            files: self.files_processed,
+        };
         // A targeted sync cannot settle reconciliation or backfills (they need
         // every transcript); leave their markers for the next full sync.
         if self.opts.files.is_some() {
@@ -227,7 +245,9 @@ fn unchanged(stored: Option<&FileOffset>, meta: &Metadata, replay: bool) -> bool
         return false;
     }
     let Some(stored) = stored else { return false };
-    let Some(state) = &stored.parser_state else { return false };
+    let Some(state) = &stored.parser_state else {
+        return false;
+    };
     stored.last_modified == mtime_ms(meta)
         && i64::try_from(meta.len()).is_ok_and(|size| size == state.size)
         && matches_session_file(state, meta)
@@ -236,7 +256,8 @@ fn unchanged(stored: Option<&FileOffset>, meta: &Metadata, replay: bool) -> bool
 fn parse_job(file: &str, job: &Job, replay: bool) -> Result<ParsedSession> {
     let stored_state = job.stored.as_ref().and_then(|s| s.parser_state.as_ref());
     let unknown_identity = job.stored.is_some() && stored_state.is_none();
-    let mut result: ParseSessionResult = parse_session_file(file, job.from_offset, stored_state, replay)?;
+    let mut result: ParseSessionResult =
+        parse_session_file(file, job.from_offset, stored_state, replay)?;
     if unknown_identity && result.parser_state.is_some() {
         result.reset = Some(true);
     }
@@ -249,13 +270,26 @@ fn parse_job(file: &str, job: &Job, replay: bool) -> Result<ParsedSession> {
                     || result.parser_state.as_ref().map(|s| s.mtime_ms) != Some(old.mtime_ms))
         }
     };
-    Ok(ParsedSession { session_file: file.to_owned(), result, rebuild, replay })
+    Ok(ParsedSession {
+        session_file: file.to_owned(),
+        result,
+        rebuild,
+        replay,
+    })
 }
 
 /// Parse `jobs` (≤ the pool size) concurrently; results in job order.
-fn parse_chunk(files: &[String], jobs: &[Job], replay: bool, parallel: bool) -> Vec<Result<ParsedSession>> {
+fn parse_chunk(
+    files: &[String],
+    jobs: &[Job],
+    replay: bool,
+    parallel: bool,
+) -> Vec<Result<ParsedSession>> {
     if !parallel || jobs.len() <= 1 {
-        return jobs.iter().map(|job| parse_job(&files[job.index], job, replay)).collect();
+        return jobs
+            .iter()
+            .map(|job| parse_job(&files[job.index], job, replay))
+            .collect();
     }
     std::thread::scope(|scope| {
         let handles: Vec<_> = jobs
@@ -264,7 +298,10 @@ fn parse_chunk(files: &[String], jobs: &[Job], replay: bool, parallel: bool) -> 
             .collect();
         handles
             .into_iter()
-            .map(|h| h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("session parse thread panicked"))))
+            .map(|h| {
+                h.join()
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("session parse thread panicked")))
+            })
             .collect()
     })
 }
@@ -296,11 +333,18 @@ fn sync_all_sessions_locked(opts: &SyncOptions<'_>) -> Result<(SyncResult, bool)
     // kilobyte tail reads: parsing them inline beats starting threads.
     if workers > 1 && opts.workers.is_none() && files.len() <= SYNC_INLINE_READS {
         let offsets = get_file_offsets(&files)?;
-        if files.iter().all(|f| offsets.get(f).is_some_and(|o| o.parser_state.is_some())) {
+        if files
+            .iter()
+            .all(|f| offsets.get(f).is_some_and(|o| o.parser_state.is_some()))
+        {
             workers = 1;
         }
     }
-    let chunk = if workers == 1 { SYNC_INLINE_READS } else { workers };
+    let chunk = if workers == 1 {
+        SYNC_INLINE_READS
+    } else {
+        workers
+    };
 
     for meta_start in (0..files.len()).step_by(SYNC_METADATA_FILES) {
         let meta_end = (meta_start + SYNC_METADATA_FILES).min(files.len());
@@ -322,9 +366,17 @@ fn sync_all_sessions_locked(opts: &SyncOptions<'_>) -> Result<(SyncResult, bool)
                     continue;
                 }
                 let unknown_identity = stored.as_ref().is_some_and(|s| s.parser_state.is_none());
-                let from_offset = if unknown_identity { 0 } else { stored.as_ref().map_or(0, |s| s.offset) };
+                let from_offset = if unknown_identity {
+                    0
+                } else {
+                    stored.as_ref().map_or(0, |s| s.offset)
+                };
                 slots.push(Some(jobs.len()));
-                jobs.push(Job { index, from_offset, stored });
+                jobs.push(Job {
+                    index,
+                    from_offset,
+                    stored,
+                });
             }
             let mut parsed = parse_chunk(&files, &jobs, replay, workers > 1).into_iter();
             // Preserve fork ownership order; the first failure aborts the pass
@@ -334,7 +386,9 @@ fn sync_all_sessions_locked(opts: &SyncOptions<'_>) -> Result<(SyncResult, bool)
                 match slot {
                     None => pass.accept(file, None)?,
                     Some(_) => {
-                        let result = parsed.next().ok_or_else(|| anyhow::anyhow!("missing parse result"))??;
+                        let result = parsed
+                            .next()
+                            .ok_or_else(|| anyhow::anyhow!("missing parse result"))??;
                         pass.accept(file, Some(result))?;
                     }
                 }

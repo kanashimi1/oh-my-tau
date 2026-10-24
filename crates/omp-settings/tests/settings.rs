@@ -1,6 +1,6 @@
 //! Behavior tests for the layered settings model.
 
-use omp_settings::{lookup, Provenance, ServiceTier, Settings, SettingType, SETTINGS};
+use omp_settings::{lookup, Provenance, ServiceTier, SettingType, Settings, SETTINGS};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -33,9 +33,16 @@ fn defaults_come_from_ts() {
     let settings = Settings::load_from(None, &dir);
     assert_eq!(
         settings.cycle_order(),
-        vec!["smol".to_string(), "default".to_string(), "slow".to_string()]
+        vec![
+            "smol".to_string(),
+            "default".to_string(),
+            "slow".to_string()
+        ]
     );
-    assert_eq!(settings.stream_server_url().as_deref(), Some("https://live.omp.sh"));
+    assert_eq!(
+        settings.stream_server_url().as_deref(),
+        Some("https://live.omp.sh")
+    );
     assert_eq!(settings.tier("openai"), Some(ServiceTier::None));
     assert_eq!(settings.tier("subagent"), Some(ServiceTier::Inherit));
     assert!(settings.disabled_extensions().is_empty());
@@ -47,7 +54,10 @@ fn defaults_come_from_ts() {
         vec!["provider-files", "tailscale", "cloudflared", "litterbox"]
     );
     // defaultThinkingLevel TS default is "high".
-    assert_eq!(settings.get_string("defaultThinkingLevel").as_deref(), Some("high"));
+    assert_eq!(
+        settings.get_string("defaultThinkingLevel").as_deref(),
+        Some("high")
+    );
 }
 
 #[test]
@@ -76,12 +86,15 @@ modelRoles:
   smol: small-model
 stream:
   serverUrl: http://localhost:9999
-"
+",
     )
     .unwrap();
 
     let settings = Settings::load_from(Some(&global), &project);
-    assert_eq!(settings.cycle_order(), vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(
+        settings.cycle_order(),
+        vec!["a".to_string(), "b".to_string()]
+    );
     // null project role falls back to global; new project role merges in.
     let roles = settings.model_roles();
     assert_eq!(roles.get("default").map(String::as_str), Some("big-model"));
@@ -92,7 +105,10 @@ stream:
         Some("http://localhost:9999")
     );
     // Unknown keys are kept in the raw map, but only unknown paths are flagged.
-    assert_eq!(settings.raw()["customUserKey"]["nested"], serde_json::json!(1));
+    assert_eq!(
+        settings.raw()["customUserKey"]["nested"],
+        serde_json::json!(1)
+    );
     assert_eq!(settings.unknown_keys(), vec!["customUserKey.nested"]);
 }
 
@@ -130,7 +146,7 @@ modelPresets:
 modelTags:
   cheap:
     models: [glm, qwen]
-"
+",
     )
     .unwrap();
     let settings = Settings::load_from(Some(&global), &root.join(".omp"));
@@ -142,13 +158,18 @@ modelTags:
     );
     assert_eq!(preset.default_thinking_level.as_deref(), Some("high"));
     let tags: BTreeMap<_, _> = settings.model_tags();
-    assert_eq!(tags["cheap"].models, vec!["glm".to_string(), "qwen".to_string()]);
+    assert_eq!(
+        tags["cheap"].models,
+        vec!["glm".to_string(), "qwen".to_string()]
+    );
 }
 
 #[test]
 fn real_user_config_loads_without_unknown_key_warnings() {
     // Read-only smoke against the actual user config TS already accepts.
-    let home = std::env::var_os("HOME").map(PathBuf::from).expect("HOME set");
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("HOME set");
     let config = home.join(".omp").join("agent").join("config.yml");
     if !config.is_file() {
         eprintln!("skipping: no user config at {}", config.display());

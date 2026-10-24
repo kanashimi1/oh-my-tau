@@ -10,7 +10,9 @@ use serde_json::{json, Value};
 use crate::compat::ModelView;
 use crate::providers::anthropic::{map_tool_choice, AnthropicOptions};
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
-use crate::types::{Model, ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StreamOptions};
+use crate::types::{
+    Model, ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StreamOptions,
+};
 
 pub const PROVIDER: &str = "kimi-code";
 
@@ -29,18 +31,27 @@ pub fn resolve_format(model: &Model, view: &ModelView) -> Result<KimiFormat, Str
     match view.compat_str("kimiApiFormat") {
         Some("anthropic") => Ok(KimiFormat::Anthropic),
         Some("openai") => Ok(KimiFormat::OpenAi),
-        _ => Err(format!("Kimi Code model {} has no resolved API format", model.id)),
+        _ => Err(format!(
+            "Kimi Code model {} has no resolved API format",
+            model.id
+        )),
     }
 }
 
 fn sanitize_header_value(value: &str, fallback: &str) -> String {
     let cleaned: String = value.chars().filter(|c| (' '..='~').contains(c)).collect();
     let cleaned = cleaned.trim();
-    if cleaned.is_empty() { fallback.to_string() } else { cleaned.to_string() }
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned.to_string()
+    }
 }
 
 fn proc_string(name: &str) -> String {
-    std::fs::read_to_string(format!("/proc/sys/kernel/{name}")).map(|s| s.trim().to_string()).unwrap_or_default()
+    std::fs::read_to_string(format!("/proc/sys/kernel/{name}"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// TS `getKimiCommonHeaders`: the device identity every Kimi request carries.
@@ -53,20 +64,43 @@ pub fn common_headers() -> Vec<(String, String)> {
         "aarch64" => "arm64",
         other => other,
     };
-    let device_model = ["Linux", release.as_str(), arch].iter().filter(|s| !s.is_empty()).copied().collect::<Vec<_>>().join(" ");
+    let device_model = ["Linux", release.as_str(), arch]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
     let agent_dir = std::env::var_os("OMP_AGENT_DIR").map_or_else(
-        || std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".omp").join("agent"),
+        || {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join(".omp")
+                .join("agent")
+        },
         std::path::PathBuf::from,
     );
-    let device_id = std::fs::read_to_string(agent_dir.join("kimi-device-id")).map(|s| s.trim().to_string()).unwrap_or_default();
+    let device_id = std::fs::read_to_string(agent_dir.join("kimi-device-id"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
     vec![
         ("User-Agent".into(), format!("KimiCLI/{VERSION}")),
         ("X-Msh-Platform".into(), "kimi_cli".into()),
         ("X-Msh-Version".into(), VERSION.into()),
-        ("X-Msh-Device-Name".into(), sanitize_header_value(&proc_string("hostname"), "unknown")),
-        ("X-Msh-Device-Model".into(), sanitize_header_value(&device_model, "unknown")),
-        ("X-Msh-Os-Version".into(), sanitize_header_value(&proc_string("version"), "unknown")),
-        ("X-Msh-Device-Id".into(), sanitize_header_value(&device_id, "unknown")),
+        (
+            "X-Msh-Device-Name".into(),
+            sanitize_header_value(&proc_string("hostname"), "unknown"),
+        ),
+        (
+            "X-Msh-Device-Model".into(),
+            sanitize_header_value(&device_model, "unknown"),
+        ),
+        (
+            "X-Msh-Os-Version".into(),
+            sanitize_header_value(&proc_string("version"), "unknown"),
+        ),
+        (
+            "X-Msh-Device-Id".into(),
+            sanitize_header_value(&device_id, "unknown"),
+        ),
     ]
 }
 
@@ -82,12 +116,18 @@ pub struct AnthropicShim {
 ///
 /// # Errors
 /// The thinking budget leaves no room for the response.
-pub fn anthropic_shim(model: &Model, view: &ModelView, options: &SimpleStreamOptions) -> Result<AnthropicShim, String> {
-    let mut merged: std::collections::BTreeMap<String, String> = common_headers().into_iter().collect();
+pub fn anthropic_shim(
+    model: &Model,
+    view: &ModelView,
+    options: &SimpleStreamOptions,
+) -> Result<AnthropicShim, String> {
+    let mut merged: std::collections::BTreeMap<String, String> =
+        common_headers().into_iter().collect();
     for (k, v) in options.base.headers.iter().flatten() {
         merged.insert(k.clone(), v.clone());
     }
-    let anthropic_thinking_mode = (view.compat_str("thinkingFormat") == Some("kimi")).then_some("anthropic-adaptive");
+    let anthropic_thinking_mode =
+        (view.compat_str("thinkingFormat") == Some("kimi")).then_some("anthropic-adaptive");
     let explicit_thinking: Option<Value> = match (anthropic_thinking_mode, &view.thinking) {
         (Some(mode), Some(Value::Object(t))) => {
             let mut t = t.clone();
@@ -109,7 +149,10 @@ pub fn anthropic_shim(model: &Model, view: &ModelView, options: &SimpleStreamOpt
     // The shim model re-resolves its ladder (`anthropic-adaptive` mode over the Kimi host), which can
     // be narrower than the ladder a stale cached row advertised to the caller; clamp the request to
     // it (`clampThinkingLevelForModel`) instead of failing the turn.
-    let reasoning = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off).map(|l| clamp_to_ladder(l, &shim_view.efforts()));
+    let reasoning = options
+        .reasoning
+        .filter(|l| *l != ModelThinkingLevel::Off)
+        .map(|l| clamp_to_ladder(l, &shim_view.efforts()));
     let thinking_enabled = reasoning.is_some() && model.reasoning && !options.disable_reasoning;
     let model_max = (model.max_tokens > 0).then_some(model.max_tokens);
     let mut base: StreamOptions = options.base.clone();
@@ -117,12 +160,17 @@ pub fn anthropic_shim(model: &Model, view: &ModelView, options: &SimpleStreamOpt
     base.headers = Some(merged.into_iter().collect());
     let mut native = AnthropicOptions::from_base(base);
     native.thinking_enabled = Some(thinking_enabled);
-    native.thinking_budget_tokens = reasoning.map(|level| crate::providers::anthropic::thinking_budget_for(options, level));
+    native.thinking_budget_tokens =
+        reasoning.map(|level| crate::providers::anthropic::thinking_budget_for(options, level));
     if anthropic_thinking_mode.is_some() {
         native.reasoning = reasoning;
     }
     native.tool_choice = map_tool_choice(options.tool_choice.as_ref());
-    Ok(AnthropicShim { model: shim, view: shim_view, options: native })
+    Ok(AnthropicShim {
+        model: shim,
+        view: shim_view,
+        options: native,
+    })
 }
 
 /// `baseUrl.replace(/\/v1\/?$/, "")`.
@@ -137,12 +185,16 @@ fn strip_v1(url: &str) -> String {
 /// options. The shim forwards the caller's raw reasoning/tool-choice (no `mapOptionsForApi`).
 #[must_use]
 pub fn openai_options(model: &Model, options: &SimpleStreamOptions) -> OpenAICompletionsOptions {
-    let mut merged: std::collections::BTreeMap<String, String> = common_headers().into_iter().collect();
+    let mut merged: std::collections::BTreeMap<String, String> =
+        common_headers().into_iter().collect();
     for (k, v) in options.base.headers.iter().flatten() {
         merged.insert(k.clone(), v.clone());
     }
     let mut base: StreamOptions = options.base.clone();
-    base.max_tokens = options.base.max_tokens.or((model.max_tokens > 0).then_some(model.max_tokens));
+    base.max_tokens = options
+        .base
+        .max_tokens
+        .or((model.max_tokens > 0).then_some(model.max_tokens));
     base.headers = Some(merged.into_iter().collect());
     let mut native = OpenAICompletionsOptions::from_base(base);
     native.max_tokens_explicit = options.base.max_tokens.is_some();
@@ -154,7 +206,9 @@ pub fn openai_options(model: &Model, options: &SimpleStreamOptions) -> OpenAICom
         Some(SimpleToolChoice::Auto) => Some(ToolChoice::Auto),
         Some(SimpleToolChoice::None) => Some(ToolChoice::None),
         Some(SimpleToolChoice::Any | SimpleToolChoice::Required) => Some(ToolChoice::Required),
-        Some(SimpleToolChoice::Function { name }) if !name.is_empty() => Some(ToolChoice::Function { name: name.clone() }),
+        Some(SimpleToolChoice::Function { name }) if !name.is_empty() => {
+            Some(ToolChoice::Function { name: name.clone() })
+        }
         _ => None,
     };
     native
@@ -170,10 +224,18 @@ fn clamp_to_ladder(level: ModelThinkingLevel, efforts: &[&str]) -> ModelThinking
         ModelThinkingLevel::Xhigh,
         ModelThinkingLevel::Max,
     ];
-    let supported: Vec<ModelThinkingLevel> = ORDER.into_iter().filter(|l| efforts.contains(&l.wire_name())).collect();
+    let supported: Vec<ModelThinkingLevel> = ORDER
+        .into_iter()
+        .filter(|l| efforts.contains(&l.wire_name()))
+        .collect();
     if supported.is_empty() || supported.contains(&level) {
         return level;
     }
     let rank = |l: ModelThinkingLevel| ORDER.iter().position(|o| *o == l).unwrap_or(0);
-    supported.iter().copied().filter(|l| rank(*l) < rank(level)).max_by_key(|l| rank(*l)).unwrap_or(supported[0])
+    supported
+        .iter()
+        .copied()
+        .filter(|l| rank(*l) < rank(level))
+        .max_by_key(|l| rank(*l))
+        .unwrap_or(supported[0])
 }

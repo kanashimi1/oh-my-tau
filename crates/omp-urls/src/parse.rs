@@ -99,9 +99,7 @@ fn is_selector_chunk(s: &str) -> bool {
         return true;
     }
     // -?\d+([-+]\d+)?(,…)* — used only as a guard, so accept the superset.
-    !s.is_empty()
-        && s.split(',')
-            .all(|part| parse_line_spec(part).is_some())
+    !s.is_empty() && s.split(',').all(|part| parse_line_spec(part).is_some())
 }
 
 fn parse_line_spec(s: &str) -> Option<()> {
@@ -118,7 +116,11 @@ fn parse_line_spec(s: &str) -> Option<()> {
         }
         rest = &r[d..];
     }
-    if rest.is_empty() { Some(()) } else { None }
+    if rest.is_empty() {
+        Some(())
+    } else {
+        None
+    }
 }
 
 /// A full selector chain: chunks separated by `:` (`raw:2-4`, `1-20,30+5`).
@@ -128,8 +130,7 @@ fn is_selector_chain(s: &str) -> bool {
 
 /// Parse an internal URL; errors when the input has no `scheme://` shape.
 pub fn parse_internal_url(input: &str) -> anyhow::Result<InternalUrl> {
-    let end = scheme_host_end(input)
-        .ok_or_else(|| anyhow::anyhow!("Invalid URL: {input}"))?;
+    let end = scheme_host_end(input).ok_or_else(|| anyhow::anyhow!("Invalid URL: {input}"))?;
     let after = &input[end..];
     let host_len = after.find(['/', '?', '#']).unwrap_or(after.len());
     let raw_host = &after[..host_len];
@@ -206,7 +207,10 @@ mod tests {
         assert_eq!(extract_uri_scheme("foo.ts:50"), None);
         assert_eq!(extract_uri_scheme("Makefile:12"), None);
         assert_eq!(extract_uri_scheme("README:raw:1-20"), None);
-        assert_eq!(extract_uri_scheme("urn:example:doc").as_deref(), Some("urn"));
+        assert_eq!(
+            extract_uri_scheme("urn:example:doc").as_deref(),
+            Some("urn")
+        );
     }
 
     #[test]
@@ -218,6 +222,9 @@ mod tests {
         assert_eq!(url.pathname, "");
         assert_eq!(url.query, "limit=3");
         assert_eq!(url.fragment, "frag");
-        assert_eq!(url.query_params(), vec![("limit".to_string(), "3".to_string())]);
+        assert_eq!(
+            url.query_params(),
+            vec![("limit".to_string(), "3".to_string())]
+        );
     }
 }

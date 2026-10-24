@@ -71,7 +71,9 @@ impl Context {
 pub fn ws_ckpt_path() -> Option<PathBuf> {
     let path = match std::env::var_os("OMP_WS_CKPT").filter(|v| !v.is_empty()) {
         Some(p) => PathBuf::from(p),
-        None => PathBuf::from(std::env::var_os("HOME")?).join("fleet-split/harness-ckpt/ws_ckpt.py"),
+        None => {
+            PathBuf::from(std::env::var_os("HOME")?).join("fleet-split/harness-ckpt/ws_ckpt.py")
+        }
     };
     path.is_file().then_some(path)
 }
@@ -82,8 +84,12 @@ pub fn keyword_notice(id: &str, ctx: &Context) -> Option<String> {
     let text = match id {
         "ultrathink" => ULTRATHINK.trim().to_owned(),
         "jevify" => JEVIFY.trim().to_owned(),
-        "orchestrate" => crate::sysprompt::render(ORCHESTRATE, &ctx.data()).trim().to_owned(),
-        "workflow" => crate::sysprompt::render(WORKFLOW, &ctx.data()).trim().to_owned(),
+        "orchestrate" => crate::sysprompt::render(ORCHESTRATE, &ctx.data())
+            .trim()
+            .to_owned(),
+        "workflow" => crate::sysprompt::render(WORKFLOW, &ctx.data())
+            .trim()
+            .to_owned(),
         "ultracode" => ultracode_notice(None, ctx, ws_ckpt_path().as_deref()),
         _ => return None,
     };
@@ -93,7 +99,11 @@ pub fn keyword_notice(id: &str, ctx: &Context) -> Option<String> {
 /// The ultracode notice: for an active ultra `mode` (with its RLM / CLM
 /// addenda), or for the `ultracode` keyword when `mode` is `None`.
 #[must_use]
-pub fn ultracode_notice(mode: Option<Ultra>, ctx: &Context, ws_ckpt: Option<&std::path::Path>) -> String {
+pub fn ultracode_notice(
+    mode: Option<Ultra>,
+    ctx: &Context,
+    ws_ckpt: Option<&std::path::Path>,
+) -> String {
     let name = mode.map_or("ultracode", Ultra::name);
     let addendum_data = json!({ "mode": name });
     let mut addenda = Vec::new();
@@ -180,14 +190,20 @@ mod tests {
 
     fn custom_type(m: &AgentMessage) -> String {
         match m {
-            AgentMessage::Custom(c) => c.payload["customType"].as_str().unwrap_or_default().to_owned(),
+            AgentMessage::Custom(c) => c.payload["customType"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
             AgentMessage::Standard(_) => String::new(),
         }
     }
 
     fn text(m: &AgentMessage) -> String {
         match m {
-            AgentMessage::Custom(c) => c.payload["content"][0]["text"].as_str().unwrap_or_default().to_owned(),
+            AgentMessage::Custom(c) => c.payload["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
             AgentMessage::Standard(_) => String::new(),
         }
     }
@@ -195,7 +211,13 @@ mod tests {
     /// Every template renders without leftover handlebars for every flag combination.
     #[test]
     fn templates_render_without_handlebars() {
-        let tool_sets: [&[&str]; 3] = [&[], &["task", "eval"], &["task", "eval", "bash", "lsp", "edit", "write", "todo", "wait"]];
+        let tool_sets: [&[&str]; 3] = [
+            &[],
+            &["task", "eval"],
+            &[
+                "task", "eval", "bash", "lsp", "edit", "write", "todo", "wait",
+            ],
+        ];
         for tools in tool_sets {
             for flags in 0..8u8 {
                 let c = Context {
@@ -223,31 +245,61 @@ mod tests {
         }
         let c = ctx(&["task", "eval"]);
         let js = ultracode_notice(Some(Ultra::Code), &c, None);
-        assert!(js.find("```js").unwrap() < js.find("```python").unwrap(), "JS example first");
+        assert!(
+            js.find("```js").unwrap() < js.find("```python").unwrap(),
+            "JS example first"
+        );
         assert!(js.contains("Ultra mode **ultracode** is active"));
-        assert!(keyword_notice("ultracode", &c).unwrap().contains("User message contains **ultracode**"));
+        assert!(keyword_notice("ultracode", &c)
+            .unwrap()
+            .contains("User message contains **ultracode**"));
     }
 
     #[test]
     fn keyword_notices_respect_requirements_and_settings() {
         let s = defaults();
         let all = ctx(&["task", "eval"]);
-        let got: Vec<String> =
-            build("please ultrathink and orchestrate, jevify too", &s, &all, None, 1).iter().map(custom_type).collect();
-        assert_eq!(got, ["ultrathink-notice", "orchestrate-notice", "jevify-notice"]);
+        let got: Vec<String> = build(
+            "please ultrathink and orchestrate, jevify too",
+            &s,
+            &all,
+            None,
+            1,
+        )
+        .iter()
+        .map(custom_type)
+        .collect();
+        assert_eq!(
+            got,
+            ["ultrathink-notice", "orchestrate-notice", "jevify-notice"]
+        );
         // A required tool missing: that notice is skipped.
         let no_eval = ctx(&["task"]);
-        let got: Vec<String> = build("jevify orchestrate ultracode", &s, &no_eval, None, 1).iter().map(custom_type).collect();
+        let got: Vec<String> = build("jevify orchestrate ultracode", &s, &no_eval, None, 1)
+            .iter()
+            .map(custom_type)
+            .collect();
         assert_eq!(got, ["orchestrate-notice"]);
         // Code spans do not trigger.
         assert!(build("run `ultrathink`", &s, &all, None, 1).is_empty());
         // Disabled by setting.
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.yml"), "magicKeywords:\n  orchestrate: false\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yml"),
+            "magicKeywords:\n  orchestrate: false\n",
+        )
+        .unwrap();
         let off = omp_settings::Settings::load_from(None, dir.path());
-        let got: Vec<String> = build("orchestrate ultrathink", &off, &all, None, 1).iter().map(custom_type).collect();
+        let got: Vec<String> = build("orchestrate ultrathink", &off, &all, None, 1)
+            .iter()
+            .map(custom_type)
+            .collect();
         assert_eq!(got, ["ultrathink-notice"]);
-        std::fs::write(dir.path().join("config.yml"), "magicKeywords:\n  enabled: false\n").unwrap();
+        std::fs::write(
+            dir.path().join("config.yml"),
+            "magicKeywords:\n  enabled: false\n",
+        )
+        .unwrap();
         let off = omp_settings::Settings::load_from(None, dir.path());
         assert!(build("orchestrate ultrathink", &off, &all, None, 1).is_empty());
     }
@@ -258,15 +310,24 @@ mod tests {
         let c = ctx(&["task", "eval"]);
         // Keyword without a mode: the keyword notice.
         let k = build("ultracode this", &s, &c, None, 7);
-        assert_eq!(k.iter().map(custom_type).collect::<Vec<_>>(), ["ultracode-notice"]);
+        assert_eq!(
+            k.iter().map(custom_type).collect::<Vec<_>>(),
+            ["ultracode-notice"]
+        );
         assert!(text(&k[0]).contains("User message contains **ultracode**"));
         // Mode active: exactly one ultracode notice, keyword or not, with the mode's addenda.
         for msg in ["plain question", "ultracode this"] {
             let m = build(msg, &s, &c, Some(Ultra::Hyper), 7);
-            assert_eq!(m.iter().map(custom_type).collect::<Vec<_>>(), ["ultracode-notice"], "{msg}");
+            assert_eq!(
+                m.iter().map(custom_type).collect::<Vec<_>>(),
+                ["ultracode-notice"],
+                "{msg}"
+            );
             assert!(text(&m[0]).contains("**hypercode**"));
         }
-        let AgentMessage::Custom(cm) = &k[0] else { panic!("custom") };
+        let AgentMessage::Custom(cm) = &k[0] else {
+            panic!("custom")
+        };
         assert_eq!(cm.role, "custom");
         assert_eq!(cm.payload["display"], json!(false));
         assert_eq!(cm.payload["attribution"], json!("user"));

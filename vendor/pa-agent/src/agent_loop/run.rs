@@ -17,7 +17,10 @@ use super::tools::execute_tool_calls;
 use super::{AgentEventSink, AgentLoopConfig};
 
 /// Copy revised arguments from finalized calls onto the assistant message's tool calls.
-pub(super) fn bake_revised_arguments(message: &mut AssistantMessage, finalized: &[ToolCall]) -> bool {
+pub(super) fn bake_revised_arguments(
+    message: &mut AssistantMessage,
+    finalized: &[ToolCall],
+) -> bool {
     let mut changed = false;
     for content in &mut message.content {
         if let AssistantContent::ToolCall(call) = content {

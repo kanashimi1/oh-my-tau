@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::{
-    CancelToken, CellResult, CellStatus, ExecOptions, Frame, KernelError,
-    KernelProcess, RecvOutcome,
+    CancelToken, CellResult, CellStatus, ExecOptions, Frame, KernelError, KernelProcess,
+    RecvOutcome,
 };
 
 const RUNNER_JS: &str = include_str!("runner.js");
@@ -35,19 +35,20 @@ const RUNNER_JS: &str = include_str!("runner.js");
 const PRELUDE_SOURCES: &[(&str, &str)] = &[
     ("prelude.js", include_str!("prelude.js")),
     ("prelude_agents.js", include_str!("prelude_agents.js")),
-    ("prelude_combinators.js", include_str!("prelude_combinators.js")),
+    (
+        "prelude_combinators.js",
+        include_str!("prelude_combinators.js"),
+    ),
     ("prelude_txn.js", include_str!("prelude_txn.js")),
 ];
 
 /// The `-e` script the Bun runner is spawned with: the prelude sources
 /// injected first, then the runner proper (which loads them at startup).
 fn runner_script() -> String {
-    let sources = serde_json::json!(
-        PRELUDE_SOURCES
-            .iter()
-            .map(|(name, source)| serde_json::json!({ "name": name, "source": source }))
-            .collect::<Vec<_>>()
-    );
+    let sources = serde_json::json!(PRELUDE_SOURCES
+        .iter()
+        .map(|(name, source)| serde_json::json!({ "name": name, "source": source }))
+        .collect::<Vec<_>>());
     format!("globalThis.__ompPreludeSources__ = {sources};\n{RUNNER_JS}")
 }
 
@@ -164,7 +165,9 @@ impl JsKernel {
         loop {
             match recv(&self.process, deadline, &id, opts.cancel.as_ref()) {
                 Ok(frame) => match frame {
-                    Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => output.push_str(&data),
+                    Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
+                        output.push_str(&data)
+                    }
                     Frame::Result { bundle, .. } => {
                         if let Some(serde_json::Value::String(text)) = bundle.get("text/plain") {
                             output.push_str(text);
@@ -182,14 +185,14 @@ impl JsKernel {
                     } => {
                         if wait {
                             let reply = match opts.bridge {
-                                Some(bridge) => bridge
-                                    .call(&op, args)
-                                    .map(|result| serde_json::json!({ "ok": true, "result": result })),
+                                Some(bridge) => bridge.call(&op, args).map(
+                                    |result| serde_json::json!({ "ok": true, "result": result }),
+                                ),
                                 None => Err("host bridge unavailable".to_owned()),
                             };
-                            let reply = reply.unwrap_or_else(|error| {
-                                serde_json::json!({ "ok": false, "error": error })
-                            });
+                            let reply = reply.unwrap_or_else(
+                                |error| serde_json::json!({ "ok": false, "error": error }),
+                            );
                             let mut guard = self.process.lock().expect("kernel lock");
                             if let Some(p) = guard.as_mut() {
                                 let frame = serde_json::json!({
@@ -251,11 +254,7 @@ impl JsKernel {
                     Frame::Started { .. } => {}
                 },
                 Err(RecvOutcome::TimedOut | RecvOutcome::Cancelled) => {
-                    if opts
-                        .cancel
-                        .as_ref()
-                        .is_some_and(CancelToken::is_cancelled)
-                    {
+                    if opts.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
                         // Turn cancel (omp JS semantics): force-kill the
                         // worker — the cell is reported cancelled with the
                         // kernel-killed status, and the next call recreates
@@ -267,12 +266,7 @@ impl JsKernel {
                         }
                         return Ok(CellResult {
                             cancelled: true,
-                            ..CellResult::partial(
-                                output,
-                                displays,
-                                CellStatus::KernelKilled,
-                                false,
-                            )
+                            ..CellResult::partial(output, displays, CellStatus::KernelKilled, false)
                         });
                     }
                     // omp JS semantics: force-kill the worker (state is lost)

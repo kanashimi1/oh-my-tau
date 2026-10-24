@@ -8,11 +8,20 @@ use serde_json::{json, Value};
 
 /// Fixture entries: every JSONL record except the fixed-width title slot and the v3 header.
 fn fixture_entries() -> Vec<Value> {
-    let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/branched-session.jsonl")).unwrap();
+    let raw = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/branched-session.jsonl"
+    ))
+    .unwrap();
     raw.lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|e| !matches!(e.get("type").and_then(Value::as_str), Some("title" | "session")))
+        .filter(|e| {
+            !matches!(
+                e.get("type").and_then(Value::as_str),
+                Some("title" | "session")
+            )
+        })
         .collect()
 }
 
@@ -51,5 +60,9 @@ fn tree_matches_ts_get_tree() {
     for root in &tree {
         node_digest(root, &mut digest);
     }
-    assert_eq!(json!(digest), golden["tree"], "tree differs from TS getTree()");
+    assert_eq!(
+        json!(digest),
+        golden["tree"],
+        "tree differs from TS getTree()"
+    );
 }

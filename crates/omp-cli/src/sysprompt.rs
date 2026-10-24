@@ -47,7 +47,11 @@ fn load_config(agent: &Path) -> PromptConfig {
     let project_none = agent.join(".no-project-layer");
     let settings =
         omp_settings::Settings::load_from(Some(&agent.join("config.yml")), &project_none);
-    let set = |id: &str| settings.provenance(id).is_some_and(|p| p != omp_settings::Provenance::Default);
+    let set = |id: &str| {
+        settings
+            .provenance(id)
+            .is_some_and(|p| p != omp_settings::Provenance::Default)
+    };
     let mut cfg = PromptConfig {
         skills_enabled: true,
         include_model_in_prompt: false,
@@ -1173,13 +1177,26 @@ mod tests {
     /// an argument, not a `key=value` hash (same-line nesting included).
     #[test]
     fn when_operator_with_equals_is_an_arg() {
-        let tmpl = "{{#when delegationBias \"==\" \"eager\"}}E{{/when}}{{#when n \">\" 1}}G{{/when}}";
-        assert_eq!(render(tmpl, &json!({"delegationBias": "eager", "n": 2})), "EG");
-        assert_eq!(render(tmpl, &json!({"delegationBias": "gated", "n": 0})), "");
+        let tmpl =
+            "{{#when delegationBias \"==\" \"eager\"}}E{{/when}}{{#when n \">\" 1}}G{{/when}}";
+        assert_eq!(
+            render(tmpl, &json!({"delegationBias": "eager", "n": 2})),
+            "EG"
+        );
+        assert_eq!(
+            render(tmpl, &json!({"delegationBias": "gated", "n": 0})),
+            ""
+        );
         // Same-line nested open/close (system-prompt.md:160 shape).
         let nested = "{{#if scout}}{{#when bias \"==\" \"eager\"}}; scout allowed{{/when}}{{/if}}.";
-        assert_eq!(render(nested, &json!({"scout": true, "bias": "eager"})), "; scout allowed.");
-        assert_eq!(render(nested, &json!({"scout": true, "bias": "gated"})), ".");
+        assert_eq!(
+            render(nested, &json!({"scout": true, "bias": "eager"})),
+            "; scout allowed."
+        );
+        assert_eq!(
+            render(nested, &json!({"scout": true, "bias": "gated"})),
+            "."
+        );
     }
 
     /// `resolvePromptInput`: multi-line stays literal; an existing path is

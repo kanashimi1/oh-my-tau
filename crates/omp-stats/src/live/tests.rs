@@ -24,7 +24,9 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 
 fn is_assistant_usage(line: &str) -> bool {
     serde_json::from_str::<Value>(line).is_ok_and(|v| {
-        v["type"] == "message" && v["message"]["role"] == "assistant" && v["message"]["usage"].is_object()
+        v["type"] == "message"
+            && v["message"]["role"] == "assistant"
+            && v["message"]["usage"].is_object()
     })
 }
 
@@ -47,7 +49,9 @@ fn small_fixture_session() -> Option<(PathBuf, String)> {
 
 #[test]
 fn watcher_syncs_appended_line_and_notifies_subscribers() {
-    let Some((source, line)) = small_fixture_session() else { return };
+    let Some((source, line)) = small_fixture_session() else {
+        return;
+    };
     let home = TestHome::new();
     let folder = home.path().join(".omp/agent/sessions/-tmp-live");
     std::fs::create_dir_all(&folder).expect("sessions dir");
@@ -63,7 +67,9 @@ fn watcher_syncs_appended_line_and_notifies_subscribers() {
     });
     let before = crate::aggregator::get_total_message_count().expect("count");
     assert!(before > 0, "initial sync ingested the copied transcript");
-    wait_until("initial refresh and version bump", || live.inner.quiescent());
+    wait_until("initial refresh and version bump", || {
+        live.inner.quiescent()
+    });
     let version = live.status().version;
     assert!(version > 1, "initial sync bumped the version");
     while let Ok(_) | Err(TryRecvError::Lagged(_)) = rx.try_recv() {}
@@ -71,7 +77,10 @@ fn watcher_syncs_appended_line_and_notifies_subscribers() {
     // A new assistant turn: same payload, fresh entry id.
     let mut entry: Value = serde_json::from_str(&line).expect("entry json");
     entry["id"] = Value::from("live0001");
-    let mut file = std::fs::OpenOptions::new().append(true).open(&session).expect("open session");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&session)
+        .expect("open session");
     writeln!(file, "{entry}").expect("append line");
     drop(file);
 
@@ -87,7 +96,10 @@ fn watcher_syncs_appended_line_and_notifies_subscribers() {
     let frame = bumped.expect("bump frame");
     let parsed: LiveStatus = serde_json::from_str(&frame.frame).expect("frame is the status json");
     assert_eq!(parsed.version, frame.status.version);
-    assert_eq!(crate::aggregator::get_total_message_count().expect("count"), before + 1);
+    assert_eq!(
+        crate::aggregator::get_total_message_count().expect("count"),
+        before + 1
+    );
 
     live.stop();
     wait_until("live threads to settle", || live.inner.quiescent());
@@ -109,24 +121,38 @@ fn request_sync_coalesces_and_emits_distinct_frames_only() {
     while let Ok(frame) = rx.try_recv() {
         frames.push(frame.frame);
     }
-    assert!(!frames.is_empty(), "the syncing/idle transitions were emitted");
-    assert!(frames.windows(2).all(|w| w[0] != w[1]), "identical statuses are not re-sent");
+    assert!(
+        !frames.is_empty(),
+        "the syncing/idle transitions were emitted"
+    );
+    assert!(
+        frames.windows(2).all(|w| w[0] != w[1]),
+        "identical statuses are not re-sent"
+    );
     assert_eq!(live.status().sync.phase, LiveSyncPhase::Idle);
 }
 
 #[test]
 fn watcher_without_sessions_dir_picks_up_transcripts_created_later() {
-    let Some((source, _)) = small_fixture_session() else { return };
+    let Some((source, _)) = small_fixture_session() else {
+        return;
+    };
     let home = TestHome::new();
     let live = StatsLive::new();
     live.start();
     // No sessions dir: the watch cannot be set up, the thread polls instead.
-    wait_until("empty initial sync", || live.status().sync.last_synced_at.is_some() && live.inner.quiescent());
-    assert_eq!(crate::aggregator::get_total_message_count().expect("count"), 0);
+    wait_until("empty initial sync", || {
+        live.status().sync.last_synced_at.is_some() && live.inner.quiescent()
+    });
+    assert_eq!(
+        crate::aggregator::get_total_message_count().expect("count"),
+        0
+    );
 
     let folder = home.path().join(".omp/agent/sessions/-tmp-late");
     std::fs::create_dir_all(&folder).expect("sessions dir");
-    std::fs::copy(&source, folder.join(source.file_name().expect("file name"))).expect("copy session");
+    std::fs::copy(&source, folder.join(source.file_name().expect("file name")))
+        .expect("copy session");
     wait_until("late transcript synced", || {
         crate::aggregator::get_total_message_count().is_ok_and(|n| n > 0)
     });

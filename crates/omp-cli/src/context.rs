@@ -59,7 +59,9 @@ static LIVE: std::sync::RwLock<Option<Live>> = std::sync::RwLock::new(None);
 
 /// Install (or clear) the live strategy `convert_to_llm` reads per request.
 pub fn set_live(shared: Option<Arc<Shared>>, by_ultra: bool) {
-    *LIVE.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+    *LIVE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
         shared.map(|shared| Live { shared, by_ultra });
 }
 
@@ -104,7 +106,9 @@ pub fn ultra_shared(settings: &omp_settings::Settings) -> Arc<Shared> {
             std::env::var(k).ok()
         }
     };
-    let policy = crate::context_policy::Policy::resolve(settings, &env).ok().flatten();
+    let policy = crate::context_policy::Policy::resolve(settings, &env)
+        .ok()
+        .flatten();
     Shared::with_policy(Kind::ClmHost, Limits::from_settings(settings), policy)
 }
 
@@ -113,7 +117,8 @@ pub fn ultra_shared(settings: &omp_settings::Settings) -> Arc<Shared> {
 #[must_use]
 pub fn session_entry() -> Option<Value> {
     let k = active();
-    (k != Kind::Append).then(|| json!({"customType": "context-strategy", "data": {"strategy": k.as_str()}}))
+    (k != Kind::Append)
+        .then(|| json!({"customType": "context-strategy", "data": {"strategy": k.as_str()}}))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -171,7 +176,11 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_slots: 16, max_slot_chars: 8_000, budget_chars: 6_000 }
+        Self {
+            max_slots: 16,
+            max_slot_chars: 8_000,
+            budget_chars: 6_000,
+        }
     }
 }
 
@@ -180,7 +189,9 @@ impl Limits {
     pub fn from_settings(s: &omp_settings::Settings) -> Self {
         let d = Self::default();
         let num = |id: &str, dv: usize| {
-            s.get_number(id).filter(|v| *v >= 1.0).map_or(dv, |v| v as usize)
+            s.get_number(id)
+                .filter(|v| *v >= 1.0)
+                .map_or(dv, |v| v as usize)
         };
         Self {
             max_slots: num("context.clm.maxSlots", d.max_slots),
@@ -230,7 +241,10 @@ impl SlotTable {
             out.push_str(&format!("<slot id=\"{name}\">\n{text}\n</slot>\n"));
         }
         if !host_evicted.is_empty() {
-            out.push_str(&format!("(host evicted over-budget slots: {})\n", host_evicted.join(", ")));
+            out.push_str(&format!(
+                "(host evicted over-budget slots: {})\n",
+                host_evicted.join(", ")
+            ));
         }
         out.push_str("</context-slots>");
         out
@@ -240,7 +254,8 @@ impl SlotTable {
 fn valid_slot_name(n: &str) -> bool {
     !n.is_empty()
         && n.len() <= 32
-        && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        && n.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Parse the tool arguments into ops (shape validation only).
@@ -273,7 +288,9 @@ pub fn parse_ops(args: &Value) -> Result<Vec<Op>, String> {
             ("evict", None) => Op::Evict { slot },
             ("evict", Some(_)) => return Err(format!("ops[{i}]: `evict` takes no `text`")),
             (other, _) => {
-                return Err(format!("ops[{i}]: unknown op {other:?} (replace|append|evict)"))
+                return Err(format!(
+                    "ops[{i}]: unknown op {other:?} (replace|append|evict)"
+                ))
             }
         });
     }
@@ -290,7 +307,10 @@ pub fn apply_ops(table: &mut SlotTable, ops: &[Op], lim: &Limits) -> Result<(), 
         match op {
             Op::Replace { slot, text } => {
                 let p = t.pos(slot).ok_or_else(|| {
-                    format!("ops[{i}]: unknown slot {slot:?}; create it with `append` (slots: {})", names(&t))
+                    format!(
+                        "ops[{i}]: unknown slot {slot:?}; create it with `append` (slots: {})",
+                        names(&t)
+                    )
                 })?;
                 t.slots[p].1 = text.clone();
             }
@@ -300,10 +320,15 @@ pub fn apply_ops(table: &mut SlotTable, ops: &[Op], lim: &Limits) -> Result<(), 
                     t.slots[p].1.push_str(text);
                 } else {
                     if !valid_slot_name(slot) {
-                        return Err(format!("ops[{i}]: invalid slot name {slot:?} ([A-Za-z0-9_-], 1-32 chars)"));
+                        return Err(format!(
+                            "ops[{i}]: invalid slot name {slot:?} ([A-Za-z0-9_-], 1-32 chars)"
+                        ));
                     }
                     if t.slots.len() >= lim.max_slots {
-                        return Err(format!("ops[{i}]: slot table full ({} slots); evict one first", lim.max_slots));
+                        return Err(format!(
+                            "ops[{i}]: slot table full ({} slots); evict one first",
+                            lim.max_slots
+                        ));
                     }
                     t.slots.push((slot.clone(), text.clone()));
                 }
@@ -316,7 +341,11 @@ pub fn apply_ops(table: &mut SlotTable, ops: &[Op], lim: &Limits) -> Result<(), 
             }
         }
         if let Some((n, s)) = t.slots.iter().find(|(_, s)| s.len() > lim.max_slot_chars) {
-            return Err(format!("ops[{i}]: slot {n:?} is {} chars, limit {}", s.len(), lim.max_slot_chars));
+            return Err(format!(
+                "ops[{i}]: slot {n:?} is {} chars, limit {}",
+                s.len(),
+                lim.max_slot_chars
+            ));
         }
     }
     *table = t;
@@ -327,7 +356,11 @@ fn names(t: &SlotTable) -> String {
     if t.slots.is_empty() {
         "none".into()
     } else {
-        t.slots.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", ")
+        t.slots
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -361,7 +394,10 @@ pub fn plan(messages: &[AgentMessage], kind: Kind, lim: &Limits) -> Plan {
         .iter()
         .position(|m| matches!(m, AgentMessage::Standard(Message::Assistant(_))))
         .unwrap_or(messages.len());
-    let mut p = Plan { pinned_end, ..Plan::default() };
+    let mut p = Plan {
+        pinned_end,
+        ..Plan::default()
+    };
     let ok_result = |id: &str| {
         messages.iter().any(|m| {
             matches!(m, AgentMessage::Standard(Message::ToolResult(tr))
@@ -378,9 +414,13 @@ pub fn plan(messages: &[AgentMessage], kind: Kind, lim: &Limits) -> Plan {
     let mut ask_pending = false;
     let mut evicted_all: Vec<String> = Vec::new();
     for (i, m) in messages.iter().enumerate().skip(pinned_end) {
-        let AgentMessage::Standard(Message::Assistant(a)) = m else { continue };
+        let AgentMessage::Standard(Message::Assistant(a)) = m else {
+            continue;
+        };
         for c in &a.content {
-            let Some((id, args)) = is_edit_call(c) else { continue };
+            let Some((id, args)) = is_edit_call(c) else {
+                continue;
+            };
             if !ok_result(id) {
                 continue;
             }
@@ -421,12 +461,19 @@ pub fn plan(messages: &[AgentMessage], kind: Kind, lim: &Limits) -> Plan {
 }
 
 fn user_msg(text: String) -> AgentMessage {
-    AgentMessage::Standard(Message::User(UserMessage { content: UserContent::Text(text), timestamp: 0 }))
+    AgentMessage::Standard(Message::User(UserMessage {
+        content: UserContent::Text(text),
+        timestamp: 0,
+    }))
 }
 
 /// Wire history for the strategy; `Append` returns the input untouched.
 #[must_use]
-pub fn build_wire(messages: Vec<AgentMessage>, kind: Kind, lim: &Limits) -> (Vec<AgentMessage>, Plan) {
+pub fn build_wire(
+    messages: Vec<AgentMessage>,
+    kind: Kind,
+    lim: &Limits,
+) -> (Vec<AgentMessage>, Plan) {
     if kind == Kind::Append {
         return (messages, Plan::default());
     }
@@ -464,9 +511,19 @@ impl Shared {
     }
 
     #[must_use]
-    pub fn with_policy(kind: Kind, limits: Limits, policy: Option<crate::context_policy::Policy>) -> Arc<Self> {
-        Arc::new(Self { kind, limits, seen: Mutex::new(SlotTable::default()), policy, allowed: AtomicBool::new(true),
-            offloaded: Mutex::new(Vec::new()) })
+    pub fn with_policy(
+        kind: Kind,
+        limits: Limits,
+        policy: Option<crate::context_policy::Policy>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            kind,
+            limits,
+            seen: Mutex::new(SlotTable::default()),
+            policy,
+            allowed: AtomicBool::new(true),
+            offloaded: Mutex::new(Vec::new()),
+        })
     }
 
     /// `convert_to_llm` stage: rewrite history per strategy, remember the slot table.
@@ -558,7 +615,9 @@ fn distinctive_tokens(text: &str) -> std::collections::HashSet<String> {
 
 /// Text the model itself wrote in an assistant message (text blocks + tool-call arguments).
 fn assistant_written(m: &AgentMessage) -> Option<String> {
-    let AgentMessage::Standard(Message::Assistant(a)) = m else { return None };
+    let AgentMessage::Standard(Message::Assistant(a)) = m else {
+        return None;
+    };
     let mut s = String::new();
     for c in &a.content {
         match c {
@@ -578,7 +637,9 @@ fn block_features(messages: &[AgentMessage], idx: usize) -> (usize, usize, usize
     let now = turns.len();
     let born = turn_of(idx);
     let age = now.saturating_sub(born);
-    let Some(text) = block_text(&messages[idx]) else { return (age, 0, age) };
+    let Some(text) = block_text(&messages[idx]) else {
+        return (age, 0, age);
+    };
     let d = distinctive_tokens(&text);
     if d.is_empty() {
         return (age, 0, age);
@@ -586,8 +647,11 @@ fn block_features(messages: &[AgentMessage], idx: usize) -> (usize, usize, usize
     let mut seen = std::collections::HashSet::new();
     let mut last_ref_turn = None;
     for (i, m) in messages.iter().enumerate().skip(idx + 1) {
-        let Some(w) = assistant_written(m) else { continue };
-        let hits: std::collections::HashSet<&String> = d.iter().filter(|t| w.contains(t.as_str())).collect();
+        let Some(w) = assistant_written(m) else {
+            continue;
+        };
+        let hits: std::collections::HashSet<&String> =
+            d.iter().filter(|t| w.contains(t.as_str())).collect();
         if hits.len() >= 2 {
             last_ref_turn = Some(turn_of(i));
         }
@@ -624,7 +688,11 @@ fn offload_reads(messages: &[AgentMessage], off: &[(usize, String)]) -> usize {
 fn offload_block(m: &AgentMessage, idx: usize) -> Option<String> {
     let text = block_text(m)?;
     let dir = std::env::var_os("OMP_CONTEXT_OFFLOAD_DIR").map_or_else(
-        || std::env::current_dir().unwrap_or_default().join(".omp-offload"),
+        || {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(".omp-offload")
+        },
         std::path::PathBuf::from,
     );
     std::fs::create_dir_all(&dir).ok()?;
@@ -708,7 +776,9 @@ fn accepted_edits(messages: &[AgentMessage]) -> Vec<usize> {
             AgentMessage::Standard(Message::Assistant(a)) => a
                 .content
                 .iter()
-                .any(|c| is_edit_call(c).is_some_and(|(id, args)| ok(id) && parse_ops(args).is_ok()))
+                .any(|c| {
+                    is_edit_call(c).is_some_and(|(id, args)| ok(id) && parse_ops(args).is_ok())
+                })
                 .then_some(i),
             _ => None,
         })
@@ -726,7 +796,13 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
     let turns = user_turns(messages);
     let step = turns.len().saturating_sub(1);
     let edits = accepted_edits(messages);
-    let turn_of = |msg_idx: usize| turns.iter().filter(|t| **t <= msg_idx).count().saturating_sub(1);
+    let turn_of = |msg_idx: usize| {
+        turns
+            .iter()
+            .filter(|t| **t <= msg_idx)
+            .count()
+            .saturating_sub(1)
+    };
     let steps_since_edit = edits.last().map(|i| step.saturating_sub(turn_of(*i)));
     let (mut input, mut cached, mut last_usage, mut last_idx) = (0u64, 0u64, 0u64, None);
     for (i, m) in messages.iter().enumerate() {
@@ -743,14 +819,18 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         .skip(last_idx.map_or(0, |i| i + 1))
         .map(|m| match m {
             AgentMessage::Standard(Message::User(u)) => user_text(&u.content).chars().count(),
-            AgentMessage::Standard(Message::ToolResult(tr)) => result_text(&tr.content).chars().count(),
+            AgentMessage::Standard(Message::ToolResult(tr)) => {
+                result_text(&tr.content).chars().count()
+            }
             _ => 0,
         })
         .sum();
     let excerpt = turns
         .last()
         .and_then(|i| match &messages[*i] {
-            AgentMessage::Standard(Message::User(u)) => Some(crate::context_policy::excerpt_of(&user_text(&u.content))),
+            AgentMessage::Standard(Message::User(u)) => {
+                Some(crate::context_policy::excerpt_of(&user_text(&u.content)))
+            }
             _ => None,
         })
         .unwrap_or_default();
@@ -767,7 +847,11 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         block_since_ref_turns: 0,
         offloads_total: 0,
         offload_reads: 0,
-        cache_hit_pct: if input == 0 { 0 } else { (100 * cached / input) as usize },
+        cache_hit_pct: if input == 0 {
+            0
+        } else {
+            (100 * cached / input) as usize
+        },
         excerpt,
     }
 }
@@ -854,8 +938,9 @@ impl AgentTool for ContextEditTool {
                 ));
             }
             let mut table = self.shared.seen.lock().clone();
-            let verdict = parse_ops(&params)
-                .and_then(|ops| apply_ops(&mut table, &ops, &self.shared.limits).map(|()| ops.len()));
+            let verdict = parse_ops(&params).and_then(|ops| {
+                apply_ops(&mut table, &ops, &self.shared.limits).map(|()| ops.len())
+            });
             Ok(match verdict {
                 Ok(n) => AgentToolResult::text(format!(
                     "ok: {n} op(s) accepted; slots after edit: {}. Takes effect at your next user turn (this turn's raw history stays visible).",
@@ -896,7 +981,10 @@ mod tests {
     }
 
     fn assistant_edit(id: &str, ops: Value) -> AgentMessage {
-        asst(json!([{"type":"toolCall","id":id,"name":TOOL_NAME,"arguments":{"ops":ops}}]), "toolUse")
+        asst(
+            json!([{"type":"toolCall","id":id,"name":TOOL_NAME,"arguments":{"ops":ops}}]),
+            "toolUse",
+        )
     }
 
     fn assistant_text(t: &str) -> AgentMessage {
@@ -915,16 +1003,29 @@ mod tests {
     }
 
     fn wire_json(m: &[AgentMessage]) -> String {
-        serde_json::to_string(&m.iter().map(|x| serde_json::to_value(x).unwrap()).collect::<Vec<_>>()).unwrap()
+        serde_json::to_string(
+            &m.iter()
+                .map(|x| serde_json::to_value(x).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
     }
 
     fn lim() -> Limits {
-        Limits { max_slots: 3, max_slot_chars: 100, budget_chars: 60 }
+        Limits {
+            max_slots: 3,
+            max_slot_chars: 100,
+            budget_chars: 60,
+        }
     }
 
     #[test]
     fn append_is_identity() {
-        let h = vec![user("task"), assistant_edit("c1", json!([{"op":"append","slot":"a","text":"x"}])), result("c1", false)];
+        let h = vec![
+            user("task"),
+            assistant_edit("c1", json!([{"op":"append","slot":"a","text":"x"}])),
+            result("c1", false),
+        ];
         let before = wire_json(&h);
         let (out, _) = build_wire(h, Kind::Append, &lim());
         assert_eq!(wire_json(&out), before);
@@ -953,7 +1054,12 @@ mod tests {
         assert_eq!(p.tail_start, Some(3));
         assert_eq!(out.len(), 6); // pinned, slots, edit call, result, reply, next user
         let s = wire_json(&out);
-        assert!(s.contains(SLOTS_MARKER) && s.contains("A=1") && !s.contains("old work") && !s.contains("steer"));
+        assert!(
+            s.contains(SLOTS_MARKER)
+                && s.contains("A=1")
+                && !s.contains("old work")
+                && !s.contains("steer")
+        );
     }
 
     #[test]
@@ -961,7 +1067,10 @@ mod tests {
         let l = lim();
         let mut h = vec![
             user("task"),
-            assistant_edit("c1", json!([{"op":"append","slot":"a","text":"alpha"},{"op":"append","slot":"b","text":"beta"}])),
+            assistant_edit(
+                "c1",
+                json!([{"op":"append","slot":"a","text":"alpha"},{"op":"append","slot":"b","text":"beta"}]),
+            ),
             result("c1", false),
             assistant_text("ok"),
             user("u1"),
@@ -973,15 +1082,26 @@ mod tests {
         let (w2, _) = build_wire(h.clone(), Kind::Clm, &l);
         assert!(wire_json(&w2).starts_with(wire_json(&w1).trim_end_matches(']')));
         // edit of slot b: pinned prefix and slot a bytes unchanged
-        h.push(assistant_edit("c2", json!([{"op":"replace","slot":"b","text":"BETA2"}])));
+        h.push(assistant_edit(
+            "c2",
+            json!([{"op":"replace","slot":"b","text":"BETA2"}]),
+        ));
         h.push(result("c2", false));
         h.push(assistant_text("ok2"));
         h.push(user("u3"));
         let (w3, p3) = build_wire(h, Kind::Clm, &l);
-        assert_eq!(wire_json(&w3[..1]), wire_json(&w1[..1]), "pinned prefix identical");
+        assert_eq!(
+            wire_json(&w3[..1]),
+            wire_json(&w1[..1]),
+            "pinned prefix identical"
+        );
         let (s1, s3) = (wire_json(&w1[1..2]), wire_json(&w3[1..2]));
         let common = s1.find("beta").unwrap();
-        assert_eq!(&s1[..common], &s3[..common], "slots before the edited one identical");
+        assert_eq!(
+            &s1[..common],
+            &s3[..common],
+            "slots before the edited one identical"
+        );
         assert_eq!(p3.table.slots[1].1, "BETA2");
     }
 
@@ -990,13 +1110,19 @@ mod tests {
         let l = lim();
         let mut h = vec![user("task"), assistant_text("work"), user("step")];
         let (w0, _) = build_wire(h.clone(), Kind::Clm, &l);
-        h.push(assistant_edit("c1", json!([{"op":"append","slot":"a","text":"x"}])));
+        h.push(assistant_edit(
+            "c1",
+            json!([{"op":"append","slot":"a","text":"x"}]),
+        ));
         h.push(result("c1", false));
         // same run (no user message after the edit): wire is the unchanged raw history + the edit
         let (w1, p1) = build_wire(h.clone(), Kind::Clm, &l);
         assert!(p1.tail_start.is_none() && p1.shown.slots.is_empty());
         assert_eq!(wire_json(&w1), wire_json(&h));
-        assert!(wire_json(&w1).starts_with(wire_json(&w0).trim_end_matches(']')), "append-only mid-run");
+        assert!(
+            wire_json(&w1).starts_with(wire_json(&w0).trim_end_matches(']')),
+            "append-only mid-run"
+        );
         // validation table already includes the pending edit
         assert_eq!(p1.table.slots.len(), 1);
         // next user turn folds it
@@ -1016,18 +1142,33 @@ mod tests {
         };
         assert!(bad(&mut t, json!([{"op":"replace","slot":"nope","text":"x"}])).is_err());
         assert!(bad(&mut t, json!([{"op":"evict","slot":"nope"}])).is_err());
-        assert!(bad(&mut t, json!([{"op":"append","slot":"bad name!","text":"x"}])).is_err());
+        assert!(bad(
+            &mut t,
+            json!([{"op":"append","slot":"bad name!","text":"x"}])
+        )
+        .is_err());
         assert!(bad(&mut t, json!([{"op":"append","slot":"a"}])).is_err());
         assert!(bad(&mut t, json!([{"op":"frob","slot":"a","text":"x"}])).is_err());
-        assert!(bad(&mut t, json!([{"op":"append","slot":"a","text":"x".repeat(101)}])).is_err());
+        assert!(bad(
+            &mut t,
+            json!([{"op":"append","slot":"a","text":"x".repeat(101)}])
+        )
+        .is_err());
         assert!(parse_ops(&json!({"ops": []})).is_err());
         // atomic: first op fine, second invalid -> nothing applied
-        assert!(bad(&mut t, json!([{"op":"append","slot":"a","text":"x"},{"op":"evict","slot":"zz"}])).is_err());
+        assert!(bad(
+            &mut t,
+            json!([{"op":"append","slot":"a","text":"x"},{"op":"evict","slot":"zz"}])
+        )
+        .is_err());
         assert!(t.slots.is_empty());
         for s in ["a", "b", "c"] {
             bad(&mut t, json!([{"op":"append","slot":s,"text":"x"}])).unwrap();
         }
-        assert!(bad(&mut t, json!([{"op":"append","slot":"d","text":"x"}])).is_err(), "max slots");
+        assert!(
+            bad(&mut t, json!([{"op":"append","slot":"d","text":"x"}])).is_err(),
+            "max slots"
+        );
     }
 
     #[test]
@@ -1050,7 +1191,10 @@ mod tests {
         let big = "z".repeat(50);
         let mut h = vec![
             user("task"),
-            assistant_edit("c1", json!([{"op":"append","slot":"old","text":big},{"op":"append","slot":"new","text":big}])),
+            assistant_edit(
+                "c1",
+                json!([{"op":"append","slot":"old","text":big},{"op":"append","slot":"new","text":big}]),
+            ),
             result("c1", false),
             user("u"),
         ];
@@ -1073,10 +1217,27 @@ mod tests {
         let t = tool(sh.clone());
         let sig = AbortSignal::default();
         let cb: AgentToolUpdateCallback = Arc::new(|_| {});
-        let r = t.clone().execute("1".into(), json!({"ops":[{"op":"evict","slot":"x"}]}), sig.clone(), cb.clone()).await.unwrap();
+        let r = t
+            .clone()
+            .execute(
+                "1".into(),
+                json!({"ops":[{"op":"evict","slot":"x"}]}),
+                sig.clone(),
+                cb.clone(),
+            )
+            .await
+            .unwrap();
         assert_eq!(r.is_error, Some(true));
         assert!(result_text(&r.content).contains("unknown slot"));
-        let r = t.execute("2".into(), json!({"ops":[{"op":"append","slot":"x","text":"1"}]}), sig, cb).await.unwrap();
+        let r = t
+            .execute(
+                "2".into(),
+                json!({"ops":[{"op":"append","slot":"x","text":"1"}]}),
+                sig,
+                cb,
+            )
+            .await
+            .unwrap();
         assert_ne!(r.is_error, Some(true));
     }
 
@@ -1095,8 +1256,16 @@ mod tests {
         assert_eq!(wire_json(&w0), wire_json(&h0));
         let t = tool(sh.clone());
         let cb: AgentToolUpdateCallback = Arc::new(|_| {});
-        let r = t.clone().execute("1".into(), json!({"ops":[{"op":"append","slot":"a","text":"x"}]}),
-            AbortSignal::default(), cb.clone()).await.unwrap();
+        let r = t
+            .clone()
+            .execute(
+                "1".into(),
+                json!({"ops":[{"op":"append","slot":"a","text":"x"}]}),
+                AbortSignal::default(),
+                cb.clone(),
+            )
+            .await
+            .unwrap();
         assert_eq!(r.is_error, Some(true));
         assert!(result_text(&r.content).contains("no context maintenance is due"));
         // turn 1 = edit: one trailing notice, edits accepted
@@ -1104,13 +1273,26 @@ mod tests {
         let w1 = sh.wire(h1.clone());
         assert_eq!(w1.len(), h1.len() + 1);
         assert!(wire_json(&w1[h1.len()..]).contains("CONTEXT MAINTENANCE"));
-        assert!(wire_json(&w1[..h1.len()]) == wire_json(&h1), "notice only at the tail: prefix bytes untouched");
-        let r = t.execute("2".into(), json!({"ops":[{"op":"append","slot":"a","text":"x"}]}),
-            AbortSignal::default(), cb).await.unwrap();
+        assert!(
+            wire_json(&w1[..h1.len()]) == wire_json(&h1),
+            "notice only at the tail: prefix bytes untouched"
+        );
+        let r = t
+            .execute(
+                "2".into(),
+                json!({"ops":[{"op":"append","slot":"a","text":"x"}]}),
+                AbortSignal::default(),
+                cb,
+            )
+            .await
+            .unwrap();
         assert_ne!(r.is_error, Some(true));
         // after the accepted edit, the same turn's next request carries no second notice
         let mut h2 = h1;
-        h2.push(assistant_edit("c9", json!([{"op":"append","slot":"a","text":"x"}])));
+        h2.push(assistant_edit(
+            "c9",
+            json!([{"op":"append","slot":"a","text":"x"}]),
+        ));
         h2.push(result("c9", false));
         let w2 = sh.wire(h2.clone());
         assert!(!wire_json(&w2).contains("CONTEXT MAINTENANCE"));
@@ -1141,7 +1323,10 @@ mod tests {
         assert_eq!(st.steps_since_edit, Some(1));
         assert_eq!(st.slots_count, 1);
         assert_eq!(st.cache_hit_pct, 100 * 180 / 300);
-        assert_eq!(st.history_tokens, 20 + 180 + 10 + format!("{} END", "w ".repeat(400)).chars().count() / 4);
+        assert_eq!(
+            st.history_tokens,
+            20 + 180 + 10 + format!("{} END", "w ".repeat(400)).chars().count() / 4
+        );
         assert!(st.excerpt.ends_with("END") && st.excerpt.chars().count() <= 300);
     }
 
@@ -1150,25 +1335,42 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let sh = Shared::with_policy(Kind::Clm, lim(), Some(sched(&[0, 0, 0, 2])));
         let big = "z".repeat(5000);
-        let mut h = vec![user("brief"), assistant_text("ACK"), user(&big), assistant_text("a")];
+        let mut h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            user(&big),
+            assistant_text("a"),
+        ];
         for step in 1..=3 {
             h.push(user(&format!("step {step}")));
             std::env::set_var("OMP_CONTEXT_OFFLOAD_DIR", dir.path());
             let w = sh.wire(h.clone());
             let j = wire_json(&w);
             if step < 2 {
-                assert!(j.contains(&big), "before the offload the block is on the wire");
+                assert!(
+                    j.contains(&big),
+                    "before the offload the block is on the wire"
+                );
             } else {
-                assert!(!j.contains(&big) && j.contains("[offloaded: 5000 chars"), "offloaded and sticky at step {step}");
+                assert!(
+                    !j.contains(&big) && j.contains("[offloaded: 5000 chars"),
+                    "offloaded and sticky at step {step}"
+                );
             }
             h.push(assistant_text("ok"));
         }
-        assert_eq!(std::fs::read_to_string(dir.path().join("block-2.txt")).unwrap(), big);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("block-2.txt")).unwrap(),
+            big
+        );
     }
 
     #[test]
     fn block_features_age_restatement_and_offload_reads() {
-        let block = format!("{} ID-1234567 ID-7654321 ID-1111111 ID-2222222", "filler ".repeat(400));
+        let block = format!(
+            "{} ID-1234567 ID-7654321 ID-1111111 ID-2222222",
+            "filler ".repeat(400)
+        );
         let h = vec![
             user("brief"),
             assistant_text("ACK"),
@@ -1181,7 +1383,10 @@ mod tests {
         let (age, pct, since) = block_features(&h, 2);
         assert_eq!(age, 2, "two user turns after the block's turn");
         assert_eq!(pct, 50, "2 of 4 distinct ids restated");
-        assert_eq!(since, 2, "last restatement was in the turn right after the block");
+        assert_eq!(
+            since, 2,
+            "last restatement was in the turn right after the block"
+        );
         let mut h2 = h.clone();
         h2.insert(5, asst(json!([{"type":"toolCall","id":"e1","name":"eval","arguments":{"code":"open('/x/block-2.txt').read()"}}]), "toolUse"));
         assert_eq!(offload_reads(&h2, &[(2, "ref".into())]), 1);

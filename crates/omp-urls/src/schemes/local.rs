@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::parse::InternalUrl;
-use crate::spec::{InternalResource, SchemeBacking, SchemeSelectors, SchemeSpec, WritePolicy, WriteScope, WriteVia};
+use crate::spec::{
+    InternalResource, SchemeBacking, SchemeSelectors, SchemeSpec, WritePolicy, WriteScope, WriteVia,
+};
 use crate::{UrlCtx, UrlProvider};
 
 use crate::schemes::core::format_byte_size;
@@ -27,9 +29,19 @@ fn safe_session_id(ctx: &UrlCtx) -> String {
     let raw = ctx.session_id().unwrap_or_else(|| "session".to_string());
     let safe: String = raw
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    if safe.is_empty() { "session".to_string() } else { safe }
+    if safe.is_empty() {
+        "session".to_string()
+    } else {
+        safe
+    }
 }
 
 /// TS `resolveLocalRoot`: `<artifactsDir>/local`, else `$TMPDIR/omp-local/<safeSessionId>`.
@@ -37,7 +49,9 @@ pub fn resolve_local_root(ctx: &UrlCtx) -> PathBuf {
     if let Some(dir) = ctx.artifacts_dir() {
         return dir.join("local");
     }
-    std::env::temp_dir().join("omp-local").join(safe_session_id(ctx))
+    std::env::temp_dir()
+        .join("omp-local")
+        .join(safe_session_id(ctx))
 }
 
 /// TS `extractRelativePath`: authority counts as the first path segment.
@@ -106,9 +120,15 @@ fn resolve_local_target(url: &InternalUrl, ctx: &UrlCtx) -> anyhow::Result<Local
         return Ok(LocalTarget::Directory(real_target));
     }
     if !meta.is_file() {
-        anyhow::bail!("local:// URL must resolve to a file or directory: {}", url.raw_href);
+        anyhow::bail!(
+            "local:// URL must resolve to a file or directory: {}",
+            url.raw_href
+        );
     }
-    Ok(LocalTarget::File { path: real_target, size: meta.len() })
+    Ok(LocalTarget::File {
+        path: real_target,
+        size: meta.len(),
+    })
 }
 
 fn non_text_resource(url: &InternalUrl, path: &Path, size: u64, reason: &str) -> InternalResource {
@@ -122,10 +142,23 @@ fn non_text_resource(url: &InternalUrl, path: &Path, size: u64, reason: &str) ->
     r
 }
 
-fn build_file_resource(url: &InternalUrl, path: &Path, size: u64) -> anyhow::Result<InternalResource> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+fn build_file_resource(
+    url: &InternalUrl,
+    path: &Path,
+    size: u64,
+) -> anyhow::Result<InternalResource> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if BINARY_FILE_EXTENSIONS.contains(&ext.as_str()) {
-        return Ok(non_text_resource(url, path, size, "extension is a known binary/container type"));
+        return Ok(non_text_resource(
+            url,
+            path,
+            size,
+            "extension is a known binary/container type",
+        ));
     }
     let mut sniff = vec![0u8; size.min(LOCAL_TEXT_SNIFF_BYTES) as usize];
     {
@@ -133,7 +166,12 @@ fn build_file_resource(url: &InternalUrl, path: &Path, size: u64) -> anyhow::Res
         std::fs::File::open(path)?.read_exact(&mut sniff)?;
     }
     if sniff.contains(&0) || std::str::from_utf8(&sniff).is_err() {
-        return Ok(non_text_resource(url, path, size, "content is not valid UTF-8 text"));
+        return Ok(non_text_resource(
+            url,
+            path,
+            size,
+            "content is not valid UTF-8 text",
+        ));
     }
     if size > LOCAL_TEXT_RESOURCE_MAX_BYTES {
         let content = format!(
@@ -160,8 +198,14 @@ fn list_files_recursively(root: &Path) -> anyhow::Result<Vec<String>> {
         let abs = root.join(&rel);
         for entry in std::fs::read_dir(&abs)?.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let child = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            let Ok(file_type) = entry.file_type() else { continue };
+            let child = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if file_type.is_dir() {
                 pending.push(child);
             } else if file_type.is_file() {
@@ -179,7 +223,11 @@ fn build_listing(url: &InternalUrl, root: &Path) -> anyhow::Result<InternalResou
     let listing = if files.is_empty() {
         "(empty)".to_string()
     } else {
-        files.iter().map(|f| format!("- [{f}](local://{f})")).collect::<Vec<_>>().join("\n")
+        files
+            .iter()
+            .map(|f| format!("- [{f}](local://{f})"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let content = format!(
         "# Local\n\nSession-scoped scratch space for large intermediate data, subagent handoffs, and reusable planning artifacts.\n\nRoot: {}\n\n{} file{} available:\n\n{listing}\n",
@@ -206,7 +254,10 @@ impl UrlProvider for LocalProvider {
             single_slash_alias: true,
             linkable: true,
             port_authority: false,
-            write: Some(WritePolicy { via: WriteVia::File, scope: WriteScope::Sandbox }),
+            write: Some(WritePolicy {
+                via: WriteVia::File,
+                scope: WriteScope::Sandbox,
+            }),
         };
         &SPEC
     }
@@ -226,7 +277,8 @@ impl UrlProvider for LocalProvider {
                         e.file_type().ok().map(|t| (name, t.is_dir()))
                     })
                     .collect();
-                let mut r = InternalResource::directory(crate::schemes::format_directory_listing(entries));
+                let mut r =
+                    InternalResource::directory(crate::schemes::format_directory_listing(entries));
                 r.path = Some(path.to_string_lossy().into_owned());
                 r.immutable = Some(true);
                 Ok(r)
@@ -238,7 +290,11 @@ impl UrlProvider for LocalProvider {
     fn locate(&self, url: &InternalUrl, ctx: &UrlCtx) -> Option<PathBuf> {
         let root = resolve_local_root(ctx);
         let relative = extract_relative_path(url).ok()?;
-        let target = if relative.is_empty() { root.clone() } else { root.join(relative) };
+        let target = if relative.is_empty() {
+            root.clone()
+        } else {
+            root.join(relative)
+        };
         ensure_within_root(&target, &root, &url.raw_href).ok()?;
         let real_root = std::fs::canonicalize(&root).ok()?;
         let real = std::fs::canonicalize(&target).ok()?;
@@ -249,7 +305,11 @@ impl UrlProvider for LocalProvider {
     fn locate_create(&self, url: &InternalUrl, ctx: &UrlCtx) -> Option<PathBuf> {
         let root = resolve_local_root(ctx);
         let relative = extract_relative_path(url).ok()?;
-        let target = if relative.is_empty() { return None; } else { root.join(relative) };
+        let target = if relative.is_empty() {
+            return None;
+        } else {
+            root.join(relative)
+        };
         // Lexical containment; a realpath check would reject not-yet-created paths.
         ensure_within_root(&target, &root, &url.raw_href).ok()?;
         Some(target)
@@ -258,17 +318,26 @@ impl UrlProvider for LocalProvider {
     fn locate_sync(&self, url: &InternalUrl, ctx: &UrlCtx) -> Option<PathBuf> {
         let root = resolve_local_root(ctx);
         let relative = extract_relative_path(url).ok()?;
-        let target = if relative.is_empty() { root } else { root.join(relative) };
+        let target = if relative.is_empty() {
+            root
+        } else {
+            root.join(relative)
+        };
         ensure_within_root(&target, &resolve_local_root(ctx), &url.raw_href).ok()?;
         Some(target)
     }
 
     fn complete(&self, _query: &str, ctx: &UrlCtx) -> Vec<crate::UrlCompletion> {
         let root = resolve_local_root(ctx);
-        let Ok(files) = list_files_recursively(&root) else { return Vec::new() };
+        let Ok(files) = list_files_recursively(&root) else {
+            return Vec::new();
+        };
         files
             .into_iter()
-            .map(|label| crate::UrlCompletion { label, detail: None })
+            .map(|label| crate::UrlCompletion {
+                label,
+                detail: None,
+            })
             .collect()
     }
 }

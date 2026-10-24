@@ -80,7 +80,12 @@ impl Hosts {
     pub(crate) fn from_env() -> Self {
         let kimi = ["KIMI_CODE_OAUTH_HOST", "KIMI_OAUTH_HOST"]
             .iter()
-            .find_map(|k| std::env::var(k).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()));
+            .find_map(|k| {
+                std::env::var(k)
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            });
         Self { kimi }
     }
 }
@@ -100,7 +105,9 @@ fn read_dotted<'a>(record: &'a Value, dotted: &str) -> Option<&'a Value> {
 }
 
 fn read_dotted_string(record: &Value, dotted: &str) -> Option<String> {
-    read_dotted(record, dotted).and_then(Value::as_str).map(str::to_string)
+    read_dotted(record, dotted)
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// `(auth.broker.url, auth.broker.token)` from `<agent dir>/config.yml` (or `.yaml`).
@@ -112,13 +119,14 @@ fn read_config_broker(dir: &AgentDir) -> Result<(Option<String>, Option<String>)
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => bail!("Unable to read {}: {e}", path.display()),
         };
-        let parsed: Value =
-            serde_yaml_ng::from_str(&raw).with_context(|| format!("{} contains invalid YAML", path.display()))?;
+        let parsed: Value = serde_yaml_ng::from_str(&raw)
+            .with_context(|| format!("{} contains invalid YAML", path.display()))?;
         return match parsed {
             Value::Null => Ok((None, None)),
-            Value::Object(_) => {
-                Ok((read_dotted_string(&parsed, "auth.broker.url"), read_dotted_string(&parsed, "auth.broker.token")))
-            }
+            Value::Object(_) => Ok((
+                read_dotted_string(&parsed, "auth.broker.url"),
+                read_dotted_string(&parsed, "auth.broker.token"),
+            )),
             _ => bail!("{} must contain a YAML object", path.display()),
         };
     }
@@ -135,7 +143,10 @@ fn token_file(dir: &AgentDir) -> std::path::PathBuf {
 ///
 /// # Errors
 /// Unreadable/invalid `config.yml`, or a broker URL without a token.
-pub fn resolve_broker_config(dir: &AgentDir, env: &dyn Fn(&str) -> Option<String>) -> Result<Option<BrokerConfig>> {
+pub fn resolve_broker_config(
+    dir: &AgentDir,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<BrokerConfig>> {
     let non_empty = |v: Option<String>| v.filter(|v| !v.is_empty());
     let env_token = non_empty(env("OMP_AUTH_BROKER_TOKEN"));
     let mut url = non_empty(env("OMP_AUTH_BROKER_URL"));
@@ -143,13 +154,20 @@ pub fn resolve_broker_config(dir: &AgentDir, env: &dyn Fn(&str) -> Option<String
     if url.is_none() || env_token.is_none() {
         let (config_url, token) = read_config_broker(dir)?;
         if url.is_none() {
-            url = config_url.and_then(|raw| crate::resolve_config_value(&raw)).filter(|v| !v.is_empty());
+            url = config_url
+                .and_then(|raw| crate::resolve_config_value(&raw))
+                .filter(|v| !v.is_empty());
         }
-        config_token = token.and_then(|raw| crate::resolve_config_value(&raw)).filter(|v| !v.is_empty());
+        config_token = token
+            .and_then(|raw| crate::resolve_config_value(&raw))
+            .filter(|v| !v.is_empty());
     }
     let Some(url) = url else { return Ok(None) };
     let token = env_token.or(config_token).or_else(|| {
-        std::fs::read_to_string(token_file(dir)).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+        std::fs::read_to_string(token_file(dir))
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
     });
     match token {
         Some(token) => Ok(Some(BrokerConfig { url, token })),
@@ -189,7 +207,10 @@ fn cache_key(cfg: &BrokerConfig) -> String {
 }
 
 fn invalidate_snapshot(cfg: &BrokerConfig) {
-    SNAPSHOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&cache_key(cfg));
+    SNAPSHOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&cache_key(cfg));
 }
 
 async fn broker_request(cfg: &BrokerConfig, post: bool, path: &str) -> Result<Value> {
@@ -198,29 +219,42 @@ async fn broker_request(cfg: &BrokerConfig, post: bool, path: &str) -> Result<Va
     let mut last = None;
     // TS client: one retry on transport errors; HTTP statuses are final.
     for _ in 0..2 {
-        let request = if post { client.post(&url) } else { client.get(&url) }
-            .bearer_auth(&cfg.token)
-            .header("Accept", "application/json")
-            .header(CAPABILITIES_HEADER, CAPABILITY_CODEX_METER);
+        let request = if post {
+            client.post(&url)
+        } else {
+            client.get(&url)
+        }
+        .bearer_auth(&cfg.token)
+        .header("Accept", "application/json")
+        .header(CAPABILITIES_HEADER, CAPABILITY_CODEX_METER);
         match request.send().await {
             Ok(response) => {
                 let status = response.status();
                 let text = response.text().await.unwrap_or_default();
                 if !status.is_success() {
-                    bail!("Auth broker request failed: {status}: {}", text.chars().take(300).collect::<String>());
+                    bail!(
+                        "Auth broker request failed: {status}: {}",
+                        text.chars().take(300).collect::<String>()
+                    );
                 }
-                return serde_json::from_str(&text).map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"));
+                return serde_json::from_str(&text)
+                    .map_err(|e| anyhow!("Auth broker returned malformed JSON: {e}"));
             }
             Err(e) => last = Some(e),
         }
     }
-    Err(anyhow!("Auth broker request failed after 2 attempt(s): {}", last.map(|e| e.to_string()).unwrap_or_default()))
+    Err(anyhow!(
+        "Auth broker request failed after 2 attempt(s): {}",
+        last.map(|e| e.to_string()).unwrap_or_default()
+    ))
 }
 
 async fn broker_snapshot(cfg: &BrokerConfig) -> Result<Vec<SnapshotEntry>> {
     let key = cache_key(cfg);
     {
-        let cache = SNAPSHOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cache = SNAPSHOTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some((at, rows)) = cache.get(&key) {
             if at.elapsed() < SNAPSHOT_TTL {
                 return Ok(rows
@@ -235,18 +269,36 @@ async fn broker_snapshot(cfg: &BrokerConfig) -> Result<Vec<SnapshotEntry>> {
         }
     }
     let body = broker_request(cfg, false, "/v1/snapshot").await?;
-    let mut entries: Vec<SnapshotEntry> =
-        body.get("credentials").and_then(Value::as_array).into_iter().flatten().filter_map(parse_entry).collect();
+    let mut entries: Vec<SnapshotEntry> = body
+        .get("credentials")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(parse_entry)
+        .collect();
     entries.sort_by_key(|e| e.id);
-    SNAPSHOTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(
-        key,
-        (Instant::now(), entries.iter().map(|e| (e.id, e.provider.clone(), e.credential.clone())).collect()),
-    );
+    SNAPSHOTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            key,
+            (
+                Instant::now(),
+                entries
+                    .iter()
+                    .map(|e| (e.id, e.provider.clone(), e.credential.clone()))
+                    .collect(),
+            ),
+        );
     Ok(entries)
 }
 
 async fn broker_refresh(cfg: &BrokerConfig, id: i64, recovery: bool) -> Result<Value> {
-    let suffix = if recovery { "?reason=auth-recovery" } else { "" };
+    let suffix = if recovery {
+        "?reason=auth-recovery"
+    } else {
+        ""
+    };
     let body = broker_request(cfg, true, &format!("/v1/credential/{id}/refresh{suffix}")).await?;
     invalidate_snapshot(cfg);
     body.get("entry")
@@ -256,36 +308,56 @@ async fn broker_refresh(cfg: &BrokerConfig, id: i64, recovery: bool) -> Result<V
 }
 
 fn access_of(credential: &Value) -> Option<&str> {
-    credential.get("access").and_then(Value::as_str).filter(|a| !a.is_empty())
+    credential
+        .get("access")
+        .and_then(Value::as_str)
+        .filter(|a| !a.is_empty())
 }
 
 fn expires_of(credential: &Value) -> Option<i64> {
-    credential.get("expires").and_then(|e| e.as_i64().or_else(|| e.as_f64().map(|f| f as i64)))
+    credential
+        .get("expires")
+        .and_then(|e| e.as_i64().or_else(|| e.as_f64().map(|f| f as i64)))
 }
 
 fn is_fresh(credential: &Value, now: i64) -> bool {
     expires_of(credential).is_none_or(|e| e > now + REFRESH_SKEW_MS)
 }
 
-async fn broker_resolve(cfg: &BrokerConfig, provider: &str, force: Option<i64>) -> Result<Option<Credential>> {
+async fn broker_resolve(
+    cfg: &BrokerConfig,
+    provider: &str,
+    force: Option<i64>,
+) -> Result<Option<Credential>> {
     let now = now_ms() as i64;
-    for entry in broker_snapshot(cfg).await?.into_iter().filter(|e| e.provider == provider) {
+    for entry in broker_snapshot(cfg)
+        .await?
+        .into_iter()
+        .filter(|e| e.provider == provider)
+    {
         if let Some((c, _)) = broker_entry_credential(cfg, entry, now, force).await? {
             return Ok(Some(c));
         }
     }
     Ok(None)
 }
-async fn broker_resolve_row(cfg: &BrokerConfig, provider: &str, force: Option<i64>) -> Result<Option<(Credential, Value)>> {
+async fn broker_resolve_row(
+    cfg: &BrokerConfig,
+    provider: &str,
+    force: Option<i64>,
+) -> Result<Option<(Credential, Value)>> {
     let now = now_ms() as i64;
-    for entry in broker_snapshot(cfg).await?.into_iter().filter(|e| e.provider == provider) {
+    for entry in broker_snapshot(cfg)
+        .await?
+        .into_iter()
+        .filter(|e| e.provider == provider)
+    {
         if let Some(pair) = broker_entry_credential(cfg, entry, now, force).await? {
             return Ok(Some(pair));
         }
     }
     Ok(None)
 }
-
 
 /// One broker snapshot entry reduced to a usable `Credential`, or `None` when it cannot serve
 /// a request (a forced refresh that fails or re-mints the same token yields `None` when
@@ -302,7 +374,15 @@ async fn broker_entry_credential(
             .get("key")
             .and_then(Value::as_str)
             .filter(|k| !k.is_empty())
-            .map(|key| (Credential { key: key.to_string(), id: entry.id }, entry.credential.clone()))),
+            .map(|key| {
+                (
+                    Credential {
+                        key: key.to_string(),
+                        id: entry.id,
+                    },
+                    entry.credential.clone(),
+                )
+            })),
         Some("oauth") => {
             let forced = force == Some(entry.id);
             let mut credential = entry.credential.clone();
@@ -310,19 +390,33 @@ async fn broker_entry_credential(
                 match broker_refresh(cfg, entry.id, forced).await {
                     Ok(refreshed) => credential = refreshed,
                     Err(e) if !forced && expires_of(&credential).is_none_or(|x| x > now) => {
-                        tracing::warn!("auth broker refresh of credential {} failed: {e:#}", entry.id);
+                        tracing::warn!(
+                            "auth broker refresh of credential {} failed: {e:#}",
+                            entry.id
+                        );
                     }
                     Err(e) => {
-                        tracing::warn!("auth broker refresh of credential {} failed: {e:#}", entry.id);
+                        tracing::warn!(
+                            "auth broker refresh of credential {} failed: {e:#}",
+                            entry.id
+                        );
                         return Ok(None);
                     }
                 }
             }
-            let Some(access) = access_of(&credential) else { return Ok(None) };
+            let Some(access) = access_of(&credential) else {
+                return Ok(None);
+            };
             if expires_of(&credential).is_some_and(|x| x <= now) {
                 return Ok(None);
             }
-            Ok(Some((Credential { key: access.to_string(), id: entry.id }, credential)))
+            Ok(Some((
+                Credential {
+                    key: access.to_string(),
+                    id: entry.id,
+                },
+                credential,
+            )))
         }
         _ => Ok(None),
     }
@@ -333,15 +427,24 @@ async fn broker_entry_credential(
 async fn broker_pool(cfg: &BrokerConfig, provider: &str) -> Result<Option<CredentialPool>> {
     let now = now_ms() as i64;
     let mut usable: Vec<Credential> = Vec::new();
-    for entry in broker_snapshot(cfg).await?.into_iter().filter(|e| e.provider == provider) {
+    for entry in broker_snapshot(cfg)
+        .await?
+        .into_iter()
+        .filter(|e| e.provider == provider)
+    {
         if let Some((c, _)) = broker_entry_credential(cfg, entry, now, None).await? {
             if usable.iter().all(|u| u.id != c.id) {
                 usable.push(c);
             }
         }
     }
-    let Some(first) = usable.first().cloned() else { return Ok(None) };
-    Ok(Some(CredentialPool { alternates: usable.into_iter().skip(1).collect(), current: first }))
+    let Some(first) = usable.first().cloned() else {
+        return Ok(None);
+    };
+    Ok(Some(CredentialPool {
+        alternates: usable.into_iter().skip(1).collect(),
+        current: first,
+    }))
 }
 
 // ------------------------------------------------------------ local store
@@ -379,7 +482,13 @@ fn read_rows(db: &Path, provider: &str) -> Result<Vec<Row>> {
         "SELECT credential_type, data, id FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NULL ORDER BY id",
     )?;
     let rows = stmt
-        .query_map([provider], |r| Ok(Row { kind: r.get(0)?, data: r.get(1)?, id: r.get(2)? }))?
+        .query_map([provider], |r| {
+            Ok(Row {
+                kind: r.get(0)?,
+                data: r.get(1)?,
+                id: r.get(2)?,
+            })
+        })?
         .filter_map(std::result::Result::ok)
         .collect();
     Ok(rows)
@@ -397,10 +506,13 @@ struct Refreshed {
 /// Tokens this process minted, keyed by (credential store path, row id): row ids are only unique
 /// within one `agent.db`.
 type MintKey = (String, i64);
-static MINTS: LazyLock<Mutex<HashMap<MintKey, (String, Instant)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static MINTS: LazyLock<Mutex<HashMap<MintKey, (String, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn remember_mint(db: &str, id: i64, access: &str) {
-    let mut mints = MINTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut mints = MINTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     mints.retain(|_, (_, at)| at.elapsed() < REMINT_COOLDOWN);
     mints.insert((db.to_string(), id), (access.to_string(), Instant::now()));
 }
@@ -428,31 +540,56 @@ async fn refresh_kimi(hosts: &Hosts, refresh_token: &str) -> Result<Refreshed> {
     const CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
     let base = hosts.kimi.as_deref().unwrap_or("https://auth.kimi.com");
     let url = format!("{base}/api/oauth/token");
-    let body = form_encode(&[("grant_type", "refresh_token"), ("client_id", CLIENT_ID), ("refresh_token", refresh_token)]);
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
-    let mut request = client.post(&url).header("Content-Type", "application/x-www-form-urlencoded");
+    let body = form_encode(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", CLIENT_ID),
+        ("refresh_token", refresh_token),
+    ]);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let mut request = client
+        .post(&url)
+        .header("Content-Type", "application/x-www-form-urlencoded");
     for (k, v) in pa_ai::kimi_common_headers() {
         request = request.header(k, v);
     }
-    let response = request.body(body).send().await.map_err(|e| anyhow!("kimi-code request to {url} failed: {e}"))?;
+    let response = request
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("kimi-code request to {url} failed: {e}"))?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        bail!("kimi-code token refresh failed: {} {}", status.as_u16(), text.chars().take(500).collect::<String>());
+        bail!(
+            "kimi-code token refresh failed: {} {}",
+            status.as_u16(),
+            text.chars().take(500).collect::<String>()
+        );
     }
     let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     let access = body
         .get("access_token")
         .and_then(Value::as_str)
         .filter(|a| !a.is_empty())
-        .ok_or_else(|| anyhow!("kimi-code token response missing access token: {}", text.chars().take(500).collect::<String>()))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "kimi-code token response missing access token: {}",
+                text.chars().take(500).collect::<String>()
+            )
+        })?;
     let expires_in = body
         .get("expires_in")
         .and_then(Value::as_f64)
         .ok_or_else(|| anyhow!("kimi-code token response missing expires_in"))?;
     Ok(Refreshed {
         access: access.to_string(),
-        refresh: body.get("refresh_token").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_string),
+        refresh: body
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty())
+            .map(str::to_string),
         expires: now_ms() as i64 + (expires_in * 1000.0) as i64 - 300_000,
         account_id: None,
         enterprise_url: None,
@@ -476,11 +613,17 @@ async fn refresh_google(provider: &str, data: &Value, refresh_token: &str) -> Re
             "R09DU1BYLUs1OEZXUjQ4NkxkTEoxbUxCOHNYQzR6NnFEQWY=",
         ),
     };
-    if data.get("projectId").and_then(Value::as_str).is_none_or(str::is_empty) {
+    if data
+        .get("projectId")
+        .and_then(Value::as_str)
+        .is_none_or(str::is_empty)
+    {
         bail!("{provider} credentials are missing projectId; sign in again");
     }
     let decode = |b: &str| -> Result<String> {
-        Ok(String::from_utf8(base64::engine::general_purpose::STANDARD.decode(b)?)?)
+        Ok(String::from_utf8(
+            base64::engine::general_purpose::STANDARD.decode(b)?,
+        )?)
     };
     let (client_id, client_secret) = (decode(client_id)?, decode(client_secret)?);
     let body = form_encode(&[
@@ -489,7 +632,9 @@ async fn refresh_google(provider: &str, data: &Value, refresh_token: &str) -> Re
         ("client_secret", &client_secret),
         ("refresh_token", refresh_token),
     ]);
-    let client = reqwest::Client::builder().timeout(Duration::from_secs(30)).build()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
     let response = client
         .post(TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
@@ -501,7 +646,11 @@ async fn refresh_google(provider: &str, data: &Value, refresh_token: &str) -> Re
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        bail!("{provider} token refresh failed: {} {}", status.as_u16(), text.chars().take(500).collect::<String>());
+        bail!(
+            "{provider} token refresh failed: {} {}",
+            status.as_u16(),
+            text.chars().take(500).collect::<String>()
+        );
     }
     let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     let access = body
@@ -515,7 +664,11 @@ async fn refresh_google(provider: &str, data: &Value, refresh_token: &str) -> Re
         .ok_or_else(|| anyhow!("{provider} token response missing expires_in"))?;
     Ok(Refreshed {
         access: access.to_string(),
-        refresh: body.get("refresh_token").and_then(Value::as_str).filter(|r| !r.is_empty()).map(str::to_string),
+        refresh: body
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .filter(|r| !r.is_empty())
+            .map(str::to_string),
         expires: now_ms() as i64 + (expires_in * 1000.0) as i64 - 300_000,
         account_id: None,
         enterprise_url: None,
@@ -525,11 +678,17 @@ async fn refresh_google(provider: &str, data: &Value, refresh_token: &str) -> Re
 /// The provider's refresh flow, or `None` when omp-rs has none for it (the stored token is then
 /// used until it expires).
 async fn refresh_flow(provider: &str, data: &Value, hosts: &Hosts) -> Option<Result<Refreshed>> {
-    let refresh = data.get("refresh").and_then(Value::as_str).unwrap_or_default().to_string();
+    let refresh = data
+        .get("refresh")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let http = pa_ai::oauth::ReqwestProviderHttp::new();
     match provider {
         "kimi-code" => Some(refresh_kimi(hosts, &refresh).await),
-        "google-gemini-cli" | "google-antigravity" => Some(refresh_google(provider, data, &refresh).await),
+        "google-gemini-cli" | "google-antigravity" => {
+            Some(refresh_google(provider, data, &refresh).await)
+        }
         "anthropic" => Some(
             pa_ai::oauth::refresh_anthropic_token(&http, &refresh)
                 .await
@@ -543,16 +702,19 @@ async fn refresh_flow(provider: &str, data: &Value, hosts: &Hosts) -> Option<Res
                 .map_err(|e| anyhow!(e)),
         ),
         "openai-codex" => Some(
-            pa_ai::oauth::refresh_openai_codex_token(&pa_ai::oauth::ReqwestCodexHttp::new(), &refresh)
-                .await
-                .map(|c| Refreshed {
-                    access: c.access,
-                    refresh: Some(c.refresh),
-                    expires: c.expires,
-                    account_id: Some(c.account_id),
-                    enterprise_url: None,
-                })
-                .map_err(|e| anyhow!(e)),
+            pa_ai::oauth::refresh_openai_codex_token(
+                &pa_ai::oauth::ReqwestCodexHttp::new(),
+                &refresh,
+            )
+            .await
+            .map(|c| Refreshed {
+                access: c.access,
+                refresh: Some(c.refresh),
+                expires: c.expires,
+                account_id: Some(c.account_id),
+                enterprise_url: None,
+            })
+            .map_err(|e| anyhow!(e)),
         ),
         "xai-oauth" => Some(
             pa_ai::oauth::refresh_xai_token(&http, &refresh)
@@ -567,7 +729,10 @@ async fn refresh_flow(provider: &str, data: &Value, hosts: &Hosts) -> Option<Res
                 .map_err(|e| anyhow!(e)),
         ),
         "github-copilot" => {
-            let enterprise = data.get("enterpriseUrl").and_then(Value::as_str).map(str::to_string);
+            let enterprise = data
+                .get("enterpriseUrl")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             Some(
                 pa_ai::oauth::refresh_github_copilot_token(&http, &refresh, enterprise.as_deref())
                     .await
@@ -612,18 +777,28 @@ fn try_lease(conn: &rusqlite::Connection, id: i64, owner: &str) -> Result<bool> 
         rusqlite::params![id, owner, now + LEASE_TTL_MS, now],
     )?;
     let holder: Option<String> = conn
-        .query_row("SELECT owner FROM auth_credential_refresh_leases WHERE credential_id = ?1", [id], |r| r.get(0))
+        .query_row(
+            "SELECT owner FROM auth_credential_refresh_leases WHERE credential_id = ?1",
+            [id],
+            |r| r.get(0),
+        )
         .ok();
     Ok(holder.as_deref() == Some(owner))
 }
 
 fn row_state(conn: &rusqlite::Connection, id: i64) -> Option<(String, Option<String>)> {
-    conn.query_row("SELECT data, disabled_cause FROM auth_credentials WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
-        .ok()
+    conn.query_row(
+        "SELECT data, disabled_cause FROM auth_credentials WHERE id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .ok()
 }
 
 fn owner_tag() -> String {
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     format!("omp-rs-{}-{nanos}", std::process::id())
 }
 
@@ -650,12 +825,18 @@ async fn refresh_local_row(
         if let Some((data, None)) = row_state(&conn, row.id) {
             let v: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
             if data != row.data && is_fresh(&v, now_ms() as i64) {
-                return Ok(access_of(&v).map(|a| Credential { key: a.to_string(), id: row.id }));
+                return Ok(access_of(&v).map(|a| Credential {
+                    key: a.to_string(),
+                    id: row.id,
+                }));
             }
         }
     }
     if !leased {
-        bail!("timed out waiting for the OAuth refresh lease of credential {}", row.id);
+        bail!(
+            "timed out waiting for the OAuth refresh lease of credential {}",
+            row.id
+        );
     }
     let result = refresh_leased(&conn, db, provider, row, forced, hosts, &owner).await;
     let _ = conn.execute(
@@ -702,10 +883,12 @@ pub async fn force_refresh_row(db: &Path, id: i64, reuse_recent: bool) -> Result
         }
     }
     let hosts = Hosts::from_env();
-    Ok(match refresh_local_row(db, &provider, &row, true, &hosts).await? {
-        Some(_) => ForceRefresh::Refreshed,
-        None => ForceRefresh::Unsupported,
-    })
+    Ok(
+        match refresh_local_row(db, &provider, &row, true, &hosts).await? {
+            Some(_) => ForceRefresh::Refreshed,
+            None => ForceRefresh::Unsupported,
+        },
+    )
 }
 
 async fn refresh_leased(
@@ -724,16 +907,25 @@ async fn refresh_leased(
     let now = now_ms() as i64;
     // Re-check under the lease: a peer may have rotated the row since we read it.
     if is_fresh(&current, now) && (!forced || current_data != row.data) {
-        return Ok(access_of(&current).map(|a| Credential { key: a.to_string(), id: row.id }));
+        return Ok(access_of(&current).map(|a| Credential {
+            key: a.to_string(),
+            id: row.id,
+        }));
     }
-    if current.get("refresh").and_then(Value::as_str).is_none_or(|r| r.is_empty() || r == REMOTE_REFRESH_SENTINEL) {
+    if current
+        .get("refresh")
+        .and_then(Value::as_str)
+        .is_none_or(|r| r.is_empty() || r == REMOTE_REFRESH_SENTINEL)
+    {
         bail!("credential {} has no refresh token", row.id);
     }
     let Some(refreshed) = refresh_flow(provider, &current, hosts).await else {
         return Ok(None);
     };
     let refreshed = refreshed?;
-    let Value::Object(map) = current else { bail!("credential {} is not an object", row.id) };
+    let Value::Object(map) = current else {
+        bail!("credential {} is not an object", row.id)
+    };
     let merged = serde_json::to_string(&Value::Object(merge_refreshed(map, &refreshed)))?;
     let changed = conn.execute(
         "UPDATE auth_credentials SET data = ?1, updated_at = CAST(strftime('%s','now') AS INTEGER)
@@ -746,13 +938,19 @@ async fn refresh_leased(
         if let Some((data, None)) = row_state(conn, row.id) {
             let v: Value = serde_json::from_str(&data).unwrap_or(Value::Null);
             if is_fresh(&v, now_ms() as i64) {
-                return Ok(access_of(&v).map(|a| Credential { key: a.to_string(), id: row.id }));
+                return Ok(access_of(&v).map(|a| Credential {
+                    key: a.to_string(),
+                    id: row.id,
+                }));
             }
         }
         bail!("credential {} changed during refresh", row.id);
     }
     remember_mint(&db_key(db), row.id, &refreshed.access);
-    Ok(Some(Credential { key: refreshed.access, id: row.id }))
+    Ok(Some(Credential {
+        key: refreshed.access,
+        id: row.id,
+    }))
 }
 
 /// The first usable credential of `rows`, refreshing an expired OAuth row. Iterates rows in
@@ -794,7 +992,6 @@ async fn local_resolve_row(
     Ok(None)
 }
 
-
 /// One credential row reduced to a usable `Credential`, or `None` when the row cannot serve a
 /// request. `force` targets one row (auth recovery): it alone is consulted, and a re-minted
 /// bearer is not re-used (`reuseRecentMint`).
@@ -812,24 +1009,53 @@ async fn local_row_credential(
             .get("key")
             .and_then(Value::as_str)
             .filter(|k| !k.is_empty())
-            .map(|k| (Credential { key: k.to_string(), id: row.id }, data.clone())),
+            .map(|k| {
+                (
+                    Credential {
+                        key: k.to_string(),
+                        id: row.id,
+                    },
+                    data.clone(),
+                )
+            }),
         "oauth" => {
             let access = access_of(&data)?;
             let forced = force == Some(row.id);
             if forced && recent_mint(&db_key(db), row.id, access) {
-                return Some((Credential { key: access.to_string(), id: row.id }, data));
+                return Some((
+                    Credential {
+                        key: access.to_string(),
+                        id: row.id,
+                    },
+                    data,
+                ));
             }
             if !forced && is_fresh(&data, now) {
-                return Some((Credential { key: access.to_string(), id: row.id }, data));
+                return Some((
+                    Credential {
+                        key: access.to_string(),
+                        id: row.id,
+                    },
+                    data,
+                ));
             }
             match refresh_local_row(db, provider, row, forced, hosts).await {
                 Ok(Some(c)) => Some((c, data)),
                 Ok(None) | Err(_) if forced => None,
                 Ok(None) => None,
                 Err(e) => {
-                    tracing::warn!("OAuth refresh of {provider} credential {} failed: {e:#}", row.id);
+                    tracing::warn!(
+                        "OAuth refresh of {provider} credential {} failed: {e:#}",
+                        row.id
+                    );
                     if expires_of(&data).is_none_or(|x| x > now) {
-                        Some((Credential { key: access.to_string(), id: row.id }, data))
+                        Some((
+                            Credential {
+                                key: access.to_string(),
+                                id: row.id,
+                            },
+                            data,
+                        ))
                     } else {
                         None
                     }
@@ -843,7 +1069,12 @@ async fn local_row_credential(
 /// Every usable credential of `provider`: the first pick ([`local_resolve`]'s ordering) plus
 /// every other row that yields a bearer. Stale OAuth rows are refreshed on the way (best
 /// effort); rows that fail to resolve are left out rather than failing the pool.
-async fn local_pool(db: &Path, provider: &str, rows: Vec<Row>, hosts: &Hosts) -> Result<Option<CredentialPool>> {
+async fn local_pool(
+    db: &Path,
+    provider: &str,
+    rows: Vec<Row>,
+    hosts: &Hosts,
+) -> Result<Option<CredentialPool>> {
     let now = now_ms() as i64;
     let mut usable: Vec<Credential> = Vec::new();
     for row in &rows {
@@ -853,8 +1084,13 @@ async fn local_pool(db: &Path, provider: &str, rows: Vec<Row>, hosts: &Hosts) ->
             }
         }
     }
-    let Some(first) = usable.first().cloned() else { return Ok(None) };
-    Ok(Some(CredentialPool { alternates: usable.into_iter().skip(1).collect(), current: first }))
+    let Some(first) = usable.first().cloned() else {
+        return Ok(None);
+    };
+    Ok(Some(CredentialPool {
+        alternates: usable.into_iter().skip(1).collect(),
+        current: first,
+    }))
 }
 
 // ------------------------------------------------------------ entry points
@@ -905,7 +1141,6 @@ async fn resolve_with_row(
     }
 }
 
-
 /// One specific `auth_credentials` row / broker snapshot entry by id: what a pinned
 /// (`credential_id`) target re-resolves through, so a rotated account does not drift back to
 /// the store's first row on the next request. OAuth rows refresh on expiry like [`resolve_with`].
@@ -935,7 +1170,9 @@ async fn resolve_by_id_with(
             let row = read_row_by_id(&db, provider, id)?;
             let Some(row) = row else { return Ok(None) };
             let now = now_ms() as i64;
-            Ok(local_row_credential(&db, provider, &row, now, None, hosts).await.map(|(c, _)| c))
+            Ok(local_row_credential(&db, provider, &row, now, None, hosts)
+                .await
+                .map(|(c, _)| c))
         }
     }
 }
@@ -950,7 +1187,13 @@ fn read_row_by_id(db: &Path, provider: &str, id: i64) -> Result<Option<Row>> {
         "SELECT credential_type, data FROM auth_credentials WHERE id = ?1 AND provider = ?2 AND disabled_cause IS NULL",
     )?;
     let row = stmt
-        .query_row(rusqlite::params![id, provider], |r| Ok(Row { id, kind: r.get(0)?, data: r.get(1)? }))
+        .query_row(rusqlite::params![id, provider], |r| {
+            Ok(Row {
+                id,
+                kind: r.get(0)?,
+                data: r.get(1)?,
+            })
+        })
         .optional()?;
     Ok(row)
 }
@@ -1006,7 +1249,9 @@ pub fn credential_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<Crede
 #[cfg(test)]
 pub(crate) fn local_credential(db: &Path, provider: &str) -> Option<Credential> {
     let hosts = Hosts::default();
-    block_on(|| local_resolve(db, provider, None, &hosts)).ok().flatten()
+    block_on(|| local_resolve(db, provider, None, &hosts))
+        .ok()
+        .flatten()
 }
 
 /// [`credential`] plus every other usable credential of the provider — the account-rotation
@@ -1027,14 +1272,19 @@ pub fn credential_pool(dir: &AgentDir, provider: &str) -> Option<CredentialPool>
             let hosts = Hosts::from_env();
             let db = dir.0.join("agent.db");
             let rows = read_rows(&db, provider).unwrap_or_default();
-            block_on(|| local_pool(&db, provider, rows, &hosts)).ok().flatten()
+            block_on(|| local_pool(&db, provider, rows, &hosts))
+                .ok()
+                .flatten()
         }
     }
 }
 
 /// [`credential_pool`] off the async executor.
 pub async fn credential_pool_async(dir: AgentDir, provider: String) -> Option<CredentialPool> {
-    tokio::task::spawn_blocking(move || credential_pool(&dir, &provider)).await.ok().flatten()
+    tokio::task::spawn_blocking(move || credential_pool(&dir, &provider))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// The TS `getOAuthApiKey` structured credential format for `google-antigravity`: the raw
@@ -1066,7 +1316,11 @@ pub fn structured_key_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<S
         .or_else(|| data.get("project_id"))
         .and_then(Value::as_str)?
         .to_string();
-    let pick = |key: &str| data.get(key).and_then(Value::as_str).map(std::string::ToString::to_string);
+    let pick = |key: &str| {
+        data.get(key)
+            .and_then(Value::as_str)
+            .map(std::string::ToString::to_string)
+    };
     Some(
         serde_json::to_string(&serde_json::json!({
             "apiEndpoint": pick("apiEndpoint"),
@@ -1091,7 +1345,10 @@ pub fn recover(dir: &AgentDir, provider: &str, failed: &Credential) -> Option<Cr
 
 /// [`credential`] off the async executor.
 pub async fn credential_async(dir: AgentDir, provider: String) -> Option<Credential> {
-    tokio::task::spawn_blocking(move || credential(&dir, &provider)).await.ok().flatten()
+    tokio::task::spawn_blocking(move || credential(&dir, &provider))
+        .await
+        .ok()
+        .flatten()
 }
 
 /// The resolved credential plus the parsed `auth_credentials.data` JSON of the row it came from
@@ -1116,9 +1373,12 @@ pub async fn credential_row_async(dir: AgentDir, provider: String) -> Option<(Cr
     .flatten()
 }
 
-
 /// [`credential_by_id`] off the async executor.
-pub async fn credential_by_id_async(dir: AgentDir, provider: String, id: i64) -> Option<Credential> {
+pub async fn credential_by_id_async(
+    dir: AgentDir,
+    provider: String,
+    id: i64,
+) -> Option<Credential> {
     tokio::task::spawn_blocking(move || credential_by_id(&dir, &provider, id))
         .await
         .ok()
@@ -1126,8 +1386,15 @@ pub async fn credential_by_id_async(dir: AgentDir, provider: String, id: i64) ->
 }
 
 /// [`recover`] off the async executor.
-pub async fn recover_async(dir: AgentDir, provider: String, failed: Credential) -> Option<Credential> {
-    tokio::task::spawn_blocking(move || recover(&dir, &provider, &failed)).await.ok().flatten()
+pub async fn recover_async(
+    dir: AgentDir,
+    provider: String,
+    failed: Credential,
+) -> Option<Credential> {
+    tokio::task::spawn_blocking(move || recover(&dir, &provider, &failed))
+        .await
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]

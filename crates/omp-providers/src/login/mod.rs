@@ -20,14 +20,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use pa_ai::oauth::{
-    CodexHttp, CodexLoginUi, OAuthLoginUi, OAuthPrompt, ProviderHttp, ProviderHttpMethod, ProviderHttpRequest,
-    ReqwestCodexHttp, ReqwestProviderHttp,
+    CodexHttp, CodexLoginUi, OAuthLoginUi, OAuthPrompt, ProviderHttp, ProviderHttpMethod,
+    ProviderHttpRequest, ReqwestCodexHttp, ReqwestProviderHttp,
 };
 use serde_json::{Map, Value};
 
 pub use store::{
-    broker_client_usage_summary, broker_usage_history, BrokerClientUsageClientSummary, BrokerClientProviderUsage,
-    BrokerUsageHistoryEntry, Credential, LocalStore, StoredRow,
+    broker_client_usage_summary, broker_usage_history, BrokerClientProviderUsage,
+    BrokerClientUsageClientSummary, BrokerUsageHistoryEntry, Credential, LocalStore, StoredRow,
 };
 
 use crate::auth::{resolve_broker_config, BrokerConfig, Hosts};
@@ -108,7 +108,12 @@ impl Target {
         match self {
             Self::Local(db) => {
                 let (db, provider) = (db.clone(), provider.to_string());
-                tokio::task::spawn_blocking(move || LocalStore::open(&db)?.upsert(&provider, &credential).map(|_| ())).await?
+                tokio::task::spawn_blocking(move || {
+                    LocalStore::open(&db)?
+                        .upsert(&provider, &credential)
+                        .map(|_| ())
+                })
+                .await?
             }
             Self::Broker(cfg) => store::broker_upload(cfg, provider, &credential).await,
         }
@@ -126,9 +131,14 @@ impl Target {
         match self {
             Self::Local(db) => {
                 let db = db.clone();
-                tokio::task::spawn_blocking(move || LocalStore::open(&db)?.disable(id, "deleted by user")).await?
+                tokio::task::spawn_blocking(move || {
+                    LocalStore::open(&db)?.disable(id, "deleted by user")
+                })
+                .await?
             }
-            Self::Broker(cfg) => store::broker_disable(cfg, id, "deleted by user").await.map(|()| true),
+            Self::Broker(cfg) => store::broker_disable(cfg, id, "deleted by user")
+                .await
+                .map(|()| true),
         }
     }
 
@@ -140,7 +150,10 @@ impl Target {
         match self {
             Self::Local(db) => {
                 let (db, provider, cause) = (db.clone(), provider.to_string(), cause.to_string());
-                tokio::task::spawn_blocking(move || LocalStore::open(&db)?.disable_provider(&provider, &cause)).await?
+                tokio::task::spawn_blocking(move || {
+                    LocalStore::open(&db)?.disable_provider(&provider, &cause)
+                })
+                .await?
             }
             Self::Broker(cfg) => {
                 for row in store::broker_list(cfg, Some(provider)).await? {
@@ -156,14 +169,27 @@ impl Target {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Identity {
     ApiKey,
-    OAuth { email: Option<String>, account_id: Option<String>, org_id: Option<String>, org_name: Option<String> },
+    OAuth {
+        email: Option<String>,
+        account_id: Option<String>,
+        org_id: Option<String>,
+        org_name: Option<String>,
+    },
 }
 
 impl Identity {
     /// TS `formatLoginIdentity`: `email (org)`, `email`, `org`; `None` for api-key logins.
     #[must_use]
     pub fn describe(&self) -> Option<String> {
-        let Self::OAuth { email, account_id, org_id, org_name } = self else { return None };
+        let Self::OAuth {
+            email,
+            account_id,
+            org_id,
+            org_name,
+        } = self
+        else {
+            return None;
+        };
         let base = email.clone().or_else(|| account_id.clone());
         let org = org_name.clone().or_else(|| org_id.clone());
         match (base, org) {
@@ -208,7 +234,10 @@ fn now_ms_i64() -> i64 {
 /// Whether `id` can be logged into by this build.
 #[must_use]
 pub fn is_supported(id: &str) -> bool {
-    matches!(id, "anthropic" | "openai-codex" | "github-copilot" | "xai-oauth" | "kimi-code") || api_key::provider(id).is_some()
+    matches!(
+        id,
+        "anthropic" | "openai-codex" | "github-copilot" | "xai-oauth" | "kimi-code"
+    ) || api_key::provider(id).is_some()
 }
 
 struct CodexUi(Arc<dyn OAuthLoginUi>);
@@ -226,7 +255,14 @@ impl CodexLoginUi for CodexUi {
     fn on_prompt(&self, message: &str) -> Pin<Box<dyn Future<Output = Option<String>> + Send>> {
         let ui = self.0.clone();
         let message = message.to_string();
-        Box::pin(async move { ui.on_prompt(&OAuthPrompt { message, placeholder: None, allow_empty: false }).await })
+        Box::pin(async move {
+            ui.on_prompt(&OAuthPrompt {
+                message,
+                placeholder: None,
+                allow_empty: false,
+            })
+            .await
+        })
     }
     fn is_cancelled(&self) -> bool {
         self.0.is_cancelled()
@@ -249,7 +285,12 @@ fn base_oauth(access: &str, refresh: &str, expires: i64) -> Map<String, Value> {
 
 fn identity_of(data: &Map<String, Value>) -> Identity {
     let get = |k: &str| data.get(k).and_then(Value::as_str).map(str::to_string);
-    Identity::OAuth { email: get("email"), account_id: get("accountId"), org_id: get("orgId"), org_name: get("orgName") }
+    Identity::OAuth {
+        email: get("email"),
+        account_id: get("accountId"),
+        org_id: get("orgId"),
+        org_name: get("orgName"),
+    }
 }
 
 /// xAI `userinfo` enrichment (`email`/`sub`), best effort like TS `applyUserinfo`.
@@ -261,11 +302,15 @@ async fn xai_userinfo(http: &dyn ProviderHttp, access: &str) -> (Option<String>,
         body: None,
         follow_redirects: true,
     };
-    let Ok(response) = http.request(request, 30_000).await else { return (None, None) };
+    let Ok(response) = http.request(request, 30_000).await else {
+        return (None, None);
+    };
     if !response.ok() {
         return (None, None);
     }
-    let Ok(body) = serde_json::from_str::<Value>(&response.body) else { return (None, None) };
+    let Ok(body) = serde_json::from_str::<Value>(&response.body) else {
+        return (None, None);
+    };
     let scalar = |k: &str| match body.get(k) {
         Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
         Some(Value::Number(n)) => Some(n.to_string()),
@@ -299,7 +344,12 @@ pub async fn login(
             data
         }
         "openai-codex" => {
-            let c = pa_ai::oauth::login_openai_codex(services.codex_http.as_ref(), &CodexUi(ui.clone()), CODEX_ORIGINATOR).await?;
+            let c = pa_ai::oauth::login_openai_codex(
+                services.codex_http.as_ref(),
+                &CodexUi(ui.clone()),
+                CODEX_ORIGINATOR,
+            )
+            .await?;
             let payload = store::jwt_payload(&c.access).unwrap_or_default();
             let email = payload
                 .get("https://api.openai.com/profile")
@@ -319,9 +369,14 @@ pub async fn login(
             data
         }
         "kimi-code" => {
-            let base = services.hosts.kimi.clone().unwrap_or_else(|| pa_ai::oauth::KIMI_DEFAULT_HOST.to_string());
+            let base = services
+                .hosts
+                .kimi
+                .clone()
+                .unwrap_or_else(|| pa_ai::oauth::KIMI_DEFAULT_HOST.to_string());
             let headers = pa_ai::kimi_common_headers();
-            let c = pa_ai::oauth::login_kimi(services.http.as_ref(), ui.as_ref(), &base, &headers).await?;
+            let c = pa_ai::oauth::login_kimi(services.http.as_ref(), ui.as_ref(), &base, &headers)
+                .await?;
             let mut data = base_oauth(&c.access, &c.refresh, c.expires);
             put(&mut data, "accountId", c.account_id.as_deref());
             data
@@ -329,7 +384,8 @@ pub async fn login(
         "xai-oauth" => {
             let c = pa_ai::oauth::login_xai(services.http.as_ref(), ui.as_ref()).await?;
             let mut data = base_oauth(&c.access, &c.refresh, c.expires);
-            let claim = store::jwt_payload(&c.access).and_then(|p| p.get("sub").and_then(Value::as_str).map(str::to_string));
+            let claim = store::jwt_payload(&c.access)
+                .and_then(|p| p.get("sub").and_then(Value::as_str).map(str::to_string));
             put(&mut data, "accountId", claim.as_deref());
             let (email, account) = xai_userinfo(services.http.as_ref(), &c.access).await;
             put(&mut data, "email", email.as_deref());
@@ -341,7 +397,10 @@ pub async fn login(
             let mut data = Map::new();
             data.insert("refresh".into(), Value::String(c.refresh.clone()));
             data.insert("access".into(), Value::String(c.refresh));
-            data.insert("expires".into(), Value::from(now_ms_i64().saturating_add(COPILOT_VALIDITY_MS)));
+            data.insert(
+                "expires".into(),
+                Value::from(now_ms_i64().saturating_add(COPILOT_VALIDITY_MS)),
+            );
             put(&mut data, "enterpriseUrl", c.enterprise_url.as_deref());
             data
         }
@@ -353,18 +412,30 @@ pub async fn login(
                     format!("Unknown OAuth provider: {other}")
                 });
             };
-            let key = api_key::login(rule, ui.as_ref(), services.http.as_ref(), services.env.as_ref()).await?;
+            let key = api_key::login(
+                rule,
+                ui.as_ref(),
+                services.http.as_ref(),
+                services.env.as_ref(),
+            )
+            .await?;
             if key.is_empty() {
                 return Ok(None);
             }
-            target.persist(&store_provider, Credential::ApiKey(key)).await.map_err(|e| format!("{e:#}"))?;
+            target
+                .persist(&store_provider, Credential::ApiKey(key))
+                .await
+                .map_err(|e| format!("{e:#}"))?;
             return Ok(Some(Identity::ApiKey));
         }
     };
     let mut data = credential;
     data.insert("authorizedAt".into(), Value::from(now_ms_i64()));
     let identity = identity_of(&data);
-    target.persist(&store_provider, Credential::OAuth(data)).await.map_err(|e| format!("{e:#}"))?;
+    target
+        .persist(&store_provider, Credential::OAuth(data))
+        .await
+        .map_err(|e| format!("{e:#}"))?;
     Ok(Some(identity))
 }
 

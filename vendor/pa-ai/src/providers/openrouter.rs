@@ -17,7 +17,12 @@ impl Provider for OpenRouterProvider {
         API_OPENROUTER
     }
 
-    fn stream(&self, model: &Model, context: &Context, options: Option<&StreamOptions>) -> AssistantMessageEventStream {
+    fn stream(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<&StreamOptions>,
+    ) -> AssistantMessageEventStream {
         if crate::transport::TransportEnv::from_process().openrouter_responses {
             let options = options.map(|base| OpenAIResponsesOptions::from_base(base.clone()));
             stream_openai_responses(model, context, options.as_ref())
@@ -27,7 +32,12 @@ impl Provider for OpenRouterProvider {
         }
     }
 
-    fn stream_simple(&self, model: &Model, context: &Context, options: Option<&SimpleStreamOptions>) -> AssistantMessageEventStream {
+    fn stream_simple(
+        &self,
+        model: &Model,
+        context: &Context,
+        options: Option<&SimpleStreamOptions>,
+    ) -> AssistantMessageEventStream {
         crate::transport::stream_simple_for_api(model, context, options)
     }
 }

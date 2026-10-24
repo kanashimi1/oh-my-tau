@@ -18,11 +18,17 @@ const DEFAULT_PORT: u16 = 7466;
 /// TS `parseInt(value, 10)`: leading digits are the port; trailing junk is
 /// ignored (mirrors `subcmd/stats.rs::parse_port`).
 fn parse_port(value: &str) -> Result<u16> {
-    let digits: String = value.trim_start().chars().take_while(char::is_ascii_digit).collect();
+    let digits: String = value
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     if digits.is_empty() {
         bail!("Invalid port: {value}");
     }
-    digits.parse::<u16>().map_err(|_| anyhow::anyhow!("Invalid port: {value}"))
+    digits
+        .parse::<u16>()
+        .map_err(|_| anyhow::anyhow!("Invalid port: {value}"))
 }
 
 /// Parse `omp-rs serve-collab` flags (`-p/--port`, `--host`, `--port=`,
@@ -37,7 +43,10 @@ pub fn parse_args(args: &[String]) -> Result<(u16, String)> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-p" | "--port" => port = parse_port(it.next().context("--port needs a value")?)?,
-            "--host" => it.next().context("--host needs a value")?.clone_into(&mut host),
+            "--host" => it
+                .next()
+                .context("--host needs a value")?
+                .clone_into(&mut host),
             other if other.starts_with("--port=") => port = parse_port(&other["--port=".len()..])?,
             other if other.starts_with("--host=") => host = other["--host=".len()..].to_string(),
             other if !other.starts_with('-') || other == "-" => {}

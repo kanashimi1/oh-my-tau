@@ -11,15 +11,13 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::config::McpServerConfig;
 use crate::errors::{Failure, JsonRpcError, McpError, McpTransportError, TransportKind};
-use crate::transport::{
-    McpTransport, PendingRequests, TransportFut,
-};
+use crate::transport::{McpTransport, PendingRequests, TransportFut};
 
 /// One SSE event.
 #[derive(Debug, Default)]
@@ -29,9 +27,7 @@ struct SseEvent {
 
 /// Read `data:` lines from an SSE byte stream into JSON values, following
 /// the standard `readSseEvents` shape (blank line terminates an event).
-async fn read_sse_events(
-    body: reqwest::Response,
-) -> Vec<Result<Value, String>> {
+async fn read_sse_events(body: reqwest::Response) -> Vec<Result<Value, String>> {
     let mut events = Vec::new();
     let mut stream = body.bytes_stream();
     let mut buf: Vec<u8> = Vec::new();
@@ -43,7 +39,9 @@ async fn read_sse_events(
             let line = String::from_utf8_lossy(&line_bytes);
             let line = line.trim_end_matches(['\r', '\n']);
             if let Some(data) = line.strip_prefix("data:") {
-                let event = SseEvent { data: data.trim_start().to_string() };
+                let event = SseEvent {
+                    data: data.trim_start().to_string(),
+                };
                 if let Ok(value) = serde_json::from_str::<Value>(&event.data) {
                     events.push(Ok(value));
                 } else {
@@ -96,16 +94,28 @@ impl HttpTransport {
 
     fn headers(&self, state: &HttpState) -> HeaderMap {
         let mut map = HeaderMap::new();
-        map.insert(ACCEPT, HeaderValue::from_static("application/json, text/event-stream"));
+        map.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/event-stream"),
+        );
         map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         if let Some(session) = &state.session_id {
-            map.insert("mcp-session-id", HeaderValue::from_str(session).unwrap_or_else(|_| HeaderValue::from_static("")));
+            map.insert(
+                "mcp-session-id",
+                HeaderValue::from_str(session).unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
         }
         if let Some(version) = &state.protocol_version {
-            map.insert("mcp-protocol-version", HeaderValue::from_str(version).unwrap_or_else(|_| HeaderValue::from_static("")));
+            map.insert(
+                "mcp-protocol-version",
+                HeaderValue::from_str(version).unwrap_or_else(|_| HeaderValue::from_static("")),
+            );
         }
         for (name, value) in self.config.headers.clone().unwrap_or_default() {
-            if let (Ok(name), Ok(value)) = (HeaderName::from_bytes(name.as_bytes()), HeaderValue::from_str(&value)) {
+            if let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_str(&value),
+            ) {
                 if name != "mcp-protocol-version" {
                     map.insert(name, value);
                 }
@@ -137,8 +147,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-impl HttpTransport {
-}
+impl HttpTransport {}
 
 /// Send one JSON-RPC request over HTTP and return the response `result`.
 #[allow(clippy::too_many_arguments)]
@@ -276,14 +285,20 @@ impl McpTransport for HttpTransport {
         let timeout_ms = self.timeout_ms;
         let state = self.state.clone();
         let method = method.to_string();
-        Box::pin(send_request(client, url, headers, id, method, params, timeout_ms, state))
+        Box::pin(send_request(
+            client, url, headers, id, method, params, timeout_ms, state,
+        ))
     }
 
     fn notify(&mut self, method: &str, params: Value) -> TransportFut<Result<(), McpError>> {
         let url = self.config.url.clone().unwrap_or_default();
         let body = json!({ "jsonrpc": "2.0", "method": method, "params": params });
         let state = futures::executor::block_on(self.state.lock()).clone();
-        let request = self.client.post(&url).headers(self.headers(&state)).json(&body);
+        let request = self
+            .client
+            .post(&url)
+            .headers(self.headers(&state))
+            .json(&body);
         Box::pin(async move {
             let response = request.send().await.map_err(|err| {
                 McpError::Transport(McpTransportError {
@@ -312,7 +327,11 @@ impl McpTransport for HttpTransport {
         Box::pin(async move {
             let session = state.lock().await.session_id.take();
             if let Some(session) = session {
-                let _ = client.delete(&url).header("mcp-session-id", session).send().await;
+                let _ = client
+                    .delete(&url)
+                    .header("mcp-session-id", session)
+                    .send()
+                    .await;
             }
         })
     }
@@ -362,11 +381,13 @@ fn parse_json_rpc(text: &str) -> Result<Value, McpError> {
         return Err(McpError::Config("malformed JSON-RPC response".to_string()));
     }
     if let Some(error) = obj.get("error") {
-        return Err(McpError::JsonRpc(serde_json::from_value::<JsonRpcError>(error.clone()).unwrap_or(JsonRpcError {
-            code: 0,
-            message: "malformed JSON-RPC error response".to_string(),
-            data: None,
-        })));
+        return Err(McpError::JsonRpc(
+            serde_json::from_value::<JsonRpcError>(error.clone()).unwrap_or(JsonRpcError {
+                code: 0,
+                message: "malformed JSON-RPC error response".to_string(),
+                data: None,
+            }),
+        ));
     }
     Ok(obj.get("result").cloned().unwrap_or(Value::Null))
 }

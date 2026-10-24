@@ -48,7 +48,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 type Body = BoxBody<Bytes, Infallible>;
 
 fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// One JSON log line on stdout (journald adds the wall clock).
@@ -80,8 +82,13 @@ impl State {
     /// TS `GenerationGate.#pollExternalChanges` / `pool.bump`: any `auth_change_revision` move
     /// (ours or a peer's) is one generation step.
     fn sync_generation(&self) {
-        let Ok(revision) = self.store.revision() else { return };
-        let mut last = self.last_revision.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(revision) = self.store.revision() else {
+            return;
+        };
+        let mut last = self
+            .last_revision
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *last != revision {
             *last = revision;
             self.generation.send_modify(|g| *g += 1);
@@ -118,8 +125,12 @@ impl State {
             .iter()
             .map(|e| {
                 let mut out = e.wire();
-                out.insert("rotatesInMs".into(), rotates_in_ms(e, self.refresher_enabled, next_sweep_at, now));
-                let own: Vec<&store::Block> = blocks.iter().filter(|b| b.credential_id == e.id).collect();
+                out.insert(
+                    "rotatesInMs".into(),
+                    rotates_in_ms(e, self.refresher_enabled, next_sweep_at, now),
+                );
+                let own: Vec<&store::Block> =
+                    blocks.iter().filter(|b| b.credential_id == e.id).collect();
                 let mut list = block_snapshots(&own, codex_meter_scopes);
                 if !list.is_empty() {
                     list.sort_by(compare_blocks);
@@ -143,7 +154,9 @@ fn rotates_in_ms(entry: &Entry, enabled: bool, next_sweep_at: i64, now: i64) -> 
     if !enabled || !entry.is_oauth() {
         return Value::Null;
     }
-    let Some(expires) = entry.expires() else { return Value::Null };
+    let Some(expires) = entry.expires() else {
+        return Value::Null;
+    };
     let expires = expires as i64;
     let due_at = expires - REFRESH_SKEW_MS;
     let eligible_at = now.max(due_at);
@@ -177,11 +190,19 @@ fn block_snapshots(blocks: &[&store::Block], codex_meter_scopes: bool) -> Vec<Va
             && b.provider_key == CODEX_BLOCK_PROVIDER_KEY
             && matches!(b.block_scope.as_str(), "chat" | "spark" | "shared");
         if !legacy_fold {
-            out.push(snap(&b.provider_key, &b.block_scope, b.blocked_until_ms, Some(b.updated_at_ms)));
+            out.push(snap(
+                &b.provider_key,
+                &b.block_scope,
+                b.blocked_until_ms,
+                Some(b.updated_at_ms),
+            ));
             continue;
         }
         let (until, updated) = shared.unwrap_or((0, None));
-        shared = Some((until.max(b.blocked_until_ms), Some(updated.map_or(b.updated_at_ms, |u| u.max(b.updated_at_ms)))));
+        shared = Some((
+            until.max(b.blocked_until_ms),
+            Some(updated.map_or(b.updated_at_ms, |u| u.max(b.updated_at_ms))),
+        ));
     }
     if let Some((until, updated)) = shared {
         out.push(snap(CODEX_BLOCK_PROVIDER_KEY, "shared", until, updated));
@@ -191,7 +212,12 @@ fn block_snapshots(blocks: &[&store::Block], codex_meter_scopes: bool) -> Vec<Va
 
 /// TS `compareCredentialBlockSnapshots`.
 fn compare_blocks(a: &Value, b: &Value) -> std::cmp::Ordering {
-    let s = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let s = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_i64).unwrap_or(0);
     s(a, "providerKey")
         .cmp(&s(b, "providerKey"))
@@ -215,7 +241,8 @@ fn is_definitive_oauth_failure(message: &str) -> bool {
         )
         .expect("static regex")
     });
-    static HTTP_AUTH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"\b401\b").expect("static regex"));
+    static HTTP_AUTH: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\b401\b").expect("static regex"));
     DEFINITIVE.is_match(message) || (HTTP_AUTH.is_match(message) && !TRANSIENT.is_match(message))
 }
 
@@ -226,25 +253,42 @@ async fn refresh_entry(state: &State, id: i64, auth_recovery: bool) -> Result<Ma
     // is !Send: drive it on a blocking-pool thread instead of a runtime worker.
     let db = state.store.db.clone();
     let handle = tokio::runtime::Handle::current();
-    let outcome = tokio::task::spawn_blocking(move || handle.block_on(force_refresh_row(&db, id, auth_recovery)))
-        .await
-        .map_err(|e| anyhow!("refresh task failed: {e}"))
-        .and_then(|r| r);
+    let outcome = tokio::task::spawn_blocking(move || {
+        handle.block_on(force_refresh_row(&db, id, auth_recovery))
+    })
+    .await
+    .map_err(|e| anyhow!("refresh task failed: {e}"))
+    .and_then(|r| r);
     state.sync_generation();
     match outcome {
         Ok(ForceRefresh::Refreshed | ForceRefresh::ReusedRecent) => {
-            let entry = state.store.entry(id)?.ok_or_else(|| anyhow!("No credential with id={id}"))?;
+            let entry = state
+                .store
+                .entry(id)?
+                .ok_or_else(|| anyhow!("No credential with id={id}"))?;
             Ok(entry.wire())
         }
         Ok(ForceRefresh::Unsupported) => {
-            let provider = state.store.entry(id)?.map(|e| e.provider).unwrap_or_default();
+            let provider = state
+                .store
+                .entry(id)?
+                .map(|e| e.provider)
+                .unwrap_or_default();
             bail!("OAuth provider \"{provider}\" does not support token refresh")
         }
         Err(e) => {
             let message = format!("{e:#}");
-            if is_definitive_oauth_failure(&message) && state.store.disable(id, &format!("oauth refresh failed: {message}"))? {
+            if is_definitive_oauth_failure(&message)
+                && state
+                    .store
+                    .disable(id, &format!("oauth refresh failed: {message}"))?
+            {
                 state.sync_generation();
-                log("warn", "auth-broker refresh failed definitively", json!({"id": id, "error": message}));
+                log(
+                    "warn",
+                    "auth-broker refresh failed definitively",
+                    json!({"id": id, "error": message}),
+                );
             }
             Err(e)
         }
@@ -262,11 +306,16 @@ async fn refresher_tick(state: &State) {
             .map(|e| e.id)
             .collect(),
         Err(e) => {
-            log("warn", "auth-broker refresher store read failed", json!({"error": format!("{e:#}")}));
+            log(
+                "warn",
+                "auth-broker refresher store read failed",
+                json!({"error": format!("{e:#}")}),
+            );
             Vec::new()
         }
     };
-    let results = futures::future::join_all(targets.iter().map(|&id| refresh_entry(state, id, false))).await;
+    let results =
+        futures::future::join_all(targets.iter().map(|&id| refresh_entry(state, id, false))).await;
     for (id, result) in targets.iter().zip(results) {
         match result {
             Ok(entry) => log(
@@ -275,10 +324,16 @@ async fn refresher_tick(state: &State) {
                 json!({"id": id, "provider": entry.get("provider"), "source": "refresher",
                        "expires": entry.get("credential").and_then(|c| c.get("expires"))}),
             ),
-            Err(e) => log("debug", "auth-broker refresh failed", json!({"id": id, "error": format!("{e:#}")})),
+            Err(e) => log(
+                "debug",
+                "auth-broker refresh failed",
+                json!({"id": id, "error": format!("{e:#}")}),
+            ),
         }
     }
-    state.next_sweep_at.store(now_ms() + REFRESH_INTERVAL_MS, Ordering::Relaxed);
+    state
+        .next_sweep_at
+        .store(now_ms() + REFRESH_INTERVAL_MS, Ordering::Relaxed);
 }
 
 // ------------------------------------------------------------------ http helpers
@@ -290,7 +345,8 @@ fn full(bytes: impl Into<Bytes>) -> Body {
 fn json_response(status: u16, body: &Value) -> Response<Body> {
     let mut res = Response::new(full(body.to_string()));
     *res.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    res.headers_mut().insert("content-type", HeaderValue::from_static("application/json"));
+    res.headers_mut()
+        .insert("content-type", HeaderValue::from_static("application/json"));
     res
 }
 
@@ -328,7 +384,10 @@ fn percent_decode(s: &str) -> String {
         match bytes[i] {
             b'+' => out.push(b' '),
             b'%' if i + 2 < bytes.len() => {
-                match std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                match std::str::from_utf8(&bytes[i + 1..i + 3])
+                    .ok()
+                    .and_then(|h| u8::from_str_radix(h, 16).ok())
+                {
                     Some(b) => {
                         out.push(b);
                         i += 2;
@@ -357,17 +416,26 @@ fn parse_int_prefix(raw: &str) -> Option<i64> {
         Some(rest) => (-1, rest),
         None => (1, t.strip_prefix('+').unwrap_or(t)),
     };
-    let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
+    let end = digits
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(digits.len());
     digits[..end].parse::<i64>().ok().map(|n| sign * n)
 }
 
-async fn read_json(req: Request<Incoming>, allow_empty: bool) -> std::result::Result<Value, Response<Body>> {
+async fn read_json(
+    req: Request<Incoming>,
+    allow_empty: bool,
+) -> std::result::Result<Value, Response<Body>> {
     let raw = match req.into_body().collect().await {
         Ok(b) => b.to_bytes(),
         Err(e) => return Err(error(400, &format!("Invalid request body: {e}"))),
     };
     if raw.is_empty() {
-        return if allow_empty { Ok(json!({})) } else { Err(error(400, "Request body required")) };
+        return if allow_empty {
+            Ok(json!({}))
+        } else {
+            Err(error(400, "Request body required"))
+        };
     }
     serde_json::from_slice(&raw).map_err(|e| error(400, &format!("Invalid JSON body: {e}")))
 }
@@ -378,7 +446,9 @@ fn str_field<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
 
 /// TS `writableAuthCredentialSchema`.
 fn validate_credential(c: &Value) -> std::result::Result<Map<String, Value>, String> {
-    let Value::Object(map) = c else { return Err("credential must be an object".into()) };
+    let Value::Object(map) = c else {
+        return Err("credential must be an object".into());
+    };
     match str_field(c, "type") {
         Some("oauth") => {
             let refresh = str_field(c, "refresh").ok_or("credential.refresh must be a string")?;
@@ -400,10 +470,16 @@ fn validate_credential(c: &Value) -> std::result::Result<Map<String, Value>, Str
             if str_field(c, "key").is_none_or(str::is_empty) {
                 return Err("credential.key must be a non-empty string".into());
             }
-            if let Some(extra) = map.keys().find(|k| !matches!(k.as_str(), "type" | "key" | "source")) {
+            if let Some(extra) = map
+                .keys()
+                .find(|k| !matches!(k.as_str(), "type" | "key" | "source"))
+            {
                 return Err(format!("credential.{extra} must be removed"));
             }
-            if map.get("source").is_some_and(|s| s.as_str() != Some("login")) {
+            if map
+                .get("source")
+                .is_some_and(|s| s.as_str() != Some("login"))
+            {
                 return Err("credential.source must be \"login\"".into());
             }
             Ok(map.clone())
@@ -413,12 +489,25 @@ fn validate_credential(c: &Value) -> std::result::Result<Map<String, Value>, Str
 }
 
 fn client_report(v: &Value) -> std::result::Result<ClientReport, String> {
-    let install_id = str_field(v, "installId").ok_or("installId must be a string")?.to_string();
-    let entries = v.get("entries").and_then(Value::as_array).ok_or("entries must be an array")?;
+    let install_id = str_field(v, "installId")
+        .ok_or("installId must be a string")?
+        .to_string();
+    let entries = v
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or("entries must be an array")?;
     let mut out = Vec::new();
     for (i, e) in entries.iter().enumerate() {
-        let n = |k: &str| e.get(k).and_then(Value::as_f64).ok_or(format!("entries[{i}].{k} must be a number"));
-        let s = |k: &str| str_field(e, k).map(str::to_string).ok_or(format!("entries[{i}].{k} must be a string"));
+        let n = |k: &str| {
+            e.get(k)
+                .and_then(Value::as_f64)
+                .ok_or(format!("entries[{i}].{k} must be a number"))
+        };
+        let s = |k: &str| {
+            str_field(e, k)
+                .map(str::to_string)
+                .ok_or(format!("entries[{i}].{k} must be a string"))
+        };
         out.push(ObservedEntry {
             at: n("at")? as i64,
             provider: s("provider")?,
@@ -443,25 +532,47 @@ fn authorized(req: &Request<Incoming>, tokens: &[String]) -> bool {
     if tokens.is_empty() {
         return true;
     }
-    let Some(header) = req.headers().get("authorization").and_then(|h| h.to_str().ok()) else { return false };
-    let Some((scheme, rest)) = header.split_once(char::is_whitespace) else { return false };
+    let Some(header) = req
+        .headers()
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+    else {
+        return false;
+    };
+    let Some((scheme, rest)) = header.split_once(char::is_whitespace) else {
+        return false;
+    };
     scheme.eq_ignore_ascii_case("bearer") && tokens.iter().any(|t| t == rest.trim())
 }
 
 // ------------------------------------------------------------------ routes
 
-async fn serve_snapshot(state: &State, req: &Request<Incoming>, codex: bool) -> Result<Response<Body>> {
+async fn serve_snapshot(
+    state: &State,
+    req: &Request<Incoming>,
+    codex: bool,
+) -> Result<Response<Body>> {
     state.sync_generation();
     let current = state.generation();
-    let client = parse_generation_tag(req.headers().get("if-none-match").and_then(|h| h.to_str().ok()));
+    let client = parse_generation_tag(
+        req.headers()
+            .get("if-none-match")
+            .and_then(|h| h.to_str().ok()),
+    );
     let wait_ms = query_param(req.uri().query(), "wait")
         .and_then(|w| w.trim().parse::<f64>().ok())
         .filter(|w| w.is_finite())
         .map_or(0, |w| (w.trunc() as i64).clamp(0, MAX_SNAPSHOT_WAIT_MS));
     let Some(client) = client.filter(|c| *c == current && wait_ms > 0) else {
         let body = state.snapshot(codex)?;
-        let generation = body.get("generation").and_then(Value::as_u64).unwrap_or(current);
-        return Ok(with_snapshot_headers(json_response(200, &Value::Object(body)), generation));
+        let generation = body
+            .get("generation")
+            .and_then(Value::as_u64)
+            .unwrap_or(current);
+        return Ok(with_snapshot_headers(
+            json_response(200, &Value::Object(body)),
+            generation,
+        ));
     };
     let mut rx = state.generation.subscribe();
     let _ = tokio::time::timeout(Duration::from_millis(wait_ms as u64), async {
@@ -476,7 +587,10 @@ async fn serve_snapshot(state: &State, req: &Request<Incoming>, codex: bool) -> 
     let now = state.generation();
     if now != client {
         let body = state.snapshot(codex)?;
-        return Ok(with_snapshot_headers(json_response(200, &Value::Object(body)), now));
+        return Ok(with_snapshot_headers(
+            json_response(200, &Value::Object(body)),
+            now,
+        ));
     }
     let mut res = Response::new(full(Bytes::new()));
     *res.status_mut() = StatusCode::NOT_MODIFIED;
@@ -509,7 +623,16 @@ fn serve_stream(state: Arc<State>, codex: bool) -> Result<Response<Body>> {
     let mut seen: Vec<(i64, String)> = initial
         .get("credentials")
         .and_then(Value::as_array)
-        .map(|list| list.iter().map(|e| (e.get("id").and_then(Value::as_i64).unwrap_or(0), fingerprint(e))).collect())
+        .map(|list| {
+            list.iter()
+                .map(|e| {
+                    (
+                        e.get("id").and_then(Value::as_i64).unwrap_or(0),
+                        fingerprint(e),
+                    )
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let mut first = Map::new();
     first.insert("kind".into(), json!("snapshot"));
@@ -567,11 +690,16 @@ fn serve_stream(state: Arc<State>, codex: bool) -> Result<Response<Body>> {
         }
     });
     let stream = futures::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|b| (Ok::<_, Infallible>(Frame::data(b)), rx))
+        rx.recv()
+            .await
+            .map(|b| (Ok::<_, Infallible>(Frame::data(b)), rx))
     });
     let mut res = Response::new(StreamBody::new(stream).boxed());
     let h = res.headers_mut();
-    h.insert("content-type", HeaderValue::from_static("text/event-stream; charset=utf-8"));
+    h.insert(
+        "content-type",
+        HeaderValue::from_static("text/event-stream; charset=utf-8"),
+    );
     h.insert("cache-control", HeaderValue::from_static("no-cache"));
     h.insert("connection", HeaderValue::from_static("keep-alive"));
     h.insert("x-accel-buffering", HeaderValue::from_static("no"));
@@ -596,7 +724,11 @@ async fn route(state: Arc<State>, req: Request<Incoming>) -> Result<Response<Bod
         return Ok(json_response(200, &json!({"ok": true, "version": VERSION})));
     }
     if !authorized(&req, &state.tokens) {
-        log("info", "auth-broker request unauthorized", json!({"method": method.as_str(), "path": path}));
+        log(
+            "info",
+            "auth-broker request unauthorized",
+            json!({"method": method.as_str(), "path": path}),
+        );
         return Ok(error(401, "unauthorized"));
     }
     let codex = req
@@ -671,7 +803,8 @@ async fn route(state: Arc<State>, req: Request<Incoming>) -> Result<Response<Bod
     };
     match (&method, action) {
         (&Method::POST, "refresh") => {
-            let recovery = query_param(query.as_deref(), "reason").as_deref() == Some("auth-recovery");
+            let recovery =
+                query_param(query.as_deref(), "reason").as_deref() == Some("auth-recovery");
             Ok(match refresh_entry(&state, id, recovery).await {
                 Ok(entry) => {
                     log(
@@ -684,7 +817,14 @@ async fn route(state: Arc<State>, req: Request<Incoming>) -> Result<Response<Bod
                 }
                 Err(e) => {
                     let message = format!("{e:#}");
-                    error(if message.contains("No credential with id") { 404 } else { 500 }, &message)
+                    error(
+                        if message.contains("No credential with id") {
+                            404
+                        } else {
+                            500
+                        },
+                        &message,
+                    )
                 }
             })
         }
@@ -696,12 +836,18 @@ async fn route(state: Arc<State>, req: Request<Incoming>) -> Result<Response<Bod
             if body.get("cause").is_some_and(|c| !c.is_string()) {
                 return Ok(error(400, "cause must be a string"));
             }
-            let cause = str_field(&body, "cause").filter(|c| !c.is_empty()).unwrap_or("disabled via auth-broker");
+            let cause = str_field(&body, "cause")
+                .filter(|c| !c.is_empty())
+                .unwrap_or("disabled via auth-broker");
             if !state.store.disable(id, cause)? {
                 return Ok(error(404, &format!("No credential with id={id}")));
             }
             state.sync_generation();
-            log("info", "auth-broker credential disabled", json!({"id": id, "cause": cause}));
+            log(
+                "info",
+                "auth-broker credential disabled",
+                json!({"id": id, "cause": cause}),
+            );
             Ok(json_response(200, &json!({"ok": true})))
         }
         (&Method::POST, "block") => {
@@ -714,7 +860,10 @@ async fn route(state: Arc<State>, req: Request<Incoming>) -> Result<Response<Bod
                 str_field(&body, "blockScope"),
                 body.get("blockedUntilMs").and_then(Value::as_f64),
             ) else {
-                return Ok(error(400, "providerKey, blockScope and blockedUntilMs are required"));
+                return Ok(error(
+                    400,
+                    "providerKey, blockScope and blockedUntilMs are required",
+                ));
             };
             if state.store.entry(id)?.is_none() {
                 return Ok(error(404, &format!("No credential with id={id}")));
@@ -728,9 +877,10 @@ async fn route(state: Arc<State>, req: Request<Incoming>) -> Result<Response<Bod
                 Ok(b) => b,
                 Err(res) => return Ok(res),
             };
-            let (Some(key), Some(scope)) =
-                (str_field(&body, "providerKey").filter(|k| !k.is_empty()), str_field(&body, "blockScope"))
-            else {
+            let (Some(key), Some(scope)) = (
+                str_field(&body, "providerKey").filter(|k| !k.is_empty()),
+                str_field(&body, "blockScope"),
+            ) else {
                 return Ok(error(400, "providerKey and blockScope are required"));
             };
             if state.store.entry(id)?.is_none() {
@@ -756,7 +906,9 @@ async fn route(state: Arc<State>, req: Request<Incoming>) -> Result<Response<Bod
 
 fn config_root() -> PathBuf {
     let agent = omp_providers::AgentDir::default().0;
-    agent.parent().map_or_else(|| agent.clone(), std::path::Path::to_path_buf)
+    agent
+        .parent()
+        .map_or_else(|| agent.clone(), std::path::Path::to_path_buf)
 }
 
 /// TS `ensureToken`: the existing `<config root>/auth-broker.token`, else a fresh 0600 one.
@@ -779,7 +931,8 @@ fn ensure_token(path: &std::path::Path) -> Result<String> {
     Ok(token)
 }
 
-const HELP: &str = "omp-auth-broker — credential vault daemon (Rust port of `omp auth-broker serve`)
+const HELP: &str =
+    "omp-auth-broker — credential vault daemon (Rust port of `omp auth-broker serve`)
 
 Usage: omp-auth-broker serve [--bind=HOST:PORT]
 
@@ -815,12 +968,15 @@ fn parse_args() -> Result<String> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> Result<()> {
     let bind = parse_args()?;
-    let addr: SocketAddr = bind.parse().with_context(|| format!("invalid --bind {bind}"))?;
+    let addr: SocketAddr = bind
+        .parse()
+        .with_context(|| format!("invalid --bind {bind}"))?;
     let token_path = config_root().join("auth-broker.token");
     let token = ensure_token(&token_path)?;
     let db = omp_providers::AgentDir::default().0.join("agent.db");
     let store = Store::open(&db)?;
-    let refresher_enabled = std::env::var(DISABLE_REFRESHER_ENV).map_or(true, |v| v.is_empty() || v == "0");
+    let refresher_enabled =
+        std::env::var(DISABLE_REFRESHER_ENV).map_or(true, |v| v.is_empty() || v == "0");
     let state = Arc::new(State {
         last_revision: Mutex::new(store.revision().unwrap_or(0)),
         store,
@@ -829,9 +985,19 @@ async fn main() -> Result<()> {
         refresher_enabled,
         next_sweep_at: AtomicI64::new(now_ms()),
     });
-    let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("binding {addr}"))?;
-    log("info", "auth-broker listening", json!({"url": format!("http://{addr}"), "db": db.display().to_string()}));
-    log("info", "auth-broker bearer token loaded", json!({"path": token_path.display().to_string(), "mode": "0600"}));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .with_context(|| format!("binding {addr}"))?;
+    log(
+        "info",
+        "auth-broker listening",
+        json!({"url": format!("http://{addr}"), "db": db.display().to_string()}),
+    );
+    log(
+        "info",
+        "auth-broker bearer token loaded",
+        json!({"path": token_path.display().to_string(), "mode": "0600"}),
+    );
 
     let poll = state.clone();
     tokio::spawn(async move {
@@ -854,7 +1020,8 @@ async fn main() -> Result<()> {
     }
 
     let shutdown = async {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).expect("SIGTERM handler");
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => "SIGINT",
             _ = term.recv() => "SIGTERM",

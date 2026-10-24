@@ -6,9 +6,7 @@ use serde_json::Value;
 use crate::files::{extract_file_ops_from_message, FileOperations};
 use crate::json::{entry_id, entry_type, message_role, str_field};
 use crate::messages::entry_message;
-use crate::settings::{
-    calculate_context_tokens, calculate_prompt_tokens, CompactionSettings,
-};
+use crate::settings::{calculate_context_tokens, calculate_prompt_tokens, CompactionSettings};
 use crate::tokens::{count_message, CountOptions, Tokenizer};
 
 /// `CutPointResult`.
@@ -239,17 +237,16 @@ impl BoundaryEntry {
             id: entry_id(entry).to_owned(),
             replay_through: str_field(entry, "providerReplayThroughEntryId").map(str::to_owned),
             first_kept: str_field(entry, "firstKeptEntryId").map(str::to_owned),
-            preserve_data: entry
-                .get("preserveData")
-                .filter(|d| !d.is_null())
-                .cloned(),
+            preserve_data: entry.get("preserveData").filter(|d| !d.is_null()).cloned(),
             remote_replacement: entry
                 .get("preserveData")
                 .and_then(|p| p.get("openaiRemoteCompaction"))
                 .is_some_and(|c| c.get("replacementHistory").is_some_and(Value::is_array)),
             summary: str_field(entry, "summary").map(str::to_owned),
             timestamp: str_field(entry, "timestamp").map(str::to_owned),
-            message_role: message.and_then(|m| str_field(m, "role")).map(str::to_owned),
+            message_role: message
+                .and_then(|m| str_field(m, "role"))
+                .map(str::to_owned),
             stop_reason: message
                 .and_then(|m| str_field(m, "stopReason"))
                 .map(str::to_owned),
@@ -288,18 +285,14 @@ pub fn plan_boundary(
     path: &[BoundaryEntry],
     _settings: &CompactionSettings,
 ) -> Option<CompactionBoundary> {
-    let last_is_compaction = path.last().is_some_and(|e| {
-        e.entry_type == "compaction" && e.replay_through.is_none()
-    });
+    let last_is_compaction = path
+        .last()
+        .is_some_and(|e| e.entry_type == "compaction" && e.replay_through.is_none());
     if last_is_compaction {
         return None;
     }
-    let prev_compaction_idx = path
-        .iter()
-        .rposition(|e| e.entry_type == "compaction");
-    let reset_idx = path
-        .iter()
-        .rposition(|e| e.entry_type == "reset_boundary");
+    let prev_compaction_idx = path.iter().rposition(|e| e.entry_type == "compaction");
+    let reset_idx = path.iter().rposition(|e| e.entry_type == "reset_boundary");
     // A newer reset clears the previous summary.
     let prev_compaction_idx = match (prev_compaction_idx, reset_idx) {
         (Some(c), Some(r)) if r > c => None,
@@ -349,9 +342,7 @@ pub fn plan_boundary(
         boundary_start,
         last_is_compaction,
         prev_compaction_idx,
-        tokens_before: usage
-            .as_ref()
-            .map_or(0, |u| calculate_context_tokens(u)),
+        tokens_before: usage.as_ref().map_or(0, |u| calculate_context_tokens(u)),
         usage: usage.cloned(),
         previous_summary: prev.and_then(|p| p.summary.clone()),
         previous_summary_timestamp: prev.and_then(|p| p.timestamp.clone()),
@@ -384,9 +375,8 @@ pub fn plan_region(
         let estimated: u64 = region
             .iter()
             .map(|e| {
-                entry_message(e).map_or(0, |m| {
-                    count_message(tokenizer, &m, CountOptions::default())
-                })
+                entry_message(e)
+                    .map_or(0, |m| count_message(tokenizer, &m, CountOptions::default()))
             })
             .sum();
         let prompt = calculate_prompt_tokens(usage);
@@ -439,10 +429,7 @@ pub fn plan_region(
         .copied()
         .unwrap_or(region.len());
     let kept_entries = region.split_off(kept_start);
-    let recent_messages: Vec<Value> = kept_entries
-        .iter()
-        .filter_map(entry_message)
-        .collect();
+    let recent_messages: Vec<Value> = kept_entries.iter().filter_map(entry_message).collect();
 
     let mut messages: Vec<Value> = Vec::with_capacity(kept_start);
     for mut e in region {

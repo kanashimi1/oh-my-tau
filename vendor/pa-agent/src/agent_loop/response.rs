@@ -286,7 +286,8 @@ async fn stream_assistant_response_inner(
                         .messages
                         .push(AgentMessage::from(final_message.clone()));
                 }
-                *prepared_calls = prepare_dispatch(&mut final_message, context, config, signal).await;
+                *prepared_calls =
+                    prepare_dispatch(&mut final_message, context, config, signal).await;
                 if !*added_partial {
                     emit(AgentEvent::MessageStart {
                         message: AgentMessage::from(final_message.clone()),

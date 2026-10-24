@@ -9,8 +9,8 @@
 use std::path::PathBuf;
 
 use omp_lsp::client::{get_or_create_client, ClientStatus};
-use omp_lsp::types::ServerConfig;
 use omp_lsp::mux::set_shared_lsp_enabled;
+use omp_lsp::types::ServerConfig;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -53,7 +53,14 @@ async fn main() {
         resolved_command: Some(command.to_string_lossy().into_owned()),
     };
 
-    let client = match get_or_create_client(&config, &root, Some(std::time::Duration::from_secs(10)), None).await {
+    let client = match get_or_create_client(
+        &config,
+        &root,
+        Some(std::time::Duration::from_secs(10)),
+        None,
+    )
+    .await
+    {
         Ok(client) => client,
         Err(e) => {
             eprintln!("initialize failed: {e}");
@@ -65,7 +72,10 @@ async fn main() {
 
     client.refresh_file(&file_path).await;
     let uri = omp_lsp::utils::file_to_uri(&file_path);
-    let diag_secs: u64 = std::env::var("MUX_SESSION_DIAG_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+    let diag_secs: u64 = std::env::var("MUX_SESSION_DIAG_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(diag_secs);
     let published = loop {
         if let Some(p) = client.published_diagnostics(&uri) {

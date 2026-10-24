@@ -28,7 +28,6 @@ use crate::types::{
 };
 use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
 use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
-use crate::utils_inner::wire_json::request_body;
 use crate::utils_inner::json_parse::{
     parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
 };
@@ -36,6 +35,7 @@ use crate::utils_inner::sse::{ServerSentEvent, SseDecoder};
 use crate::utils_inner::stream_failure::{
     record_stream_failure, stream_drop_failure, OpenStreamBlock, ProviderError,
 };
+use crate::utils_inner::wire_json::request_body;
 
 struct StreamingState {
     output: AssistantMessage,
@@ -600,9 +600,23 @@ async fn run_stream(
     let body = {
         let transformed = transform_for_request(model, context, &compat);
         let params = if base_options.on_payload.is_none() {
-            wire_cache::build_params_cached(model, context, &transformed, options, &compat, cache_retention)
+            wire_cache::build_params_cached(
+                model,
+                context,
+                &transformed,
+                options,
+                &compat,
+                cache_retention,
+            )
         } else {
-            build_params(model, context, &transformed, options, &compat, cache_retention)
+            build_params(
+                model,
+                context,
+                &transformed,
+                options,
+                &compat,
+                cache_retention,
+            )
         };
         request_body(&params, base_options.on_payload.as_ref(), model)
     };

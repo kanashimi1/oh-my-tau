@@ -18,21 +18,45 @@ const fn h(
     prefixes: &'static [&'static str],
     markers: &'static [&'static str],
 ) -> HostClass {
-    HostClass { name, providers, prefixes, markers }
+    HostClass {
+        name,
+        providers,
+        prefixes,
+        markers,
+    }
 }
 
 static KNOWN_HOSTS: &[HostClass] = &[
     h("openai", &["openai"], &[], &["api.openai.com"]),
-    h("openaiCodex", &[], &[], &["chatgpt.com/backend-api", "chat.openai.com/backend-api"]),
+    h(
+        "openaiCodex",
+        &[],
+        &[],
+        &["chatgpt.com/backend-api", "chat.openai.com/backend-api"],
+    ),
     h(
         "azureOpenAI",
         &["azure"],
         &[],
-        &[".openai.azure.com", "azure.com/openai", "models.inference.ai.azure.com"],
+        &[
+            ".openai.azure.com",
+            "azure.com/openai",
+            "models.inference.ai.azure.com",
+        ],
     ),
     h("openrouter", &["openrouter"], &[], &["openrouter.ai"]),
-    h("vercelAIGateway", &["vercel-ai-gateway"], &[], &["ai-gateway.vercel.sh"]),
-    h("githubCopilot", &["github-copilot"], &[], &["githubcopilot.com", "copilot-api."]),
+    h(
+        "vercelAIGateway",
+        &["vercel-ai-gateway"],
+        &[],
+        &["ai-gateway.vercel.sh"],
+    ),
+    h(
+        "githubCopilot",
+        &["github-copilot"],
+        &[],
+        &["githubcopilot.com", "copilot-api."],
+    ),
     h("anthropic", &["anthropic"], &[], &["api.anthropic.com"]),
     h("deepseekDirect", &["deepseek"], &[], &["api.deepseek.com"]),
     h("deepseekFamily", &["deepseek"], &[], &["deepseek.com"]),
@@ -47,7 +71,12 @@ static KNOWN_HOSTS: &[HostClass] = &[
         &["dashscope", "token-plan."],
     ),
     h("umans", &["umans"], &[], &["api.code.umans.ai"]),
-    h("xiaomi", &["xiaomi"], &["xiaomi-token-plan-"], &["xiaomimimo.com"]),
+    h(
+        "xiaomi",
+        &["xiaomi"],
+        &["xiaomi-token-plan-"],
+        &["xiaomimimo.com"],
+    ),
     h("xai", &["xai", "xai-oauth"], &[], &["api.x.ai"]),
     h("mistral", &["mistral"], &[], &["mistral.ai"]),
     h("together", &["together"], &[], &["api.together.xyz"]),
@@ -63,9 +92,24 @@ static KNOWN_HOSTS: &[HostClass] = &[
     h("qwenPortal", &["qwen-portal"], &[], &["portal.qwen.ai"]),
     h("nvidia", &["nvidia"], &[], &["integrate.api.nvidia.com"]),
     h("venice", &["venice"], &[], &["api.venice.ai"]),
-    h("moonshotNative", &["moonshot", "kimi-code"], &[], &["api.moonshot.ai", "api.kimi.com"]),
-    h("googleAistudio", &[], &[], &["generativelanguage.googleapis.com"]),
-    h("opencode", &["opencode-go", "opencode-zen"], &[], &["opencode.ai"]),
+    h(
+        "moonshotNative",
+        &["moonshot", "kimi-code"],
+        &[],
+        &["api.moonshot.ai", "api.kimi.com"],
+    ),
+    h(
+        "googleAistudio",
+        &[],
+        &[],
+        &["generativelanguage.googleapis.com"],
+    ),
+    h(
+        "opencode",
+        &["opencode-go", "opencode-zen"],
+        &[],
+        &["opencode.ai"],
+    ),
     h("zenmux", &["zenmux"], &[], &["zenmux.ai"]),
     h("chutes", &[], &[], &["chutes.ai"]),
 ];
@@ -92,7 +136,10 @@ pub fn host_matches_url(base_url: &str, host: &str) -> bool {
     if base_url.is_empty() {
         return false;
     }
-    class(host).markers.iter().any(|m| includes_ascii_ci(base_url, m))
+    class(host)
+        .markers
+        .iter()
+        .any(|m| includes_ascii_ci(base_url, m))
 }
 
 /// Provider-or-URL host check.
@@ -128,11 +175,15 @@ pub fn is_bedrock_route_url(base_url: &str, route: &str) -> bool {
     if base_url.is_empty() {
         return false;
     }
-    let Ok(url) = url::Url::parse(base_url) else { return false };
+    let Ok(url) = url::Url::parse(base_url) else {
+        return false;
+    };
     if url.scheme() != "https" {
         return false;
     }
-    let Some(hostname) = url.host_str() else { return false };
+    let Some(hostname) = url.host_str() else {
+        return false;
+    };
     let caps = bedrock_public()
         .captures(hostname)
         .or_else(|| bedrock_privatelink().captures(hostname));
@@ -149,10 +200,17 @@ pub fn has_local_loopback_base_url(base_url: &str) -> bool {
     if base_url.is_empty() {
         return false;
     }
-    let Ok(url) = url::Url::parse(base_url) else { return false };
-    let Some(host) = url.host_str() else { return false };
+    let Ok(url) = url::Url::parse(base_url) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
     let host = host.to_lowercase();
-    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]") {
+    if matches!(
+        host.as_str(),
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]"
+    ) {
         return true;
     }
     if host.starts_with("10.") || host.starts_with("192.168.") || host.ends_with(".local") {
@@ -191,7 +249,11 @@ pub fn is_bedrock_anthropic_route(base_url: &str) -> bool {
 
 pub fn is_azure_anthropic_route(base_url: &str) -> bool {
     static R: OnceLock<Regex> = OnceLock::new();
-    re(&R, r"(?i)(?:^|//|\.)[a-z0-9-]+\.(?:inference|services)\.ai\.azure\.com").is_match(base_url)
+    re(
+        &R,
+        r"(?i)(?:^|//|\.)[a-z0-9-]+\.(?:inference|services)\.ai\.azure\.com",
+    )
+    .is_match(base_url)
 }
 
 pub fn is_anthropic_signing_proxy_url(base_url: &str) -> bool {
@@ -201,9 +263,18 @@ pub fn is_anthropic_signing_proxy_url(base_url: &str) -> bool {
     host_matches_url(base_url, "githubCopilot")
         || host_matches_url(base_url, "zenmux")
         || (!base_url.is_empty()
-            && (re(&CF, r"(?i)gateway\.ai\.cloudflare\.com/.+/anthropic(?:/|$)").is_match(base_url)
-                || re(&VX, r"(?i)aiplatform\.googleapis\.com/.+/publishers/anthropic/").is_match(base_url)
-                || re(&BR, r"(?i)(?:^|//|\.)bedrock-runtime\.[a-z0-9-]+\.amazonaws\.com").is_match(base_url)))
+            && (re(&CF, r"(?i)gateway\.ai\.cloudflare\.com/.+/anthropic(?:/|$)")
+                .is_match(base_url)
+                || re(
+                    &VX,
+                    r"(?i)aiplatform\.googleapis\.com/.+/publishers/anthropic/",
+                )
+                .is_match(base_url)
+                || re(
+                    &BR,
+                    r"(?i)(?:^|//|\.)bedrock-runtime\.[a-z0-9-]+\.amazonaws\.com",
+                )
+                .is_match(base_url)))
         || is_bedrock_anthropic_route(base_url)
         || is_azure_anthropic_route(base_url)
 }

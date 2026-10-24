@@ -507,7 +507,12 @@ fn offset_to_pos(lines: &[String], offset: usize) -> VimPosition {
 /// and spanning lines. A cursor sitting on either delimiter counts as being
 /// on that pair. Charwise in both variants; Vim's linewise-ish `i{`
 /// reshaping is deliberately not reproduced.
-fn bracket_object(buf: &VimBuffer, open: char, close: char, around: bool) -> Option<TextObjectRange> {
+fn bracket_object(
+    buf: &VimBuffer,
+    open: char,
+    close: char,
+    around: bool,
+) -> Option<TextObjectRange> {
     let (text, cursor) = flatten(buf);
     let chars: Vec<char> = text.chars().collect();
     let mut depth = 0usize;
@@ -576,7 +581,10 @@ fn paragraph_object(buf: &VimBuffer, around: bool) -> TextObjectRange {
         }
     }
     TextObjectRange {
-        from: VimPosition { line: first, col: 0 },
+        from: VimPosition {
+            line: first,
+            col: 0,
+        },
         to: VimPosition {
             line: end,
             col: buf.lines.get(end).map_or(0, |l| line_len(l)),
@@ -591,7 +599,11 @@ fn paragraph_object(buf: &VimBuffer, around: bool) -> TextObjectRange {
 /// linewise selections span whole lines, with `to.col` at the end of the
 /// last line so the caller can decide whether the trailing newline goes too.
 #[must_use]
-pub fn visual_range(buf: &VimBuffer, anchor: VimPosition, linewise: bool) -> (VimPosition, VimPosition) {
+pub fn visual_range(
+    buf: &VimBuffer,
+    anchor: VimPosition,
+    linewise: bool,
+) -> (VimPosition, VimPosition) {
     let cursor = buf.cursor();
     let (from, to) = if pos_less(cursor, anchor) {
         (cursor, anchor)
@@ -601,17 +613,17 @@ pub fn visual_range(buf: &VimBuffer, anchor: VimPosition, linewise: bool) -> (Vi
     if linewise {
         let last_line = to.line.min(buf.lines.len().saturating_sub(1));
         return (
-            VimPosition { line: from.line, col: 0 },
+            VimPosition {
+                line: from.line,
+                col: 0,
+            },
             VimPosition {
                 line: last_line,
                 col: buf.lines.get(last_line).map_or(0, |l| line_len(l)),
             },
         );
     }
-    let col = next_char_start(
-        buf.lines.get(to.line).map_or("", String::as_str),
-        to.col,
-    );
+    let col = next_char_start(buf.lines.get(to.line).map_or("", String::as_str), to.col);
     (from, VimPosition { line: to.line, col })
 }
 
@@ -937,8 +949,7 @@ impl VimState {
                 // Vim's `cw` quirk: standing on a non-blank, it changes to the
                 // end of the word like `ce` rather than swallowing the
                 // whitespace that follows it.
-                if self.operator == Some(VimOperator::Change)
-                    && !char_at(line, col).is_whitespace()
+                if self.operator == Some(VimOperator::Change) && !char_at(line, col).is_whitespace()
                 {
                     for _ in 0..count {
                         col = word_end(line, col);
@@ -1042,7 +1053,12 @@ impl VimState {
     }
 
     /// Resolve an `f`/`F`/`t`/`T` target character into a motion application.
-    fn apply_char_search(&mut self, search: CharSearch, ch: char, buf: &VimBuffer) -> Vec<VimCommand> {
+    fn apply_char_search(
+        &mut self,
+        search: CharSearch,
+        ch: char,
+        buf: &VimBuffer,
+    ) -> Vec<VimCommand> {
         let count = self.take_count();
         let line = buf.line();
         let mut cur = buf.cursor_col;
@@ -1054,10 +1070,7 @@ impl VimState {
             };
             cur = next;
         }
-        let inclusive = matches!(
-            search,
-            CharSearch::ForwardFind | CharSearch::BackwardFind
-        );
+        let inclusive = matches!(search, CharSearch::ForwardFind | CharSearch::BackwardFind);
         self.apply_motion(
             buf,
             Motion {
@@ -1084,11 +1097,10 @@ impl VimState {
             let to = if self.visual() {
                 VimPosition {
                     line: motion.to.line,
-                    col: motion.to.col.min(
-                        buf.lines
-                            .get(motion.to.line)
-                            .map_or(0, |l| line_len(l)),
-                    ),
+                    col: motion
+                        .to
+                        .col
+                        .min(buf.lines.get(motion.to.line).map_or(0, |l| line_len(l))),
                 }
             } else {
                 self.clamp_normal(buf, motion.to)
@@ -1105,13 +1117,15 @@ impl VimState {
         if motion.inclusive {
             end = VimPosition {
                 line: end.line,
-                col: next_char_start(
-                    buf.lines.get(end.line).map_or("", String::as_str),
-                    end.col,
-                ),
+                col: next_char_start(buf.lines.get(end.line).map_or("", String::as_str), end.col),
             };
         }
-        self.operate(operator.unwrap_or(VimOperator::Delete), start, end, motion.linewise)
+        self.operate(
+            operator.unwrap_or(VimOperator::Delete),
+            start,
+            end,
+            motion.linewise,
+        )
     }
 
     fn operate(
@@ -1358,8 +1372,7 @@ impl VimState {
                 if self.operator == Some(operator) {
                     let span = self.take_count();
                     self.operator = None;
-                    let last =
-                        (buf.cursor_line + span - 1).min(buf.lines.len().saturating_sub(1));
+                    let last = (buf.cursor_line + span - 1).min(buf.lines.len().saturating_sub(1));
                     return self.operate(
                         operator,
                         VimPosition {
@@ -1495,40 +1508,85 @@ mod tests {
     fn word_motions_w_b_e_and_big_variants() {
         let b = VimBuffer::from_flat("foo bar-baz qux", 0);
         let mut s = VimState::new();
-        assert_eq!(send(&mut s, &b, "w"), vec![VimCommand::Move { to: pos(0, 4) }]);
+        assert_eq!(
+            send(&mut s, &b, "w"),
+            vec![VimCommand::Move { to: pos(0, 4) }]
+        );
         // `W` folds punctuation into the word, so the WORD ends at the gap.
         let b = VimBuffer::from_flat("foo bar-baz qux", 4);
-        assert_eq!(send(&mut s, &b, "W"), vec![VimCommand::Move { to: pos(0, 12) }]);
-        assert_eq!(send(&mut s, &b, "E"), vec![VimCommand::Move { to: pos(0, 10) }]);
-        assert_eq!(send(&mut s, &b, "B"), vec![VimCommand::Move { to: pos(0, 0) }]);
+        assert_eq!(
+            send(&mut s, &b, "W"),
+            vec![VimCommand::Move { to: pos(0, 12) }]
+        );
+        assert_eq!(
+            send(&mut s, &b, "E"),
+            vec![VimCommand::Move { to: pos(0, 10) }]
+        );
+        assert_eq!(
+            send(&mut s, &b, "B"),
+            vec![VimCommand::Move { to: pos(0, 0) }]
+        );
         let b = VimBuffer::from_flat("foo bar", 6);
-        assert_eq!(send(&mut s, &b, "e"), vec![VimCommand::Move { to: pos(0, 6) }]);
-        assert_eq!(send(&mut s, &b, "b"), vec![VimCommand::Move { to: pos(0, 4) }]);
+        assert_eq!(
+            send(&mut s, &b, "e"),
+            vec![VimCommand::Move { to: pos(0, 6) }]
+        );
+        assert_eq!(
+            send(&mut s, &b, "b"),
+            vec![VimCommand::Move { to: pos(0, 4) }]
+        );
     }
 
     #[test]
     fn gg_g_and_counts() {
         let b = VimBuffer::from_flat("one\ntwo\nthree", 0);
         let mut s = VimState::new();
-        assert_eq!(send(&mut s, &b, "G"), vec![VimCommand::Move { to: pos(2, 0) }]);
-        assert_eq!(send(&mut s, &b, "gg"), vec![VimCommand::Move { to: pos(0, 0) }]);
-        assert_eq!(send(&mut s, &b, "2G"), vec![VimCommand::Move { to: pos(1, 0) }]);
+        assert_eq!(
+            send(&mut s, &b, "G"),
+            vec![VimCommand::Move { to: pos(2, 0) }]
+        );
+        assert_eq!(
+            send(&mut s, &b, "gg"),
+            vec![VimCommand::Move { to: pos(0, 0) }]
+        );
+        assert_eq!(
+            send(&mut s, &b, "2G"),
+            vec![VimCommand::Move { to: pos(1, 0) }]
+        );
         let b = VimBuffer::from_flat("aaa bbb ccc", 0);
-        assert_eq!(send(&mut s, &b, "2w"), vec![VimCommand::Move { to: pos(0, 8) }]);
+        assert_eq!(
+            send(&mut s, &b, "2w"),
+            vec![VimCommand::Move { to: pos(0, 8) }]
+        );
     }
 
     #[test]
     fn f_f_t_t_char_search() {
         let b = VimBuffer::from_flat("a.b.c", 0);
         let mut s = VimState::new();
-        assert_eq!(send(&mut s, &b, "f."), vec![VimCommand::Move { to: pos(0, 1) }]);
-        assert_eq!(send(&mut s, &b, "2f."), vec![VimCommand::Move { to: pos(0, 3) }]);
+        assert_eq!(
+            send(&mut s, &b, "f."),
+            vec![VimCommand::Move { to: pos(0, 1) }]
+        );
+        assert_eq!(
+            send(&mut s, &b, "2f."),
+            vec![VimCommand::Move { to: pos(0, 3) }]
+        );
         let b = VimBuffer::from_flat("a.b.c", 4);
-        assert_eq!(send(&mut s, &b, "F."), vec![VimCommand::Move { to: pos(0, 3) }]);
+        assert_eq!(
+            send(&mut s, &b, "F."),
+            vec![VimCommand::Move { to: pos(0, 3) }]
+        );
         let b = VimBuffer::from_flat("a.b.c", 0);
-        assert_eq!(send(&mut s, &b, "t."), vec![VimCommand::Move { to: pos(0, 0) }]);
+        assert_eq!(
+            send(&mut s, &b, "t."),
+            vec![VimCommand::Move { to: pos(0, 0) }]
+        );
         let b = VimBuffer::from_flat("xa;b", 0);
-        assert_eq!(send(&mut s, &b, "t;"), vec![VimCommand::Move { to: pos(0, 1) }]);
+        assert_eq!(
+            send(&mut s, &b, "t;"),
+            vec![VimCommand::Move { to: pos(0, 1) }]
+        );
         // `df,` on "a,b,c" at col 2: lands on the comma at 3, inclusive.
         let b = VimBuffer::from_flat("a,b,c", 2);
         let mut s = VimState::new();
@@ -1673,7 +1731,11 @@ mod tests {
         assert_eq!(s.mode, VimMode::Insert);
         assert!(matches!(
             cmds.as_slice(),
-            [VimCommand::Move { .. }, VimCommand::Delete { insert: true, .. }, VimCommand::Mode(VimMode::Insert)]
+            [
+                VimCommand::Move { .. },
+                VimCommand::Delete { insert: true, .. },
+                VimCommand::Mode(VimMode::Insert)
+            ]
         ));
     }
 
@@ -1683,11 +1745,17 @@ mod tests {
         let mut s = VimState::new();
         assert_eq!(
             send(&mut s, &b, "p"),
-            vec![VimCommand::Paste { after: true, count: 1 }]
+            vec![VimCommand::Paste {
+                after: true,
+                count: 1
+            }]
         );
         assert_eq!(
             send(&mut s, &b, "3P"),
-            vec![VimCommand::Paste { after: false, count: 3 }]
+            vec![VimCommand::Paste {
+                after: false,
+                count: 3
+            }]
         );
         assert_eq!(send(&mut s, &b, "u"), vec![VimCommand::Undo]);
     }
@@ -1831,7 +1899,10 @@ mod tests {
     fn visual_select_and_delete() {
         let b = VimBuffer::from_flat("abcdef", 1);
         let mut s = VimState::new();
-        assert_eq!(send(&mut s, &b, "v"), vec![VimCommand::Mode(VimMode::Visual)]);
+        assert_eq!(
+            send(&mut s, &b, "v"),
+            vec![VimCommand::Mode(VimMode::Visual)]
+        );
         let (_, cmds) = s.handle_key(key('l'), &b);
         // Visual mode may sit one past the last selected char.
         assert_eq!(cmds, vec![VimCommand::Move { to: pos(0, 2) }]);

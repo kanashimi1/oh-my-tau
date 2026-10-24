@@ -40,7 +40,13 @@ pub struct RetryConfig {
 
 impl Default for RetryConfig {
     fn default() -> Self {
-        Self { enabled: true, max_retries: 10, base_delay_ms: 500, max_delay_ms: 300_000, revert_policy: "cooldown-expiry".into() }
+        Self {
+            enabled: true,
+            max_retries: 10,
+            base_delay_ms: 500,
+            max_delay_ms: 300_000,
+            revert_policy: "cooldown-expiry".into(),
+        }
     }
 }
 
@@ -63,7 +69,10 @@ impl RetryConfig {
         if let Some(v) = r.get("maxDelayMs").and_then(serde_yaml_ng::Value::as_u64) {
             c.max_delay_ms = v;
         }
-        if r.get("fallbackRevertPolicy").and_then(serde_yaml_ng::Value::as_str) == Some("never") {
+        if r.get("fallbackRevertPolicy")
+            .and_then(serde_yaml_ng::Value::as_str)
+            == Some("never")
+        {
             c.revert_policy = "never".into();
         }
         c
@@ -119,9 +128,15 @@ impl RetryConfig {
     /// Capped exponential delay (`calculateRetryBackoffDelayMs`): `base * 2^(attempt-1)`,
     /// capped at 8 s, times `1 - jitter * 0.25` with `jitter` in `[0, 1)`.
     #[must_use]
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     pub fn backoff_ms(&self, attempt: u32, jitter: f64) -> u64 {
-        let capped = (self.base_delay_ms as f64 * 2f64.powi(i32::try_from(attempt.saturating_sub(1).min(30)).unwrap_or(30))).min(8_000.0);
+        let capped = (self.base_delay_ms as f64
+            * 2f64.powi(i32::try_from(attempt.saturating_sub(1).min(30)).unwrap_or(30)))
+        .min(8_000.0);
         (capped * (1.0 - jitter.clamp(0.0, 1.0) * 0.25)) as u64
     }
 }
@@ -132,9 +147,15 @@ impl RetryConfig {
 #[must_use]
 pub fn is_retryable_error(status: Option<u16>, message: &str) -> bool {
     let m = message.to_ascii_lowercase();
-    if ["context length", "context window", "prompt is too long", "maximum context", "too many tokens"]
-        .iter()
-        .any(|p| m.contains(p))
+    if [
+        "context length",
+        "context window",
+        "prompt is too long",
+        "maximum context",
+        "too many tokens",
+    ]
+    .iter()
+    .any(|p| m.contains(p))
     {
         return false;
     }
@@ -143,8 +164,21 @@ pub fn is_retryable_error(status: Option<u16>, message: &str) -> bool {
         return matches!(s, 408 | 409 | 425 | 429) || s >= 500;
     }
     [
-        "rate limit", "overloaded", "timeout", "timed out", "connection reset", "connection closed", "connection refused",
-        "broken pipe", "unexpected eof", "socket", "temporarily unavailable", "usage limit", "quota", "network", "stream ended",
+        "rate limit",
+        "overloaded",
+        "timeout",
+        "timed out",
+        "connection reset",
+        "connection closed",
+        "connection refused",
+        "broken pipe",
+        "unexpected eof",
+        "socket",
+        "temporarily unavailable",
+        "usage limit",
+        "quota",
+        "network",
+        "stream ended",
     ]
     .iter()
     .any(|p| m.contains(p))
@@ -237,7 +271,12 @@ pub(crate) fn parse_selector(s: &str) -> Option<Selector> {
         Some(Sel::Level(l)) => Some(l),
         _ => None,
     };
-    Some(Selector { raw: raw.to_string(), provider: provider.into(), id: id.into(), level })
+    Some(Selector {
+        raw: raw.to_string(),
+        provider: provider.into(),
+        id: id.into(),
+        level,
+    })
 }
 
 fn is_model_key(k: &str) -> bool {
@@ -249,7 +288,8 @@ fn is_wildcard(k: &str) -> bool {
 }
 
 type ExistsFn = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
-type ClampFn = Arc<dyn Fn(&str, &str, Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel> + Send + Sync>;
+type ClampFn =
+    Arc<dyn Fn(&str, &str, Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel> + Send + Sync>;
 
 /// Model lookups the resolution needs from the catalog: whether a model exists
 /// (aggregator -> direct id rewrite) and how a thinking level clamps on a model
@@ -270,9 +310,15 @@ impl ModelLookup {
     /// Lookup with an explicit clamp (`provider`, `id`, requested level -> effective level).
     pub fn new(
         exists: impl Fn(&str, &str) -> bool + Send + Sync + 'static,
-        clamp: impl Fn(&str, &str, Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel> + Send + Sync + 'static,
+        clamp: impl Fn(&str, &str, Option<ModelThinkingLevel>) -> Option<ModelThinkingLevel>
+            + Send
+            + Sync
+            + 'static,
     ) -> Self {
-        Self { exists: Arc::new(exists), clamp: Arc::new(clamp) }
+        Self {
+            exists: Arc::new(exists),
+            clamp: Arc::new(clamp),
+        }
     }
 
     /// Existence-only lookup: levels never clamp, so only identical efforts match.
@@ -289,7 +335,9 @@ impl ModelLookup {
         let find = {
             let (dir, cfg) = (dir, cfg);
             move |p: &str, i: &str| {
-                let cfg = cfg.get_or_init(|| crate::Config::load(&dir).ok()).as_ref()?;
+                let cfg = cfg
+                    .get_or_init(|| crate::Config::load(&dir).ok())
+                    .as_ref()?;
                 crate::find_model(&dir, cfg, p, i).ok()
             }
         };
@@ -357,9 +405,19 @@ impl FallbackConfig {
     /// Chains with the `default` chain applied to every non-kind role lacking its own.
     fn expanded(&self) -> Vec<(String, Vec<String>)> {
         let mut out = self.chains.clone();
-        let Some(default) = self.chains.iter().find(|(k, _)| k == "default").map(|(_, v)| v.clone()) else { return out };
+        let Some(default) = self
+            .chains
+            .iter()
+            .find(|(k, _)| k == "default")
+            .map(|(_, v)| v.clone())
+        else {
+            return out;
+        };
         for role in self.roles.keys() {
-            if role != "default" && !KIND_ROLES.contains(&role.as_str()) && !out.iter().any(|(k, _)| k == role) {
+            if role != "default"
+                && !KIND_ROLES.contains(&role.as_str())
+                && !out.iter().any(|(k, _)| k == role)
+            {
                 out.push((role.clone(), default.clone()));
             }
         }
@@ -369,7 +427,9 @@ impl FallbackConfig {
     fn wildcard(&self, key: &str) -> (String, Option<String>) {
         let template = &key[..key.len() - 2];
         match template.split_once('/') {
-            Some((p, rest)) if !self.known_providers.contains(template) => (p.to_string(), Some(rest.to_string())),
+            Some((p, rest)) if !self.known_providers.contains(template) => {
+                (p.to_string(), Some(rest.to_string()))
+            }
             _ => (template.to_string(), None),
         }
     }
@@ -396,9 +456,14 @@ impl FallbackConfig {
             return Match::Base;
         }
         let normalized = self.model_exists.as_ref().is_some_and(|m| {
-            (m.clamp)(&cur.provider, &cur.id, p.level) == (m.clamp)(&cur.provider, &cur.id, cur.level)
+            (m.clamp)(&cur.provider, &cur.id, p.level)
+                == (m.clamp)(&cur.provider, &cur.id, cur.level)
         });
-        if normalized { Match::Normalized } else { Match::Effort }
+        if normalized {
+            Match::Normalized
+        } else {
+            Match::Effort
+        }
     }
 
     /// Which chain key serves `current` (a `provider/id[:level]` selector).
@@ -440,7 +505,11 @@ impl FallbackConfig {
                 continue;
             }
             let (provider, prefix) = self.wildcard(key);
-            if provider != cur.provider || prefix.as_deref().is_some_and(|p| !cur.id.starts_with(&format!("{p}/"))) {
+            if provider != cur.provider
+                || prefix
+                    .as_deref()
+                    .is_some_and(|p| !cur.id.starts_with(&format!("{p}/")))
+            {
                 continue;
             }
             let len = prefix.map_or(0, |p| p.len());
@@ -482,7 +551,10 @@ impl FallbackConfig {
             return effort_only;
         }
         // 4. default chain, even when its primary is another model.
-        chains.iter().find(|(k, v)| k == "default" && !v.is_empty()).map(|(k, _)| k.clone())
+        chains
+            .iter()
+            .find(|(k, v)| k == "default" && !v.is_empty())
+            .map(|(k, _)| k.clone())
     }
 
     fn chain_entry(&self, entry: &str, cur: Option<&Selector>) -> Option<Selector> {
@@ -492,29 +564,48 @@ impl FallbackConfig {
         let cur = cur?;
         let (provider, prefix) = self.wildcard(entry);
         let bare = cur.id.rsplit('/').next().unwrap_or(&cur.id).to_string();
-        let exists = |p: &str, i: &str| self.model_exists.as_ref().is_some_and(|m| (m.exists)(p, i));
+        let exists =
+            |p: &str, i: &str| self.model_exists.as_ref().is_some_and(|m| (m.exists)(p, i));
         let id = match prefix {
             Some(p) => format!("{p}/{bare}"),
             // Aggregator -> direct: the failing id carries a vendor prefix the target provider
             // does not use (openrouter/google/x -> google-vertex/x).
-            None if bare != cur.id && !exists(&provider, &cur.id) && exists(&provider, &bare) => bare,
+            None if bare != cur.id && !exists(&provider, &cur.id) && exists(&provider, &bare) => {
+                bare
+            }
             None => cur.id.clone(),
         };
-        Some(Selector { raw: format!("{provider}/{id}"), provider, id, level: None })
+        Some(Selector {
+            raw: format!("{provider}/{id}"),
+            provider,
+            id,
+            level: None,
+        })
     }
 
     /// Selectors to try after `current` fails, in order. Empty when no chain applies.
     #[must_use]
     pub fn candidates(&self, current: &str, role_hint: Option<&str>) -> Vec<String> {
-        let Some(key) = self.chain_key(current, role_hint) else { return Vec::new() };
+        let Some(key) = self.chain_key(current, role_hint) else {
+            return Vec::new();
+        };
         self.candidates_for_key(&key, current, CandidateOptions::default())
     }
 
     /// Candidates of one chain `key` after `current` (`findRetryFallbackCandidates`).
     #[must_use]
-    pub fn candidates_for_key(&self, key: &str, current: &str, opts: CandidateOptions<'_>) -> Vec<String> {
+    pub fn candidates_for_key(
+        &self,
+        key: &str,
+        current: &str,
+        opts: CandidateOptions<'_>,
+    ) -> Vec<String> {
         let chains = self.expanded();
-        let entries = chains.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_slice()).unwrap_or_default();
+        let entries = chains
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_slice())
+            .unwrap_or_default();
         let cur = parse_selector(current);
         let mut seen = BTreeSet::new();
         let mut chain: Vec<Selector> = Vec::new();
@@ -541,14 +632,17 @@ impl FallbackConfig {
                 }
             }
         }
-        let Some(cur) = cur else { return chain.into_iter().map(|s| s.raw).collect() };
+        let Some(cur) = cur else {
+            return chain.into_iter().map(|s| s.raw).collect();
+        };
         if chain.len() <= 1 {
             return Vec::new();
         }
-        let idx = chain
-            .iter()
-            .position(|s| s.raw == cur.raw)
-            .or_else(|| chain.iter().position(|s| s.provider == cur.provider && s.id == cur.id));
+        let idx = chain.iter().position(|s| s.raw == cur.raw).or_else(|| {
+            chain
+                .iter()
+                .position(|s| s.provider == cur.provider && s.id == cur.id)
+        });
         match idx {
             Some(i) => {
                 let mut out: Vec<String> = chain[i + 1..].iter().map(|s| s.raw.clone()).collect();
@@ -577,7 +671,11 @@ pub struct FallbackWalker {
 impl FallbackWalker {
     #[must_use]
     pub(crate) fn new(dir: crate::AgentDir, selectors: Vec<String>) -> Self {
-        Self { dir, remaining: selectors.into(), skipped: Vec::new() }
+        Self {
+            dir,
+            remaining: selectors.into(),
+            skipped: Vec::new(),
+        }
     }
 
     /// Remaining candidate selectors (not yet resolved).
@@ -627,7 +725,14 @@ pub fn parse_rate_limit_reason(message: &str) -> RateLimitReason {
     if has(&["capacity", "overloaded", "529", "503"]) {
         return RateLimitReason::ModelCapacityExhausted;
     }
-    if has(&["per minute", "rate limit", "rate_limit", "too many requests", "tpm", "rpm"]) {
+    if has(&[
+        "per minute",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "tpm",
+        "rpm",
+    ]) {
         return RateLimitReason::RateLimitExceeded;
     }
     if has(&[
@@ -658,7 +763,9 @@ pub fn rate_limit_backoff_ms(reason: RateLimitReason, rand01: f64) -> u64 {
         RateLimitReason::RateLimitExceeded => 30_000,
         RateLimitReason::ConcurrentLimit => 5_000,
         // 45 s base + up to 30 s jitter
-        RateLimitReason::ModelCapacityExhausted => 45_000 + (rand01.clamp(0.0, 1.0) * 30_000.0) as u64,
+        RateLimitReason::ModelCapacityExhausted => {
+            45_000 + (rand01.clamp(0.0, 1.0) * 30_000.0) as u64
+        }
         RateLimitReason::ServerError => 20_000,
         RateLimitReason::QuotaExhausted | RateLimitReason::Unknown => 30 * 60_000,
     }
@@ -689,7 +796,11 @@ impl RevertPolicy {
     /// omp reads anything but `never` as `cooldown-expiry`.
     #[must_use]
     pub fn from_setting(value: Option<&str>) -> Self {
-        if value == Some("never") { Self::Never } else { Self::CooldownExpiry }
+        if value == Some("never") {
+            Self::Never
+        } else {
+            Self::CooldownExpiry
+        }
     }
 }
 
@@ -728,13 +839,19 @@ pub struct FallbackState {
 
 /// Cooldown key of a selector: `provider/id` without thinking suffix.
 fn suppression_key(selector: &str) -> String {
-    parse_selector(selector).map_or_else(|| selector.trim().to_string(), |s| format!("{}/{}", s.provider, s.id))
+    parse_selector(selector).map_or_else(
+        || selector.trim().to_string(),
+        |s| format!("{}/{}", s.provider, s.id),
+    )
 }
 
 impl FallbackState {
     #[must_use]
     pub fn new(policy: RevertPolicy) -> Self {
-        Self { policy, ..Self::default() }
+        Self {
+            policy,
+            ..Self::default()
+        }
     }
 
     #[must_use]
@@ -754,7 +871,9 @@ impl FallbackState {
 
     #[must_use]
     pub fn is_suppressed(&self, selector: &str, now_ms: u64) -> bool {
-        self.suppressed.get(&suppression_key(selector)).is_some_and(|until| *until > now_ms)
+        self.suppressed
+            .get(&suppression_key(selector))
+            .is_some_and(|until| *until > now_ms)
     }
 
     /// Clear one selector's cooldown after an explicit user selection.
@@ -767,7 +886,14 @@ impl FallbackState {
     }
 
     /// Record the cooldown of a failing selector; returns its length in ms.
-    pub fn note_cooldown(&mut self, current_selector: &str, retry_after_ms: Option<u64>, message: &str, now_ms: u64, rand01: f64) -> u64 {
+    pub fn note_cooldown(
+        &mut self,
+        current_selector: &str,
+        retry_after_ms: Option<u64>,
+        message: &str,
+        now_ms: u64,
+        rand01: f64,
+    ) -> u64 {
         let ms = fallback_cooldown_ms(retry_after_ms, message, rand01);
         self.suppress(current_selector, now_ms.saturating_add(ms));
         ms
@@ -777,7 +903,12 @@ impl FallbackState {
     /// owns the active walk, then the chain the current model owns when different
     /// (`retryFallbackChainKeys`).
     #[must_use]
-    pub fn chain_keys(&self, cfg: &FallbackConfig, current: &str, role_hint: Option<&str>) -> Vec<String> {
+    pub fn chain_keys(
+        &self,
+        cfg: &FallbackConfig,
+        current: &str,
+        role_hint: Option<&str>,
+    ) -> Vec<String> {
         let pinned = self.active.as_ref().map(|a| a.role.clone());
         let live = cfg.chain_key(current, role_hint);
         match (pinned, live) {
@@ -790,11 +921,20 @@ impl FallbackState {
     /// Fallback selectors to try after `current` failed, skipping cooled-down
     /// selectors and `opts.exclude_provider`; walk order follows [`Self::chain_keys`].
     #[must_use]
-    pub fn candidates(&self, cfg: &FallbackConfig, current: &str, role_hint: Option<&str>, opts: CandidateOptions<'_>, now_ms: u64) -> Vec<String> {
+    pub fn candidates(
+        &self,
+        cfg: &FallbackConfig,
+        current: &str,
+        role_hint: Option<&str>,
+        opts: CandidateOptions<'_>,
+        now_ms: u64,
+    ) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for key in self.chain_keys(cfg, current, role_hint) {
             for sel in cfg.candidates_for_key(&key, current, opts) {
-                let excluded = opts.exclude_provider.is_some_and(|p| parse_selector(&sel).is_some_and(|s| s.provider == p));
+                let excluded = opts
+                    .exclude_provider
+                    .is_some_and(|p| parse_selector(&sel).is_some_and(|s| s.provider == p));
                 if !excluded && !self.is_suppressed(&sel, now_ms) && !out.contains(&sel) {
                     out.push(sel);
                 }
@@ -807,7 +947,14 @@ impl FallbackState {
     /// `from_selector`/`from_thinking` describe the model being left. The first switch
     /// pins the original; later hops only update the applied level. The new target is
     /// not `served` until [`Self::mark_served`].
-    pub fn apply(&mut self, role: &str, from_selector: &str, from_thinking: Option<String>, applied_thinking: Option<String>, pin: bool) {
+    pub fn apply(
+        &mut self,
+        role: &str,
+        from_selector: &str,
+        from_thinking: Option<String>,
+        applied_thinking: Option<String>,
+        pin: bool,
+    ) {
         match &mut self.active {
             None => {
                 self.active = Some(ActiveFallback {
@@ -850,7 +997,12 @@ impl FallbackState {
     /// The caller resolves the primary model and its credentials, switches, and calls
     /// [`Self::clear_active`] (before the swap, so observers never see the restored
     /// primary tagged as fallback-served). `current_thinking` is the configured level now.
-    pub fn restore_plan(&mut self, current_selector: &str, current_thinking: Option<&str>, now_ms: u64) -> Option<RestorePlan> {
+    pub fn restore_plan(
+        &mut self,
+        current_selector: &str,
+        current_thinking: Option<&str>,
+        now_ms: u64,
+    ) -> Option<RestorePlan> {
         let a = self.active.as_ref()?;
         if a.pinned || self.policy != RevertPolicy::CooldownExpiry {
             return None;
@@ -874,7 +1026,10 @@ impl FallbackState {
         } else {
             current_thinking.map(str::to_string)
         };
-        Some(RestorePlan { selector: original.raw, thinking })
+        Some(RestorePlan {
+            selector: original.raw,
+            thinking,
+        })
     }
 }
 
@@ -884,25 +1039,53 @@ mod tests {
 
     fn cfg(chains: &[(&str, &[&str])], roles: &[(&str, &str)]) -> FallbackConfig {
         FallbackConfig {
-            chains: chains.iter().map(|(k, v)| ((*k).into(), v.iter().map(|s| (*s).into()).collect())).collect(),
-            roles: roles.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect(),
-            known_providers: ["zai", "openrouter", "anthropic"].iter().map(|s| (*s).into()).collect(),
+            chains: chains
+                .iter()
+                .map(|(k, v)| ((*k).into(), v.iter().map(|s| (*s).into()).collect()))
+                .collect(),
+            roles: roles
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into()))
+                .collect(),
+            known_providers: ["zai", "openrouter", "anthropic"]
+                .iter()
+                .map(|s| (*s).into())
+                .collect(),
             model_exists: None,
         }
     }
 
     #[test]
     fn role_chain_candidates_follow_current() {
-        let c = cfg(&[("judge", &["commandcode/typesafe/jev", "zai/glm-5.3-flash"])], &[("judge", "openrouter/typesafe/jev-1.13")]);
-        assert_eq!(c.chain_key("openrouter/typesafe/jev-1.13", None).as_deref(), Some("judge"));
-        assert_eq!(c.candidates("openrouter/typesafe/jev-1.13", None), ["commandcode/typesafe/jev", "zai/glm-5.3-flash"]);
-        assert_eq!(c.candidates("commandcode/typesafe/jev", Some("judge")), ["zai/glm-5.3-flash"]);
+        let c = cfg(
+            &[("judge", &["commandcode/typesafe/jev", "zai/glm-5.3-flash"])],
+            &[("judge", "openrouter/typesafe/jev-1.13")],
+        );
+        assert_eq!(
+            c.chain_key("openrouter/typesafe/jev-1.13", None).as_deref(),
+            Some("judge")
+        );
+        assert_eq!(
+            c.candidates("openrouter/typesafe/jev-1.13", None),
+            ["commandcode/typesafe/jev", "zai/glm-5.3-flash"]
+        );
+        assert_eq!(
+            c.candidates("commandcode/typesafe/jev", Some("judge")),
+            ["zai/glm-5.3-flash"]
+        );
         assert!(c.candidates("zai/glm-5.3-flash", Some("judge")).is_empty());
     }
 
     #[test]
     fn default_chain_expands_to_roles_but_not_kind_roles() {
-        let c = cfg(&[("default", &["zai/a", "zai/b"])], &[("default", "anthropic/x:medium"), ("smol", "zai/s"), ("judge", "zai/j")]);
+        let c = cfg(
+            &[("default", &["zai/a", "zai/b"])],
+            &[
+                ("default", "anthropic/x:medium"),
+                ("smol", "zai/s"),
+                ("judge", "zai/j"),
+            ],
+        );
         assert_eq!(c.chain_key("zai/s:minimal", None).as_deref(), Some("smol"));
         assert_eq!(c.candidates("zai/s", None), ["zai/a", "zai/b"]);
         // judge is a kind role: no inherited chain; unknown model falls through to default chain
@@ -913,10 +1096,17 @@ mod tests {
     #[test]
     fn model_key_and_wildcards() {
         let c = cfg(
-            &[("zai/*", &["openrouter/z-ai/*"]), ("zai/g:high", &["anthropic/c"]), ("default", &["anthropic/d"])],
+            &[
+                ("zai/*", &["openrouter/z-ai/*"]),
+                ("zai/g:high", &["anthropic/c"]),
+                ("default", &["anthropic/d"]),
+            ],
             &[],
         );
-        assert_eq!(c.chain_key("zai/g:high", None).as_deref(), Some("zai/g:high"));
+        assert_eq!(
+            c.chain_key("zai/g:high", None).as_deref(),
+            Some("zai/g:high")
+        );
         assert_eq!(c.chain_key("zai/g:low", None).as_deref(), Some("zai/*"));
         assert_eq!(c.candidates("zai/g:low", None), ["openrouter/z-ai/g"]);
         assert_eq!(c.candidates("zai/g:high", None), ["anthropic/c"]);
@@ -924,9 +1114,13 @@ mod tests {
 
     #[test]
     fn retry_config_and_backoff() {
-        let y: serde_yaml_ng::Value = serde_yaml_ng::from_str("maxRetries: 3\nmaxDelayMs: 10000").unwrap();
+        let y: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("maxRetries: 3\nmaxDelayMs: 10000").unwrap();
         let r = RetryConfig::from_yaml(Some(&y));
-        assert_eq!((r.max_retries, r.base_delay_ms, r.max_delay_ms), (3, 500, 10_000));
+        assert_eq!(
+            (r.max_retries, r.base_delay_ms, r.max_delay_ms),
+            (3, 500, 10_000)
+        );
         assert_eq!(r.backoff_ms(1, 0.0), 500);
         assert_eq!(r.backoff_ms(3, 0.0), 2000);
         assert_eq!(r.backoff_ms(10, 0.0), 8000);
@@ -938,7 +1132,10 @@ mod tests {
         assert!(is_retryable_error(None, "503 Service Unavailable"));
         assert!(is_retryable_error(None, "connection reset by peer"));
         assert!(!is_retryable_error(Some(401), "bad key"));
-        assert!(!is_retryable_error(Some(400), "maximum context length exceeded"));
+        assert!(!is_retryable_error(
+            Some(400),
+            "maximum context length exceeded"
+        ));
     }
 
     /// Bare digit runs are not HTTP statuses: a port or a "N seconds" retry
@@ -954,20 +1151,33 @@ mod tests {
         // (previously misread as status 480, same outcome but for the wrong reason;
         // the important part is the guess must not fire).
         assert!(!status_guess_is_bare_digit("try again in 480 seconds"));
-        assert!(!status_guess_is_bare_digit("connection to api.example.com:443 failed"));
-        assert!(!status_guess_is_bare_digit("via https://api.example.com:443/v1"));
+        assert!(!status_guess_is_bare_digit(
+            "connection to api.example.com:443 failed"
+        ));
+        assert!(!status_guess_is_bare_digit(
+            "via https://api.example.com:443/v1"
+        ));
         // Explicit status shapes still classify.
-        assert!(is_retryable_error(None, "provider returned http status 429, retry later"));
+        assert!(is_retryable_error(
+            None,
+            "provider returned http status 429, retry later"
+        ));
         assert!(is_retryable_error(None, "error code: 503, backend down"));
         assert!(is_retryable_error(None, "500 Internal Server Error"));
-        assert!(!is_retryable_error(None, "400 Bad Request: malformed tool call"));
+        assert!(!is_retryable_error(
+            None,
+            "400 Bad Request: malformed tool call"
+        ));
     }
 
     fn status_guess_is_bare_digit(message: &str) -> bool {
         super::status_from_message(&message.to_ascii_lowercase()).is_some()
     }
 
-    fn lookup(models: &'static [(&'static str, &'static str)], cap: ModelThinkingLevel) -> ModelLookup {
+    fn lookup(
+        models: &'static [(&'static str, &'static str)],
+        cap: ModelThinkingLevel,
+    ) -> ModelLookup {
         ModelLookup::new(
             move |p, i| models.iter().any(|(mp, mi)| *mp == p && *mi == i),
             move |_, _, l| l.map(|l| l.min(cap)),
@@ -977,12 +1187,21 @@ mod tests {
     #[test]
     fn normalized_effort_beats_suffixless_key_and_matches_clamped_levels() {
         use ModelThinkingLevel as L;
-        let mut c = cfg(&[("zai/g", &["anthropic/base"]), ("zai/g:max", &["anthropic/norm"])], &[]);
+        let mut c = cfg(
+            &[
+                ("zai/g", &["anthropic/base"]),
+                ("zai/g:max", &["anthropic/norm"]),
+            ],
+            &[],
+        );
         // no catalog: `max` and `high` stay distinct, the suffixless key serves
         assert_eq!(c.chain_key("zai/g:high", None).as_deref(), Some("zai/g"));
         // high-capped model: `max` normalizes to `high`, beating the suffixless key
         c.model_exists = Some(lookup(&[("zai", "g")], L::High));
-        assert_eq!(c.chain_key("zai/g:high", None).as_deref(), Some("zai/g:max"));
+        assert_eq!(
+            c.chain_key("zai/g:high", None).as_deref(),
+            Some("zai/g:max")
+        );
         assert_eq!(c.candidates("zai/g:high", None), ["anthropic/norm"]);
         // an effort that clamps differently stays distinct
         assert_eq!(c.chain_key("zai/g:low", None).as_deref(), Some("zai/g"));
@@ -997,25 +1216,47 @@ mod tests {
         // `b` is suffixless (base) and beats `a` whose explicit effort differs
         assert_eq!(c.chain_key("zai/m:low", None).as_deref(), Some("b"));
         let only_effort = cfg(&[("a", &["zai/x"])], &[("a", "zai/m:high")]);
-        assert_eq!(only_effort.chain_key("zai/m:low", None).as_deref(), Some("a"));
+        assert_eq!(
+            only_effort.chain_key("zai/m:low", None).as_deref(),
+            Some("a")
+        );
     }
 
     #[test]
     fn wrap_around_appends_entries_before_current() {
         let c = cfg(&[("default", &["zai/b", "zai/c"])], &[("default", "zai/a")]);
-        let wrap = CandidateOptions { wrap_around: true, ..CandidateOptions::default() };
-        assert_eq!(c.candidates_for_key("default", "zai/b", CandidateOptions::default()), ["zai/c"]);
-        assert_eq!(c.candidates_for_key("default", "zai/b", wrap), ["zai/c", "zai/a"]);
-        assert_eq!(c.candidates_for_key("default", "zai/c", wrap), ["zai/a", "zai/b"]);
+        let wrap = CandidateOptions {
+            wrap_around: true,
+            ..CandidateOptions::default()
+        };
+        assert_eq!(
+            c.candidates_for_key("default", "zai/b", CandidateOptions::default()),
+            ["zai/c"]
+        );
+        assert_eq!(
+            c.candidates_for_key("default", "zai/b", wrap),
+            ["zai/c", "zai/a"]
+        );
+        assert_eq!(
+            c.candidates_for_key("default", "zai/c", wrap),
+            ["zai/a", "zai/b"]
+        );
         // current is never returned
-        assert!(!c.candidates_for_key("default", "zai/a", wrap).contains(&"zai/a".to_string()));
+        assert!(!c
+            .candidates_for_key("default", "zai/a", wrap)
+            .contains(&"zai/a".to_string()));
     }
 
     #[test]
     fn missing_primary_needs_default_or_allow_flag() {
         let c = cfg(&[("smol", &["zai/b"])], &[]);
-        assert!(c.candidates_for_key("smol", "zai/a", CandidateOptions::default()).is_empty());
-        let allow = CandidateOptions { allow_missing_primary: true, ..CandidateOptions::default() };
+        assert!(c
+            .candidates_for_key("smol", "zai/a", CandidateOptions::default())
+            .is_empty());
+        let allow = CandidateOptions {
+            allow_missing_primary: true,
+            ..CandidateOptions::default()
+        };
         assert_eq!(c.candidates_for_key("smol", "zai/a", allow), ["zai/b"]);
     }
 
@@ -1023,30 +1264,53 @@ mod tests {
     fn aggregator_to_direct_id_rewrite_uses_catalog() {
         let mut c = cfg(&[("openrouter/*", &["zai/*", "anthropic/*"])], &[]);
         // without a catalog the id is kept verbatim
-        assert_eq!(c.candidates("openrouter/google/gem", None), ["zai/google/gem", "anthropic/google/gem"]);
+        assert_eq!(
+            c.candidates("openrouter/google/gem", None),
+            ["zai/google/gem", "anthropic/google/gem"]
+        );
         c.model_exists = Some(ModelLookup::exists_only(|p, i| (p, i) == ("zai", "gem")));
         // zai lacks `google/gem` but has `gem`: rewritten; anthropic has neither: kept
-        assert_eq!(c.candidates("openrouter/google/gem", None), ["zai/gem", "anthropic/google/gem"]);
+        assert_eq!(
+            c.candidates("openrouter/google/gem", None),
+            ["zai/gem", "anthropic/google/gem"]
+        );
         // a target that has the prefixed id keeps it
-        c.model_exists = Some(ModelLookup::exists_only(|p, i| p == "zai" && (i == "gem" || i == "google/gem")));
-        assert_eq!(c.candidates("openrouter/google/gem", None)[0], "zai/google/gem");
+        c.model_exists = Some(ModelLookup::exists_only(|p, i| {
+            p == "zai" && (i == "gem" || i == "google/gem")
+        }));
+        assert_eq!(
+            c.candidates("openrouter/google/gem", None)[0],
+            "zai/google/gem"
+        );
     }
 
     #[test]
     fn cooldown_durations_follow_rate_limit_reason() {
         assert_eq!(fallback_cooldown_ms(Some(1234), "anything", 0.0), 1234);
         assert_eq!(fallback_cooldown_ms(Some(0), "weird failure", 0.0), 300_000);
-        assert_eq!(fallback_cooldown_ms(None, "429 rate limit exceeded", 0.0), 30_000);
+        assert_eq!(
+            fallback_cooldown_ms(None, "429 rate limit exceeded", 0.0),
+            30_000
+        );
         assert_eq!(fallback_cooldown_ms(None, "quota exceeded", 0.0), 1_800_000);
         assert_eq!(fallback_cooldown_ms(None, "model overloaded", 0.0), 45_000);
         assert_eq!(fallback_cooldown_ms(None, "model overloaded", 0.5), 60_000);
-        assert_eq!(fallback_cooldown_ms(None, "internal server error", 0.0), 20_000);
-        assert_eq!(parse_rate_limit_reason("Your quota will reset after 3h"), RateLimitReason::QuotaExhausted);
+        assert_eq!(
+            fallback_cooldown_ms(None, "internal server error", 0.0),
+            20_000
+        );
+        assert_eq!(
+            parse_rate_limit_reason("Your quota will reset after 3h"),
+            RateLimitReason::QuotaExhausted
+        );
     }
 
     #[test]
     fn state_cooldown_filters_candidates_and_excluded_provider() {
-        let c = cfg(&[("default", &["zai/b", "anthropic/c", "zai/d"])], &[("default", "zai/a")]);
+        let c = cfg(
+            &[("default", &["zai/b", "anthropic/c", "zai/d"])],
+            &[("default", "zai/a")],
+        );
         let mut st = FallbackState::new(RevertPolicy::CooldownExpiry);
         st.note_cooldown("zai/a:high", Some(1000), "x", 10, 0.0);
         assert!(st.is_suppressed("zai/a", 500));
@@ -1054,10 +1318,16 @@ mod tests {
         st.suppress("zai/b", 100);
         let got = st.candidates(&c, "zai/a", None, CandidateOptions::default(), 50);
         assert_eq!(got, ["anthropic/c", "zai/d"]);
-        let excl = CandidateOptions { exclude_provider: Some("zai"), ..CandidateOptions::default() };
+        let excl = CandidateOptions {
+            exclude_provider: Some("zai"),
+            ..CandidateOptions::default()
+        };
         assert_eq!(st.candidates(&c, "zai/a", None, excl, 50), ["anthropic/c"]);
         // cooldown expired: b is back
-        assert_eq!(st.candidates(&c, "zai/a", None, CandidateOptions::default(), 200)[0], "zai/b");
+        assert_eq!(
+            st.candidates(&c, "zai/a", None, CandidateOptions::default(), 200)[0],
+            "zai/b"
+        );
     }
 
     #[test]
@@ -1068,10 +1338,19 @@ mod tests {
         );
         let mut st = FallbackState::new(RevertPolicy::default());
         assert_eq!(st.chain_keys(&c, "zai/a", None), ["default"]);
-        st.apply("default", "zai/a", Some("high".into()), Some("high".into()), false);
+        st.apply(
+            "default",
+            "zai/a",
+            Some("high".into()),
+            Some("high".into()),
+            false,
+        );
         // landed on zai/b, which owns its own chain: walk pinned chain then b's chain
         assert_eq!(st.chain_keys(&c, "zai/b", None), ["default", "zai/b"]);
-        assert_eq!(st.candidates(&c, "zai/b", None, CandidateOptions::default(), 0), ["anthropic/c"]);
+        assert_eq!(
+            st.candidates(&c, "zai/b", None, CandidateOptions::default(), 0),
+            ["anthropic/c"]
+        );
     }
 
     #[test]
@@ -1083,9 +1362,18 @@ mod tests {
         assert!(st.mark_served());
         assert!(!st.mark_served());
         // next hop re-arms; pin is sticky; original stays
-        st.apply("default", "zai/b", Some("low".into()), Some("low".into()), true);
+        st.apply(
+            "default",
+            "zai/b",
+            Some("low".into()),
+            Some("low".into()),
+            true,
+        );
         let a = st.active().unwrap();
-        assert_eq!((a.original_selector.as_str(), a.pinned, a.served), ("zai/a", true, false));
+        assert_eq!(
+            (a.original_selector.as_str(), a.pinned, a.served),
+            ("zai/a", true, false)
+        );
         assert!(st.mark_served());
     }
 
@@ -1093,17 +1381,32 @@ mod tests {
     fn revert_to_primary_after_cooldown_expiry() {
         let mut st = FallbackState::new(RevertPolicy::CooldownExpiry);
         assert!(st.restore_plan("zai/b", None, 0).is_none()); // nothing active
-        st.apply("default", "zai/a:high", Some("high".into()), Some("low".into()), false);
+        st.apply(
+            "default",
+            "zai/a:high",
+            Some("high".into()),
+            Some("low".into()),
+            false,
+        );
         st.suppress("zai/a:high", 1000);
         assert!(st.restore_plan("zai/b:low", Some("low"), 500).is_none()); // still cooling
-        // cooldown over; level unchanged since the switch -> original level comes back
+                                                                           // cooldown over; level unchanged since the switch -> original level comes back
         let plan = st.restore_plan("zai/b:low", Some("low"), 1000).unwrap();
-        assert_eq!((plan.selector.as_str(), plan.thinking.as_deref()), ("zai/a:high", Some("high")));
+        assert_eq!(
+            (plan.selector.as_str(), plan.thinking.as_deref()),
+            ("zai/a:high", Some("high"))
+        );
         assert!(st.is_fallback_active());
         st.clear_active();
         assert!(!st.is_fallback_active());
         // user changed effort after the switch -> kept
-        st.apply("default", "zai/a", Some("high".into()), Some("low".into()), false);
+        st.apply(
+            "default",
+            "zai/a",
+            Some("high".into()),
+            Some("low".into()),
+            false,
+        );
         let plan = st.restore_plan("zai/b", Some("max"), 1000).unwrap();
         assert_eq!(plan.thinking.as_deref(), Some("max"));
     }

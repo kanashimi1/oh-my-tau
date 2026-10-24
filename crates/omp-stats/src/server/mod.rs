@@ -25,5 +25,7 @@ mod roots_tests;
 mod tests;
 
 pub use api::{handle_api, ApiResponse, STATS_ACTION_HEADER};
-pub use start::{format_stats_dashboard_url, start_server, StartServerOptions, StatsServerHandle, DEFAULT_PORT};
+pub use start::{
+    format_stats_dashboard_url, start_server, StartServerOptions, StatsServerHandle, DEFAULT_PORT,
+};
 pub use statics::handle_static;

@@ -47,7 +47,9 @@ fn runner_speaks_protocol() {
 #[test]
 fn state_persists_across_cells() {
     let k = kernel("state");
-    let r1 = k.execute("let accum = 41\naccum + 1", None).expect("cell 1");
+    let r1 = k
+        .execute("let accum = 41\naccum + 1", None)
+        .expect("cell 1");
     assert_eq!(r1.status, CellStatus::Ok);
     assert_eq!(r1.output, "42\n");
     assert_eq!(r1.execution_count, 1);
@@ -119,7 +121,11 @@ fn error_formatting_matches_omp_js() {
     assert_eq!(err.name, "Error");
     assert_eq!(err.value, "nope");
     // stack pushed like the TS executor (error.stack), runner frames filtered
-    assert!(err.traceback[0].starts_with("Error: nope"), "{:?}", err.traceback);
+    assert!(
+        err.traceback[0].starts_with("Error: nope"),
+        "{:?}",
+        err.traceback
+    );
     assert!(
         err.traceback.iter().any(|l| l.contains("boom")),
         "user frame kept: {:?}",
@@ -173,15 +179,15 @@ fn display_and_prelude_helpers() {
     assert_eq!(r.status, CellStatus::Ok);
     assert_eq!(r.output, "\"l2\\nl3\"\n", "output: {:?}", r.output);
 
-    let r2 = k.execute("display({ a: 1 })\n'done'", None).expect("display cell");
+    let r2 = k
+        .execute("display({ a: 1 })\n'done'", None)
+        .expect("display cell");
     assert_eq!(r2.output, "\"done\"\n"); // Bun.inspect: quoted string
     assert_eq!(r2.displays.len(), 1);
-    assert!(
-        r2.displays[0]
-            .get("text/plain")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s.contains("a: 1"))
-    );
+    assert!(r2.displays[0]
+        .get("text/plain")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s.contains("a: 1")));
     std::fs::remove_file(&file).ok();
     k.shutdown();
 }

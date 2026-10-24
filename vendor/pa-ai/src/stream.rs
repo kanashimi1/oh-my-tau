@@ -34,12 +34,14 @@ fn estimated_input_tokens(context: &Context) -> u64 {
     }
     for message in &context.messages {
         chars = chars.saturating_add(match message {
-            crate::types::Message::User(user) | crate::types::Message::Developer(user) => match &user.content {
-                crate::types::UserMessageContent::Text(text) => text.chars().count() as u64,
-                crate::types::UserMessageContent::Blocks(blocks) => {
-                    user_content_block_chars(blocks)
+            crate::types::Message::User(user) | crate::types::Message::Developer(user) => {
+                match &user.content {
+                    crate::types::UserMessageContent::Text(text) => text.chars().count() as u64,
+                    crate::types::UserMessageContent::Blocks(blocks) => {
+                        user_content_block_chars(blocks)
+                    }
                 }
-            },
+            }
             crate::types::Message::Assistant(assistant) => assistant
                 .content
                 .iter()
@@ -84,7 +86,11 @@ fn user_content_block_chars(blocks: &[crate::types::UserOrToolContent]) -> u64 {
 /// The TS facade never clamps; this is a deliberate Rust-side guard. Budget-folding thinking
 /// providers (Anthropic, Bedrock) add their budget after this clamp and cap it at
 /// `model.max_tokens`.
-pub(crate) fn clamp_output_budget(model: &Model, context: &Context, options: Option<&mut StreamOptions>) {
+pub(crate) fn clamp_output_budget(
+    model: &Model,
+    context: &Context,
+    options: Option<&mut StreamOptions>,
+) {
     let Some(options) = options else {
         return;
     };
@@ -147,9 +153,15 @@ pub fn stream_simple(
     context: &Context,
     options: Option<SimpleStreamOptions>,
 ) -> Result<AssistantMessageEventStream, ProviderError> {
-    let simple = crate::transport::prepare_options(model, options.as_ref(), &crate::providers::anthropic::request::uuid_v4);
+    let simple = crate::transport::prepare_options(
+        model,
+        options.as_ref(),
+        &crate::providers::anthropic::request::uuid_v4,
+    );
     let env = crate::transport::TransportEnv::from_process();
-    if let Some(stream) = crate::transport::dispatch(model, context, &simple, &env).map_err(ProviderError::Message)? {
+    if let Some(stream) =
+        crate::transport::dispatch(model, context, &simple, &env).map_err(ProviderError::Message)?
+    {
         return Ok(stream);
     }
     // The api streams through its registered provider; the facade keeps its output-budget guard.

@@ -22,7 +22,7 @@ struct ListedModel {
 /// `omp models` action, mirroring TS `ModelsAction`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
-   Ls,
+    Ls,
     Find,
     Refresh,
 }
@@ -64,8 +64,15 @@ pub fn run(args: &[String]) -> Result<i32> {
             for r in &reports {
                 match (&r.note, r.discovered.is_empty()) {
                     (Some(note), _) => eprintln!("omp-rs: {}: {note}", r.provider),
-                    (None, true) => eprintln!("omp-rs: {}: no new models ({} cached)", r.provider, r.total),
-                    (None, false) => eprintln!("omp-rs: {}: +{} ({})", r.provider, r.discovered.len(), r.discovered.join(", ")),
+                    (None, true) => {
+                        eprintln!("omp-rs: {}: no new models ({} cached)", r.provider, r.total)
+                    }
+                    (None, false) => eprintln!(
+                        "omp-rs: {}: +{} ({})",
+                        r.provider,
+                        r.discovered.len(),
+                        r.discovered.join(", ")
+                    ),
                 }
             }
         }
@@ -160,20 +167,39 @@ pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
         map: &mut BTreeMap<(String, String), ListedModel>,
         meta: &mut Meta,
     ) {
-        let Some(mut model) = lenient_model(entry, provider) else { return };
+        let Some(mut model) = lenient_model(entry, provider) else {
+            return;
+        };
         if model.provider.is_empty() {
             model.provider = provider.to_owned();
         }
         let key = (model.provider.clone(), model.id.clone());
-        let kind = entry.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned();
-        meta.insert(key.clone(), (kind, entry.get("priority").and_then(Value::as_i64)));
-        map.insert(key, ListedModel { model, efforts: None });
+        let kind = entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        meta.insert(
+            key.clone(),
+            (kind, entry.get("priority").and_then(Value::as_i64)),
+        );
+        map.insert(
+            key,
+            ListedModel {
+                model,
+                efforts: None,
+            },
+        );
     }
     for (provider, entry) in bundled_catalog() {
         put(&provider, &entry, &mut map, &mut meta);
     }
     for (provider_id, entries) in db_cache_models(&dir.0.join("models.db")) {
-        let provider = provider_id.split(':').next().unwrap_or(&provider_id).to_string();
+        let provider = provider_id
+            .split(':')
+            .next()
+            .unwrap_or(&provider_id)
+            .to_string();
         for entry in entries {
             put(&provider, &entry, &mut map, &mut meta);
         }
@@ -182,7 +208,13 @@ pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
         if let Some(model) = custom_model(&provider, &entry) {
             let key = (model.provider.clone(), model.id.clone());
             meta.insert(key.clone(), (String::new(), None));
-            map.insert(key, ListedModel { model, efforts: None });
+            map.insert(
+                key,
+                ListedModel {
+                    model,
+                    efforts: None,
+                },
+            );
         }
     }
     apply_overrides(&mut map, &model_overrides(&yml_path));
@@ -190,14 +222,24 @@ pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
         .into_iter()
         .map(|(key, l)| {
             let (kind, priority) = meta.remove(&key).unwrap_or_default();
-            BrowserModel { available: available.contains(&l.model.provider), model: l.model, kind, priority }
+            BrowserModel {
+                available: available.contains(&l.model.provider),
+                model: l.model,
+                kind,
+                priority,
+            }
         })
         .collect();
     for provider in KEYLESS_PROVIDERS {
         if !out.iter().any(|b| b.model.provider == provider) {
             if let Some(mut m) = lenient_model(&json!({"id": "-", "name": "-"}), provider) {
                 m.id = String::new();
-                out.push(BrowserModel { model: m, available: true, kind: String::new(), priority: None });
+                out.push(BrowserModel {
+                    model: m,
+                    available: true,
+                    kind: String::new(),
+                    priority: None,
+                });
             }
         }
     }
@@ -206,32 +248,49 @@ pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
 
 fn collect_all(
     dir: &omp_providers::AgentDir,
-) -> (BTreeMap<(String, String), ListedModel>, std::collections::BTreeSet<String>) {
+) -> (
+    BTreeMap<(String, String), ListedModel>,
+    std::collections::BTreeSet<String>,
+) {
     let mut out: BTreeMap<(String, String), ListedModel> = BTreeMap::new();
     let yml_path = dir.0.join("models.yml");
     let available = available_providers(&yml_path, &dir.0.join("agent.db"));
 
     for provider in pa_ai::models_generated::get_providers() {
         for model in pa_ai::models_generated::get_models(provider) {
-            let efforts = model.thinking_level_map.as_ref().map(|map| {
-                map.keys().map(|l| level_name(*l)).collect::<Vec<_>>()
-            });
+            let efforts = model
+                .thinking_level_map
+                .as_ref()
+                .map(|map| map.keys().map(|l| level_name(*l)).collect::<Vec<_>>());
             out.insert(
                 (model.provider.clone(), model.id.clone()),
-                ListedModel { model: model.clone(), efforts },
+                ListedModel {
+                    model: model.clone(),
+                    efforts,
+                },
             );
         }
     }
 
     for (provider_id, entries) in db_cache_models(&dir.0.join("models.db")) {
-        let provider = provider_id.split(':').next().unwrap_or(&provider_id).to_string();
+        let provider = provider_id
+            .split(':')
+            .next()
+            .unwrap_or(&provider_id)
+            .to_string();
         for entry in entries {
             // TS `getAvailable("chat")` drops non-chat catalog rows (`kind` set
             // to image/tts/stt/embedding/rerank/video).
-            if entry.get("kind").and_then(Value::as_str).is_some_and(is_non_chat_kind) {
+            if entry
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_some_and(is_non_chat_kind)
+            {
                 continue;
             }
-            let Some(mut model) = lenient_model(&entry, &provider) else { continue };
+            let Some(mut model) = lenient_model(&entry, &provider) else {
+                continue;
+            };
             if model.provider.is_empty() {
                 model.provider.clone_from(&provider);
             }
@@ -239,14 +298,27 @@ fn collect_all(
                 .get("thinking")
                 .and_then(|t| t.get("efforts"))
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_string)).collect());
-            out.insert((model.provider.clone(), model.id.clone()), ListedModel { model, efforts });
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|e| e.as_str().map(str::to_string))
+                        .collect()
+                });
+            out.insert(
+                (model.provider.clone(), model.id.clone()),
+                ListedModel { model, efforts },
+            );
         }
     }
 
     for (provider, entry) in yml_custom_models(&yml_path) {
         if let Some(model) = custom_model(&provider, &entry) {
-            out.insert((model.provider.clone(), model.id.clone()), ListedModel { model, efforts: None });
+            out.insert(
+                (model.provider.clone(), model.id.clone()),
+                ListedModel {
+                    model,
+                    efforts: None,
+                },
+            );
         }
     }
     apply_overrides(&mut out, &model_overrides(&yml_path));
@@ -255,7 +327,10 @@ fn collect_all(
 
 /// TS `KIND_API_KINDS`: non-chat catalog kinds excluded from the chat listing.
 fn is_non_chat_kind(kind: &str) -> bool {
-    matches!(kind, "image" | "tts" | "stt" | "embedding" | "rerank" | "video" | "judge")
+    matches!(
+        kind,
+        "image" | "tts" | "stt" | "embedding" | "rerank" | "video" | "judge"
+    )
 }
 
 /// Parse a `models.db` cache entry tolerantly: rows may carry `null` limits
@@ -267,33 +342,54 @@ fn lenient_model(entry: &Value, provider: &str) -> Option<Model> {
         return Some(model);
     }
     let id = entry.get("id").and_then(Value::as_str)?.to_string();
-    let name = entry.get("name").and_then(Value::as_str).unwrap_or(&id).to_string();
-    let api = entry.get("api").and_then(Value::as_str).unwrap_or("openai-completions").to_string();
+    let name = entry
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(&id)
+        .to_string();
+    let api = entry
+        .get("api")
+        .and_then(Value::as_str)
+        .unwrap_or("openai-completions")
+        .to_string();
     let num = |key: &str| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let input = entry
-        .get("input")
-        .and_then(Value::as_array).map_or_else(|| vec![ModelInput::Text], |a| {
+    let input = entry.get("input").and_then(Value::as_array).map_or_else(
+        || vec![ModelInput::Text],
+        |a| {
             a.iter()
                 .filter_map(|v| match v.as_str()? {
                     "image" => Some(ModelInput::Image),
                     _ => Some(ModelInput::Text),
                 })
                 .collect::<Vec<_>>()
-        });
+        },
+    );
     let zero = pa_types::JsNumber(0.0);
     Some(Model {
         id,
         name,
         api,
         provider: provider.to_string(),
-        base_url: entry.get("baseUrl").and_then(Value::as_str).unwrap_or_default().to_string(),
-        reasoning: entry.get("reasoning").and_then(Value::as_bool).unwrap_or(false),
+        base_url: entry
+            .get("baseUrl")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        reasoning: entry
+            .get("reasoning")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         thinking_level_map: None,
         input,
         cost: entry
             .get("cost")
             .and_then(|c| serde_json::from_value::<pa_types::ai::ModelCost>(c.clone()).ok())
-            .unwrap_or(pa_types::ai::ModelCost { input: zero, output: zero, cache_read: zero, cache_write: zero }),
+            .unwrap_or(pa_types::ai::ModelCost {
+                input: zero,
+                output: zero,
+                cache_read: zero,
+                cache_write: zero,
+            }),
         context_window: num("contextWindow"),
         max_tokens: num("maxTokens"),
         max_tokens_explicit: true,
@@ -307,8 +403,12 @@ fn lenient_model(entry: &Value, provider: &str) -> Option<Model> {
 
 /// `providers.*.modelOverrides` from `models.yml`: `"prov/id" -> patch fields`.
 fn model_overrides(path: &Path) -> Vec<(String, String, Value)> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
-    let Ok(Value::Object(root)) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text).map(yaml_to_json) else {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(Value::Object(root)) =
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text).map(yaml_to_json)
+    else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -334,7 +434,10 @@ fn model_overrides(path: &Path) -> Vec<(String, String, Value)> {
 /// the catalog under another provider's cache (e.g. an override written for
 /// `inception/mercury-2.5` applies to the row reachable through any provider),
 /// so a provider miss falls back to an id-only match.
-fn apply_overrides(catalog: &mut BTreeMap<(String, String), ListedModel>, overrides: &[(String, String, Value)]) {
+fn apply_overrides(
+    catalog: &mut BTreeMap<(String, String), ListedModel>,
+    overrides: &[(String, String, Value)],
+) {
     for (provider, id, patch) in overrides {
         let key = (provider.clone(), id.clone());
         let target = if catalog.contains_key(&key) {
@@ -353,7 +456,9 @@ fn apply_overrides(catalog: &mut BTreeMap<(String, String), ListedModel>, overri
             };
             found
         };
-        let Some(listed) = catalog.get_mut(&target) else { continue };
+        let Some(listed) = catalog.get_mut(&target) else {
+            continue;
+        };
         let m = &mut listed.model;
         if let Some(v) = patch.get("contextWindow").and_then(Value::as_u64) {
             m.context_window = v;
@@ -372,7 +477,10 @@ fn apply_overrides(catalog: &mut BTreeMap<(String, String), ListedModel>, overri
         if let Some(v) = patch.get("reasoning").and_then(Value::as_bool) {
             m.reasoning = v;
         }
-        if let Some(v) = patch.get("cost").and_then(|c| serde_json::from_value::<pa_types::ai::ModelCost>(c.clone()).ok()) {
+        if let Some(v) = patch
+            .get("cost")
+            .and_then(|c| serde_json::from_value::<pa_types::ai::ModelCost>(c.clone()).ok())
+        {
             m.cost = v;
         }
     }
@@ -404,7 +512,9 @@ fn available_providers(models_yml: &Path, agent_db: &Path) -> std::collections::
         agent_db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     ) {
-        if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT provider FROM auth_credentials WHERE disabled_cause IS NULL") {
+        if let Ok(mut stmt) = conn
+            .prepare("SELECT DISTINCT provider FROM auth_credentials WHERE disabled_cause IS NULL")
+        {
             let rows = stmt.query_map([], |r| r.get::<_, String>(0));
             if let Ok(rows) = rows {
                 for row in rows.filter_map(std::result::Result::ok) {
@@ -429,7 +539,9 @@ fn db_cache_models(db: &Path) -> Vec<(String, Vec<Value>)> {
     ) else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare("SELECT provider_id, models FROM model_cache ORDER BY updated_at DESC") else {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT provider_id, models FROM model_cache ORDER BY updated_at DESC")
+    else {
         return Vec::new();
     };
     let rows = stmt
@@ -451,8 +563,12 @@ fn db_cache_models(db: &Path) -> Vec<(String, Vec<Value>)> {
 
 /// `providers.<name>.models[]` entries from `models.yml` (TS `Config.providers`).
 fn yml_custom_models(path: &Path) -> Vec<(String, Value)> {
-    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
-    let Ok(Value::Object(root)) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text).map(yaml_to_json) else {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(Value::Object(root)) =
+        serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text).map(yaml_to_json)
+    else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -471,18 +587,23 @@ fn yml_custom_models(path: &Path) -> Vec<(String, Value)> {
 /// Build a `Model` from a `models.yml` custom entry (TS `custom_model` defaults).
 fn custom_model(provider: &str, entry: &Value) -> Option<Model> {
     let id = entry.get("id").and_then(Value::as_str)?.to_string();
-    let name = entry.get("name").and_then(Value::as_str).unwrap_or(&id).to_string();
+    let name = entry
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(&id)
+        .to_string();
     let num = |key: &str| entry.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let input = entry
-        .get("input")
-        .and_then(Value::as_array).map_or_else(|| vec![ModelInput::Text], |a| {
+    let input = entry.get("input").and_then(Value::as_array).map_or_else(
+        || vec![ModelInput::Text],
+        |a| {
             a.iter()
                 .filter_map(|v| match v.as_str()? {
                     "image" => Some(ModelInput::Image),
                     _ => Some(ModelInput::Text),
                 })
                 .collect::<Vec<_>>()
-        });
+        },
+    );
     let zero = pa_types::JsNumber(0.0);
     let cost = entry
         .get("cost")
@@ -499,7 +620,10 @@ fn custom_model(provider: &str, entry: &Value) -> Option<Model> {
         api: "openai-completions".to_string(),
         provider: provider.to_string(),
         base_url: String::new(),
-        reasoning: entry.get("reasoning").and_then(Value::as_bool).unwrap_or(false),
+        reasoning: entry
+            .get("reasoning")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         thinking_level_map: None,
         input,
         cost,
@@ -520,7 +644,11 @@ fn level_name(level: pa_types::ai::ModelThinkingLevel) -> String {
 }
 
 /// TS `formatNumber`: compact K/M/B suffixes (`262K`, `8.2K`, `1M`).
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)] // rounded quotients of n < 2^53 by construction of the branches
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)] // rounded quotients of n < 2^53 by construction of the branches
 fn format_number(n: u64) -> String {
     let f = n as f64;
     let trim1 = |x: f64| {
@@ -548,7 +676,11 @@ fn format_number(n: u64) -> String {
 }
 
 fn format_limit(n: u64) -> String {
-    if n == 0 { "-".to_string() } else { format_number(n) }
+    if n == 0 {
+        "-".to_string()
+    } else {
+        format_number(n)
+    }
 }
 
 /// TS `sendsImageInputOnWire`: declared image input minus `compat.stripImageInput`.
@@ -568,9 +700,13 @@ fn filter_models<'a>(
     pattern: Option<&str>,
 ) -> Vec<&'a ListedModel> {
     let mut all: Vec<&ListedModel> = catalog.values().collect();
-    let Some(needle) = pattern.map(str::to_lowercase) else { return all };
+    let Some(needle) = pattern.map(str::to_lowercase) else {
+        return all;
+    };
     let exact_found = action != Action::Find
-        && all.iter().any(|m| m.model.provider.to_lowercase() == needle);
+        && all
+            .iter()
+            .any(|m| m.model.provider.to_lowercase() == needle);
     if exact_found {
         all.retain(|m| m.model.provider.to_lowercase() == needle);
     } else {
@@ -578,7 +714,9 @@ fn filter_models<'a>(
             let m = &m.model;
             m.id.to_lowercase().contains(&needle)
                 || m.provider.to_lowercase().contains(&needle)
-                || format!("{}/{}", m.provider, m.id).to_lowercase().contains(&needle)
+                || format!("{}/{}", m.provider, m.id)
+                    .to_lowercase()
+                    .contains(&needle)
                 || m.name.to_lowercase().contains(&needle)
         });
     }
@@ -590,7 +728,9 @@ fn filter_models<'a>(
 /// (measured empirically) and digit runs compared by numeric value
 /// (`k10` < `k9` is false — numeric runs sort numerically, so `k9` < `k10`).
 fn ts_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    collation_key(a).cmp(&collation_key(b)).then_with(|| a.cmp(b))
+    collation_key(a)
+        .cmp(&collation_key(b))
+        .then_with(|| a.cmp(b))
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -634,7 +774,12 @@ fn collation_key(s: &str) -> Vec<Element> {
         .collect()
 }
 
-fn render(catalog: &BTreeMap<(String, String), ListedModel>, action: Action, pattern: Option<&str>, json: bool) {
+fn render(
+    catalog: &BTreeMap<(String, String), ListedModel>,
+    action: Action,
+    pattern: Option<&str>,
+    json: bool,
+) {
     let filtered = filter_models(catalog, action, pattern);
     let mut sorted = filtered;
     sorted.sort_by(|a, b| {
@@ -679,7 +824,11 @@ fn render(catalog: &BTreeMap<(String, String), ListedModel>, action: Action, pat
                     format_limit(m.model.context_window),
                     format_limit(m.model.max_tokens),
                     thinking,
-                    if sends_image_input(&m.model) { "yes".to_string() } else { "no".to_string() },
+                    if sends_image_input(&m.model) {
+                        "yes".to_string()
+                    } else {
+                        "no".to_string()
+                    },
                 ]
             })
             .collect();
@@ -754,7 +903,10 @@ fn box_table(columns: &[(&str, bool)], rows: &[Vec<String>]) -> Vec<String> {
     };
     let mut lines = vec![format!("┌{}┐", segments.join("┬"))];
     lines.push(render_row(
-        &columns.iter().map(|(header, _)| (*header).to_string()).collect::<Vec<_>>(),
+        &columns
+            .iter()
+            .map(|(header, _)| (*header).to_string())
+            .collect::<Vec<_>>(),
     ));
     lines.push(format!("├{}┤", segments.join("┼")));
     for row in rows {
@@ -781,7 +933,9 @@ fn yaml_to_json(value: serde_yaml_ng::Value) -> Value {
             }
         }
         serde_yaml_ng::Value::String(s) => Value::String(s),
-        serde_yaml_ng::Value::Sequence(seq) => Value::Array(seq.into_iter().map(yaml_to_json).collect()),
+        serde_yaml_ng::Value::Sequence(seq) => {
+            Value::Array(seq.into_iter().map(yaml_to_json).collect())
+        }
         serde_yaml_ng::Value::Mapping(map) => Value::Object(
             map.into_iter()
                 .filter_map(|(k, v)| k.as_str().map(|key| (key.to_string(), yaml_to_json(v))))
@@ -828,7 +982,10 @@ mod tests {
 
         // Listed by `omp models` (mockprov is declared in models.yml → available).
         let catalog = collect_catalog(&dir);
-        assert!(catalog.contains_key(&("mockprov".into(), "mock-brand-new".into())), "not listed");
+        assert!(
+            catalog.contains_key(&("mockprov".into(), "mock-brand-new".into())),
+            "not listed"
+        );
 
         // Resolvable by `--model mockprov/mock-brand-new` (same `resolve_in`
         // path the CLI flag takes).
@@ -884,7 +1041,10 @@ mod tests {
 
     #[test]
     fn yaml_numbers_convert() {
-        assert_eq!(yaml_to_json(serde_yaml_ng::from_str("42").unwrap()), Value::Number(42.into()));
+        assert_eq!(
+            yaml_to_json(serde_yaml_ng::from_str("42").unwrap()),
+            Value::Number(42.into())
+        );
         assert_eq!(
             yaml_to_json(serde_yaml_ng::from_str("0.5").unwrap()),
             Value::Number(serde_json::Number::from_f64(0.5).unwrap())
@@ -919,9 +1079,16 @@ mod tests {
         let failures: Vec<String> = listed
             .keys()
             .filter_map(|(p, id)| {
-                omp_providers::resolve_in(&dir, &format!("{p}/{id}")).err().map(|e| format!("{p}/{id}: {e}"))
+                omp_providers::resolve_in(&dir, &format!("{p}/{id}"))
+                    .err()
+                    .map(|e| format!("{p}/{id}: {e}"))
             })
             .collect();
-        assert!(failures.is_empty(), "{} listed models do not resolve: {:#?}", failures.len(), failures);
+        assert!(
+            failures.is_empty(),
+            "{} listed models do not resolve: {:#?}",
+            failures.len(),
+            failures
+        );
     }
 }

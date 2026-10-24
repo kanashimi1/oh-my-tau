@@ -9,10 +9,17 @@ use omp_urls::{parse_internal_url, UrlCtx, UrlProvider};
 fn fixture() -> (tempfile::TempDir, PathBuf, UrlCtx) {
     let dir = tempfile::tempdir().unwrap();
     let session_file = dir.path().join("demo.jsonl");
-    std::fs::write(&session_file, "{\"type\":\"session\",\"version\":3,\"id\":\"demo\"}\n").unwrap();
+    std::fs::write(
+        &session_file,
+        "{\"type\":\"session\",\"version\":3,\"id\":\"demo\"}\n",
+    )
+    .unwrap();
     let artifacts = dir.path().join("demo");
     std::fs::create_dir_all(&artifacts).unwrap();
-    let ctx = UrlCtx { session_file: Some(session_file), ..UrlCtx::default() };
+    let ctx = UrlCtx {
+        session_file: Some(session_file),
+        ..UrlCtx::default()
+    };
     (dir, artifacts, ctx)
 }
 
@@ -51,7 +58,11 @@ fn artifact_rejects_non_numeric_id() {
 #[test]
 fn agent_reads_markdown_and_extracts_json() {
     let (_dir, artifacts, ctx) = fixture();
-    std::fs::write(artifacts.join("Worker.md"), "{\"report\": \"done\", \"n\": 3}").unwrap();
+    std::fs::write(
+        artifacts.join("Worker.md"),
+        "{\"report\": \"done\", \"n\": 3}",
+    )
+    .unwrap();
     let provider = omp_urls::schemes::agent::AgentProvider;
 
     let url = parse_internal_url("agent://Worker").unwrap();
@@ -75,7 +86,10 @@ fn agent_all_is_write_only() {
     let provider = omp_urls::schemes::agent::AgentProvider;
     let url = parse_internal_url("agent://all").unwrap();
     let err = provider.read(&url, &ctx).unwrap_err().to_string();
-    assert_eq!(err, "agent://all is write-only; use it to broadcast a message.");
+    assert_eq!(
+        err,
+        "agent://all is write-only; use it to broadcast a message."
+    );
 }
 
 #[test]
@@ -100,8 +114,12 @@ fn local_lists_and_reads_files() {
     let url = parse_internal_url("local://").unwrap();
     let resource = provider.read(&url, &ctx).unwrap();
     assert!(resource.content.starts_with("# Local\n\n"));
-    assert!(resource.content.contains("- [notes.txt](local://notes.txt)"));
-    assert!(resource.content.contains("- [sub/deep.txt](local://sub/deep.txt)"));
+    assert!(resource
+        .content
+        .contains("- [notes.txt](local://notes.txt)"));
+    assert!(resource
+        .content
+        .contains("- [sub/deep.txt](local://sub/deep.txt)"));
     assert!(resource.content.contains("2 files available"));
 
     let url = parse_internal_url("local://notes.txt").unwrap();
@@ -162,13 +180,19 @@ fn history_unknown_agent_lists_known() {
     let url = parse_internal_url("history://Beta").unwrap();
     let err = provider.read(&url, &ctx).unwrap_err().to_string();
     // TS lists registered refs only; without a registry that is "none".
-    assert_eq!(err, "Unknown agent: Beta\nKnown agents: none\nList all with history://");
+    assert_eq!(
+        err,
+        "Unknown agent: Beta\nKnown agents: none\nList all with history://"
+    );
 }
 
 #[test]
 fn fuzzy_suggest_ranks_subsequence() {
     let candidates = vec!["Reviewer".to_string(), "Cleanup4".to_string()];
-    assert_eq!(core::fuzzy_suggest(&candidates, "Reviewr", 5), vec!["Reviewer"]);
+    assert_eq!(
+        core::fuzzy_suggest(&candidates, "Reviewr", 5),
+        vec!["Reviewer"]
+    );
     assert!(core::fuzzy_suggest(&candidates, "Zzz", 5).is_empty());
 }
 

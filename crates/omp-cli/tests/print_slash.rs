@@ -23,12 +23,22 @@ fn print_mode_prints_handled_command_output() {
         .env_remove("OMP_AUTH_BROKER_TOKEN")
         .env("NO_COLOR", "1")
         .current_dir(&work)
-        .args(["-p", "--no-session", "--no-extensions", "--model", "mock/m", "/rlm stats"])
+        .args([
+            "-p",
+            "--no-session",
+            "--no-extensions",
+            "--model",
+            "mock/m",
+            "/rlm stats",
+        ])
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "stdout: {stdout}\nstderr: {stderr}");
-    assert!(stdout.contains("\"calls\": 0"), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        stdout.contains("\"calls\": 0"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
     assert!(!stderr.contains("no assistant response"), "{stderr}");
 }

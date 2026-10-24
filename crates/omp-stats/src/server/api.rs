@@ -48,7 +48,12 @@ impl ApiResponse {
     /// `new Response(null, { status })`.
     #[must_use]
     pub fn empty(status: u16) -> Self {
-        Self { status, content_type: String::new(), headers: Vec::new(), body: Vec::new() }
+        Self {
+            status,
+            content_type: String::new(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }
     }
 
     /// `{ error: message }` with `status`.
@@ -70,7 +75,10 @@ fn ok<T: Serialize>(value: &T) -> anyhow::Result<ApiResponse> {
 
 /// `limit ? parseInt(limit, 10) : undefined`.
 fn limit_param(target: &Target) -> Option<i64> {
-    target.get("limit").filter(|s| !s.is_empty()).and_then(parse_int)
+    target
+        .get("limit")
+        .filter(|s| !s.is_empty())
+        .and_then(parse_int)
 }
 
 /// Handle one API request. `path_and_query` is the raw request target
@@ -79,7 +87,11 @@ fn limit_param(target: &Target) -> Option<i64> {
 ///
 /// # Errors
 /// Any handler failure (sqlite, I/O) other than the mapped 4xx responses.
-pub fn handle_api(method: &str, path_and_query: &str, headers: &HeaderMap) -> anyhow::Result<ApiResponse> {
+pub fn handle_api(
+    method: &str,
+    path_and_query: &str,
+    headers: &HeaderMap,
+) -> anyhow::Result<ApiResponse> {
     let target = Target::parse(path_and_query);
     let path = target.path.as_str();
     // Stats reads are DB-only; ingest runs in the background (see `live`).
@@ -91,22 +103,37 @@ pub fn handle_api(method: &str, path_and_query: &str, headers: &HeaderMap) -> an
         "/api/stats/overview" => return ok(&aggregator::get_overview_stats(range)?),
         "/api/stats/model-dashboard" => return ok(&aggregator::get_model_dashboard_stats(range)?),
         "/api/stats/costs" => return ok(&aggregator::get_cost_dashboard_stats(range)?),
-        "/api/stats/frustration" => return ok(&frustration::get_frustration_dashboard_stats(range)?),
+        "/api/stats/frustration" => {
+            return ok(&frustration::get_frustration_dashboard_stats(range)?)
+        }
         "/api/frustration/estimate" => return ok(&frustration::estimate_frustration_run(range)?),
-        "/api/frustration/judge" | "/api/frustration/cancel" => return frustration_action(method, path, range, headers),
+        "/api/frustration/judge" | "/api/frustration/cancel" => {
+            return frustration_action(method, path, range, headers)
+        }
         "/api/stats/tools" => return ok(&aggregator::get_tool_dashboard_stats(range)?),
         "/api/stats/provider-windows" => {
-            return ok(&aggregator::get_provider_window_stats(range, target.get("provider"))?);
+            return ok(&aggregator::get_provider_window_stats(
+                range,
+                target.get("provider"),
+            )?);
         }
         "/api/stats/providers" => return ok(&aggregator::get_provider_dashboard_stats(range)?),
         "/api/stats/recent" => return ok(&aggregator::get_recent_requests(limit_param(&target))?),
-        "/api/stats/errors" => return ok(&aggregator::get_recent_errors(range, limit_param(&target))?),
+        "/api/stats/errors" => {
+            return ok(&aggregator::get_recent_errors(range, limit_param(&target))?)
+        }
         "/api/stats/models" => {
             // Also the port-conflict identity probe: keep it to the one query it serves.
-            return ok(&rollup::get_stats_by_model(rollup::get_time_range_config(range).cutoff)?);
+            return ok(&rollup::get_stats_by_model(
+                rollup::get_time_range_config(range).cutoff,
+            )?);
         }
         "/api/stats/folders" => return ok(&aggregator::get_folder_stats(range)?),
-        "/api/stats/timeseries" => return ok(&rollup::get_time_series(rollup::get_time_range_config(range))?),
+        "/api/stats/timeseries" => {
+            return ok(&rollup::get_time_series(rollup::get_time_range_config(
+                range,
+            ))?)
+        }
         "/api/sync" => {
             if method != "POST" {
                 return ApiResponse::json(405, &json!({ "error": "POST required" }));
@@ -115,15 +142,29 @@ pub fn handle_api(method: &str, path_and_query: &str, headers: &HeaderMap) -> an
             live.request_sync(None);
             return ApiResponse::json(202, &live.status());
         }
-        "/api/stats/gain" => return ok(&gain::get_gain_dashboard_stats(range, target.get("project"))?),
+        "/api/stats/gain" => {
+            return ok(&gain::get_gain_dashboard_stats(
+                range,
+                target.get("project"),
+            )?)
+        }
         "/api/sessions" => {
             // Number(limit ?? "100"), finite and > 0, floored; else 100.
             let limit = target
                 .get("limit")
-                .map_or(Some(100.0), |s| if s.trim().is_empty() { Some(0.0) } else { s.trim().parse::<f64>().ok() })
+                .map_or(Some(100.0), |s| {
+                    if s.trim().is_empty() {
+                        Some(0.0)
+                    } else {
+                        s.trim().parse::<f64>().ok()
+                    }
+                })
                 .filter(|n| n.is_finite() && *n > 0.0)
                 .map_or(100, |n| n.floor() as i64);
-            return ok(&crate::trace::list_session_summaries(limit, target.get("q"))?);
+            return ok(&crate::trace::list_session_summaries(
+                limit,
+                target.get("q"),
+            )?);
         }
         "/api/session/trace" => return super::session::session_trace(&target, headers),
         "/api/session/entry" => return super::session::session_entry(&target),
@@ -135,7 +176,11 @@ pub fn handle_api(method: &str, path_and_query: &str, headers: &HeaderMap) -> an
         if id.is_empty() {
             return Ok(ApiResponse::text(400, "Bad Request"));
         }
-        return match parse_int(id).map(aggregator::get_request_details).transpose()?.flatten() {
+        return match parse_int(id)
+            .map(aggregator::get_request_details)
+            .transpose()?
+            .flatten()
+        {
             Some(details) => ok(&details),
             None => Ok(ApiResponse::text(404, "Not Found")),
         };
@@ -153,9 +198,15 @@ fn frustration_action(
     if method != "POST" {
         return ApiResponse::json(405, &json!({ "error": "POST required" }));
     }
-    let has_header = headers.get(STATS_ACTION_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
+    let has_header = headers
+        .get(STATS_ACTION_HEADER)
+        .and_then(|v| v.to_str().ok())
+        == Some("1");
     if !has_header {
-        return ApiResponse::json(403, &json!({ "error": format!("{STATS_ACTION_HEADER}: 1 header required") }));
+        return ApiResponse::json(
+            403,
+            &json!({ "error": format!("{STATS_ACTION_HEADER}: 1 header required") }),
+        );
     }
     if path == "/api/frustration/cancel" {
         return ok(&frustration::cancel_frustration_run());

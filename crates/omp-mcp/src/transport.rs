@@ -38,7 +38,10 @@ pub trait McpTransport: Send {
 }
 
 /// Default answer for server→client requests, port of `defaultRequestHandler`.
-async fn default_request_handler(method: &str, cwd: &std::path::Path) -> Result<Value, JsonRpcError> {
+async fn default_request_handler(
+    method: &str,
+    cwd: &std::path::Path,
+) -> Result<Value, JsonRpcError> {
     match method {
         "ping" => Ok(json!({})),
         "roots/list" => {
@@ -89,7 +92,8 @@ impl PendingRequests {
 }
 
 /// How an incoming server→client request is answered.
-pub type RequestHandler = Arc<dyn Fn(&str, Value) -> TransportFut<Result<Value, JsonRpcError>> + Send + Sync>;
+pub type RequestHandler =
+    Arc<dyn Fn(&str, Value) -> TransportFut<Result<Value, JsonRpcError>> + Send + Sync>;
 
 /// Callback invoked for server→client notifications.
 pub type NotificationCallback = Arc<dyn Fn(&str, Value) + Send + Sync>;
@@ -147,9 +151,13 @@ pub async fn dispatch_message(
     let Some(id) = id else { return };
     let key = PendingRequests::key(&id);
     let result = match obj.get("error") {
-        Some(error) => Err(McpError::JsonRpc(serde_json::from_value::<JsonRpcError>(error.clone()).unwrap_or(
-            JsonRpcError { code: 0, message: "malformed JSON-RPC error".to_string(), data: None },
-        ))),
+        Some(error) => Err(McpError::JsonRpc(
+            serde_json::from_value::<JsonRpcError>(error.clone()).unwrap_or(JsonRpcError {
+                code: 0,
+                message: "malformed JSON-RPC error".to_string(),
+                data: None,
+            }),
+        )),
         None => Ok(obj.get("result").cloned().unwrap_or(Value::Null)),
     };
     let mut guard = pending.lock().await;
@@ -180,8 +188,21 @@ pub async fn await_with_timeout(
     }
 }
 
-fn kind_error(kind: TransportKind, failure: Failure, message: String, retryable: bool) -> McpTransportError {
-    McpTransportError { transport: kind, stage: failure, failure, retryable, message, code: None, data: None }
+fn kind_error(
+    kind: TransportKind,
+    failure: Failure,
+    message: String,
+    retryable: bool,
+) -> McpTransportError {
+    McpTransportError {
+        transport: kind,
+        stage: failure,
+        failure,
+        retryable,
+        message,
+        code: None,
+        data: None,
+    }
 }
 
 fn connection_closed(kind: TransportKind) -> McpError {

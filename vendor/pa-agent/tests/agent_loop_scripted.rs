@@ -13,9 +13,10 @@ use pa_agent::agent_loop::{run_agent_loop_continue, AgentEventSink, AgentLoopCon
 use pa_agent::scripted::ScriptedProvider;
 use pa_agent::stream::AssistantMessageEvent;
 use pa_agent::types::{
-    AfterToolCallResult, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult, AgentToolUpdateCallback,
-    AssistantContent, AssistantMessage, BeforeToolCallResult, Message, Model, StopReason, TextContent, ToolExecutionMode,
-    ToolResultContent, ToolResultMessage, UserContent,
+    AfterToolCallResult, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult,
+    AgentToolUpdateCallback, AssistantContent, AssistantMessage, BeforeToolCallResult, Message,
+    Model, StopReason, TextContent, ToolExecutionMode, ToolResultContent, ToolResultMessage,
+    UserContent,
 };
 
 fn test_model() -> Model {
@@ -276,7 +277,10 @@ async fn finished_assistant_message_carries_timing_credential_and_context_snapsh
     assert!(meta.duration.is_some_and(|d| d >= 0.0));
     assert!(meta.ttft.is_some_and(|t| t >= 0.0));
     assert!(meta.completed_at.is_some_and(|c| c > 0));
-    let snap = meta.context_snapshot.as_ref().expect("contextSnapshot on a stop turn");
+    let snap = meta
+        .context_snapshot
+        .as_ref()
+        .expect("contextSnapshot on a stop turn");
     assert_eq!(snap.compaction_epoch, 2);
     let wire = serde_json::to_value(assistant_text(&state.messages[1])).unwrap();
     assert_eq!(wire["credentialId"], 7);
@@ -846,14 +850,19 @@ async fn before_tool_call_context_is_dropped_for_errors_and_blocks_ignore_rewrit
     agent.prompt("go").await.unwrap();
     agent.wait_for_idle().await;
 
-    assert_eq!(echo.calls.load(Ordering::SeqCst), 0, "blocked call must not run");
+    assert_eq!(
+        echo.calls.load(Ordering::SeqCst),
+        0,
+        "blocked call must not run"
+    );
     let state = agent.state().await;
     // user, assistant, 2 tool results, final assistant: no developer message at all
     assert_eq!(state.messages.len(), 5);
-    assert!(state.messages[2..4]
-        .iter()
-        .all(|m| tool_result(m).is_error));
-    assert_eq!(single_text(&tool_result(&state.messages[3]).content), "nope");
+    assert!(state.messages[2..4].iter().all(|m| tool_result(m).is_error));
+    assert_eq!(
+        single_text(&tool_result(&state.messages[3]).content),
+        "nope"
+    );
 }
 
 #[tokio::test]

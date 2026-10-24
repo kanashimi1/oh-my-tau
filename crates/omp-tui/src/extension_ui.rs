@@ -273,7 +273,12 @@ fn select_matches(options: &[DialogOption], query: &str) -> Vec<usize> {
         .iter()
         .enumerate()
         .filter(|(_, o)| {
-            let hay = format!("{} {}", o.label, o.description.as_deref().unwrap_or_default()).to_lowercase();
+            let hay = format!(
+                "{} {}",
+                o.label,
+                o.description.as_deref().unwrap_or_default()
+            )
+            .to_lowercase();
             terms.iter().all(|t| hay.contains(t.as_str()))
         })
         .map(|(i, _)| i)
@@ -365,7 +370,12 @@ impl ActiveDialog {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                buffer: String::new(),
+                // TS rpc `editor {prefill}`: the buffer starts with the text to edit.
+                buffer: params
+                    .get("prefill")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
             },
             // "input" and unknown methods degrade to the single-line prompt.
             _ => DialogKind::Input {
@@ -478,7 +488,10 @@ impl ExtensionUi {
     pub fn wants_fullscreen(&self) -> bool {
         matches!(
             self.active.as_ref().map(|d| &d.kind),
-            Some(DialogKind::Select { fullscreen: true, .. })
+            Some(DialogKind::Select {
+                fullscreen: true,
+                ..
+            })
         )
     }
 
@@ -754,7 +767,10 @@ impl ExtensionUi {
         };
         let matches = select_matches(options, query);
         let last = matches.len().saturating_sub(1);
-        let typing = *searchable && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        let typing = *searchable
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => return KeyResult::Cancel,
             KeyCode::Enter => {
@@ -953,7 +969,11 @@ impl ExtensionUi {
             })
             .border_style(ratatui::style::Style::default().fg(theme.color("border")))
             .title(Span::styled(
-                if fullscreen { format!(" {title} ") } else { title },
+                if fullscreen {
+                    format!(" {title} ")
+                } else {
+                    title
+                },
                 ratatui::style::Style::default().fg(theme.color("accent")),
             ));
         let inner = block.inner(popup);
@@ -1049,7 +1069,10 @@ impl ExtensionUi {
                 lines.push(Line::styled(shown, text));
             }
             DialogKind::Editor { buffer, .. } => {
-                lines.push(Line::styled(format!("{buffer}▏"), text));
+                let shown = format!("{buffer}▏");
+                for line in shown.split('\n') {
+                    lines.push(Line::styled(line.to_owned(), text));
+                }
             }
             DialogKind::Select {
                 title,
@@ -1106,7 +1129,11 @@ impl ExtensionUi {
                 }
                 if window.len() < matches.len() {
                     lines.push(Line::styled(
-                        format!("  ({}/{})", (*cursor).min(matches.len() - 1) + 1, matches.len()),
+                        format!(
+                            "  ({}/{})",
+                            (*cursor).min(matches.len() - 1) + 1,
+                            matches.len()
+                        ),
                         muted,
                     ));
                 }
@@ -1265,7 +1292,10 @@ mod tests {
         }
         let screen = snapshot(&ui).join("\n");
         assert!(screen.contains("Search: kimi api"), "{screen}");
-        assert!(screen.contains("Moonshot (Kimi API)") && !screen.contains("Kimi Code"), "{screen}");
+        assert!(
+            screen.contains("Moonshot (Kimi API)") && !screen.contains("Kimi Code"),
+            "{screen}"
+        );
         ui.handle_key(key(KeyCode::Enter), &port);
         assert!(port.log.lock()[0].contains(r#""value":"Moonshot (Kimi API)""#));
         assert!(!ui.wants_fullscreen());
@@ -1281,16 +1311,23 @@ mod tests {
             ui.handle_key(key(KeyCode::Down), &port);
         }
         let screen = snapshot(&ui).join("\n");
-        assert!(screen.contains("provider-60") && !screen.contains("provider-01"), "{screen}");
+        assert!(
+            screen.contains("provider-60") && !screen.contains("provider-01"),
+            "{screen}"
+        );
         assert!(screen.contains("(60/80)"), "{screen}");
     }
 
     #[test]
     fn cancel_dialog_withdraws_it_unanswered() {
         let mut ui = ExtensionUi::new();
-        ui.push(&json!({"type":"extension_ui_request","id":"paste","method":"input","title":"Paste"}));
+        ui.push(
+            &json!({"type":"extension_ui_request","id":"paste","method":"input","title":"Paste"}),
+        );
         ui.push(&json!({"type":"extension_ui_request","id":"next","method":"confirm","title":"B","message":"b?"}));
-        ui.push(&json!({"type":"extension_ui_request","method":"cancelDialog","params":{"id":"paste"}}));
+        ui.push(
+            &json!({"type":"extension_ui_request","method":"cancelDialog","params":{"id":"paste"}}),
+        );
         assert_eq!(ui.head().map(|r| r.id.as_str()), Some("next"));
         assert_eq!(ui.pending_len(), 1);
     }
@@ -1415,8 +1452,13 @@ mod tests {
     fn a_dialog_without_deadline_survives_deadline_polls_and_keeps_taking_keys() {
         let mut ui = ExtensionUi::new();
         ui.push(&json!({"type":"extension_ui_request","id":"i1","method":"input","title":"Key"}));
-        assert!(ui.poll_deadlines(Instant::now() + Duration::from_secs(60)).is_empty());
-        assert!(ui.is_active(), "an unexpired poll must not drop the active dialog");
+        assert!(ui
+            .poll_deadlines(Instant::now() + Duration::from_secs(60))
+            .is_empty());
+        assert!(
+            ui.is_active(),
+            "an unexpired poll must not drop the active dialog"
+        );
         let port = FakePort::default();
         assert!(ui.handle_key(key(KeyCode::Char('x')), &port));
         ui.handle_key(key(KeyCode::Enter), &port);

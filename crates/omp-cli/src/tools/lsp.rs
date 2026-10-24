@@ -9,12 +9,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use omp_lsp::client::{self, LspError};
+use omp_lsp::Cancel;
 use pa_agent::abort::{is_abort_error, AbortSignal};
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_agent::BoxFut;
 use serde::Deserialize;
-use omp_lsp::client::{self, LspError};
-use omp_lsp::Cancel;
 use serde_json::{json, Value};
 
 use super::Env;
@@ -66,7 +66,10 @@ const MAX_RENAME_PAIRS: usize = 1000;
 /// The `lsp` tool, bound to the session working directory.
 #[must_use]
 pub fn tool(env: Arc<Env>) -> Arc<dyn AgentTool> {
-    Arc::new(LspTool { schema: schema(), env })
+    Arc::new(LspTool {
+        schema: schema(),
+        env,
+    })
 }
 
 struct LspTool {
@@ -164,20 +167,26 @@ impl LspTool {
         // listener, consulted only at client cold-start, so running clients
         // keep their transport until they exit or idle out.
         let settings = omp_settings::Settings::load_from(None, &self.env.cwd);
-        let shared = settings.get_bool("lsp.enabled").unwrap_or(true) && settings.get_bool("lsp.shared").unwrap_or(true);
+        let shared = settings.get_bool("lsp.enabled").unwrap_or(true)
+            && settings.get_bool("lsp.shared").unwrap_or(true);
         omp_lsp::mux::set_shared_lsp_enabled(shared);
 
-        let params: Params = serde_json::from_value(raw)
-            .map_err(|e| anyhow!("Invalid lsp arguments: {e}"))?;
+        let params: Params =
+            serde_json::from_value(raw).map_err(|e| anyhow!("Invalid lsp arguments: {e}"))?;
         let timeout_secs = params
             .timeout
             .unwrap_or(TIMEOUT_DEFAULT_SECS)
             .clamp(TIMEOUT_MIN_SECS, TIMEOUT_MAX_SECS);
         let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         let cwd = self.env.cwd.clone();
-        let cancel = DeadlineCancel { abort: signal, deadline };
+        let cancel = DeadlineCancel {
+            abort: signal,
+            deadline,
+        };
 
-        let result = self.dispatch(&params, &cwd, &cancel, signal, timeout_secs).await;
+        let result = self
+            .dispatch(&params, &cwd, &cancel, signal, timeout_secs)
+            .await;
         match result {
             Ok(r) => Ok(r),
             Err(e) => {
@@ -228,11 +237,16 @@ impl LspTool {
                     "  note: 'configured, not started' means the binary resolves on PATH but no request has spawned it yet; 'ready' means a client process is live for this cwd.".to_string(),
                 );
             }
-            return Ok(text_result(lines.join("\n"), json!({"action": action, "success": true, "request": params.request_json()})));
+            return Ok(text_result(
+                lines.join("\n"),
+                json!({"action": action, "success": true, "request": params.request_json()}),
+            ));
         }
 
         if action == "diagnostics" {
-            return self.action_diagnostics(params, cwd, cancel, timeout_secs).await;
+            return self
+                .action_diagnostics(params, cwd, cancel, timeout_secs)
+                .await;
         }
 
         if action == "rename_file" {
@@ -245,14 +259,20 @@ impl LspTool {
                     let resolved = omp_lsp::utils::resolve_to_cwd(file, cwd);
                     let list = omp_lsp::servers::get_lsp_servers_for_file(&config, &resolved);
                     if list.is_empty() {
-                        return Ok(text_result("No language server found for this file", json!({"action": action, "success": false, "request": params.request_json()})));
+                        return Ok(text_result(
+                            "No language server found for this file",
+                            json!({"action": action, "success": false, "request": params.request_json()}),
+                        ));
                     }
                     list
                 }
                 _ => omp_lsp::servers::get_lsp_servers(&config),
             };
             if server_list.is_empty() {
-                return Ok(text_result("No language servers configured", json!({"action": action, "success": false, "request": params.request_json()})));
+                return Ok(text_result(
+                    "No language servers configured",
+                    json!({"action": action, "success": false, "request": params.request_json()}),
+                ));
             }
             let mut sections: Vec<String> = Vec::new();
             let mut responding: Vec<String> = Vec::new();
@@ -264,15 +284,30 @@ impl LspTool {
                     Ok(c) => {
                         responding.push(server_name.clone());
                         let caps = c.server_capabilities();
-                        let pretty = serde_json::to_string_pretty(&caps).unwrap_or_else(|_| caps.to_string());
+                        let pretty = serde_json::to_string_pretty(&caps)
+                            .unwrap_or_else(|_| caps.to_string());
                         sections.push(format!("{server_name}:"));
                         sections.push(format!("  capabilities: {}", pretty.replace('\n', "\n  ")));
                     }
-                    Err(LspError { message, cancelled: true }) => return Err(if signal.is_aborted() { abort_err() } else { anyhow!(message) }),
-                    Err(e) => sections.push(format!("{server_name}: failed to start ({})", e.message)),
+                    Err(LspError {
+                        message,
+                        cancelled: true,
+                    }) => {
+                        return Err(if signal.is_aborted() {
+                            abort_err()
+                        } else {
+                            anyhow!(message)
+                        })
+                    }
+                    Err(e) => {
+                        sections.push(format!("{server_name}: failed to start ({})", e.message))
+                    }
                 }
             }
-            return Ok(text_result(sections.join("\n"), json!({"action": action, "serverName": responding.join(", "), "success": true, "request": params.request_json()})));
+            return Ok(text_result(
+                sections.join("\n"),
+                json!({"action": action, "serverName": responding.join(", "), "success": true, "request": params.request_json()}),
+            ));
         }
 
         if action == "request" {
@@ -294,7 +329,9 @@ impl LspTool {
         };
 
         if action == "symbols" && (is_workspace || resolved_file.is_none()) {
-            return self.action_workspace_symbols(params, cwd, cancel, signal).await;
+            return self
+                .action_workspace_symbols(params, cwd, cancel, signal)
+                .await;
         }
 
         if action == "reload" && (is_workspace || resolved_file.is_none()) {
@@ -302,10 +339,18 @@ impl LspTool {
         }
 
         let Some(resolved_file) = resolved_file else {
-            return Ok(text_result("No language server found for this action", json!({"action": action, "success": false})));
+            return Ok(text_result(
+                "No language server found for this action",
+                json!({"action": action, "success": false}),
+            ));
         };
-        let Some((server_name, server_config)) = omp_lsp::servers::get_lsp_server_for_file(&config, &resolved_file) else {
-            return Ok(text_result("No language server found for this action", json!({"action": action, "success": false})));
+        let Some((server_name, server_config)) =
+            omp_lsp::servers::get_lsp_server_for_file(&config, &resolved_file)
+        else {
+            return Ok(text_result(
+                "No language server found for this action",
+                json!({"action": action, "success": false}),
+            ));
         };
 
         if action == "reload" {
@@ -313,7 +358,16 @@ impl LspTool {
         }
 
         match self
-            .action_file_based(action, params, cwd, &resolved_file, &server_name, &server_config, cancel, timeout_secs)
+            .action_file_based(
+                action,
+                params,
+                cwd,
+                &resolved_file,
+                &server_name,
+                &server_config,
+                cancel,
+                timeout_secs,
+            )
             .await
         {
             Ok(r) => Ok(r),
@@ -326,7 +380,12 @@ fn abort_err() -> anyhow::Error {
     pa_agent::abort::aborted_error()
 }
 
-fn map_action_error(e: anyhow::Error, action: &str, server_name: &str, signal: &AbortSignal) -> anyhow::Error {
+fn map_action_error(
+    e: anyhow::Error,
+    action: &str,
+    server_name: &str,
+    signal: &AbortSignal,
+) -> anyhow::Error {
     if let Some(lsp_err) = e.downcast_ref::<LspError>() {
         if lsp_err.cancelled {
             return if signal.is_aborted() {
@@ -363,13 +422,26 @@ impl LspTool {
             return self.action_workspace_diagnostics(params, cwd, cancel).await;
         }
 
-        let (targets, truncated_glob) =
-            match diag::resolve_diagnostic_targets(&file, cwd, diag::MAX_GLOB_DIAGNOSTIC_TARGETS).await {
-                Ok(t) => t,
-                Err(e) => return Ok(text_result(format!("Error: {e}"), json!({"action": action, "success": false, "request": params.request_json()}))),
-            };
+        let (targets, truncated_glob) = match diag::resolve_diagnostic_targets(
+            &file,
+            cwd,
+            diag::MAX_GLOB_DIAGNOSTIC_TARGETS,
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                return Ok(text_result(
+                    format!("Error: {e}"),
+                    json!({"action": action, "success": false, "request": params.request_json()}),
+                ))
+            }
+        };
         if targets.is_empty() {
-            return Ok(text_result(format!("No files matched pattern: {file}"), json!({"action": action, "success": true, "request": params.request_json()})));
+            return Ok(text_result(
+                format!("No files matched pattern: {file}"),
+                json!({"action": action, "success": true, "request": params.request_json()}),
+            ));
         }
 
         let config = omp_lsp::config::get_config(cwd);
@@ -408,7 +480,14 @@ impl LspTool {
                 }
                 total_attempts += 1;
                 match self
-                    .diagnostics_from_server(&resolved, &uri, server_config, detailed, cancel, timeout_secs)
+                    .diagnostics_from_server(
+                        &resolved,
+                        &uri,
+                        server_config,
+                        detailed,
+                        cancel,
+                        timeout_secs,
+                    )
                     .await
                 {
                     Ok(mut ds) => {
@@ -416,10 +495,15 @@ impl LspTool {
                         succeeded += 1;
                         total_successes += 1;
                     }
-                    Err(LspError { cancelled: true, .. }) => return Err(pa_agent::abort::aborted_error()),
+                    Err(LspError {
+                        cancelled: true, ..
+                    }) => return Err(pa_agent::abort::aborted_error()),
                     Err(e) => {
                         failed_servers.push(server_name.clone());
-                        tracing::debug!("LSP diagnostics server failed: {server_name} {rel_path}: {}", e.message);
+                        tracing::debug!(
+                            "LSP diagnostics server failed: {server_name} {rel_path}: {}",
+                            e.message
+                        );
                     }
                 }
             }
@@ -446,7 +530,10 @@ impl LspTool {
                 let server_names = all_server_names.join(", ");
                 if succeeded == 0 {
                     return Ok(text_result(
-                        format!("✘ {rel_path}: all language servers failed ({})", failed_servers.join(", ")),
+                        format!(
+                            "✘ {rel_path}: all language servers failed ({})",
+                            failed_servers.join(", ")
+                        ),
                         json!({"action": action, "serverName": server_names, "success": false}),
                     ));
                 }
@@ -456,28 +543,43 @@ impl LspTool {
                     } else {
                         format!("OK\n⚠ some servers failed: {}", failed_servers.join(", "))
                     };
-                    return Ok(text_result(text, json!({"action": action, "serverName": server_names, "success": true})));
+                    return Ok(text_result(
+                        text,
+                        json!({"action": action, "serverName": server_names, "success": true}),
+                    ));
                 }
                 let summary = omp_lsp::utils::format_diagnostics_summary(&unique);
                 let formatted: Vec<String> = unique
                     .iter()
                     .map(|d| omp_lsp::utils::format_diagnostic(d, &rel_path))
                     .collect();
-                let mut output = format!("{summary}:\n{}", omp_lsp::utils::format_grouped_diagnostic_messages(&formatted));
+                let mut output = format!(
+                    "{summary}:\n{}",
+                    omp_lsp::utils::format_grouped_diagnostic_messages(&formatted)
+                );
                 if !failed_servers.is_empty() {
                     output.push_str("\n⚠ some servers failed: ");
                     output.push_str(&failed_servers.join(", "));
                 }
-                return Ok(text_result(output, json!({"action": action, "serverName": server_names, "success": true})));
+                return Ok(text_result(
+                    output,
+                    json!({"action": action, "serverName": server_names, "success": true}),
+                ));
             }
 
             if unique.is_empty() {
                 if succeeded == 0 {
-                    results.push(format!("✘ {rel_path}: all language servers failed ({})", failed_servers.join(", ")));
+                    results.push(format!(
+                        "✘ {rel_path}: all language servers failed ({})",
+                        failed_servers.join(", ")
+                    ));
                 } else {
                     results.push(format!("✔ {rel_path}: no issues"));
                     if !failed_servers.is_empty() {
-                        results.push(format!("⚠ {rel_path}: some servers failed ({})", failed_servers.join(", ")));
+                        results.push(format!(
+                            "⚠ {rel_path}: some servers failed ({})",
+                            failed_servers.join(", ")
+                        ));
                     }
                 }
             } else {
@@ -487,9 +589,14 @@ impl LspTool {
                     .iter()
                     .map(|d| omp_lsp::utils::format_diagnostic(d, &rel_path))
                     .collect();
-                results.push(omp_lsp::utils::format_grouped_diagnostic_messages(&formatted));
+                results.push(omp_lsp::utils::format_grouped_diagnostic_messages(
+                    &formatted,
+                ));
                 if !failed_servers.is_empty() {
-                    results.push(format!("⚠ {rel_path}: some servers failed ({})", failed_servers.join(", ")));
+                    results.push(format!(
+                        "⚠ {rel_path}: some servers failed ({})",
+                        failed_servers.join(", ")
+                    ));
                 }
             }
         }
@@ -512,11 +619,16 @@ impl LspTool {
         timeout_secs: u64,
     ) -> std::result::Result<Vec<omp_lsp::types::Diagnostic>, LspError> {
         use omp_lsp::diagnostics as diag;
-        let client = omp_lsp::client::get_or_create_client(server_config, &self.env.cwd, None, Some(cancel)).await?;
+        let client =
+            omp_lsp::client::get_or_create_client(server_config, &self.env.cwd, None, Some(cancel))
+                .await?;
         if omp_lsp::servers::is_project_aware_lsp_server(server_config) {
             client.wait_for_project_loaded(Some(cancel)).await;
             if cancel.is_cancelled() {
-                return Err(LspError { message: "operation cancelled".to_string(), cancelled: true });
+                return Err(LspError {
+                    message: "operation cancelled".to_string(),
+                    cancelled: true,
+                });
             }
         }
         let min_version = client.diagnostics_version();
@@ -530,9 +642,19 @@ impl LspTool {
             diag::SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS
         };
         let wait = wait_cap.min(timeout_secs * 1000);
-        diag::wait_for_diagnostics(&client, uri, wait, Some(cancel), Some(min_version), expected_version)
-            .await
-            .map_err(|message| LspError { message, cancelled: false })
+        diag::wait_for_diagnostics(
+            &client,
+            uri,
+            wait,
+            Some(cancel),
+            Some(min_version),
+            expected_version,
+        )
+        .await
+        .map_err(|message| LspError {
+            message,
+            cancelled: false,
+        })
     }
 }
 
@@ -563,14 +685,19 @@ impl LspTool {
             if files.is_empty() {
                 continue;
             }
-            let client = match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await {
-                Ok(c) => c,
-                Err(LspError { cancelled: true, .. }) => return Err(pa_agent::abort::aborted_error()),
-                Err(e) => {
-                    results.push(format!("{server_name}: failed to start ({})", e.message));
-                    continue;
-                }
-            };
+            let client =
+                match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel))
+                    .await
+                {
+                    Ok(c) => c,
+                    Err(LspError {
+                        cancelled: true, ..
+                    }) => return Err(pa_agent::abort::aborted_error()),
+                    Err(e) => {
+                        results.push(format!("{server_name}: failed to start ({})", e.message));
+                        continue;
+                    }
+                };
             client.wait_for_project_loaded(Some(cancel)).await;
             let mut rows: Vec<String> = Vec::new();
             for file in &files {
@@ -630,18 +757,32 @@ impl LspTool {
         let config = omp_lsp::config::get_config(cwd);
         let servers = omp_lsp::servers::get_lsp_servers(&config);
         if servers.is_empty() {
-            return Ok(text_result("No language server found for this action", json!({"action": action, "success": false, "request": params.request_json()})));
+            return Ok(text_result(
+                "No language server found for this action",
+                json!({"action": action, "success": false, "request": params.request_json()}),
+            ));
         }
         let mut aggregated: Vec<omp_lsp::types::SymbolInformation> = Vec::new();
         let mut responding: Vec<String> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
         for (name, server_config) in &servers {
             if cancel.is_cancelled() {
-                return Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP {action} timed out") });
+                return Err(if signal.is_aborted() {
+                    pa_agent::abort::aborted_error()
+                } else {
+                    anyhow!("LSP {action} timed out")
+                });
             }
-            match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await {
+            match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel))
+                .await
+            {
                 Ok(client) => match client
-                    .send_request("workspace/symbol", json!({ "query": normalized_query }), Some(cancel), None)
+                    .send_request(
+                        "workspace/symbol",
+                        json!({ "query": normalized_query }),
+                        Some(cancel),
+                        None,
+                    )
                     .await
                 {
                     Ok(result) => {
@@ -654,15 +795,30 @@ impl LspTool {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        aggregated.extend(omp_lsp::utils::filter_workspace_symbols(&symbols, &normalized_query));
+                        aggregated.extend(omp_lsp::utils::filter_workspace_symbols(
+                            &symbols,
+                            &normalized_query,
+                        ));
                     }
-                    Err(LspError { cancelled: true, .. }) => {
-                        return Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP {action} timed out") });
+                    Err(LspError {
+                        cancelled: true, ..
+                    }) => {
+                        return Err(if signal.is_aborted() {
+                            pa_agent::abort::aborted_error()
+                        } else {
+                            anyhow!("LSP {action} timed out")
+                        });
                     }
                     Err(e) => failures.push(format!("  {name}: {}", e.message)),
                 },
-                Err(LspError { cancelled: true, .. }) => {
-                    return Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP {action} timed out") });
+                Err(LspError {
+                    cancelled: true, ..
+                }) => {
+                    return Err(if signal.is_aborted() {
+                        pa_agent::abort::aborted_error()
+                    } else {
+                        anyhow!("LSP {action} timed out")
+                    });
                 }
                 Err(e) => failures.push(format!("  {name}: {}", e.message)),
             }
@@ -674,7 +830,9 @@ impl LspTool {
         };
         if responding.is_empty() {
             return Ok(text_result(
-                format!("Workspace symbol search failed: all language servers failed{failure_section}"),
+                format!(
+                    "Workspace symbol search failed: all language servers failed{failure_section}"
+                ),
                 json!({"action": action, "serverName": "", "success": false, "request": params.request_json()}),
             ));
         }
@@ -695,7 +853,10 @@ impl LspTool {
             .map(|s| format!("  {}", omp_lsp::utils::format_symbol_information(s, cwd)))
             .collect();
         let truncation = if deduped.len() > omp_lsp::diagnostics::WORKSPACE_SYMBOL_LIMIT {
-            format!("\n[…{} symbols elided…]", deduped.len() - omp_lsp::diagnostics::WORKSPACE_SYMBOL_LIMIT)
+            format!(
+                "\n[…{} symbols elided…]",
+                deduped.len() - omp_lsp::diagnostics::WORKSPACE_SYMBOL_LIMIT
+            )
         } else {
             String::new()
         };
@@ -731,19 +892,39 @@ impl LspTool {
         let mut outputs: Vec<String> = Vec::new();
         for (name, server_config) in &servers {
             if cancel.is_cancelled() {
-                return Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP reload timed out") });
+                return Err(if signal.is_aborted() {
+                    pa_agent::abort::aborted_error()
+                } else {
+                    anyhow!("LSP reload timed out")
+                });
             }
             omp_lsp::client::clear_initialization_failure(server_config, cwd);
-            match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await {
-                Ok(client) => match omp_lsp::servers::reload_server(&client, name, Some(cancel)).await {
-                    Ok(line) => outputs.push(line),
-                    Err(LspError { cancelled: true, .. }) => {
-                        return Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP reload timed out") });
+            match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel))
+                .await
+            {
+                Ok(client) => {
+                    match omp_lsp::servers::reload_server(&client, name, Some(cancel)).await {
+                        Ok(line) => outputs.push(line),
+                        Err(LspError {
+                            cancelled: true, ..
+                        }) => {
+                            return Err(if signal.is_aborted() {
+                                pa_agent::abort::aborted_error()
+                            } else {
+                                anyhow!("LSP reload timed out")
+                            });
+                        }
+                        Err(e) => outputs.push(format!("Failed to reload {name}: {}", e.message)),
                     }
-                    Err(e) => outputs.push(format!("Failed to reload {name}: {}", e.message)),
-                },
-                Err(LspError { cancelled: true, .. }) => {
-                    return Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP reload timed out") });
+                }
+                Err(LspError {
+                    cancelled: true, ..
+                }) => {
+                    return Err(if signal.is_aborted() {
+                        pa_agent::abort::aborted_error()
+                    } else {
+                        anyhow!("LSP reload timed out")
+                    });
                 }
                 Err(e) => outputs.push(format!("Failed to reload {name}: {}", e.message)),
             }
@@ -764,7 +945,9 @@ fn collect_workspace_files(cwd: &Path, file_types: &[String], max: usize) -> Vec
         if out.len() >= max {
             break;
         }
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             if out.len() >= max {
                 break;
@@ -772,7 +955,10 @@ fn collect_workspace_files(cwd: &Path, file_types: &[String], max: usize) -> Vec
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_lowercase();
             if path.is_dir() {
-                if !matches!(name.as_str(), "node_modules" | ".git" | "target" | ".venv" | "venv") {
+                if !matches!(
+                    name.as_str(),
+                    "node_modules" | ".git" | "target" | ".venv" | "venv"
+                ) {
                     stack.push(path);
                 }
                 continue;
@@ -817,8 +1003,12 @@ impl LspTool {
         match &params.file {
             Some(file) if file != "*" => {
                 let resolved = omp_lsp::utils::resolve_to_cwd(file, cwd);
-                let Some(pair) = omp_lsp::servers::get_lsp_server_for_file(&config, &resolved) else {
-                    return Ok(text_result("No language server found for this file", json!({"action": action, "success": false, "request": params.request_json()})));
+                let Some(pair) = omp_lsp::servers::get_lsp_server_for_file(&config, &resolved)
+                else {
+                    return Ok(text_result(
+                        "No language server found for this file",
+                        json!({"action": action, "success": false, "request": params.request_json()}),
+                    ));
                 };
                 resolved_target = Some(resolved);
                 chosen_name = pair.0;
@@ -827,7 +1017,10 @@ impl LspTool {
             _ => {
                 let all = omp_lsp::servers::get_lsp_servers(&config);
                 if all.is_empty() {
-                    return Ok(text_result("No language servers configured", json!({"action": action, "success": false, "request": params.request_json()})));
+                    return Ok(text_result(
+                        "No language servers configured",
+                        json!({"action": action, "success": false, "request": params.request_json()}),
+                    ));
                 }
                 let (n, c) = all.into_iter().next().unwrap();
                 chosen_name = n;
@@ -848,9 +1041,12 @@ impl LspTool {
         } else if let Some(target) = &resolved_target {
             let uri = omp_lsp::utils::file_to_uri(target);
             if let Some(line) = params.line {
-                let character = omp_lsp::utils::resolve_symbol_column(target, line as usize, params.symbol.as_deref())
-                    .await
-                    ?;
+                let character = omp_lsp::utils::resolve_symbol_column(
+                    target,
+                    line as usize,
+                    params.symbol.as_deref(),
+                )
+                .await?;
                 json!({ "textDocument": { "uri": uri }, "position": { "line": line - 1, "character": character } })
             } else {
                 json!({ "textDocument": { "uri": uri } })
@@ -859,17 +1055,38 @@ impl LspTool {
             json!({})
         };
 
-        let client = match omp_lsp::client::get_or_create_client(&chosen_config, cwd, None, Some(cancel)).await {
+        let client = match omp_lsp::client::get_or_create_client(
+            &chosen_config,
+            cwd,
+            None,
+            Some(cancel),
+        )
+        .await
+        {
             Ok(c) => c,
-            Err(LspError { cancelled: true, .. }) => {
-                return Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP {action} timed out") });
+            Err(LspError {
+                cancelled: true, ..
+            }) => {
+                return Err(if signal.is_aborted() {
+                    pa_agent::abort::aborted_error()
+                } else {
+                    anyhow!("LSP {action} timed out")
+                });
             }
-            Err(e) => return Ok(text_result(format!("LSP error: {}", e.message), json!({"action": action, "serverName": chosen_name, "success": false, "request": params.request_json()}))),
+            Err(e) => {
+                return Ok(text_result(
+                    format!("LSP error: {}", e.message),
+                    json!({"action": action, "serverName": chosen_name, "success": false, "request": params.request_json()}),
+                ))
+            }
         };
         if let Some(target) = &resolved_target {
             client.refresh_file(target).await;
         }
-        match client.send_request(&method, request_params.clone(), Some(cancel), None).await {
+        match client
+            .send_request(&method, request_params.clone(), Some(cancel), None)
+            .await
+        {
             Ok(result) => {
                 let formatted = if result.is_null() {
                     "null".to_string()
@@ -883,18 +1100,26 @@ impl LspTool {
                     json!({"action": action, "serverName": chosen_name, "success": true, "request": params.request_json()}),
                 ))
             }
-            Err(LspError { cancelled: true, .. }) => {
-                Err(if signal.is_aborted() { pa_agent::abort::aborted_error() } else { anyhow!("LSP {action} timed out") })
-            }
+            Err(LspError {
+                cancelled: true, ..
+            }) => Err(if signal.is_aborted() {
+                pa_agent::abort::aborted_error()
+            } else {
+                anyhow!("LSP {action} timed out")
+            }),
             Err(e) => {
-                let preview_raw = serde_json::to_string(&request_params).unwrap_or_else(|_| "null".to_string());
+                let preview_raw =
+                    serde_json::to_string(&request_params).unwrap_or_else(|_| "null".to_string());
                 let preview = if preview_raw.len() > 400 {
                     format!("{}...", &preview_raw[..397])
                 } else {
                     preview_raw
                 };
                 Ok(text_result(
-                    format!("LSP error from {chosen_name} on {method}: {}\n  params: {preview}", e.message),
+                    format!(
+                        "LSP error from {chosen_name} on {method}: {}\n  params: {preview}",
+                        e.message
+                    ),
                     json!({"action": action, "serverName": chosen_name, "success": false, "request": params.request_json()}),
                 ))
             }
@@ -909,7 +1134,14 @@ async fn enumerate_rename_pairs(
 ) -> std::io::Result<(Vec<(String, String)>, bool, bool)> {
     let stat = tokio::fs::metadata(source).await?;
     if !stat.is_dir() {
-        return Ok((vec![(omp_lsp::utils::file_to_uri(source), omp_lsp::utils::file_to_uri(dest))], false, false));
+        return Ok((
+            vec![(
+                omp_lsp::utils::file_to_uri(source),
+                omp_lsp::utils::file_to_uri(dest),
+            )],
+            false,
+            false,
+        ));
     }
     let mut pairs = Vec::new();
     let mut stack: Vec<(PathBuf, PathBuf)> = vec![(source.to_path_buf(), dest.to_path_buf())];
@@ -925,7 +1157,10 @@ async fn enumerate_rename_pairs(
             if pairs.len() >= MAX_RENAME_PAIRS {
                 return Ok((pairs, true, true));
             }
-            pairs.push((omp_lsp::utils::file_to_uri(&path), omp_lsp::utils::file_to_uri(&rel_new)));
+            pairs.push((
+                omp_lsp::utils::file_to_uri(&path),
+                omp_lsp::utils::file_to_uri(&rel_new),
+            ));
         }
     }
     Ok((pairs, true, false))
@@ -949,7 +1184,12 @@ impl LspTool {
         cancel: &DeadlineCancel<'_>,
     ) -> Result<AgentToolResult> {
         let action = "rename_file";
-        let err = |text: &str| Ok(text_result(text, json!({"action": action, "success": false, "request": params.request_json()})));
+        let err = |text: &str| {
+            Ok(text_result(
+                text,
+                json!({"action": action, "success": false, "request": params.request_json()}),
+            ))
+        };
         let (Some(file), Some(new_name)) = (&params.file, &params.new_name) else {
             return err("Error: rename_file requires both `file` (source path) and `new_name` (destination path)");
         };
@@ -961,22 +1201,48 @@ impl LspTool {
         let _source_stat = match tokio::fs::metadata(&source).await {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return err(&format!("Error: source path does not exist: {}", source.display()));
+                return err(&format!(
+                    "Error: source path does not exist: {}",
+                    source.display()
+                ));
             }
-            Err(e) => return err(&format!("Error: cannot read source path {}: {e}", source.display())),
+            Err(e) => {
+                return err(&format!(
+                    "Error: cannot read source path {}: {e}",
+                    source.display()
+                ))
+            }
         };
         match tokio::fs::symlink_metadata(&dest).await {
-            Ok(_) => return err(&format!("Error: destination already exists: {}", dest.display())),
+            Ok(_) => {
+                return err(&format!(
+                    "Error: destination already exists: {}",
+                    dest.display()
+                ))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return err(&format!("Error: cannot read destination path {}: {e}", dest.display())),
+            Err(e) => {
+                return err(&format!(
+                    "Error: cannot read destination path {}: {e}",
+                    dest.display()
+                ))
+            }
         }
 
         let (pairs, directory, exceeded) = match enumerate_rename_pairs(&source, &dest).await {
             Ok(p) => p,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return err(&format!("Error: source path does not exist: {}", source.display()));
+                return err(&format!(
+                    "Error: source path does not exist: {}",
+                    source.display()
+                ));
             }
-            Err(e) => return err(&format!("Error: cannot read source path {}: {e}", source.display())),
+            Err(e) => {
+                return err(&format!(
+                    "Error: cannot read source path {}: {e}",
+                    source.display()
+                ))
+            }
         };
         if exceeded {
             return err(&format!(
@@ -1018,27 +1284,44 @@ impl LspTool {
             if cancel.is_cancelled() {
                 return Err(pa_agent::abort::aborted_error());
             }
-            let client = match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await {
-                Ok(c) => c,
-                Err(LspError { cancelled: true, .. }) => return Err(pa_agent::abort::aborted_error()),
-                Err(e) => {
-                    server_notes.push(format!("  {server_name}: {}", e.message));
-                    continue;
-                }
-            };
+            let client =
+                match omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel))
+                    .await
+                {
+                    Ok(c) => c,
+                    Err(LspError {
+                        cancelled: true, ..
+                    }) => return Err(pa_agent::abort::aborted_error()),
+                    Err(e) => {
+                        server_notes.push(format!("  {server_name}: {}", e.message));
+                        continue;
+                    }
+                };
             if omp_lsp::servers::is_project_aware_lsp_server(server_config) {
                 client.wait_for_project_loaded(Some(cancel)).await;
             }
-            match client.send_request("workspace/willRenameFiles", lsp_params.clone(), Some(cancel), None).await {
+            match client
+                .send_request(
+                    "workspace/willRenameFiles",
+                    lsp_params.clone(),
+                    Some(cancel),
+                    None,
+                )
+                .await
+            {
                 Ok(result) => {
                     responding.push(server_name.clone());
-                    if let Ok(edit) = serde_json::from_value::<omp_lsp::types::WorkspaceEdit>(result) {
+                    if let Ok(edit) =
+                        serde_json::from_value::<omp_lsp::types::WorkspaceEdit>(result)
+                    {
                         if edit.changes.is_some() || edit.document_changes.is_some() {
                             per_server_edits.push((server_name.clone(), edit));
                         }
                     }
                 }
-                Err(LspError { cancelled: true, .. }) => return Err(pa_agent::abort::aborted_error()),
+                Err(LspError {
+                    cancelled: true, ..
+                }) => return Err(pa_agent::abort::aborted_error()),
                 Err(e) => {
                     if !omp_lsp::servers::is_method_not_found_error(&e) {
                         server_notes.push(format!("  {server_name}: {}", e.message));
@@ -1052,14 +1335,19 @@ impl LspTool {
         let dest_label = omp_lsp::utils::format_path_relative_to_cwd(&dest, cwd);
         let file_count_label_owned;
         let file_count_label = if directory {
-            format!("{} file{} under {source_label}", pairs.len(), if pairs.len() == 1 { "" } else { "s" })
+            format!(
+                "{} file{} under {source_label}",
+                pairs.len(),
+                if pairs.len() == 1 { "" } else { "s" }
+            )
         } else {
             file_count_label_owned = source_label.clone();
             file_count_label_owned
         };
 
         if params.apply != Some(true) {
-            let mut lines: Vec<String> = vec![format!("Rename preview: {file_count_label} → {dest_label}")];
+            let mut lines: Vec<String> =
+                vec![format!("Rename preview: {file_count_label} → {dest_label}")];
             if per_server_edits.is_empty() {
                 lines.push("  No LSP edits would be applied".to_string());
             } else {
@@ -1091,12 +1379,17 @@ impl LspTool {
             )];
             lines.push("  Server notes:".to_string());
             lines.extend(server_notes.iter().cloned());
-            return Ok(text_result(lines.join("\n"), json!({"action": action, "serverName": responding.join(", "), "success": false, "request": params.request_json()})));
+            return Ok(text_result(
+                lines.join("\n"),
+                json!({"action": action, "serverName": responding.join(", "), "success": false, "request": params.request_json()}),
+            ));
         }
 
         // Coalesce per-URI edits across servers: primary (project-aware) wins overlaps.
-        let server_config_by_name: std::collections::HashMap<String, &omp_lsp::types::ServerConfig> =
-            servers.iter().map(|(n, c)| (n.clone(), c)).collect();
+        let server_config_by_name: std::collections::HashMap<
+            String,
+            &omp_lsp::types::ServerConfig,
+        > = servers.iter().map(|(n, c)| (n.clone(), c)).collect();
         let mut accepted: Vec<(String, Bucket)> = Vec::new();
         for (server_name, edit) in &per_server_edits {
             let incoming_primary = server_config_by_name
@@ -1105,12 +1398,15 @@ impl LspTool {
             for (uri, edits) in omp_lsp::edits::flatten_workspace_text_edits(edit) {
                 let existing = accepted.iter_mut().find(|(u, _)| *u == uri);
                 match existing {
-                    None => accepted.push((uri.clone(), Bucket {
-                        primary_server: server_name.clone(),
-                        edits: edits.clone(),
-                        discarded: 0,
-                        conflict_servers: Vec::new(),
-                    })),
+                    None => accepted.push((
+                        uri.clone(),
+                        Bucket {
+                            primary_server: server_name.clone(),
+                            edits: edits.clone(),
+                            discarded: 0,
+                            conflict_servers: Vec::new(),
+                        },
+                    )),
                     Some((_, bucket)) => {
                         let existing_primary = server_config_by_name
                             .get(&bucket.primary_server)
@@ -1119,13 +1415,18 @@ impl LspTool {
                             let mut kept_old = Vec::new();
                             let mut discarded_old = 0;
                             for oe in &bucket.edits {
-                                if edits.iter().any(|ne| omp_lsp::edits::ranges_overlap(&ne.range, &oe.range)) {
+                                if edits
+                                    .iter()
+                                    .any(|ne| omp_lsp::edits::ranges_overlap(&ne.range, &oe.range))
+                                {
                                     discarded_old += 1;
                                 } else {
                                     kept_old.push(oe.clone());
                                 }
                             }
-                            if discarded_old > 0 && !bucket.conflict_servers.contains(&bucket.primary_server) {
+                            if discarded_old > 0
+                                && !bucket.conflict_servers.contains(&bucket.primary_server)
+                            {
                                 bucket.conflict_servers.push(bucket.primary_server.clone());
                             }
                             bucket.discarded += discarded_old;
@@ -1136,7 +1437,11 @@ impl LspTool {
                         } else {
                             let mut discarded_new = 0;
                             for ne in &edits {
-                                if bucket.edits.iter().any(|ae| omp_lsp::edits::ranges_overlap(&ae.range, &ne.range)) {
+                                if bucket
+                                    .edits
+                                    .iter()
+                                    .any(|ae| omp_lsp::edits::ranges_overlap(&ae.range, &ne.range))
+                                {
                                     discarded_new += 1;
                                 } else {
                                     bucket.edits.push(ne.clone());
@@ -1158,7 +1463,10 @@ impl LspTool {
         for (_, bucket) in &accepted {
             let mut edits = bucket.edits.clone();
             if let Err(e) = omp_lsp::edits::sort_and_validate_text_edits(&mut edits) {
-                return Ok(text_result(format!("Error: {e}"), json!({"action": action, "success": false, "request": params.request_json()})));
+                return Ok(text_result(
+                    format!("Error: {e}"),
+                    json!({"action": action, "success": false, "request": params.request_json()}),
+                ));
             }
         }
 
@@ -1171,7 +1479,11 @@ impl LspTool {
                 edits: bucket.edits.clone(),
             });
             let rel = omp_lsp::utils::format_path_relative_to_cwd(&file_path, cwd);
-            summary.push(format!("  {}: applied {} edit(s) to {rel}", bucket.primary_server, bucket.edits.len()));
+            summary.push(format!(
+                "  {}: applied {} edit(s) to {rel}",
+                bucket.primary_server,
+                bucket.edits.len()
+            ));
             if bucket.discarded > 0 {
                 let others = bucket.conflict_servers.join(", ");
                 summary.push(format!(
@@ -1181,16 +1493,26 @@ impl LspTool {
             }
         }
 
-        if let Err(e) = omp_lsp::edits::apply_edits_then_rename(&reference_edits, &source, &dest).await {
-            return Ok(text_result(format!("Error: {e}"), json!({"action": action, "success": false, "request": params.request_json()})));
+        if let Err(e) =
+            omp_lsp::edits::apply_edits_then_rename(&reference_edits, &source, &dest).await
+        {
+            return Ok(text_result(
+                format!("Error: {e}"),
+                json!({"action": action, "success": false, "request": params.request_json()}),
+            ));
         }
         summary.push(format!("  Renamed {source_label} → {dest_label}"));
 
         // Announce the rename to every relevant server.
         let old_uris: Vec<String> = pairs.iter().map(|(o, _)| o.clone()).collect();
         for (server_name, server_config) in &servers {
-            if let Ok(client) = omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await {
-                if let Err(e) = omp_lsp::servers::notify_did_rename(&client, lsp_params.clone(), &old_uris).await {
+            if let Ok(client) =
+                omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await
+            {
+                if let Err(e) =
+                    omp_lsp::servers::notify_did_rename(&client, lsp_params.clone(), &old_uris)
+                        .await
+                {
                     server_notes.push(format!("  {server_name}: {}", e.message));
                 }
             }
@@ -1201,7 +1523,10 @@ impl LspTool {
         }
 
         Ok(text_result(
-            format!("Renamed {file_count_label} → {dest_label}\n{}", summary.join("\n")),
+            format!(
+                "Renamed {file_count_label} → {dest_label}\n{}",
+                summary.join("\n")
+            ),
             json!({"action": action, "serverName": responding.join(", "), "success": true, "request": params.request_json()}),
         ))
     }
@@ -1212,8 +1537,12 @@ fn format_workspace_edit_lines(edit: &omp_lsp::types::WorkspaceEdit, cwd: &Path)
     if let Some(changes) = &edit.changes {
         for (uri, edits_value) in changes {
             let count = edits_value.as_array().map_or(0, Vec::len);
-            let file = omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(uri), cwd);
-            results.push(format!("{file}: {count} edit{}", if count > 1 { "s" } else { "" }));
+            let file =
+                omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(uri), cwd);
+            results.push(format!(
+                "{file}: {count} edit{}",
+                if count > 1 { "s" } else { "" }
+            ));
         }
     }
     if let Some(document_changes) = &edit.document_changes {
@@ -1221,22 +1550,47 @@ fn format_workspace_edit_lines(edit: &omp_lsp::types::WorkspaceEdit, cwd: &Path)
         for change in document_changes {
             match change {
                 DocumentChange::TextDocumentEdit(tdc) => {
-                    let file = omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(&tdc.text_document.uri), cwd);
-                    results.push(format!("{file}: {} edit{}", tdc.edits.len(), if tdc.edits.len() > 1 { "s" } else { "" }));
+                    let file = omp_lsp::utils::format_path_relative_to_cwd(
+                        &omp_lsp::utils::uri_to_file(&tdc.text_document.uri),
+                        cwd,
+                    );
+                    results.push(format!(
+                        "{file}: {} edit{}",
+                        tdc.edits.len(),
+                        if tdc.edits.len() > 1 { "s" } else { "" }
+                    ));
                 }
                 DocumentChange::CreateFile(c) => {
-                    results.push(format!("CREATE: {}", omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(&c.uri), cwd)));
+                    results.push(format!(
+                        "CREATE: {}",
+                        omp_lsp::utils::format_path_relative_to_cwd(
+                            &omp_lsp::utils::uri_to_file(&c.uri),
+                            cwd
+                        )
+                    ));
                 }
                 DocumentChange::RenameFile(r) => {
                     results.push(format!(
                         "RENAME: {} {} {}",
-                        omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(&r.old_uri), cwd),
+                        omp_lsp::utils::format_path_relative_to_cwd(
+                            &omp_lsp::utils::uri_to_file(&r.old_uri),
+                            cwd
+                        ),
                         omp_lsp::utils::NAV_CURSOR,
-                        omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(&r.new_uri), cwd)
+                        omp_lsp::utils::format_path_relative_to_cwd(
+                            &omp_lsp::utils::uri_to_file(&r.new_uri),
+                            cwd
+                        )
                     ));
                 }
                 DocumentChange::DeleteFile(d) => {
-                    results.push(format!("DELETE: {}", omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(&d.uri), cwd)));
+                    results.push(format!(
+                        "DELETE: {}",
+                        omp_lsp::utils::format_path_relative_to_cwd(
+                            &omp_lsp::utils::uri_to_file(&d.uri),
+                            cwd
+                        )
+                    ));
                 }
             }
         }
@@ -1261,13 +1615,14 @@ impl LspTool {
         timeout_secs: u64,
     ) -> Result<AgentToolResult> {
         use omp_lsp::diagnostics as diag;
-        let client = omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await?;
-        let is_rust_analyzer_server =
-            client.is_rust_analyzer() || server_name == "rust-analyzer";
+        let client =
+            omp_lsp::client::get_or_create_client(server_config, cwd, None, Some(cancel)).await?;
+        let is_rust_analyzer_server = client.is_rust_analyzer() || server_name == "rust-analyzer";
         let project_aware = omp_lsp::servers::is_project_aware_lsp_server(server_config);
         let needs_project_index = diag::PROJECT_INDEXED_ACTIONS.contains(&action) && project_aware;
-        let rust_workspace_wait =
-            needs_project_index && is_rust_analyzer_server && diag::has_rust_workspace_ancestor(target_file);
+        let rust_workspace_wait = needs_project_index
+            && is_rust_analyzer_server
+            && diag::has_rust_workspace_ancestor(target_file);
 
         client.refresh_file(target_file).await;
         let reconciled_from_disk = false;
@@ -1292,9 +1647,12 @@ impl LspTool {
         let uri = omp_lsp::utils::file_to_uri(target_file);
         let resolved_line = params.line.unwrap_or(1);
         let resolved_character = if target_file.exists() {
-            omp_lsp::utils::resolve_symbol_column(target_file, resolved_line as usize, params.symbol.as_deref())
-                .await
-                ?
+            omp_lsp::utils::resolve_symbol_column(
+                target_file,
+                resolved_line as usize,
+                params.symbol.as_deref(),
+            )
+            .await?
         } else {
             0
         };
@@ -1334,7 +1692,11 @@ impl LspTool {
                         "type_definition" => "type definition",
                         _ => "implementation",
                     };
-                    format!("Found {} {label}(s):\n{}", locations.len(), lines.join("\n"))
+                    format!(
+                        "Found {} {label}(s):\n{}",
+                        locations.len(),
+                        lines.join("\n")
+                    )
                 }
             }
             "references" => {
@@ -1368,7 +1730,9 @@ impl LspTool {
                         line: resolved_line - 1,
                         character: u32::try_from(resolved_character).unwrap_or(u32::MAX),
                     };
-                    if !locations.is_empty() && !diag::is_only_queried_declaration(&locations, &uri, &pos) {
+                    if !locations.is_empty()
+                        && !diag::is_only_queried_declaration(&locations, &uri, &pos)
+                    {
                         result = Some(locations);
                         break;
                     }
@@ -1376,15 +1740,24 @@ impl LspTool {
                     if cancel.is_cancelled() {
                         return Err(pa_agent::abort::aborted_error());
                     }
-                    tokio::time::sleep(Duration::from_millis(diag::REFERENCES_RETRY_DELAY_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(diag::REFERENCES_RETRY_DELAY_MS))
+                        .await;
                 }
                 let locations = result.unwrap_or_default();
                 if locations.is_empty() {
                     useless = true;
                     "No references found".to_string()
                 } else {
-                    let contextual: Vec<_> = locations.iter().take(diag::REFERENCE_CONTEXT_LIMIT).cloned().collect();
-                    let plain: Vec<_> = locations.iter().skip(diag::REFERENCE_CONTEXT_LIMIT).cloned().collect();
+                    let contextual: Vec<_> = locations
+                        .iter()
+                        .take(diag::REFERENCE_CONTEXT_LIMIT)
+                        .cloned()
+                        .collect();
+                    let plain: Vec<_> = locations
+                        .iter()
+                        .skip(diag::REFERENCE_CONTEXT_LIMIT)
+                        .cloned()
+                        .collect();
                     let mut lines: Vec<String> = Vec::new();
                     for location in &contextual {
                         lines.push(diag::format_location_with_context(location, cwd).await);
@@ -1394,10 +1767,17 @@ impl LspTool {
                         .map(|l| format!("  {}", omp_lsp::utils::format_location(l, cwd)))
                         .collect();
                     if !plain_lines.is_empty() {
-                        lines.push(format!("  ... {} additional reference(s) shown without context", plain_lines.len()));
+                        lines.push(format!(
+                            "  ... {} additional reference(s) shown without context",
+                            plain_lines.len()
+                        ));
                         lines.append(&mut plain_lines);
                     }
-                    format!("Found {} reference(s):\n{}", locations.len(), lines.join("\n"))
+                    format!(
+                        "Found {} reference(s):\n{}",
+                        locations.len(),
+                        lines.join("\n")
+                    )
                 }
             }
             "hover" => {
@@ -1411,17 +1791,34 @@ impl LspTool {
                     .await?;
                 let hover: Option<omp_lsp::types::Hover> = serde_json::from_value(result).ok();
                 match hover {
-                    Some(h) if !h.contents.is_null() => omp_lsp::utils::extract_hover_text(&h.contents),
+                    Some(h) if !h.contents.is_null() => {
+                        omp_lsp::utils::extract_hover_text(&h.contents)
+                    }
                     _ => "No hover information".to_string(),
                 }
             }
             "code_actions" => {
-                self.action_code_actions(params, &client, &uri, &position, reconciled_from_disk, cwd, cancel, timeout_secs, project_aware)
-                    .await?
+                self.action_code_actions(
+                    params,
+                    &client,
+                    &uri,
+                    &position,
+                    reconciled_from_disk,
+                    cwd,
+                    cancel,
+                    timeout_secs,
+                    project_aware,
+                )
+                .await?
             }
             "symbols" => {
                 let result = client
-                    .send_request("textDocument/documentSymbol", json!({ "textDocument": { "uri": uri } }), Some(cancel), None)
+                    .send_request(
+                        "textDocument/documentSymbol",
+                        json!({ "textDocument": { "uri": uri } }),
+                        Some(cancel),
+                        None,
+                    )
                     .await?;
                 let arr = result.as_array().cloned().unwrap_or_default();
                 if arr.is_empty() {
@@ -1477,10 +1874,24 @@ impl LspTool {
                     let edit: omp_lsp::types::WorkspaceEdit = serde_json::from_value(result)?;
                     if params.apply == Some(false) {
                         let preview = format_workspace_edit_lines(&edit, cwd);
-                        format!("Rename preview:\n{}", preview.iter().map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n"))
+                        format!(
+                            "Rename preview:\n{}",
+                            preview
+                                .iter()
+                                .map(|p| format!("  {p}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
                     } else {
                         let applied = omp_lsp::edits::apply_workspace_edit(&edit, cwd).await?;
-                        format!("Applied rename:\n{}", applied.iter().map(|a| format!("  {a}")).collect::<Vec<_>>().join("\n"))
+                        format!(
+                            "Applied rename:\n{}",
+                            applied
+                                .iter()
+                                .map(|a| format!("  {a}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        )
                     }
                 }
             }
@@ -1522,7 +1933,9 @@ impl LspTool {
             }
             .min(timeout_secs * 1000);
             let expected = client.open_file_version(uri);
-            match diag::wait_for_diagnostics(client, uri, wait_cap, Some(cancel), None, expected).await {
+            match diag::wait_for_diagnostics(client, uri, wait_cap, Some(cancel), None, expected)
+                .await
+            {
                 Ok(ds) => diagnostics = ds,
                 Err(_) => {
                     if let Some(published) = client.published_diagnostics(uri) {
@@ -1556,10 +1969,14 @@ impl LspTool {
 
         if params.apply == Some(true) {
             let Some(query) = params.query.as_deref().map(str::trim) else {
-                return Ok("Error: query parameter required when apply=true for code_actions".to_string());
+                return Ok(
+                    "Error: query parameter required when apply=true for code_actions".to_string(),
+                );
             };
             if query.is_empty() {
-                return Ok("Error: query parameter required when apply=true for code_actions".to_string());
+                return Ok(
+                    "Error: query parameter required when apply=true for code_actions".to_string(),
+                );
             }
             let selected: Option<Value> = if query.chars().all(|c| c.is_ascii_digit()) {
                 let idx: usize = query.parse().unwrap_or(usize::MAX);
@@ -1581,7 +1998,10 @@ impl LspTool {
                     .enumerate()
                     .map(|(i, a)| format!("  {}", format_code_action_line(a, i)))
                     .collect();
-                return Ok(format!("No code action matches \"{query}\". Available actions:\n{}", lines.join("\n")));
+                return Ok(format!(
+                    "No code action matches \"{query}\". Available actions:\n{}",
+                    lines.join("\n")
+                ));
             };
             return self.apply_code_action(&selected, client, cwd, cancel).await;
         }
@@ -1591,7 +2011,11 @@ impl LspTool {
             .enumerate()
             .map(|(i, a)| format!("  {}", format_code_action_line(a, i)))
             .collect();
-        Ok(format!("{} code action(s):\n{}", actions.len(), lines.join("\n")))
+        Ok(format!(
+            "{} code action(s):\n{}",
+            actions.len(),
+            lines.join("\n")
+        ))
     }
 
     /// Apply one code action: resolve (if needed), apply its workspace edit,
@@ -1603,7 +2027,11 @@ impl LspTool {
         cwd: &Path,
         cancel: &DeadlineCancel<'_>,
     ) -> Result<String> {
-        let title = action.get("title").and_then(Value::as_str).unwrap_or("").to_string();
+        let title = action
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         // A Command item has a string `command` field.
         if let Some(command_name) = action.get("command").and_then(Value::as_str) {
             client
@@ -1614,11 +2042,16 @@ impl LspTool {
                     None,
                 )
                 .await?;
-            return Ok(format!("Applied \"{title}\":\n  Executed command(s):\n    {command_name}"));
+            return Ok(format!(
+                "Applied \"{title}\":\n  Executed command(s):\n    {command_name}"
+            ));
         }
         let mut resolved = action.clone();
         if resolved.get("edit").is_none() {
-            if let Ok(r) = client.send_request("codeAction/resolve", action.clone(), Some(cancel), None).await {
+            if let Ok(r) = client
+                .send_request("codeAction/resolve", action.clone(), Some(cancel), None)
+                .await
+            {
                 resolved = r;
             }
         }
@@ -1644,7 +2077,9 @@ impl LspTool {
             executed.push(name.to_string());
         }
         if edits.is_empty() && executed.is_empty() {
-            return Ok(format!("Action \"{title}\" has no workspace edit or command to apply"));
+            return Ok(format!(
+                "Action \"{title}\" has no workspace edit or command to apply"
+            ));
         }
         let mut lines: Vec<String> = Vec::new();
         if !edits.is_empty() {
@@ -1673,8 +2108,17 @@ fn symbol_icon(kind: u32) -> &'static str {
 fn format_document_symbol(symbol: &omp_lsp::types::DocumentSymbol, indent: usize) -> Vec<String> {
     let prefix = "  ".repeat(indent);
     let line = symbol.range.start.line + 1;
-    let detail = symbol.detail.as_deref().map(|d| format!(" {d}")).unwrap_or_default();
-    let mut out = vec![format!("{}{} {}{detail} @ line {line}", prefix, symbol_icon(symbol.kind), symbol.name)];
+    let detail = symbol
+        .detail
+        .as_deref()
+        .map(|d| format!(" {d}"))
+        .unwrap_or_default();
+    let mut out = vec![format!(
+        "{}{} {}{detail} @ line {line}",
+        prefix,
+        symbol_icon(symbol.kind),
+        symbol.name
+    )];
     if let Some(children) = &symbol.children {
         for child in children {
             out.extend(format_document_symbol(child, indent + 1));
@@ -1685,7 +2129,10 @@ fn format_document_symbol(symbol: &omp_lsp::types::DocumentSymbol, indent: usize
 
 fn format_code_action_line(action: &Value, index: usize) -> String {
     let title = action.get("title").and_then(Value::as_str).unwrap_or("");
-    let kind = action.get("kind").and_then(Value::as_str).unwrap_or("action");
+    let kind = action
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("action");
     let preferred = action
         .get("isPreferred")
         .and_then(Value::as_bool)

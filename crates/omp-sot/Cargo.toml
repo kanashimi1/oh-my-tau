@@ -1,0 +1,12 @@
+[package]
+name = "omp-sot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "State of Thought controllers (training-free + embedding-only) per arXiv 2609.16055"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = { workspace = true }

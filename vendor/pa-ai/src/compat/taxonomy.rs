@@ -10,7 +10,12 @@ use super::Rules;
 #[derive(Debug, thiserror::Error)]
 pub enum AmbiguousIdentity {
     #[error("ambiguous {kind} for `{model}`: `{first}` and `{second}` tie")]
-    Tie { model: String, first: String, second: String, kind: &'static str },
+    Tie {
+        model: String,
+        first: String,
+        second: String,
+        kind: &'static str,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,7 +160,9 @@ pub fn glob_match(pattern: &str, value: &str) -> bool {
         if segment.is_empty() {
             continue;
         }
-        let Some(found) = remainder.find(segment) else { return false };
+        let Some(found) = remainder.find(segment) else {
+            return false;
+        };
         remainder = &remainder[found + segment.len()..];
     }
     let last = segments[segments.len() - 1];
@@ -183,7 +190,10 @@ fn bounded_match(value: &str, token: &str) -> bool {
     if !value.starts_with(token) {
         return false;
     }
-    matches!(value.as_bytes().get(token.len()), Some(b'-' | b'_' | b'.' | b':' | b'0'..=b'9'))
+    matches!(
+        value.as_bytes().get(token.len()),
+        Some(b'-' | b'_' | b'.' | b':' | b'0'..=b'9')
+    )
 }
 
 fn matcher_matches(m: &Matcher, lower: &str, bare: &str) -> bool {
@@ -268,7 +278,12 @@ fn classify_family(
     if lenient {
         return Ok(None);
     }
-    Err(AmbiguousIdentity::Tie { model: model.into(), first: a.into(), second: b.into(), kind: "family" })
+    Err(AmbiguousIdentity::Tie {
+        model: model.into(),
+        first: a.into(),
+        second: b.into(),
+        kind: "family",
+    })
 }
 
 fn extract_revision(cls: &Class, bare: &str) -> Option<String> {
@@ -277,7 +292,8 @@ fn extract_revision(cls: &Class, bare: &str) -> Option<String> {
     }
     for rule in &cls.revision_prefixes {
         let tail = if rule.anywhere {
-            bare.find(&rule.prefix).map(|start| &bare[start + rule.prefix.len()..])
+            bare.find(&rule.prefix)
+                .map(|start| &bare[start + rule.prefix.len()..])
         } else {
             bare.strip_prefix(rule.prefix.as_str())
         };
@@ -294,7 +310,11 @@ struct ClassRanks {
     revision: Option<String>,
 }
 
-fn classify_ranks(rules: &Rules, model: &str, lenient: bool) -> Result<ClassRanks, AmbiguousIdentity> {
+fn classify_ranks(
+    rules: &Rules,
+    model: &str,
+    lenient: bool,
+) -> Result<ClassRanks, AmbiguousIdentity> {
     let lower = model.trim().to_lowercase();
     let bare = bare_of(&lower);
     let mut winner: Option<((i32, usize), &Class)> = None;
@@ -306,7 +326,9 @@ fn classify_ranks(rules: &Rules, model: &str, lenient: bool) -> Result<ClassRank
             }
             let rank = (matcher_rank(&matcher.kind), matcher.token.len());
             match winner {
-                Some((w, c)) if w == rank && c.id != cls.id => tied = Some((c.id.as_str(), cls.id.as_str())),
+                Some((w, c)) if w == rank && c.id != cls.id => {
+                    tied = Some((c.id.as_str(), cls.id.as_str()))
+                }
                 Some((w, _)) if w >= rank => {}
                 _ => {
                     winner = Some((rank, cls));
@@ -315,14 +337,25 @@ fn classify_ranks(rules: &Rules, model: &str, lenient: bool) -> Result<ClassRank
             }
         }
     }
-    let unknown = || ClassRanks { class: "unknown".into(), family: None, revision: None };
+    let unknown = || ClassRanks {
+        class: "unknown".into(),
+        family: None,
+        revision: None,
+    };
     if let Some((a, b)) = tied {
         if lenient {
             return Ok(unknown());
         }
-        return Err(AmbiguousIdentity::Tie { model: lower.clone(), first: a.into(), second: b.into(), kind: "class" });
+        return Err(AmbiguousIdentity::Tie {
+            model: lower.clone(),
+            first: a.into(),
+            second: b.into(),
+            kind: "class",
+        });
     }
-    let Some((_, cls)) = winner else { return Ok(unknown()) };
+    let Some((_, cls)) = winner else {
+        return Ok(unknown());
+    };
     Ok(ClassRanks {
         class: cls.id.clone(),
         family: classify_family(cls, bare, &lower, lenient)?,
@@ -341,7 +374,10 @@ fn ranks_in_class(
     };
     let lower = model.trim().to_lowercase();
     let bare = bare_of(&lower);
-    Ok((classify_family(cls, bare, &lower, lenient)?, extract_revision(cls, bare)))
+    Ok((
+        classify_family(cls, bare, &lower, lenient)?,
+        extract_revision(cls, bare),
+    ))
 }
 
 fn find_identity_override<'a>(
@@ -352,21 +388,34 @@ fn find_identity_override<'a>(
 ) -> Result<Option<&'a Override>, AmbiguousIdentity> {
     let lower_provider = provider.to_lowercase();
     let lower_bare = bare_model.to_lowercase();
-    let all = || rules.taxonomy.classes.iter().flat_map(|c| c.overrides.iter());
+    let all = || {
+        rules
+            .taxonomy
+            .classes
+            .iter()
+            .flat_map(|c| c.overrides.iter())
+    };
     // Exact index: first provider-scoped hit, else first agnostic hit.
     let exact: Vec<&Override> = all()
-        .filter(|o| o.model.as_ref().is_some_and(|m| m.to_lowercase() == lower_bare))
+        .filter(|o| {
+            o.model
+                .as_ref()
+                .is_some_and(|m| m.to_lowercase() == lower_bare)
+        })
         .collect();
-    if let Some(o) = exact
-        .iter()
-        .find(|o| o.provider.as_ref().is_some_and(|p| p.to_lowercase() == lower_provider))
-    {
+    if let Some(o) = exact.iter().find(|o| {
+        o.provider
+            .as_ref()
+            .is_some_and(|p| p.to_lowercase() == lower_provider)
+    }) {
         return Ok(Some(o));
     }
     if let Some(o) = exact.iter().find(|o| o.provider.is_none()) {
         return Ok(Some(o));
     }
-    let patterns: Vec<&Override> = all().filter(|o| o.model.is_none() && o.glob.is_some()).collect();
+    let patterns: Vec<&Override> = all()
+        .filter(|o| o.model.is_none() && o.glob.is_some())
+        .collect();
     let rank = |provider: Option<&str>| {
         let mut winner: Option<(usize, &Override)> = None;
         let mut tied: Option<(&Override, &Override)> = None;
@@ -421,7 +470,11 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
     let lower_provider = provider.to_lowercase();
     for family in &collapse.effort_families {
         if family.provider == lower_provider && family.aliases.contains(&lower) {
-            return Collapsed { logical_id: family.logical.clone(), effort: None, thinking_variant: false };
+            return Collapsed {
+                logical_id: family.logical.clone(),
+                effort: None,
+                thinking_variant: false,
+            };
         }
     }
     let bare = bare_of(&lower);
@@ -430,7 +483,11 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
         if !lower.ends_with(&rule.suffix) {
             continue;
         }
-        if rule.except_bare_prefix.as_ref().is_some_and(|p| bare.starts_with(p.as_str())) {
+        if rule
+            .except_bare_prefix
+            .as_ref()
+            .is_some_and(|p| bare.starts_with(p.as_str()))
+        {
             continue;
         }
         if winner.is_none_or(|w| rule.suffix.len() > w.suffix.len()) {
@@ -450,7 +507,11 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
         }
         let trimmed = &lower[..lower.len() - lane.suffix.len()];
         let trimmed_bare = bare_of(trimmed);
-        if lane.bare_prefix.as_ref().is_some_and(|p| !trimmed_bare.starts_with(p.as_str())) {
+        if lane
+            .bare_prefix
+            .as_ref()
+            .is_some_and(|p| !trimmed_bare.starts_with(p.as_str()))
+        {
             continue;
         }
         let mut effort_rule: Option<&Suffix> = None;
@@ -458,14 +519,20 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
             if rule.effort.is_none() || !trimmed.ends_with(&rule.suffix) {
                 continue;
             }
-            if rule.except_bare_prefix.as_ref().is_some_and(|p| trimmed_bare.starts_with(p.as_str())) {
+            if rule
+                .except_bare_prefix
+                .as_ref()
+                .is_some_and(|p| trimmed_bare.starts_with(p.as_str()))
+            {
                 continue;
             }
             if effort_rule.is_none_or(|w| rule.suffix.len() > w.suffix.len()) {
                 effort_rule = Some(rule);
             }
         }
-        let Some(effort_rule) = effort_rule else { continue };
+        let Some(effort_rule) = effort_rule else {
+            continue;
+        };
         let base = &model[..trimmed.len() - effort_rule.suffix.len()];
         if base.is_empty() || base.ends_with('/') {
             continue;
@@ -476,7 +543,11 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
             thinking_variant: false,
         };
     }
-    Collapsed { logical_id: model.to_string(), effort: None, thinking_variant: false }
+    Collapsed {
+        logical_id: model.to_string(),
+        effort: None,
+        thinking_variant: false,
+    }
 }
 
 /// First declared thinking-variant suffix token removed from a model id (`None` when absent).
@@ -487,10 +558,14 @@ pub fn strip_thinking_variant_suffix(rules: &Rules, model: &str) -> Option<Strin
         let needle = format!("-{token}");
         let mut search_from = 0usize;
         while search_from < lower.len() {
-            let Some(rel) = lower[search_from..].find(&needle) else { break };
+            let Some(rel) = lower[search_from..].find(&needle) else {
+                break;
+            };
             let index = search_from + rel;
             let end = index + needle.len();
-            let followed = lb.get(end).is_some_and(|c| c.is_ascii_digit() || c.is_ascii_lowercase());
+            let followed = lb
+                .get(end)
+                .is_some_and(|c| c.is_ascii_digit() || c.is_ascii_lowercase());
             let mut word_start = index;
             while word_start > 0 {
                 let c = lb[word_start - 1];
@@ -538,7 +613,11 @@ pub fn classify_model(
     let collapsed = if trimmed.len() == model_id.len() {
         collapse_variant_id(rules, provider, trimmed)
     } else {
-        Collapsed { logical_id: trimmed.to_string(), effort: None, thinking_variant: false }
+        Collapsed {
+            logical_id: trimmed.to_string(),
+            effort: None,
+            thinking_variant: false,
+        }
     };
     let ranks = classify_ranks(rules, &collapsed.logical_id, lenient)?;
     Ok(Identity {

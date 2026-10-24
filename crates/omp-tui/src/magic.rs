@@ -31,12 +31,37 @@ pub struct Keyword {
 
 /// The registered keywords (TS `MAGIC_KEYWORDS` + omp-rs `ultracode`).
 pub const KEYWORDS: &[Keyword] = &[
-    Keyword { id: "ultrathink", word: "ultrathink", hue: (0.0, 330.0), requires: &[] },
-    Keyword { id: "orchestrate", word: "orchestrate", hue: (150.0, 280.0), requires: &["task"] },
-    Keyword { id: "workflow", word: "workflowz", hue: (30.0, 150.0), requires: &["task", "eval"] },
-    Keyword { id: "jevify", word: "jevify", hue: (300.0, 420.0), requires: &["eval"] },
+    Keyword {
+        id: "ultrathink",
+        word: "ultrathink",
+        hue: (0.0, 330.0),
+        requires: &[],
+    },
+    Keyword {
+        id: "orchestrate",
+        word: "orchestrate",
+        hue: (150.0, 280.0),
+        requires: &["task"],
+    },
+    Keyword {
+        id: "workflow",
+        word: "workflowz",
+        hue: (30.0, 150.0),
+        requires: &["task", "eval"],
+    },
+    Keyword {
+        id: "jevify",
+        word: "jevify",
+        hue: (300.0, 420.0),
+        requires: &["eval"],
+    },
     // Sunset: yellow (50) through red/pink to violet (270).
-    Keyword { id: "ultracode", word: "ultracode", hue: (410.0, 270.0), requires: &["task", "eval"] },
+    Keyword {
+        id: "ultracode",
+        word: "ultracode",
+        hue: (410.0, 270.0),
+        requires: &["task", "eval"],
+    },
 ];
 
 /// Whether keyword `id` is enabled (`magicKeywords.enabled` and
@@ -44,7 +69,9 @@ pub const KEYWORDS: &[Keyword] = &[
 #[must_use]
 pub fn enabled(settings: &omp_settings::Settings, id: &str) -> bool {
     settings.get_bool("magicKeywords.enabled").unwrap_or(true)
-        && settings.get_bool(&format!("magicKeywords.{id}")).unwrap_or(true)
+        && settings
+            .get_bool(&format!("magicKeywords.{id}"))
+            .unwrap_or(true)
 }
 
 /// Byte ranges of every registered keyword standing as prose in `text`,
@@ -310,8 +337,12 @@ fn mask_tag_at(text: &str, i: usize, masked: &mut [bool]) -> usize {
     if closing {
         j += 1;
     }
-    let Some(name_end) = tag_name_end(b, j) else { return i };
-    let Some(gt) = tag_end(b, name_end) else { return i };
+    let Some(name_end) = tag_name_end(b, j) else {
+        return i;
+    };
+    let Some(gt) = tag_end(b, name_end) else {
+        return i;
+    };
     let after = gt + 1;
     let self_closing = b[gt - 1] == b'/';
     masked[i..after].iter_mut().for_each(|m| *m = true);
@@ -424,7 +455,8 @@ pub fn gradient_at(stops: &[(u8, u8, u8)], t: f64) -> (u8, u8, u8) {
             let i = (seg.floor() as usize).min(stops.len() - 2);
             let f = seg - i as f64;
             let (a, b) = (stops[i], stops[i + 1]);
-            let ch = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * f).round() as u8;
+            let ch =
+                |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * f).round() as u8;
             (ch(a.0, b.0), ch(a.1, b.1), ch(a.2, b.2))
         }
     }
@@ -432,7 +464,11 @@ pub fn gradient_at(stops: &[(u8, u8, u8)], t: f64) -> (u8, u8, u8) {
 
 /// HSL → RGB; `h` in degrees (wrapped), `s`/`l` in `0..=1`.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::many_single_char_names)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names
+)]
 pub fn hsl(h: f64, s: f64, l: f64) -> (u8, u8, u8) {
     let h = h.rem_euclid(360.0);
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
@@ -463,13 +499,19 @@ pub const KEYWORD_LIGHTNESS: f64 = 0.62;
 /// `round((from + j/14 · (to − from)) mod 360)`. `phase` 0 is the static
 /// (sent-bubble) palette; increasing phase shimmers.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 pub fn keyword_rgb(k: &Keyword, i: usize, n: usize, phase: f64) -> (u8, u8, u8) {
     let n = n.max(1) as f64;
     let t = (i as f64 / n + phase.rem_euclid(1.0)).rem_euclid(1.0);
     let stop = ((t * KEYWORD_STOPS as f64).floor() as usize) % KEYWORD_STOPS;
     let (from, to) = k.hue;
-    let hue = (from + stop as f64 / KEYWORD_STOPS as f64 * (to - from)).rem_euclid(360.0).round();
+    let hue = (from + stop as f64 / KEYWORD_STOPS as f64 * (to - from))
+        .rem_euclid(360.0)
+        .round();
     hsl(hue, KEYWORD_SATURATION, KEYWORD_LIGHTNESS)
 }
 

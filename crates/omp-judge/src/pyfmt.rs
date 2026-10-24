@@ -61,7 +61,11 @@ pub fn dumps(v: &Value) -> String {
 }
 
 fn py_quote(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
     let mut out = String::with_capacity(s.len() + 2);
     out.push(quote);
     for c in s.chars() {
@@ -74,7 +78,9 @@ fn py_quote(s: &str) -> String {
                 out.push('\\');
                 out.push(c);
             }
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                out.push_str(&format!("\\x{:02x}", c as u32))
+            }
             c => out.push(c),
         }
     }
@@ -124,13 +130,19 @@ mod tests {
     fn py_str_matches_python() {
         assert_eq!(py_str(&json!(true)), "True");
         assert_eq!(py_str(&json!(null)), "None");
-        assert_eq!(py_str(&json!(["a", 1, {"k": false}])), "['a', 1, {'k': False}]");
+        assert_eq!(
+            py_str(&json!(["a", 1, {"k": false}])),
+            "['a', 1, {'k': False}]"
+        );
         assert_eq!(py_str(&json!("it's")), "it's");
         assert_eq!(py_str(&json!(["it's"])), "[\"it's\"]");
     }
 
     #[test]
     fn dumps_matches_python() {
-        assert_eq!(dumps(&json!({"a": [1, "é"], "b": null})), "{\"a\": [1, \"é\"], \"b\": null}");
+        assert_eq!(
+            dumps(&json!({"a": [1, "é"], "b": null})),
+            "{\"a\": [1, \"é\"], \"b\": null}"
+        );
     }
 }

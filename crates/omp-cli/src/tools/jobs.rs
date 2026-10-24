@@ -199,7 +199,10 @@ impl JobRegistry {
                        "command": j.command, "startTime": start_of(j)})
             })
             .collect();
-        let mut settled: Vec<_> = jobs.iter().filter(|(_, j)| j.status != JobStatus::Running).collect();
+        let mut settled: Vec<_> = jobs
+            .iter()
+            .filter(|(_, j)| j.status != JobStatus::Running)
+            .collect();
         settled.sort_by_key(|(_, j)| std::cmp::Reverse(start_of(j)));
         let recent: Vec<_> = settled
             .into_iter()

@@ -173,7 +173,7 @@ fn osc99_urgency(urgency: Urgency) -> &'static str {
 
 /// UTF-8 → base64 (OSC 99 payload encoding; no external crate — hand-rolled
 /// RFC 4648, padded).
-fn base64_utf8(value: &str) -> String {
+pub(crate) fn base64_utf8(value: &str) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -217,7 +217,10 @@ pub fn has_linux_desktop_session() -> bool {
 /// fallback.
 pub fn send_notification(protocol: NotifyProtocol, n: &TerminalNotification) {
     // TS `isNotificationSuppressed`: `PI_NOTIFICATIONS=off|0|false`.
-    if matches!(std::env::var("PI_NOTIFICATIONS").as_deref(), Ok("off" | "0" | "false")) {
+    if matches!(
+        std::env::var("PI_NOTIFICATIONS").as_deref(),
+        Ok("off" | "0" | "false")
+    ) {
         return;
     }
     // Innermost surface first (TS `sendNotification`): herdr, then cmux.
@@ -253,29 +256,50 @@ pub fn send_notification(protocol: NotifyProtocol, n: &TerminalNotification) {
 /// TS `isInsideHerdr`: `HERDR_ENV=1` or any pane/tab/workspace identity var.
 fn inside_herdr(env: &dyn Fn(&str) -> Option<String>) -> bool {
     let set = |k: &str| env(k).is_some_and(|v| !v.is_empty());
-    env("HERDR_ENV").as_deref() == Some("1") || set("HERDR_PANE_ID") || set("HERDR_TAB_ID") || set("HERDR_WORKSPACE_ID")
+    env("HERDR_ENV").as_deref() == Some("1")
+        || set("HERDR_PANE_ID")
+        || set("HERDR_TAB_ID")
+        || set("HERDR_WORKSPACE_ID")
 }
 
 fn notification_title_and_body(n: &TerminalNotification) -> (String, String) {
-    let title = n.title.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or("omp").to_owned();
+    let title = n
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("omp")
+        .to_owned();
     (title, n.body.clone())
 }
 
 /// TS `sendHerdrNotification` argv: `herdr notification show <title> --body <body> --sound <s>`
 /// when the process runs inside a herdr pane (valid `HERDR_PANE_ID` required).
 #[must_use]
-pub fn herdr_argv(env: &dyn Fn(&str) -> Option<String>, n: &TerminalNotification) -> Option<Vec<String>> {
+pub fn herdr_argv(
+    env: &dyn Fn(&str) -> Option<String>,
+    n: &TerminalNotification,
+) -> Option<Vec<String>> {
     if !inside_herdr(env) {
         return None;
     }
     let pane = env("HERDR_PANE_ID")?;
     let pane = pane.trim();
-    if pane.is_empty() || pane.len() > 64 || !pane.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-')) {
+    if pane.is_empty()
+        || pane.len() > 64
+        || !pane
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-'))
+    {
         return None;
     }
     let (title, body) = notification_title_and_body(n);
     // `herdr notification show` reads a bare help token in the title slot as a help request.
-    let title = if matches!(title.as_str(), "help" | "--help" | "-h") { "omp".to_owned() } else { title };
+    let title = if matches!(title.as_str(), "help" | "--help" | "-h") {
+        "omp".to_owned()
+    } else {
+        title
+    };
     let sound = match n.kind {
         NotifyKind::Ask | NotifyKind::Error => "request",
         NotifyKind::Completion => "done",
@@ -295,12 +319,18 @@ pub fn herdr_argv(env: &dyn Fn(&str) -> Option<String>, n: &TerminalNotification
 
 /// TS `sendCmuxNotification` argv (a valid `CMUX_SURFACE_ID` UUID is required).
 #[must_use]
-pub fn cmux_argv(env: &dyn Fn(&str) -> Option<String>, n: &TerminalNotification) -> Option<Vec<String>> {
+pub fn cmux_argv(
+    env: &dyn Fn(&str) -> Option<String>,
+    n: &TerminalNotification,
+) -> Option<Vec<String>> {
     let surface = env("CMUX_SURFACE_ID")?;
     let surface = surface.trim();
     let groups: Vec<&str> = surface.split('-').collect();
     let uuid = groups.len() == 5
-        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()));
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(g, len)| g.len() == len && g.chars().all(|c| c.is_ascii_hexdigit()));
     if !uuid {
         return None;
     }
@@ -411,25 +441,39 @@ mod tests {
     #[test]
     fn herdr_argv_matches_ts() {
         let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| (*v).to_owned())
+            move |k: &str| {
+                pairs
+                    .iter()
+                    .find(|(n, _)| *n == k)
+                    .map(|(_, v)| (*v).to_owned())
+            }
         };
         let mut n = TerminalNotification::body("Complete");
         n.kind = NotifyKind::Completion;
         let argv = herdr_argv(&env(&[("HERDR_ENV", "1"), ("HERDR_PANE_ID", "p_1:2")]), &n).unwrap();
-        assert_eq!(argv.join(" "), "herdr notification show omp --body Complete --sound done");
+        assert_eq!(
+            argv.join(" "),
+            "herdr notification show omp --body Complete --sound done"
+        );
         n.kind = NotifyKind::Error;
         n.title = Some("My session".into());
         let argv = herdr_argv(&env(&[("HERDR_PANE_ID", "p1")]), &n).unwrap();
         assert_eq!(argv[3], "My session");
         assert_eq!(argv[7], "request");
         n.kind = NotifyKind::None;
-        assert_eq!(herdr_argv(&env(&[("HERDR_PANE_ID", "p1")]), &n).unwrap()[7], "none");
+        assert_eq!(
+            herdr_argv(&env(&[("HERDR_PANE_ID", "p1")]), &n).unwrap()[7],
+            "none"
+        );
         // Outside a pane, or without a valid pane id, herdr does not own delivery.
         assert!(herdr_argv(&env(&[]), &n).is_none());
         assert!(herdr_argv(&env(&[("HERDR_ENV", "1")]), &n).is_none());
         assert!(herdr_argv(&env(&[("HERDR_PANE_ID", "bad id")]), &n).is_none());
         n.title = Some("help".into());
-        assert_eq!(herdr_argv(&env(&[("HERDR_PANE_ID", "p1")]), &n).unwrap()[3], "omp");
+        assert_eq!(
+            herdr_argv(&env(&[("HERDR_PANE_ID", "p1")]), &n).unwrap()[3],
+            "omp"
+        );
     }
 
     #[test]

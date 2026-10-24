@@ -97,7 +97,11 @@ fn local_to_utc_ms(naive: i64) -> Option<i64> {
     let offset_at = |utc_ms: i64| -> Option<i64> {
         let secs = utc_ms.div_euclid(1000);
         let local_secs: i64 = conn
-            .query_row("SELECT CAST(strftime('%s', ?1, 'unixepoch', 'localtime') AS INTEGER)", [secs], |row| row.get(0))
+            .query_row(
+                "SELECT CAST(strftime('%s', ?1, 'unixepoch', 'localtime') AS INTEGER)",
+                [secs],
+                |row| row.get(0),
+            )
             .ok()?;
         Some((local_secs - secs) * 1000)
     };
@@ -139,14 +143,20 @@ mod tests {
 
     #[test]
     fn parses_iso_z() {
-        assert_eq!(date_parse("2026-10-10T06:09:53.689Z"), Some(1_791_612_593_689));
+        assert_eq!(
+            date_parse("2026-10-10T06:09:53.689Z"),
+            Some(1_791_612_593_689)
+        );
         assert_eq!(date_parse("2026-10-10T06:09:53Z"), Some(1_791_612_593_000));
     }
 
     #[test]
     fn parses_offsets_and_invalid() {
         // +02:00 shifts earlier.
-        assert_eq!(date_parse("2026-10-10T08:09:53+02:00"), Some(1_791_612_593_000));
+        assert_eq!(
+            date_parse("2026-10-10T08:09:53+02:00"),
+            Some(1_791_612_593_000)
+        );
         // Date-only is UTC midnight in JS (unlike date-time without offset).
         assert_eq!(date_parse("2026-10-10"), Some(1_791_590_400_000));
         assert_eq!(date_parse("garbage"), None);
@@ -193,14 +203,22 @@ mod tests {
         let exe = std::env::current_exe().expect("test binary");
         for (tz, _) in LOCAL_CASES {
             let out = std::process::Command::new(&exe)
-                .args(["--exact", "parser::util::tests::local_time_child", "--nocapture", "--test-threads=1"])
+                .args([
+                    "--exact",
+                    "parser::util::tests::local_time_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
                 .env("TZ", tz)
                 .env("OMP_STATS_LOCAL_TIME_CHILD", "1")
                 .output()
                 .unwrap_or_else(|e| panic!("spawn child {exe:?}: {e}"));
             let stdout = String::from_utf8_lossy(&out.stdout);
             assert!(out.status.success(), "TZ={tz}: {stdout}");
-            assert!(stdout.contains("1 passed"), "TZ={tz} child did not run: {stdout}");
+            assert!(
+                stdout.contains("1 passed"),
+                "TZ={tz} child did not run: {stdout}"
+            );
         }
     }
 
@@ -210,7 +228,10 @@ mod tests {
             return;
         }
         let tz = std::env::var("TZ").expect("TZ set by parent");
-        let (_, cases) = LOCAL_CASES.iter().find(|(name, _)| *name == tz).expect("known TZ");
+        let (_, cases) = LOCAL_CASES
+            .iter()
+            .find(|(name, _)| *name == tz)
+            .expect("known TZ");
         for (input, expected) in cases.iter() {
             assert_eq!(date_parse(input), Some(*expected), "TZ={tz} {input}");
         }

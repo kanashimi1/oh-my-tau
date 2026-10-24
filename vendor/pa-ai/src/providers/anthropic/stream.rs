@@ -15,8 +15,8 @@ use crate::event_stream::{
 use crate::models::{calculate_cost, CostOverrides};
 use crate::providers::anthropic::convert::map_stop_reason;
 use crate::providers::anthropic::{
-    body_betas, build_request_headers, is_oauth_token,
-    should_use_fine_grained_tool_streaming_beta, AnthropicOptions,
+    body_betas, build_request_headers, is_oauth_token, should_use_fine_grained_tool_streaming_beta,
+    AnthropicOptions,
 };
 use crate::types::{
     done_reason, error_reason, AssistantContent, AssistantMessage, Context, Model, StopReason,
@@ -205,10 +205,18 @@ async fn run_stream(
         .and_then(|options| options.interleaved_thinking)
         .unwrap_or(true);
     let use_fine_grained = should_use_fine_grained_tool_streaming_beta(model, context);
-    let view = options.and_then(|o| o.view.clone()).unwrap_or_else(|| crate::compat::ModelView::of(model));
+    let view = options
+        .and_then(|o| o.view.clone())
+        .unwrap_or_else(|| crate::compat::ModelView::of(model));
     let is_oauth = is_oauth_token(&api_key);
-    let cache_control = crate::providers::anthropic::request::cache_control_value(&view, base_options.cache_retention, is_oauth);
-    let cache_ttl_1h = cache_control.as_ref().is_some_and(|c| c.get("ttl").is_some());
+    let cache_control = crate::providers::anthropic::request::cache_control_value(
+        &view,
+        base_options.cache_retention,
+        is_oauth,
+    );
+    let cache_ttl_1h = cache_control
+        .as_ref()
+        .is_some_and(|c| c.get("ttl").is_some());
     let uses_anthropic_cache_pricing = has_standard_anthropic_cache_pricing(model);
     let mut cache_write_cost: Option<f64> = match (&cache_control, uses_anthropic_cache_pricing) {
         (Some(_), true) => Some(get_anthropic_cache_write_cost(
@@ -231,7 +239,11 @@ async fn run_stream(
         )
         .map_err(ProviderError::Message)?;
         betas = body_betas(&view, &params);
-        crate::utils_inner::wire_json::request_body_value(params, base_options.on_payload.as_ref(), model)
+        crate::utils_inner::wire_json::request_body_value(
+            params,
+            base_options.on_payload.as_ref(),
+            model,
+        )
     };
     let (headers, _) = build_request_headers(
         model,
@@ -426,7 +438,10 @@ async fn run_stream(
                                         .unwrap_or_default()
                                         .to_string(),
                                     name: crate::providers::anthropic::request::decode_tool_name(
-                                        content_block.get("name").and_then(|value| value.as_str()).unwrap_or_default(),
+                                        content_block
+                                            .get("name")
+                                            .and_then(|value| value.as_str())
+                                            .unwrap_or_default(),
                                         is_oauth,
                                         view.is("escapeBuiltinToolNames"),
                                     ),

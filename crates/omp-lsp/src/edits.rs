@@ -14,7 +14,9 @@ use crate::utils::{format_path_relative_to_cwd, uri_to_file};
 pub struct EditError(pub String);
 
 fn compare_position(a: &crate::types::Position, b: &crate::types::Position) -> std::cmp::Ordering {
-    a.line.cmp(&b.line).then_with(|| a.character.cmp(&b.character))
+    a.line
+        .cmp(&b.line)
+        .then_with(|| a.character.cmp(&b.character))
 }
 
 fn positions_equal(a: &crate::types::Position, b: &crate::types::Position) -> bool {
@@ -54,7 +56,9 @@ pub fn ranges_overlap(a: &Range, b: &Range) -> bool {
 pub fn sort_and_validate_text_edits(edits: &mut Vec<TextEdit>) -> Result<Vec<TextEdit>, EditError> {
     for edit in &*edits {
         if edit.insert_text_format == Some(2) {
-            return Err(EditError("snippet-formatted LSP edits are unsupported".to_string()));
+            return Err(EditError(
+                "snippet-formatted LSP edits are unsupported".to_string(),
+            ));
         }
     }
     let mut indexed: Vec<(usize, TextEdit)> = edits.drain(..).enumerate().collect();
@@ -109,7 +113,12 @@ pub fn apply_text_edits_to_string(content: &str, edits: &[TextEdit]) -> Result<S
         if start_line == end_line {
             let line = lines.get(start_line).cloned().unwrap_or_default();
             let (a, b) = (start.character as usize, end.character as usize);
-            lines[start_line] = format!("{}{}{}", &line[..line.len().min(a)], edit.new_text, &line[b.min(line.len())..]);
+            lines[start_line] = format!(
+                "{}{}{}",
+                &line[..line.len().min(a)],
+                edit.new_text,
+                &line[b.min(line.len())..]
+            );
         } else {
             let start_line_text = lines.get(start_line).cloned().unwrap_or_default();
             let end_line_text = lines.get(end_line).cloned().unwrap_or_default();
@@ -196,14 +205,22 @@ pub async fn apply_edits_then_rename(
     for reference in references {
         let original = tokio::fs::read_to_string(&reference.file_path)
             .await
-            .map_err(|e| EditError(format!("failed to read {}: {e}", reference.file_path.display())))?;
+            .map_err(|e| {
+                EditError(format!(
+                    "failed to read {}: {e}",
+                    reference.file_path.display()
+                ))
+            })?;
         backups.push((reference.file_path.clone(), original));
         apply_text_edits(&reference.file_path, &reference.edits).await?;
     }
     if let Some(parent) = dest.parent() {
         if let Err(e) = tokio::fs::create_dir_all(parent).await {
             rollback(&backups).await;
-            return Err(EditError(format!("failed to create {}: {e}", parent.display())));
+            return Err(EditError(format!(
+                "failed to create {}: {e}",
+                parent.display()
+            )));
         }
     }
     if let Err(e) = tokio::fs::rename(source, dest).await {
@@ -225,10 +242,23 @@ async fn rollback(backups: &[(PathBuf, String)]) {
 
 #[derive(Debug)]
 enum WorkspaceEditOp {
-    Text { uri: String, edits: Vec<TextEdit> },
-    Create { uri: String, options: Option<Value> },
-    Rename { old_uri: String, new_uri: String, options: Option<Value> },
-    Delete { uri: String, options: Option<Value> },
+    Text {
+        uri: String,
+        edits: Vec<TextEdit>,
+    },
+    Create {
+        uri: String,
+        options: Option<Value>,
+    },
+    Rename {
+        old_uri: String,
+        new_uri: String,
+        options: Option<Value>,
+    },
+    Delete {
+        uri: String,
+        options: Option<Value>,
+    },
 }
 
 fn opt_bool(options: Option<&Value>, key: &str) -> bool {
@@ -248,21 +278,25 @@ fn uri_related(op_uri: &str, uri: &str) -> bool {
 fn plan_document_changes(document_changes: &[DocumentChange]) -> Vec<WorkspaceEditOp> {
     let mut ops: Vec<WorkspaceEditOp> = Vec::new();
     let mut pending_text: Vec<(String, Vec<TextEdit>)> = Vec::new();
-    let flush_uri = |ops: &mut Vec<WorkspaceEditOp>, pending: &mut Vec<(String, Vec<TextEdit>)>, uri: &str| {
-        let mut i = 0;
-        while i < pending.len() {
-            if uri_related(uri, &pending[i].0) {
-                let (u, edits) = pending.remove(i);
-                ops.push(WorkspaceEditOp::Text { uri: u, edits });
-            } else {
-                i += 1;
+    let flush_uri =
+        |ops: &mut Vec<WorkspaceEditOp>, pending: &mut Vec<(String, Vec<TextEdit>)>, uri: &str| {
+            let mut i = 0;
+            while i < pending.len() {
+                if uri_related(uri, &pending[i].0) {
+                    let (u, edits) = pending.remove(i);
+                    ops.push(WorkspaceEditOp::Text { uri: u, edits });
+                } else {
+                    i += 1;
+                }
             }
-        }
-    };
+        };
     for change in document_changes {
         match change {
             DocumentChange::TextDocumentEdit(tdc) => {
-                if let Some(entry) = pending_text.iter_mut().find(|(u, _)| *u == tdc.text_document.uri) {
+                if let Some(entry) = pending_text
+                    .iter_mut()
+                    .find(|(u, _)| *u == tdc.text_document.uri)
+                {
                     entry.1.extend(tdc.edits.iter().cloned());
                 } else {
                     pending_text.push((tdc.text_document.uri.clone(), tdc.edits.clone()));
@@ -270,7 +304,10 @@ fn plan_document_changes(document_changes: &[DocumentChange]) -> Vec<WorkspaceEd
             }
             DocumentChange::CreateFile(c) => {
                 flush_uri(&mut ops, &mut pending_text, &c.uri);
-                ops.push(WorkspaceEditOp::Create { uri: c.uri.clone(), options: c.options.clone() });
+                ops.push(WorkspaceEditOp::Create {
+                    uri: c.uri.clone(),
+                    options: c.options.clone(),
+                });
             }
             DocumentChange::RenameFile(r) => {
                 flush_uri(&mut ops, &mut pending_text, &r.old_uri);
@@ -283,7 +320,10 @@ fn plan_document_changes(document_changes: &[DocumentChange]) -> Vec<WorkspaceEd
             }
             DocumentChange::DeleteFile(d) => {
                 flush_uri(&mut ops, &mut pending_text, &d.uri);
-                ops.push(WorkspaceEditOp::Delete { uri: d.uri.clone(), options: d.options.clone() });
+                ops.push(WorkspaceEditOp::Delete {
+                    uri: d.uri.clone(),
+                    options: d.options.clone(),
+                });
             }
         }
     }
@@ -323,15 +363,24 @@ pub async fn apply_workspace_edit(
                         format_path_relative_to_cwd(&file_path, cwd)
                     ));
                 }
-                WorkspaceEditOp::Create { uri, options } => match create_file(&uri, options.as_ref()).await {
-                    Ok(created) => {
-                        if created {
-                            applied.push(format!("Created {}", format_path_relative_to_cwd(&uri_to_file(&uri), cwd)));
+                WorkspaceEditOp::Create { uri, options } => {
+                    match create_file(&uri, options.as_ref()).await {
+                        Ok(created) => {
+                            if created {
+                                applied.push(format!(
+                                    "Created {}",
+                                    format_path_relative_to_cwd(&uri_to_file(&uri), cwd)
+                                ));
+                            }
                         }
+                        Err(e) => return Err(e),
                     }
-                    Err(e) => return Err(e),
-                },
-                WorkspaceEditOp::Rename { old_uri, new_uri, options } => {
+                }
+                WorkspaceEditOp::Rename {
+                    old_uri,
+                    new_uri,
+                    options,
+                } => {
                     rename_file(&old_uri, &new_uri, options.as_ref(), cwd).await?;
                     applied.push(format!(
                         "Renamed {} {} {}",
@@ -342,7 +391,10 @@ pub async fn apply_workspace_edit(
                 }
                 WorkspaceEditOp::Delete { uri, options } => {
                     delete_file(&uri, options.as_ref()).await?;
-                    applied.push(format!("Deleted {}", format_path_relative_to_cwd(&uri_to_file(&uri), cwd)));
+                    applied.push(format!(
+                        "Deleted {}",
+                        format_path_relative_to_cwd(&uri_to_file(&uri), cwd)
+                    ));
                 }
             }
         }
@@ -389,10 +441,23 @@ async fn create_file(uri: &str, options: Option<&Value>) -> Result<bool, EditErr
             .map_err(|e| EditError(format!("failed to create {}: {e}", file_path.display())))?;
         return Ok(true);
     }
-    match tokio::fs::OpenOptions::new().write(true).create_new(true).open(&file_path).await {
+    match tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file_path)
+        .await
+    {
         Ok(_) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && opt_bool(options, "ignoreIfExists") => Ok(false),
-        Err(e) => Err(EditError(format!("failed to create {}: {e}", file_path.display()))),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::AlreadyExists
+                && opt_bool(options, "ignoreIfExists") =>
+        {
+            Ok(false)
+        }
+        Err(e) => Err(EditError(format!(
+            "failed to create {}: {e}",
+            file_path.display()
+        ))),
     }
 }
 
@@ -447,8 +512,16 @@ async fn delete_file(uri: &str, options: Option<&Value>) -> Result<(), EditError
         Ok(_) => tokio::fs::remove_dir_all(&file_path)
             .await
             .map_err(|e| EditError(format!("failed to delete {}: {e}", file_path.display()))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && opt_bool(options, "ignoreIfNotExists") => Ok(()),
-        Err(e) => Err(EditError(format!("failed to delete {}: {e}", file_path.display()))),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::NotFound
+                && opt_bool(options, "ignoreIfNotExists") =>
+        {
+            Ok(())
+        }
+        Err(e) => Err(EditError(format!(
+            "failed to delete {}: {e}",
+            file_path.display()
+        ))),
     }
 }
 
@@ -474,7 +547,10 @@ mod tests {
 
     fn edit(start: (u32, u32), end: (u32, u32), new_text: &str) -> TextEdit {
         TextEdit {
-            range: Range { start: pos(start.0, start.1), end: pos(end.0, end.1) },
+            range: Range {
+                start: pos(start.0, start.1),
+                end: pos(end.0, end.1),
+            },
             new_text: new_text.to_string(),
             insert_text_format: None,
         }
@@ -482,7 +558,8 @@ mod tests {
 
     #[test]
     fn applies_single_line_edit_bottom_up() {
-        let result = apply_text_edits_to_string("hello world\n", &[edit((0, 6), (0, 11), "there")]).unwrap();
+        let result =
+            apply_text_edits_to_string("hello world\n", &[edit((0, 6), (0, 11), "there")]).unwrap();
         assert_eq!(result, "hello there\n");
     }
 

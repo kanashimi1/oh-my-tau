@@ -69,12 +69,19 @@ pub(crate) fn visit_session_entries_lenient(bytes: &[u8], visit: &mut dyn FnMut(
     let mut read = 0i64;
 
     while cursor < bytes.len() {
-        let newline = bytes[cursor..].iter().position(|b| *b == LF).map(|p| p + cursor);
+        let newline = bytes[cursor..]
+            .iter()
+            .position(|b| *b == LF)
+            .map(|p| p + cursor);
         let has_newline = newline.is_some();
         let line_end = newline.unwrap_or(bytes.len());
         if let Some(entry) = parse_json_line(bytes, cursor as i64, line_end as i64) {
             visit(&entry);
-            read = if has_newline { line_end as i64 + 1 } else { line_end as i64 };
+            read = if has_newline {
+                line_end as i64 + 1
+            } else {
+                line_end as i64
+            };
         } else if has_newline {
             read = line_end as i64 + 1;
         } else {
@@ -123,7 +130,9 @@ fn metadata_birthtime_ms(meta: &std::fs::Metadata) -> f64 {
     meta.created()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0.0, |d| (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0)
+        .map_or(0.0, |d| {
+            (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0
+        })
 }
 
 /// Same file identity check as TS `matchesSessionFile`: dev, ino and
@@ -178,9 +187,13 @@ pub fn parse_session_file(
 
     // Reduce each entry immediately so full replays do not retain
     // tool-output/message bodies.
-    let visit = |entry: &Value, result: &mut ParseSessionResult, tier: &mut Option<ServiceTierByFamily>| {
+    let visit = |entry: &Value,
+                 result: &mut ParseSessionResult,
+                 tier: &mut Option<ServiceTierByFamily>| {
         if is_service_tier_change(entry) {
-            *tier = entry.get("serviceTier").and_then(coerce_service_tier_by_family);
+            *tier = entry
+                .get("serviceTier")
+                .and_then(coerce_service_tier_by_family);
             return;
         }
         if is_user_message(entry) {
@@ -196,13 +209,16 @@ pub fn parse_session_file(
             return;
         }
         if is_model_usage(entry) {
-            if let Some(stats) = extract_model_usage_stats(session_path, &folder, entry, agent_type) {
+            if let Some(stats) = extract_model_usage_stats(session_path, &folder, entry, agent_type)
+            {
                 result.stats.push(stats);
             }
             return;
         }
         if is_assistant_message(entry) {
-            if let Some(msg_stats) = extract_stats(session_path, &folder, entry, tier.as_ref(), agent_type) {
+            if let Some(msg_stats) =
+                extract_stats(session_path, &folder, entry, tier.as_ref(), agent_type)
+            {
                 result.stats.push(msg_stats);
             }
             let calls = extract_tool_calls(session_path, &folder, entry, agent_type);
@@ -245,7 +261,11 @@ pub fn parse_session_file(
     if replay {
         resume = false;
     }
-    let start = if reset || replay { 0 } else { from_offset.max(0) };
+    let start = if reset || replay {
+        0
+    } else {
+        from_offset.max(0)
+    };
     let read_start = if resume { start } else { 0 };
 
     handle.seek(SeekFrom::Start(read_start as u64))?;
@@ -360,5 +380,3 @@ pub fn get_session_entry(session_path: &str, entry_id: &str) -> Result<Option<Se
         }
     }
 }
-
-

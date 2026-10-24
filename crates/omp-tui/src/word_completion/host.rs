@@ -13,12 +13,11 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use pi_predict::{Config, Method, Predictor, Query};
-
 
 const SNAPSHOT_FILE: &str = "ngram.snapshot";
 const CURSOR_FILE: &str = "cursor.json";
@@ -39,7 +38,9 @@ pub fn method_for_setting(value: &str) -> Option<Method> {
 enum Slot {
     /// Loading or ingesting on the background thread; prompts submitted
     /// meanwhile queue here and are observed once the engine is ready.
-    Loading { pending: Vec<String> },
+    Loading {
+        pending: Vec<String>,
+    },
     Ready(Box<dyn Predictor>),
     /// Unloadable (state dir unwritable, ...): ghost text stays off.
     Failed,
@@ -64,7 +65,9 @@ pub struct WordHost {
 
 impl std::fmt::Debug for WordHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WordHost").field("state_dir", &self.state_dir).finish_non_exhaustive()
+        f.debug_struct("WordHost")
+            .field("state_dir", &self.state_dir)
+            .finish_non_exhaustive()
     }
 }
 
@@ -93,7 +96,9 @@ impl WordHost {
     pub fn spawn_with(agent_dir: &Path, method: Method, foreign: Vec<PathBuf>) -> Arc<Self> {
         let state_dir = agent_dir.join("predict").join("ngram-rs");
         let host = Arc::new(Self {
-            slot: Mutex::new(Slot::Loading { pending: Vec::new() }),
+            slot: Mutex::new(Slot::Loading {
+                pending: Vec::new(),
+            }),
             dirty: AtomicBool::new(false),
             cursor: AtomicI64::new(0),
             state_dir: Some(state_dir),
@@ -130,7 +135,9 @@ impl WordHost {
     /// Whether the engine has finished loading (successfully).
     #[must_use]
     pub fn is_ready(&self) -> bool {
-        self.slot.try_lock().is_some_and(|slot| matches!(*slot, Slot::Ready(_)))
+        self.slot
+            .try_lock()
+            .is_some_and(|slot| matches!(*slot, Slot::Ready(_)))
     }
 
     /// Ghost suffix for `prefix` typed after `before`. Never blocks: a busy or
@@ -144,7 +151,12 @@ impl WordHost {
             Slot::Failed => Answer::Ready(None),
             Slot::Ready(engine) => {
                 let query = Query { before, prefix };
-                Answer::Ready(engine.complete(&query).map(|s| s.suffix).filter(|s| !s.is_empty()))
+                Answer::Ready(
+                    engine
+                        .complete(&query)
+                        .map(|s| s.suffix)
+                        .filter(|s| !s.is_empty()),
+                )
             }
         }
     }
@@ -189,15 +201,25 @@ impl WordHost {
     /// Background load: restore, ingest history, persist, then go live.
     /// Returns `false` when the engine could not be opened.
     fn load(&self, agent_dir: &Path, method: Method, foreign: &[PathBuf]) -> bool {
-        let Some(dir) = self.state_dir.clone() else { return false };
+        let Some(dir) = self.state_dir.clone() else {
+            return false;
+        };
         if std::fs::create_dir_all(&dir).is_err() {
             return false;
         }
         if !dir.join(SNAPSHOT_FILE).exists() {
             seed_from_daemon_state(&agent_dir.join("predict").join("ngram"), &dir);
         }
-        let config = Config { state_dir: dir.clone(), model_dir: None, show_threshold: None };
-        let mut cursor = if dir.join(SNAPSHOT_FILE).exists() { read_cursor(&dir) } else { None };
+        let config = Config {
+            state_dir: dir.clone(),
+            model_dir: None,
+            show_threshold: None,
+        };
+        let mut cursor = if dir.join(SNAPSHOT_FILE).exists() {
+            read_cursor(&dir)
+        } else {
+            None
+        };
         let mut engine = match pi_predict::open(method, &config) {
             Ok(engine) => engine,
             Err(_) => {
@@ -243,7 +265,10 @@ impl WordHost {
 
 fn read_cursor(dir: &Path) -> Option<i64> {
     let text = std::fs::read_to_string(dir.join(CURSOR_FILE)).ok()?;
-    serde_json::from_str::<serde_json::Value>(&text).ok()?.get("historyId")?.as_i64()
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()?
+        .get("historyId")?
+        .as_i64()
 }
 
 fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
@@ -255,15 +280,23 @@ fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 fn write_cursor(dir: &Path, cursor: i64) -> std::io::Result<()> {
-    write_atomic(dir, CURSOR_FILE, format!("{{\"historyId\":{cursor}}}").as_bytes())
+    write_atomic(
+        dir,
+        CURSOR_FILE,
+        format!("{{\"historyId\":{cursor}}}").as_bytes(),
+    )
 }
 
 /// Copy the TS daemon's snapshot + cursor (read-only on the source). The
 /// cursor is read first: a stale cursor only re-ingests a few rows, a newer
 /// one than the snapshot would skip them.
 fn seed_from_daemon_state(ts_dir: &Path, own: &Path) {
-    let Some(cursor) = read_cursor(ts_dir) else { return };
-    let Ok(snapshot) = std::fs::read(ts_dir.join(SNAPSHOT_FILE)) else { return };
+    let Some(cursor) = read_cursor(ts_dir) else {
+        return;
+    };
+    let Ok(snapshot) = std::fs::read(ts_dir.join(SNAPSHOT_FILE)) else {
+        return;
+    };
     if write_atomic(own, SNAPSHOT_FILE, &snapshot).is_ok() {
         let _ = write_cursor(own, cursor);
     }
@@ -326,13 +359,21 @@ fn foreign_history_files() -> Vec<PathBuf> {
 /// slash commands are not prose, Claude's paste and image placeholders are not
 /// words the user typed.
 fn read_foreign_prompts(files: &[PathBuf]) -> Vec<String> {
-    let placeholder = regex::Regex::new(r"\[(?:Pasted text|Image) #\d+[^\]]*\]").expect("static regex");
+    let placeholder =
+        regex::Regex::new(r"\[(?:Pasted text|Image) #\d+[^\]]*\]").expect("static regex");
     let mut prompts = Vec::new();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        let Ok(text) = std::fs::read_to_string(file) else {
+            continue;
+        };
         for line in text.lines() {
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-            let Some(text) = value.get("display").or_else(|| value.get("text")).and_then(|v| v.as_str())
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let Some(text) = value
+                .get("display")
+                .or_else(|| value.get("text"))
+                .and_then(|v| v.as_str())
             else {
                 continue;
             };
@@ -360,7 +401,8 @@ mod tests {
         )
         .unwrap();
         for row in rows {
-            conn.execute("INSERT INTO history(prompt) VALUES (?1)", [row]).unwrap();
+            conn.execute("INSERT INTO history(prompt) VALUES (?1)", [row])
+                .unwrap();
         }
     }
 
@@ -389,19 +431,37 @@ mod tests {
         std::fs::create_dir_all(tmp.join("predict/ngram")).unwrap();
         write_history(&tmp, &["please refactor the parser carefully"; 12]);
         // A daemon state that must stay byte-identical.
-        std::fs::write(tmp.join("predict/ngram/ngram.snapshot"), b"junk-not-a-snapshot").unwrap();
-        std::fs::write(tmp.join("predict/ngram/cursor.json"), b"{\"historyId\":999}").unwrap();
+        std::fs::write(
+            tmp.join("predict/ngram/ngram.snapshot"),
+            b"junk-not-a-snapshot",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("predict/ngram/cursor.json"),
+            b"{\"historyId\":999}",
+        )
+        .unwrap();
 
         let host = WordHost::spawn_with(&tmp, Method::Ngram, Vec::new());
         wait_ready(&host);
         let own = tmp.join("predict/ngram-rs");
-        assert!(own.join(SNAPSHOT_FILE).exists(), "state persisted after ingest");
-        assert_eq!(read_cursor(&own), Some(12), "unloadable seed was rebuilt, history re-ingested");
+        assert!(
+            own.join(SNAPSHOT_FILE).exists(),
+            "state persisted after ingest"
+        );
+        assert_eq!(
+            read_cursor(&own),
+            Some(12),
+            "unloadable seed was rebuilt, history re-ingested"
+        );
         assert_eq!(
             std::fs::read(tmp.join("predict/ngram/ngram.snapshot")).unwrap(),
             b"junk-not-a-snapshot"
         );
-        assert_eq!(std::fs::read(tmp.join("predict/ngram/cursor.json")).unwrap(), b"{\"historyId\":999}");
+        assert_eq!(
+            std::fs::read(tmp.join("predict/ngram/cursor.json")).unwrap(),
+            b"{\"historyId\":999}"
+        );
 
         let Answer::Ready(Some(suffix)) = host.complete("please ", "refac") else {
             panic!("expected a learned completion");
@@ -409,7 +469,9 @@ mod tests {
         assert_eq!(suffix, "tor");
 
         // Live observation persists and survives a restart.
-        host.observe("zebrafish zebrafish zebrafish zebrafish zebrafish zebrafish zebrafish zebrafish");
+        host.observe(
+            "zebrafish zebrafish zebrafish zebrafish zebrafish zebrafish zebrafish zebrafish",
+        );
         host.persist();
         let again = WordHost::spawn_with(&tmp, Method::Ngram, Vec::new());
         wait_ready(&again);
@@ -435,8 +497,14 @@ mod tests {
         }
         let host = WordHost::spawn_with(&tmp, Method::Ngram, Vec::new());
         wait_ready(&host);
-        assert!(matches!(host.complete("please ", "refac"), Answer::Ready(_)));
-        assert_eq!(read_cursor(&tmp.join("predict/ngram-rs")), read_cursor(&src));
+        assert!(matches!(
+            host.complete("please ", "refac"),
+            Answer::Ready(_)
+        ));
+        assert_eq!(
+            read_cursor(&tmp.join("predict/ngram-rs")),
+            read_cursor(&src)
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

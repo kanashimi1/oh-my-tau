@@ -716,15 +716,27 @@ pub trait HostResponder: Send + Sync {
         Box::pin(async { false })
     }
     /// `ctx.ui.select(title, options)`; no UI yields `None`.
-    fn ui_select<'a>(&'a self, _title: &'a str, _options: Vec<String>) -> BoxFuture<'a, Option<String>> {
+    fn ui_select<'a>(
+        &'a self,
+        _title: &'a str,
+        _options: Vec<String>,
+    ) -> BoxFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     /// `ctx.ui.input(title, placeholder)`; no UI yields `None`.
-    fn ui_input<'a>(&'a self, _title: &'a str, _placeholder: Option<&'a str>) -> BoxFuture<'a, Option<String>> {
+    fn ui_input<'a>(
+        &'a self,
+        _title: &'a str,
+        _placeholder: Option<&'a str>,
+    ) -> BoxFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     /// `ctx.ui.editor(title, prefill)`; no UI yields `None`.
-    fn ui_editor<'a>(&'a self, _title: &'a str, _prefill: Option<&'a str>) -> BoxFuture<'a, Option<String>> {
+    fn ui_editor<'a>(
+        &'a self,
+        _title: &'a str,
+        _prefill: Option<&'a str>,
+    ) -> BoxFuture<'a, Option<String>> {
         Box::pin(async { None })
     }
     /// `ctx.compact(options)`; the default runner action is a no-op.
@@ -738,6 +750,10 @@ pub trait HostResponder: Send + Sync {
         _options: Value,
     ) -> BoxFuture<'a, Result<Value, String>> {
         Box::pin(async { Ok(json!({"cancelled": false})) })
+    }
+    /// Complete one auxiliary model request through the core's catalog and auth.
+    fn model_complete(&self, _request: Value) -> BoxFuture<'_, Result<Value, String>> {
+        Box::pin(async move { Err("model_complete is not supported by the core".into()) })
     }
     /// `pi.setModel(model)`; `false` = model not applied (no UI/credentials to switch with).
     fn set_model(&self, _model: Value) -> BoxFuture<'_, bool> {
@@ -775,12 +791,23 @@ pub async fn answer(
             let options = params
                 .get("options")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
                 .unwrap_or_default();
-            Ok(responder.ui_select(s("title"), options).await.map_or(Value::Null, Value::String))
+            Ok(responder
+                .ui_select(s("title"), options)
+                .await
+                .map_or(Value::Null, Value::String))
         }
         "ui_input" => Ok(responder
-            .ui_input(s("title"), params.get("placeholder").and_then(Value::as_str))
+            .ui_input(
+                s("title"),
+                params.get("placeholder").and_then(Value::as_str),
+            )
             .await
             .map_or(Value::Null, Value::String)),
         "ui_editor" => Ok(responder
@@ -824,6 +851,7 @@ pub async fn answer(
             .set_session_name(s("name").to_owned())
             .await
             .map(|()| Value::Null),
+        "model_complete" => responder.model_complete(params.clone()).await,
         other => Err(format!("{other} is not supported by the core")),
     }
 }

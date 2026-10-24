@@ -5,18 +5,31 @@
 //! `prompt_result` and `session_settled` frames are interleaved. Commands that
 //! depend on subsystems omp-rs lacks answer `success: false` with an omp-style
 //! error message (see `unsupported`).
+//!
+//! Commands are handled one at a time in arrival order on a worker task; the read loop keeps
+//! routing `extension_ui_response` frames (and `abort`, while a command is in flight) so a
+//! command awaiting a dialog answer cannot deadlock the transport.
+//!
+//! Interactive slash commands (`/branch`, `/copy`, `/agents`, `/modelpreset`, …) drive TS-shaped
+//! `extension_ui_request` dialogs (`select` / `confirm` / `input` / `editor`, withdrawn by a
+//! `cancelDialog` side-effect frame) unless the process runs with `--no-ui`; see
+//! `slash_extra::dialog`. Host effects without an answer:
+//! - `{"type":"extension_ui_request","id":…,"method":"set_editor_text","text":…}` — replace the
+//!   client's prompt draft (TS rpc `set_editor_text`).
+//! - `{"type":"clipboard_copy","text":…}` — `/copy` picked `text`; the client puts it on its
+//!   clipboard (omp-rs extension; the TUI host copies itself).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 
 use anyhow::Result;
 use pa_agent::abort::AbortController;
 use pa_agent::agent::{Agent, QueueMode};
-use pa_agent::BoxFut;
 use pa_agent::types::ThinkingLevel;
+use pa_agent::BoxFut;
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -80,9 +93,12 @@ impl RpcAskUi {
     /// was cancelled/timed out (TS resolves `undefined`).
     async fn request(method: &str, mut frame: Map<String, Value>) -> Result<Option<Value>> {
         let (tx, rx) = tokio::sync::oneshot::channel::<Value>();
-        let id = format!("ui-{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos()));
+        let id = format!(
+            "ui-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        );
         let timeout_ms = frame.get("timeout").and_then(Value::as_u64);
         frame.insert("id".into(), json!(id));
         frame.insert("type".into(), json!("extension_ui_request"));
@@ -102,10 +118,12 @@ impl RpcAskUi {
             }
         };
         let result = match timeout_ms {
-            Some(ms) => match tokio::time::timeout(std::time::Duration::from_millis(ms), wait).await {
-                Ok(r) => r,
-                Err(_) => Ok(Some(json!({"cancelled": true, "timedOut": true}))),
-            },
+            Some(ms) => {
+                match tokio::time::timeout(std::time::Duration::from_millis(ms), wait).await {
+                    Ok(r) => r,
+                    Err(_) => Ok(Some(json!({"cancelled": true, "timedOut": true}))),
+                }
+            }
             None => wait.await,
         };
         lock(&PENDING_UI_REQUESTS).remove(&id);
@@ -150,8 +168,7 @@ impl AskUi for RpcAskUi {
         _initial_index: Option<usize>,
     ) -> BoxFut<'static, anyhow::Result<Option<String>>> {
         Box::pin(async move {
-            let labels: Vec<String> =
-                options.iter().map(|o| o.label.clone()).collect();
+            let labels: Vec<String> = options.iter().map(|o| o.label.clone()).collect();
             let mut frame = Map::new();
             frame.insert("title".into(), json!(prompt));
             frame.insert("options".into(), json!(labels));
@@ -162,7 +179,10 @@ impl AskUi for RpcAskUi {
                     _ => json!({}),
                 })
                 .collect();
-            if details.iter().any(|d| !d.as_object().is_none_or(Map::is_empty)) {
+            if details
+                .iter()
+                .any(|d| !d.as_object().is_none_or(Map::is_empty))
+            {
                 frame.insert("optionDetails".into(), json!(details));
             }
             Ok(Self::request("select", frame)
@@ -435,7 +455,9 @@ async fn cycle_model(rt: &Runtime) -> CmdResult {
     let model = rt.cycle_to(&next.provider, &next.id).await?;
     let level = rt.agent.thinking_level().await;
     let ultra = rt.ultra().map(omp_tui::magic::Ultra::name);
-    ok(json!({"model": model, "thinkingLevel": level_name(level), "ultra": ultra, "isScoped": false}))
+    ok(
+        json!({"model": model, "thinkingLevel": level_name(level), "ultra": ultra, "isScoped": false}),
+    )
 }
 
 fn branch_messages(entries: &[Value]) -> Vec<Value> {
@@ -491,7 +513,12 @@ async fn run_bash(rt: &Arc<Runtime>, command: &str) -> CmdResult {
     // TS `executeBash`: a `user_bash` handler's result replaces the execution.
     if let Some(host) = rt.ext_host().filter(|h| h.has_handlers("user_bash")) {
         match host
-            .emit_user_bash(command.to_owned(), false, rt.cwd.display().to_string(), None)
+            .emit_user_bash(
+                command.to_owned(),
+                false,
+                rt.cwd.display().to_string(),
+                None,
+            )
             .await
         {
             Ok(outcome) => {
@@ -547,7 +574,10 @@ async fn input_gate(text: &str) -> Option<String> {
     let Some(ext) = slash::extensions() else {
         return Some(text.to_string());
     };
-    match ext.input_gate(text, omp_ext::lifecycle::InputSource::Rpc).await {
+    match ext
+        .input_gate(text, omp_ext::lifecycle::InputSource::Rpc)
+        .await
+    {
         Ok(crate::ext::PromptGate::Run(t)) => Some(t),
         Ok(crate::ext::PromptGate::Handled) => None,
         Err(e) => {
@@ -576,7 +606,9 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             };
             let message = gated.as_deref().unwrap_or(message);
             match outcome {
-                slash::Outcome::Handled { agent_invoked } => ok(json!({"agentInvoked": agent_invoked})),
+                slash::Outcome::Handled { agent_invoked } => {
+                    ok(json!({"agentInvoked": agent_invoked}))
+                }
                 slash::Outcome::ExtensionHandled => {
                     // TS: the extension consumed the prompt inside session.prompt;
                     // the response carries no data and a completed prompt_result
@@ -595,9 +627,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                     none()
                 }
                 slash::Outcome::Prompt(rewritten) => {
-                    rt.prompt(cmd.get("id").cloned(), &rewritten,
-                        cmd.get("streamingBehavior").and_then(Value::as_str), images(cmd))
-                        .await?;
+                    rt.prompt(
+                        cmd.get("id").cloned(),
+                        &rewritten,
+                        cmd.get("streamingBehavior").and_then(Value::as_str),
+                        images(cmd),
+                    )
+                    .await?;
                     none()
                 }
                 slash::Outcome::NotSlash => {
@@ -1308,7 +1344,8 @@ impl FrameEncoder {
 
 /// Hook run once the runtime exists, before the `ready` frame (extension host start-up).
 pub type OnStart = Box<
-    dyn FnOnce(Arc<Runtime>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send,
+    dyn FnOnce(Arc<Runtime>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send,
 >;
 
 /// Run the RPC loop until stdin closes.
@@ -1382,6 +1419,22 @@ pub async fn run_with(
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut background = tokio::task::JoinSet::new();
+    // Commands run one at a time, in arrival order, on a worker task, so the read loop keeps
+    // routing `extension_ui_response` (and `abort`) while a command awaits a dialog answer
+    // (interactive slash commands, extension `ui.select`): handling inline deadlocked.
+    let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Value>();
+    let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker = {
+        let (rt, busy) = (rt.clone(), busy.clone());
+        tokio::spawn(async move {
+            while let Some(cmd) = cmd_rx.recv().await {
+                busy.store(true, std::sync::atomic::Ordering::SeqCst);
+                let reply = handle(&rt, &cmd).await;
+                rt.send(reply);
+                busy.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        })
+    };
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
             continue;
@@ -1432,10 +1485,18 @@ pub async fn run_with(
             });
             continue;
         }
-        let reply = handle(&rt, &cmd).await;
-        rt.send(reply);
+        if kind == "abort" && busy.load(std::sync::atomic::Ordering::SeqCst) {
+            // A command is in flight (possibly waiting on a dialog): abort the run now
+            // instead of queueing behind it.
+            let reply = handle(&rt, &cmd).await;
+            rt.send(reply);
+            continue;
+        }
+        let _ = cmd_tx.send(cmd);
     }
     // stdin closed: let accepted work finish and flush its frames.
+    drop(cmd_tx);
+    let _ = worker.await;
     while background.join_next().await.is_some() {}
     agent.wait_for_idle().await;
     drop(rt);

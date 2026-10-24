@@ -20,7 +20,10 @@ const HIGHLIGHT_JS: &str = include_str!("../../assets/export/vendor/highlight.mi
 
 /// TS `COMMON_EXPORT_PALETTE` (`export/html/web-palette.ts`).
 const COMMON_PALETTE: &[(&str, &str)] = &[
-    ("--font-mono", r#"ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace"#),
+    (
+        "--font-mono",
+        r#"ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace"#,
+    ),
     ("--body-bg", "var(--bg)"),
     ("--container-bg", "var(--bg-raised)"),
     ("--info-bg", "var(--bg-inset)"),
@@ -28,7 +31,10 @@ const COMMON_PALETTE: &[(&str, &str)] = &[
     ("--muted", "var(--fg-muted)"),
     ("--dim", "var(--fg-faint)"),
     ("--thinkingText", "var(--fg-muted)"),
-    ("--borderMuted", "color-mix(in srgb, var(--border) 67%, transparent)"),
+    (
+        "--borderMuted",
+        "color-mix(in srgb, var(--border) 67%, transparent)",
+    ),
     ("--borderAccent", "#945ff9"),
     ("--selectedBg", "var(--accent-muted)"),
     ("--success", "var(--ok)"),
@@ -41,7 +47,10 @@ const COMMON_PALETTE: &[(&str, &str)] = &[
     ("--customMessageLabel", "#945ff9"),
     ("--toolPendingBg", "var(--bg-raised)"),
     ("--toolSuccessBg", "var(--bg-inset)"),
-    ("--toolErrorBg", "color-mix(in srgb, var(--err) 14%, transparent)"),
+    (
+        "--toolErrorBg",
+        "color-mix(in srgb, var(--err) 14%, transparent)",
+    ),
     ("--toolTitle", "var(--fg)"),
     ("--toolOutput", "var(--fg-muted)"),
     ("--mdHeading", "var(--accent)"),
@@ -144,10 +153,15 @@ pub fn run(args: &[String]) -> Result<i32> {
     let mut output: Option<PathBuf> = None;
     // The `--export <file>` launch path calls run("export", &[path]) without
     // the name token; direct dispatch includes it. Skip it only when present.
-    let mut it = args.iter().skip(usize::from(args.first().is_some_and(|a| a == "export"))).peekable();
+    let mut it = args
+        .iter()
+        .skip(usize::from(args.first().is_some_and(|a| a == "export")))
+        .peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "-o" | "--output" => output = Some(PathBuf::from(it.next().context("--output needs a value")?)),
+            "-o" | "--output" => {
+                output = Some(PathBuf::from(it.next().context("--output needs a value")?))
+            }
             other if other.starts_with("--output=") => output = Some(PathBuf::from(&other[9..])),
             other if other.starts_with('-') => anyhow::bail!("unknown flag: {other}"),
             other => {
@@ -159,16 +173,29 @@ pub fn run(args: &[String]) -> Result<i32> {
         }
     }
     let input = input.context("Usage: omp-rs export <session.jsonl> [-o out.html]")?;
-    let data = session_data(&input)
-        .with_context(|| format!("read session file {}", input.display()))?;
+    let data =
+        session_data(&input).with_context(|| format!("read session file {}", input.display()))?;
     let html = generate_html(&data);
     let output = output.unwrap_or_else(|| {
-        let stem = input.file_stem().map_or("session", |s| s.to_str().unwrap_or("session"));
+        let stem = input
+            .file_stem()
+            .map_or("session", |s| s.to_str().unwrap_or("session"));
         PathBuf::from(format!("omp-session-{stem}.html"))
     });
     std::fs::write(&output, html).with_context(|| format!("write {}", output.display()))?;
     println!("{}", output.display());
     Ok(0)
+}
+
+/// The standalone HTML export of one session file (the `omp-rs web` export
+/// button serves this directly).
+///
+/// # Errors
+/// Missing or unreadable session file.
+pub fn render_html(path: &Path) -> Result<String> {
+    let data =
+        session_data(path).with_context(|| format!("read session file {}", path.display()))?;
+    Ok(generate_html(&data))
 }
 
 /// TS `buildSessionData` for the file-based path: header (minus
@@ -179,7 +206,9 @@ fn session_data(path: &Path) -> Result<Value> {
     let mut entries: Vec<Value> = Vec::new();
     let mut leaf_id: Option<String> = None;
     for line in &loaded.lines {
-        let Ok(value) = serde_json::from_str::<Value>(&line.raw) else { continue };
+        let Ok(value) = serde_json::from_str::<Value>(&line.raw) else {
+            continue;
+        };
         let kind = value.get("type").and_then(Value::as_str);
         if kind == Some("session") {
             let mut h = value;
@@ -189,7 +218,11 @@ fn session_data(path: &Path) -> Result<Value> {
             header = Some(h);
         } else if kind != Some("title") {
             // "title" lines are the fixed-width title slot, not transcript entries.
-            leaf_id = value.get("id").and_then(Value::as_str).map(str::to_string).or(leaf_id);
+            leaf_id = value
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(leaf_id);
             entries.push(value);
         }
     }
@@ -204,10 +237,14 @@ fn session_data(path: &Path) -> Result<Value> {
 /// and the base64 session payload.
 fn generate_html(session_data: &Value) -> String {
     template_html()
-        .replace("<theme-vars/>", &format!("<style>{}</style>", theme_styles()))
+        .replace(
+            "<theme-vars/>",
+            &format!("<style>{}</style>", theme_styles()),
+        )
         .replace(
             "{{SESSION_DATA}}",
-            &base64::engine::general_purpose::STANDARD.encode(serde_json::to_string(session_data).unwrap_or_default()),
+            &base64::engine::general_purpose::STANDARD
+                .encode(serde_json::to_string(session_data).unwrap_or_default()),
         )
 }
 
@@ -216,9 +253,18 @@ fn template_html() -> String {
     let minified_css = minify_css(TEMPLATE_CSS);
     TEMPLATE_HTML
         .replace("<template-css/>", &format!("<style>{minified_css}</style>"))
-        .replace("<template-marked/>", &format!("<script>{MARKED_JS}</script>"))
-        .replace("<template-highlight/>", &format!("<script>{HIGHLIGHT_JS}</script>"))
-        .replace("<template-tool-views/>", &format!("<script>{TOOL_VIEWS_JS}</script>"))
+        .replace(
+            "<template-marked/>",
+            &format!("<script>{MARKED_JS}</script>"),
+        )
+        .replace(
+            "<template-highlight/>",
+            &format!("<script>{HIGHLIGHT_JS}</script>"),
+        )
+        .replace(
+            "<template-tool-views/>",
+            &format!("<script>{TOOL_VIEWS_JS}</script>"),
+        )
         .replace("<template-js/>", &format!("<script>{TEMPLATE_JS}</script>"))
 }
 
@@ -306,10 +352,18 @@ mod tests {
         .unwrap();
         let out = dir.join(format!("omp-rs-export-ow-{}.html", std::process::id()));
         std::fs::write(&out, "previous contents").unwrap();
-        let code = run(&[session.to_string_lossy().into_owned(), "-o".into(), out.to_string_lossy().into_owned()]).unwrap();
+        let code = run(&[
+            session.to_string_lossy().into_owned(),
+            "-o".into(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
         assert_eq!(code, 0);
         let written = std::fs::read_to_string(&out).unwrap();
-        assert!(written.starts_with("<!DOCTYPE html>"), "overwritten: {written:?}");
+        assert!(
+            written.starts_with("<!DOCTYPE html>"),
+            "overwritten: {written:?}"
+        );
         std::fs::remove_file(&session).ok();
         std::fs::remove_file(&out).ok();
     }
@@ -322,7 +376,8 @@ mod tests {
 
     #[test]
     fn template_has_no_leftover_placeholders() {
-        let html = generate_html(&serde_json::json!({"header": null, "entries": [], "leafId": null}));
+        let html =
+            generate_html(&serde_json::json!({"header": null, "entries": [], "leafId": null}));
         assert!(!html.contains("<template-css/>"));
         assert!(!html.contains("{{SESSION_DATA}}"));
         assert!(html.contains("<style>"));

@@ -32,15 +32,21 @@ pub(crate) fn resolve_artifact_file(
     let id = parse_artifact_id(url).map_err(ArtifactError::Message)?;
     let dirs = artifacts_dirs(ctx);
     if dirs.is_empty() {
-        return Err(ArtifactError::Missing("No session - artifacts unavailable".to_string()));
+        return Err(ArtifactError::Missing(
+            "No session - artifacts unavailable".to_string(),
+        ));
     }
     let mut any_dir_exists = false;
     let mut available: Vec<u64> = Vec::new();
     for dir in &dirs {
-        let Ok(files) = std::fs::read_dir(dir) else { continue };
+        let Ok(files) = std::fs::read_dir(dir) else {
+            continue;
+        };
         any_dir_exists = true;
         for entry in files.flatten() {
-            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else { continue };
+            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
             if let Some(rest) = name.strip_prefix(id).and_then(|r| r.strip_prefix('.')) {
                 let _ = rest;
                 return Ok(entry.path());
@@ -53,13 +59,19 @@ pub(crate) fn resolve_artifact_file(
         }
     }
     if !any_dir_exists {
-        return Err(ArtifactError::Missing("No artifacts directory found".to_string()));
+        return Err(ArtifactError::Missing(
+            "No artifacts directory found".to_string(),
+        ));
     }
     available.sort_unstable();
     let available_str = if available.is_empty() {
         "none".to_string()
     } else {
-        available.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+        available
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     Err(ArtifactError::Missing(format!(
         "Artifact {id} not found. Available: {available_str}"
@@ -131,9 +143,13 @@ impl UrlProvider for ArtifactProvider {
     fn complete(&self, _query: &str, ctx: &UrlCtx) -> Vec<crate::UrlCompletion> {
         let mut ids: Vec<u64> = Vec::new();
         for dir in artifacts_dirs(ctx) {
-            let Ok(files) = std::fs::read_dir(dir) else { continue };
+            let Ok(files) = std::fs::read_dir(dir) else {
+                continue;
+            };
             for entry in files.flatten() {
-                let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else { continue };
+                let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                    continue;
+                };
                 if let Some(num) = name.split('.').next().and_then(|p| p.parse::<u64>().ok()) {
                     if !ids.contains(&num) {
                         ids.push(num);
@@ -143,7 +159,10 @@ impl UrlProvider for ArtifactProvider {
         }
         ids.sort_unstable();
         ids.into_iter()
-            .map(|id| crate::UrlCompletion { label: id.to_string(), detail: None })
+            .map(|id| crate::UrlCompletion {
+                label: id.to_string(),
+                detail: None,
+            })
             .collect()
     }
 }

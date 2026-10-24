@@ -1291,7 +1291,10 @@ pub fn serialize_conversation_for_summary(messages: &[Value], dialect: Dialect) 
 
 /// [`serialize_conversation_for_summary`] over borrowed messages.
 #[must_use]
-pub(crate) fn serialize_conversation_for_summary_refs(messages: &[&Value], dialect: Dialect) -> String {
+pub(crate) fn serialize_conversation_for_summary_refs(
+    messages: &[&Value],
+    dialect: Dialect,
+) -> String {
     let conversation = serialize_conversation_refs(messages, dialect);
     let escaped = if dialect == Dialect::Harmony {
         escape_harmony_control_tokens(&conversation)

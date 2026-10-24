@@ -12,6 +12,7 @@ mod events;
 mod ext;
 mod herdr;
 mod images;
+mod methodology;
 mod model;
 mod notices;
 mod paging;
@@ -50,8 +51,8 @@ const HELP: &str = r"usage: omp-rs [--mode text|json|rpc] [-p|--print] [--model 
        [--no-lsp] [--no-pty] [--no-ui] [--allow-home] [--auto-approve|--yolo]
        [--approval-mode always-ask|write|yolo] [--export FILE] [--version] [--] <prompt...|@file>
 
-Session control (headless: pass a session id prefix or path; bare --resume needs
-the interactive picker, which omp-rs does not have):
+Session control (bare --resume in a terminal opens the session picker; headless
+modes need a session id prefix or path):
   -c, --continue       continue the newest previous session
   -r, --resume [ID]    resume a session (also --session)
   --fork ID            fork a session into a fresh file
@@ -110,7 +111,11 @@ fn resolve_session(dir: &Path, value: &str) -> Option<PathBuf> {
             .take(5)
             .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
             .find(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("session"))
-            .and_then(|v| v.get("id").and_then(serde_json::Value::as_str).map(ToString::to_string));
+            .and_then(|v| {
+                v.get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string)
+            });
         if id.is_some_and(|id| id.starts_with(value)) {
             return Some(path);
         }
@@ -229,11 +234,17 @@ fn main() -> Result<()> {
     // multi-thread default (spawns, lsp, ext-host IO overlap).
     let mut raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
     raw.remove(0);
-    let sequential = raw.iter().any(|a| a == "--mode" || a.to_string_lossy().starts_with("--mode="));
+    let sequential = raw
+        .iter()
+        .any(|a| a == "--mode" || a.to_string_lossy().starts_with("--mode="));
     let rt = if sequential {
-        tokio::runtime::Builder::new_current_thread().enable_all().build()
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
     } else {
-        tokio::runtime::Builder::new_multi_thread().enable_all().build()
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
     }
     .expect("tokio runtime");
     rt.block_on(async_main())
@@ -257,10 +268,14 @@ async fn async_main() -> Result<()> {
     // Flags of subsystems omp-rs does not have: omp's exact error where one
     // exists, otherwise an explicit unsupported message.
     if args.goal.is_some() {
-        return Err(usage_err("--goal requires an interactive terminal (not --print or --mode)."));
+        return Err(usage_err(
+            "--goal requires an interactive terminal (not --print or --mode).",
+        ));
     }
     if args.alias.is_some() && args.profile.is_none() && std::env::var_os("OMP_PROFILE").is_none() {
-        return Err(usage_err("--alias requires --profile <name> or OMP_PROFILE"));
+        return Err(usage_err(
+            "--alias requires --profile <name> or OMP_PROFILE",
+        ));
     }
     if args.profile.is_some() {
         bail!("omp-rs: --profile is not supported (no profile subsystem)");
@@ -300,7 +315,9 @@ async fn async_main() -> Result<()> {
     if !args.allow_home {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
             if cwd == home.canonicalize().unwrap_or(home) {
-                eprintln!("omp-rs: started in ~; switching to a temp dir (pass --allow-home to stay)");
+                eprintln!(
+                    "omp-rs: started in ~; switching to a temp dir (pass --allow-home to stay)"
+                );
                 cwd = std::env::temp_dir();
             }
         }
@@ -314,7 +331,11 @@ async fn async_main() -> Result<()> {
 
     // Role model selection: expose omp's PI_*_MODEL env contract so any
     // role-aware subsystem (task/prewalk/plan ports) picks these up.
-    for (flag, value) in [("--smol", &args.smol), ("--slow", &args.slow), ("--plan", &args.plan)] {
+    for (flag, value) in [
+        ("--smol", &args.smol),
+        ("--slow", &args.slow),
+        ("--plan", &args.plan),
+    ] {
         if let Some(v) = value {
             let key = format!(
                 "OMP_RS_{}_MODEL",
@@ -403,9 +424,11 @@ async fn async_main() -> Result<()> {
         Some(e) => e.tools().await.unwrap_or_default(),
         None => Vec::new(),
     };
-    let context_strategy =
-        context::Kind::resolve(args.context_strategy.as_deref(), &omp_settings::Settings::load(&cwd))
-            .map_err(|e| anyhow::anyhow!(e))?;
+    let context_strategy = context::Kind::resolve(
+        args.context_strategy.as_deref(),
+        &omp_settings::Settings::load(&cwd),
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
     context::set_active(context_strategy);
     approval::Gate::install(
         args.approval_mode.as_deref().and_then(approval::parse_mode),
@@ -484,6 +507,10 @@ async fn async_main() -> Result<()> {
         if let Some(e) = extensions.as_ref() {
             crate::rpc::slash::set_extensions(e.clone());
         }
+        // TS `hasUI`: RPC clients answer dialogs unless started with `--no-ui`.
+        if !args.no_ui {
+            crate::slash_extra::mark_interactive_ui();
+        }
         let result = match extensions.as_ref() {
             Some(e) => rpc::run_with(agent, target, cwd, persistence, Some(e.rpc_on_start())).await,
             None => rpc::run(agent, target, cwd, persistence).await,
@@ -508,7 +535,15 @@ async fn async_main() -> Result<()> {
         && std::io::IsTerminal::is_terminal(&std::io::stdout())
     {
         let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
-        let result = tui::run(agent, target, cwd, persistence, resume_target, extensions.clone()).await;
+        let result = tui::run(
+            agent,
+            target,
+            cwd,
+            persistence,
+            resume_target,
+            extensions.clone(),
+        )
+        .await;
         if let Some(e) = &extensions {
             e.shutdown().await;
         }
@@ -541,14 +576,23 @@ async fn async_main() -> Result<()> {
         prompt,
         images,
         extensions.as_ref(),
-        if args.mode.as_deref() == Some("json") { ext::ExtMode::Json } else { ext::ExtMode::Print },
+        if args.mode.as_deref() == Some("json") {
+            ext::ExtMode::Json
+        } else {
+            ext::ExtMode::Print
+        },
     );
     let messages = if let Some(secs) = args.max_time {
-        if let Ok(r) = tokio::time::timeout(std::time::Duration::from_secs_f64(secs), run).await { r? } else {
+        if let Ok(r) = tokio::time::timeout(std::time::Duration::from_secs_f64(secs), run).await {
+            r?
+        } else {
             if let Some(e) = &extensions {
                 e.shutdown().await;
             }
-            eprintln!("omp-rs: stopped after --max-time {:?}", args.max_time_raw.as_deref().unwrap_or(""));
+            eprintln!(
+                "omp-rs: stopped after --max-time {:?}",
+                args.max_time_raw.as_deref().unwrap_or("")
+            );
             exit(124);
         }
     } else {
@@ -593,7 +637,7 @@ async fn async_main() -> Result<()> {
 
 /// Thinking blocks of the last assistant message (`--print-thoughts`).
 fn last_thinking(messages: &[pa_agent::types::AgentMessage]) -> Option<String> {
-    use pa_agent::types::{AgentMessage};
+    use pa_agent::types::AgentMessage;
     use pa_agent::types::{AssistantContent, Message};
     messages.iter().rev().find_map(|m| match m {
         AgentMessage::Standard(Message::Assistant(a)) => {
@@ -651,7 +695,8 @@ fn exit(code: i32) -> ! {
 #[allow(clippy::too_many_arguments)] // print-mode run context; mirrors omp's runPrint signature
 /// Set when print mode answered a handled slash command with its output
 /// (no model turn ran, so "no assistant response" is not an error).
-static PRINTED_COMMAND_OUTPUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PRINTED_COMMAND_OUTPUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 async fn run_print(
     agent: pa_agent::agent::Agent,
@@ -690,7 +735,12 @@ async fn run_print(
         }
         if !prompt.is_empty() {
             agent
-                .prompt(runtime::prompt_input(&prompt, Vec::new(), Vec::new(), injected))
+                .prompt(runtime::prompt_input(
+                    &prompt,
+                    Vec::new(),
+                    Vec::new(),
+                    injected,
+                ))
                 .await?;
         }
         return Ok(agent.messages_snapshot().await.into_vec());
@@ -717,7 +767,8 @@ async fn run_print(
     // dispatcher as the TUI); a matched command handles or rewrites the prompt.
     let mut prompt = prompt;
     match crate::rpc::slash::try_dispatch(&rt, &prompt).await {
-        crate::rpc::slash::Outcome::Handled { .. } | crate::rpc::slash::Outcome::ExtensionHandled => {
+        crate::rpc::slash::Outcome::Handled { .. }
+        | crate::rpc::slash::Outcome::ExtensionHandled => {
             prompt = String::new();
             // A handled command reports through `command_output` frames, which
             // in print mode have no UI to land in: print them, so e.g.

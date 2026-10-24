@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use host::{Answer, WordHost};
-pub use query::{WordQuery, word_completion_query};
+pub use query::{word_completion_query, WordQuery};
 
 /// Answers kept per editor before the cache is dropped (TS `CACHE_LIMIT`).
 const CACHE_LIMIT: usize = 256;
@@ -42,7 +42,10 @@ pub struct WordCompletion {
 impl WordCompletion {
     #[must_use]
     pub fn new(host: Arc<WordHost>) -> Self {
-        Self { host, state: RefCell::new(State::default()) }
+        Self {
+            host,
+            state: RefCell::new(State::default()),
+        }
     }
 
     /// The engine host behind this provider.
@@ -83,9 +86,19 @@ impl WordCompletion {
 
     /// Forward accept (Tab/→) or typed-past feedback for the suggestion shown
     /// at the cursor.
-    pub fn feedback(&self, lines: &[String], line: usize, col: usize, suggestion: &str, accepted: bool) {
-        let Some(query) = word_completion_query(lines, line, col) else { return };
-        self.host.feedback(&query.before, &query.prefix, suggestion, accepted);
+    pub fn feedback(
+        &self,
+        lines: &[String],
+        line: usize,
+        col: usize,
+        suggestion: &str,
+        accepted: bool,
+    ) {
+        let Some(query) = word_completion_query(lines, line, col) else {
+            return;
+        };
+        self.host
+            .feedback(&query.before, &query.prefix, suggestion, accepted);
         if !accepted {
             self.state.borrow_mut().last_shown = None;
         }
@@ -110,7 +123,10 @@ fn project(state: &State, query: &WordQuery) -> Option<String> {
     }
     // Slice the original word by the prefix's character count: case folding
     // can change byte lengths.
-    let skip = word.char_indices().nth(query.prefix.chars().count()).map_or(word.len(), |(at, _)| at);
+    let skip = word
+        .char_indices()
+        .nth(query.prefix.chars().count())
+        .map_or(word.len(), |(at, _)| at);
     Some(word[skip..].to_owned())
 }
 
@@ -119,28 +135,47 @@ pub(crate) mod test_support {
     use pi_predict::{Predictor, Query, Suggestion};
 
     /// Engine answering a fixed word list by prefix, recording feedback.
-    pub struct Words(pub Vec<&'static str>, pub std::sync::Arc<parking_lot::Mutex<Vec<String>>>);
+    pub struct Words(
+        pub Vec<&'static str>,
+        pub std::sync::Arc<parking_lot::Mutex<Vec<String>>>,
+    );
 
     impl Predictor for Words {
         fn complete(&mut self, query: &Query<'_>) -> Option<Suggestion> {
             let prefix = query.prefix.to_lowercase();
-            let word = self.0.iter().find(|w| w.starts_with(&prefix) && w.len() > prefix.len())?;
-            Some(Suggestion { suffix: word[prefix.len()..].to_owned(), confidence: 1.0 })
+            let word = self
+                .0
+                .iter()
+                .find(|w| w.starts_with(&prefix) && w.len() > prefix.len())?;
+            Some(Suggestion {
+                suffix: word[prefix.len()..].to_owned(),
+                confidence: 1.0,
+            })
         }
         fn observe(&mut self, prompt: &str) {
             self.1.lock().push(format!("observe:{prompt}"));
         }
         fn feedback(&mut self, query: &Query<'_>, suggestion: &str, accepted: bool) {
-            self.1.lock().push(format!("feedback:{}:{suggestion}:{accepted}", query.prefix));
+            self.1
+                .lock()
+                .push(format!("feedback:{}:{suggestion}:{accepted}", query.prefix));
         }
         fn persist(&mut self) -> anyhow::Result<()> {
             Ok(())
         }
     }
 
-    pub fn host(words: Vec<&'static str>) -> (std::sync::Arc<super::host::WordHost>, std::sync::Arc<parking_lot::Mutex<Vec<String>>>) {
+    pub fn host(
+        words: Vec<&'static str>,
+    ) -> (
+        std::sync::Arc<super::host::WordHost>,
+        std::sync::Arc<parking_lot::Mutex<Vec<String>>>,
+    ) {
         let log = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
-        (super::host::WordHost::with_engine(Box::new(Words(words, log.clone()))), log)
+        (
+            super::host::WordHost::with_engine(Box::new(Words(words, log.clone()))),
+            log,
+        )
     }
 }
 
@@ -175,7 +210,11 @@ mod tests {
         let wc = WordCompletion::new(h);
         assert_eq!(ghost(&wc, "open src/refac"), None);
         let l = vec!["see `refac".to_owned(), "x` text".to_owned()];
-        assert_eq!(wc.ghost(&l, 0, l[0].len()), None, "inside an inline code span");
+        assert_eq!(
+            wc.ghost(&l, 0, l[0].len()),
+            None,
+            "inside an inline code span"
+        );
     }
 
     #[test]
@@ -198,7 +237,9 @@ mod tests {
         let wc = WordCompletion::new(h);
         assert_eq!(ghost(&wc, "do refa").as_deref(), Some("ctor"));
         wc.state.borrow_mut().cache.insert(
-            word_completion_query(&lines("do refac"), 0, 8).unwrap().key(),
+            word_completion_query(&lines("do refac"), 0, 8)
+                .unwrap()
+                .key(),
             None,
         );
         assert_eq!(ghost(&wc, "do refac").as_deref(), Some("tor"));
@@ -212,7 +253,10 @@ mod tests {
         let l = lines("do refa");
         wc.feedback(&l, 0, 7, "ctor", true);
         wc.feedback(&l, 0, 7, "ctor", false);
-        assert_eq!(*log.lock(), ["feedback:refa:ctor:true", "feedback:refa:ctor:false"]);
+        assert_eq!(
+            *log.lock(),
+            ["feedback:refa:ctor:true", "feedback:refa:ctor:false"]
+        );
         assert!(wc.state.borrow().last_shown.is_none());
     }
 }
@@ -223,7 +267,9 @@ mod editor_tests {
     use crate::editor::Editor;
     use crate::keys::{KeyCode, KeyEvent, KeyModifiers};
 
-    fn editor(words: Vec<&'static str>) -> (Editor, std::sync::Arc<parking_lot::Mutex<Vec<String>>>) {
+    fn editor(
+        words: Vec<&'static str>,
+    ) -> (Editor, std::sync::Arc<parking_lot::Mutex<Vec<String>>>) {
         let (h, log) = host(words);
         let mut e = Editor::new();
         e.set_word_completion(Some(h));
@@ -323,13 +369,17 @@ mod editor_tests {
         type_str(&mut e, "do refac");
         let mut term = Terminal::new(TestBackend::new(40, 3)).unwrap();
         let theme = Theme::default();
-        term.draw(|f| e.render(f, Rect::new(0, 0, 40, 3), &theme)).unwrap();
+        term.draw(|f| e.render(f, Rect::new(0, 0, 40, 3), &theme))
+            .unwrap();
         let row: String = (0..40)
             .map(|x| term.backend().buffer()[(x, 1)].symbol().to_owned())
             .collect();
         // Band gutter, text, then the ghost suffix starting on the cursor cell.
         assert!(row.contains("do refactor"), "{row:?}");
-        let cell = &term.backend().buffer()[(u16::try_from(row.chars().position(|c| c == 't').unwrap()).unwrap(), 1)];
+        let cell = &term.backend().buffer()[(
+            u16::try_from(row.chars().position(|c| c == 't').unwrap()).unwrap(),
+            1,
+        )];
         assert!(cell.modifier.contains(ratatui::style::Modifier::DIM));
     }
 }

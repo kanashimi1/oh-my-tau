@@ -21,8 +21,8 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 pub use model::{compat_overrides, materialize, model_from_catalog_row, resolve_for_model};
-pub use view::ModelView;
 pub use resolve::{resolve_model_policy, ModelSpec, ResolveError, ResolvedModelPolicy};
+pub use view::ModelView;
 
 /// The compiled rule tree (the parts the resolver reads).
 #[derive(Debug, Deserialize)]
@@ -43,11 +43,15 @@ pub struct Axes {
 pub fn rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| {
-        serde_json::from_str(include_str!("../../data/compat/rules.json")).expect("compat rules.json parses")
+        serde_json::from_str(include_str!("../../data/compat/rules.json"))
+            .expect("compat rules.json parses")
     })
 }
 
 pub fn axes() -> &'static Axes {
     static AXES: OnceLock<Axes> = OnceLock::new();
-    AXES.get_or_init(|| serde_json::from_str(include_str!("../../data/compat/axes.json")).expect("compat axes.json parses"))
+    AXES.get_or_init(|| {
+        serde_json::from_str(include_str!("../../data/compat/axes.json"))
+            .expect("compat axes.json parses")
+    })
 }

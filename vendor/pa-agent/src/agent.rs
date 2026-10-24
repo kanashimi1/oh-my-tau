@@ -933,7 +933,10 @@ impl Agent {
 
     /// Read the transcript in place under the state lock (no copy). Keep `read`
     /// short and non-blocking: the agent loop's event reducer waits on this lock.
-    pub async fn with_messages<R>(&self, read: impl FnOnce(&crate::types::ContextMessages) -> R) -> R {
+    pub async fn with_messages<R>(
+        &self,
+        read: impl FnOnce(&crate::types::ContextMessages) -> R,
+    ) -> R {
         read(&self.inner.shared.lock().await.state.messages)
     }
 
@@ -1003,7 +1006,15 @@ impl Agent {
     /// Mutate the transcript under ONE state lock (the atomic form of the
     /// `state()` + `set_messages` read-modify-write).
     pub async fn mutate_messages(&self, mutate: impl FnOnce(&mut Vec<AgentMessage>)) {
-        mutate(self.inner.shared.lock().await.state.messages.make_contiguous());
+        mutate(
+            self.inner
+                .shared
+                .lock()
+                .await
+                .state
+                .messages
+                .make_contiguous(),
+        );
     }
 
     /// # Panics

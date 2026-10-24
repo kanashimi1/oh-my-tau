@@ -46,10 +46,7 @@ pub fn parse_slash_command(text: &str) -> Option<(String, String)> {
         (None, Some(c)) | (Some(c), None) => c,
         (Some(w), Some(c)) => w.min(c),
     };
-    Some((
-        body[..sep].to_string(),
-        body[sep + 1..].trim().to_string(),
-    ))
+    Some((body[..sep].to_string(), body[sep + 1..].trim().to_string()))
 }
 
 /// Emit a `command_output` frame (TS `runtime.output`).
@@ -60,7 +57,9 @@ fn output(rt: &Runtime, text: &str) {
 /// Emit a usage/error message and consume the command (TS `usage`).
 fn usage(rt: &Runtime, text: &str) -> Outcome {
     output(rt, text);
-    Outcome::Handled { agent_invoked: false }
+    Outcome::Handled {
+        agent_invoked: false,
+    }
 }
 
 static EXTENSIONS: OnceLock<Arc<Ext>> = OnceLock::new();
@@ -228,7 +227,9 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
     if let Some(rest) = content.strip_prefix("---\n") {
         if let Some(end) = rest.find("\n---") {
             let fm = &rest[..end];
-            let body = rest[end + 4..].strip_prefix('\n').unwrap_or(&rest[end + 4..]);
+            let body = rest[end + 4..]
+                .strip_prefix('\n')
+                .unwrap_or(&rest[end + 4..]);
             return (fm, body);
         }
     }
@@ -278,7 +279,6 @@ fn expand_file_command(name: &str, args: &str, cwd: &Path) -> Option<String> {
     Some(body)
 }
 
-
 /// `formatModelString` equivalent: `provider/id`.
 fn model_ref(info: &serde_json::Value) -> String {
     format!(
@@ -296,7 +296,9 @@ async fn resolve_model(
     selector: &str,
 ) -> Option<(String, String, Option<pa_agent::types::ThinkingLevel>)> {
     let (sel, level) = match selector.rsplit_once(':') {
-        Some((s, l)) if crate::runtime::parse_level(l).is_some() => (s, crate::runtime::parse_level(l)),
+        Some((s, l)) if crate::runtime::parse_level(l).is_some() => {
+            (s, crate::runtime::parse_level(l))
+        }
         _ => (selector, None),
     };
     if sel.is_empty() {
@@ -330,6 +332,56 @@ pub async fn dispatch_builtin(
     name: &str,
     args: &str,
 ) -> Option<Outcome> {
+    // TS `showModelSelector`: a bare `/model` / `/switch` opens the picker when the host answers
+    // dialogs (the TUI intercepts these itself; this serves RPC clients).
+    let picked_model;
+    let args = if matches!(name, "model" | "models" | "switch")
+        && args.is_empty()
+        && crate::slash_extra::dialog::has_ui()
+    {
+        // Same catalogue as the TUI `/model` picker: providers with credentials (or declared in
+        // models.yml / keyless), chat models only.
+        let labels: Vec<String> =
+            crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
+                .into_iter()
+                .filter(|m| m.available && m.kind.is_empty())
+                .map(|m| format!("{}/{}", m.model.provider, m.model.id))
+                .collect();
+        if labels.is_empty() {
+            output(
+                rt,
+                "No models available. Use /login or configure an API key.",
+            );
+            return Some(Handled {
+                agent_invoked: false,
+            });
+        }
+        let current = model_ref(&rt.model_info());
+        let style = crate::slash_extra::dialog::SelectStyle {
+            fullscreen: true,
+            initial: labels.iter().position(|l| *l == current).unwrap_or(0),
+            ..Default::default()
+        };
+        let choices: Vec<_> = labels
+            .iter()
+            .map(crate::slash_extra::dialog::Choice::new)
+            .collect();
+        let title = if name == "switch" {
+            "Switch model (this session)"
+        } else {
+            "Select model"
+        };
+        let Some(index) = crate::slash_extra::dialog::select_with(rt, title, &choices, style).await
+        else {
+            return Some(Handled {
+                agent_invoked: false,
+            });
+        };
+        picked_model = labels[index].clone();
+        picked_model.as_str()
+    } else {
+        args
+    };
     match name {
         "model" | "models" => {
             if args.is_empty() {
@@ -356,11 +408,15 @@ pub async fn dispatch_builtin(
                         }
                         output(rt, &format!("Model set to {provider}/{id}."));
                     }
-                    Err(e) => return Some(usage(rt, &format!("Failed to set model: {}", e.message))),
+                    Err(e) => {
+                        return Some(usage(rt, &format!("Failed to set model: {}", e.message)))
+                    }
                 }
             }
             rt.announce_commands();
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "switch" => {
             if args.is_empty() {
@@ -373,7 +429,9 @@ pub async fn dispatch_builtin(
                         format!("Current model: {}", model_ref(&model))
                     },
                 );
-                return Some(Handled { agent_invoked: false });
+                return Some(Handled {
+                    agent_invoked: false,
+                });
             }
             let Some((provider, id, level)) = resolve_model(rt, args).await else {
                 return Some(usage(rt, &format!("Unknown model: {args}")));
@@ -384,7 +442,9 @@ pub async fn dispatch_builtin(
                         rt.set_thinking_level(level).await;
                     }
                     output(rt, &format!("Session-only model: {provider}/{id}."));
-                    Some(Handled { agent_invoked: false })
+                    Some(Handled {
+                        agent_invoked: false,
+                    })
                 }
                 Err(e) => Some(usage(rt, &format!("Failed to switch model: {}", e.message))),
             }
@@ -397,8 +457,13 @@ pub async fn dispatch_builtin(
                     .get("thinkingLevel")
                     .and_then(|v| v.as_str())
                     .unwrap_or("model default");
-                output(rt, &format!("Thinking: {current}\nAvailable: {}", levels.join(", ")));
-                return Some(Handled { agent_invoked: false });
+                output(
+                    rt,
+                    &format!("Thinking: {current}\nAvailable: {}", levels.join(", ")),
+                );
+                return Some(Handled {
+                    agent_invoked: false,
+                });
             }
             let sel = args.trim().to_lowercase();
             match levels.iter().find(|l| **l == sel) {
@@ -407,47 +472,66 @@ pub async fn dispatch_builtin(
                         .unwrap_or(pa_agent::types::ThinkingLevel::Medium);
                     rt.set_thinking_level(level).await;
                     output(rt, &format!("Thinking set to {level_name}."));
-                    Some(Handled { agent_invoked: false })
+                    Some(Handled {
+                        agent_invoked: false,
+                    })
                 }
                 None => Some(usage(
                     rt,
-                    &format!("Unknown thinking level: {sel}. Available: {}", levels.join(", ")),
+                    &format!(
+                        "Unknown thinking level: {sel}. Available: {}",
+                        levels.join(", ")
+                    ),
                 )),
             }
         }
         "fresh" => {
-            if rt.state().await.get("isStreaming").and_then(serde_json::Value::as_bool) == Some(true) {
+            if rt
+                .state()
+                .await
+                .get("isStreaming")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
                 Some(usage(
                     rt,
                     "Wait for the current response to finish or abort it before refreshing provider state.",
                 ))
             } else {
                 output(rt, "Provider stream state reset.");
-                Some(Handled { agent_invoked: false })
+                Some(Handled {
+                    agent_invoked: false,
+                })
             }
         }
         "compact" => {
             // TS parseCompactArgs: optional leading mode token (soft|remote|snapcompact).
             let trimmed = args.trim();
             let (mode, instructions) = match trimmed.split_once(char::is_whitespace) {
-                None if matches!(trimmed, "soft" | "remote" | "snapcompact") => (Some(trimmed), None),
+                None if matches!(trimmed, "soft" | "remote" | "snapcompact") => {
+                    (Some(trimmed), None)
+                }
                 None => (None, (!trimmed.is_empty()).then(|| trimmed.to_string())),
-                Some((first, rest))
-                    if matches!(first, "soft" | "remote" | "snapcompact") =>
-                {
+                Some((first, rest)) if matches!(first, "soft" | "remote" | "snapcompact") => {
                     if first == "snapcompact" {
                         return Some(usage(
                             rt,
                             "/compact snapcompact does not take focus instructions (it archives history without an LLM summary).",
                         ));
                     }
-                    (Some(first), Some(rest.trim().to_string()).filter(|s| !s.is_empty()))
+                    (
+                        Some(first),
+                        Some(rest.trim().to_string()).filter(|s| !s.is_empty()),
+                    )
                 }
                 Some(_) => (None, Some(trimmed.to_string())),
             };
             if let Some(mode) = mode {
                 // omp-rs compaction does not implement mode overrides; run the default.
-                output(rt, &format!("/compact {mode} is not supported; running default compaction."));
+                output(
+                    rt,
+                    &format!("/compact {mode} is not supported; running default compaction."),
+                );
             }
             let instructions = instructions.filter(|s| !s.is_empty());
             let result = rt.compact(instructions.as_deref()).await;
@@ -455,12 +539,20 @@ pub async fn dispatch_builtin(
                 Ok(_) => output(rt, "Compaction complete."),
                 Err(e) => output(rt, &format!("Compaction failed: {}", e.message)),
             }
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "clear" => {
             // TS `/clear`: close the active session and start a fresh one
             // (same work as the RPC `new_session` command).
-            if rt.state().await.get("isStreaming").and_then(serde_json::Value::as_bool) == Some(true) {
+            if rt
+                .state()
+                .await
+                .get("isStreaming")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
                 return Some(usage(
                     rt,
                     "Wait for the current response to finish or abort it before starting a new session.",
@@ -471,7 +563,9 @@ pub async fn dispatch_builtin(
                 Err(e) if crate::runtime::is_switch_cancelled(&e) => {}
                 Err(e) => return Some(usage(rt, &format!("Failed to start a new session: {e:#}"))),
             }
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "export" => {
             // TS `/export [path] [--themes]` writes the session to a file and
@@ -512,11 +606,22 @@ pub async fn dispatch_builtin(
                 Ok(()) => output(rt, &format!("Session exported to: {}", path.display())),
                 Err(e) => return Some(usage(rt, &format!("Failed to export session: {e}"))),
             }
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "retry" => {
-            if rt.state().await.get("isStreaming").and_then(serde_json::Value::as_bool) == Some(true) {
-                Some(usage(rt, "Wait for the current response to finish or abort it before retrying."))
+            if rt
+                .state()
+                .await
+                .get("isStreaming")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                Some(usage(
+                    rt,
+                    "Wait for the current response to finish or abort it before retrying.",
+                ))
             } else {
                 // Manual retry of a failed turn is driven by the recovery saga
                 // in omp-rs; there is no parked failed turn to re-run here.
@@ -525,14 +630,22 @@ pub async fn dispatch_builtin(
         }
         "rename" => {
             if args.is_empty() {
-                output(rt, "Could not generate a session title. Use /rename <title> to set one.");
+                output(
+                    rt,
+                    "Could not generate a session title. Use /rename <title> to set one.",
+                );
             } else {
                 match rt.set_session_name(args, "user") {
                     Ok(()) => output(rt, &format!("Session renamed to {args}.")),
-                    Err(_) => output(rt, "Session name not changed (a user-set name takes precedence)."),
+                    Err(_) => output(
+                        rt,
+                        "Session name not changed (a user-set name takes precedence).",
+                    ),
                 }
             }
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "session" => {
             let (verb, rest) = subcommand(args);
@@ -546,9 +659,15 @@ pub async fn dispatch_builtin(
                     .to_string();
                 output(
                     rt,
-                    &format!("Session: {}\nTitle: {name}\nCWD: {}", rt.session_id(), rt.cwd.display()),
+                    &format!(
+                        "Session: {}\nTitle: {name}\nCWD: {}",
+                        rt.session_id(),
+                        rt.cwd.display()
+                    ),
                 );
-                return Some(Handled { agent_invoked: false });
+                return Some(Handled {
+                    agent_invoked: false,
+                });
             }
             Some(usage(rt, "Usage: /session [info|delete|pin [account]]"))
         }
@@ -584,7 +703,9 @@ async fn dispatch_builtin_more(
                 .unwrap_or_default();
             if tools.is_empty() {
                 output(rt, "No tools are available.");
-                return Some(Handled { agent_invoked: false });
+                return Some(Handled {
+                    agent_invoked: false,
+                });
             }
             let lines: Vec<String> = tools
                 .iter()
@@ -592,24 +713,24 @@ async fn dispatch_builtin_more(
                 .map(|n| format!("* {n}"))
                 .collect();
             output(rt, &lines.join("\n"));
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "context" => {
             let st = rt.state().await;
             let usage = st.get("contextUsage").cloned().unwrap_or(Value::Null);
             output(rt, &context_report(&st, &usage));
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "jobs" => {
             let (verb, rest) = subcommand(args);
             if !rest.is_empty() || (!verb.is_empty() && verb != "full") {
                 return Some(usage(rt, "Usage: /jobs [full]"));
             }
-            output(
-                rt,
-                "No background jobs running. (Background jobs run async tools — e.g. long-running bash, debug, or task subagents that would otherwise tie up a turn. They appear here while alive and briefly after (until their result is delivered; at most ~5 minutes).)",
-            );
-            Some(Handled { agent_invoked: false })
+            Some(crate::slash_extra::interactive::jobs_command(rt, verb == "full").await)
         }
         "advisor" => {
             let (verb, _rest) = subcommand(args);
@@ -623,7 +744,9 @@ async fn dispatch_builtin_more(
                 ),
                 _ => return Some(usage(rt, "Usage: /advisor [on|off|status|dump [raw]|configure]")),
             }
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "memory" => {
             let (verb, _rest) = subcommand(args);
@@ -642,11 +765,15 @@ async fn dispatch_builtin_more(
                 ),
                 _ => return Some(usage(rt, "Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync>")),
             }
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "reload-plugins" => {
             output(rt, "Plugins reloaded.");
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         "force" => {
             let (tool, prompt) = match args.split_once(' ') {
@@ -658,7 +785,9 @@ async fn dispatch_builtin_more(
             }
             output(rt, &format!("Next turn forced to use {tool}."));
             if prompt.is_empty() {
-                Some(Handled { agent_invoked: false })
+                Some(Handled {
+                    agent_invoked: false,
+                })
             } else {
                 Some(Prompt(prompt.to_string()))
             }
@@ -681,7 +810,9 @@ async fn dispatch_builtin_more(
                 text = "(empty session)".into();
             }
             output(rt, &text);
-            Some(Handled { agent_invoked: false })
+            Some(Handled {
+                agent_invoked: false,
+            })
         }
         other => match dispatch_ported(rt, other, args).await {
             Some(outcome) => Some(outcome),
@@ -690,8 +821,13 @@ async fn dispatch_builtin_more(
                 // subsystem is TUI-only even in TS). Consuming keeps TS
                 // reserved-name semantics; the message mirrors the TUI-only
                 // notice shape.
-                output(rt, &format!("/{other} is only available in the interactive TUI."));
-                Some(Handled { agent_invoked: false })
+                output(
+                    rt,
+                    &format!("/{other} is only available in the interactive TUI."),
+                );
+                Some(Handled {
+                    agent_invoked: false,
+                })
             }
             None => None,
         },
@@ -708,11 +844,7 @@ async fn dispatch_builtin_more(
 /// it and say exactly what is missing for the rest; stubs name the absent
 /// subsystem.
 #[allow(clippy::too_many_lines)]
-async fn dispatch_ported(
-    rt: &std::sync::Arc<Runtime>,
-    name: &str,
-    args: &str,
-) -> Option<Outcome> {
+async fn dispatch_ported(rt: &std::sync::Arc<Runtime>, name: &str, args: &str) -> Option<Outcome> {
     match name {
         "fast" => Some(fast_command(rt, args)),
         "slow" => Some(slow_command(rt, args)),
@@ -759,7 +891,9 @@ async fn dispatch_ported(
 /// Emit a system notice and consume the command.
 fn notice(rt: &Runtime, text: &str) -> Outcome {
     output(rt, text);
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
 }
 
 // =============================================================================
@@ -848,7 +982,9 @@ fn slow_command(rt: &Runtime, args: &str) -> Outcome {
                     "Slow mode is off.".to_string()
                 },
             );
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         arg @ ("" | "toggle" | "on" | "off") => {
             let enabled = arg == "on"
@@ -865,7 +1001,9 @@ fn slow_command(rt: &Runtime, args: &str) -> Outcome {
                     "Slow mode off."
                 },
             );
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         _ => usage(rt, SLOW_USAGE),
     }
@@ -906,7 +1044,10 @@ fn phases_to_markdown(phases: &[Value]) -> String {
             .unwrap_or(&[])
         {
             let content = task.get("content").and_then(Value::as_str).unwrap_or("");
-            let status = task.get("status").and_then(Value::as_str).unwrap_or("pending");
+            let status = task
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
             let note = if status == "blocked" {
                 task.get("blocker")
                     .and_then(Value::as_str)
@@ -943,7 +1084,9 @@ fn task_content(task: &Value) -> &str {
 }
 
 fn task_status(task: &Value) -> &str {
-    task.get("status").and_then(Value::as_str).unwrap_or("pending")
+    task.get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("pending")
 }
 
 fn tasks_of(phase: &Value) -> &[Value] {
@@ -1122,10 +1265,7 @@ fn markdown_to_phases(content: &str) -> Result<Vec<Value>, String> {
             continue;
         }
     }
-    let task_count: usize = phases
-        .iter()
-        .map(|p| tasks_of(p).len())
-        .sum();
+    let task_count: usize = phases.iter().map(|p| tasks_of(p).len()).sum();
     if task_count == 0 {
         return Err("no todo entries found".to_string());
     }
@@ -1141,7 +1281,10 @@ fn normalize_todo(phases: &mut [Value]) {
             continue;
         };
         for task in tasks.iter_mut() {
-            let status = task.get("status").and_then(Value::as_str).unwrap_or("pending");
+            let status = task
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending");
             if status == "in_progress" {
                 if seen {
                     task["status"] = json!("pending");
@@ -1174,7 +1317,9 @@ async fn todo_mutate(rt: &Runtime, verb: TodoVerb, arg: &str, current: &[Value])
         if verb == TodoVerb::Rm {
             commit_todos(rt, &[]).await;
             output(rt, "Cleared all todos.");
-            return Handled { agent_invoked: false };
+            return Handled {
+                agent_invoked: false,
+            };
         }
         let next: Vec<Value> = current
             .iter()
@@ -1201,7 +1346,9 @@ async fn todo_mutate(rt: &Runtime, verb: TodoVerb, arg: &str, current: &[Value])
                 "Marked all tasks abandoned."
             },
         );
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     }
     if let Some(task) = find_task_fuzzy(current, arg) {
         let content = task_content(task).to_string();
@@ -1230,7 +1377,9 @@ async fn todo_mutate(rt: &Runtime, verb: TodoVerb, arg: &str, current: &[Value])
             TodoVerb::Rm => "Removed",
         };
         output(rt, &format!("{label}: {content}"));
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     }
     if let Some(phase) = find_phase_fuzzy(current, arg) {
         let name = phase_name(phase).to_string();
@@ -1260,7 +1409,9 @@ async fn todo_mutate(rt: &Runtime, verb: TodoVerb, arg: &str, current: &[Value])
             TodoVerb::Rm => format!("Removed phase: {name}"),
         };
         output(rt, &message);
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     }
     usage(rt, &format!("No task or phase matched \"{}\".", arg.trim()))
 }
@@ -1278,7 +1429,9 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
                 phases_to_markdown(&phases).trim_end().to_string()
             },
         );
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     }
     let (verb, rest) = subcommand(trimmed);
     match verb.as_str() {
@@ -1289,27 +1442,48 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
             } else {
                 phases_to_markdown(&phases).trim_end().to_string()
             };
+            if crate::slash_extra::dialog::has_ui() {
+                if markdown.is_empty() {
+                    output(rt, "No todos to copy.");
+                } else {
+                    crate::slash_extra::dialog::copy_to_clipboard(rt, &markdown);
+                    output(rt, "Copied todos to clipboard.");
+                }
+                return Handled {
+                    agent_invoked: false,
+                };
+            }
             output(
                 rt,
                 &format!(
                     "Copy not available in ACP mode; printing instead:\n\n{}",
-                    if markdown.is_empty() { "No todos." } else { &markdown }
+                    if markdown.is_empty() {
+                        "No todos."
+                    } else {
+                        &markdown
+                    }
                 ),
             );
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "export" => {
             let phases = current_todo_phases(rt).await;
             if phases.is_empty() {
                 output(rt, "No todos to export.");
-                return Handled { agent_invoked: false };
+                return Handled {
+                    agent_invoked: false,
+                };
             }
             let target = todo_markdown_path(&rest, &rt.cwd);
             if let Err(e) = std::fs::write(&target, phases_to_markdown(&phases)) {
                 return usage(rt, &format!("Failed to write todos: {e}"));
             }
             output(rt, &format!("Wrote todos to {}", target.display()));
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "import" => {
             let target = todo_markdown_path(&rest, &rt.cwd);
@@ -1329,7 +1503,9 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
                             target.display()
                         ),
                     );
-                    Handled { agent_invoked: false }
+                    Handled {
+                        agent_invoked: false,
+                    }
                 }
                 Err(e) => usage(rt, &format!("Could not parse {}: {e}", target.display())),
             }
@@ -1370,7 +1546,9 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
             normalize_todo(&mut next);
             commit_todos(rt, &next).await;
             output(rt, &format!("Appended to {target_name}: {final_content}"));
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "start" => {
             if rest.is_empty() {
@@ -1400,27 +1578,71 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
             }
             commit_todos(rt, &next).await;
             output(rt, &format!("Started: {content}"));
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "done" => todo_mutate(rt, TodoVerb::Done, &rest, &current_todo_phases(rt).await).await,
         "drop" => todo_mutate(rt, TodoVerb::Drop, &rest, &current_todo_phases(rt).await).await,
         "rm" => todo_mutate(rt, TodoVerb::Rm, &rest, &current_todo_phases(rt).await).await,
-        "edit" => usage(
-            rt,
-            "/todo edit requires the TUI editor; use /todo export then /todo import for non-interactive edits.",
-        ),
+        "edit" => todo_edit(rt).await,
         "expand" | "collapse" => usage(
             rt,
             &format!("/todo {verb} controls the interactive HUD and is unavailable in this mode."),
         ),
         "help" | "?" => {
             output(rt, TODO_HELP);
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         _ => usage(
             rt,
             "Unknown /todo subcommand. Use append, start, done, drop, rm, copy, export, import.",
         ),
+    }
+}
+
+/// `/todo edit` (TS `handleTui`): the todo list as Markdown in an editor dialog; the saved
+/// text replaces the list.
+async fn todo_edit(rt: &Runtime) -> Outcome {
+    if !crate::slash_extra::dialog::has_ui() {
+        return usage(
+            rt,
+            "/todo edit requires an interactive editor; use /todo export then /todo import for non-interactive edits.",
+        );
+    }
+    let phases = current_todo_phases(rt).await;
+    let markdown = phases_to_markdown(&phases);
+    let Some(edited) =
+        crate::slash_extra::dialog::editor(rt, "Edit todos (Markdown)", &markdown).await
+    else {
+        return Handled {
+            agent_invoked: false,
+        };
+    };
+    if edited.trim() == markdown.trim() {
+        output(rt, "Todos unchanged.");
+        return Handled {
+            agent_invoked: false,
+        };
+    }
+    match markdown_to_phases(&edited) {
+        Ok(next) => {
+            let task_count: usize = next.iter().map(|p| tasks_of(p).len()).sum();
+            commit_todos(rt, &next).await;
+            output(
+                rt,
+                &format!(
+                    "Updated todos: {} phase(s), {task_count} task(s).",
+                    next.len()
+                ),
+            );
+            Handled {
+                agent_invoked: false,
+            }
+        }
+        Err(e) => usage(rt, &format!("Could not parse the edited todos: {e}")),
     }
 }
 
@@ -1440,14 +1662,8 @@ async fn usage_command(rt: &Runtime, args: &str) -> Outcome {
             let tokens = &stats["tokens"];
             let mut lines = vec![
                 "Session token usage:".to_string(),
-                format!(
-                    "  input:       {}",
-                    tokens["input"].as_u64().unwrap_or(0)
-                ),
-                format!(
-                    "  output:      {}",
-                    tokens["output"].as_u64().unwrap_or(0)
-                ),
+                format!("  input:       {}", tokens["input"].as_u64().unwrap_or(0)),
+                format!("  output:      {}", tokens["output"].as_u64().unwrap_or(0)),
                 format!(
                     "  cache read:  {}",
                     tokens["cacheRead"].as_u64().unwrap_or(0)
@@ -1457,14 +1673,19 @@ async fn usage_command(rt: &Runtime, args: &str) -> Outcome {
                     tokens["cacheWrite"].as_u64().unwrap_or(0)
                 ),
                 format!("  total:       {}", tokens["total"].as_u64().unwrap_or(0)),
-                format!("  cost:        {:.4}", stats["cost"].as_f64().unwrap_or(0.0)),
+                format!(
+                    "  cost:        {:.4}",
+                    stats["cost"].as_f64().unwrap_or(0.0)
+                ),
             ];
             if let Some(window) = stats["contextUsage"]["contextWindow"].as_u64() {
                 lines.push(format!("  context window: {window} tokens"));
             }
             lines.extend(provider_usage_lines(rt).await);
             output(rt, &lines.join("\n"));
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "reset" => usage_reset(rt, &rest).await,
         _ => usage(
@@ -1487,7 +1708,10 @@ const USAGE_PROVIDERS: [&str; 6] = [
 /// usage endpoint, `Err` = fetch/credential failure.
 async fn fetch_active_usage(
     rt: &Runtime,
-) -> (String, Result<Option<omp_providers::usage::UsageReport>, String>) {
+) -> (
+    String,
+    Result<Option<omp_providers::usage::UsageReport>, String>,
+) {
     let provider = rt
         .model_info()
         .get("provider")
@@ -1497,7 +1721,12 @@ async fn fetch_active_usage(
     if provider.is_empty() || !USAGE_PROVIDERS.contains(&provider.as_str()) {
         return (provider, Ok(None));
     }
-    let Some(cred) = omp_providers::auth::credential_row_async(omp_providers::AgentDir::default(), provider.clone()).await else {
+    let Some(cred) = omp_providers::auth::credential_row_async(
+        omp_providers::AgentDir::default(),
+        provider.clone(),
+    )
+    .await
+    else {
         return (provider, Err("no credential".to_string()));
     };
     let cred_input = omp_providers::usage::UsageCredential {
@@ -1574,7 +1803,10 @@ pub(crate) async fn usage_panel_frame(rt: &Runtime) -> Value {
         kv("Cache read", n("cacheRead")),
         kv("Cache write", n("cacheWrite")),
         kv("Total", n("total")),
-        kv("Cost", format!("${:.4}", stats["cost"].as_f64().unwrap_or(0.0))),
+        kv(
+            "Cost",
+            format!("${:.4}", stats["cost"].as_f64().unwrap_or(0.0)),
+        ),
     ];
     if let Some(window) = stats["contextUsage"]["contextWindow"].as_u64() {
         lines.push(kv("Context window", format!("{window} tokens")));
@@ -1585,7 +1817,9 @@ pub(crate) async fn usage_panel_frame(rt: &Runtime) -> Value {
         Ok(None) => lines.push(json!({"text": unsupported_usage_note(&provider), "dim": true})),
         Err(e) => {
             lines.push(json!({"head": format!("Provider limits ({provider})")}));
-            lines.push(json!({"k": "Status", "vs": [{"t": format!("unavailable: {e}"), "c": "error"}]}));
+            lines.push(
+                json!({"k": "Status", "vs": [{"t": format!("unavailable: {e}"), "c": "error"}]}),
+            );
         }
         Ok(Some(report)) => {
             lines.push(json!({"head": format!("Provider limits ({provider})")}));
@@ -1595,7 +1829,13 @@ pub(crate) async fn usage_panel_frame(rt: &Runtime) -> Value {
                     const BAR: usize = 20;
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     let filled = ((p.clamp(0.0, 100.0) / 100.0) * BAR as f64).round() as usize;
-                    let color = if p >= 90.0 { "error" } else if p >= 70.0 { "warning" } else { "success" };
+                    let color = if p >= 90.0 {
+                        "error"
+                    } else if p >= 70.0 {
+                        "warning"
+                    } else {
+                        "success"
+                    };
                     spans.push(json!({"t": "█".repeat(filled), "c": color}));
                     spans.push(json!({"t": "░".repeat(BAR - filled), "c": "dim"}));
                     spans.push(json!({"t": format!(" {p:.0}%")}));
@@ -1633,7 +1873,10 @@ fn fmt_reset(ms: i64) -> String {
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
-    let (d, mo) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    let (d, mo) = (
+        doy - (153 * mp + 2) / 5 + 1,
+        if mp < 10 { mp + 3 } else { mp - 9 },
+    );
     let y = if mo <= 2 { y + 1 } else { y };
     format!(" (resets {y}-{mo:02}-{d:02} {h:02}:{m:02})")
 }
@@ -1662,43 +1905,73 @@ async fn usage_reset(rt: &Runtime, rest: &str) -> Outcome {
         );
     }
     let Some(credential) =
-        omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider.clone()).await
+        omp_providers::auth::credential_async(omp_providers::AgentDir::default(), provider.clone())
+            .await
     else {
-        return usage(rt, &format!("No credential for `{provider}`; login first (`/login`)."));
+        return usage(
+            rt,
+            &format!("No credential for `{provider}`; login first (`/login`)."),
+        );
     };
     let token = credential.key;
-    let credit = if provider == "anthropic" {
-        let Ok(Some(list)) = omp_providers::usage::anthropic_reset_credits(&token, None).await else {
-            return usage(rt, "Could not discover saved reset credits (discovery failed).");
-        };
-        let selected = list
-            .next_credit_id
-            .as_ref()
-            .and_then(|id| list.credits.iter().find(|c| &c.id == id).cloned())
-            .or_else(|| {
-                list.credits
-                    .iter()
-                    .find(|c| c.usable && c.remaining_count.unwrap_or(0) > 0)
-                    .cloned()
-            });
-        let Some(credit) = selected else {
-            return usage(rt, "No usable reset credit discovered.");
-        };
-        credit
+    let list = if provider == "anthropic" {
+        omp_providers::usage::anthropic_reset_credits(&token, None).await
     } else {
-        let Ok(Some(list)) = omp_providers::usage::codex_reset_credits(&token, None).await else {
-            return usage(rt, "Could not discover saved reset credits (discovery failed).");
+        omp_providers::usage::codex_reset_credits(&token, None).await
+    };
+    let Ok(Some(list)) = list else {
+        return usage(
+            rt,
+            "Could not discover saved reset credits (discovery failed).",
+        );
+    };
+    let usable: Vec<&omp_providers::usage::ResetCredit> = list
+        .credits
+        .iter()
+        .filter(|c| c.usable && c.remaining_count.unwrap_or(0) > 0)
+        .collect();
+    let credit = if crate::slash_extra::dialog::has_ui() && !usable.is_empty() {
+        // TS `showResetUsageSelector`: pick which saved credit to spend (server pick first).
+        use crate::slash_extra::dialog::{select_with, Choice, SelectStyle};
+        let choices: Vec<Choice> = usable
+            .iter()
+            .map(|c| {
+                let next = if list.next_credit_id.as_deref() == Some(c.id.as_str()) {
+                    " · server pick"
+                } else {
+                    ""
+                };
+                Choice::with(
+                    format!("{} ({})", c.id, c.program),
+                    format!(
+                        "{} left · clears {}{next}",
+                        c.remaining_count.unwrap_or(0),
+                        c.clears.join(", ")
+                    ),
+                )
+            })
+            .collect();
+        let initial = usable
+            .iter()
+            .position(|c| list.next_credit_id.as_deref() == Some(c.id.as_str()))
+            .unwrap_or(0);
+        let style = SelectStyle {
+            initial,
+            ..SelectStyle::default()
         };
+        let Some(index) = select_with(rt, "Spend a saved rate-limit reset", &choices, style).await
+        else {
+            return Handled {
+                agent_invoked: false,
+            };
+        };
+        usable[index].clone()
+    } else {
         let selected = list
             .next_credit_id
             .as_ref()
             .and_then(|id| list.credits.iter().find(|c| &c.id == id).cloned())
-            .or_else(|| {
-                list.credits
-                    .iter()
-                    .find(|c| c.usable && c.remaining_count.unwrap_or(0) > 0)
-                    .cloned()
-            });
+            .or_else(|| usable.first().map(|c| (*c).clone()));
         let Some(credit) = selected else {
             return usage(rt, "No usable reset credit discovered.");
         };
@@ -1706,7 +1979,10 @@ async fn usage_reset(rt: &Runtime, rest: &str) -> Outcome {
     };
     let outcome = if provider == "anthropic" {
         let Some(org_id) = omp_providers::usage::resolve_organization(&token, None).await else {
-            return usage(rt, "Could not resolve the account organization id from /api/oauth/profile.");
+            return usage(
+                rt,
+                "Could not resolve the account organization id from /api/oauth/profile.",
+            );
         };
         omp_providers::usage::consume_anthropic_reset_credit(&token, None, &org_id, &credit).await
     } else {
@@ -1727,10 +2003,19 @@ async fn usage_reset(rt: &Runtime, rest: &str) -> Outcome {
         "nothing_to_reset" => "No window is currently limited; nothing to reset.".to_string(),
         "rate_limited" => "Reset endpoint rate-limited; try again in a minute.".to_string(),
         "auth_error" => "Auth rejected by the reset endpoint; re-login.".to_string(),
-        other => format!("Reset failed ({other}).{}", outcome.reason.as_deref().map(|r| format!(" {r}")).unwrap_or_default()),
+        other => format!(
+            "Reset failed ({other}).{}",
+            outcome
+                .reason
+                .as_deref()
+                .map(|r| format!(" {r}"))
+                .unwrap_or_default()
+        ),
     };
     output(rt, &message);
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
 }
 
 /// `/stats [--port <port>] [--host <host>]` — start (or reuse) the in-process
@@ -1741,12 +2026,16 @@ async fn stats_command(rt: &Runtime, args: &str) -> Outcome {
         Err(message) => return usage(rt, &message),
     };
     output(rt, "Syncing session files...");
-    match tokio::task::spawn_blocking(move || crate::subcmd::stats::launch_dashboard(port, &host)).await {
+    match tokio::task::spawn_blocking(move || crate::subcmd::stats::launch_dashboard(port, &host))
+        .await
+    {
         Ok(Ok((_url, message))) => output(rt, &message),
         Ok(Err(error)) => output(rt, &format!("Stats dashboard failed: {error:#}")),
         Err(error) => output(rt, &format!("Stats dashboard failed: {error}")),
     }
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
 }
 
 /// `/trace` — open this session's trace in the stats dashboard (prints the URL).
@@ -1754,7 +2043,9 @@ async fn trace_command(rt: &Runtime) -> Outcome {
     let session_file = rt.session_file();
     if !session_file.is_file() {
         output(rt, "No session file yet — send a message first.");
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     }
     // TS `/trace`: bare `startServer()` (default port + hostname); not the
     // `/stats` launcher, so no browser open and no cached handle.
@@ -1781,7 +2072,9 @@ async fn trace_command(rt: &Runtime) -> Outcome {
         Ok(Err(error)) => output(rt, &format!("Failed to open trace: {error:#}")),
         Err(error) => output(rt, &format!("Failed to open trace: {error}")),
     }
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
 }
 
 /// Parse `/changelog [full|last [N]]` (TS `parseChangelogView`).
@@ -1861,11 +2154,15 @@ fn changelog_command(rt: &Runtime, args: &str) -> Outcome {
             rt,
             "No changelog entries found. (No CHANGELOG.md next to the omp-rs executable.)",
         );
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     };
     let Ok(content) = std::fs::read_to_string(&path) else {
         output(rt, "No changelog entries found.");
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     };
     let entries = parse_changelog_content(&content);
     let selected: Vec<&String> = match view {
@@ -1874,7 +2171,9 @@ fn changelog_command(rt: &Runtime, args: &str) -> Outcome {
     };
     if selected.is_empty() {
         output(rt, "No changelog entries found.");
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     }
     // TS renders oldest-first (`renderChangelogEntries` default).
     let markdown = selected
@@ -1884,7 +2183,9 @@ fn changelog_command(rt: &Runtime, args: &str) -> Outcome {
         .collect::<Vec<_>>()
         .join("\n\n");
     output(rt, &markdown);
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
 }
 
 // =============================================================================
@@ -1934,7 +2235,8 @@ fn write_mcp_file(path: &Path, file: Value) -> Result<(), String> {
 /// project candidate (`mcp.json` / `.mcp.json` / `.omp/mcp.json`).
 fn mcp_scope_path(rt: &Runtime, scope: &str, create: bool) -> Result<PathBuf, String> {
     match scope {
-        "user" => omp_mcp::config::user_config_path().ok_or_else(|| "no HOME for user MCP config".to_string()),
+        "user" => omp_mcp::config::user_config_path()
+            .ok_or_else(|| "no HOME for user MCP config".to_string()),
         "project" => {
             let paths = omp_mcp::config::project_config_paths(&rt.cwd);
             if create {
@@ -1950,19 +2252,25 @@ fn mcp_scope_path(rt: &Runtime, scope: &str, create: bool) -> Result<PathBuf, St
     }
 }
 
-fn mcp_list(rt: &Runtime) -> Outcome {
+/// One configured MCP server: `(name, scope, enabled, summary line)` (user entries shadow
+/// project ones of the same name).
+fn mcp_server_rows(rt: &Runtime) -> Vec<(String, &'static str, bool, String)> {
     let user_path = mcp_scope_path(rt, "user", false);
     let project_path = mcp_scope_path(rt, "project", false);
     let (Ok(user_path), Ok(project_path)) = (user_path, project_path) else {
-        output(rt, "No MCP servers configured.");
-        return Handled { agent_invoked: false };
+        return Vec::new();
     };
     let user = read_mcp_file(&user_path);
     let project = read_mcp_file(&project_path);
     let disabled: HashSet<String> = user
         .get("disabledServers")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default();
     let mut entries: Vec<(String, Value, &'static str)> = Vec::new();
     for (name, config) in mcp_servers_of(&user) {
@@ -1973,19 +2281,15 @@ fn mcp_list(rt: &Runtime) -> Outcome {
             entries.push((name.clone(), config.clone(), "project"));
         }
     }
-    if entries.is_empty() {
-        output(rt, "No MCP servers configured.");
-        return Handled { agent_invoked: false };
-    }
-    let lines: Vec<String> = entries
-        .iter()
+    entries
+        .into_iter()
         .map(|(name, config, scope)| {
             let ty = config
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or("stdio");
             let enabled = config.get("enabled").and_then(Value::as_bool) != Some(false)
-                && !disabled.contains(name);
+                && !disabled.contains(&name);
             let location = match ty {
                 "http" | "sse" => config
                     .get("url")
@@ -1996,14 +2300,116 @@ fn mcp_list(rt: &Runtime) -> Outcome {
                     .and_then(Value::as_str)
                     .unwrap_or("(unknown)"),
             };
-            format!(
-                "* {name} [{scope}] ({ty}, {}) — {location}",
+            let summary = format!(
+                "[{scope}] ({ty}, {}) — {location}",
                 if enabled { "enabled" } else { "disabled" }
-            )
+            );
+            (name, scope, enabled, summary)
         })
+        .collect()
+}
+
+fn mcp_list(rt: &Runtime) -> Outcome {
+    let rows = mcp_server_rows(rt);
+    if rows.is_empty() {
+        output(rt, "No MCP servers configured.");
+        return Handled {
+            agent_invoked: false,
+        };
+    }
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|(name, _, _, summary)| format!("* {name} {summary}"))
         .collect();
     output(rt, &lines.join("\n"));
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
+}
+
+/// Bare `/mcp` with a dialog host (TS interactive MCP menu): pick a server, then an action.
+async fn mcp_menu(rt: &Runtime) -> Outcome {
+    use crate::slash_extra::dialog::{self, Choice, SelectStyle};
+    let rows = mcp_server_rows(rt);
+    let mut choices: Vec<Choice> = rows
+        .iter()
+        .map(|(name, _, _, summary)| Choice::with(name.clone(), summary.clone()))
+        .collect();
+    choices.push(Choice::with(
+        "Add server…",
+        "/mcp add <name> [--scope project|user] -- <command…> | --url <url>",
+    ));
+    choices.push(Choice::with("Help", "MCP subcommands"));
+    let title = if rows.is_empty() {
+        "MCP servers (none configured)"
+    } else {
+        "MCP servers"
+    };
+    let Some(index) = dialog::select_with(rt, title, &choices, SelectStyle::default()).await else {
+        return Handled {
+            agent_invoked: false,
+        };
+    };
+    if index == rows.len() {
+        let Some(spec) = dialog::input(
+            rt,
+            "Add MCP server",
+            Some("<name> [--scope project|user] -- <command…> | --url <url>"),
+        )
+        .await
+        else {
+            return Handled {
+                agent_invoked: false,
+            };
+        };
+        if spec.trim().is_empty() {
+            return Handled {
+                agent_invoked: false,
+            };
+        }
+        return mcp_add(rt, spec.trim());
+    }
+    if index > rows.len() {
+        output(rt, MCP_HELP);
+        return Handled {
+            agent_invoked: false,
+        };
+    }
+    let (name, scope, enabled, _) = &rows[index];
+    let actions = [
+        "Test connection".to_string(),
+        if *enabled {
+            "Disable".to_string()
+        } else {
+            "Enable".to_string()
+        },
+        "Remove".to_string(),
+    ];
+    let Some(action) = dialog::select(rt, &format!("MCP server: {name}"), &actions).await else {
+        return Handled {
+            agent_invoked: false,
+        };
+    };
+    match action {
+        0 => Box::pin(mcp_command(rt, &format!("test {name}"))).await,
+        1 => mcp_set_enabled(rt, name, scope, !enabled),
+        _ => {
+            if dialog::confirm(
+                rt,
+                "Remove MCP server",
+                &format!("Remove \"{name}\" from the {scope} config?"),
+            )
+            .await
+                == Some(true)
+            {
+                mcp_remove(rt, name, scope)
+            } else {
+                Handled {
+                    agent_invoked: false,
+                }
+            }
+        }
+    }
 }
 
 fn mcp_set_enabled(rt: &Runtime, name: &str, scope: &str, enabled: bool) -> Outcome {
@@ -2013,7 +2419,10 @@ fn mcp_set_enabled(rt: &Runtime, name: &str, scope: &str, enabled: bool) -> Outc
     let mut file = read_mcp_file(&path);
     let servers = file
         .as_object_mut()
-        .map(|o| o.entry("mcpServers".to_string()).or_insert_with(|| json!({})))
+        .map(|o| {
+            o.entry("mcpServers".to_string())
+                .or_insert_with(|| json!({}))
+        })
         .and_then(Value::as_object_mut)
         .expect("mcpServers inserted as object");
     let Some(server) = servers.get_mut(name) else {
@@ -2032,10 +2441,15 @@ fn mcp_set_enabled(rt: &Runtime, name: &str, scope: &str, enabled: bool) -> Outc
         obj.insert("enabled".into(), Value::Bool(false));
     }
     match write_mcp_file(&path, file) {
-        Ok(()) => output(rt, &format!("{} {name}.", if enabled { "Enabled" } else { "Disabled" })),
+        Ok(()) => output(
+            rt,
+            &format!("{} {name}.", if enabled { "Enabled" } else { "Disabled" }),
+        ),
         Err(e) => return usage(rt, &format!("Failed to write {}: {e}", path.display())),
     }
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
 }
 
 fn mcp_remove(rt: &Runtime, name: &str, scope: &str) -> Outcome {
@@ -2054,7 +2468,9 @@ fn mcp_remove(rt: &Runtime, name: &str, scope: &str) -> Outcome {
     match write_mcp_file(&path, file) {
         Ok(()) => {
             output(rt, &format!("Removed {name} from {}.", path.display()));
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         Err(e) => usage(rt, &format!("Failed to write {}: {e}", path.display())),
     }
@@ -2124,7 +2540,10 @@ fn mcp_add(rt: &Runtime, rest: &str) -> Outcome {
     let mut file = read_mcp_file(&path);
     let servers = file
         .as_object_mut()
-        .map(|o| o.entry("mcpServers".to_string()).or_insert_with(|| json!({})))
+        .map(|o| {
+            o.entry("mcpServers".to_string())
+                .or_insert_with(|| json!({}))
+        })
         .and_then(Value::as_object_mut)
         .expect("mcpServers inserted as object");
     let config = if let Some(url) = url {
@@ -2152,13 +2571,16 @@ fn mcp_add(rt: &Runtime, rest: &str) -> Outcome {
         ),
         Err(e) => return usage(rt, &format!("Failed to write {}: {e}", path.display())),
     }
-    Handled { agent_invoked: false }
+    Handled {
+        agent_invoked: false,
+    }
 }
 
 /// `/mcp <subcommand>` (TS `handleMcpAcp`; smithery/oauth verbs are TUI-only).
 async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
     let (verb, rest) = subcommand(args);
     match verb.as_str() {
+        "" if crate::slash_extra::dialog::has_ui() => mcp_menu(rt).await,
         "" | "help" => {
             output(rt, MCP_HELP);
             Handled { agent_invoked: false }
@@ -2244,8 +2666,10 @@ async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
 // /modelpreset (config/model-presets.ts `runPresetsCommand`)
 // =============================================================================
 
-const PRESETS_USAGE: &str = "Usage: /modelpreset [list | save <name> | switch <name> | delete <name>]";
-const NO_PRESETS_MESSAGE: &str = "No model presets saved. Use /modelpreset save <name> to create one.";
+const PRESETS_USAGE: &str =
+    "Usage: /modelpreset [list | save <name> | switch <name> | delete <name>]";
+const NO_PRESETS_MESSAGE: &str =
+    "No model presets saved. Use /modelpreset save <name> to create one.";
 
 fn preset_name_valid(name: &str) -> bool {
     let mut chars = name.chars();
@@ -2265,9 +2689,31 @@ fn read_model_presets(settings: &omp_settings::Settings) -> serde_json::Map<Stri
 
 async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
     let settings = omp_settings::Settings::load(&rt.cwd);
+    // TS `handleTui`: bare `/modelpreset` picks a preset to switch to.
+    let picked;
+    let args = if args.trim().is_empty() && crate::slash_extra::dialog::has_ui() {
+        let names: Vec<String> = settings.model_presets().keys().cloned().collect();
+        if names.is_empty() {
+            output(rt, NO_PRESETS_MESSAGE);
+            return Handled {
+                agent_invoked: false,
+            };
+        }
+        let Some(index) =
+            crate::slash_extra::dialog::select(rt, "Switch to model preset", &names).await
+        else {
+            return Handled {
+                agent_invoked: false,
+            };
+        };
+        picked = format!("switch {}", names[index]);
+        picked.as_str()
+    } else {
+        args
+    };
     let tokens: Vec<&str> = args.split_whitespace().collect();
     let sub = tokens.first().copied().unwrap_or("list");
-    let name = tokens[1..].join(" ");
+    let name = tokens.get(1..).unwrap_or_default().join(" ");
     match sub {
         "list" => {
             let presets = settings.model_presets();
@@ -2282,7 +2728,9 @@ async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
                     )
                 },
             );
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "save" => {
             if name.is_empty() {
@@ -2307,7 +2755,9 @@ async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
                         rt,
                         &format!("Saved model preset \"{name}\" to {}.", path.display()),
                     );
-                    Handled { agent_invoked: false }
+                    Handled {
+                        agent_invoked: false,
+                    }
                 }
                 Err(e) => usage(rt, &format!("Failed to save preset: {e}")),
             }
@@ -2341,7 +2791,9 @@ async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
                     }
                 ),
             );
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "delete" => {
             if name.is_empty() {
@@ -2354,7 +2806,9 @@ async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
             match omp_settings::write_global("modelPresets", &Value::Object(presets)) {
                 Ok(_) => {
                     output(rt, &format!("Deleted model preset \"{name}\""));
-                    Handled { agent_invoked: false }
+                    Handled {
+                        agent_invoked: false,
+                    }
                 }
                 Err(e) => usage(rt, &format!("Failed to delete preset: {e}")),
             }
@@ -2371,7 +2825,11 @@ async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
 /// survive moves), the omp-rs counterpart of TS `~/.omp/session-pins.json`.
 fn pins_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
-    Some(PathBuf::from(home).join(".omp-rs").join("session-pins.json"))
+    Some(
+        PathBuf::from(home)
+            .join(".omp-rs")
+            .join("session-pins.json"),
+    )
 }
 
 fn load_pinned_sessions() -> HashSet<String> {
@@ -2420,7 +2878,9 @@ async fn pin_command(rt: &Runtime, args: &str) -> Outcome {
                     "Session unpinned."
                 },
             );
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         Err(e) => usage(rt, &format!("Failed to update pins: {e}")),
     }
@@ -2433,7 +2893,13 @@ async fn pin_command(rt: &Runtime, args: &str) -> Outcome {
 /// Status is served from the live config; toggling is a session override in TS
 /// (applied to the in-memory settings and the rebuilt system prompt), which
 /// the omp-rs runtime does not implement — say so honestly.
-fn setting_status_toggle(rt: &Runtime, args: &str, setting: &str, label: &str, usage_line: &str) -> Outcome {
+fn setting_status_toggle(
+    rt: &Runtime,
+    args: &str,
+    setting: &str,
+    label: &str,
+    usage_line: &str,
+) -> Outcome {
     let settings = omp_settings::Settings::load(&rt.cwd);
     let current = settings.get_bool(setting).unwrap_or(false);
     match args.trim().to_lowercase().as_str() {
@@ -2468,7 +2934,10 @@ async fn move_command(rt: &Runtime, args: &str) -> Outcome {
         rt.cwd.join(args.trim())
     };
     if !resolved.is_dir() {
-        return usage(rt, &format!("Directory does not exist: {}", resolved.display()));
+        return usage(
+            rt,
+            &format!("Directory does not exist: {}", resolved.display()),
+        );
     }
     usage(
         rt,
@@ -2512,7 +2981,9 @@ async fn plugins_command(rt: &Runtime, args: &str) -> Outcome {
                 ),
             );
         }
-        return Handled { agent_invoked: false };
+        return Handled {
+            agent_invoked: false,
+        };
     }
     usage(rt, "Usage: /plugins [list|enable|disable]")
 }
@@ -2537,15 +3008,18 @@ async fn handoff_command(rt: &Runtime, args: &str) -> Outcome {
 const ADVISOR_INACTIVE_ON: &str =
     "Advisor setting enabled, but no model is assigned to the 'advisor' role.";
 
-
-
 /// Compact context report (simplified TS `buildContextReportText`).
 fn context_report(_state: &Value, usage: &Value) -> String {
     let tokens = usage.get("tokens").and_then(serde_json::Value::as_u64);
-    let window = usage.get("contextWindow").and_then(serde_json::Value::as_u64);
+    let window = usage
+        .get("contextWindow")
+        .and_then(serde_json::Value::as_u64);
     match (tokens, window) {
         (Some(t), Some(w)) => {
-            let pct = t.checked_mul(100).and_then(|v| v.checked_div(w)).unwrap_or(0);
+            let pct = t
+                .checked_mul(100)
+                .and_then(|v| v.checked_div(w))
+                .unwrap_or(0);
             format!("Context: {t} / {w} tokens ({pct}%)")
         }
         (Some(t), None) => format!("Context: {t} tokens"),
@@ -2613,7 +3087,11 @@ pub async fn available_commands(rt: &std::sync::Arc<Runtime>) -> Vec<Value> {
         .map(str::to_string)
         .collect();
     for cmd in dynamic {
-        let name = cmd.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+        let name = cmd
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
         if seen.insert(name) {
             all.push(cmd);
         }
@@ -2772,13 +3250,27 @@ mod tests {
 
     #[test]
     fn changelog_view_parsing_matches_ts() {
-        assert!(matches!(parse_changelog_view(""), Ok(ChangelogView::Recent(3))));
-        assert!(matches!(parse_changelog_view("full"), Ok(ChangelogView::Full)));
-        assert!(matches!(parse_changelog_view("last"), Ok(ChangelogView::Last(1))));
-        assert!(matches!(parse_changelog_view("last 5"), Ok(ChangelogView::Last(5))));
+        assert!(matches!(
+            parse_changelog_view(""),
+            Ok(ChangelogView::Recent(3))
+        ));
+        assert!(matches!(
+            parse_changelog_view("full"),
+            Ok(ChangelogView::Full)
+        ));
+        assert!(matches!(
+            parse_changelog_view("last"),
+            Ok(ChangelogView::Last(1))
+        ));
+        assert!(matches!(
+            parse_changelog_view("last 5"),
+            Ok(ChangelogView::Last(5))
+        ));
         assert!(parse_changelog_view("last 0").is_err());
         assert!(parse_changelog_view("bogus").is_err());
-        let entries = parse_changelog_content("# Changelog\n\n## [1.2.0]\n\n- Added A\n\n## [1.1.0]\n\n- Added B\n");
+        let entries = parse_changelog_content(
+            "# Changelog\n\n## [1.2.0]\n\n- Added A\n\n## [1.1.0]\n\n- Added B\n",
+        );
         assert_eq!(entries.len(), 2);
         assert!(entries[0].starts_with("[1.2.0]"));
         assert!(entries[0].contains("- Added A"));
@@ -2791,7 +3283,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("omp-pins-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let pins_file = dir.join("session-pins.json");
-        std::fs::write(&pins_file, serde_json::to_string(&["sess-a".to_string()]).unwrap()).unwrap();
+        std::fs::write(
+            &pins_file,
+            serde_json::to_string(&["sess-a".to_string()]).unwrap(),
+        )
+        .unwrap();
         // Direct store/load check against the file contents (load_pinned_sessions
         // reads HOME; emulate by parsing the same JSON shape).
         let pins: HashSet<String> =

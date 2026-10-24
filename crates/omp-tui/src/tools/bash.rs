@@ -1505,9 +1505,7 @@ mod tests {
     #[test]
     fn background_notice_mentions_job_and_deadline() {
         let notice = format_background_notice("job-7", Some(30));
-        assert!(
-            notice.starts_with("Backgrounded as job job-7 (deadline 30s)")
-        );
+        assert!(notice.starts_with("Backgrounded as job job-7 (deadline 30s)"));
         let no_deadline = format_background_notice("job-7", None);
         assert!(no_deadline.starts_with("Backgrounded as job job-7 (no deadline)"));
         assert!(is_background_notice(

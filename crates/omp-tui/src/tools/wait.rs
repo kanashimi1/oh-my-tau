@@ -55,12 +55,7 @@ impl ToolRenderer for Wait {
         paint(frame, area, lines);
     }
 
-    fn render_frame(
-        &self,
-        frame: &Value,
-        expanded: bool,
-        theme: &Theme,
-    ) -> Vec<Line<'static>> {
+    fn render_frame(&self, frame: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
         // Pending: a single `⧗ Wait` line (TS `waitRenderCall`).
         let Some(result) = frame.get("result") else {
             return vec![status_line(theme, "⧗", "Wait", "", Vec::new())];
@@ -160,11 +155,7 @@ pub fn message_card_lines(waited: &Value, expanded: bool, theme: &Theme) -> Vec<
 /// Quote-bordered message body rows (`  │ <line>`), blank lines dropped,
 /// capped to the collapsed/expanded budget with a dim `… +N more lines` tail.
 #[must_use]
-pub fn message_body_lines(
-    body: &str,
-    expanded: bool,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
+pub fn message_body_lines(body: &str, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
     let cap = if expanded {
         BODY_LINES_EXPANDED
     } else {
@@ -190,7 +181,10 @@ pub fn message_body_lines(
             styled(
                 theme,
                 "text_muted",
-                format!("… +{hidden} more {}", if hidden == 1 { "line" } else { "lines" }),
+                format!(
+                    "… +{hidden} more {}",
+                    if hidden == 1 { "line" } else { "lines" }
+                ),
             ),
         ]));
     }
@@ -488,9 +482,9 @@ mod tests {
     #[test]
     fn render_frame_roster_branch_keeps_rows() {
         let frame = json!({"toolCallId": "1", "toolName": "wait", "args": {},
-            "result": {"content": [], "details": {"jobs": [
-                {"id": "a", "status": "failed", "label": "build", "durationMs": 10, "exitCode": 1}
-            ]}}});
+        "result": {"content": [], "details": {"jobs": [
+            {"id": "a", "status": "failed", "label": "build", "durationMs": 10, "exitCode": 1}
+        ]}}});
         let flat = flat(&Wait.render_frame(&frame, false, &Theme::default()));
         let text = flat.join("\n");
         assert!(text.contains("1 jobs settled"), "{text}");

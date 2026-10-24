@@ -271,8 +271,11 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         bail!("Cannot read '{path_part}': it is a special file, not a regular file or directory.");
     }
     if matches!(sel, Selector::None) && crate::images::looks_like_image(&absolute) {
-        let (image, note) = crate::images::read_image_detailed(&absolute, &crate::images::ImageResizeOptions::default())
-            .map_err(|e| anyhow::anyhow!("Cannot read '{path_part}': {e}"))?;
+        let (image, note) = crate::images::read_image_detailed(
+            &absolute,
+            &crate::images::ImageResizeOptions::default(),
+        )
+        .map_err(|e| anyhow::anyhow!("Cannot read '{path_part}': {e}"))?;
         let mut text = format!(
             "Read image file [{}].",
             format_path_relative_to_cwd(&absolute, &env.cwd, false)
@@ -283,7 +286,10 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         }
         return Ok(AgentToolResult {
             content: vec![
-                pa_agent::types::ToolResultContent::Text(pa_agent::types::TextContent { text, text_signature: None }),
+                pa_agent::types::ToolResultContent::Text(pa_agent::types::TextContent {
+                    text,
+                    text_signature: None,
+                }),
                 pa_agent::types::ToolResultContent::Image(image),
             ],
             details: serde_json::Value::Null,
@@ -308,8 +314,15 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     } else {
         display
     };
-    let result =
-        format_read_output(env, &normalized, &sel, &selector_base, &display, env.hashline, Some(&absolute))?;
+    let result = format_read_output(
+        env,
+        &normalized,
+        &sel,
+        &selector_base,
+        &display,
+        env.hashline,
+        Some(&absolute),
+    )?;
     Ok(relevance_spill(env, result, save_artifact))
 }
 
@@ -348,7 +361,11 @@ fn relevance_spill(
         return result;
     };
     let url = save(&block.text);
-    block.text = format!("{}\n\n[{}]", p.content, notice_with_artifact(&p.notice, url.as_deref()));
+    block.text = format!(
+        "{}\n\n[{}]",
+        p.content,
+        notice_with_artifact(&p.notice, url.as_deref())
+    );
     result
 }
 
@@ -430,7 +447,11 @@ fn format_read_output(
             .collect()
     };
     let mut truncated_by_bytes = false;
-    let max_bytes = DEFAULT_MAX_BYTES.max(windows.iter().map(|w| w.1).max().unwrap_or(0) * 512);
+    let max_bytes = if crate::methodology::raw_tool_output_requested() {
+        usize::MAX
+    } else {
+        DEFAULT_MAX_BYTES.max(windows.iter().map(|w| w.1).max().unwrap_or(0) * 512)
+    };
     for (wi, (start, count)) in windows.iter().enumerate() {
         if *start >= total {
             if wi == 0 {
@@ -585,17 +606,25 @@ fn read_internal_url(env: &Env, raw_path: &str) -> Result<Option<AgentToolResult
     };
     let ctx = url_ctx(env);
     let target = reg.target(&normalized, &ctx)?;
-    let Some(target) = target else { return Ok(None) };
+    let Some(target) = target else {
+        return Ok(None);
+    };
 
     match target {
-        UrlTarget::File { url, spec, path, .. } => {
+        UrlTarget::File {
+            url, spec, path, ..
+        } => {
             match std::fs::metadata(&path) {
                 Ok(meta) if meta.is_dir() => read_directory(&path, &parsed).map(Some),
                 Ok(meta) if meta.is_file() => {
-                    let bytes =
-                        std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+                    let bytes = std::fs::read(&path)
+                        .with_context(|| format!("cannot read {}", path.display()))?;
                     if bytes.contains(&0) {
-                        bail!("Cannot read '{}': binary file ({}).", url.raw_href, format_bytes(bytes.len()));
+                        bail!(
+                            "Cannot read '{}': binary file ({}).",
+                            url.raw_href,
+                            format_bytes(bytes.len())
+                        );
                     }
                     let text = String::from_utf8_lossy(&bytes);
                     let (_, without_bom) = strip_bom(&text);
@@ -657,7 +686,10 @@ fn slice_listing(content: &str, sel: &Selector, selector_base: &str) -> AgentToo
         let suggestion = if all.is_empty() {
             "The listing is empty.".to_string()
         } else {
-            format!("Use :1 to read from the start, or :{} to read the last line.", all.len())
+            format!(
+                "Use :1 to read from the start, or :{} to read the last line.",
+                all.len()
+            )
         };
         return AgentToolResult::text(format!(
             "Line {} is beyond end of listing ({} lines total). {suggestion}",
@@ -870,7 +902,14 @@ fn read_directory(absolute: &Path, sel: &Selector) -> Result<AgentToolResult> {
         }
         return Ok(AgentToolResult::text(text));
     }
-    let t = truncate_head(&rendered, DEFAULT_MAX_BYTES);
+    let t = truncate_head(
+        &rendered,
+        if crate::methodology::raw_tool_output_requested() {
+            usize::MAX
+        } else {
+            DEFAULT_MAX_BYTES
+        },
+    );
     let mut text = t.content;
     if t.truncated {
         let _ = write!(
@@ -897,7 +936,11 @@ mod tests {
     fn session_store() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let session_file = dir.path().join("sess.jsonl");
-        std::fs::write(&session_file, "{\"type\":\"session\",\"version\":3,\"id\":\"sess\"}\n").unwrap();
+        std::fs::write(
+            &session_file,
+            "{\"type\":\"session\",\"version\":3,\"id\":\"sess\"}\n",
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.path().join("sess")).unwrap();
         omp_urls::set_global_session_file(Some(session_file.clone()));
         super::TEST_SESSION_FILE.with(|f| *f.borrow_mut() = Some(session_file));
@@ -934,7 +977,8 @@ mod tests {
             other => panic!("expected lines, got {other:?}"),
         }
         // Huge-but-parseable bounds merge without `last_end + 1` overflow.
-        let sel = parse_sel("18446744073709551610-18446744073709551615,18446744073709551615").unwrap();
+        let sel =
+            parse_sel("18446744073709551610-18446744073709551615,18446744073709551615").unwrap();
         match sel {
             Selector::Lines { ranges, .. } => {
                 assert_eq!(ranges.len(), 1);
@@ -1104,7 +1148,9 @@ mod tests {
         let full_text = text_of(&full);
         assert!(full_text.len() > 12 * 1024, "{}", full_text.len());
         *env.query.lock() = "where is reconcile_ledger_snapshot defined?".to_string();
-        let out = text_of(&relevance_spill(&env, full, |_| Some("artifact://9".to_string())));
+        let out = text_of(&relevance_spill(&env, full, |_| {
+            Some("artifact://9".to_string())
+        }));
         assert!(out.len() < 10 * 1024, "{}", out.len());
         assert!(out.contains("reconcile_ledger_snapshot"), "{out}");
         assert!(out.starts_with(full_text.lines().next().unwrap()), "{out}");
@@ -1144,7 +1190,10 @@ mod tests {
         let out = text_of(&read(&env, &serde_json::json!({"path": "artifact://3:2-3"})).unwrap());
         // Immutable scheme: raw display, exact window (no context expansion);
         // a range ending before EOF carries the continuation hint like TS.
-        assert_eq!(out, "l2\nl3\n\n[1 more lines in file. Use artifact://3:4 to continue]");
+        assert_eq!(
+            out,
+            "l2\nl3\n\n[1 more lines in file. Use artifact://3:4 to continue]"
+        );
     }
 
     #[test]
@@ -1172,7 +1221,8 @@ mod tests {
         std::fs::write(
             artifacts.join("Agent.jsonl"),
             "{\"type\":\"session\",\"version\":3,\"id\":\"a\"}\n",
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::create_dir_all(artifacts.join("local")).unwrap();
         std::fs::write(artifacts.join("local/notes.txt"), "scratch\n").unwrap();
         let env = Env::new(dir.path(), false);
@@ -1198,9 +1248,16 @@ mod tests {
         // "bogus" is not selector-shaped, so nothing peels and the numeric-ID
         // error surfaces — TS behavior for unregistered selector chunks.
         let err = read(&env, &serde_json::json!({"path": "artifact://1:bogus"})).unwrap_err();
-        assert_eq!(err.to_string(), "artifact:// ID must be numeric, got: 1:bogus");
+        assert_eq!(
+            err.to_string(),
+            "artifact:// ID must be numeric, got: 1:bogus"
+        );
         // A selector-shaped but malformed chunk peels, then errors as a selector.
-        let err = read(&env, &serde_json::json!({"path": "artifact://1:2-3:raw:-100-5"})).unwrap_err();
+        let err = read(
+            &env,
+            &serde_json::json!({"path": "artifact://1:2-3:raw:-100-5"}),
+        )
+        .unwrap_err();
         assert_eq!(
             err.to_string(),
             "Invalid selector ':2-3:raw:-100-5' on 'artifact://1'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100)."
@@ -1215,4 +1272,5 @@ mod tests {
         // Not a registered scheme: the existing path pipeline answers.
         let out = text_of(&read(&env, &serde_json::json!({"path": "f.txt"})).unwrap());
         assert!(out.contains("plain"));
-    }}
+    }
+}

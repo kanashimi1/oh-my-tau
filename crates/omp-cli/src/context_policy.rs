@@ -27,7 +27,8 @@ use serde_json::json;
 pub const OFFLOAD_MIN_CHARS: usize = 2_000;
 
 /// Per-turn maintenance instruction sent by the host (same wording the bench used for `clm`).
-pub const MAINT_NOTICE: &str = "CONTEXT MAINTENANCE: your context is managed. Raw conversation before your \
+pub const MAINT_NOTICE: &str =
+    "CONTEXT MAINTENANCE: your context is managed. Raw conversation before your \
 `context_edit` call is dropped from your context on the next turn, so first copy every \
 task-critical fact (all `ANCHOR-<n> code=<c> value=<v>` lines, counts, PINs, incoming \
 notices and instructions) into slots, then keep the slots compact. Then give your \
@@ -50,7 +51,9 @@ impl Kind {
             "rule" => Ok(Self::Rule),
             "laya" => Ok(Self::Laya),
             "schedule" => Ok(Self::Schedule),
-            other => Err(format!("unknown context policy {other:?} (expected always, rule, laya or schedule)")),
+            other => Err(format!(
+                "unknown context policy {other:?} (expected always, rule, laya or schedule)"
+            )),
         }
     }
 }
@@ -105,7 +108,9 @@ impl State {
     /// Rust log, never re-rendered there).
     #[must_use]
     pub fn render(&self) -> String {
-        let since = self.steps_since_edit.map_or_else(|| "none".to_owned(), |n| n.to_string());
+        let since = self
+            .steps_since_edit
+            .map_or_else(|| "none".to_owned(), |n| n.to_string());
         format!(
             "context controller\nstep: {}\nhistory_tokens: {}\nslots_chars: {} ({} slots)\nsteps_since_last_edit: {}\n\
              edits_so_far: {}\nlargest_old_block_chars: {}\nblock_age_turns: {}\nblock_restated_pct: {}\n\
@@ -153,7 +158,9 @@ pub struct Policy {
 
 impl std::fmt::Debug for Policy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Policy").field("kind", &self.kind).finish_non_exhaustive()
+        f.debug_struct("Policy")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
     }
 }
 
@@ -202,24 +209,50 @@ impl Policy {
         };
         let mut p = Self::new(Kind::parse(&name)?);
         let num = |envk: &str, id: &str, d: usize| {
-            env(envk).and_then(|v| v.parse().ok()).or_else(|| settings.get_number(id).map(|v| v as usize)).unwrap_or(d)
+            env(envk)
+                .and_then(|v| v.parse().ok())
+                .or_else(|| settings.get_number(id).map(|v| v as usize))
+                .unwrap_or(d)
         };
-        p.rule_tokens = num("OMP_CONTEXT_POLICY_RULE_TOKENS", "context.policy.ruleTokens", p.rule_tokens);
-        p.rule_every = num("OMP_CONTEXT_POLICY_RULE_EVERY", "context.policy.ruleEvery", p.rule_every);
-        p.rule_offload_chars =
-            num("OMP_CONTEXT_POLICY_RULE_OFFLOAD", "context.policy.ruleOffloadChars", p.rule_offload_chars);
-        p.rule_offload_age = num("OMP_CONTEXT_POLICY_RULE_AGE", "context.policy.ruleOffloadAge", p.rule_offload_age);
-        p.rule_offload_restated =
-            num("OMP_CONTEXT_POLICY_RULE_RESTATED", "context.policy.ruleOffloadRestated", p.rule_offload_restated);
-        p.rule_offload_hist =
-            num("OMP_CONTEXT_POLICY_RULE_OFFLOAD_HIST", "context.policy.ruleOffloadHist", p.rule_offload_hist);
+        p.rule_tokens = num(
+            "OMP_CONTEXT_POLICY_RULE_TOKENS",
+            "context.policy.ruleTokens",
+            p.rule_tokens,
+        );
+        p.rule_every = num(
+            "OMP_CONTEXT_POLICY_RULE_EVERY",
+            "context.policy.ruleEvery",
+            p.rule_every,
+        );
+        p.rule_offload_chars = num(
+            "OMP_CONTEXT_POLICY_RULE_OFFLOAD",
+            "context.policy.ruleOffloadChars",
+            p.rule_offload_chars,
+        );
+        p.rule_offload_age = num(
+            "OMP_CONTEXT_POLICY_RULE_AGE",
+            "context.policy.ruleOffloadAge",
+            p.rule_offload_age,
+        );
+        p.rule_offload_restated = num(
+            "OMP_CONTEXT_POLICY_RULE_RESTATED",
+            "context.policy.ruleOffloadRestated",
+            p.rule_offload_restated,
+        );
+        p.rule_offload_hist = num(
+            "OMP_CONTEXT_POLICY_RULE_OFFLOAD_HIST",
+            "context.policy.ruleOffloadHist",
+            p.rule_offload_hist,
+        );
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
             .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
             .unwrap_or_default();
         p.log = env("OMP_CONTEXT_POLICY_LOG").map(PathBuf::from);
         if p.kind == Kind::Laya {
-            let ckpt = env("OMP_CONTEXT_LAYA_CKPT").or_else(|| settings.get_string("context.policy.layaCkpt"));
-            let onnx = env("OMP_CONTEXT_LAYA_ONNX").or_else(|| settings.get_string("context.policy.layaOnnx"));
+            let ckpt = env("OMP_CONTEXT_LAYA_CKPT")
+                .or_else(|| settings.get_string("context.policy.layaCkpt"));
+            let onnx = env("OMP_CONTEXT_LAYA_ONNX")
+                .or_else(|| settings.get_string("context.policy.layaOnnx"));
             let (Some(ckpt), Some(onnx)) = (ckpt, onnx) else {
                 return Err("context.policy=laya needs context.policy.layaCkpt and context.policy.layaOnnx \
                             (or OMP_CONTEXT_LAYA_CKPT / OMP_CONTEXT_LAYA_ONNX)"
@@ -238,12 +271,15 @@ impl Policy {
     #[must_use]
     pub fn rule(&self, st: &State) -> bool {
         let big = self.rule_tokens > 0 && st.history_tokens >= self.rule_tokens;
-        let due = self.rule_every > 0 && st.steps_since_edit.unwrap_or(st.step + 1) >= self.rule_every;
+        let due =
+            self.rule_every > 0 && st.steps_since_edit.unwrap_or(st.step + 1) >= self.rule_every;
         big || due
     }
 
     fn laya_action(&self, st: &State) -> Action {
-        let Some(paths) = &self.laya_paths else { return Action::ClmEdit };
+        let Some(paths) = &self.laya_paths else {
+            return Action::ClmEdit;
+        };
         let mut slot = self.laya.lock();
         let scorer = slot.get_or_insert_with(|| {
             omp_judge::policy::PolicyScorer::load(&omp_judge::scorer::ModelPaths {
@@ -253,10 +289,15 @@ impl Policy {
             })
             .map_err(|e| tracing::warn!("context.policy=laya: {e:#}; falling back to always"))
         });
-        let Ok(scorer) = scorer else { return Action::ClmEdit };
+        let Ok(scorer) = scorer else {
+            return Action::ClmEdit;
+        };
         match scorer.probs(&st.render()) {
             Ok(probs) => {
-                let best = probs.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|p| p.0.as_str());
+                let best = probs
+                    .iter()
+                    .max_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|p| p.0.as_str());
                 match best {
                     Some("noop") => Action::Noop,
                     Some("rlm_offload") => Action::RlmOffload,
@@ -296,7 +337,11 @@ impl Policy {
             Kind::Laya => {
                 let a = self.laya_action(st);
                 // nothing to offload: the host cannot do it, so it is a noop
-                if a == Action::RlmOffload && st.largest_block_chars < OFFLOAD_MIN_CHARS { Action::Noop } else { a }
+                if a == Action::RlmOffload && st.largest_block_chars < OFFLOAD_MIN_CHARS {
+                    Action::Noop
+                } else {
+                    a
+                }
             }
             Kind::Schedule => match self.schedule.get(st.step).copied().unwrap_or(0) {
                 1 => Action::ClmEdit,
@@ -309,7 +354,11 @@ impl Policy {
         if let Some(path) = &self.log {
             let line = json!({"step": st.step, "policy": format!("{:?}", self.kind).to_lowercase(),
                               "action": action.as_str(), "edit": edit, "state": st.render()});
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 let _ = writeln!(f, "{line}");
             }
         }
@@ -322,7 +371,12 @@ mod tests {
     use super::*;
 
     fn st(step: usize, hist: usize, since: Option<usize>) -> State {
-        State { step, history_tokens: hist, steps_since_edit: since, ..State::default() }
+        State {
+            step,
+            history_tokens: hist,
+            steps_since_edit: since,
+            ..State::default()
+        }
     }
 
     #[test]
@@ -333,10 +387,16 @@ mod tests {
         assert!(!p.rule(&st(2, 999, Some(1))));
         assert!(p.rule(&st(2, 1000, Some(1))));
         assert!(p.rule(&st(6, 10, Some(4))));
-        assert!(!p.rule(&st(2, 10, None)), "no edit yet: age counts from the start (step+1 = 3 < 4)");
+        assert!(
+            !p.rule(&st(2, 10, None)),
+            "no edit yet: age counts from the start (step+1 = 3 < 4)"
+        );
         assert!(p.rule(&st(3, 10, None)));
         p.rule_every = 0;
-        assert!(!p.rule(&st(99, 10, None)), "ruleEvery=0 disables the age trigger");
+        assert!(
+            !p.rule(&st(99, 10, None)),
+            "ruleEvery=0 disables the age trigger"
+        );
     }
 
     #[test]
@@ -346,13 +406,21 @@ mod tests {
         p.rule_offload_chars = 5000;
         let mut s = st(2, 5000, None);
         s.largest_block_chars = 4999;
-        assert_eq!(p.decide(&s).0, Action::ClmEdit, "block below the threshold: edit rule applies");
+        assert_eq!(
+            p.decide(&s).0,
+            Action::ClmEdit,
+            "block below the threshold: edit rule applies"
+        );
         s.step = 3;
         s.largest_block_chars = 5000;
         assert_eq!(p.decide(&s).0, Action::RlmOffload);
         p.rule_offload_chars = 0;
         s.step = 4;
-        assert_eq!(p.decide(&s).0, Action::ClmEdit, "offload disabled by default");
+        assert_eq!(
+            p.decide(&s).0,
+            Action::ClmEdit,
+            "offload disabled by default"
+        );
     }
 
     #[test]
@@ -381,9 +449,17 @@ mod tests {
         p.schedule = vec![0, 1, 2];
         assert_eq!(p.decide(&st(0, 0, None)), (Action::Noop, true));
         assert_eq!(p.decide(&st(1, 0, None)), (Action::ClmEdit, true));
-        assert_eq!(p.decide(&st(1, 0, None)), (Action::ClmEdit, false), "same turn: memoized, not fresh");
+        assert_eq!(
+            p.decide(&st(1, 0, None)),
+            (Action::ClmEdit, false),
+            "same turn: memoized, not fresh"
+        );
         assert_eq!(p.decide(&st(2, 0, None)).0, Action::RlmOffload);
-        assert_eq!(p.decide(&st(7, 0, None)).0, Action::Noop, "past the script = noop");
+        assert_eq!(
+            p.decide(&st(7, 0, None)).0,
+            Action::Noop,
+            "past the script = noop"
+        );
         p.schedule = vec![1; 8]; // changing the script must not flip an already-decided turn
         assert_eq!(p.decide(&st(0, 0, None)).0, Action::Noop);
     }
@@ -395,17 +471,36 @@ mod tests {
         let p = Policy::new(Kind::Always).with_log(log.clone());
         assert_eq!(p.decide(&st(0, 5, None)).0, Action::ClmEdit);
         assert_eq!(p.decide(&st(1, 5, Some(1))).0, Action::ClmEdit);
-        let l: Vec<serde_json::Value> =
-            std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        let l: Vec<serde_json::Value> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
         assert_eq!(l.len(), 2);
-        assert!(l[1]["state"].as_str().unwrap().contains("steps_since_last_edit: 1"));
+        assert!(l[1]["state"]
+            .as_str()
+            .unwrap()
+            .contains("steps_since_last_edit: 1"));
     }
 
     #[test]
     fn render_is_stable_and_excerpt_is_tail() {
-        let s = State { step: 3, history_tokens: 1234, slots_chars: 56, slots_count: 2, steps_since_edit: None,
-                        edits_total: 0, largest_block_chars: 7, block_age_turns: 4, block_restated_pct: 50,
-                        block_since_ref_turns: 2, offloads_total: 0, offload_reads: 1, cache_hit_pct: 91, excerpt: excerpt_of("a\n  b") };
+        let s = State {
+            step: 3,
+            history_tokens: 1234,
+            slots_chars: 56,
+            slots_count: 2,
+            steps_since_edit: None,
+            edits_total: 0,
+            largest_block_chars: 7,
+            block_age_turns: 4,
+            block_restated_pct: 50,
+            block_since_ref_turns: 2,
+            offloads_total: 0,
+            offload_reads: 1,
+            cache_hit_pct: 91,
+            excerpt: excerpt_of("a\n  b"),
+        };
         assert_eq!(
             s.render(),
             "context controller\nstep: 3\nhistory_tokens: 1234\nslots_chars: 56 (2 slots)\nsteps_since_last_edit: none\n\
@@ -429,6 +524,9 @@ mod tests {
         let bad = |k: &str| (k == "OMP_CONTEXT_POLICY").then(|| "nope".to_owned());
         assert!(Policy::resolve(&s, &bad).is_err());
         let laya = |k: &str| (k == "OMP_CONTEXT_POLICY").then(|| "laya".to_owned());
-        assert!(Policy::resolve(&s, &laya).is_err(), "laya without model paths is a config error");
+        assert!(
+            Policy::resolve(&s, &laya).is_err(),
+            "laya without model paths is a config error"
+        );
     }
 }

@@ -94,9 +94,13 @@ fn hash_hex(data: &str, n: usize) -> String {
 /// socket paths.
 #[must_use]
 pub fn lsp_mux_runtime_dir(project_dir: &Path) -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).or_else(|| {
-        std::env::var_os("TMPDIR").map(PathBuf::from).or_else(|| Some(std::env::temp_dir()))
-    })?;
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("TMPDIR")
+                .map(PathBuf::from)
+                .or_else(|| Some(std::env::temp_dir()))
+        })?;
     let canonical = crate::utils::normalize_path(project_dir);
     let scope = hash_hex(&canonical.to_string_lossy(), 16);
     Some(base.join("omp-rs").join("lsp-mux").join(scope))

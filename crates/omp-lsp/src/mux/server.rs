@@ -12,9 +12,9 @@
 //! `OMP_LSP_MUX_IDLE_MS`).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::io::Write as _;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -26,8 +26,8 @@ use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use tracing::{debug, warn};
 
 use super::protocol::{
-    lsp_mux_ready_banner, mux_server_key, MuxConnectParams, MuxConnectResult, MUX_CONNECT_METHOD, MUX_PING_METHOD,
-    MUX_PING_RESULT, MUX_RESTART_METHOD,
+    lsp_mux_ready_banner, mux_server_key, MuxConnectParams, MuxConnectResult, MUX_CONNECT_METHOD,
+    MUX_PING_METHOD, MUX_PING_RESULT, MUX_RESTART_METHOD,
 };
 use crate::client::Framer;
 
@@ -67,7 +67,10 @@ fn frame(message: &Value) -> Vec<u8> {
 }
 
 /// `Content-Length`-framed write of one message.
-async fn write_framed(writer: &mut (impl AsyncWriteExt + Unpin), message: &Value) -> std::io::Result<()> {
+async fn write_framed(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    message: &Value,
+) -> std::io::Result<()> {
     writer.write_all(&frame(message)).await?;
     writer.flush().await
 }
@@ -99,7 +102,13 @@ fn parse_document_params(params: Option<&Value>) -> Option<(String, i64)> {
 }
 
 fn parse_uri(params: Option<&Value>) -> Option<String> {
-    Some(params?.get("textDocument")?.get("uri")?.as_str()?.to_string())
+    Some(
+        params?
+            .get("textDocument")?
+            .get("uri")?
+            .as_str()?
+            .to_string(),
+    )
 }
 
 fn parse_diagnostics(params: Option<&Value>) -> Option<Value> {
@@ -129,7 +138,11 @@ struct PendingClient {
 
 /// A forwarded client request awaiting the server's response.
 enum PendingForward {
-    Forward { session: u64, original_id: Value, drop: bool },
+    Forward {
+        session: u64,
+        original_id: Value,
+        drop: bool,
+    },
     Initialize,
     Resolve(oneshot::Sender<()>),
 }
@@ -221,7 +234,10 @@ impl ServerInstance {
     }
 
     fn client_id(&self) -> String {
-        format!("mux:{}", self.next_client_id.fetch_add(1, Ordering::SeqCst) + 1)
+        format!(
+            "mux:{}",
+            self.next_client_id.fetch_add(1, Ordering::SeqCst) + 1
+        )
     }
 
     fn session_snapshot(&self) -> Vec<Arc<Session>> {
@@ -331,10 +347,17 @@ pub async fn run(endpoint: &Path, _project_dir: &Path) -> std::io::Result<()> {
 
 /// True when something is accepting connections at `endpoint`.
 async fn probe_unix(endpoint: &Path) -> bool {
-    matches!(tokio::time::timeout(Duration::from_millis(200), UnixStream::connect(endpoint)).await, Ok(Ok(_)))
+    matches!(
+        tokio::time::timeout(Duration::from_millis(200), UnixStream::connect(endpoint)).await,
+        Ok(Ok(_))
+    )
 }
 
-async fn handle_connection(state: Arc<MuxState>, session: Arc<Session>, mut reader: tokio::net::unix::OwnedReadHalf) {
+async fn handle_connection(
+    state: Arc<MuxState>,
+    session: Arc<Session>,
+    mut reader: tokio::net::unix::OwnedReadHalf,
+) {
     let mut framer = Framer::new();
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
@@ -375,7 +398,9 @@ async fn from_session(state: &Arc<MuxState>, session: &Arc<Session>, message: Va
     let id = message.get("id").cloned().unwrap_or(Value::Null);
 
     if method == MUX_PING_METHOD && request {
-        session.send(&rpc_result(&id, &json!(MUX_PING_RESULT))).await;
+        session
+            .send(&rpc_result(&id, &json!(MUX_PING_RESULT)))
+            .await;
         return;
     }
     if method == MUX_CONNECT_METHOD && request {
@@ -385,7 +410,9 @@ async fn from_session(state: &Arc<MuxState>, session: &Arc<Session>, message: Va
     let bound = lock(&session.server).clone();
     let Some(server) = bound else {
         if request {
-            session.send(&rpc_error(&id, -32002, "muxConnect must be first")).await;
+            session
+                .send(&rpc_error(&id, -32002, "muxConnect must be first"))
+                .await;
         }
         return;
     };
@@ -443,7 +470,11 @@ async fn from_session(state: &Arc<MuxState>, session: &Arc<Session>, message: Va
             let mux_id = server.mux_id();
             lock(&server.pending).insert(
                 mux_id,
-                PendingForward::Forward { session: session.id, original_id: id.clone(), drop: false },
+                PendingForward::Forward {
+                    session: session.id,
+                    original_id: id.clone(),
+                    drop: false,
+                },
             );
             lock(&session.forwarded_ids).insert(id_key(&id), mux_id);
             let mut forwarded = message.clone();
@@ -456,20 +487,34 @@ async fn from_session(state: &Arc<MuxState>, session: &Arc<Session>, message: Va
     }
 }
 
-async fn handle_mux_connect(state: &Arc<MuxState>, session: &Arc<Session>, message: &Value, id: Value) {
+async fn handle_mux_connect(
+    state: &Arc<MuxState>,
+    session: &Arc<Session>,
+    message: &Value,
+    id: Value,
+) {
     if lock(&session.server).is_some() {
-        session.send(&rpc_error(&id, -32600, "session already bound")).await;
+        session
+            .send(&rpc_error(&id, -32600, "session already bound"))
+            .await;
         return;
     }
     let Some(params) = parse_connect_params(message.get("params")) else {
-        session.send(&rpc_error(&id, -32602, "invalid mux connect params")).await;
+        session
+            .send(&rpc_error(&id, -32602, "invalid mux connect params"))
+            .await;
         return;
     };
     let key = mux_server_key(&params);
-    let mut server = lock(&state.servers).values().find(|c| c.key == key).cloned();
+    let mut server = lock(&state.servers)
+        .values()
+        .find(|c| c.key == key)
+        .cloned();
     if let Some(candidate) = server.clone() {
         // A crashed child must not be re-adopted.
-        let dead = lock(&candidate.child).as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))));
+        let dead = lock(&candidate.child)
+            .as_mut()
+            .is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))));
         if dead || candidate.stopping.load(Ordering::SeqCst) {
             server = None;
         }
@@ -483,11 +528,24 @@ async fn handle_mux_connect(state: &Arc<MuxState>, session: &Arc<Session>, messa
     };
     lock(&server.sessions).push(Arc::clone(session));
     *lock(&session.server) = Some(Arc::clone(&server));
-    let result = MuxConnectResult { key, spawned, pid: Some(server.pid) };
-    session.send(&rpc_result(&id, &serde_json::to_value(result).expect("serialize connect result"))).await;
+    let result = MuxConnectResult {
+        key,
+        spawned,
+        pid: Some(server.pid),
+    };
+    session
+        .send(&rpc_result(
+            &id,
+            &serde_json::to_value(result).expect("serialize connect result"),
+        ))
+        .await;
 }
 
-fn spawn_server(state: &Arc<MuxState>, key: &str, params: &MuxConnectParams) -> Arc<ServerInstance> {
+fn spawn_server(
+    state: &Arc<MuxState>,
+    key: &str,
+    params: &MuxConnectParams,
+) -> Arc<ServerInstance> {
     let mut command = Command::new(&params.command);
     command
         .args(&params.args)
@@ -578,7 +636,12 @@ fn spawn_server(state: &Arc<MuxState>, key: &str, params: &MuxConnectParams) -> 
     server
 }
 
-async fn initialize_session(session: &Arc<Session>, server: &Arc<ServerInstance>, message: &Value, id: Value) {
+async fn initialize_session(
+    session: &Arc<Session>,
+    server: &Arc<ServerInstance>,
+    message: &Value,
+    id: Value,
+) {
     if server.init_cached.load(Ordering::SeqCst) {
         let result = lock(&server.init_result).clone().unwrap_or(Value::Null);
         session.send(&rpc_result(&id, &result)).await;
@@ -637,8 +700,14 @@ async fn from_server(server: &Arc<ServerInstance>, message: &Value) {
     }
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     if method == "textDocument/publishDiagnostics" {
-        let Some(params) = parse_diagnostics(message.get("params")) else { return };
-        let uri = params.get("uri").and_then(Value::as_str).unwrap_or("").to_string();
+        let Some(params) = parse_diagnostics(message.get("params")) else {
+            return;
+        };
+        let uri = params
+            .get("uri")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         lock(&server.diagnostics).insert(uri, params.clone());
         for session in server.session_snapshot() {
             if session.initialized.load(Ordering::SeqCst) {
@@ -649,8 +718,13 @@ async fn from_server(server: &Arc<ServerInstance>, message: &Value) {
     }
     if method == "$/progress" {
         if let Some(params) = parse_progress(message.get("params")) {
-            let token_key = serde_json::to_string(params.get("token").unwrap_or(&Value::Null)).unwrap_or_default();
-            match params.get("value").and_then(|v| v.get("kind")).and_then(Value::as_str) {
+            let token_key = serde_json::to_string(params.get("token").unwrap_or(&Value::Null))
+                .unwrap_or_default();
+            match params
+                .get("value")
+                .and_then(|v| v.get("kind"))
+                .and_then(Value::as_str)
+            {
                 Some("begin") => {
                     lock(&server.progress).insert(token_key, params.clone());
                 }
@@ -682,7 +756,9 @@ async fn send_diagnostics(session: &Arc<Session>, params: &Value) {
 /// Replies go out inline, in server order, like diagnostics/progress on this same read loop: a
 /// task per reply cost a spawn each and could reorder a reply against those inline sends.
 async fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
-    let Some(id) = message.get("id").and_then(Value::as_i64) else { return };
+    let Some(id) = message.get("id").and_then(Value::as_i64) else {
+        return;
+    };
     let pending = lock(&server.pending).remove(&id);
     let Some(pending) = pending else { return };
     match pending {
@@ -716,11 +792,17 @@ async fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
                 }
             }
         }
-        PendingForward::Forward { session, original_id, drop } => {
+        PendingForward::Forward {
+            session,
+            original_id,
+            drop,
+        } => {
             if drop {
                 return;
             }
-            let Some(session) = find_session(server, session) else { return };
+            let Some(session) = find_session(server, session) else {
+                return;
+            };
             if session.is_closed() {
                 return;
             }
@@ -733,7 +815,10 @@ async fn handle_server_response(server: &Arc<ServerInstance>, message: &Value) {
 }
 
 fn find_session(server: &Arc<ServerInstance>, session_id: u64) -> Option<Arc<Session>> {
-    lock(&server.sessions).iter().find(|s| s.id == session_id).cloned()
+    lock(&server.sessions)
+        .iter()
+        .find(|s| s.id == session_id)
+        .cloned()
 }
 
 async fn handle_server_request(server: &Arc<ServerInstance>, message: &Value) {
@@ -741,11 +826,15 @@ async fn handle_server_request(server: &Arc<ServerInstance>, message: &Value) {
     let server_id = message.get("id").cloned().unwrap_or(Value::Null);
     if matches!(
         method,
-        "client/registerCapability" | "client/unregisterCapability" | "window/workDoneProgress/create"
+        "client/registerCapability"
+            | "client/unregisterCapability"
+            | "window/workDoneProgress/create"
     ) {
         if method == "client/registerCapability" {
-            if let Some(registrations) =
-                message.get("params").and_then(|p| p.get("registrations")).and_then(Value::as_array)
+            if let Some(registrations) = message
+                .get("params")
+                .and_then(|p| p.get("registrations"))
+                .and_then(Value::as_array)
             {
                 let valid: Vec<Value> = registrations
                     .iter()
@@ -759,7 +848,10 @@ async fn handle_server_request(server: &Arc<ServerInstance>, message: &Value) {
         } else {
             let raw = message
                 .get("params")
-                .and_then(|p| p.get("unregisterations").or_else(|| p.get("unregistrations")))
+                .and_then(|p| {
+                    p.get("unregisterations")
+                        .or_else(|| p.get("unregistrations"))
+                })
                 .and_then(Value::as_array);
             if let Some(items) = raw {
                 let ids: HashSet<String> = items
@@ -767,9 +859,12 @@ async fn handle_server_request(server: &Arc<ServerInstance>, message: &Value) {
                     .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_string))
                     .collect();
                 for batch in lock(&server.registrations).iter_mut() {
-                    if let Some(regs) = batch.get_mut("registrations").and_then(Value::as_array_mut) {
+                    if let Some(regs) = batch.get_mut("registrations").and_then(Value::as_array_mut)
+                    {
                         regs.retain(|r| {
-                            r.get("id").and_then(Value::as_str).is_none_or(|id| !ids.contains(id))
+                            r.get("id")
+                                .and_then(Value::as_str)
+                                .is_none_or(|id| !ids.contains(id))
                         });
                     }
                 }
@@ -790,13 +885,18 @@ async fn handle_server_request(server: &Arc<ServerInstance>, message: &Value) {
         .into_iter()
         .max_by_key(|s| s.last_activity.load(Ordering::SeqCst));
     let Some(focus) = focus else {
-        server.write(&rpc_error(&server_id, -32601, "no client attached")).await;
+        server
+            .write(&rpc_error(&server_id, -32601, "no client attached"))
+            .await;
         return;
     };
     let client_id = server.client_id();
     lock(&focus.pending_client).insert(
         client_id.clone(),
-        PendingClient { relay: true, server_id: Some(server_id) },
+        PendingClient {
+            relay: true,
+            server_id: Some(server_id),
+        },
     );
     let mut forwarded = message.clone();
     forwarded["id"] = json!(client_id);
@@ -805,15 +905,25 @@ async fn handle_server_request(server: &Arc<ServerInstance>, message: &Value) {
 
 async fn forward_no_relay(session: &Arc<Session>, server: &Arc<ServerInstance>, message: &Value) {
     let client_id = server.client_id();
-    lock(&session.pending_client).insert(client_id.clone(), PendingClient { relay: false, server_id: None });
+    lock(&session.pending_client).insert(
+        client_id.clone(),
+        PendingClient {
+            relay: false,
+            server_id: None,
+        },
+    );
     let mut forwarded = message.clone();
     forwarded["id"] = json!(client_id);
     session.send(&forwarded).await;
 }
 
 fn handle_client_response(session: &Arc<Session>, message: &Value) {
-    let Some(id) = message.get("id").and_then(Value::as_str) else { return };
-    let Some(pending) = lock(&session.pending_client).remove(id) else { return };
+    let Some(id) = message.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(pending) = lock(&session.pending_client).remove(id) else {
+        return;
+    };
     if !pending.relay {
         return;
     }
@@ -832,7 +942,9 @@ fn handle_client_response(session: &Arc<Session>, message: &Value) {
 async fn replay_state(session: &Arc<Session>, server: &Arc<ServerInstance>) {
     let batches: Vec<Value> = lock(&server.registrations).clone();
     for batch in &batches {
-        let Some(regs) = batch.get("registrations").and_then(Value::as_array) else { continue };
+        let Some(regs) = batch.get("registrations").and_then(Value::as_array) else {
+            continue;
+        };
         if regs.is_empty() {
             continue;
         }
@@ -854,7 +966,9 @@ async fn replay_state(session: &Arc<Session>, server: &Arc<ServerInstance>) {
     }
     let progress: Vec<Value> = lock(&server.progress).values().cloned().collect();
     for params in &progress {
-        session.send(&json!({ "jsonrpc": "2.0", "method": "$/progress", "params": params })).await;
+        session
+            .send(&json!({ "jsonrpc": "2.0", "method": "$/progress", "params": params }))
+            .await;
     }
 }
 
@@ -883,7 +997,9 @@ async fn close_session(state: &Arc<MuxState>, session: &Arc<Session>) {
         let pending = std::mem::take(&mut *lock(&server.pending));
         for (mux_id, mut entry) in pending {
             let drop_it = match &mut entry {
-                PendingForward::Forward { session: sid, drop, .. } if *sid == session.id => {
+                PendingForward::Forward {
+                    session: sid, drop, ..
+                } if *sid == session.id => {
                     *drop = true;
                     true
                 }
@@ -944,10 +1060,14 @@ async fn stop_server(server: &Arc<ServerInstance>) {
     let mux_id = server.mux_id();
     lock(&server.pending).insert(mux_id, PendingForward::Resolve(tx));
     server
-        .write(&json!({ "jsonrpc": "2.0", "id": mux_id, "method": "shutdown", "params": Value::Null }))
+        .write(
+            &json!({ "jsonrpc": "2.0", "id": mux_id, "method": "shutdown", "params": Value::Null }),
+        )
         .await;
     let _ = tokio::time::timeout(Duration::from_millis(SHUTDOWN_BUDGET_MS), rx).await;
-    server.write(&json!({ "jsonrpc": "2.0", "method": "exit" })).await;
+    server
+        .write(&json!({ "jsonrpc": "2.0", "method": "exit" }))
+        .await;
     if let Ok(mut guard) = server.child.lock() {
         if let Some(child) = guard.as_mut() {
             let _ = child.start_kill();

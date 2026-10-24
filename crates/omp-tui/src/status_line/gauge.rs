@@ -50,24 +50,40 @@ pub fn embedded_min_width(input: &GaugeInput) -> usize {
     if !input.embed {
         return 1;
     }
-    let pct_w = input.percent.map_or(0, |p| percent_label(p).chars().count() + 2);
-    let win_w = fmt::format_number(input.window.unwrap_or(0)).chars().count();
+    let pct_w = input
+        .percent
+        .map_or(0, |p| percent_label(p).chars().count() + 2);
+    let win_w = fmt::format_number(input.window.unwrap_or(0))
+        .chars()
+        .count();
     pct_w + win_w + 2
 }
 
 /// Percent → cell index on a `scale`-cell gauge (`Math.round` semantics).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 fn cell_for(percent: f64, scale: usize) -> usize {
     ((percent / 100.0 * scale as f64).round().max(0.0) as usize).min(scale.saturating_sub(1))
 }
 
 /// `adjustHsv(hex, {s: 0.7, v: 0.75})` for the threshold marker color.
-#[allow(clippy::many_single_char_names, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::many_single_char_names,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn dimmed(color: Color) -> Color {
     let Color::Rgb(r, g, b) = color else {
         return color;
     };
-    let (r, g, b) = (f64::from(r) / 255.0, f64::from(g) / 255.0, f64::from(b) / 255.0);
+    let (r, g, b) = (
+        f64::from(r) / 255.0,
+        f64::from(g) / 255.0,
+        f64::from(b) / 255.0,
+    );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
@@ -100,7 +116,11 @@ fn dimmed(color: Color) -> Color {
 /// Render the gauge as styled spans totalling exactly `width` cells —
 /// a port of `#buildContextGaugeFill` (`component.ts`).
 #[must_use]
-#[allow(clippy::too_many_lines, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::too_many_lines,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> Vec<Span<'static>> {
     use ratatui::style::Style;
     if width == 0 {
@@ -132,7 +152,9 @@ pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> 
     let mut window_start: Option<usize> = None;
     let mut scale = width;
     if input.embed {
-        let cand_pct = pct.map_or(String::new(), |p| percent_label(if overflow { p } else { clamped }));
+        let cand_pct = pct.map_or(String::new(), |p| {
+            percent_label(if overflow { p } else { clamped })
+        });
         let cand_win = fmt::format_number(window);
         if width >= embedded_min_width(input) {
             percent_label_text = cand_pct;
@@ -154,8 +176,10 @@ pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> 
 
     let mut spec_idx: Option<usize> = None;
     let mut thr_idx: Option<usize> = None;
-    if matches!(input.mode, ContextLineMode::Annotated | ContextLineMode::Embedded)
-        && input.boundaries_known
+    if matches!(
+        input.mode,
+        ContextLineMode::Annotated | ContextLineMode::Embedded
+    ) && input.boundaries_known
         && width >= 8
         && scale > 0
     {
@@ -206,7 +230,10 @@ pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> 
     let window_end = window_start.map(|s| s + window_chars.len());
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(width);
     for i in 0..width {
-        let (text, color) = if let Some((ps, _)) = percent_start.zip(percent_end).filter(|(s, e)| i >= *s && i < *e) {
+        let (text, color) = if let Some((ps, _)) = percent_start
+            .zip(percent_end)
+            .filter(|(s, e)| i >= *s && i < *e)
+        {
             (
                 percent_chars[i - ps].to_string(),
                 if overflow { overflow_color } else { used_color },
@@ -215,12 +242,19 @@ pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> 
             (thr_glyph.to_string(), thr_color)
         } else if spec_idx == Some(i) {
             (spec_glyph.to_string(), spec_color)
-        } else if let Some((ws, _)) = window_start.zip(window_end).filter(|(s, e)| i >= *s && i < *e) {
+        } else if let Some((ws, _)) = window_start
+            .zip(window_end)
+            .filter(|(s, e)| i >= *s && i < *e)
+        {
             (window_chars[i - ws].to_string(), thr_color)
         } else {
             (
                 horizontal.to_string(),
-                if i < used_count { used_color } else { unused_color },
+                if i < used_count {
+                    used_color
+                } else {
+                    unused_color
+                },
             )
         };
         spans.push(Span::styled(text, Style::default().fg(color)));
@@ -247,7 +281,11 @@ pub fn clean_fill_token(percent: f64) -> &'static str {
 /// The clean-style context segment: a fixed 10-cell `━`/`─` bar plus
 /// ` N%`; `None` when neither the percent nor the window is known.
 #[must_use]
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
 pub fn clean_bar(percent: Option<f64>, window: Option<u64>) -> Option<super::segments::Piece> {
     if percent.is_none() && window.unwrap_or(0) == 0 {
         return None;
@@ -324,7 +362,10 @@ mod tests {
         let bar = clean_bar(Some(30.0), None).unwrap();
         assert_eq!(bar.text, "━━━─────── 30%");
         assert_eq!(bar.runs[1].1, "dim");
-        assert_eq!(clean_bar(None, Some(128_000)).unwrap().text, "────────── 0%");
+        assert_eq!(
+            clean_bar(None, Some(128_000)).unwrap().text,
+            "────────── 0%"
+        );
         assert!(clean_bar(None, None).is_none());
     }
 }

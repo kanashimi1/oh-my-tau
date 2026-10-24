@@ -9,7 +9,9 @@ use std::time::Duration;
 use omp_lsp::client::{get_or_create_client, ClientStatus};
 use omp_lsp::config::{get_config, get_server_for_file, invalidate_config};
 use omp_lsp::diagnostics::{normalize_location_result, wait_for_diagnostics};
-use omp_lsp::mux::{connect_shared_lsp_transport, protocol::lsp_mux_endpoint, set_shared_lsp_enabled};
+use omp_lsp::mux::{
+    connect_shared_lsp_transport, protocol::lsp_mux_endpoint, set_shared_lsp_enabled,
+};
 use omp_lsp::utils::file_to_uri;
 use serde_json::json;
 
@@ -45,8 +47,11 @@ async fn mux_shares_one_server_across_sessions() {
             }
         }
     });
-    std::fs::write(cwd.join("lsp.json"), serde_json::to_string_pretty(&lsp_json).unwrap())
-        .expect("write lsp.json");
+    std::fs::write(
+        cwd.join("lsp.json"),
+        serde_json::to_string_pretty(&lsp_json).unwrap(),
+    )
+    .expect("write lsp.json");
     let file_path = cwd.join("src").join("main.fake");
     std::fs::write(&file_path, "fake document body\n").expect("write source file");
 
@@ -54,7 +59,10 @@ async fn mux_shares_one_server_across_sessions() {
     let config = get_config(&cwd);
     let (_name, server) = get_server_for_file(&config, &file_path)
         .unwrap_or_else(|| panic!("fakeserver should match {}", file_path.display()));
-    let command = server.resolved_command.clone().unwrap_or_else(|| server.command.clone());
+    let command = server
+        .resolved_command
+        .clone()
+        .unwrap_or_else(|| server.command.clone());
     let args = server.args.clone().unwrap_or_default();
 
     // Session 1 spawns the shared server; session 2 must reuse its pid.
@@ -65,7 +73,11 @@ async fn mux_shares_one_server_across_sessions() {
     let t2 = connect_shared_lsp_transport(&command, &args, &cwd, None)
         .await
         .expect("second shared transport");
-    assert_eq!(t2.pid, Some(pid1), "second session must reuse the same server process");
+    assert_eq!(
+        t2.pid,
+        Some(pid1),
+        "second session must reuse the same server process"
+    );
     drop(t1);
     drop(t2);
 

@@ -46,13 +46,19 @@ pub fn parse_revision_prefix(value: &str) -> Option<Revision> {
             index += 1;
         }
         let is_size_token = index < b.len() && b[index].is_ascii_alphabetic();
-        let component = if is_size_token { None } else { parse_component(&value[start..index]) };
+        let component = if is_size_token {
+            None
+        } else {
+            parse_component(&value[start..index])
+        };
         let Some(component) = component else {
             return if count > 0 { Some(out) } else { None };
         };
         out[count] = component;
         count += 1;
-        let Some(&separator) = b.get(index) else { break };
+        let Some(&separator) = b.get(index) else {
+            break;
+        };
         let next_is_digit = b.get(index + 1).is_some_and(u8::is_ascii_digit);
         if (separator != b'.' && separator != b'-') || !next_is_digit {
             break;

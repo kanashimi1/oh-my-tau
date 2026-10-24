@@ -51,10 +51,22 @@ pub fn judgment_route(api: &str) -> Option<&'static str> {
 fn classify(model: ResolvedModel) -> JudgeCandidate {
     if let Some(route) = judgment_route(&model.api) {
         let url = format!("{}{route}", model.base_url.trim_end_matches('/'));
-        return JudgeCandidate { kind: JudgeKind::Native, model, url: Some(url) };
+        return JudgeCandidate {
+            kind: JudgeKind::Native,
+            model,
+            url: Some(url),
+        };
     }
-    let kind = if model.api == "local-inference" { JudgeKind::Local } else { JudgeKind::Online };
-    JudgeCandidate { kind, model, url: None }
+    let kind = if model.api == "local-inference" {
+        JudgeKind::Local
+    } else {
+        JudgeKind::Online
+    };
+    JudgeCandidate {
+        kind,
+        model,
+        url: None,
+    }
 }
 
 /// The ordered judge chain. Empty candidates are an error (no judge configured / no credentials).
@@ -68,7 +80,11 @@ pub fn resolve_judge_chain(dir: &AgentDir) -> Result<Vec<JudgeCandidate>> {
     let mut chain: Vec<JudgeCandidate> = Vec::new();
     let mut first_err = None;
     for (i, sel) in selectors.iter().enumerate() {
-        let resolved = if i == 0 { Ok(primary.clone()) } else { crate::resolve_in(dir, sel) };
+        let resolved = if i == 0 {
+            Ok(primary.clone())
+        } else {
+            crate::resolve_in(dir, sel)
+        };
         match resolved {
             Ok(m) if m.api_key.is_some() || m.api == "local-inference" => chain.push(classify(m)),
             Ok(_) => {}
@@ -83,7 +99,9 @@ pub fn resolve_judge_chain(dir: &AgentDir) -> Result<Vec<JudgeCandidate>> {
         });
     }
     if chain.is_empty() {
-        return Err(first_err.unwrap_or_else(|| anyhow!("no credentialed model for the judge role")));
+        return Err(
+            first_err.unwrap_or_else(|| anyhow!("no credentialed model for the judge role"))
+        );
     }
     Ok(chain)
 }
@@ -169,15 +187,24 @@ fn label(c: &JudgeCandidate) -> String {
 ///
 /// # Errors
 /// Non-native candidate, missing key, HTTP/transport failure, or an incomplete response.
-pub async fn judge_native(candidate: &JudgeCandidate, request: &JudgeRequest) -> Result<JudgeResult> {
-    judge_native_inner(candidate, request).await.map_err(anyhow::Error::new)
+pub async fn judge_native(
+    candidate: &JudgeCandidate,
+    request: &JudgeRequest,
+) -> Result<JudgeResult> {
+    judge_native_inner(candidate, request)
+        .await
+        .map_err(anyhow::Error::new)
 }
 
 async fn judge_native_inner(
     candidate: &JudgeCandidate,
     request: &JudgeRequest,
 ) -> std::result::Result<JudgeResult, JudgeError> {
-    let fail = |message: String| JudgeError { message, status: None, timeout: false };
+    let fail = |message: String| JudgeError {
+        message,
+        status: None,
+        timeout: false,
+    };
     let (JudgeKind::Native, Some(url)) = (candidate.kind, candidate.url.as_deref()) else {
         return Err(fail(format!("{} is not a native judge", label(candidate))));
     };
@@ -187,7 +214,10 @@ async fn judge_native_inner(
         .as_deref()
         .ok_or_else(|| fail(format!("no API key for {}", label(candidate))))?;
     let body = json!({ "state": request.state, "model": candidate.model.id, "questions": request.questions });
-    let client = reqwest::Client::builder().timeout(TIMEOUT).build().map_err(|e| fail(e.to_string()))?;
+    let client = reqwest::Client::builder()
+        .timeout(TIMEOUT)
+        .build()
+        .map_err(|e| fail(e.to_string()))?;
     let mut attempt = 0;
     let response: Value = loop {
         let mut req = client.post(url);
@@ -210,7 +240,10 @@ async fn judge_native_inner(
                 tokio::time::sleep(backoff(attempt, None)).await;
             }
             Ok(resp) if resp.status().is_success() => {
-                break resp.json().await.map_err(|e| fail(format!("{} bad response body: {e}", label(candidate))))?;
+                break resp
+                    .json()
+                    .await
+                    .map_err(|e| fail(format!("{} bad response body: {e}", label(candidate))))?;
             }
             Ok(resp) => {
                 let status = resp.status().as_u16();
@@ -229,10 +262,20 @@ async fn judge_native_inner(
         }
         attempt += 1;
     };
-    let answers = response.get("answers").and_then(Value::as_object).cloned().unwrap_or_default();
+    let answers = response
+        .get("answers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
     for (id, q) in &request.questions {
         let want = q.get("type").and_then(Value::as_str);
-        if want.is_none() || answers.get(id).and_then(|a| a.get("type")).and_then(Value::as_str) != want {
+        if want.is_none()
+            || answers
+                .get(id)
+                .and_then(|a| a.get("type"))
+                .and_then(Value::as_str)
+                != want
+        {
             return Err(fail(format!(
                 "{} response is missing a \"{}\" answer for question \"{id}\"",
                 label(candidate),
@@ -241,7 +284,12 @@ async fn judge_native_inner(
         }
     }
     let usage = response.get("usage");
-    let count = |k: &str| usage.and_then(|u| u.get(k)).and_then(Value::as_u64).unwrap_or(0);
+    let count = |k: &str| {
+        usage
+            .and_then(|u| u.get(k))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
     let cost = usage
         .and_then(|u| u.get("cost"))
         .and_then(Value::as_f64)
@@ -255,7 +303,11 @@ async fn judge_native_inner(
             .and_then(Value::as_str)
             .map_or_else(|| candidate.model.id.clone(), str::to_owned),
         answers,
-        usage: JudgeUsage { input: count("input_tokens"), output: count("output_tokens"), cost },
+        usage: JudgeUsage {
+            input: count("input_tokens"),
+            output: count("output_tokens"),
+            cost,
+        },
     })
 }
 
@@ -266,7 +318,9 @@ const REJECTION_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 static REJECTIONS: std::sync::Mutex<Option<HashMap<String, Instant>>> = std::sync::Mutex::new(None);
 
 fn rejection_map<R>(f: impl FnOnce(&mut HashMap<String, Instant>) -> R) -> R {
-    let mut guard = REJECTIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = REJECTIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     f(guard.get_or_insert_with(HashMap::new))
 }
 
@@ -280,11 +334,13 @@ async fn judge_candidate(
 ) -> std::result::Result<JudgeResult, JudgeError> {
     // Prompted chat judgments have no server-side cache; omp answers them fresh each call.
     if candidate.kind == JudgeKind::Online {
-        return judge_online(candidate, request).await.map_err(|e| JudgeError {
-            message: e.to_string(),
-            status: None,
-            timeout: false,
-        });
+        return judge_online(candidate, request)
+            .await
+            .map_err(|e| JudgeError {
+                message: e.to_string(),
+                status: None,
+                timeout: false,
+            });
     }
     let model_key = label(candidate);
     let cached = match cache {
@@ -300,12 +356,17 @@ async fn judge_candidate(
     }
     let mut fresh = None;
     if !pending.is_empty() || request.questions.is_empty() {
-        let pending_request = JudgeRequest { state: request.state.clone(), questions: pending.clone() };
+        let pending_request = JudgeRequest {
+            state: request.state.clone(),
+            questions: pending.clone(),
+        };
         let mut r = judge_native_inner(candidate, &pending_request).await?;
         if r.usage.cost == 0.0 {
             #[allow(clippy::cast_precision_loss)]
-            let cost = (candidate.model.model.cost.input.as_f64() / 1_000_000.0) * r.usage.input as f64
-                + (candidate.model.model.cost.output.as_f64() / 1_000_000.0) * r.usage.output as f64;
+            let cost = (candidate.model.model.cost.input.as_f64() / 1_000_000.0)
+                * r.usage.input as f64
+                + (candidate.model.model.cost.output.as_f64() / 1_000_000.0)
+                    * r.usage.output as f64;
             r.usage.cost = cost;
         }
         if let (Some(cache), Some(cached)) = (cache, &cached) {
@@ -325,7 +386,9 @@ async fn judge_candidate(
     Ok(JudgeResult {
         api: candidate.model.api.clone(),
         provider: candidate.model.provider.clone(),
-        model: fresh.as_ref().map_or_else(|| candidate.model.id.clone(), |f| f.model.clone()),
+        model: fresh
+            .as_ref()
+            .map_or_else(|| candidate.model.id.clone(), |f| f.model.clone()),
         answers,
         usage: fresh.map(|f| f.usage).unwrap_or_default(),
     })
@@ -372,7 +435,9 @@ pub async fn judge(
     }
     Err(anyhow!(
         "judgment: every judge candidate failed: {}",
-        last_failure.or(last_unavailable).unwrap_or_else(|| "unknown error".into())
+        last_failure
+            .or(last_unavailable)
+            .unwrap_or_else(|| "unknown error".into())
     ))
 }
 
@@ -432,7 +497,11 @@ pub fn judgment_cache_path(dir: &AgentDir) -> PathBuf {
     if let Some(p) = std::env::var_os("OMP_JUDGMENT_CACHE_DB").filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
-    dir.0.parent().unwrap_or(&dir.0).join("cache").join("judgment-cache.db")
+    dir.0
+        .parent()
+        .unwrap_or(&dir.0)
+        .join("cache")
+        .join("judgment-cache.db")
 }
 
 /// `stableStringifyJson`: object keys sorted at every depth (array-index-like keys first,
@@ -452,7 +521,11 @@ pub fn stable_json(v: &Value) -> String {
                 out.push(']');
             }
             Value::Object(o) => {
-                let index = |k: &str| k.parse::<u32>().ok().filter(|n| *n != u32::MAX && n.to_string() == k);
+                let index = |k: &str| {
+                    k.parse::<u32>()
+                        .ok()
+                        .filter(|n| *n != u32::MAX && n.to_string() == k)
+                };
                 let mut keys: Vec<&String> = o.keys().collect();
                 keys.sort_by(|a, b| match (index(a), index(b)) {
                     (Some(x), Some(y)) => x.cmp(&y),
@@ -496,8 +569,14 @@ fn unix_seconds() -> i64 {
 fn question_key(name: &str, q: &Value) -> (String, String, String, String) {
     (
         name.to_owned(),
-        q.get("type").and_then(Value::as_str).unwrap_or_default().to_owned(),
-        q.get("instructions").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        q.get("type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        q.get("instructions")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
         stable_json(q.get("criteria").unwrap_or(&Value::Null)),
     )
 }
@@ -516,7 +595,9 @@ impl JudgmentCache {
         db.pragma_update(None, "synchronous", "NORMAL")?;
         db.pragma_update(None, "foreign_keys", "ON")?;
         db.execute_batch(CACHE_SCHEMA)?;
-        Ok(Self { db: std::sync::Arc::new(std::sync::Mutex::new(db)) })
+        Ok(Self {
+            db: std::sync::Arc::new(std::sync::Mutex::new(db)),
+        })
     }
 
     /// Answers already recorded for `request`'s questions under `model` (`provider/id`).
@@ -524,7 +605,10 @@ impl JudgmentCache {
     pub fn lookup(&self, model: &str, request: &JudgeRequest) -> CachedAnswers {
         let state = stable_json(&request.state);
         let state_id = sha256_hex(&state);
-        let db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut answers = Map::new();
         let found = (|| -> rusqlite::Result<()> {
             let mut stmt = db.prepare_cached(
@@ -544,7 +628,11 @@ impl JudgmentCache {
         if found.is_err() {
             answers.clear();
         }
-        CachedAnswers { state_id, state, answers }
+        CachedAnswers {
+            state_id,
+            state,
+            answers,
+        }
     }
 
     /// [`Self::lookup`] on the blocking pool (sqlite I/O must not stall a tokio worker).
@@ -553,20 +641,46 @@ impl JudgmentCache {
         match tokio::task::spawn_blocking(move || this.lookup(&model, &request)).await {
             Ok(c) => c,
             // Best-effort cache: a panicked/cancelled lookup reads as "nothing cached".
-            Err(_) => CachedAnswers { state_id: String::new(), state: String::new(), answers: Map::new() },
+            Err(_) => CachedAnswers {
+                state_id: String::new(),
+                state: String::new(),
+                answers: Map::new(),
+            },
         }
     }
 
     /// [`Self::record`] on the blocking pool.
-    pub async fn record_async(&self, model: &str, cached: &CachedAnswers, questions: &Map<String, Value>, result: &JudgeResult) {
-        let (this, model, cached, questions, result) =
-            (self.clone(), model.to_owned(), cached.clone(), questions.clone(), result.clone());
-        let _ = tokio::task::spawn_blocking(move || this.record(&model, &cached, &questions, &result)).await;
+    pub async fn record_async(
+        &self,
+        model: &str,
+        cached: &CachedAnswers,
+        questions: &Map<String, Value>,
+        result: &JudgeResult,
+    ) {
+        let (this, model, cached, questions, result) = (
+            self.clone(),
+            model.to_owned(),
+            cached.clone(),
+            questions.clone(),
+            result.clone(),
+        );
+        let _ =
+            tokio::task::spawn_blocking(move || this.record(&model, &cached, &questions, &result))
+                .await;
     }
 
     /// Record one billed request: its state, one oracle row per answered question, and a usage row.
-    pub fn record(&self, model: &str, cached: &CachedAnswers, questions: &Map<String, Value>, result: &JudgeResult) {
-        let mut db = self.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    pub fn record(
+        &self,
+        model: &str,
+        cached: &CachedAnswers,
+        questions: &Map<String, Value>,
+        result: &JudgeResult,
+    ) {
+        let mut db = self
+            .db
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = unix_seconds();
         let _ = (|| -> rusqlite::Result<()> {
             let tx = db.transaction()?;
@@ -610,11 +724,13 @@ impl JudgmentCache {
 
 fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(s.as_bytes()).iter().fold(String::with_capacity(64), |mut acc, b| {
-        use std::fmt::Write;
-        let _ = write!(acc, "{b:02x}");
-        acc
-    })
+    Sha256::digest(s.as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut acc, b| {
+            use std::fmt::Write;
+            let _ = write!(acc, "{b:02x}");
+            acc
+        })
 }
 
 // --- Prompted chat judgments (`pi-ai/src/judgment/text.ts` + `chat.ts`) ---
@@ -696,8 +812,10 @@ fn render_state_field(key: &str, value: &Value) -> String {
 pub fn render_judgment_state(state: &Value) -> String {
     match state {
         Value::Object(fields) if !fields.is_empty() => {
-            let fields: Vec<String> =
-                fields.iter().map(|(k, v)| render_state_field(k, v)).collect();
+            let fields: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| render_state_field(k, v))
+                .collect();
             fields.join("\n")
         }
         Value::Object(_) => "<state>{}</state>".to_string(),
@@ -772,8 +890,11 @@ fn render_judgment_prompt(request: &JudgeRequest, guard_state: bool) -> (String,
         .questions
         .iter()
         .map(|(id, q)| {
-            let instructions =
-                q.get("instructions").and_then(Value::as_str).unwrap_or_default().to_string();
+            let instructions = q
+                .get("instructions")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             match q.get("type").and_then(Value::as_str) {
                 Some("choice") => {
                     let options = q
@@ -787,29 +908,53 @@ fn render_judgment_prompt(request: &JudgeRequest, guard_state: bool) -> (String,
                                 })
                                 .collect()
                         });
-                    RenderedQuestion { id: id.clone(), instructions, options, levels: None, yes: None, no: None }
+                    RenderedQuestion {
+                        id: id.clone(),
+                        instructions,
+                        options,
+                        levels: None,
+                        yes: None,
+                        no: None,
+                    }
                 }
                 Some("score") => {
-                    let levels = q
-                        .get("criteria")
-                        .and_then(Value::as_array)
-                        .map(|levels| {
-                            levels
-                                .iter()
-                                .map(|d| d.as_str().unwrap_or_default().to_string())
-                                .collect()
-                        });
-                    RenderedQuestion { id: id.clone(), instructions, options: None, levels, yes: None, no: None }
+                    let levels = q.get("criteria").and_then(Value::as_array).map(|levels| {
+                        levels
+                            .iter()
+                            .map(|d| d.as_str().unwrap_or_default().to_string())
+                            .collect()
+                    });
+                    RenderedQuestion {
+                        id: id.clone(),
+                        instructions,
+                        options: None,
+                        levels,
+                        yes: None,
+                        no: None,
+                    }
                 }
                 Some("noul") => {
                     let (yes, no) = match q.get("criteria") {
                         Some(criteria) => (
-                            criteria.get("true").and_then(Value::as_str).map(str::to_owned),
-                            criteria.get("false").and_then(Value::as_str).map(str::to_owned),
+                            criteria
+                                .get("true")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
+                            criteria
+                                .get("false")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned),
                         ),
                         None => (None, None),
                     };
-                    RenderedQuestion { id: id.clone(), instructions, options: None, levels: None, yes, no }
+                    RenderedQuestion {
+                        id: id.clone(),
+                        instructions,
+                        options: None,
+                        levels: None,
+                        yes,
+                        no,
+                    }
                 }
                 _ => RenderedQuestion {
                     id: id.clone(),
@@ -921,10 +1066,14 @@ fn index_of_word(text: &str, needle: &str) -> Option<usize> {
 fn parse_choice_reply(text: &str, labels: &[String]) -> Option<String> {
     let mut best: Option<(usize, String)> = None;
     for label in labels {
-        let Some(at) = index_of_word(text, label) else { continue };
+        let Some(at) = index_of_word(text, label) else {
+            continue;
+        };
         let better = match &best {
             None => true,
-            Some((best_at, best_label)) => at < *best_at || (at == *best_at && label.len() > best_label.len()),
+            Some((best_at, best_label)) => {
+                at < *best_at || (at == *best_at && label.len() > best_label.len())
+            }
         };
         if better {
             best = Some((at, label.clone()));
@@ -990,7 +1139,9 @@ fn parse_score_reply(text: &str, levels: usize) -> Option<usize> {
 fn split_answer_lines(text: &str, ids: &[String]) -> std::collections::BTreeMap<String, String> {
     let mut by_id = std::collections::BTreeMap::new();
     for raw in text.split('\n') {
-        let line = raw.trim_start_matches([' ', '\t', '-', '*', '\u{2022}']).trim();
+        let line = raw
+            .trim_start_matches([' ', '\t', '-', '*', '\u{2022}'])
+            .trim();
         let sep = line
             .char_indices()
             .find(|&(i, c)| {
@@ -1022,7 +1173,10 @@ fn split_answer_lines(text: &str, ids: &[String]) -> std::collections::BTreeMap<
 }
 
 fn parse_error(id: &str, output: &str, detail: &str) -> anyhow::Error {
-    anyhow!("judgment \"{id}\": {detail}: {}", serde_json::to_string(output).unwrap_or_default())
+    anyhow!(
+        "judgment \"{id}\": {detail}: {}",
+        serde_json::to_string(output).unwrap_or_default()
+    )
 }
 
 /// Parse one question's keyword reply into its typed, one-hot answer (`parseAnswer`).
@@ -1041,7 +1195,9 @@ fn parse_answer(id: &str, question: &Value, reply: &str) -> Result<Value> {
             for label in &labels {
                 probabilities.insert(label.clone(), json!(if *label == choice { 1 } else { 0 }));
             }
-            Ok(json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 1 }))
+            Ok(
+                json!({ "type": "choice", "choice": choice, "probabilities": probabilities, "confidence": 1 }),
+            )
         }
         Some("noul") => {
             let Some(verdict) = parse_noul_reply(reply) else {
@@ -1062,9 +1218,13 @@ fn parse_answer(id: &str, question: &Value, reply: &str) -> Result<Value> {
             for index in 0..levels {
                 probabilities.insert(index.to_string(), json!(if index == level { 1 } else { 0 }));
             }
-            Ok(json!({ "type": "score", "score": level, "probabilities": probabilities, "confidence": 1 }))
+            Ok(
+                json!({ "type": "score", "score": level, "probabilities": probabilities, "confidence": 1 }),
+            )
         }
-        other => Err(anyhow!("judgment \"{id}\": unknown question type {other:?}")),
+        other => Err(anyhow!(
+            "judgment \"{id}\": unknown question type {other:?}"
+        )),
     }
 }
 
@@ -1093,7 +1253,12 @@ async fn complete_judgment(
 ) -> Result<pa_types::ai::AssistantMessage> {
     let response = pa_ai::complete_simple(&model.model, context, Some(options.clone()))
         .await
-        .map_err(|e| provider_error(format!("{} judgment completion failed: {e:?}", label_of(model))))?;
+        .map_err(|e| {
+            provider_error(format!(
+                "{} judgment completion failed: {e:?}",
+                label_of(model)
+            ))
+        })?;
     let rejected_disable = response.stop_reason == pa_types::ai::StopReason::Error
         && options.disable_reasoning
         && response
@@ -1125,7 +1290,12 @@ async fn complete_judgment(
     options.reasoning = Some(effort);
     let response = pa_ai::complete_simple(&model.model, context, Some(options))
         .await
-        .map_err(|e| provider_error(format!("{} judgment completion failed: {e:?}", label_of(model))))?;
+        .map_err(|e| {
+            provider_error(format!(
+                "{} judgment completion failed: {e:?}",
+                label_of(model)
+            ))
+        })?;
     if response.stop_reason == pa_types::ai::StopReason::Aborted {
         return Err(anyhow!("judgment: completion aborted"));
     }
@@ -1151,7 +1321,10 @@ fn label_of(m: &crate::ResolvedModel) -> String {
 ///
 /// # Errors
 /// Non-online candidate, a provider error, or answers missing/unparsable after the retries.
-pub async fn judge_online(candidate: &JudgeCandidate, request: &JudgeRequest) -> Result<JudgeResult> {
+pub async fn judge_online(
+    candidate: &JudgeCandidate,
+    request: &JudgeRequest,
+) -> Result<JudgeResult> {
     if candidate.kind != JudgeKind::Online {
         return Err(anyhow!("{} is not a prompted chat judge", label(candidate)));
     }
@@ -1165,7 +1338,11 @@ pub async fn judge_online(candidate: &JudgeCandidate, request: &JudgeRequest) ->
     let mut last_parse_error = None;
     for attempt in 0..=(PARSE_RETRIES) {
         let retry = attempt > 0;
-        let prompt_system = if retry { render_retry_prompt(&system, multi) } else { system.clone() };
+        let prompt_system = if retry {
+            render_retry_prompt(&system, multi)
+        } else {
+            system.clone()
+        };
         let context = pa_ai::types::Context {
             system_prompt: Some(prompt_system),
             messages: vec![pa_types::ai::Message::User(pa_types::ai::UserMessage {
@@ -1183,15 +1360,22 @@ pub async fn judge_online(candidate: &JudgeCandidate, request: &JudgeRequest) ->
         options.base.temperature = Some(0.0);
         options.disable_reasoning = true;
         if retry {
-            options.tool_choice =
-                Some(pa_ai::types::SimpleToolChoice::Function { name: "submit_judgment".into() });
+            options.tool_choice = Some(pa_ai::types::SimpleToolChoice::Function {
+                name: "submit_judgment".into(),
+            });
         }
         if let Some(key) = candidate.model.api_key.as_deref() {
             options.base.api_key = Some(key.to_string());
         }
         if !candidate.model.headers.is_empty() {
-            options.base.headers =
-                Some(candidate.model.headers.iter().cloned().collect::<std::collections::HashMap<_, _>>());
+            options.base.headers = Some(
+                candidate
+                    .model
+                    .headers
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::HashMap<_, _>>(),
+            );
         }
         let response = complete_judgment(&candidate.model, &context, options).await?;
         let mut text = String::new();
@@ -1248,8 +1432,10 @@ pub async fn judge_online(candidate: &JudgeCandidate, request: &JudgeRequest) ->
                 };
                 if !usage.cost.is_finite() || usage.cost == 0.0 {
                     #[allow(clippy::cast_precision_loss)]
-                    let cost = (candidate.model.model.cost.input.as_f64() / 1_000_000.0) * usage.input as f64
-                        + (candidate.model.model.cost.output.as_f64() / 1_000_000.0) * usage.output as f64;
+                    let cost = (candidate.model.model.cost.input.as_f64() / 1_000_000.0)
+                        * usage.input as f64
+                        + (candidate.model.model.cost.output.as_f64() / 1_000_000.0)
+                            * usage.output as f64;
                     usage.cost = cost;
                 }
                 return Ok(JudgeResult {
@@ -1275,7 +1461,9 @@ mod tests {
     use super::*;
 
     /// Serves one canned `(status, extra headers, body)` per connection; yields captured requests.
-    async fn mock(responses: Vec<(u16, &'static str, String)>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    async fn mock(
+        responses: Vec<(u16, &'static str, String)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let h = tokio::spawn(async move {
@@ -1291,7 +1479,11 @@ mod tests {
                     if let Some(i) = text.find("\r\n\r\n") {
                         let len = text[..i]
                             .lines()
-                            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap()))
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap())
+                            })
                             .unwrap_or(0);
                         if buf.len() >= i + 4 + len {
                             break;
@@ -1324,7 +1516,8 @@ mod tests {
             ),
         )
         .unwrap();
-        let model = crate::resolve_in(&AgentDir(t.path().to_path_buf()), &format!("zz/{id}")).unwrap();
+        let model =
+            crate::resolve_in(&AgentDir(t.path().to_path_buf()), &format!("zz/{id}")).unwrap();
         classify(model)
     }
 
@@ -1333,7 +1526,10 @@ mod tests {
             "c": {"type": "choice", "instructions": "pick", "criteria": {"a": null, "b": null}},
             "n": {"type": "noul", "instructions": "yes?"}
         });
-        JudgeRequest { state: json!("hello"), questions: questions.as_object().unwrap().clone() }
+        JudgeRequest {
+            state: json!("hello"),
+            questions: questions.as_object().unwrap().clone(),
+        }
     }
 
     fn ok_body() -> String {
@@ -1355,7 +1551,14 @@ mod tests {
         assert_eq!(r.model, "srv-model");
         assert_eq!(r.answers["c"]["choice"], "a");
         assert_eq!(r.answers["n"]["noul"], 0.25);
-        assert_eq!(r.usage, JudgeUsage { input: 12, output: 3, cost: 0.0001 });
+        assert_eq!(
+            r.usage,
+            JudgeUsage {
+                input: 12,
+                output: 3,
+                cost: 0.0001
+            }
+        );
         let seen = h.await.unwrap().remove(0);
         let lower = seen.to_ascii_lowercase();
         assert!(seen.starts_with("POST /decisions "));
@@ -1371,14 +1574,24 @@ mod tests {
         let body = json!({"model": "x", "answers": {"c": {"type": "noul", "noul": 0.5}, "n": {"type": "noul", "noul": 0.5}}, "usage": {}})
             .to_string();
         let (url, _h) = mock(vec![(200, "", body)]).await;
-        let e = judge_native(&cand(&url, "m1"), &request()).await.unwrap_err();
-        assert!(e.to_string().contains("missing a \"choice\" answer for question \"c\""), "{e}");
+        let e = judge_native(&cand(&url, "m1"), &request())
+            .await
+            .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("missing a \"choice\" answer for question \"c\""),
+            "{e}"
+        );
     }
 
     #[tokio::test]
     async fn chain_falls_back_after_hard_error_and_retries_transient() {
         let (bad, _h1) = mock(vec![(401, "", "{\"error\":\"nope\"}".into())]).await;
-        let (good, h2) = mock(vec![(429, "retry-after: 0\r\n", "slow".into()), (200, "", ok_body())]).await;
+        let (good, h2) = mock(vec![
+            (429, "retry-after: 0\r\n", "slow".into()),
+            (200, "", ok_body()),
+        ])
+        .await;
         let chain = vec![cand(&bad, "fb-bad"), cand(&good, "fb-good")];
         let r = judge(&chain, &request(), None).await.unwrap();
         assert_eq!(r.model, "srv-model");
@@ -1388,9 +1601,14 @@ mod tests {
     #[tokio::test]
     async fn chain_reports_last_failure() {
         let (bad, _h) = mock(vec![(403, "", "denied".into())]).await;
-        let e = judge(&[cand(&bad, "rej-403")], &request(), None).await.unwrap_err();
+        let e = judge(&[cand(&bad, "rej-403")], &request(), None)
+            .await
+            .unwrap_err();
         let s = e.to_string();
-        assert!(s.starts_with("judgment: every judge candidate failed:") && s.contains("(403)"), "{s}");
+        assert!(
+            s.starts_with("judgment: every judge candidate failed:") && s.contains("(403)"),
+            "{s}"
+        );
         assert!(judge(&[], &request(), None).await.is_err());
     }
 
@@ -1398,19 +1616,27 @@ mod tests {
     async fn rejected_account_is_skipped_for_the_cooldown() {
         let (bad, h) = mock(vec![(402, "", "no credits".into())]).await;
         let c = cand(&bad, "cooldown-402");
-        let first = judge(std::slice::from_ref(&c), &request(), None).await.unwrap_err();
+        let first = judge(std::slice::from_ref(&c), &request(), None)
+            .await
+            .unwrap_err();
         assert!(first.to_string().contains("(402)"), "{first}");
         assert_eq!(h.await.unwrap().len(), 1);
         // The mock is gone: a second attempt would be a connection error, not this message.
         let second = judge(&[c], &request(), None).await.unwrap_err();
-        assert!(second.to_string().ends_with("zz/cooldown-402 rejected the account recently"), "{second}");
+        assert!(
+            second
+                .to_string()
+                .ends_with("zz/cooldown-402 rejected the account recently"),
+            "{second}"
+        );
     }
 
     #[tokio::test]
     async fn cache_serves_known_answers_and_sends_only_pending_questions() {
         let t = tempfile::tempdir().unwrap();
         let cache = JudgmentCache::open(&t.path().join("c/judgment.db")).unwrap();
-        let extra = json!({"s": {"type": "score", "instructions": "how bad", "criteria": ["low", "high"]}});
+        let extra =
+            json!({"s": {"type": "score", "instructions": "how bad", "criteria": ["low", "high"]}});
         let mut wider = request();
         wider.questions.extend(extra.as_object().unwrap().clone());
         let score_body = json!({
@@ -1421,31 +1647,53 @@ mod tests {
         .to_string();
         let (url, h) = mock(vec![(200, "", ok_body()), (200, "", score_body)]).await;
         let c = cand(&url, "cache-m");
-        let first = judge(std::slice::from_ref(&c), &request(), Some(&cache)).await.unwrap();
+        let first = judge(std::slice::from_ref(&c), &request(), Some(&cache))
+            .await
+            .unwrap();
         assert_eq!(first.usage.input, 12);
         // Same state + questions: served locally (the mock expects a second connection that never carries it).
-        let again = judge(std::slice::from_ref(&c), &request(), Some(&cache)).await.unwrap();
+        let again = judge(std::slice::from_ref(&c), &request(), Some(&cache))
+            .await
+            .unwrap();
         assert_eq!(again.answers["c"]["choice"], "a");
         assert_eq!(again.usage, JudgeUsage::default());
         // Superset: only the new question travels.
-        let wide = judge(std::slice::from_ref(&c), &wider, Some(&cache)).await.unwrap();
+        let wide = judge(std::slice::from_ref(&c), &wider, Some(&cache))
+            .await
+            .unwrap();
         assert_eq!(wide.answers.len(), 3);
         assert_eq!(wide.answers["c"]["choice"], "a");
         assert_eq!(wide.answers["s"]["score"], 0.5);
         let seen = h.await.unwrap();
         assert_eq!(seen.len(), 2);
         let body: Value = serde_json::from_str(seen[1].split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(body["questions"].as_object().unwrap().keys().collect::<Vec<_>>(), ["s"]);
+        assert_eq!(
+            body["questions"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<Vec<_>>(),
+            ["s"]
+        );
         // Another state misses.
-        let other = JudgeRequest { state: json!("different"), ..request() };
+        let other = JudgeRequest {
+            state: json!("different"),
+            ..request()
+        };
         assert!(cache.lookup("zz/cache-m", &other).answers.is_empty());
     }
 
     #[test]
     fn stable_json_sorts_keys_like_js() {
         let v = json!({"b": 1, "a": {"y": [1.0, 2.5], "x": null}, "10": 0, "9": 0});
-        assert_eq!(stable_json(&v), r#"{"9":0,"10":0,"a":{"x":null,"y":[1,2.5]},"b":1}"#);
-        assert_eq!(sha256_hex(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            stable_json(&v),
+            r#"{"9":0,"10":0,"a":{"x":null,"y":[1,2.5]},"b":1}"#
+        );
+        assert_eq!(
+            sha256_hex(""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 }
 
@@ -1461,7 +1709,11 @@ mod online_live_tests {
         // The live `judge` role resolves to a native (typesafe) candidate, so build the
         // prompted-chat candidate directly from the `zai/glm-5.3-flash` model.
         let model = crate::resolve("zai/glm-5.3-flash").expect("resolve judge model");
-        let candidate = JudgeCandidate { kind: JudgeKind::Online, model, url: None };
+        let candidate = JudgeCandidate {
+            kind: JudgeKind::Online,
+            model,
+            url: None,
+        };
         let mut questions = Map::new();
         questions.insert(
             "q_choice".into(),
@@ -1485,9 +1737,23 @@ mod online_live_tests {
         };
         let result = judge_online(&candidate, &request).await.expect("judgment");
         println!("candidate: {}", label(&candidate));
-        println!("answers: {}", serde_json::to_string_pretty(&result.answers).unwrap());
-        assert_eq!(result.answers.get("q_choice").and_then(|a| a.get("choice")).and_then(Value::as_str), Some("yellow"));
-        let score = result.answers.get("q_score").and_then(|a| a.get("score")).and_then(Value::as_u64);
+        println!(
+            "answers: {}",
+            serde_json::to_string_pretty(&result.answers).unwrap()
+        );
+        assert_eq!(
+            result
+                .answers
+                .get("q_choice")
+                .and_then(|a| a.get("choice"))
+                .and_then(Value::as_str),
+            Some("yellow")
+        );
+        let score = result
+            .answers
+            .get("q_score")
+            .and_then(|a| a.get("score"))
+            .and_then(Value::as_u64);
         assert_eq!(score, Some(0));
         assert_eq!(result.answers.len(), 2);
     }

@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
 use serde_json::Value;
+use tokio::sync::Mutex;
 
 use crate::client::{call_tool, connect_to_server, list_tools, Connection};
 use crate::config::{load_configs, McpServerConfig};
@@ -62,7 +62,9 @@ pub struct McpManager {
 
 impl std::fmt::Debug for McpManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("McpManager").field("cwd", &self.cwd).finish_non_exhaustive()
+        f.debug_struct("McpManager")
+            .field("cwd", &self.cwd)
+            .finish_non_exhaustive()
     }
 }
 
@@ -83,7 +85,10 @@ impl McpManager {
                 )
             })
             .collect();
-        Self { cwd, servers: Mutex::new(servers) }
+        Self {
+            cwd,
+            servers: Mutex::new(servers),
+        }
     }
 
     /// Build a manager from omp's standard config locations for `cwd`.
@@ -130,7 +135,9 @@ impl McpManager {
                 Some(entry) => match &mut entry.state {
                     ServerState::Connected(_) | ServerState::Connecting => None,
                     ServerState::Failed(message) => {
-                        return Err(McpError::Config(format!("MCP server \"{name}\": {message}")));
+                        return Err(McpError::Config(format!(
+                            "MCP server \"{name}\": {message}"
+                        )));
                     }
                     ServerState::NotConnected => {
                         entry.state = ServerState::Connecting;
@@ -149,7 +156,9 @@ impl McpManager {
         }
         .await;
         let mut guard = self.servers.lock().await;
-        let entry = guard.get_mut(name).expect("server entry vanished while connecting");
+        let entry = guard
+            .get_mut(name)
+            .expect("server entry vanished while connecting");
         match result {
             Ok(connection) => {
                 entry.state = ServerState::Connected(Box::new(connection));
@@ -160,7 +169,9 @@ impl McpManager {
                 let message = error.to_string();
                 entry.state = ServerState::Failed(message.clone());
                 entry.status = ServerStatus::Failed(message.clone());
-                Err(McpError::Config(format!("MCP server \"{name}\": {message}")))
+                Err(McpError::Config(format!(
+                    "MCP server \"{name}\": {message}"
+                )))
             }
         }
     }
@@ -214,7 +225,9 @@ impl McpManager {
             }
         };
         let Some(first) = first else {
-            return Err(McpError::Config(format!("MCP server \"{server}\" is not connected")));
+            return Err(McpError::Config(format!(
+                "MCP server \"{server}\" is not connected"
+            )));
         };
         match first {
             Ok(result) => Ok(result),
@@ -236,7 +249,9 @@ impl McpManager {
                 let entry = guard.get_mut(server).expect("resolved server vanished");
                 match &mut entry.state {
                     ServerState::Connected(connection) => call_tool(connection, tool, args).await,
-                    _ => Err(McpError::Config(format!("MCP server \"{server}\" is not connected"))),
+                    _ => Err(McpError::Config(format!(
+                        "MCP server \"{server}\" is not connected"
+                    ))),
                 }
             }
             Err(error) => Err(error),
@@ -248,7 +263,10 @@ impl McpManager {
 /// errors warrant a reconnect + single retry.
 fn is_retriable(error: &McpError) -> bool {
     let message = error.to_string().to_lowercase();
-    if message.starts_with("http 404:") || message.starts_with("http 502:") || message.starts_with("http 503:") {
+    if message.starts_with("http 404:")
+        || message.starts_with("http 502:")
+        || message.starts_with("http 503:")
+    {
         return true;
     }
     [

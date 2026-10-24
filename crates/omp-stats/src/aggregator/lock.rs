@@ -30,7 +30,11 @@ pub fn with_stats_sync_lock<T>(db_path: &Path, f: impl FnOnce() -> Result<T>) ->
     let mut target = db_path.as_os_str().to_owned();
     target.push(".sync");
     let retries = STATS_SYNC_LOCK_WAIT_MS.div_ceil(STATS_SYNC_LOCK_RETRY_MS);
-    let lock = acquire(Path::new(&target), retries, Duration::from_millis(STATS_SYNC_LOCK_RETRY_MS))?;
+    let lock = acquire(
+        Path::new(&target),
+        retries,
+        Duration::from_millis(STATS_SYNC_LOCK_RETRY_MS),
+    )?;
     let out = f();
     drop(lock);
     out
@@ -50,7 +54,9 @@ fn lock_path(file_path: &Path) -> PathBuf {
             Component::ParentDir => {
                 resolved.pop();
             }
-            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => resolved.push(component),
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                resolved.push(component)
+            }
         }
     }
     let mut path = resolved.into_os_string();
@@ -69,7 +75,10 @@ fn acquire(file_path: &Path, retries: u64, delay: Duration) -> Result<platform::
             std::thread::sleep(delay);
         }
     }
-    bail!("Failed to acquire lock for {} after {retries} attempts", file_path.display())
+    bail!(
+        "Failed to acquire lock for {} after {retries} attempts",
+        file_path.display()
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -144,9 +153,15 @@ mod tests {
         let target = dir.path().join("stats.db.sync");
         let first = acquire(&target, 1, Duration::ZERO).expect("first acquire");
         let second = acquire(&target, 2, Duration::from_millis(1));
-        assert!(second.is_err(), "second holder must wait while the first is alive");
+        assert!(
+            second.is_err(),
+            "second holder must wait while the first is alive"
+        );
         drop(first);
-        assert!(acquire(&target, 1, Duration::ZERO).is_ok(), "released lock is free again");
+        assert!(
+            acquire(&target, 1, Duration::ZERO).is_ok(),
+            "released lock is free again"
+        );
     }
 
     #[test]
@@ -164,8 +179,14 @@ mod tests {
     fn lock_path_normalizes_like_path_resolve() {
         let lock = |p: &str| lock_path(Path::new(p));
         assert_eq!(lock("/a/b/../stats.db.sync"), lock("/a/stats.db.sync"));
-        assert_eq!(lock("/a/stats.db.sync"), PathBuf::from("/a/stats.db.sync.lock"));
-        assert_eq!(lock("/a/./b//c/../../stats.db.sync"), PathBuf::from("/a/stats.db.sync.lock"));
+        assert_eq!(
+            lock("/a/stats.db.sync"),
+            PathBuf::from("/a/stats.db.sync.lock")
+        );
+        assert_eq!(
+            lock("/a/./b//c/../../stats.db.sync"),
+            PathBuf::from("/a/stats.db.sync.lock")
+        );
         assert_eq!(lock("/../x.sync"), PathBuf::from("/x.sync.lock"));
         let cwd = std::env::current_dir().expect("cwd");
         assert_eq!(lock("x/../y.sync"), cwd.join("y.sync.lock"));

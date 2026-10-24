@@ -32,20 +32,29 @@ pub fn session_roots() -> Vec<PathBuf> {
 
 fn relative_inside(root: &Path, path: &Path) -> Option<PathBuf> {
     let rel = super::path_relative(root, path);
-    let escapes = rel.components().next().is_none_or(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)));
+    let escapes = rel.components().next().is_none_or(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    });
     (!escapes).then_some(rel)
 }
 
 /// The session root that (lexically) contains `path`.
 #[must_use]
 pub fn session_root_of(path: &Path) -> Option<PathBuf> {
-    session_roots().into_iter().find(|root| relative_inside(root, path).is_some())
+    session_roots()
+        .into_iter()
+        .find(|root| relative_inside(root, path).is_some())
 }
 
 /// `path` relative to the session root containing it (`None` when outside all roots).
 #[must_use]
 pub fn relative_to_session_root(path: &Path) -> Option<PathBuf> {
-    session_roots().iter().find_map(|root| relative_inside(root, path))
+    session_roots()
+        .iter()
+        .find_map(|root| relative_inside(root, path))
 }
 
 /// `/`-separated slug omp-rs derives from a cwd (`/home/u/x` → `-home-u-x`).
@@ -67,12 +76,18 @@ fn omp_rs_slug_to_ts_name(slug: &str, home: &Path, tmp: &Path) -> String {
         if slug == prefix {
             return Some(String::new());
         }
-        slug.strip_prefix(prefix).and_then(|rest| rest.strip_prefix('-')).map(str::to_string)
+        slug.strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .map(str::to_string)
     };
     let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     for tmp in [tmp.to_path_buf(), canon(tmp)] {
         if let Some(rel) = under(&slugify(&tmp)) {
-            return if rel.is_empty() { "-tmp".to_string() } else { format!("-tmp-{rel}") };
+            return if rel.is_empty() {
+                "-tmp".to_string()
+            } else {
+                format!("-tmp-{rel}")
+            };
         }
     }
     for home in [home.to_path_buf(), canon(home)] {
@@ -91,7 +106,10 @@ fn omp_rs_slug_to_ts_name(slug: &str, home: &Path, tmp: &Path) -> String {
 pub fn session_project_dir(session_path: &str) -> String {
     let path = Path::new(session_path);
     let first = |rel: &Path| {
-        rel.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default()
+        rel.components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_default()
     };
     let Some(root) = session_root_of(path) else {
         return first(&super::path_relative(&sessions_dir(), path));
@@ -209,7 +227,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("omp-roots-hdr-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ok = dir.join("a.jsonl");
-        std::fs::write(&ok, "{\"type\":\"title\"}\n{\"type\":\"session\",\"cwd\":\"/w/x\"}\n").unwrap();
+        std::fs::write(
+            &ok,
+            "{\"type\":\"title\"}\n{\"type\":\"session\",\"cwd\":\"/w/x\"}\n",
+        )
+        .unwrap();
         let other = dir.join("b.jsonl");
         std::fs::write(&other, "{\"type\":\"message\",\"cwd\":\"/w/x\"}\n").unwrap();
         assert_eq!(header_cwd(&ok), Some(PathBuf::from("/w/x")));

@@ -2,16 +2,18 @@
 //!
 //! Provides [`dispatch_extra`] and [`extra_catalog`] for commands that extend
 //! the core text-mode builtin set. Commands with runtime backing in `omp-rs`
-//! execute their real handlers (`/new`, `/fork`, `/queue`); commands whose
-//! subsystems are not ported headlessly (clipboards, TUI
-//! dashboards) emit an informative notice explaining what is missing and return
-//! [`Outcome::Handled`].
+//! execute their real handlers (`/new`, `/fork`, `/queue`); interactive selectors and
+//! dashboards (`/branch`, `/copy`, `/agents`, `/extensions`, `/debug`, `/jobs`) run as runtime
+//! dialogs (`interactive`, on `dialog`); commands whose subsystems are not ported emit an
+//! informative notice explaining what is missing and return [`Outcome::Handled`].
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod dialog;
+pub(crate) mod interactive;
 mod login;
-pub use login::mark_interactive_ui;
+pub use dialog::mark_interactive_ui;
 
 use serde_json::{json, Value};
 
@@ -69,18 +71,27 @@ async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     let trimmed = args.trim();
     if trimmed.is_empty() || trimmed == "help" {
         output(rt, rlm::USAGE);
-        return Outcome::Handled { agent_invoked: false };
+        return Outcome::Handled {
+            agent_invoked: false,
+        };
     }
     if trimmed == "stats" {
         let stats = rlm::stats_snapshot();
-        output(rt, &serde_json::to_string_pretty(&stats).unwrap_or_default());
-        return Outcome::Handled { agent_invoked: false };
+        output(
+            rt,
+            &serde_json::to_string_pretty(&stats).unwrap_or_default(),
+        );
+        return Outcome::Handled {
+            agent_invoked: false,
+        };
     }
     let parsed = match rlm::parse_args(trimmed) {
         Ok(parsed) => parsed,
         Err(message) => {
             output(rt, &message);
-            return Outcome::Handled { agent_invoked: false };
+            return Outcome::Handled {
+                agent_invoked: false,
+            };
         }
     };
     let context = match parsed.context {
@@ -89,18 +100,32 @@ async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
             let text = session_transcript(&rt.messages().await);
             if text.trim().is_empty() {
                 output(rt, &format!("/rlm: this session has no conversation yet; pass a context with @<file> or -- <text>.\n{}", rlm::USAGE));
-                return Outcome::Handled { agent_invoked: false };
+                return Outcome::Handled {
+                    agent_invoked: false,
+                };
             }
-            output(rt, &format!("/rlm: context = this session's conversation ({} chars)", text.chars().count()));
+            output(
+                rt,
+                &format!(
+                    "/rlm: context = this session's conversation ({} chars)",
+                    text.chars().count()
+                ),
+            );
             text
         }
         rlm::ContextSource::File(path) => {
-            let full = if Path::new(&path).is_absolute() { path.clone().into() } else { rt.cwd.join(&path) };
+            let full = if Path::new(&path).is_absolute() {
+                path.clone().into()
+            } else {
+                rt.cwd.join(&path)
+            };
             match std::fs::read_to_string(&full) {
                 Ok(text) => text,
                 Err(e) => {
                     output(rt, &format!("/rlm: cannot read {}: {e}", full.display()));
-                    return Outcome::Handled { agent_invoked: false };
+                    return Outcome::Handled {
+                        agent_invoked: false,
+                    };
                 }
             }
         }
@@ -110,10 +135,19 @@ async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     let context_chars = context.chars().count();
     rlm::SESSION.set_context(Some(context));
     if let Err(e) = rlm::load_context_cell(&rt.cwd).await {
-        output(rt, &format!("/rlm: failed to load context into the eval kernel: {e}"));
-        return Outcome::Handled { agent_invoked: false };
+        output(
+            rt,
+            &format!("/rlm: failed to load context into the eval kernel: {e}"),
+        );
+        return Outcome::Handled {
+            agent_invoked: false,
+        };
     }
-    Outcome::Prompt(rlm::loop_prompt(&parsed.question, context_chars, rlm::Limits::effective()))
+    Outcome::Prompt(rlm::loop_prompt(
+        &parsed.question,
+        context_chars,
+        rlm::Limits::effective(),
+    ))
 }
 
 /// `/ultra` usage text.
@@ -165,7 +199,9 @@ async fn ultra_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         }
         Err(message) => output(rt, &message),
     }
-    Outcome::Handled { agent_invoked: false }
+    Outcome::Handled {
+        agent_invoked: false,
+    }
 }
 
 /// Check whether `name` is one of the extra builtin commands or their aliases
@@ -399,15 +435,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "copy" => {
-            output(
-                rt,
-                "/copy: clipboard integration is not ported to omp-rs; copy directly from the terminal or export session with /export",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "copy" => Some(interactive::copy_command(rt, args).await),
         "fork" => {
             if rt.state().await.get("isStreaming").and_then(Value::as_bool) == Some(true) {
                 output(
@@ -439,24 +467,8 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "branch" => {
-            output(
-                rt,
-                "/branch: interactive message rewinding is not ported to omp-rs; use checkpoint/rewind tools in agent turns or /fork to branch from the current tip",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
-        "rewind" => {
-            output(
-                rt,
-                "/branch: interactive message rewinding is not ported to omp-rs; use checkpoint/rewind tools in agent turns or /fork to branch from the current tip",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "branch" => Some(interactive::branch_command(rt).await),
+        "rewind" => Some(interactive::branch_command(rt).await),
         "plan" => {
             output(
                 rt,
@@ -505,33 +517,9 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "agents" => {
-            output(
-                rt,
-                "/agents: agents dashboard is only available in the interactive TUI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
-        "extensions" => {
-            output(
-                rt,
-                "/extensions: extension dashboard is only available in the interactive TUI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
-        "status" => {
-            output(
-                rt,
-                "/extensions: extension dashboard is only available in the interactive TUI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "agents" => Some(interactive::agents_command(rt).await),
+        "extensions" => Some(interactive::extensions_command(rt).await),
+        "status" => Some(interactive::extensions_command(rt).await),
         "login" => {
             login::login_command(rt, args).await;
             Some(Outcome::Handled {
@@ -544,15 +532,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "debug" => {
-            output(
-                rt,
-                "/debug: debug tools selector is only available in the interactive TUI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "debug" => Some(interactive::debug_command(rt).await),
         "restart" => {
             output(
                 rt,
@@ -689,7 +669,9 @@ async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
                     rt,
                     "Usage: /collab list — for links use `omp-rs collab link <id|pid>`",
                 );
-                return Outcome::Handled { agent_invoked: false };
+                return Outcome::Handled {
+                    agent_invoked: false,
+                };
             }
             match registry::list_collab_hosts(None).await {
                 Ok(hosts) if hosts.is_empty() => output(rt, "No active Collab hosts"),
@@ -746,8 +728,7 @@ async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
             {
                 Ok(host) => {
                     let heading = if existing.as_ref().is_some_and(|e| {
-                        e.instance_id() == host.instance_id()
-                            && e.generation() == host.generation()
+                        e.instance_id() == host.instance_id() && e.generation() == host.generation()
                     }) {
                         if view {
                             "Read-only collab session active"
@@ -777,7 +758,9 @@ async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
             }
         }
     }
-    Outcome::Handled { agent_invoked: false }
+    Outcome::Handled {
+        agent_invoked: false,
+    }
 }
 
 #[cfg(test)]
@@ -821,14 +804,34 @@ mod tests {
         assert_eq!(parse_ultra_arg(""), Ok(UltraArg::Show));
         assert_eq!(parse_ultra_arg("  "), Ok(UltraArg::Show));
         assert_eq!(parse_ultra_arg("off"), Ok(UltraArg::Set(None)));
-        assert_eq!(parse_ultra_arg("code"), Ok(UltraArg::Set(Some(Ultra::Code))));
-        assert_eq!(parse_ultra_arg("deep"), Ok(UltraArg::Set(Some(Ultra::Deep))));
-        assert_eq!(parse_ultra_arg(" long "), Ok(UltraArg::Set(Some(Ultra::Long))));
-        assert_eq!(parse_ultra_arg("hyper"), Ok(UltraArg::Set(Some(Ultra::Hyper))));
-        assert_eq!(parse_ultra_arg("hypercode"), Ok(UltraArg::Set(Some(Ultra::Hyper))));
+        assert_eq!(
+            parse_ultra_arg("code"),
+            Ok(UltraArg::Set(Some(Ultra::Code)))
+        );
+        assert_eq!(
+            parse_ultra_arg("deep"),
+            Ok(UltraArg::Set(Some(Ultra::Deep)))
+        );
+        assert_eq!(
+            parse_ultra_arg(" long "),
+            Ok(UltraArg::Set(Some(Ultra::Long)))
+        );
+        assert_eq!(
+            parse_ultra_arg("hyper"),
+            Ok(UltraArg::Set(Some(Ultra::Hyper)))
+        );
+        assert_eq!(
+            parse_ultra_arg("hypercode"),
+            Ok(UltraArg::Set(Some(Ultra::Hyper)))
+        );
         let err = parse_ultra_arg("max").unwrap_err();
-        assert!(err.contains("unknown mode") && err.contains("Usage: /ultra"), "{err}");
-        assert!(extra_catalog().iter().any(|c| c["name"] == "ultra" && c["input"]["hint"] == "[code|deep|long|hyper|off]"));
+        assert!(
+            err.contains("unknown mode") && err.contains("Usage: /ultra"),
+            "{err}"
+        );
+        assert!(extra_catalog()
+            .iter()
+            .any(|c| c["name"] == "ultra" && c["input"]["hint"] == "[code|deep|long|hyper|off]"));
     }
 
     #[test]

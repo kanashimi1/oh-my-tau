@@ -386,12 +386,18 @@ impl AccountRotation {
 
     #[cfg(test)]
     fn burned_of(&self, provider: &str, model: &str) -> Vec<i64> {
-        self.burned.get(&Self::slot(provider, model)).cloned().unwrap_or_default()
+        self.burned
+            .get(&Self::slot(provider, model))
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[cfg(test)]
     fn cooling_of(&self, provider: &str, model: &str) -> Vec<i64> {
-        self.cooling.get(&Self::slot(provider, model)).cloned().unwrap_or_default()
+        self.cooling
+            .get(&Self::slot(provider, model))
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -490,7 +496,10 @@ impl TurnRecovery {
             return false;
         }
         let m = failed.message.to_ascii_lowercase();
-        m.contains("rate limit") || m.contains("rate_limit") || m.contains("too many requests") || m.contains("quota")
+        m.contains("rate limit")
+            || m.contains("rate_limit")
+            || m.contains("too many requests")
+            || m.contains("quota")
     }
 
     /// Open (or continue) a saga for `failed`: bump the attempt counter, compute the backoff.
@@ -772,10 +781,19 @@ mod tests {
     fn account_rotation_walks_alternates_and_burns_failed() {
         // The runtime keeps the pool's `current` in sync with the promoted account.
         let mut pool = omp_providers::auth::CredentialPool {
-            current: omp_providers::auth::Credential { key: "k0".into(), id: 10 },
+            current: omp_providers::auth::Credential {
+                key: "k0".into(),
+                id: 10,
+            },
             alternates: vec![
-                omp_providers::auth::Credential { key: "k1".into(), id: 11 },
-                omp_providers::auth::Credential { key: "k2".into(), id: 12 },
+                omp_providers::auth::Credential {
+                    key: "k1".into(),
+                    id: 11,
+                },
+                omp_providers::auth::Credential {
+                    key: "k2".into(),
+                    id: 12,
+                },
             ],
         };
         let mut rot = AccountRotation::default();
@@ -804,10 +822,19 @@ mod tests {
     fn account_rotation_never_cycles_promoted_back_immediately() {
         let mut rot = AccountRotation::default();
         let pool = omp_providers::auth::CredentialPool {
-            current: omp_providers::auth::Credential { key: "k0".into(), id: 10 },
+            current: omp_providers::auth::Credential {
+                key: "k0".into(),
+                id: 10,
+            },
             alternates: vec![
-                omp_providers::auth::Credential { key: "k1".into(), id: 11 },
-                omp_providers::auth::Credential { key: "k2".into(), id: 12 },
+                omp_providers::auth::Credential {
+                    key: "k1".into(),
+                    id: 11,
+                },
+                omp_providers::auth::Credential {
+                    key: "k2".into(),
+                    id: 12,
+                },
             ],
         };
         // Window after current=10: 11, 12.
@@ -823,10 +850,19 @@ mod tests {
     #[test]
     fn account_rotation_cooldown_skips_recently_failed() {
         let pool = omp_providers::auth::CredentialPool {
-            current: omp_providers::auth::Credential { key: "k0".into(), id: 20 },
+            current: omp_providers::auth::Credential {
+                key: "k0".into(),
+                id: 20,
+            },
             alternates: vec![
-                omp_providers::auth::Credential { key: "k1".into(), id: 21 },
-                omp_providers::auth::Credential { key: "k2".into(), id: 22 },
+                omp_providers::auth::Credential {
+                    key: "k1".into(),
+                    id: 21,
+                },
+                omp_providers::auth::Credential {
+                    key: "k2".into(),
+                    id: 22,
+                },
             ],
         };
         let mut rot = AccountRotation::default();
@@ -1840,7 +1876,9 @@ mod tests {
             cfg(&["p/a"]),
         )
         .await;
-        h.rt.prompt(None, "hello", None, Vec::new()).await.expect("prompt");
+        h.rt.prompt(None, "hello", None, Vec::new())
+            .await
+            .expect("prompt");
         wait_for(&mut h.rx, |f| {
             f["type"] == "message_update" && f["assistantMessageEvent"]["type"] == "text_delta"
         })
@@ -1851,8 +1889,14 @@ mod tests {
         wait_for(&mut h.rx, |f| f["type"] == "agent_end").await;
         h.rt.agent.wait_for_idle().await;
         let last_stop = |msgs: &[pa_agent::types::AgentMessage]| {
-            let last = msgs.iter().rev().find(|m| m.role() == "assistant").expect("assistant");
-            let pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::Assistant(a)) = last else {
+            let last = msgs
+                .iter()
+                .rev()
+                .find(|m| m.role() == "assistant")
+                .expect("assistant");
+            let pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::Assistant(a)) =
+                last
+            else {
                 panic!("assistant message")
             };
             a.stop_reason.clone()
@@ -1864,14 +1908,20 @@ mod tests {
             "the drained steer turn must run, not end as 'Request was aborted'"
         );
 
-        h.rt.prompt(None, "next", None, Vec::new()).await.expect("prompt");
+        h.rt.prompt(None, "next", None, Vec::new())
+            .await
+            .expect("prompt");
         wait_for(&mut h.rx, |f| {
             f["type"] == "message_end" && f["message"]["role"] == json!("assistant")
         })
         .await;
         h.rt.agent.wait_for_idle().await;
         let msgs = h.rt.agent.state().await.messages;
-        assert_ne!(last_stop(&msgs), pa_agent::types::StopReason::Aborted, "next prompt not aborted");
+        assert_ne!(
+            last_stop(&msgs),
+            pa_agent::types::StopReason::Aborted,
+            "next prompt not aborted"
+        );
     }
 
     /// Read frames until `pred` matches (30 s guard).

@@ -115,8 +115,12 @@ impl ResolvedCompat {
 pub fn resolve_compat(model: &Model) -> Result<ResolvedCompat, ProviderError> {
     let policy = resolve_for_model(model).map_err(|e| ProviderError::Message(e.to_string()))?;
     let record = policy.compat.unwrap_or_default();
-    serde_json::from_value(Value::Object(record))
-        .map_err(|e| ProviderError::Message(format!("resolved compat for {}/{}: {e}", model.provider, model.id)))
+    serde_json::from_value(Value::Object(record)).map_err(|e| {
+        ProviderError::Message(format!(
+            "resolved compat for {}/{}: {e}",
+            model.provider, model.id
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +162,10 @@ pub struct CompatPolicy {
 /// TS `isForcedToolChoice`.
 #[must_use]
 pub fn is_forced(choice: Option<&ToolChoice>) -> bool {
-    matches!(choice, Some(ToolChoice::Required | ToolChoice::Function { .. }))
+    matches!(
+        choice,
+        Some(ToolChoice::Required | ToolChoice::Function { .. })
+    )
 }
 
 /// TS `mapOpenAIReasoningEffort`: explicit compat map, then the model's baked effort map, else
@@ -169,14 +176,21 @@ pub fn map_reasoning_effort(model: &Model, compat: &ResolvedCompat, effort: &str
         return v.clone();
     }
     crate::models::thinking_level_from_str(effort)
-        .and_then(|level| crate::types::ModelExt::thinking_level_map_value(model, level).flatten().cloned())
+        .and_then(|level| {
+            crate::types::ModelExt::thinking_level_map_value(model, level)
+                .flatten()
+                .cloned()
+        })
         .unwrap_or_else(|| effort.to_string())
 }
 
 fn is_implicit_disable_when_not_requested(mode: &str) -> bool {
     matches!(
         mode,
-        "zai-thinking-disabled" | "qwen-enable-thinking-false" | "qwen-template-false" | "chat-template-thinking-false"
+        "zai-thinking-disabled"
+            | "qwen-enable-thinking-false"
+            | "qwen-template-false"
+            | "chat-template-thinking-false"
     )
 }
 
@@ -213,8 +227,10 @@ pub fn resolve_policy(
         && is_forced(tool_choice);
     let any_tool_choice_suppresses =
         !forced_suppresses && base.disable_reasoning_on_tool_choice && tool_choice.is_some();
-    let tools_suppress =
-        !forced_suppresses && !any_tool_choice_suppresses && base.disable_reasoning_with_tools && has_tools;
+    let tools_suppress = !forced_suppresses
+        && !any_tool_choice_suppresses
+        && base.disable_reasoning_with_tools
+        && has_tools;
     let requested_and_allowed = requested.is_some() && !disable_reasoning && model_supported;
     let conflict_disable_reason = if forced_suppresses {
         Some(DisableReason::ForcedToolChoice)
@@ -225,7 +241,11 @@ pub fn resolve_policy(
     } else {
         None
     };
-    let disable_reason = if disable_reasoning { Some(DisableReason::Caller) } else { conflict_disable_reason };
+    let disable_reason = if disable_reasoning {
+        Some(DisableReason::Caller)
+    } else {
+        conflict_disable_reason
+    };
     let enabled_before_variant = requested_and_allowed && disable_reason.is_none();
     let base_wire_effort = if enabled_before_variant {
         requested.map(|e| map_reasoning_effort(model, base, e))
@@ -242,7 +262,11 @@ pub fn resolve_policy(
     };
     let omit_reasoning_effort = compat.omit_reasoning_effort || !compat.supports_reasoning_effort;
     let disable_mode = compat.reasoning_disable_mode.clone();
-    let mut wire_effort = if enabled { requested.map(|e| map_reasoning_effort(model, compat, e)) } else { None };
+    let mut wire_effort = if enabled {
+        requested.map(|e| map_reasoning_effort(model, compat, e))
+    } else {
+        None
+    };
     let disabled_without_request = model_supported
         && requested.is_none()
         && !disable_reasoning
@@ -254,7 +278,10 @@ pub fn resolve_policy(
     if disabled && compat.supports_reasoning_effort && !omit_reasoning_effort {
         if disable_mode == "none-effort" {
             wire_effort = Some("none".to_string());
-        } else if disable_reason == Some(DisableReason::Caller) && requested.is_none() && disable_mode == "lowest-effort" {
+        } else if disable_reason == Some(DisableReason::Caller)
+            && requested.is_none()
+            && disable_mode == "lowest-effort"
+        {
             let min_effort = get_supported_thinking_levels(model)
                 .into_iter()
                 .find(|l| *l != ModelThinkingLevel::Off);
@@ -272,11 +299,13 @@ pub fn resolve_policy(
             wire_effort,
             enabled,
             disabled,
-            disable_reason: disable_reason.or(if disabled_without_request || disabled_by_none_effort {
-                Some(DisableReason::NotRequested)
-            } else {
-                None
-            }),
+            disable_reason: disable_reason.or(
+                if disabled_without_request || disabled_by_none_effort {
+                    Some(DisableReason::NotRequested)
+                } else {
+                    None
+                },
+            ),
             dialect: compat.thinking_format.clone(),
             disable_mode,
             omit_reasoning_effort,
@@ -420,7 +449,10 @@ pub fn apply_compat_policy(params: &mut Map<String, Value>, policy: &CompatPolic
     }
     if reasoning.disable_reason == Some(DisableReason::Caller)
         && reasoning.requested_effort.is_none()
-        && matches!(reasoning.disable_mode.as_str(), "lowest-effort" | "none-effort")
+        && matches!(
+            reasoning.disable_mode.as_str(),
+            "lowest-effort" | "none-effort"
+        )
     {
         if let Some(w) = &reasoning.wire_effort {
             params.insert("reasoning_effort".into(), json!(w));
@@ -436,10 +468,18 @@ mod tests {
     use crate::providers::openai_completions::convert::transform_for_request;
     use crate::providers::openai_completions::params::build_params;
     use crate::providers::openai_completions::OpenAICompletionsOptions;
-    use crate::types::{CacheRetention, Context, Message, StreamOptions, UserMessage, UserMessageContent};
+    use crate::types::{
+        CacheRetention, Context, Message, StreamOptions, UserMessage, UserMessageContent,
+    };
     use serde_json::json;
 
-    fn model(provider: &str, id: &str, base_url: &str, reasoning: bool, compat: Option<Value>) -> Model {
+    fn model(
+        provider: &str,
+        id: &str,
+        base_url: &str,
+        reasoning: bool,
+        compat: Option<Value>,
+    ) -> Model {
         let mut m: Model = serde_json::from_value(json!({
             "id": id, "name": id, "api": "openai-completions", "provider": provider,
             "baseUrl": base_url, "reasoning": reasoning, "input": ["text"],
@@ -464,7 +504,15 @@ mod tests {
         };
         let compat = resolve_compat(model).unwrap();
         let transformed = transform_for_request(model, &context, &compat);
-        build_params(model, &context, &transformed, Some(&options), &compat, CacheRetention::Short).to_value()
+        build_params(
+            model,
+            &context,
+            &transformed,
+            Some(&options),
+            &compat,
+            CacheRetention::Short,
+        )
+        .to_value()
     }
 
     /// Regression: `400 role 'developer' is not allowed` on kimi-code. Only OpenAI/Azure hosts
@@ -496,12 +544,17 @@ mod tests {
             "gpt-5.5",
             "https://llm.corp.example/v1",
             true,
-            Some(json!({"supportsDeveloperRole": true, "thinkingFormat": "some-future-dialect", "bogus": 1})),
+            Some(
+                json!({"supportsDeveloperRole": true, "thinkingFormat": "some-future-dialect", "bogus": 1}),
+            ),
         );
         let c = resolve_compat(&m).unwrap();
         assert!(c.supports_developer_role);
         assert_eq!(c.thinking_format, "some-future-dialect");
-        assert_eq!(body(&m, OpenAICompletionsOptions::default(), Some("S"))["messages"][0]["role"], "developer");
+        assert_eq!(
+            body(&m, OpenAICompletionsOptions::default(), Some("S"))["messages"][0]["role"],
+            "developer"
+        );
     }
 
     /// `supportsMultipleSystemMessages: false` hosts coalesce system prompt blocks into one
@@ -509,19 +562,41 @@ mod tests {
     #[test]
     fn system_prompt_blocks_follow_supports_multiple_system_messages() {
         let blocks = ["static prefix", "dynamic suffix"];
-        let context = Context { system_prompt: None, messages: vec![], tools: None };
+        let context = Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: None,
+        };
         for (provider, url, multiple) in [
             ("openai", "https://api.openai.com/v1", true),
             ("kimi-code", "https://api.kimi.com/coding/v1", false),
-            ("alibaba-coding-plan", "https://coding.dashscope.aliyuncs.com/v1", false),
+            (
+                "alibaba-coding-plan",
+                "https://coding.dashscope.aliyuncs.com/v1",
+                false,
+            ),
         ] {
             let m = model(provider, "some-model", url, false, None);
             let compat = resolve_compat(&m).unwrap();
-            assert_eq!(compat.supports_multiple_system_messages.unwrap_or(true), multiple, "{provider}");
+            assert_eq!(
+                compat.supports_multiple_system_messages.unwrap_or(true),
+                multiple,
+                "{provider}"
+            );
             let transformed = transform_for_request(&m, &context, &compat);
-            let messages = crate::providers::openai_completions::convert::convert_messages(&m, &blocks, &transformed, &compat);
+            let messages = crate::providers::openai_completions::convert::convert_messages(
+                &m,
+                &blocks,
+                &transformed,
+                &compat,
+            );
             let wire = serde_json::to_value(&messages).unwrap();
-            let system: Vec<&Value> = wire.as_array().unwrap().iter().filter(|m| m["role"] == "system" || m["role"] == "developer").collect();
+            let system: Vec<&Value> = wire
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["role"] == "system" || m["role"] == "developer")
+                .collect();
             if multiple {
                 assert_eq!(system.len(), 2, "{provider}");
             } else {
@@ -541,7 +616,9 @@ mod tests {
             "k3",
             "https://api.kimi.com/coding/v1",
             true,
-            Some(json!({"thinkingFormat": "kimi", "reasoningContentField": "reasoning_content", "supportsDeveloperRole": false})),
+            Some(
+                json!({"thinkingFormat": "kimi", "reasoningContentField": "reasoning_content", "supportsDeveloperRole": false}),
+            ),
         );
         let mut o = OpenAICompletionsOptions::from_base(StreamOptions::default());
         o.reasoning_effort = Some(ModelThinkingLevel::Medium);

@@ -47,7 +47,11 @@ pub async fn run(
                 &m.id,
                 Some(m.context_window),
             );
-            e.name = if m.name.is_empty() { m.id.clone() } else { m.name.clone() };
+            e.name = if m.name.is_empty() {
+                m.id.clone()
+            } else {
+                m.name.clone()
+            };
             e.max_tokens = Some(m.max_tokens);
             e.cost_input = m.cost.input.as_f64();
             e.cost_output = m.cost.output.as_f64();
@@ -101,7 +105,10 @@ pub async fn run(
     rt.enable_context_usage_frames();
     crate::slash_extra::mark_interactive_ui();
     rt.publish_context_usage();
-    let port = Port { rt, ext: extensions };
+    let port = Port {
+        rt,
+        ext: extensions,
+    };
     omp_tui::run(
         omp_tui::RunConfig {
             frames: rx,
@@ -164,14 +171,14 @@ struct Port {
 /// Extension `input` gate (TS input-controller `#runInputHandlers`, source
 /// `interactive`): `Some(text)` to run (possibly rewritten), `None` when an extension
 /// handled the input.
-async fn gate_prompt(
-    ext: Option<&Arc<crate::ext::Extensions>>,
-    text: &str,
-) -> Option<String> {
+async fn gate_prompt(ext: Option<&Arc<crate::ext::Extensions>>, text: &str) -> Option<String> {
     let Some(ext) = ext else {
         return Some(text.to_string());
     };
-    match ext.input_gate(text, omp_ext::lifecycle::InputSource::Interactive).await {
+    match ext
+        .input_gate(text, omp_ext::lifecycle::InputSource::Interactive)
+        .await
+    {
         Ok(crate::ext::PromptGate::Run(t)) => Some(t),
         Ok(crate::ext::PromptGate::Handled) => None,
         Err(e) => {
@@ -184,27 +191,28 @@ async fn gate_prompt(
 /// `models_changed` frame: the re-read `/model` picker catalogue after an
 /// F5 refresh (fields mirror the startup mapping in `tui_main`).
 fn models_changed_frame() -> Value {
-    let models: Vec<Value> = crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
-        .into_iter()
-        .map(|b| {
-            let m = &b.model;
-            serde_json::json!({
-                "provider": m.provider,
-                "id": m.id,
-                "name": if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
-                "contextWindow": m.context_window,
-                "maxTokens": m.max_tokens,
-                "costInput": m.cost.input.as_f64(),
-                "costOutput": m.cost.output.as_f64(),
-                "costCacheRead": m.cost.cache_read.as_f64(),
-                "reasoning": m.reasoning,
-                "vision": m.input.contains(&pa_types::ai::ModelInput::Image),
-                "available": b.available,
-                "kind": b.kind,
-                "priority": b.priority,
+    let models: Vec<Value> =
+        crate::subcmd::models::browser_models(&omp_providers::AgentDir::default())
+            .into_iter()
+            .map(|b| {
+                let m = &b.model;
+                serde_json::json!({
+                    "provider": m.provider,
+                    "id": m.id,
+                    "name": if m.name.is_empty() { m.id.clone() } else { m.name.clone() },
+                    "contextWindow": m.context_window,
+                    "maxTokens": m.max_tokens,
+                    "costInput": m.cost.input.as_f64(),
+                    "costOutput": m.cost.output.as_f64(),
+                    "costCacheRead": m.cost.cache_read.as_f64(),
+                    "reasoning": m.reasoning,
+                    "vision": m.input.contains(&pa_types::ai::ModelInput::Image),
+                    "available": b.available,
+                    "kind": b.kind,
+                    "priority": b.priority,
+                })
             })
-        })
-        .collect();
+            .collect();
     serde_json::json!({"type": "models_changed", "models": models})
 }
 
@@ -264,7 +272,10 @@ fn has_local_loopback_base_url(base_url: &str) -> bool {
     else {
         return false;
     };
-    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]") {
+    if matches!(
+        host.as_str(),
+        "localhost" | "127.0.0.1" | "0.0.0.0" | "::1" | "[::1]"
+    ) {
         return true;
     }
     if host.starts_with("10.") || host.starts_with("192.168.") || host.ends_with(".local") {
@@ -286,7 +297,10 @@ fn append_only_context_enabled(setting: &str, model: &Value) -> bool {
             let base_url = model["baseUrl"].as_str().unwrap_or("");
             !model.is_null()
                 && (provider == "deepseek"
-                    || matches!(provider, "ollama" | "ollama-cloud" | "lm-studio" | "llama.cpp")
+                    || matches!(
+                        provider,
+                        "ollama" | "ollama-cloud" | "lm-studio" | "llama.cpp"
+                    )
                     || base_url.to_ascii_lowercase().contains("xiaomimimo.com")
                     || has_local_loopback_base_url(base_url)
                     || model["compat"]["supportsStore"].as_bool() == Some(true))
@@ -307,7 +321,13 @@ async fn session_info_frame(rt: &Runtime) -> Value {
     let count = |key: &str| stats[key].as_u64().unwrap_or(0).to_string();
     let session_id = stats["sessionId"].as_str().unwrap_or_default().to_string();
     let mut lines = vec![
-        kv("File", stats["sessionFile"].as_str().unwrap_or("In-memory").to_string()),
+        kv(
+            "File",
+            stats["sessionFile"]
+                .as_str()
+                .unwrap_or("In-memory")
+                .to_string(),
+        ),
         kv("ID", session_id),
         blank(),
         head("Provider"),
@@ -329,7 +349,10 @@ async fn session_info_frame(rt: &Runtime) -> Value {
             lines.push(kv("Name", provider.clone()));
             lines.push(kv("Model", field("id")));
             lines.push(kv("API", field("api")));
-            lines.push(kv("Auth", auth.as_ref().map_or("auto", |a| a.mode).to_string()));
+            lines.push(kv(
+                "Auth",
+                auth.as_ref().map_or("auto", |a| a.mode).to_string(),
+            ));
             lines.push(kv("Endpoint", format_endpoint(&field("baseUrl"))));
             if let Some(source) = auth.and_then(|a| a.source) {
                 lines.push(kv("Source", source));
@@ -498,7 +521,11 @@ impl omp_tui::RuntimePort for Port {
     }
 
     fn available_thinking_levels(&self) -> Vec<String> {
-        self.rt.supported_efforts().into_iter().map(String::from).collect()
+        self.rt
+            .supported_efforts()
+            .into_iter()
+            .map(String::from)
+            .collect()
     }
 
     fn run_slash(&self, name: String, args: String) {
@@ -545,13 +572,15 @@ impl omp_tui::RuntimePort for Port {
                     // No builtin/extension/file command matched: the palette
                     // offered an unknown name — report it instead of sending
                     // the literal text to the model.
-                    rt.send(prompt_failed(if rt.available_commands().iter().any(|c| {
+                    rt.send(prompt_failed(
+                        if rt.available_commands().iter().any(|c| {
                             c.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
                         }) {
                             format!("/{name} is not ported to omp-rs yet")
                         } else {
                             format!("Unknown command: /{name}")
-                        }));
+                        },
+                    ));
                 }
             }
         });
@@ -620,7 +649,9 @@ impl omp_tui::RuntimePort for Port {
         // Synchronous read: the layered merge is pure fs + env work (TS
         // `cfg://` get runs inline in the UI host too).
         let settings = omp_settings::Settings::load(&self.rt.cwd);
-        ids.iter().map(|id| (id.clone(), settings.get(id))).collect()
+        ids.iter()
+            .map(|id| (id.clone(), settings.get(id)))
+            .collect()
     }
 
     fn settings_set(&self, id: String, value: Value) -> Result<(), String> {
@@ -660,7 +691,10 @@ impl omp_tui::RuntimePort for Port {
                         let msg = match &r.note {
                             Some(note) => format!("model refresh {}: {note}", r.provider),
                             None if r.discovered.is_empty() => {
-                                format!("model refresh {}: no new models ({} cached)", r.provider, r.total)
+                                format!(
+                                    "model refresh {}: no new models ({} cached)",
+                                    r.provider, r.total
+                                )
                             }
                             None => format!(
                                 "model refresh {}: +{} ({})",
@@ -671,7 +705,9 @@ impl omp_tui::RuntimePort for Port {
                         };
                         // `session_info` is the one free-text frame the TUI
                         // renders verbatim.
-                        rt.send(serde_json::json!({"type": "session_info", "lines": [{"text": msg}]}));
+                        rt.send(
+                            serde_json::json!({"type": "session_info", "lines": [{"text": msg}]}),
+                        );
                     }
                     // Re-read the merged catalog so the open /model browser
                     // shows new models immediately (TS model hub behavior).
@@ -838,7 +874,9 @@ mod tests {
         assert_eq!(result["status"], "completed");
         assert_eq!(result["status"], "completed");
         assert!(
-            outputs(&frames).iter().any(|t| t.contains("Current model: p/a")),
+            outputs(&frames)
+                .iter()
+                .any(|t| t.contains("Current model: p/a")),
             "frames: {frames:?}"
         );
     }
@@ -904,7 +942,9 @@ mod tests {
         let frames = until_result(&mut h.rx).await;
         assert_eq!(frames.last().unwrap()["status"], "completed");
         assert!(
-            outputs(&frames).iter().any(|t| t.contains("New session started.")),
+            outputs(&frames)
+                .iter()
+                .any(|t| t.contains("New session started.")),
             "frames: {frames:?}"
         );
         assert_ne!(before, h.port.rt.session_id());

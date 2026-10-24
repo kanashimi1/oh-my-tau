@@ -41,7 +41,11 @@ fn parses_all_real_user_agent_defs() {
         result.failure_count()
     );
     for failure in &result.failures {
-        eprintln!("FAILURE {}: {}", failure.file_path.display(), failure.message);
+        eprintln!(
+            "FAILURE {}: {}",
+            failure.file_path.display(),
+            failure.message
+        );
     }
 
     assert_eq!(result.failure_count(), 0, "all real agent defs must parse");
@@ -58,8 +62,14 @@ fn parses_all_real_user_agent_defs() {
             .get_agent(name)
             .unwrap_or_else(|| panic!("agent {name} must be discoverable"));
         assert_eq!(def.source, AgentSource::User);
-        assert!(!def.fields.description.is_empty(), "{name}: description required");
-        assert!(!def.system_prompt.trim().is_empty(), "{name}: system prompt body required");
+        assert!(
+            !def.fields.description.is_empty(),
+            "{name}: description required"
+        );
+        assert!(
+            !def.system_prompt.trim().is_empty(),
+            "{name}: system prompt body required"
+        );
         if let Some(tools) = &def.fields.tools {
             assert!(
                 tools.contains(&"yield".to_string()),
@@ -70,10 +80,18 @@ fn parses_all_real_user_agent_defs() {
             sorted.sort_unstable();
             let mut dedup = sorted.clone();
             dedup.dedup();
-            assert_eq!(sorted, dedup, "{name}: normalized tool names are dedup-able");
+            assert_eq!(
+                sorted, dedup,
+                "{name}: normalized tool names are dedup-able"
+            );
         }
         // file_path points at the real file.
-        assert!(def.file_path.is_file(), "{}: {}", name, def.file_path.display());
+        assert!(
+            def.file_path.is_file(),
+            "{}: {}",
+            name,
+            def.file_path.display()
+        );
     }
 }
 
@@ -88,7 +106,14 @@ fn known_thinking_levels_and_models_parse() {
     for def in &result.agents {
         if let Some(level) = &def.fields.thinking_level {
             assert!(
-                matches!(level, ThinkingLevel::Low | ThinkingLevel::Medium | ThinkingLevel::High | ThinkingLevel::Max | ThinkingLevel::Other(_)),
+                matches!(
+                    level,
+                    ThinkingLevel::Low
+                        | ThinkingLevel::Medium
+                        | ThinkingLevel::High
+                        | ThinkingLevel::Max
+                        | ThinkingLevel::Other(_)
+                ),
                 "{}: unexpected thinking level {level:?}",
                 def.fields.name
             );
@@ -99,9 +124,14 @@ fn known_thinking_levels_and_models_parse() {
         }
     }
     // Spot-check specific fleet agents observed in the TS-format files.
-    let glm = result.get_agent("glm-flash-coder").expect("glm-flash-coder");
+    let glm = result
+        .get_agent("glm-flash-coder")
+        .expect("glm-flash-coder");
     assert_eq!(glm.fields.thinking_level, Some(ThinkingLevel::Low));
-    assert_eq!(glm.fields.model.as_deref(), Some(&["zai/glm-5.3-flash".to_string()][..]));
+    assert_eq!(
+        glm.fields.model.as_deref(),
+        Some(&["zai/glm-5.3-flash".to_string()][..])
+    );
 
     let atria = result.get_agent("atria-worker").expect("atria-worker");
     assert_eq!(atria.fields.thinking_level, Some(ThinkingLevel::Medium));

@@ -124,7 +124,11 @@ pub struct UsageInputCost {
     pub output: Option<f64>,
     #[serde(rename = "cacheRead", default, skip_serializing_if = "Option::is_none")]
     pub cache_read: Option<f64>,
-    #[serde(rename = "cacheWrite", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "cacheWrite",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cache_write: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub total: Option<f64>,
@@ -447,10 +451,7 @@ pub enum FrustrationEstimate {
         judge: String,
     },
     #[serde(rename_all = "camelCase")]
-    Unavailable {
-        available: bool,
-        reason: String,
-    },
+    Unavailable { available: bool, reason: String },
 }
 
 /// Token savings from a single source type.

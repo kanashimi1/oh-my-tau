@@ -26,7 +26,10 @@ fn map_error(err: anyhow::Error, enoent: Option<&str>) -> anyhow::Result<ApiResp
         return Ok(ApiResponse::error(400, &err.to_string()));
     }
     if let Some(message) = enoent {
-        if err.downcast_ref::<std::io::Error>().is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        if err
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
             return Ok(ApiResponse::error(404, message));
         }
     }
@@ -40,12 +43,19 @@ pub(super) fn session_trace(target: &Target, headers: &HeaderMap) -> anyhow::Res
     // ETag-first: compare the client's etag against the root+child fingerprint
     // WITHOUT building the trace. The fingerprint covers child transcripts, so
     // a subagent-only append changes the ETag and never 304s stale.
-    let client_etag = headers.get("if-none-match").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty());
+    let client_etag = headers
+        .get("if-none-match")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty());
     let mut fingerprint = None;
     if let Some(client) = client_etag {
         fingerprint = trace::trace_fingerprint_for_etag(file);
         if let Some(fp) = &fingerprint {
-            let etag = format!("\"{TRACE_ETAG_VERSION}:{}:{}\"", js_number(fp.root_mtime_ms), fp.child_fingerprint);
+            let etag = format!(
+                "\"{TRACE_ETAG_VERSION}:{}:{}\"",
+                js_number(fp.root_mtime_ms),
+                fp.child_fingerprint
+            );
             if client == etag {
                 return Ok(not_modified());
             }
@@ -66,8 +76,10 @@ pub(super) fn session_trace(target: &Target, headers: &HeaderMap) -> anyhow::Res
 }
 
 pub(super) fn session_entry(target: &Target) -> anyhow::Result<ApiResponse> {
-    let (Some(file), Some(id)) = (target.get("file").filter(|f| !f.is_empty()), target.get("id").filter(|f| !f.is_empty()))
-    else {
+    let (Some(file), Some(id)) = (
+        target.get("file").filter(|f| !f.is_empty()),
+        target.get("id").filter(|f| !f.is_empty()),
+    ) else {
         return Ok(ApiResponse::error(400, "file and id required"));
     };
     match trace::get_trace_entry(file, id) {

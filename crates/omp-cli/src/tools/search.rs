@@ -250,7 +250,14 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if !trailing.is_empty() {
         let _ = write!(out, "\n\n{}", trailing.join("\n"));
     }
-    let t = truncate_head(&out, DEFAULT_MAX_BYTES);
+    let t = truncate_head(
+        &out,
+        if crate::methodology::raw_tool_output_requested() {
+            usize::MAX
+        } else {
+            DEFAULT_MAX_BYTES
+        },
+    );
     let mut text = t.content.clone();
     let mut notices: Vec<String> = Vec::new();
     if t.truncated {
@@ -603,7 +610,9 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         // output and the total-match cap stay identical to a serial scan.
         for chunk in files.chunks(SEARCH_CHUNK_FILES) {
             let slots: Vec<OnceLock<Option<(Vec<Match>, usize, bool)>>> =
-                std::iter::repeat_with(OnceLock::new).take(chunk.len()).collect();
+                std::iter::repeat_with(OnceLock::new)
+                    .take(chunk.len())
+                    .collect();
             let indices: Vec<usize> = (0..chunk.len()).collect();
             let searched = pi_walker::parallel_for_each_init(
                 &indices,
@@ -852,7 +861,14 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         model.push(warning);
     }
     let raw = model.join("\n");
-    let t = truncate_head(&raw, DEFAULT_MAX_BYTES);
+    let t = truncate_head(
+        &raw,
+        if crate::methodology::raw_tool_output_requested() {
+            usize::MAX
+        } else {
+            DEFAULT_MAX_BYTES
+        },
+    );
     let mut text = t.content.clone();
     let mut notices: Vec<String> = Vec::new();
     if t.truncated {

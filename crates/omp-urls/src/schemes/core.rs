@@ -85,41 +85,47 @@ pub fn register_artifacts_dir(dir: Option<PathBuf>) {
 pub fn session_files_from_disk(preferred: Option<&Path>) -> Vec<(String, PathBuf)> {
     let mut found: Vec<(String, PathBuf)> = Vec::new();
     let mut seen_dirs: Vec<PathBuf> = Vec::new();
-    let scan = |dir: &Path, depth: usize, found: &mut Vec<(String, PathBuf)>, seen: &mut Vec<PathBuf>| {
-        fn scan_impl(dir: &Path, depth: usize, found: &mut Vec<(String, PathBuf)>, seen: &mut Vec<PathBuf>) {
-            if depth > 8 || seen.iter().any(|d| d == dir) {
-                return;
-            }
-            seen.push(dir.to_path_buf());
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Ok(file_type) = entry.file_type() else {
-                    continue;
+    let scan =
+        |dir: &Path, depth: usize, found: &mut Vec<(String, PathBuf)>, seen: &mut Vec<PathBuf>| {
+            fn scan_impl(
+                dir: &Path,
+                depth: usize,
+                found: &mut Vec<(String, PathBuf)>,
+                seen: &mut Vec<PathBuf>,
+            ) {
+                if depth > 8 || seen.iter().any(|d| d == dir) {
+                    return;
+                }
+                seen.push(dir.to_path_buf());
+                let Ok(entries) = std::fs::read_dir(dir) else {
+                    return;
                 };
-                if file_type.is_dir() {
-                    scan_impl(&path, depth + 1, found, seen);
-                    continue;
-                }
-                if !file_type.is_file() {
-                    continue;
-                }
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                    continue;
-                };
-                if !name.ends_with(".jsonl") || name.starts_with("__advisor") {
-                    continue;
-                }
-                let id = name[..name.len() - ".jsonl".len()].to_string();
-                if !found.iter().any(|(existing, _)| *existing == id) {
-                    found.push((id, path));
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let Ok(file_type) = entry.file_type() else {
+                        continue;
+                    };
+                    if file_type.is_dir() {
+                        scan_impl(&path, depth + 1, found, seen);
+                        continue;
+                    }
+                    if !file_type.is_file() {
+                        continue;
+                    }
+                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
+                    if !name.ends_with(".jsonl") || name.starts_with("__advisor") {
+                        continue;
+                    }
+                    let id = name[..name.len() - ".jsonl".len()].to_string();
+                    if !found.iter().any(|(existing, _)| *existing == id) {
+                        found.push((id, path));
+                    }
                 }
             }
-        }
-        scan_impl(dir, depth, found, seen);
-    };
+            scan_impl(dir, depth, found, seen);
+        };
     if let Some(p) = preferred {
         scan(p, 0, &mut found, &mut seen_dirs);
     }
@@ -154,5 +160,9 @@ pub fn fuzzy_suggest(candidates: &[String], query: &str, max: usize) -> Vec<Stri
         })
         .collect();
     scored.sort_by_key(|(s, _)| *s);
-    scored.into_iter().take(max).map(|(_, c)| c.clone()).collect()
+    scored
+        .into_iter()
+        .take(max)
+        .map(|(_, c)| c.clone())
+        .collect()
 }

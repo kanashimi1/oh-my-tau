@@ -24,7 +24,10 @@ pub(super) struct Timeouts {
 impl Default for Timeouts {
     fn default() -> Self {
         // idle: Bun.serve default `idleTimeout` (10 s), which the TS dashboard uses.
-        Self { header_read: Duration::from_secs(30), idle: Duration::from_secs(10) }
+        Self {
+            header_read: Duration::from_secs(30),
+            idle: Duration::from_secs(10),
+        }
     }
 }
 
@@ -36,20 +39,36 @@ struct ConnState {
 
 impl ConnState {
     fn touch(&self) {
-        *self.last_activity.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+        *self
+            .last_activity
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
     }
 
     fn idle_for(&self) -> Option<Duration> {
         if self.sse.load(Ordering::SeqCst) || self.inflight.load(Ordering::SeqCst) > 0 {
             return None;
         }
-        Some(self.last_activity.lock().unwrap_or_else(std::sync::PoisonError::into_inner).elapsed())
+        Some(
+            self.last_activity
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .elapsed(),
+        )
     }
 }
 
 /// Serve `stream` until the peer closes, an error occurs or the idle timeout fires.
-pub(super) async fn serve_connection(stream: tokio::net::TcpStream, ctx: Arc<Ctx>, timeouts: Timeouts) {
-    let state = Arc::new(ConnState { last_activity: Mutex::new(Instant::now()), inflight: AtomicUsize::new(0), sse: AtomicBool::new(false) });
+pub(super) async fn serve_connection(
+    stream: tokio::net::TcpStream,
+    ctx: Arc<Ctx>,
+    timeouts: Timeouts,
+) {
+    let state = Arc::new(ConnState {
+        last_activity: Mutex::new(Instant::now()),
+        inflight: AtomicUsize::new(0),
+        sse: AtomicBool::new(false),
+    });
     let svc_state = Arc::clone(&state);
     let service = service_fn(move |req| {
         let (ctx, state) = (Arc::clone(&ctx), Arc::clone(&svc_state));

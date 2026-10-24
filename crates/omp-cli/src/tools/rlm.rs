@@ -51,7 +51,11 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { max_depth: 2, max_calls: 64, max_tokens: 2_000_000 }
+        Self {
+            max_depth: 2,
+            max_calls: 64,
+            max_tokens: 2_000_000,
+        }
     }
 }
 
@@ -69,7 +73,10 @@ impl Limits {
     #[must_use]
     pub fn effective() -> Self {
         let get = |key: &str, default: u64| {
-            std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+            std::env::var(key)
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(default)
         };
         let d = Self::default();
         let o = *OVERRIDE.lock().expect("rlm override");
@@ -200,7 +207,10 @@ impl Session {
     pub fn reset(&self) {
         let mut ledger = self.ledger.lock().expect("rlm ledger");
         let context = ledger.context.take();
-        *ledger = Ledger { context, ..Ledger::default() };
+        *ledger = Ledger {
+            context,
+            ..Ledger::default()
+        };
     }
 
     pub fn set_context(&self, context: Option<String>) {
@@ -306,7 +316,11 @@ impl Session {
         let prompt_frame = if pointers.is_empty() {
             prompt.to_string()
         } else {
-            let list = pointers.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n");
+            let list = pointers
+                .iter()
+                .map(|p| format!("- {p}"))
+                .collect::<Vec<_>>()
+                .join("\n");
             format!("<pointers>\n{list}\n</pointers>\n\n{prompt}")
         };
 
@@ -320,10 +334,24 @@ impl Session {
         let select = match args.get("select") {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(Select::parse(s)?),
-            Some(_) => return Err("llm_query: select must be 'consistency' or 'uncertainty'".into()),
+            Some(_) => {
+                return Err("llm_query: select must be 'consistency' or 'uncertainty'".into())
+            }
         };
         if k == 1 && select.is_none() {
-            let call = self.call_one(backend, limits, model, &prompt_frame, &context, depth, 0, 1, signal).await?;
+            let call = self
+                .call_one(
+                    backend,
+                    limits,
+                    model,
+                    &prompt_frame,
+                    &context,
+                    depth,
+                    0,
+                    1,
+                    signal,
+                )
+                .await?;
             let ledger = self.ledger.lock().expect("rlm ledger");
             return Ok(reply(&call.text, &call.record, &ledger));
         }
@@ -331,15 +359,30 @@ impl Session {
         let on_low = match args.get("on_low") {
             None | Some(Value::Null) => OnLow::Return,
             Some(Value::String(s)) => OnLow::parse(s)?,
-            Some(_) => return Err("llm_query: on_low must be 'expand', 'escalate' or 'return'".into()),
+            Some(_) => {
+                return Err("llm_query: on_low must be 'expand', 'escalate' or 'return'".into())
+            }
         };
-        let low = args.get("low").and_then(Value::as_f64).unwrap_or(DEFAULT_LOW);
+        let low = args
+            .get("low")
+            .and_then(Value::as_f64)
+            .unwrap_or(DEFAULT_LOW);
         let escalate_model = args
             .get("escalate_model")
             .and_then(Value::as_str)
             .filter(|m| !m.is_empty())
             .unwrap_or(DEFAULT_ESCALATE_MODEL);
-        let plan = Plan { model, prompt: &prompt_frame, context: &context, depth, k, select, on_low, low, escalate_model };
+        let plan = Plan {
+            model,
+            prompt: &prompt_frame,
+            context: &context,
+            depth,
+            k,
+            select,
+            on_low,
+            low,
+            escalate_model,
+        };
         self.query_sampled(backend, limits, &plan, signal).await
     }
 
@@ -362,13 +405,27 @@ impl Session {
         plan: &Plan<'_>,
         signal: &AbortSignal,
     ) -> Result<Value, String> {
-        let suffix = if plan.select == Select::Uncertainty { CONFIDENCE_SUFFIX } else { "" };
+        let suffix = if plan.select == Select::Uncertainty {
+            CONFIDENCE_SUFFIX
+        } else {
+            ""
+        };
         let prompt_eff = format!("{}{suffix}", plan.prompt);
         let mut cands: Vec<Candidate> = Vec::new();
         let mut first_err: Option<String> = None;
         for sample in 0..plan.k {
             match self
-                .call_one(backend, limits, plan.model, &prompt_eff, plan.context, plan.depth, sample, plan.k, signal)
+                .call_one(
+                    backend,
+                    limits,
+                    plan.model,
+                    &prompt_eff,
+                    plan.context,
+                    plan.depth,
+                    sample,
+                    plan.k,
+                    signal,
+                )
                 .await
             {
                 Ok(call) => cands.push(Candidate::from_call(&call, plan.select, sample)),
@@ -391,10 +448,22 @@ impl Session {
                     expanded = true;
                     for sample in plan.k..plan.k * 2 {
                         match self
-                            .call_one(backend, limits, plan.model, &prompt_eff, plan.context, plan.depth, sample, plan.k * 2, signal)
+                            .call_one(
+                                backend,
+                                limits,
+                                plan.model,
+                                &prompt_eff,
+                                plan.context,
+                                plan.depth,
+                                sample,
+                                plan.k * 2,
+                                signal,
+                            )
                             .await
                         {
-                            Ok(call) => cands.push(Candidate::from_call(&call, plan.select, sample)),
+                            Ok(call) => {
+                                cands.push(Candidate::from_call(&call, plan.select, sample))
+                            }
                             Err(_) => break,
                         }
                     }
@@ -402,7 +471,17 @@ impl Session {
                 }
                 OnLow::Escalate => {
                     if let Ok(call) = self
-                        .call_one(backend, limits, plan.escalate_model, &prompt_eff, plan.context, plan.depth, 0, 1, signal)
+                        .call_one(
+                            backend,
+                            limits,
+                            plan.escalate_model,
+                            &prompt_eff,
+                            plan.context,
+                            plan.depth,
+                            0,
+                            1,
+                            signal,
+                        )
                         .await
                     {
                         escalated = Some(Candidate::from_call(&call, plan.select, 0));
@@ -415,8 +494,16 @@ impl Session {
             Some(c) => (c.answer.clone(), None),
             None => (cands[sel.index].answer.clone(), Some(sel.index)),
         };
-        let usage_in: u64 = cands.iter().chain(escalated.iter()).map(|c| c.input_tokens).sum();
-        let usage_out: u64 = cands.iter().chain(escalated.iter()).map(|c| c.output_tokens).sum();
+        let usage_in: u64 = cands
+            .iter()
+            .chain(escalated.iter())
+            .map(|c| c.input_tokens)
+            .sum();
+        let usage_out: u64 = cands
+            .iter()
+            .chain(escalated.iter())
+            .map(|c| c.output_tokens)
+            .sum();
         let all_cached = cands.iter().chain(escalated.iter()).all(|c| c.cached);
         let mut ledger = self.ledger.lock().expect("rlm ledger");
         ledger.selections += 1;
@@ -480,7 +567,15 @@ impl Session {
         k: u64,
         signal: &AbortSignal,
     ) -> Result<Called, String> {
-        let key = memo_key(model, context, &if sample == 0 { prompt.to_string() } else { format!("{prompt}\u{0}sample={sample}") });
+        let key = memo_key(
+            model,
+            context,
+            &if sample == 0 {
+                prompt.to_string()
+            } else {
+                format!("{prompt}\u{0}sample={sample}")
+            },
+        );
         let full = render_prompt(prompt, context);
         let estimate = estimate_tokens(full.len());
         let started = Instant::now();
@@ -531,7 +626,8 @@ impl Session {
         let mut ledger = self.ledger.lock().expect("rlm ledger");
         ledger.reserved = ledger.reserved.saturating_sub(estimate);
         let (text, mut usage, model_info) = result.map_err(|e| format!("llm_query: {e}"))?;
-        if usage.input == 0 && usage.output == 0 && usage.cache_read == 0 && usage.cache_write == 0 {
+        if usage.input == 0 && usage.output == 0 && usage.cache_read == 0 && usage.cache_write == 0
+        {
             // Provider reported no usage: charge the estimate rather than free calls.
             usage.input = estimate;
         }
@@ -579,7 +675,8 @@ const DEFAULT_LOW: f64 = 0.5;
 /// Model used by `on_low="escalate"` when `escalate_model` is not given.
 const DEFAULT_ESCALATE_MODEL: &str = "default";
 /// Appended under `select="uncertainty"` to elicit SRLM's verbalized confidence.
-const CONFIDENCE_SUFFIX: &str = "\n\nAfter your answer, on a final separate line, report your confidence \
+const CONFIDENCE_SUFFIX: &str =
+    "\n\nAfter your answer, on a final separate line, report your confidence \
 as JSON: {\"confidence\": N} where N is an integer in 1..=100.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,7 +690,9 @@ impl Select {
         match s {
             "consistency" => Ok(Self::Consistency),
             "uncertainty" => Ok(Self::Uncertainty),
-            other => Err(format!("llm_query: select must be 'consistency' or 'uncertainty', got {other:?}")),
+            other => Err(format!(
+                "llm_query: select must be 'consistency' or 'uncertainty', got {other:?}"
+            )),
         }
     }
 
@@ -618,7 +717,9 @@ impl OnLow {
             "return" => Ok(Self::Return),
             "expand" => Ok(Self::Expand),
             "escalate" => Ok(Self::Escalate),
-            other => Err(format!("llm_query: on_low must be 'expand', 'escalate' or 'return', got {other:?}")),
+            other => Err(format!(
+                "llm_query: on_low must be 'expand', 'escalate' or 'return', got {other:?}"
+            )),
         }
     }
 
@@ -701,7 +802,9 @@ fn split_confidence(text: &str) -> (String, f64) {
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect();
-    let conf = digits.parse::<f64>().map_or(MISSING, |v| v.clamp(1.0, 100.0));
+    let conf = digits
+        .parse::<f64>()
+        .map_or(MISSING, |v| v.clamp(1.0, 100.0));
     let head = &text[..pos];
     let cut = head.rfind('{').unwrap_or(head.len());
     (head[..cut].trim().to_string(), conf)
@@ -710,7 +813,13 @@ fn split_confidence(text: &str) -> (String, f64) {
 /// Normalize an answer for agreement grouping: lowercase alphanumerics, single spaces.
 fn normalize_answer(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_alphanumeric() { c.to_lowercase().collect::<String>() } else { " ".to_string() })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_lowercase().collect::<String>()
+            } else {
+                " ".to_string()
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -737,21 +846,38 @@ fn select_candidate(cands: &[Candidate], select: Select) -> Selection {
     }
     // Plurality; size ties go to the group with the best joint score under
     // `uncertainty`, else to the group holding the earliest candidate.
-    let top = |g: &(String, Vec<usize>)| g.1.iter().filter_map(|&i| cands[i].score).fold(f64::NEG_INFINITY, f64::max);
-    let best = groups.iter().fold(None::<&(String, Vec<usize>)>, |acc, g| match acc {
-        Some(a) if a.1.len() > g.1.len() => Some(a),
-        Some(a) if a.1.len() == g.1.len() && (select == Select::Consistency || top(a) >= top(g)) => Some(a),
-        _ => Some(g),
-    });
+    let top = |g: &(String, Vec<usize>)| {
+        g.1.iter()
+            .filter_map(|&i| cands[i].score)
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let best = groups
+        .iter()
+        .fold(None::<&(String, Vec<usize>)>, |acc, g| match acc {
+            Some(a) if a.1.len() > g.1.len() => Some(a),
+            Some(a)
+                if a.1.len() == g.1.len()
+                    && (select == Select::Consistency || top(a) >= top(g)) =>
+            {
+                Some(a)
+            }
+            _ => Some(g),
+        });
     let members = &best.expect("at least one candidate").1;
     let index = match select {
         Select::Consistency => members[0],
-        Select::Uncertainty => members
-            .iter()
-            .copied()
-            .fold(members[0], |b, i| if cands[i].score > cands[b].score { i } else { b }),
+        Select::Uncertainty => members.iter().copied().fold(members[0], |b, i| {
+            if cands[i].score > cands[b].score {
+                i
+            } else {
+                b
+            }
+        }),
     };
-    Selection { index, agreement: members.len() as f64 / cands.len() as f64 }
+    Selection {
+        index,
+        agreement: members.len() as f64 / cands.len() as f64,
+    }
 }
 
 fn reply(text: &str, record: &CallRecord, ledger: &Ledger) -> Value {
@@ -778,7 +904,11 @@ fn append_json_log(line: &Value) {
     let Some(path) = std::env::var_os("OMP_RLM_LOG") else {
         return;
     };
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = writeln!(file, "{line}");
     }
 }
@@ -786,8 +916,9 @@ fn append_json_log(line: &Value) {
 /// Session-entry sink installed by the runtime ([`set_entry_sink`]): one
 /// `model_usage` entry per provider call, so `omp stats` / bench can count
 /// sub-call tokens straight from the session file.
-static ENTRY_SINK: LazyLock<parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str, Value) + Send + Sync>>>> =
-    LazyLock::new(|| parking_lot::RwLock::new(None));
+static ENTRY_SINK: LazyLock<
+    parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str, Value) + Send + Sync>>>,
+> = LazyLock::new(|| parking_lot::RwLock::new(None));
 
 /// Install (or clear) the sink that records sub-call accounting in the session.
 pub fn set_entry_sink(sink: Option<std::sync::Arc<dyn Fn(&str, Value) + Send + Sync>>) {
@@ -825,9 +956,13 @@ pub(crate) static TEST_BACKEND: Mutex<Option<std::sync::Arc<dyn Backend>>> = Mut
 pub async fn llm_query_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
     #[cfg(test)]
     if let Some(backend) = TEST_BACKEND.lock().expect("test backend").clone() {
-        return SESSION.query(backend.as_ref(), Limits::effective(), args, &ctx.signal).await;
+        return SESSION
+            .query(backend.as_ref(), Limits::effective(), args, &ctx.signal)
+            .await;
     }
-    SESSION.query(&LiveBackend, Limits::effective(), args, &ctx.signal).await
+    SESSION
+        .query(&LiveBackend, Limits::effective(), args, &ctx.signal)
+        .await
 }
 
 /// `__rlm_stats__` host op.
@@ -880,7 +1015,9 @@ pub fn parse_args(args: &str) -> Result<RlmArgs, String> {
         let Some((name, value)) = token.split_once('=') else {
             break; // bare `--` delimiter or unknown token: part of the question
         };
-        let parsed: u64 = value.parse().map_err(|_| format!("/rlm: invalid value for --{name}: {value}"))?;
+        let parsed: u64 = value
+            .parse()
+            .map_err(|_| format!("/rlm: invalid value for --{name}: {value}"))?;
         match name {
             "max-depth" => depth = Some(parsed),
             "max-calls" => calls = Some(parsed),
@@ -891,7 +1028,11 @@ pub fn parse_args(args: &str) -> Result<RlmArgs, String> {
     }
     let (question, context) = if let Some((q, text)) = rest.split_once(" -- ") {
         (q.trim(), ContextSource::Text(text.to_string()))
-    } else if let Some(at) = rest.rfind(" @").map(|i| i + 1).or_else(|| rest.starts_with('@').then_some(0)) {
+    } else if let Some(at) = rest
+        .rfind(" @")
+        .map(|i| i + 1)
+        .or_else(|| rest.starts_with('@').then_some(0))
+    {
         let path = rest[at + 1..].trim();
         if path.is_empty() || path.contains(char::is_whitespace) {
             return Err(USAGE.to_string());
@@ -903,7 +1044,13 @@ pub fn parse_args(args: &str) -> Result<RlmArgs, String> {
     if question.is_empty() {
         return Err(USAGE.to_string());
     }
-    Ok(RlmArgs { question: question.to_string(), context, max_depth: depth, max_calls: calls, max_tokens: tokens })
+    Ok(RlmArgs {
+        question: question.to_string(),
+        context,
+        max_depth: depth,
+        max_calls: calls,
+        max_tokens: tokens,
+    })
 }
 
 /// Load the stored context into the kernel as `context` (a real eval cell on
@@ -919,7 +1066,9 @@ pub async fn load_context_cell(cwd: &std::path::Path) -> Result<(), String> {
         on_update: None,
     };
     let args = json!({"language": "py", "code": "context = rlm_context()", "timeout": 60});
-    let result = super::eval::eval(env, args, ctx).await.map_err(|e| format!("{e:#}"))?;
+    let result = super::eval::eval(env, args, ctx)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
     if result.is_error == Some(true) {
         let text = result
             .content
@@ -969,7 +1118,11 @@ mod tests {
 
     impl Mock {
         fn new(input: u64, output: u64) -> Self {
-            Self { calls: AtomicU64::new(0), input, output }
+            Self {
+                calls: AtomicU64::new(0),
+                input,
+                output,
+            }
         }
     }
 
@@ -1012,7 +1165,11 @@ mod tests {
     }
 
     fn limits(max_depth: u64, max_calls: u64, max_tokens: u64) -> Limits {
-        Limits { max_depth, max_calls, max_tokens }
+        Limits {
+            max_depth,
+            max_calls,
+            max_tokens,
+        }
     }
 
     #[tokio::test]
@@ -1021,11 +1178,24 @@ mod tests {
         let (session, mock, sig) = (Session::default(), Mock::new(10, 5), AbortSignal::never());
         let lim = limits(2, 2, 1_000_000);
         for i in 0..2 {
-            session.query(&mock, lim, &q(&format!("p{i}"), None), &sig).await.unwrap();
+            session
+                .query(&mock, lim, &q(&format!("p{i}"), None), &sig)
+                .await
+                .unwrap();
         }
-        let err = session.query(&mock, lim, &q("p2", None), &sig).await.unwrap_err();
-        assert!(err.contains("call budget exhausted") && err.contains("max_calls 2"), "{err}");
-        assert_eq!(mock.calls.load(Ordering::SeqCst), 2, "no provider call after exhaustion");
+        let err = session
+            .query(&mock, lim, &q("p2", None), &sig)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("call budget exhausted") && err.contains("max_calls 2"),
+            "{err}"
+        );
+        assert_eq!(
+            mock.calls.load(Ordering::SeqCst),
+            2,
+            "no provider call after exhaustion"
+        );
     }
 
     #[tokio::test]
@@ -1033,14 +1203,23 @@ mod tests {
         let _guard = TEST_GUARD.lock().await;
         let (session, mock, sig) = (Session::default(), Mock::new(80, 30), AbortSignal::never());
         let lim = limits(2, 10, 100);
-        session.query(&mock, lim, &q("a", None), &sig).await.unwrap(); // 110 tokens: budget now exceeded
-        let err = session.query(&mock, lim, &q("b", None), &sig).await.unwrap_err();
+        session
+            .query(&mock, lim, &q("a", None), &sig)
+            .await
+            .unwrap(); // 110 tokens: budget now exceeded
+        let err = session
+            .query(&mock, lim, &q("b", None), &sig)
+            .await
+            .unwrap_err();
         assert!(err.contains("token budget exhausted"), "{err}");
         assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
         // A huge prompt is refused up front from the estimate alone.
         let fresh = Session::default();
         let big = "x".repeat(4_000);
-        let err = fresh.query(&mock, limits(2, 10, 100), &q("p", Some(&big)), &sig).await.unwrap_err();
+        let err = fresh
+            .query(&mock, limits(2, 10, 100), &q("p", Some(&big)), &sig)
+            .await
+            .unwrap_err();
         assert!(err.contains("token budget exhausted"), "{err}");
         assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
     }
@@ -1051,10 +1230,16 @@ mod tests {
         let (session, mock, sig) = (Session::default(), Mock::new(1, 1), AbortSignal::never());
         let mut args = q("p", None);
         args["depth"] = json!(3);
-        let err = session.query(&mock, limits(2, 10, 1000), &args, &sig).await.unwrap_err();
+        let err = session
+            .query(&mock, limits(2, 10, 1000), &args, &sig)
+            .await
+            .unwrap_err();
         assert!(err.contains("depth budget exhausted"), "{err}");
         args["depth"] = json!(2);
-        session.query(&mock, limits(2, 10, 1000), &args, &sig).await.unwrap();
+        session
+            .query(&mock, limits(2, 10, 1000), &args, &sig)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1062,16 +1247,25 @@ mod tests {
         let _guard = TEST_GUARD.lock().await;
         let (session, mock, sig) = (Session::default(), Mock::new(40, 10), AbortSignal::never());
         let lim = limits(2, 1, 1_000_000);
-        let first = session.query(&mock, lim, &q("what?", Some("ctx")), &sig).await.unwrap();
+        let first = session
+            .query(&mock, lim, &q("what?", Some("ctx")), &sig)
+            .await
+            .unwrap();
         // max_calls is 1 and spent: only a memo hit can succeed now.
-        let second = session.query(&mock, lim, &q("what?", Some("ctx")), &sig).await.unwrap();
+        let second = session
+            .query(&mock, lim, &q("what?", Some("ctx")), &sig)
+            .await
+            .unwrap();
         assert_eq!(first["text"], second["text"]);
         assert_eq!(first["cached"], json!(false));
         assert_eq!(second["cached"], json!(true));
         assert_eq!(second["usage"], json!({"input": 0, "output": 0}));
         assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
         // Different context or model is a different key.
-        assert!(session.query(&mock, lim, &q("what?", Some("other")), &sig).await.is_err());
+        assert!(session
+            .query(&mock, lim, &q("what?", Some("other")), &sig)
+            .await
+            .is_err());
         let mut other_model = q("what?", Some("ctx"));
         other_model["model"] = json!("slow");
         assert!(session.query(&mock, lim, &other_model, &sig).await.is_err());
@@ -1082,9 +1276,18 @@ mod tests {
         let _guard = TEST_GUARD.lock().await;
         let (session, mock, sig) = (Session::default(), Mock::new(40, 10), AbortSignal::never());
         let lim = limits(2, 10, 1_000_000);
-        session.query(&mock, lim, &q("a", Some("one")), &sig).await.unwrap();
-        session.query(&mock, lim, &q("b", Some("two")), &sig).await.unwrap();
-        session.query(&mock, lim, &q("a", Some("one")), &sig).await.unwrap(); // memo
+        session
+            .query(&mock, lim, &q("a", Some("one")), &sig)
+            .await
+            .unwrap();
+        session
+            .query(&mock, lim, &q("b", Some("two")), &sig)
+            .await
+            .unwrap();
+        session
+            .query(&mock, lim, &q("a", Some("one")), &sig)
+            .await
+            .unwrap(); // memo
         let stats = session.stats(lim);
         assert_eq!(stats["calls"], 2);
         assert_eq!(stats["memo_hits"], 1);
@@ -1093,7 +1296,10 @@ mod tests {
         assert_eq!(stats["total_tokens"], 100);
         let records = stats["records"].as_array().unwrap();
         assert_eq!(records.len(), 3);
-        assert_eq!(records[0]["model"], "smol", "default model is the smol role");
+        assert_eq!(
+            records[0]["model"], "smol",
+            "default model is the smol role"
+        );
         assert_eq!(records[0]["context_chars"], 3);
         assert_eq!(records[2]["cached"], true);
         session.reset();
@@ -1104,18 +1310,29 @@ mod tests {
     async fn session_accounting_records_model_usage_entries() {
         let _guard = TEST_GUARD.lock().await;
         use std::sync::Arc;
-        let entries: Arc<parking_lot::Mutex<Vec<(String, Value)>>> = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let entries: Arc<parking_lot::Mutex<Vec<(String, Value)>>> =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
         let collected = Arc::clone(&entries);
         set_entry_sink(Some(Arc::new(move |kind: &str, payload: Value| {
             collected.lock().push((kind.to_string(), payload));
         })));
         let (session, mock, sig) = (Session::default(), Mock::new(40, 10), AbortSignal::never());
         let lim = limits(2, 10, 1_000_000);
-        session.query(&mock, lim, &q("a", Some("one")), &sig).await.unwrap();
-        session.query(&mock, lim, &q("a", Some("one")), &sig).await.unwrap(); // memo: no entry
+        session
+            .query(&mock, lim, &q("a", Some("one")), &sig)
+            .await
+            .unwrap();
+        session
+            .query(&mock, lim, &q("a", Some("one")), &sig)
+            .await
+            .unwrap(); // memo: no entry
         set_entry_sink(None);
         let entries = entries.lock();
-        assert_eq!(entries.len(), 1, "one model_usage entry per provider call; memo hits are free");
+        assert_eq!(
+            entries.len(),
+            1,
+            "one model_usage entry per provider call; memo hits are free"
+        );
         let (kind, payload) = &entries[0];
         assert_eq!(kind, "model_usage");
         assert_eq!(payload["purpose"], "rlm");
@@ -1143,9 +1360,15 @@ mod tests {
         let a = parse_args("--max-calls=5 --max-tokens=900 find it -- some text here").unwrap();
         assert_eq!(a.question, "find it");
         assert_eq!(a.context, ContextSource::Text("some text here".into()));
-        assert_eq!((a.max_calls, a.max_tokens, a.max_depth), (Some(5), Some(900), None));
+        assert_eq!(
+            (a.max_calls, a.max_tokens, a.max_depth),
+            (Some(5), Some(900), None)
+        );
         // No @file / `-- text`: the session conversation is the context.
-        assert_eq!(parse_args("what did we decide?").unwrap().context, ContextSource::Session);
+        assert_eq!(
+            parse_args("what did we decide?").unwrap().context,
+            ContextSource::Session
+        );
         assert!(parse_args("").is_err());
         assert!(parse_args("@only.txt").is_err());
         assert!(parse_args("--max-calls=x q @f").is_err());
@@ -1160,7 +1383,11 @@ mod tests {
 
     impl Script {
         fn new(script: impl Fn(&str, u64) -> String + Send + Sync + 'static) -> Self {
-            Self { calls: AtomicU64::new(0), prompts: Mutex::new(Vec::new()), script: Box::new(script) }
+            Self {
+                calls: AtomicU64::new(0),
+                prompts: Mutex::new(Vec::new()),
+                script: Box::new(script),
+            }
         }
     }
 
@@ -1175,7 +1402,12 @@ mod tests {
                 let n = self.calls.fetch_add(1, Ordering::SeqCst);
                 self.prompts.lock().unwrap().push(prompt.to_string());
                 let text = (self.script)(model, n);
-                let usage = Usage { input: 10, output: 5, total_tokens: 15, ..Usage::default() };
+                let usage = Usage {
+                    input: 10,
+                    output: 5,
+                    total_tokens: 15,
+                    ..Usage::default()
+                };
                 Ok((text, usage, fake_model()))
             })
         }
@@ -1197,15 +1429,26 @@ mod tests {
         session.set_context(Some("PARENT-TRANSCRIPT-SECRET".into()));
         let backend = Script::new(|_, _| "ok".into());
         let lim = limits(2, 10, 1_000_000);
-        session.query(&backend, lim, &q("Q?", Some("chunk")), &sig).await.unwrap();
+        session
+            .query(&backend, lim, &q("Q?", Some("chunk")), &sig)
+            .await
+            .unwrap();
         let mut args = q("Q2?", None);
         args["frame"] = json!("only");
         args["pointers"] = json!(["/tmp/a.txt", "memo#3"]);
         session.query(&backend, lim, &args, &sig).await.unwrap();
         let prompts = backend.prompts.lock().unwrap().clone();
         assert_eq!(prompts[0], "<context>\nchunk\n</context>\n\nQ?");
-        assert_eq!(prompts[1], "<pointers>\n- /tmp/a.txt\n- memo#3\n</pointers>\n\nQ2?");
-        assert!(prompts.iter().all(|p| !p.contains("PARENT-TRANSCRIPT-SECRET")), "{prompts:?}");
+        assert_eq!(
+            prompts[1],
+            "<pointers>\n- /tmp/a.txt\n- memo#3\n</pointers>\n\nQ2?"
+        );
+        assert!(
+            prompts
+                .iter()
+                .all(|p| !p.contains("PARENT-TRANSCRIPT-SECRET")),
+            "{prompts:?}"
+        );
         let mut bad = q("Q3?", None);
         bad["frame"] = json!("parent");
         let err = session.query(&backend, lim, &bad, &sig).await.unwrap_err();
@@ -1228,12 +1471,18 @@ mod tests {
         assert_eq!(r["usage"], json!({"input": 30, "output": 15}));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
         // Same query again: every sample is a memo hit, budget untouched.
-        let again = session.query(&backend, limits(2, 3, 1_000_000), &args, &sig).await.unwrap();
+        let again = session
+            .query(&backend, limits(2, 3, 1_000_000), &args, &sig)
+            .await
+            .unwrap();
         assert_eq!(again["text"], "Paris");
         assert_eq!(again["cached"], json!(true));
         assert_eq!(backend.calls.load(Ordering::SeqCst), 3);
         // A plain llm_query shares sample 0's memo entry.
-        let plain = session.query(&backend, lim, &q("capital?", None), &sig).await.unwrap();
+        let plain = session
+            .query(&backend, lim, &q("capital?", None), &sig)
+            .await
+            .unwrap();
         assert_eq!(plain["cached"], json!(true));
         let stats = session.stats(lim);
         assert_eq!(stats["srlm"]["queries"], 2);
@@ -1254,12 +1503,18 @@ mod tests {
         // s = ln(.6)*~6 ≈ -3.1 -> the long one wins; the lone 100% "7" is outvoted.
         let backend = Script::new(move |_, n| replies[n as usize % 3].clone());
         let args = ks("answer?", 3, json!({"select": "uncertainty"}));
-        let r = session.query(&backend, limits(2, 10, 1_000_000), &args, &sig).await.unwrap();
+        let r = session
+            .query(&backend, limits(2, 10, 1_000_000), &args, &sig)
+            .await
+            .unwrap();
         // Different answer text -> three singleton groups; the size tie goes to the best
         // joint score: the 100%-confidence "7" has s = ln(1)*Len = 0.
         assert_eq!(r["selected"], 2);
         assert_eq!(r["candidates"][0]["confidence"], 60.0);
-        assert!(r["candidates"][1]["score"].as_f64().unwrap() > r["candidates"][0]["score"].as_f64().unwrap());
+        assert!(
+            r["candidates"][1]["score"].as_f64().unwrap()
+                > r["candidates"][0]["score"].as_f64().unwrap()
+        );
         assert!(backend.prompts.lock().unwrap()[0].contains("\"confidence\""));
     }
 
@@ -1295,15 +1550,33 @@ mod tests {
         let lim = limits(2, 20, 1_000_000);
         // expand: first 3 all differ (1/3 < 0.5), 3 more draws, "a" ends with 3 of 6.
         let session = Session::default();
-        let backend = Script::new(|_, n| ["a", "b", "c", "a", "a", "b"][n as usize % 6].to_string());
+        let backend =
+            Script::new(|_, n| ["a", "b", "c", "a", "a", "b"][n as usize % 6].to_string());
         let args = ks("q", 3, json!({"on_low": "expand"}));
         let r = session.query(&backend, lim, &args, &sig).await.unwrap();
-        assert_eq!((r["text"].as_str().unwrap(), r["k"].as_u64().unwrap(), r["expanded"].clone()), ("a", 6, json!(true)));
+        assert_eq!(
+            (
+                r["text"].as_str().unwrap(),
+                r["k"].as_u64().unwrap(),
+                r["expanded"].clone()
+            ),
+            ("a", 6, json!(true))
+        );
         assert_eq!(backend.calls.load(Ordering::SeqCst), 6);
         // escalate: the escalation model's answer wins, and it is one extra call.
         let session = Session::default();
-        let backend = Script::new(|model, n| if model == "big" { "BIG".into() } else { format!("s{n}") });
-        let args = ks("q", 3, json!({"on_low": "escalate", "escalate_model": "big"}));
+        let backend = Script::new(|model, n| {
+            if model == "big" {
+                "BIG".into()
+            } else {
+                format!("s{n}")
+            }
+        });
+        let args = ks(
+            "q",
+            3,
+            json!({"on_low": "escalate", "escalate_model": "big"}),
+        );
         let r = session.query(&backend, lim, &args, &sig).await.unwrap();
         assert_eq!(r["text"], "BIG");
         assert_eq!(r["escalated"]["model"], "big");
@@ -1311,8 +1584,19 @@ mod tests {
         // return: flagged, selection kept.
         let session = Session::default();
         let backend = Script::new(|_, n| format!("s{n}"));
-        let r = session.query(&backend, lim, &ks("q", 3, json!({"on_low": "return"})), &sig).await.unwrap();
-        assert_eq!((r["low"].clone(), r["text"].clone()), (json!(true), json!("s0")));
+        let r = session
+            .query(
+                &backend,
+                lim,
+                &ks("q", 3, json!({"on_low": "return"})),
+                &sig,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            (r["low"].clone(), r["text"].clone()),
+            (json!(true), json!("s0"))
+        );
         assert_eq!(session.stats(lim)["srlm"]["low_agreement"], 1);
     }
 
@@ -1323,14 +1607,38 @@ mod tests {
         let backend = Script::new(|_, _| "same".into());
         let session = Session::default();
         // max_calls 2: only two of the three samples can be drawn; still an answer.
-        let r = session.query(&backend, limits(2, 2, 1_000_000), &ks("q", 3, json!({})), &sig).await.unwrap();
+        let r = session
+            .query(
+                &backend,
+                limits(2, 2, 1_000_000),
+                &ks("q", 3, json!({})),
+                &sig,
+            )
+            .await
+            .unwrap();
         assert_eq!(r["k"], 2);
         assert_eq!(r["agreement"], 1.0);
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
         // Nothing left: the budget error surfaces.
-        let err = session.query(&backend, limits(2, 2, 1_000_000), &ks("other", 3, json!({})), &sig).await.unwrap_err();
+        let err = session
+            .query(
+                &backend,
+                limits(2, 2, 1_000_000),
+                &ks("other", 3, json!({})),
+                &sig,
+            )
+            .await
+            .unwrap_err();
         assert!(err.contains("call budget exhausted"), "{err}");
-        let err = session.query(&backend, limits(2, 9, 1_000_000), &ks("q", 99, json!({})), &sig).await.unwrap_err();
+        let err = session
+            .query(
+                &backend,
+                limits(2, 9, 1_000_000),
+                &ks("q", 99, json!({})),
+                &sig,
+            )
+            .await
+            .unwrap_err();
         assert!(err.contains("k must be"), "{err}");
     }
 }

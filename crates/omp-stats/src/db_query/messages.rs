@@ -9,7 +9,10 @@ use rusqlite::{params, params_from_iter, OptionalExtension, Row};
 use serde_json::Value;
 
 use crate::db::{rows, with_db};
-use crate::types::{AgentType, DailyActivityPoint, MessageStats, StopReason, Usage, UsageCost, UserMessageLink, UserMessageStats};
+use crate::types::{
+    AgentType, DailyActivityPoint, MessageStats, StopReason, Usage, UsageCost, UserMessageLink,
+    UserMessageStats,
+};
 
 /// TS `rowToMessageStats`. Column names are read by name, not position.
 fn row_to_message_stats(row: &Row<'_>) -> rusqlite::Result<MessageStats> {
@@ -102,7 +105,9 @@ pub fn get_recent_errors(limit: i64, cutoff: Option<i64>) -> Result<Vec<MessageS
 pub fn get_message_by_id(id: i64) -> Result<Option<MessageStats>> {
     with_db(|conn| {
         let mut stmt = conn.prepare("SELECT * FROM messages WHERE id = ?")?;
-        Ok(stmt.query_row(params![id], row_to_message_stats).optional()?)
+        Ok(stmt
+            .query_row(params![id], row_to_message_stats)
+            .optional()?)
     })
 }
 

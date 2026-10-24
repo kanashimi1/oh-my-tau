@@ -10,10 +10,10 @@ use serde_json::{json, Value};
 use crate::config::{McpServerConfig, ServerKind};
 use crate::errors::{McpConnectionTimeoutError, McpError};
 use crate::timeout::is_timeout_enabled;
-use crate::transport::McpTransport;
-use crate::transport::PROTOCOL_VERSION;
 use crate::transport::http::HttpTransport;
 use crate::transport::stdio::StdioTransport;
+use crate::transport::McpTransport;
+use crate::transport::PROTOCOL_VERSION;
 use crate::{Content, ToolCallResult, ToolDefinition};
 
 /// Client info sent during initialization (omp `CLIENT_INFO`).
@@ -49,8 +49,14 @@ pub async fn connect_to_server(
             name: name.to_string(),
             config: config.clone(),
             transport,
-            server_info: init_result.get("serverInfo").cloned().unwrap_or(Value::Null),
-            capabilities: init_result.get("capabilities").cloned().unwrap_or_else(|| json!({})),
+            server_info: init_result
+                .get("serverInfo")
+                .cloned()
+                .unwrap_or(Value::Null),
+            capabilities: init_result
+                .get("capabilities")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
             instructions: init_result
                 .get("instructions")
                 .and_then(Value::as_str)
@@ -84,7 +90,9 @@ fn create_transport(
             futures::executor::block_on(transport.connect())?;
             Ok(Box::new(transport))
         }
-        ServerKind::Http | ServerKind::Sse => Ok(Box::new(HttpTransport::new(name, config.clone(), cwd))),
+        ServerKind::Http | ServerKind::Sse => {
+            Ok(Box::new(HttpTransport::new(name, config.clone(), cwd)))
+        }
     }
 }
 
@@ -96,7 +104,9 @@ async fn initialize_connection(transport: &mut dyn McpTransport) -> Result<Value
         "clientInfo": { "name": CLIENT_INFO.0, "version": CLIENT_INFO.1 },
     });
     let result = transport.request("initialize", params).await?;
-    transport.notify("notifications/initialized", json!({})).await?;
+    transport
+        .notify("notifications/initialized", json!({}))
+        .await?;
     Ok(result)
 }
 
@@ -137,9 +147,19 @@ pub async fn list_tools(connection: &mut Connection) -> Result<Vec<ToolDefinitio
 /// Parse one `tools/list` entry, keeping the input schema verbatim.
 fn parse_tool_definition(value: &Value) -> ToolDefinition {
     ToolDefinition {
-        name: value.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
-        title: value.get("title").and_then(Value::as_str).map(str::to_string),
-        description: value.get("description").and_then(Value::as_str).map(str::to_string),
+        name: value
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        title: value
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        description: value
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         input_schema: value
             .get("inputSchema")
             .cloned()
@@ -169,7 +189,10 @@ pub(crate) fn parse_tool_call_result(result: &Value) -> ToolCallResult {
         .unwrap_or_default();
     ToolCallResult {
         content,
-        is_error: result.get("isError").and_then(Value::as_bool).unwrap_or(false),
+        is_error: result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         structured_content: result.get("structuredContent").cloned(),
         meta: result.get("_meta").cloned(),
     }
@@ -178,10 +201,18 @@ pub(crate) fn parse_tool_call_result(result: &Value) -> ToolCallResult {
 fn parse_content(value: &Value) -> Content {
     match value.get("type").and_then(Value::as_str) {
         Some("text") => Content::Text {
-            text: value.get("text").and_then(Value::as_str).unwrap_or_default().to_string(),
+            text: value
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
         },
         Some("image") => Content::Image {
-            data: value.get("data").and_then(Value::as_str).unwrap_or_default().to_string(),
+            data: value
+                .get("data")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
             mime_type: value
                 .get("mimeType")
                 .and_then(Value::as_str)
@@ -191,8 +222,15 @@ fn parse_content(value: &Value) -> Content {
         Some("resource") => {
             let resource = value.get("resource").cloned().unwrap_or_else(|| json!({}));
             Content::Resource {
-                uri: resource.get("uri").and_then(Value::as_str).unwrap_or_default().to_string(),
-                text: resource.get("text").and_then(Value::as_str).map(str::to_string),
+                uri: resource
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                text: resource
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             }
         }
         _ => Content::Other(value.clone()),

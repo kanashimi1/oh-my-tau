@@ -31,7 +31,9 @@ impl DocsIndex {
 
     /// Resolve a doc body by path; inflates lazily, once (TS `getBody`).
     pub fn body(&self, relative_path: &str) -> Option<&str> {
-        let bodies = self.bodies.get_or_init(|| inflate_bodies(&self.filenames, &self.blob));
+        let bodies = self
+            .bodies
+            .get_or_init(|| inflate_bodies(&self.filenames, &self.blob));
         match bodies {
             Ok(map) => map
                 .iter()
@@ -104,7 +106,9 @@ fn index() -> &'static Option<DocsIndex> {
 
 /// Sorted list of available doc filenames (TS `getDocFilenames`).
 pub fn doc_filenames() -> Vec<String> {
-    index().as_ref().map_or_else(Vec::new, |i| i.filenames.clone())
+    index()
+        .as_ref()
+        .map_or_else(Vec::new, |i| i.filenames.clone())
 }
 
 /// Resolve a doc body by path, or `None` when not found (TS `getEmbeddedDoc`).
@@ -202,7 +206,10 @@ fn list_docs(_url: &InternalUrl) -> Result<InternalResource, String> {
         .map(|f| format!("- [{f}](omp://{f})"))
         .collect::<Vec<_>>()
         .join("\n");
-    let content = format!("# Documentation\n\n{} files available:\n\n{listing}\n", filenames.len());
+    let content = format!(
+        "# Documentation\n\n{} files available:\n\n{listing}\n",
+        filenames.len()
+    );
     Ok(InternalResource {
         content,
         is_directory: true,
@@ -212,14 +219,17 @@ fn list_docs(_url: &InternalUrl) -> Result<InternalResource, String> {
 }
 
 /// One embedded doc, or the TS not-found error with up to 5 suggestions (TS `#readDoc`).
-fn read_doc(doc_path: &str, filename: &str, _url: &InternalUrl) -> Result<InternalResource, String> {
+fn read_doc(
+    doc_path: &str,
+    filename: &str,
+    _url: &InternalUrl,
+) -> Result<InternalResource, String> {
     let Some(content) = embedded_doc(doc_path) else {
         let lookup = doc_path.strip_suffix(".md").unwrap_or(doc_path);
         let suggestions: Vec<String> = doc_filenames()
             .into_iter()
             .filter(|f| {
-                f.contains(lookup)
-                    || lookup.contains(f.strip_suffix(".md").unwrap_or(f.as_str()))
+                f.contains(lookup) || lookup.contains(f.strip_suffix(".md").unwrap_or(f.as_str()))
             })
             .take(5)
             .collect();
@@ -294,8 +304,7 @@ mod tests {
     fn fixture() -> String {
         let bodies = serde_json::json!(["body of a", "body of guide"]).to_string();
         use base64::Engine;
-        let mut encoder =
-            flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         std::io::Write::write_all(&mut encoder, bodies.as_bytes()).unwrap();
         let blob = base64::engine::general_purpose::STANDARD.encode(encoder.finish().unwrap());
         format!("[\"a.md\",\"guide/getting-started.md\"]\n{blob}")
@@ -308,7 +317,10 @@ mod tests {
     #[test]
     fn decode_lists_and_reads() {
         let index = decode_docs_index(&fixture()).unwrap();
-        assert_eq!(index.filenames(), &["a.md".to_string(), "guide/getting-started.md".to_string()]);
+        assert_eq!(
+            index.filenames(),
+            &["a.md".to_string(), "guide/getting-started.md".to_string()]
+        );
         assert_eq!(index.body("a.md"), Some("body of a"));
         assert_eq!(index.body("missing.md"), None);
     }
@@ -316,7 +328,10 @@ mod tests {
     #[test]
     fn doc_filename_and_rel() {
         assert_eq!(omp_doc_filename(&url("omp://a.md")), "a.md");
-        assert_eq!(omp_doc_filename(&url("omp://guide/start.md")), "guide/start.md");
+        assert_eq!(
+            omp_doc_filename(&url("omp://guide/start.md")),
+            "guide/start.md"
+        );
         assert_eq!(omp_doc_filename(&url("omp://")), "");
         assert_eq!(omp_doc_rel(&url("omp://")).unwrap(), "");
         assert_eq!(omp_doc_rel(&url("omp://docs")).unwrap(), "");
@@ -332,9 +347,17 @@ mod tests {
         std::env::set_var("OMP_DOCS_EMBED", fixture());
         // A fresh process-global would be polluted across tests; call the
         // render path through `decode_docs_index`-backed helpers instead.
-        let filenames: Vec<String> = serde_json::from_str(fixture().split('\n').next().unwrap()).unwrap();
-        let listing = filenames.iter().map(|f| format!("- [{f}](omp://{f})")).collect::<Vec<_>>().join("\n");
-        let content = format!("# Documentation\n\n{} files available:\n\n{listing}\n", filenames.len());
+        let filenames: Vec<String> =
+            serde_json::from_str(fixture().split('\n').next().unwrap()).unwrap();
+        let listing = filenames
+            .iter()
+            .map(|f| format!("- [{f}](omp://{f})"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let content = format!(
+            "# Documentation\n\n{} files available:\n\n{listing}\n",
+            filenames.len()
+        );
         assert_eq!(
             content,
             "# Documentation\n\n2 files available:\n\n- [a.md](omp://a.md)\n- [guide/getting-started.md](omp://guide/getting-started.md)\n"
@@ -348,7 +371,9 @@ mod tests {
         let filenames = vec!["a.md".to_string(), "guide/getting-started.md".to_string()];
         let suggestions: Vec<String> = filenames
             .into_iter()
-            .filter(|f| f.contains(lookup) || lookup.contains(f.strip_suffix(".md").unwrap_or(f.as_str())))
+            .filter(|f| {
+                f.contains(lookup) || lookup.contains(f.strip_suffix(".md").unwrap_or(f.as_str()))
+            })
             .take(5)
             .collect();
         assert_eq!(suggestions, vec!["guide/getting-started.md"]);

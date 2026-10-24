@@ -125,6 +125,9 @@ pub enum AppEvent {
         /// Notice text.
         message: String,
     },
+    /// `{"type":"clipboard_copy","text":...}` — `/copy` picked `text` for the
+    /// system clipboard (omp-cli `slash_extra::dialog::copy_to_clipboard`).
+    ClipboardCopy(String),
     /// Any frame without a dedicated variant; kept verbatim.
     Unknown(Value),
 }
@@ -174,8 +177,16 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
         | "retry_fallback_succeeded" => AppEvent::Retry(frame.clone()),
         "available_commands_update" => AppEvent::AvailableCommands(frame.clone()),
         "notice" => AppEvent::Notice {
-            level: frame.get("level").and_then(Value::as_str).unwrap_or("info").to_owned(),
-            message: frame.get("message").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            level: frame
+                .get("level")
+                .and_then(Value::as_str)
+                .unwrap_or("info")
+                .to_owned(),
+            message: frame
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
         },
         "command_output" => AppEvent::CommandOutput(
             frame
@@ -202,8 +213,18 @@ pub fn parse_frame(frame: &Value) -> AppEvent {
             name: session_loaded_name(frame),
         },
         "session_reset" => AppEvent::SessionReset,
+        "clipboard_copy" => AppEvent::ClipboardCopy(
+            frame
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        ),
         "session_info" => AppEvent::SessionInfo {
-            title: frame.get("title").and_then(Value::as_str).map(str::to_owned),
+            title: frame
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
             lines: crate::overlays::session_info::SessionInfoLine::parse_frame(frame),
         },
         "models_changed" => AppEvent::ModelsChanged {
@@ -257,12 +278,30 @@ fn parse_model_entry(entry: &Value) -> Option<crate::overlays::models::ModelEntr
         .unwrap_or_default()
         .to_owned();
     model.max_tokens = entry.get("maxTokens").and_then(Value::as_u64);
-    model.cost_input = entry.get("costInput").and_then(Value::as_f64).unwrap_or(0.0);
-    model.cost_output = entry.get("costOutput").and_then(Value::as_f64).unwrap_or(0.0);
-    model.cost_cache_read = entry.get("costCacheRead").and_then(Value::as_f64).unwrap_or(0.0);
-    model.reasoning = entry.get("reasoning").and_then(Value::as_bool).unwrap_or(false);
-    model.vision = entry.get("vision").and_then(Value::as_bool).unwrap_or(false);
-    model.available = entry.get("available").and_then(Value::as_bool).unwrap_or(false);
+    model.cost_input = entry
+        .get("costInput")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    model.cost_output = entry
+        .get("costOutput")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    model.cost_cache_read = entry
+        .get("costCacheRead")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    model.reasoning = entry
+        .get("reasoning")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    model.vision = entry
+        .get("vision")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    model.available = entry
+        .get("available")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     model.kind = entry
         .get("kind")
         .and_then(Value::as_str)
@@ -294,7 +333,10 @@ mod tests {
     fn notice_frames_become_notices() {
         assert_eq!(
             parse_frame(&json!({"type":"notice","level":"warning","message":"cache resets"})),
-            AppEvent::Notice { level: "warning".into(), message: "cache resets".into() }
+            AppEvent::Notice {
+                level: "warning".into(),
+                message: "cache resets".into()
+            }
         );
     }
 
@@ -308,8 +350,12 @@ mod tests {
             parse_frame(&json!({"type":"session_settled"})),
             AppEvent::SessionSettled
         );
-        match parse_frame(&json!({"type":"prompt_result","id":"t1","status":"completed","agentInvoked":true,"sessionSettled":true})) {
-            AppEvent::PromptResult { id, success, error, .. } => {
+        match parse_frame(
+            &json!({"type":"prompt_result","id":"t1","status":"completed","agentInvoked":true,"sessionSettled":true}),
+        ) {
+            AppEvent::PromptResult {
+                id, success, error, ..
+            } => {
                 assert_eq!(id.as_deref(), Some("t1"));
                 assert!(success);
                 assert!(error.is_none());
@@ -317,8 +363,10 @@ mod tests {
             other => panic!("unexpected: {other:?}"),
         }
         // TS wire shape: failure is `status: "error"` + `error.message`.
-        match parse_frame(&json!({"type":"prompt_result","status":"error","agentInvoked":true,
-                                  "error":{"message":"429 rate limited","retryable":true}})) {
+        match parse_frame(
+            &json!({"type":"prompt_result","status":"error","agentInvoked":true,
+                                  "error":{"message":"429 rate limited","retryable":true}}),
+        ) {
             AppEvent::PromptResult { success, error, .. } => {
                 assert!(!success);
                 assert_eq!(error.as_deref(), Some("429 rate limited"));

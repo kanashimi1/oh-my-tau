@@ -59,17 +59,21 @@ fn normalize_string_array(value: &Value) -> Option<Vec<String>> {
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
-    if items.is_empty() { None } else { Some(items) }
+    if items.is_empty() {
+        None
+    } else {
+        Some(items)
+    }
 }
 
 fn normalize_extension_map(value: &Value) -> Option<Vec<String>> {
     let map = value.as_object()?;
-    let exts: Vec<String> = map
-        .keys()
-        .filter(|k| !k.is_empty())
-        .cloned()
-        .collect();
-    if exts.is_empty() { None } else { Some(exts) }
+    let exts: Vec<String> = map.keys().filter(|k| !k.is_empty()).cloned().collect();
+    if exts.is_empty() {
+        None
+    } else {
+        Some(exts)
+    }
 }
 
 /// Normalize one raw server entry; `None` when required fields are missing.
@@ -79,16 +83,26 @@ fn normalize_server_config(_name: &str, config: &Value) -> Option<ServerConfig> 
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())?
         .to_string();
-    let file_types = normalize_string_array(&config.get("fileTypes").cloned().unwrap_or(Value::Null))
-        .or_else(|| normalize_extension_map(&config.get("extensionToLanguage").cloned().unwrap_or(Value::Null)))?;
-    let root_markers = normalize_string_array(&config.get("rootMarkers").cloned().unwrap_or(Value::Null))
-        .or_else(|| {
-            if config.get("extensionToLanguage").is_some() {
-                Some(vec![".".to_string()])
-            } else {
-                None
-            }
-        })?;
+    let file_types = normalize_string_array(
+        &config.get("fileTypes").cloned().unwrap_or(Value::Null),
+    )
+    .or_else(|| {
+        normalize_extension_map(
+            &config
+                .get("extensionToLanguage")
+                .cloned()
+                .unwrap_or(Value::Null),
+        )
+    })?;
+    let root_markers =
+        normalize_string_array(&config.get("rootMarkers").cloned().unwrap_or(Value::Null))
+            .or_else(|| {
+                if config.get("extensionToLanguage").is_some() {
+                    Some(vec![".".to_string()])
+                } else {
+                    None
+                }
+            })?;
     let language_id = config
         .get("languageId")
         .and_then(Value::as_str)
@@ -96,7 +110,11 @@ fn normalize_server_config(_name: &str, config: &Value) -> Option<ServerConfig> 
         .map(ToString::to_string);
     let args = config.get("args").and_then(|v| {
         let arr = v.as_array()?;
-        let items: Vec<String> = arr.iter().filter_map(|x| x.as_str()).map(ToString::to_string).collect();
+        let items: Vec<String> = arr
+            .iter()
+            .filter_map(|x| x.as_str())
+            .map(ToString::to_string)
+            .collect();
         Some(items)
     });
     let init_options = config
@@ -114,9 +132,7 @@ fn normalize_server_config(_name: &str, config: &Value) -> Option<ServerConfig> 
         init_options,
         settings: config.get("settings").filter(|v| v.is_object()).cloned(),
         disabled: config.get("disabled").and_then(Value::as_bool),
-        warmup_timeout_ms: config
-            .get("warmupTimeoutMs")
-            .and_then(Value::as_u64),
+        warmup_timeout_ms: config.get("warmupTimeoutMs").and_then(Value::as_u64),
         workspace_ready_timings: config
             .get("workspaceReadyTimings")
             .and_then(|v| serde_json::from_value(v.clone()).ok()),
@@ -171,7 +187,9 @@ fn merge_servers(
         };
         if let Some(cfg) = normalize_server_config(name, &candidate) {
             merged.insert(name.clone(), cfg);
-        } else { warn!("Ignoring invalid LSP overrides (keeping previous config): {name}") }
+        } else {
+            warn!("Ignoring invalid LSP overrides (keeping previous config): {name}")
+        }
     }
     merged
 }
@@ -232,9 +250,7 @@ pub fn has_root_marker_ancestor(file_path: &Path, markers: &[String]) -> bool {
     if markers.is_empty() {
         return false;
     }
-    let mut dir = file_path
-        .parent()
-        .map(crate::utils::normalize_path);
+    let mut dir = file_path.parent().map(crate::utils::normalize_path);
     while let Some(d) = dir {
         if has_root_markers(&d, markers) {
             return true;
@@ -261,7 +277,15 @@ const PYTHON_ROOT_MARKERS: [&str; 9] = [
 ];
 
 const LOCAL_BIN_PATHS: [(&[&str], &str); 8] = [
-    (&["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"], "node_modules/.bin"),
+    (
+        &[
+            "package.json",
+            "package-lock.json",
+            "yarn.lock",
+            "pnpm-lock.yaml",
+        ],
+        "node_modules/.bin",
+    ),
     (&PYTHON_ROOT_MARKERS, ".venv/bin"),
     (&PYTHON_ROOT_MARKERS, ".venv/Scripts"),
     (&PYTHON_ROOT_MARKERS, "venv/bin"),
@@ -273,7 +297,10 @@ const LOCAL_BIN_PATHS: [(&[&str], &str); 8] = [
 
 fn resolve_command_from_local_root(command: &str, cwd: &Path) -> Option<PathBuf> {
     for (markers, bin_dir) in LOCAL_BIN_PATHS {
-        if !has_root_markers(cwd, &markers.iter().map(ToString::to_string).collect::<Vec<_>>()) {
+        if !has_root_markers(
+            cwd,
+            &markers.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        ) {
             continue;
         }
         let candidate = cwd.join(bin_dir).join(command);
@@ -324,8 +351,7 @@ pub fn resolve_command(command: &str, cwd: &Path) -> Option<String> {
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
@@ -355,12 +381,17 @@ fn typescript_package_dir(tsc_path: &Path) -> Option<PathBuf> {
 
 /// TypeScript 7 dropped `lib/tsserver.js`; older releases reject `tsc --lsp`.
 fn typescript_speaks_lsp(tsc_path: &Path) -> bool {
-    typescript_package_dir(tsc_path).is_some_and(|dir| !dir.join("lib").join("tsserver.js").exists())
+    typescript_package_dir(tsc_path)
+        .is_some_and(|dir| !dir.join("lib").join("tsserver.js").exists())
 }
 
 fn select_typescript_server(servers: &mut HashMap<String, ServerConfig>) {
-    let Some(native) = servers.get("typescript-native") else { return };
-    let Some(resolved) = native.resolved_command.clone() else { return };
+    let Some(native) = servers.get("typescript-native") else {
+        return;
+    };
+    let Some(resolved) = native.resolved_command.clone() else {
+        return;
+    };
     let native_path = PathBuf::from(&resolved);
     if typescript_speaks_lsp(&native_path) {
         servers.remove("typescript-language-server");
@@ -465,7 +496,10 @@ pub fn load_config(cwd: &Path) -> LspConfig {
     }
     select_typescript_server(&mut servers);
 
-    LspConfig { servers, idle_timeout_ms }
+    LspConfig {
+        servers,
+        idle_timeout_ms,
+    }
 }
 
 // =============================================================================
