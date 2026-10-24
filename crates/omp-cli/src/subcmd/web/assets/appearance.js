@@ -5,7 +5,7 @@
 // localStorage; applied before first paint by `OMP.appearance.apply()`.
 (function (OMP) {
   const { el } = OMP;
-  const KEY = "omrs-appearance";
+  const KEY = "omt-appearance";
 
   const W = (file, name) => ({ url: `/wallpapers/${file}`, name });
   const BUILTIN_WALLPAPERS = [
@@ -19,7 +19,7 @@
 
   /** id, name, preview swatches [bg, panel, accent, fg], suggested wallpaper. */
   const THEMES = [
-    { id: "omrs", name: "OMRS", sw: ["#0f0b14", "#16111c", "#ed4abf", "#e6e3ea"], wall: "" },
+    { id: "omt", name: "OMT", sw: ["#0f0b14", "#16111c", "#ed4abf", "#e6e3ea"], wall: "" },
     { id: "midnight", name: "Midnight", sw: ["#050506", "#0c0c0f", "#ff5ca8", "#e8e8ec"], wall: "/wallpapers/midnight.svg" },
     { id: "light", name: "Light", sw: ["#fbf9fc", "#ffffff", "#c42a95", "#2b2233"], wall: "" },
     { id: "sakura", name: "Sakura", sw: ["#120f24", "#1a1630", "#ff8fc7", "#f3eaf6"], wall: "/wallpapers/anime-sakura.svg" },
@@ -28,14 +28,14 @@
     { id: "vaporwave", name: "Vaporwave", sw: ["#1a0b2e", "#241040", "#ff71ce", "#f4e8ff"], wall: "/wallpapers/vaporwave-sunset.svg" },
     { id: "synthwave", name: "Synthwave", sw: ["#0b0820", "#120e2e", "#01cdfe", "#e6f7ff"], wall: "/wallpapers/vaporwave-grid.svg" },
   ];
-  const DEFAULTS = { theme: "omrs", wallpaper: "", dim: 35, blur: 0, glass: 78 };
+  const DEFAULTS = { theme: "omt", wallpaper: "", dim: 35, blur: 0, glass: 78 };
 
   function load() {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { /* reset */ }
-    // Pre-omrs single toggle (dark | light).
+    // Legacy single toggle (dark | light).
     const legacy = localStorage.getItem("omp-web-theme");
-    if (!saved.theme && legacy) saved.theme = legacy === "light" ? "light" : "omrs";
+    if (!saved.theme && legacy) saved.theme = legacy === "light" ? "light" : "omt";
     const out = { ...DEFAULTS, ...saved };
     if (!THEMES.some((t) => t.id === out.theme)) out.theme = DEFAULTS.theme;
     return out;

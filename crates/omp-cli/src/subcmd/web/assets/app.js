@@ -208,7 +208,7 @@
       else S.widgets.delete(key);
       return renderWidgets();
     }
-    if (m === "setTitle" || m === "set_title") { document.title = f.title || "omrs"; return; }
+    if (m === "setTitle" || m === "set_title") { document.title = f.title || "omt"; return; }
     if (m === "set_editor_text" || m === "setEditorText") return composer.setText(f.text || "");
     if (m === "setWorkingMessage") { S.status.set("working", f.message || ""); return renderStatus(); }
   }

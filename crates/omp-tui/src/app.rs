@@ -870,7 +870,7 @@ impl App {
         )
     }
 
-    /// Welcome block rows at `width` (clean: OMRS logo at `phase`).
+    /// Welcome block rows at `width` (clean: OMT logo at `phase`).
     fn welcome_rows(&self, width: u16, phase: f64) -> Vec<Line<'static>> {
         let Some(w) = &self.welcome else {
             return Vec::new();
@@ -4074,7 +4074,7 @@ mod tests {
         })));
     }
 
-    // ---- omp-rs: OMRS welcome, τ, ultra, magic keywords -------------------
+    // ---- omp-rs: OMT welcome, τ, ultra, magic keywords -------------------
 
     fn clean_app() -> App {
         let mut app = app();
@@ -4210,7 +4210,7 @@ mod tests {
         );
         let s = screen(&mut app, 100, 14);
         assert!(
-            s.lines().nth(1).is_some_and(|l| l.contains("OMRS")),
+            s.lines().nth(1).is_some_and(|l| l.contains("OMT")),
             "drawn at the top of the live region:\n{s}"
         );
         // Time is up: the static rows commit, the live region drops them.
@@ -4225,7 +4225,7 @@ mod tests {
         let mut expected = welcome::clean_welcome_lines("9.9.9", &tip, 100, &app.theme, 0.0);
         expected.push(Line::default());
         assert_eq!(rows, expected);
-        assert!(!screen(&mut app, 100, 14).contains("OMRS"));
+        assert!(!screen(&mut app, 100, 14).contains("OMT"));
         assert!(app.take_scrollback_lines(100, false).is_empty());
 
         // A prompt retiring mid-shimmer commits the welcome first.
@@ -4239,10 +4239,10 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        assert!(text.iter().any(|r| r.contains("OMRS")), "{text:#?}");
-        let omrs = text.iter().position(|r| r.contains("OMRS")).unwrap();
+        assert!(text.iter().any(|r| r.contains("OMT")), "{text:#?}");
+        let omt = text.iter().position(|r| r.contains("OMT")).unwrap();
         let hello = text.iter().position(|r| r.contains("hello")).unwrap();
-        assert!(omrs < hello);
+        assert!(omt < hello);
 
         // `/new` (session_reset) rebuild re-commits the static welcome.
         let mut app = clean_app();

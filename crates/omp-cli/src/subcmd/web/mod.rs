@@ -45,7 +45,7 @@ use agent::{Agent, Spawn};
 
 const USAGE: &str = "Usage: omp-rs web [--port <port>] [--host <host>] [--cwd <dir>] [--open]
 
-Start the omrs browser UI (default http://127.0.0.1:7467). Each open
+Start the omt browser UI (default http://127.0.0.1:7467). Each open
 session runs as its own `omp-rs --mode rpc` agent.";
 const DEFAULT_PORT: u16 = 7467;
 /// Request bodies are small JSON objects; images travel over the socket.
@@ -189,7 +189,7 @@ async fn serve(opts: Options) -> Result<i32> {
     });
     let shown_host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { opts.host.clone() };
     let url = format!("http://{shown_host}:{port}/");
-    println!("omrs web UI: {url}");
+    println!("omt web UI: {url}");
     println!("Working directory: {}", opts.cwd.display());
     println!("Press Ctrl+C to stop");
     if opts.open {

@@ -412,7 +412,7 @@ impl Ultra {
     }
 }
 
-/// The omp-rs "sunset" palette, top → bottom: the OMRS τ logo stripes and the
+/// The omp-rs "sunset" palette, top → bottom: the OMT τ logo stripes and the
 /// `hypercode` gradient.
 pub const SUNSET: [(u8, u8, u8); 8] = [
     (255, 224, 102),

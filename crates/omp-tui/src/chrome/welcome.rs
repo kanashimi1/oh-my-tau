@@ -4,7 +4,7 @@
 //! centered in the terminal width. It is the first transcript block and
 //! retires into scrollback with the rest of the history.
 //!
-//! The clean style (omp-rs default) shows the OMRS τ logo instead
+//! The clean style (omp-rs default) shows the OMT τ logo instead
 //! ([`clean_welcome_lines`]), shimmering for [`SHIMMER_MS`] after startup.
 
 use ratatui::style::{Color, Modifier, Style};
@@ -322,7 +322,7 @@ pub fn welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme) -> V
     lines
 }
 
-/// The OMRS τ glyph, 10 × 8 pixels (`#` lit), drawn as 4 half-block rows.
+/// The OMT τ glyph, 10 × 8 pixels (`#` lit), drawn as 4 half-block rows.
 const TAU: [&str; 8] = [
     "##########",
     "##########",
@@ -334,11 +334,11 @@ const TAU: [&str; 8] = [
     "     #####",
 ];
 const TAU_WIDTH: usize = 10;
-/// OMRS gradient ends (also the idle τ of the clean status line).
+/// OMT gradient ends (also the idle τ of the clean status line).
 pub const PINK: (u8, u8, u8) = (255, 92, 168);
 /// See [`PINK`].
 pub const CYAN: (u8, u8, u8) = (80, 220, 255);
-const KATAKANA: &str = "オー・マイ・アールエス";
+const KATAKANA: &str = "オー・マイ・タウ";
 /// Startup shimmer length: the logo animates this long, then freezes.
 pub const SHIMMER_MS: u64 = 1500;
 /// One colour cycle of the shimmer; [`SHIMMER_MS`] is a whole number of
@@ -400,11 +400,11 @@ fn stripe(row: usize, phase: f64) -> Color {
     ))
 }
 
-/// Gradient position of `OMRS` char `i`, ping-ponged by the phase so the
+/// Gradient position of `OMT` char `i`, ping-ponged by the phase so the
 /// sweep runs out and back and phase 0 / 1 are the static spread.
 #[allow(clippy::cast_precision_loss)]
-fn omrs_color(i: usize, phase: f64) -> Color {
-    let t = i as f64 / 3.0 + 2.0 * phase;
+fn omt_color(i: usize, phase: f64) -> Color {
+    let t = i as f64 / 2.0 + 2.0 * phase;
     let f = t.rem_euclid(2.0);
     rgb(crate::magic::gradient_at(
         &[PINK, CYAN],
@@ -412,15 +412,15 @@ fn omrs_color(i: usize, phase: f64) -> Color {
     ))
 }
 
-fn omrs_spans(phase: f64) -> Vec<Span<'static>> {
-    "OMRS"
+fn omt_spans(phase: f64) -> Vec<Span<'static>> {
+    "OMT"
         .chars()
         .enumerate()
         .map(|(i, c)| {
             Span::styled(
                 c.to_string(),
                 Style::default()
-                    .fg(omrs_color(i, phase))
+                    .fg(omt_color(i, phase))
                     .add_modifier(Modifier::BOLD),
             )
         })
@@ -451,9 +451,9 @@ fn tau_rows(phase: f64) -> Vec<Vec<Span<'static>>> {
         .collect()
 }
 
-/// Clean style welcome: the OMRS τ logo (sunset half-block stripes) with
-/// the `OMRS` wordmark, version + katakana reading and the tip beside it;
-/// one line (`τ OMRS v…`) on narrow terminals. `phase` 0 is the static
+/// Clean style welcome: the OMT τ logo (sunset half-block stripes) with
+/// the `OMT` wordmark, version + katakana reading and the tip beside it;
+/// one line (`τ OMT v…`) on narrow terminals. `phase` 0 is the static
 /// palette, other values come from [`shimmer_phase`].
 #[must_use]
 pub fn clean_welcome_lines(
@@ -474,12 +474,12 @@ pub fn clean_welcome_lines(
             ),
             Span::raw(" "),
         ];
-        spans.extend(omrs_spans(phase));
+        spans.extend(omt_spans(phase));
         spans.push(Span::styled(format!(" v{version}"), muted));
         return vec![Line::from(spans)];
     }
     let mut beside: Vec<Vec<Span<'static>>> = vec![Vec::new(); TAU.len() / 2];
-    beside[0] = omrs_spans(phase);
+    beside[0] = omt_spans(phase);
     beside[1] = vec![Span::styled(
         fit(&format!("v{version} · {KATAKANA}"), side),
         muted,
@@ -526,14 +526,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clean_welcome_is_the_omrs_logo_with_text_beside() {
+    fn clean_welcome_is_the_omt_logo_with_text_beside() {
         let theme = Theme::default();
         let rows = clean_welcome_lines("0.10.0", "Type `/` for commands", 100, &theme, 0.0);
         let t: Vec<String> = rows.iter().map(text).collect();
         assert_eq!(rows.len(), 5, "{t:#?}");
         assert!(t[0].is_empty());
-        assert_eq!(t[1], "  ▀▀▀▀▀▀▀▀▀▀   OMRS");
-        assert_eq!(t[2], "     ▀▀▀       v0.10.0 · オー・マイ・アールエス");
+        assert_eq!(t[1], "  ▀▀▀▀▀▀▀▀▀▀   OMT");
+        assert_eq!(t[2], "     ▀▀▀       v0.10.0 · オー・マイ・タウ");
         assert_eq!(t[3], "     ▀▀▀       Tip: Type `/` for commands");
         assert_eq!(t[4], "      ▀▀▀▄▄▄");
         assert!(t.iter().all(|r| !r.contains("Omi") && !r.contains("/w")));
@@ -541,12 +541,12 @@ mod tests {
         let first = &rows[1].spans[1];
         assert_eq!(first.style.fg, Some(rgb(crate::magic::SUNSET[0])));
         assert_eq!(first.style.bg, Some(rgb(crate::magic::SUNSET[1])));
-        // OMRS: bold pink → cyan.
+        // OMT: bold pink → cyan.
         let o = rows[1].spans.iter().find(|s| s.content == "O").unwrap();
         assert_eq!(o.style.fg, Some(rgb(PINK)));
         assert!(o.style.add_modifier.contains(Modifier::BOLD));
-        let s = rows[1].spans.iter().find(|s| s.content == "S").unwrap();
-        assert_eq!(s.style.fg, Some(rgb(CYAN)));
+        let t = rows[1].spans.iter().find(|s| s.content == "T").unwrap();
+        assert_eq!(t.style.fg, Some(rgb(CYAN)));
     }
 
     #[test]
@@ -561,7 +561,7 @@ mod tests {
         assert!(t.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 70));
         let narrow = clean_welcome_lines("1.2.3", "tip", 50, &theme, 0.0);
         assert_eq!(narrow.len(), 1);
-        assert_eq!(text(&narrow[0]), "  τ OMRS v1.2.3");
+        assert_eq!(text(&narrow[0]), "  τ OMT v1.2.3");
         assert_eq!(narrow[0].spans[1].style.fg, Some(rgb(PINK)));
     }
 
@@ -593,7 +593,7 @@ mod tests {
         assert!(late > 0.99);
         assert_eq!(stripe(3, 0.0), rgb(crate::magic::SUNSET[3]));
         assert_eq!(stripe(3, 1.0), stripe(3, 0.0));
-        assert_eq!(omrs_color(2, 1.0), omrs_color(2, 0.0));
+        assert_eq!(omt_color(2, 1.0), omt_color(2, 0.0));
     }
 
     fn text(l: &Line<'_>) -> String {

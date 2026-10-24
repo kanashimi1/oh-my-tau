@@ -25,9 +25,9 @@
   function renderHeader(s) {
     const st = s.state || {};
     const info = s.agents.find((a) => a.id === s.agentId) || s.agentInfo || {};
-    const title = st.sessionName || info.sessionName || (s.agentId ? "New session" : "omrs");
+    const title = st.sessionName || info.sessionName || (s.agentId ? "New session" : "omt");
     $("#session-title").textContent = title;
-    document.title = s.agentId ? `${title} — omrs` : "omrs";
+    document.title = s.agentId ? `${title} — omt` : "omt";
     $("#session-cwd").textContent = info.cwd ? shortPath(info.cwd) : "";
     const model = st.model ? `${st.model.provider}/${st.model.id}` : "model";
     $("#model-btn").textContent = model;

@@ -1,13 +1,13 @@
-# τ omrs
+# τ oh my tau (omt)
 
-**omrs** is a Rust port of [oh-my-pi](https://github.com/can1357/oh-my-pi)
+**oh my tau** (**omt**) is a Rust port of [oh-my-pi](https://github.com/can1357/oh-my-pi)
 ("omp"), the TypeScript coding agent. It re-implements the parts of omp that
 matter day to day: the interactive TUI, headless print mode, an RPC mode, a
 browser UI, and the model/provider/session machinery — reading and writing the
 same config and session files as omp, so the two can be used interchangeably
 on the same agent directory (`~/.omp/agent`).
 
-The release binary is `omp-rs` (symlink it as `omrs` if you prefer the shorter
+The release binary is `omp-rs` (symlink it as `omt` if you prefer the shorter
 name). Highlights:
 
 - **TUI** — interactive terminal session with a `/model` browser, autocomplete,
@@ -50,7 +50,7 @@ The binary lands at `target/release/omp-rs`.
 
 ## Quick start
 
-omrs resolves providers, models and credentials from omp's agent directory
+omt resolves providers, models and credentials from omp's agent directory
 (`$OMP_AGENT_DIR`, default `~/.omp/agent`). Pick whichever of these applies:
 
 1. **Environment API key** — standard per-provider variables are picked up
@@ -115,7 +115,7 @@ Useful subcommands (see `omp-rs <sub> --help`): `models`, `stats`, `config`,
 
 ## Adding new models
 
-New models reach omrs through three layers; each is optional and later layers
+New models reach omt through three layers; each is optional and later layers
 win:
 
 1. **Live refresh** — `omp-rs models --refresh [provider]` (or `F5` in the
@@ -150,7 +150,7 @@ The golden tests in `tests-golden/` compare Rust behaviour against the
 TypeScript implementation; they additionally need bun and a local oh-my-pi
 checkout at `vendor-src/oh-my-pi/` (gitignored), and are optional.
 
-omrs is a workspace of crates: `omp-cli` (the `omp-rs` binary: TUI, RPC loop
+omt is a workspace of crates: `omp-cli` (the `omp-rs` binary: TUI, RPC loop
 and the `web` browser UI) plus `omp-providers` (model/credential resolution),
 `omp-session`, `omp-tui`, `omp-ext`, `omp-mcp`, `omp-lsp` and the other
 `omp-*` support crates — layered over the vendored `pa-*`/`pi-*` crates (see
@@ -158,5 +158,5 @@ and the `web` browser UI) plus `omp-providers` (model/credential resolution),
 
 ## License
 
-omrs is MIT-licensed — see [`LICENSE`](LICENSE). Third-party vendored code is
+omt is MIT-licensed — see [`LICENSE`](LICENSE). Third-party vendored code is
 attributed in [`NOTICE.md`](NOTICE.md).

@@ -4,7 +4,7 @@
 // with recent picks and a details line for the highlighted model.
 (function (OMP) {
   const { el } = OMP;
-  const RECENT_KEY = "omrs-recent-models";
+  const RECENT_KEY = "omt-recent-models";
   const RECENT_MAX = 8;
   const RENDER_CAP = 400;
 

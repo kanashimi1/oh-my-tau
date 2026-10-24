@@ -500,7 +500,7 @@ mod tests {
     fn session_info_render_matches_ts_screen() {
         let rows = render(&overlay(), 120, 40);
         // Optional TS ground-truth capture, supplied via the environment.
-        let ts = std::env::var_os("OMRS_TS_SLASH_SESSION_CAPTURE")
+        let ts = std::env::var_os("OMT_TS_SLASH_SESSION_CAPTURE")
             .ok_or(())
             .and_then(|p| std::fs::read_to_string(p).map_err(|_| ()));
         // Panel: 29 body rows + 4 chrome rows, bottom-anchored.

@@ -1,11 +1,11 @@
 # Notices
 
-This file covers third-party code vendored into this repository. omrs itself
+This file covers third-party code vendored into this repository. oh my tau (omt) itself
 is MIT-licensed — see [`LICENSE`](LICENSE).
 
 ## oh-my-pi (omp)
 
-omrs is a Rust port of [oh-my-pi](https://github.com/can1357/oh-my-pi) ("omp"),
+omt is a Rust port of [oh-my-pi](https://github.com/can1357/oh-my-pi) ("omp"),
 a TypeScript coding agent by Mario Zechner, Can Bölük and Stencil Labs, Inc.
 The upstream TypeScript source used as the porting reference is checked out at
 `vendor-src/oh-my-pi/` (gitignored; not distributed). Its license text is
