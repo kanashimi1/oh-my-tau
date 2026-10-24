@@ -1630,6 +1630,25 @@ pub async fn shutdown_all() {
     }
 }
 
+/// Synchronous counterpart of [`shutdown_all`] for exit paths that cannot drive
+/// the async handshake (a current-thread runtime blocked in `process::exit`):
+/// drop every client and kill its child process. Shared-mux links close with
+/// the process.
+pub fn kill_all_now() {
+    let clients: Vec<LspClient> = registry()
+        .clients
+        .lock()
+        .map(|mut g| g.drain().map(|(_, c)| c).collect())
+        .unwrap_or_default();
+    for client in clients {
+        if let Ok(mut guard) = client.inner.child.lock() {
+            if let Some(child) = guard.as_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+}
+
 impl LspClient {
     /// Canonical disk paths of currently open documents.
     #[must_use]

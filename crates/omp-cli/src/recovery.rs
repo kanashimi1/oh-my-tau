@@ -101,6 +101,9 @@ pub struct FailedTurn {
     pub status: Option<u16>,
     pub provider: String,
     pub model: String,
+    /// Provider-stated wait from the response headers (`Retry-After`,
+    /// `retry-after-ms`), when the stream-failure diagnostic carries one.
+    pub retry_after_ms: Option<u64>,
 }
 
 impl FailedTurn {
@@ -118,12 +121,19 @@ impl FailedTurn {
                 .find_map(|d| d.get("status").and_then(Value::as_u64))
                 .and_then(|s| u16::try_from(s).ok())
         });
+        let retry_after_ms = m
+            .diagnostics
+            .iter()
+            .flatten()
+            .filter_map(|d| d.details.as_ref())
+            .find_map(|d| d.get("retryAfterMs").and_then(Value::as_u64));
         Some(Self {
             message: m
                 .error_message
                 .clone()
                 .unwrap_or_else(|| "Unknown error".to_string()),
             status,
+            retry_after_ms,
             provider: m.provider.clone(),
             model: m.model.clone(),
         })
@@ -501,7 +511,12 @@ impl TurnRecovery {
         self.handling = true;
         self.abort_pending = false;
         let max = self.cfg.retry.max_retries;
-        let retry_after_ms = parse_retry_after_ms(&failed.message);
+        // An explicit provider wait is authoritative in both directions: a
+        // header `Retry-After: 0` means "retry now", so the rate-limit
+        // heuristic window below does not apply.
+        let retry_after_ms = failed
+            .retry_after_ms
+            .or_else(|| parse_retry_after_ms(&failed.message));
         let mut delay_ms = self.cfg.retry.backoff_ms(self.attempt, rand01);
         if retry_after_ms.is_none() {
             let reason = parse_rate_limit_reason(&failed.message);
@@ -713,6 +728,7 @@ mod tests {
             status: None,
             provider: "p".into(),
             model: "m".into(),
+            retry_after_ms: None,
         }
     }
 
@@ -751,6 +767,25 @@ mod tests {
         assert_eq!(parse_retry_after_ms("boom"), None);
     }
 
+    /// Buffon `http-429-exhausted`: a 429 with `Retry-After: 0` retries on the
+    /// exponential backoff, not the 30 s rate-limit window, so an exhausted
+    /// budget ends in well under a minute instead of ten 30 s waits.
+    #[test]
+    fn header_retry_after_zero_overrides_the_rate_limit_window() {
+        let mut r = TurnRecovery::new(cfg(&[]));
+        let mut f = failed("429 buffon injected 429 (type=rate_limit_error)");
+        f.status = Some(429);
+        let heuristic = r.begin_attempt(&f, 0.0);
+        assert!(heuristic.delay_ms >= 10_000, "{heuristic:?}");
+        r.finish_attempt(&heuristic, false);
+        let mut r = TurnRecovery::new(cfg(&[]));
+        f.retry_after_ms = Some(0);
+        let a = r.begin_attempt(&f, 0.0);
+        assert_eq!(a.retry_after_ms, Some(0));
+        assert_eq!(a.delay_ms, 100);
+        assert!(matches!(r.finish_attempt(&a, false), Verdict::Retry { delay_ms: 100 }));
+    }
+
     #[test]
     fn is_rate_limit_only_matches_real_429s() {
         let r = TurnRecovery::new(cfg(&[]));
@@ -759,12 +794,14 @@ mod tests {
             status: Some(429),
             provider: "p".into(),
             model: "m".into(),
+            retry_after_ms: None,
         }));
         assert!(!r.is_rate_limit(&FailedTurn {
             message: "503 overloaded".into(),
             status: Some(503),
             provider: "p".into(),
             model: "m".into(),
+            retry_after_ms: None,
         }));
         // A transient without an explicit 429 status is not a rotation trigger.
         assert!(!r.is_rate_limit(&failed("please try again later")));
