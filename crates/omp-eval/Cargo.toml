@@ -1,0 +1,19 @@
+[package]
+name = "omp-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Persistent Python eval kernel for omp-rs (NDJSON subprocess protocol, ported from omp eval/py)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = "0.2"
+tracing = { workspace = true }
+nix = { version = "0.29", default-features = false, features = ["signal"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+{
+ "action": {
+  "type": "choice",
+  "instructions": "Context controller: which context action should be taken before the agent's next step so that the whole session stays cheap in billed tokens without losing task-critical facts?",
+  "criteria": {
+   "noop": "do nothing: keep the history as it is (cheapest when the history is small or the prompt cache is warm)",
+   "clm_edit": "edit the context: have the agent fold task-critical facts into compact slots and drop the raw history (pays off when the history is large)",
+   "rlm_offload": "offload the largest old block into the kernel and keep a one-line reference; answer later with llm_query over the sub-context"
+  }
+ }
+}

@@ -1,0 +1,486 @@
+//! Session-scoped snapshots, clipboard registers, and no-op loop state.
+
+use std::{
+    collections::{BTreeSet, HashMap},
+    mem::size_of,
+    path::{Path, PathBuf},
+    sync::{Arc, LazyLock},
+};
+
+use parking_lot::Mutex;
+use regex::Regex;
+use xxhash_rust::{xxh32::Xxh32, xxh64::xxh64};
+
+/// Retained path count before LRU eviction.
+pub const DEFAULT_MAX_PATHS: usize = 256;
+/// Full-file versions retained per path.
+pub const DEFAULT_MAX_VERSIONS_PER_PATH: usize = 4;
+/// Global ceiling on retained snapshot allocations, measured in estimated
+/// bytes. Hash-map buckets, allocator rounding, and caller-held snapshots are
+/// outside this budget.
+pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+/// Files larger than this are never snapshotted from disk.
+pub const MAX_SNAPSHOT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Consecutive identical no-ops before the guard escalates.
+pub const NOOP_HARD_LIMIT: u32 = 3;
+
+/// One full-file version observed at a point in time.
+#[derive(Debug, Clone)]
+pub struct Snapshot {
+    /// Canonical path this version belongs to.
+    pub path: PathBuf,
+    /// Full LF-normalized, BOM-stripped text.
+    pub text: Arc<str>,
+    /// Four-character content tag.
+    pub hash: String,
+    /// Lines displayed from this version, when provenance was recorded. Shared
+    /// so lookups hand out snapshots without copying a set that holds one entry
+    /// per displayed line.
+    pub seen_lines: Option<Arc<BTreeSet<u32>>>,
+}
+
+/// Clipboard registers threaded through one patch application.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Clipboard {
+    /// Latest anonymous cut.
+    pub lines: Option<Vec<String>>,
+    /// Named registers, retained between batches.
+    pub named: Option<HashMap<String, Vec<String>>>,
+    /// Anonymous cuts not yet consumed.
+    pub pending_anon_cuts: Option<Vec<String>>,
+}
+
+impl Clipboard {
+    /// Start a batch with named registers only.
+    pub fn start_batch(source: &Self) -> Self {
+        Self {
+            named: source.named.clone(),
+            ..Self::default()
+        }
+    }
+
+    /// Make a transactional deep copy.
+    pub fn fork(&self) -> Self {
+        self.clone()
+    }
+
+    /// Merge named registers from a completed transaction.
+    pub fn commit_from(&mut self, fork: &Self) {
+        let Some(named) = &fork.named else { return };
+        self.named
+            .get_or_insert_with(HashMap::new)
+            .extend(named.clone());
+    }
+}
+
+/// Compute the four-hex uppercase hashline content tag.
+///
+/// Hashes the text with trailing spaces, tabs, and CRs stripped from every
+/// line. Unchanged runs between stripped spans are fed straight from `text`, so
+/// no normalized copy is built.
+pub fn file_hash(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut hasher = Xxh32::new(0);
+    let mut run_start = 0;
+    let mut line_start = 0;
+    for segment in text.split_inclusive('\n') {
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
+        let kept = line.trim_end_matches([' ', '\t', '\r']).len();
+        if kept < line.len() {
+            hasher.update(&bytes[run_start..line_start + kept]);
+            run_start = line_start + line.len();
+        }
+        line_start += segment.len();
+    }
+    hasher.update(&bytes[run_start..]);
+    format!("{:04X}", hasher.digest() & 0xffff)
+}
+
+/// Compute a stable 64-bit key for raw patch input.
+pub fn payload_hash(text: &str) -> u64 {
+    xxh64(text.as_bytes(), 0)
+}
+
+static SEEN_LINE_PREFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[ *]?(\d+)(?:-(\d+))?:").expect("valid hashline prefix regex"));
+
+/// Parse displayed boundary line numbers from a hashline-formatted body.
+pub fn seen_lines_from_body(body: &str) -> Vec<u32> {
+    let mut seen = Vec::new();
+    for row in body.split('\n') {
+        let Some(captures) = SEEN_LINE_PREFIX_RE.captures(row) else {
+            continue;
+        };
+        if let Ok(line) = captures[1].parse() {
+            seen.push(line);
+        }
+        if let Some(end) = captures
+            .get(2)
+            .and_then(|value| value.as_str().parse().ok())
+        {
+            seen.push(end);
+        }
+    }
+    seen
+}
+
+struct StoredSnapshot {
+    snapshot: Snapshot,
+}
+
+impl StoredSnapshot {
+    fn retained_bytes(&self) -> usize {
+        let snapshot = &self.snapshot;
+        let text_bytes =
+            (snapshot.text.len() + 2 * size_of::<usize>()).next_multiple_of(size_of::<usize>());
+        let seen_bytes = snapshot.seen_lines.as_ref().map_or(0, |lines| {
+            // BTreeSet does not expose its nodes. Half-full u32 leaves (56 B, 5 of
+            // 11 keys) cost about 11 B per key and internal nodes at most 6 B
+            // more, so 20 B per line is an upper bound; sorted inserts
+            // pack nodes and overcount up to 4×, which only evicts
+            // sooner.
+            2 * size_of::<usize>()
+                + size_of::<BTreeSet<u32>>()
+                + lines.len() * (size_of::<u32>() + 2 * size_of::<usize>())
+        });
+        snapshot.path.capacity() + snapshot.hash.capacity() + text_bytes + seen_bytes
+    }
+}
+
+struct PathHistory {
+    versions: Vec<StoredSnapshot>,
+    touched: u64,
+}
+
+impl PathHistory {
+    fn retained_bytes(&self, path_bytes: usize) -> usize {
+        path_bytes
+            + self.versions.capacity() * size_of::<StoredSnapshot>()
+            + self
+                .versions
+                .iter()
+                .map(StoredSnapshot::retained_bytes)
+                .sum::<usize>()
+    }
+}
+
+struct StoreState {
+    histories: HashMap<PathBuf, PathHistory>,
+    clipboard: Clipboard,
+    noop: HashMap<PathBuf, (u64, u32)>,
+    clock: u64,
+    max_paths: usize,
+    max_versions: usize,
+    max_total_bytes: usize,
+    retained_bytes: usize,
+}
+
+impl Default for StoreState {
+    fn default() -> Self {
+        Self {
+            histories: HashMap::new(),
+            clipboard: Clipboard::default(),
+            noop: HashMap::new(),
+            clock: 0,
+            max_paths: DEFAULT_MAX_PATHS,
+            max_versions: DEFAULT_MAX_VERSIONS_PER_PATH,
+            max_total_bytes: DEFAULT_MAX_TOTAL_BYTES,
+            retained_bytes: 0,
+        }
+    }
+}
+
+/// Thread-safe state shared for the lifetime of an edit session.
+#[derive(Default, Clone)]
+pub struct EditStore {
+    inner: Arc<Mutex<StoreState>>,
+}
+
+impl EditStore {
+    /// Construct a store with production retention limits.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Construct a store with explicit limits.
+    pub fn with_limits(max_paths: usize, max_versions: usize, max_total_bytes: usize) -> Self {
+        let state = StoreState {
+            max_paths,
+            max_versions,
+            max_total_bytes,
+            ..StoreState::default()
+        };
+        Self {
+            inner: Arc::new(Mutex::new(state)),
+        }
+    }
+
+    /// Record normalized text under a canonical path and return its tag.
+    pub fn record(&self, path: &Path, text: &str, seen_lines: Option<&[u32]>) -> String {
+        let hash = file_hash(text);
+        let mut state = self.inner.lock();
+        state.clock = state.clock.wrapping_add(1);
+        let touched = state.clock;
+        let max_versions = state.max_versions;
+        let mut previous_bytes = 0;
+        let entry = state.histories.entry(path.to_owned());
+        let path_bytes = entry.key().capacity();
+        let history = entry
+            .and_modify(|history| previous_bytes = history.retained_bytes(path_bytes))
+            .or_insert_with(|| PathHistory {
+                versions: Vec::new(),
+                touched,
+            });
+        history.touched = touched;
+        if let Some(index) = history
+            .versions
+            .iter()
+            .position(|version| version.snapshot.hash == hash && &*version.snapshot.text == text)
+        {
+            let mut snapshot = history.versions.remove(index);
+            merge_seen(&mut snapshot.snapshot, seen_lines);
+            history.versions.insert(0, snapshot);
+        } else if max_versions > 0 {
+            let mut snapshot = Snapshot {
+                path: path.to_owned(),
+                text: Arc::from(text),
+                hash: hash.clone(),
+                seen_lines: None,
+            };
+            merge_seen(&mut snapshot, seen_lines);
+            history.versions.insert(0, StoredSnapshot { snapshot });
+            history.versions.truncate(max_versions);
+        }
+        let current_bytes = history.retained_bytes(path_bytes);
+        state.retained_bytes = state.retained_bytes - previous_bytes + current_bytes;
+        evict(&mut state);
+        hash
+    }
+
+    /// Read, normalize, and record a file if it is readable and at most 4 MiB.
+    pub fn record_file(&self, absolute: &Path, seen_lines: Option<&[u32]>) -> Option<String> {
+        if std::fs::metadata(absolute).ok()?.len() > MAX_SNAPSHOT_FILE_BYTES {
+            return None;
+        }
+        let raw = std::fs::read_to_string(absolute).ok()?;
+        if raw.len() as u64 > MAX_SNAPSHOT_FILE_BYTES {
+            return None;
+        }
+        let (_, without_bom) = crate::text::strip_bom(&raw);
+        let normalized = crate::text::normalize_to_lf(without_bom);
+        let key = crate::path_policy::canonical_key(absolute);
+        Some(self.record(&key, &normalized, seen_lines))
+    }
+
+    /// Union displayed lines into the most recent version matching a tag.
+    pub fn record_seen_lines(&self, path: &Path, hash: &str, lines: &[u32]) {
+        let mut state = self.inner.lock();
+        touch(&mut state, path);
+        if let Some(version) = state
+            .histories
+            .get_mut(path)
+            .and_then(|h| h.versions.iter_mut().find(|v| v.snapshot.hash == hash))
+        {
+            let previous_bytes = version.retained_bytes();
+            merge_seen(&mut version.snapshot, Some(lines));
+            let current_bytes = version.retained_bytes();
+            state.retained_bytes = state.retained_bytes - previous_bytes + current_bytes;
+            evict(&mut state);
+        }
+    }
+
+    /// Return the current version and refresh path recency.
+    pub fn head(&self, path: &Path) -> Option<Snapshot> {
+        let mut state = self.inner.lock();
+        touch(&mut state, path);
+        state
+            .histories
+            .get(path)?
+            .versions
+            .first()
+            .map(|v| v.snapshot.clone())
+    }
+
+    /// Return the current version's tag and refresh path recency.
+    pub fn head_hash(&self, path: &Path) -> Option<String> {
+        let mut state = self.inner.lock();
+        touch(&mut state, path);
+        state
+            .histories
+            .get(path)?
+            .versions
+            .first()
+            .map(|v| v.snapshot.hash.clone())
+    }
+
+    /// Every retained snapshot for a path, newest first.
+    pub fn versions(&self, path: &Path) -> Vec<Snapshot> {
+        let mut state = self.inner.lock();
+        touch(&mut state, path);
+        state.histories.get(path).map_or_else(Vec::new, |history| {
+            history
+                .versions
+                .iter()
+                .map(|version| version.snapshot.clone())
+                .collect()
+        })
+    }
+
+    /// Return the most recent version matching a tag and refresh path recency.
+    pub fn by_hash(&self, path: &Path, hash: &str) -> Option<Snapshot> {
+        let mut state = self.inner.lock();
+        touch(&mut state, path);
+        state
+            .histories
+            .get(path)?
+            .versions
+            .iter()
+            .find(|v| v.snapshot.hash == hash)
+            .map(|v| v.snapshot.clone())
+    }
+
+    /// Whether a version matching a tag is retained; refreshes path recency
+    /// like [`Self::by_hash`].
+    pub fn has_hash(&self, path: &Path, hash: &str) -> bool {
+        let mut state = self.inner.lock();
+        touch(&mut state, path);
+        state
+            .histories
+            .get(path)
+            .is_some_and(|history| history.versions.iter().any(|v| v.snapshot.hash == hash))
+    }
+
+    /// Return the version with exactly equal text and refresh path recency.
+    pub fn by_content(&self, path: &Path, text: &str) -> Option<Snapshot> {
+        let mut state = self.inner.lock();
+        touch(&mut state, path);
+        state
+            .histories
+            .get(path)?
+            .versions
+            .iter()
+            .find(|v| &*v.snapshot.text == text)
+            .map(|v| v.snapshot.clone())
+    }
+
+    /// Path of every retained version matching a tag (one entry per version).
+    pub fn paths_with_hash(&self, hash: &str) -> Vec<PathBuf> {
+        let state = self.inner.lock();
+        state
+            .histories
+            .values()
+            .flat_map(|h| h.versions.iter())
+            .filter(|v| v.snapshot.hash == hash)
+            .map(|v| v.snapshot.path.clone())
+            .collect()
+    }
+
+    /// Remove one path's history.
+    pub fn invalidate(&self, path: &Path) {
+        let mut state = self.inner.lock();
+        if let Some((path, history)) = state.histories.remove_entry(path) {
+            state.retained_bytes -= history.retained_bytes(path.capacity());
+        }
+    }
+
+    /// Move source history and provenance to a destination path.
+    pub fn relocate(&self, from: &Path, to: &Path) {
+        let mut state = self.inner.lock();
+        state.clock = state.clock.wrapping_add(1);
+        let touched = state.clock;
+        let max_versions = state.max_versions;
+        let Some((source_path, mut source)) = state.histories.remove_entry(from) else {
+            return;
+        };
+        state.retained_bytes -= source.retained_bytes(source_path.capacity());
+        for version in &mut source.versions {
+            to.clone_into(&mut version.snapshot.path);
+        }
+        let mut merged = source.versions;
+        if let Some((destination_path, destination)) = state.histories.remove_entry(to) {
+            state.retained_bytes -= destination.retained_bytes(destination_path.capacity());
+            merged.extend(destination.versions);
+        }
+        let mut hashes = BTreeSet::new();
+        merged.retain(|version| hashes.insert(version.snapshot.hash.clone()));
+        merged.truncate(max_versions);
+        // `extend` can leave room for both histories; keep only the slots a path
+        // may use.
+        merged.shrink_to(max_versions);
+        let history = PathHistory {
+            versions: merged,
+            touched,
+        };
+        let path = to.to_owned();
+        state.retained_bytes += history.retained_bytes(path.capacity());
+        state.histories.insert(path, history);
+        evict(&mut state);
+    }
+
+    /// Remove all snapshots, clipboard state, and no-op counters.
+    pub fn clear(&self) {
+        *self.inner.lock() = StoreState::default();
+    }
+
+    /// Start a clipboard batch with persisted named registers.
+    pub fn start_clipboard_batch(&self) -> Clipboard {
+        Clipboard::start_batch(&self.inner.lock().clipboard)
+    }
+
+    /// Publish named registers from a batch fork.
+    pub fn commit_clipboard(&self, fork: &Clipboard) {
+        self.inner.lock().clipboard.commit_from(fork);
+    }
+
+    /// Record an identical no-op and return its consecutive count and escalation
+    /// state.
+    pub fn record_noop(&self, path: &Path, payload: u64) -> (u32, bool) {
+        let mut state = self.inner.lock();
+        let count = state
+            .noop
+            .get(path)
+            .filter(|(hash, _)| *hash == payload)
+            .map_or(1, |(_, count)| count + 1);
+        state.noop.insert(path.to_owned(), (payload, count));
+        (count, count >= NOOP_HARD_LIMIT)
+    }
+
+    /// Clear one path's no-op counter.
+    pub fn reset_noop(&self, path: &Path) {
+        self.inner.lock().noop.remove(path);
+    }
+}
+
+fn merge_seen(snapshot: &mut Snapshot, lines: Option<&[u32]>) {
+    let Some(lines) = lines else { return };
+    // Copies the set only while a lookup still holds the previous version.
+    Arc::make_mut(snapshot.seen_lines.get_or_insert_with(Arc::default))
+        .extend(lines.iter().copied());
+}
+
+fn touch(state: &mut StoreState, path: &Path) {
+    if state.histories.contains_key(path) {
+        state.clock = state.clock.wrapping_add(1);
+        state
+            .histories
+            .get_mut(path)
+            .expect("checked above")
+            .touched = state.clock;
+    }
+}
+
+fn evict(state: &mut StoreState) {
+    while state.histories.len() > state.max_paths || state.retained_bytes > state.max_total_bytes {
+        let Some(oldest) = state
+            .histories
+            .iter()
+            .min_by_key(|(_, history)| history.touched)
+            .map(|(path, _)| path.clone())
+        else {
+            break;
+        };
+        if let Some((path, history)) = state.histories.remove_entry(&oldest) {
+            state.retained_bytes -= history.retained_bytes(path.capacity());
+        }
+    }
+}

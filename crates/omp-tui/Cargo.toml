@@ -1,0 +1,34 @@
+[package]
+name = "omp-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Interactive terminal UI for omp-rs (Rust port of omp's pi-tui)"
+
+[dependencies]
+omp-session = { path = "../omp-session" }
+omp-settings = { path = "../omp-settings" }
+crossterm = { version = "0.28", features = ["event-stream"] }
+ratatui = "0.29"
+tokio = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml_ng = "0.10"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = "0.12"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+pi-edit = { path = "../../vendor/pi-edit" }
+pi-ast = { path = "../../vendor/pi-ast" }
+pi-predict = { path = "../../vendor/pi-predict" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+regex = "1"
+tree-sitter = "0.25"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["event", "termios"] }
+
+[lints]
+workspace = true

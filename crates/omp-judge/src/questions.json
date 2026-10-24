@@ -1,0 +1,32 @@
+{
+ "success": {
+  "type": "bool",
+  "instructions": "Did the agent accomplish what the user asked in this turn (correctly and completely)?",
+  "criteria": {
+   "true": "the request was fulfilled correctly and completely",
+   "false": "the request was not fulfilled, only partly, or wrongly"
+  }
+ },
+ "failure_mode": {
+  "type": "choice",
+  "instructions": "What is the main way this turn failed (none if it succeeded)?",
+  "criteria": {
+   "none": "no failure: the request was fulfilled",
+   "wrong_result": "the agent produced a result that is wrong or does not do what was asked",
+   "incomplete": "part of the request was left undone or the work stopped early",
+   "broke_something": "the agent damaged or regressed something that worked before",
+   "ignored_instruction": "the agent disregarded an explicit instruction or constraint of the user",
+   "looped_or_stuck": "the agent repeated failing actions or made no progress",
+   "blocked_external": "an external blocker (missing access, tool/service outage, missing input) prevented the work",
+   "unverified_claim": "the final reply claims success that the steps do not support"
+  }
+ },
+ "rework": {
+  "type": "bool",
+  "instructions": "Will the user have to ask for a fix/redo of this turn's work?",
+  "criteria": {
+   "true": "the user will need to correct or redo this work",
+   "false": "the user can accept this work as it is"
+  }
+ }
+}

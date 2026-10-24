@@ -1,0 +1,17 @@
+[package]
+name = "omp-urls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+omp-settings = { path = "../omp-settings" }
+omp-providers = { path = "../omp-providers" }
+serde_yaml_ng = "0.10"
+base64 = "0.22"
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = "3"

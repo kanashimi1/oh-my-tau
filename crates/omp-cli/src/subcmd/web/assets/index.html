@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en" data-theme="omt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>omt</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<div id="wallpaper" aria-hidden="true"></div>
+<div id="app">
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="brand"><svg class="tau" viewBox="8 12 48 46" aria-label="τ"><defs><linearGradient id="tau-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="oklch(0.7 0.24 340)"/><stop offset="0.5" stop-color="oklch(0.62 0.21 295)"/><stop offset="1" stop-color="oklch(0.81 0.14 200)"/></linearGradient></defs><path fill="url(#tau-g)" d="M10 14h44v9H37v24h13v9H28V23H10z"/></svg><span class="wordmark">OMT</span></div>
+      <button class="icon-btn" id="appearance-btn" title="Themes &amp; wallpapers (Ctrl+Shift+A)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1.5"/><circle cx="17.5" cy="10.5" r="1.5"/><circle cx="8.5" cy="7.5" r="1.5"/><circle cx="6.5" cy="12.5" r="1.5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.75 1.5-1.67 0-.44-.17-.84-.44-1.13-.29-.29-.44-.68-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.96 6.01 17.46 2 12 2z"/></svg></button>
+    </div>
+    <button class="primary wide" id="new-session">+ New session</button>
+    <div class="side-section">
+      <div class="side-title">Running</div>
+      <div id="agent-list" class="list"></div>
+    </div>
+    <div class="side-section grow">
+      <div class="side-title">
+        <span>Sessions</span>
+        <button class="link-btn" id="project-pick" title="Change folder">folder ▾</button>
+      </div>
+      <div id="project-path" class="muted small ellipsis"></div>
+      <input id="session-filter" class="filter" placeholder="Filter sessions…" autocomplete="off">
+      <div id="session-list" class="list scroll"></div>
+    </div>
+  </aside>
+  <main id="main">
+    <header id="topbar">
+      <button class="icon-btn" id="sidebar-toggle" title="Toggle sidebar">☰</button>
+      <div class="title-block">
+        <div id="session-title" class="session-title" title="Rename session">omt</div>
+        <div id="session-cwd" class="muted small ellipsis"></div>
+      </div>
+      <div class="top-actions">
+        <button class="chip" id="model-btn" title="Model (/model)">model</button>
+        <button class="chip" id="thinking-btn" title="Thinking level (/effort)">thinking</button>
+        <button class="icon-btn" id="menu-btn" title="Session actions">⋯</button>
+      </div>
+    </header>
+    <section id="transcript-wrap">
+      <div id="transcript"></div>
+      <div id="empty-state" class="empty-state">
+        <div class="logo big"><svg class="tau big" viewBox="8 12 48 46" aria-label="τ"><defs><linearGradient id="tau-g-big" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="oklch(0.7 0.24 340)"/><stop offset="0.5" stop-color="oklch(0.62 0.21 295)"/><stop offset="1" stop-color="oklch(0.81 0.14 200)"/></linearGradient></defs><path fill="url(#tau-g-big)" d="M10 14h44v9H37v24h13v9H28V23H10z"/></svg></div>
+        <h1 class="wordmark big">OMT</h1>
+        <div class="katakana">オー・マイ・アールエス</div>
+        <p class="muted">Start a new session or pick one from the sidebar.</p>
+        <p class="muted small">Type <kbd>/</kbd> for commands · <kbd>!</kbd> runs a shell command · <kbd>Esc</kbd> interrupts</p>
+      </div>
+      <button id="jump-bottom" class="jump" hidden>↓</button>
+    </section>
+    <div id="widgets-above" class="widgets"></div>
+    <div id="queue-band" class="queue-band" hidden></div>
+    <footer id="composer-wrap">
+      <div id="autocomplete" class="autocomplete" hidden></div>
+      <div id="attachments" class="attachments"></div>
+      <div class="composer">
+        <div class="ta-wrap"><div id="composer-hl" class="ta-hl" aria-hidden="true"></div><textarea id="composer" rows="1" placeholder="Message omt…  (/ commands · ! shell · Enter send · Shift+Enter newline)" disabled></textarea></div>
+        <button id="attach-btn" class="icon-btn" title="Attach image"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+        <button id="send-btn" class="primary" disabled>Send</button>
+        <button id="stop-btn" class="danger" hidden title="Interrupt (Esc)">Stop</button>
+      </div>
+      <input type="file" id="file-input" accept="image/*" multiple hidden>
+      <div id="widgets-below" class="widgets"></div>
+      <div id="statusbar" class="statusbar"></div>
+    </footer>
+  </main>
+</div>
+<div id="modal-root"></div>
+<div id="toasts"></div>
+<script src="/assets/util.js"></script>
+<script src="/assets/markdown.js"></script>
+<script src="/assets/tools.js"></script>
+<script src="/assets/transcript.js"></script>
+<script src="/assets/dialogs.js"></script>
+<script src="/assets/composer.js"></script>
+<script src="/assets/appearance.js"></script>
+<script src="/assets/models.js"></script>
+<script src="/assets/shell.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

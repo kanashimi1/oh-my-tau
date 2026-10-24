@@ -1,0 +1,23 @@
+[package]
+name = "omp-task"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Subagent task tool for omp-rs: agent-definition discovery and task spawning"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng = "0.10"
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true }
+jsonschema = "0.29"
+
+[target.'cfg(unix)'.dependencies]
+# Process-group SIGKILL for cancelled child runs (safe wrapper; the workspace
+# forbids `unsafe`). Same version/features as omp-eval.
+nix = { version = "0.29", default-features = false, features = ["signal"] }
+
+[dev-dependencies]
+tempfile = "3"

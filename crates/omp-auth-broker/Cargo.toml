@@ -1,0 +1,29 @@
+[package]
+name = "omp-auth-broker"
+version.workspace = true
+edition.workspace = true
+description = "Rust port of `omp auth-broker serve`: the credential vault daemon omp clients pull snapshots and OAuth refreshes from"
+
+[[bin]]
+name = "omp-auth-broker"
+path = "src/main.rs"
+
+[dependencies]
+omp-providers = { path = "../omp-providers" }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+regex = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+tempfile = "3"

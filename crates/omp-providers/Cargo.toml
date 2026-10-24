@@ -1,0 +1,31 @@
+[package]
+name = "omp-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing.workspace = true
+pa-types = { workspace = true }
+pa-ai = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
+serde_yaml_ng = "0.10"
+omp-settings = { path = "../omp-settings" }
+libc = "0.2"
+base64 = "0.22"
+rusqlite = { version = "0.32", features = ["bundled"] }
+omp-stats = { path = "../omp-stats" }
+
+[build-dependencies]
+serde_json = { workspace = true }
+omp-stats = { path = "../omp-stats" }
+
+[dev-dependencies]
+futures = { workspace = true }
+tempfile = "3"
+parking_lot = "0.12"

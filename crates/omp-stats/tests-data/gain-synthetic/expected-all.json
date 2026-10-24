@@ -1,0 +1,43 @@
+{
+ "overall": {
+  "savedTokens": 13160,
+  "savedBytes": 52640,
+  "hits": 16,
+  "outputBytes": 0,
+  "originalBytes": 0,
+  "reductionPercent": null
+ },
+ "bySource": {
+  "snapcompact": {
+   "savedTokens": 13160,
+   "savedBytes": 52640,
+   "hits": 16,
+   "outputBytes": 0,
+   "originalBytes": 0,
+   "reductionPercent": null
+  }
+ },
+ "timeSeries": [
+  {
+   "date": "2026-10-03",
+   "snapcompact": 4390,
+   "total": 4390
+  },
+  {
+   "date": "2026-10-04",
+   "snapcompact": 8765,
+   "total": 8765
+  },
+  {
+   "date": "2026-10-05",
+   "snapcompact": 5,
+   "total": 5
+  }
+ ],
+ "project": null,
+ "projects": [
+  "-home-user-omrs",
+  "-home-user-work-solpi-ab-task-repoK-par1",
+  "-tmp-acx"
+ ]
+}

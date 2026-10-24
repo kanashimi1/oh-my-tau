@@ -1,0 +1,19 @@
+[package]
+name = "omp-compact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Port of omp's context compaction: cut points, summary requests, compaction entries, context rebuild"
+
+[dependencies]
+omp-session = { path = "../omp-session" }
+pa-types = { workspace = true }
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+anyhow = { workspace = true }
+regex = "1"
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

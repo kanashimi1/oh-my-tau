@@ -1,0 +1,20 @@
+[package]
+name = "omp-judge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Laya turn judge: judge-view builder (port of judge_view.view_sel), shadow worker, offline session scoring"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+regex = "1"
+omp-session = { path = "../omp-session" }
+laya-ort = { path = "../../vendor/laya-ort" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

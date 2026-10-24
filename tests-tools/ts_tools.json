@@ -1,0 +1,757 @@
+[
+	{
+		"name": "read",
+		"description_first_line": "Use `read` for static web; browser only if needed.",
+		"description": "Use `read` for static web; browser only if needed.\n\nPath suffixes: :50 or :50- starts at line 50; :50-200 inclusive; :50+150 counts lines; :-60 last 60; commas join ranges (:5-16,960-973) or individual lines (:19,59). :raw verbatim without anchors/prefixes; combine :2-4:raw or :raw:2-4. :conflicts lists one line per unresolved merge block. SVG/SVGZ default text; :img PNG, :raw original. Video requires ffmpeg/ffprobe: bare preview grid+metadata, :412 frame, :1h5m42s/:90s/:01:23 time.\n\nSources:\n- Bare code: declarations only; re-read ONLY footer-named omissions, NEVER guess `..`/`…`.\n- Selected file: `[foo.ts#1A2B]` snapshot+lines. Copy `[FILENAME#TAG]` for anchored edits; NEVER invent tag.\n- Directory: complete root; child listings cap at 12 (`… N more`), read child; page via :N-M/:-N.\n- SQLite: file.db tables; :table schema/rows; :table:key by primary key; ?limit=, ?where=, ?q=SELECT.\n- Archives: ZIP/JAR/APK/WHL, compressed TAR, RAR/7z/ISO/CAB/DEB/RPM/CPIO/AR/LZH/ARJ/ASAR, compressed streams; member via archive.ext:member/path.\n- PDF/documents: extracted text; notebooks: editable cells; images: decoded inline. URLs: reader text/markdown, :raw original HTML; bare host:port needs trailing slash.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string",
+					"description": "Local path, internal URI, or URL; selectors inline."
+				}
+			},
+			"required": [
+				"path"
+			]
+		}
+	},
+	{
+		"name": "bash",
+		"description_first_line": "Persistent shell: one fact command/pipeline; dependencies use `&&`.",
+		"description": "Persistent shell: one fact command/pipeline; dependencies use `&&`.\nScripts/heredocs/`$(…)`/complex pipelines → `eval`.\n`cwd`, not `cd`; `pty` only interactive.\nInternal URIs work as paths for builtins/coreutils, redirects, globs.\n`async` defers finite results but keeps the deadline (default 300s); `timeout: 0` for watchers and long jobs.\nNo `head`/`tail`/redirection; output trunc by default, full result at `artifact://<id>`.\nLong-lived services: unique name; ready requires name; no async/timeout; pty defaults true. ready needs log regex or port (both if given); host defaults 127.0.0.1, ready.timeout 30s.\nBackground results follow; NEVER poll; foreground wait unchanged.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"command": {
+					"type": "string"
+				},
+				"timeout": {
+					"type": "number",
+					"description": "timeout in seconds; 0 disables the command deadline; nonzero values are clamped to 1-3600"
+				},
+				"cwd": {
+					"type": "string"
+				},
+				"pty": {
+					"type": "boolean"
+				},
+				"async": {
+					"type": "boolean"
+				},
+				"name": {
+					"type": "string",
+					"maxLength": 48
+				},
+				"ready": {
+					"type": "object",
+					"properties": {
+						"log": {
+							"type": "string"
+						},
+						"port": {
+							"type": "number"
+						},
+						"host": {
+							"type": "string"
+						},
+						"timeout": {
+							"type": "number"
+						}
+					}
+				}
+			},
+			"required": [
+				"command"
+			]
+		}
+	},
+	{
+		"name": "edit",
+		"description_first_line": "Single file string replacement; fuzzy whitespace matching.",
+		"description": "Single file string replacement; fuzzy whitespace matching.\n\n<instruction>\n- MUST use smallest `old_string` uniquely identifying change.\n- Nonunique `old_string` → MUST add context or use `replace_all: true` for all occurrences.\n- Rename a string across file → use `replace_all: true`.\n- SHOULD edit existing files, not create new.\n</instruction>\n\n<output>\nSuccess/failure status.\nSuccess: file modified in place; replacement applied.\nFailure — e.g., `old_string` absent or multiple matches without `replace_all: true`: error describes issue.\n</output>\n\n<critical>\n- MUST read file at least once in conversation before editing. Tool errors on edit before read.\n</critical>\n\n<bash-alternatives>\nReplace content-addressed — identify change by text.\n\nPattern-addressed bulk changes: bash more efficient:\n\n|Operation|Command|\n|---|---|\n|Regex replace|`sd 'pattern' 'replacement' file`|\n|Bulk replace across files|`sd 'pattern' 'replacement' **/*.ts`|\n\nUse Replace when content identifies location; `ast_edit` for structure-aware codemods.\nFor in-place edits prefer Replace or `write` — diff preview and fuzzy matching.\n</bash-alternatives>",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				},
+				"old_string": {
+					"type": "string"
+				},
+				"new_string": {
+					"type": "string"
+				},
+				"replace_all": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"path",
+				"old_string",
+				"new_string"
+			]
+		}
+	},
+	{
+		"name": "glob",
+		"description_first_line": "Glob files/dirs: `;`-separated paths or internal URLs (`local://*.md`, `omp://**/*.md`); default workspace root.",
+		"description": "Glob files/dirs: `;`-separated paths or internal URLs (`local://*.md`, `omp://**/*.md`); default workspace root.\n`gitignore` and `hidden` default true; ignored dotfiles need `gitignore: false`. Newest-first by directory; dirs end `/`.\nBehavior search → `find`.\nMulti-round discovery → Task + scout.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				},
+				"hidden": {
+					"type": "boolean"
+				},
+				"gitignore": {
+					"type": "boolean"
+				},
+				"limit": {
+					"type": "number"
+				}
+			}
+		}
+	},
+	{
+		"name": "grep",
+		"description_first_line": "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files.",
+		"description": "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files.\nFile-only selector: `src/foo.ts:50-100`. Literal `\\n`/`\\\\n` enables cross-line.\nBare glob `*.ts` matches any depth; `dir/*.ts` only `dir`'s direct children (`dir/**/*.ts` recurses).\nBehavior/unknown symbol → `find`; literals/regex → `grep`.\nMulti-round search MUST use Task + scout, not chained calls.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"pattern": {
+					"type": "string"
+				},
+				"path": {
+					"type": "string"
+				},
+				"case": {
+					"type": "boolean"
+				},
+				"gitignore": {
+					"type": "boolean"
+				},
+				"skip": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"pattern"
+			]
+		}
+	},
+	{
+		"name": "find",
+		"description_first_line": "Describe behavior, get implementing files and line ranges. MUST use first for unknown locations; known strings/regex/symbols → `grep`, names → `glob`.",
+		"description": "Describe behavior, get implementing files and line ranges. MUST use first for unknown locations; known strings/regex/symbols → `grep`, names → `glob`.\n`query`: plain language, not regex; quoted phrases match whole. `grep_keywords`: likely verbatim terms, `[]` if unsure.\n`path`: one directory or file, host path or internal URL (`omp://`, `omp://<file>.md`, `skill://<name>`, `local://…`); omitted = workspace root. Scope known subsystem; batch related questions. Searches live files, no index; no `:start-end` selector (judges whole files).\nHits strongest first: `path:start-end score snippet` (workspace-relative, or URL under URL scope); read returned ranges. Scores: absolute comparable 0–1 probability; below ~0.4 = weak evidence, so widen query or use `grep` before concluding absence.\n",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string"
+				},
+				"grep_keywords": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"path": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"query",
+				"grep_keywords"
+			]
+		}
+	},
+	{
+		"name": "write",
+		"description_first_line": "SHOULD `edit` existing files; `write` for required new files or whole-file replacement. NEVER create docs or emojis unless requested.",
+		"description": "SHOULD `edit` existing files; `write` for required new files or whole-file replacement. NEVER create docs or emojis unless requested.\n`archive.ext:member`: ZIP/tar families and `.asar` writable, others read-only. `db.sqlite:table`: insert; `db.sqlite:table:key`: JSON update, empty content deletes.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				},
+				"content": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"path"
+			]
+		}
+	},
+	{
+		"name": "task",
+		"description_first_line": "Spawn `tasks[]` concurrently; IDs return immediately.",
+		"description": "Spawn `tasks[]` concurrently; IDs return immediately.\n\n# Results\n`outputSchema` parsed payload, even invalid: `agent://<id>` (field `/<field>`, nested `/reports/0/data`); invalid preview inline.\n\n# Delegation\nUse most specific agent. Read-only research MUST use `scout` only when files unknown. Prefer one agent to investigate + edit. Omit `agent` only for default (`task`); NEVER specify it.\nShared edits need one integration owner; siblings coordinate via `write agent://<id>`. Set interfaces in `context`. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.\n\n# Inputs\n`name`: CamelCase ≤32, auto-generated if omitted; address agent by name. `outputSchema` overrides agent/session schemas.\n`solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)\n`tools`: eval-defined, run in your kernel.\n`model`: selector or ordered array overriding the agent's model for this spawn (`provider/model[:level]`, role alias like `@smol`, `@default` = parent's live model); set per `tasks[]` item, never top-level. Omit unless a specific model is needed. Requested model unavailable → stop and report; NEVER substitute another.\n`schemaMode`: default permissive warns after retries; strict fails.\nChildren start blank; parent IRC steers immediately; large payloads via `local://<path>`, NEVER inline.\n\n# Format\n`context`: shared (`# Goal`, `# Contract` interfaces); NEVER repeat per task.\n`task`: self-contained (`# Target` files/non-goals, `# Change` steps/APIs, `# Acceptance` observable result).\n\n# Available Agents\n- `scout` (READ-ONLY; investigation only, no edits): MUST be used for exploratory codebase research, rapid code analysis, and broad pattern searches. Fast read-only scout returning compressed context for handoff.\n- `coder`: General-purpose implementation agent for delegated multi-step edits; writes files; caller verifies.\n- `reviewer`: Code review specialist for quality/security analysis",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"context": {
+					"type": "string"
+				},
+				"tasks": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"task": {
+								"type": "string"
+							},
+							"solutionSpace": {
+								"type": "string"
+							},
+							"name": {
+								"type": "string"
+							},
+							"agent": {
+								"type": "string",
+								"default": "task"
+							},
+							"model": {
+								"anyOf": [
+									{
+										"type": "string"
+									},
+									{
+										"type": "array",
+										"items": {
+											"type": "string"
+										}
+									}
+								]
+							},
+							"outputSchema": {
+								"anyOf": [
+									{
+										"type": "object"
+									},
+									{
+										"type": "boolean"
+									},
+									{
+										"type": "string"
+									},
+									{
+										"type": "null"
+									}
+								]
+							},
+							"schemaMode": {
+								"enum": [
+									"permissive",
+									"strict"
+								],
+								"type": "string"
+							},
+							"tools": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								}
+							}
+						},
+						"required": [
+							"task",
+							"solutionSpace"
+						]
+					}
+				},
+				"model": {
+					"not": {}
+				}
+			},
+			"required": [
+				"context",
+				"tasks"
+			]
+		}
+	},
+	{
+		"name": "eval",
+		"description_first_line": "One cell per call; top-level state persists, including across compaction. Subagents have separate kernels.",
+		"description": "One cell per call; top-level state persists, including across compaction. Subagents have separate kernels.\nFor 2+ independent items, use a named `workpool()`; results auto-deliver. If blocked, leave `eval` and call `wait`.\nPython: top-level `await` works; `asyncio.run(…)` fails.\nJS: Bun (`Bun.file`, `Bun.write`, `Bun.$`); top-level `await`/`return` work.\nOn error, retry only the failed step; earlier steps may have taken effect.\n\n<prelude>\nPython helpers: sync, kwargs; JS helpers: async, ONE trailing options object.\n```\ndisplay(value)  print(value, ...)  log(message)  phase(title)\nread(path, offset?, limit?)  write(path, content)  env(key?, value?)  output(*ids, format?, query?, offset?, limit?)\nawait tool.<name>(args) — session tool; `args` is its parameter object\nwait(handles, timeout?=None, raise_errors?=True) — agent/completion barrier, ordered results; JS: wait(handles, { timeout, raiseErrors }); `raise_errors=False` retains failures.\n```\n</prelude>\n\n<namespaces>\nMore globals; `read` the linked docs before first use:\n- `judge`, `judge_batch`, `completion`: classification, bulk judgment, model calls → `xd://eval/judge`\n- `%load`, `%pip`, `%bun add`, `budget`, `@tool`/`tool(fn)`: setup, installs, utilities → `xd://eval/helpers`\n- `agent`, `workpool`: background subagents, DAG waves → `xd://eval/agents`\n</namespaces>\n\n<critical>\nNEVER repeat successful setup. Kernel-loss notice means reload setup.\n</critical>",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"language": {
+					"enum": [
+						"py",
+						"js"
+					],
+					"type": "string",
+					"description": "\"py\": IPython; \"js\": Bun"
+				},
+				"code": {
+					"type": "string",
+					"description": "Code or standalone % command; top-level await works."
+				},
+				"title": {
+					"type": "string",
+					"description": "Short transcript label."
+				},
+				"timeout": {
+					"type": "number",
+					"description": "Cell deadline in seconds; 0 disables it."
+				},
+				"reset": {
+					"type": "boolean",
+					"description": "Wipe only this kernel."
+				}
+			},
+			"required": [
+				"language",
+				"code"
+			]
+		}
+	},
+	{
+		"name": "todo",
+		"description_first_line": "Tasks identified by verbatim content, NEVER generated IDs (task-1). Unique, stable task/phase names; lost text: view, NEVER guess.",
+		"description": "Tasks identified by verbatim content, NEVER generated IDs (task-1). Unique, stable task/phase names; lost text: view, NEVER guess.\nBefore work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately (phased/numbered/bulleted/N); NEVER omit or remember leftovers.\nAfter successful mutation: no active means earliest pending starts (phase order); multiple active means only earliest stays. Blocked NEVER starts automatically; unblock returns pending. Done out of order may rewind pointer but NEVER reopen completed. Mark done immediately; follow phase order.\nExternal waits (user/agent/service): block with optional reason suppresses stop reminder, starts next pending. Unblock when actionable; append a clearing task for agent-actionable blocker.\nNEVER call todo alone: init with first work; done/start with next action.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"op": {
+					"enum": [
+						"init",
+						"start",
+						"done",
+						"rm",
+						"drop",
+						"block",
+						"unblock",
+						"append",
+						"view"
+					],
+					"type": "string"
+				},
+				"list": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"phase": {
+								"type": "string"
+							},
+							"items": {
+								"type": "array",
+								"items": {
+									"type": "string"
+								},
+								"minItems": 1
+							}
+						},
+						"required": [
+							"phase",
+							"items"
+						]
+					},
+					"description": "phases for init"
+				},
+				"task": {
+					"type": "string",
+					"description": "verbatim task content"
+				},
+				"phase": {
+					"type": "string"
+				},
+				"items": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "tasks for flat init or append"
+				},
+				"reason": {
+					"type": "string",
+					"description": "blocker note for block"
+				}
+			},
+			"required": [
+				"op"
+			]
+		}
+	},
+	{
+		"name": "ask",
+		"description_first_line": "Ask only for materially different tradeoffs the user must decide. Default: act using code/config/docs/history and conventions. Several viable choices: pick conservative/standard, proceed, state choice.",
+		"description": "Ask only for materially different tradeoffs the user must decide. Default: act using code/config/docs/history and conventions. Several viable choices: pick conservative/standard, proceed, state choice.\n\n<instruction>\n- Batch related questions; 2–5 distinct options each; short labels, tradeoffs in `description`.\n- `recommended` auto-adds \" (Recommended)\"; `multi: true` permits multiple selections.\n- NEVER supply \"Other\": UI adds \"Other (type your own)\". Clarifying custom input? Answer first; re-ask unresolved questions.\n</instruction>",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"questions": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"id": {
+								"type": "string"
+							},
+							"question": {
+								"type": "string"
+							},
+							"options": {
+								"type": "array",
+								"items": {
+									"type": "object",
+									"properties": {
+										"label": {
+											"type": "string"
+										},
+										"description": {
+											"type": "string"
+										},
+										"preview": {
+											"type": "string",
+											"description": "rich preview"
+										}
+									},
+									"required": [
+										"label"
+									]
+								}
+							},
+							"header": {
+								"type": "string",
+								"description": "display chip"
+							},
+							"multi": {
+								"type": "boolean"
+							},
+							"recommended": {
+								"type": "number",
+								"description": "0-based default index"
+							}
+						},
+						"required": [
+							"id",
+							"question",
+							"options"
+						]
+					},
+					"minItems": 1
+				}
+			},
+			"required": [
+				"questions"
+			]
+		}
+	},
+	{
+		"name": "ast_grep",
+		"description_first_line": "Structural code search via ast-grep. Use when syntax shape matters more than text (calls, declarations, language constructs).",
+		"description": "Structural code search via ast-grep. Use when syntax shape matters more than text (calls, declarations, language constructs).\n\n<instruction>\n- Narrow each call to one language. `pat` is ONE AST pattern; separate calls for unrelated patterns.\n- Set `lang` when extension inference is ambiguous (for example, `cpp` for `.h`); `.cu` and `.cuh` infer as C++.\n- `$NAME` captures one node; `$_` matches without binding; `$$$NAME` zero-or-more; `$$$` zero-or-more unbound.\n  - Use `$$$NAME`, NOT `$$NAME` (invalid). Names UPPERCASE, whole node — `prefix$VAR` fails.\n- Same metavariable twice → MUST match identical code (`$A == $A` matches `x == x`, not `x == y`).\n- Patterns MUST parse as single AST node. Non-standalone → wrap: `class $_ { … }`.\n- C++ expression-statement calls need trailing `;`: `ns::doThing($ARG);`, `$CALLEE($ARG);`.\n- TS: tolerate annotations — `async function $NAME($$$ARGS): $_ { $$$BODY }`.\n- Declaration forms are distinct — `function foo`, method `foo()`, `const foo = () => {}`; search the right form before concluding absence.\n- Loosest existence check: `pat: \"executeBash\"` with narrow `path`.\n</instruction>\n\n<critical>\n- AVOID repo-root scans — narrow `path` first.\n- Parse issues = query failure, not absence: fix pattern or tighten `path` before concluding \"no matches\".\n- Broad cross-subsystem exploration → Task tool + scout subagent first.\n</critical>",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"pat": {
+					"type": "string",
+					"description": "ast pattern"
+				},
+				"path": {
+					"type": "string",
+					"description": "file, directory, glob, or internal URL to search; pass several as a semicolon-delimited list (\"src; tests\"). Omitted -> searches the workspace root (\".\")"
+				},
+				"lang": {
+					"type": "string",
+					"description": "language override, e.g. cpp for ambiguous .h files"
+				},
+				"skip": {
+					"type": "number",
+					"description": "matches to skip"
+				}
+			},
+			"required": [
+				"pat"
+			]
+		}
+	},
+	{
+		"name": "ast_edit",
+		"description_first_line": "Structural AST-aware rewrites via ast-grep. Use for codemods where text replace is unsafe. Mixed-language paths are fine: each file is parsed in its own language, and a pattern only rewrites files it parses in.",
+		"description": "Structural AST-aware rewrites via ast-grep. Use for codemods where text replace is unsafe. Mixed-language paths are fine: each file is parsed in its own language, and a pattern only rewrites files it parses in.\n\n- Metavariables in `pat` (`$A`, `$$$ARGS`) substitute into `out`.\n- **Patterns match AST structure, not text.** `$NAME` = one node; `$_` = unbound; `$$$NAME` = zero-or-more.\n  - Use `$$$NAME`, NOT `$$NAME` (invalid). Names UPPERCASE, whole node — partial like `prefix$VAR` fails.\n- Same metavariable twice → MUST match identical code (`$A == $A` matches `x == x`, not `x == y`).\n- Rewrite patterns MUST parse as single AST node. Non-standalone → wrap: `class $_ { … }`.\n- TS: tolerate annotations — `async function $NAME($$$ARGS): $_ { $$$BODY }`. Delete with empty `out`: `{\"pat\":\"console.log($$$)\",\"out\":\"\"}`.\n- 1:1 substitution — no splitting/merging captures.\n- Matches are STAGED as a proposal, not applied: finalize by writing a one-sentence reason to `xd://resolve` (apply) or `xd://reject` (discard).\n- Parse issues → malformed rewrite, not clean no-op. For one-off text edits, prefer the Edit tool.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"ops": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"pat": {
+								"type": "string",
+								"description": "ast pattern"
+							},
+							"out": {
+								"type": "string",
+								"description": "replacement template"
+							}
+						},
+						"required": [
+							"pat",
+							"out"
+						]
+					},
+					"minItems": 1,
+					"description": "rewrite ops"
+				},
+				"paths": {
+					"type": "array",
+					"items": {
+						"type": "string",
+						"description": "file, directory, glob, or internal URL to rewrite"
+					},
+					"minItems": 1,
+					"description": "files, directories, globs, or internal URLs to rewrite"
+				}
+			},
+			"required": [
+				"ops",
+				"paths"
+			]
+		}
+	},
+	{
+		"name": "web_search",
+		"description_first_line": "Known URLs/programmatic data → `read`. Query: site: or -site:, after: or before: YYYY-MM-DD, inurl:, intitle:, filetype:, \"phrase\", -term, OR. Prefer primary sources; MUST link citations.",
+		"description": "Known URLs/programmatic data → `read`. Query: site: or -site:, after: or before: YYYY-MM-DD, inurl:, intitle:, filetype:, \"phrase\", -term, OR. Prefer primary sources; MUST link citations.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"query": {
+					"type": "string"
+				},
+				"recency": {
+					"enum": [
+						"day",
+						"week",
+						"month",
+						"year"
+					],
+					"type": "string"
+				},
+				"limit": {
+					"type": "number"
+				},
+				"max_tokens": {
+					"type": "number"
+				},
+				"temperature": {
+					"type": "number"
+				},
+				"num_search_results": {
+					"type": "number"
+				}
+			},
+			"required": [
+				"query"
+			]
+		}
+	},
+	{
+		"name": "wait",
+		"description_first_line": "Wait only when blocked with nothing else to do.",
+		"description": "Wait only when blocked with nothing else to do.\nBlocks on background jobs/services you started; returns on the first result, a message sent to you, or a steering interrupt; a safety cap returns a still-running snapshot.\nNothing you started running? Errors; NEVER wait on other agents.\nResults and messages auto-deliver. NEVER poll while work remains.",
+		"parameters": {
+			"type": "object",
+			"properties": {}
+		}
+	},
+	{
+		"name": "think",
+		"description_first_line": "private scratchpad; not shown to user",
+		"description": "private scratchpad; not shown to user",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"thoughts": {
+					"type": "string",
+					"description": "private scratchpad; not shown to user"
+				}
+			},
+			"required": [
+				"thoughts"
+			],
+			"additionalProperties": false,
+			"description": "private scratchpad; not shown to user"
+		}
+	},
+	{
+		"name": "yield",
+		"description_first_line": "Submit subagent output: `{ data: <your output> }` for success, `{ error: \"message\" }` for failure. Never both; never a bare payload outside `data`.",
+		"description": "Submit subagent output: `{ data: <your output> }` for success, `{ error: \"message\" }` for failure. Never both; never a bare payload outside `data`.\n\nOmit `type` for the usual single terminal structured result. Pass `type: [\"section\"]` to submit an incremental, non-terminal section that accumulates.\nPass `type: \"result\"` to finalize; when `data` is omitted, your last assistant turn becomes the raw final result.",
+		"parameters": {
+			"type": "object",
+			"additionalProperties": false,
+			"description": "submit data or error",
+			"properties": {
+				"type": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "array",
+							"minItems": 1,
+							"items": {
+								"type": "string"
+							}
+						}
+					],
+					"description": "Optional result type. A non-empty string array is incremental; a string is terminal."
+				},
+				"data": {
+					"type": "object",
+					"additionalProperties": true,
+					"description": "Structured JSON output (no schema specified)"
+				},
+				"error": {
+					"type": "string",
+					"description": "Failure reason; mutually exclusive with data"
+				}
+			},
+			"required": []
+		}
+	},
+	{
+		"name": "goal",
+		"description_first_line": "Manage active goal-mode objective.",
+		"description": "Manage active goal-mode objective.\n\nSingle `op` field:\n- `create`: starts goal; enables goal mode. Requires `objective`; optional positive `token_budget`. Only when no goal exists and none is paused.\n- `get`: returns current active/paused goal and remaining token budget.\n- `resume`: re-activates paused goal for continued work.\n- `complete`: marks goal complete only when actually done and every deliverable verified against current evidence. NEVER because budget low or turn ending.\n- `drop`: discards current goal without completing it.\n\nPaused goal from `get` → MUST `resume` before continuing work.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"op": {
+					"enum": [
+						"create",
+						"get",
+						"complete",
+						"resume",
+						"drop"
+					],
+					"type": "string",
+					"description": "goal operation"
+				},
+				"objective": {
+					"type": "string",
+					"description": "goal objective"
+				},
+				"token_budget": {
+					"type": "integer",
+					"description": "token budget"
+				}
+			},
+			"required": [
+				"op"
+			]
+		}
+	},
+	{
+		"name": "checkpoint",
+		"description_first_line": "Context checkpoint: before exploratory work; later `rewind`, retaining only concise report.",
+		"description": "Context checkpoint: before exploratory work; later `rewind`, retaining only concise report.\n\nUse for investigations with many intermediate tool calls (`read`/`grep`/`glob`/`lsp`/etc.) to minimize subsequent context cost.\n\nRules:\n- MUST `rewind` before yielding after starting a checkpoint.\n- NEVER `checkpoint` while another checkpoint active.\n- Subagents: disabled by default. Enable: agent-definition `tools:` frontmatter lists `checkpoint` or `rewind`; sister tool auto-included; requires `checkpoint.enabled` setting.\n\nTypical flow:\n1. `checkpoint(goal: …)`\n2. Exploratory work\n3. `rewind(report: …)` with concise findings\n\nAfter `rewind`: intermediate checkpoint messages removed from active context; replaced by report.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"goal": {
+					"type": "string",
+					"description": "investigation goal"
+				}
+			},
+			"required": [
+				"goal"
+			]
+		}
+	},
+	{
+		"name": "rewind",
+		"description_first_line": "End the active checkpoint; rewind context to it, replacing intermediate exploration with your report.",
+		"description": "End the active checkpoint; rewind context to it, replacing intermediate exploration with your report.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"report": {
+					"type": "string",
+					"description": "investigation findings"
+				}
+			},
+			"required": [
+				"report"
+			]
+		}
+	},
+	{
+		"name": "lsp",
+		"description_first_line": "Symbol-aware code intelligence from language servers — navigation, refactors, and diagnostics where text tools miss callsites.",
+		"parameters": {
+			"type": "object",
+			"properties": {
+				"action": {
+					"enum": [
+						"diagnostics",
+						"definition",
+						"references",
+						"hover",
+						"symbols",
+						"rename",
+						"rename_file",
+						"code_actions",
+						"type_definition",
+						"implementation",
+						"status",
+						"reload",
+						"capabilities",
+						"request"
+					],
+					"type": "string"
+				},
+				"file": {
+					"type": "string"
+				},
+				"line": {
+					"type": "number"
+				},
+				"symbol": {
+					"type": "string"
+				},
+				"query": {
+					"type": "string"
+				},
+				"new_name": {
+					"type": "string"
+				},
+				"apply": {
+					"type": "boolean"
+				},
+				"timeout": {
+					"type": "number",
+					"minimum": 5,
+					"maximum": 300,
+					"description": "Timeout in seconds (default 20; range 5–300)."
+				},
+				"payload": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"action"
+			],
+			"additionalProperties": false
+		}
+	}
+]
