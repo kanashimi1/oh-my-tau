@@ -420,7 +420,8 @@ impl Runtime {
         let recovery_cfg = match recovery_cfg {
             Some(cfg) => cfg,
             None => match resolver(format!("{}/{}", live.provider, live.id)).await {
-                Ok(r) => {
+                Ok(mut r) => {
+                    apply_launch_fallbacks(&mut r);
                     agent.set_credential_id(r.credential_id);
                     RecoveryConfig::from_resolved(&r)
                 }
@@ -4150,6 +4151,22 @@ struct MessageEnvelope {
 pub static MODEL_PINNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub static THINKING_PINNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// Set by `main` when `--model` was an ordered chain: `(provider/id of the
+/// selected entry, the entries after it)`. The startup recovery config of that
+/// model walks this chain instead of its configured `retry.fallbackChains`
+/// (TS `installSubagentRetryFallbackChain`: a non-empty selector chain wins).
+pub static LAUNCH_FALLBACKS: std::sync::OnceLock<(String, Vec<String>)> =
+    std::sync::OnceLock::new();
+
+/// [`LAUNCH_FALLBACKS`] applied to the startup resolution of the live model.
+fn apply_launch_fallbacks(resolved: &mut omp_providers::ResolvedModel) {
+    if let Some((primary, chain)) = LAUNCH_FALLBACKS.get() {
+        if *primary == format!("{}/{}", resolved.provider, resolved.id) && !chain.is_empty() {
+            resolved.fallbacks.clone_from(chain);
+        }
+    }
+}
 
 /// Model/thinking bookkeeping of a session branch (TS `buildSessionContext`
 /// `models` + `getLastModelChangeRole` + thinking fields).

@@ -14,6 +14,10 @@ pub struct Selected {
     pub headers: Option<std::collections::BTreeMap<String, String>>,
     /// Stored `auth_credentials` row `api_key` came from; see `ProviderTarget::credential_id`.
     pub credential_id: Option<i64>,
+    /// The `--model` chain entries after the selected one: the runtime retry
+    /// fallback chain of this model (TS `installSubagentRetryFallbackChain`), so a
+    /// quota-exhausted 429 on the winner switches to the next entry mid-run.
+    pub fallbacks: Vec<String>,
 }
 
 fn map_level(l: pa_types::ai::ModelThinkingLevel) -> ThinkingLevel {
@@ -38,6 +42,7 @@ async fn from_providers(reference: String) -> Result<Selected> {
         credential_id: r.credential_id,
         model: r.model,
         headers,
+        fallbacks: Vec::new(),
     })
 }
 
@@ -98,6 +103,7 @@ pub async fn select(model_ref: Option<&str>) -> Result<Selected> {
         thinking: thinking.unwrap_or(ThinkingLevel::Off),
         headers: None,
         credential_id: None,
+        fallbacks: Vec::new(),
     })
 }
 
@@ -134,14 +140,19 @@ where
     F: Fn(String) -> Fut,
     Fut: Future<Output = Result<Selected>>,
 {
-    let mut resolved: Option<Selected> = None;
+    let candidates = model_candidates(reference);
+    let rest = |index: usize| candidates[index + 1..].to_vec();
+    let mut resolved: Option<(usize, Selected)> = None;
     let mut failure: Option<anyhow::Error> = None;
-    for candidate in model_candidates(reference) {
-        match resolve(candidate).await {
-            Ok(selected) if selected.api_key.is_some() => return Ok(selected),
+    for (index, candidate) in candidates.iter().enumerate() {
+        match resolve(candidate.clone()).await {
+            Ok(mut selected) if selected.api_key.is_some() => {
+                selected.fallbacks = rest(index);
+                return Ok(selected);
+            }
             Ok(selected) => {
                 if resolved.is_none() {
-                    resolved = Some(selected);
+                    resolved = Some((index, selected));
                 }
             }
             Err(error) => {
@@ -151,9 +162,13 @@ where
             }
         }
     }
-    resolved.ok_or_else(|| {
-        failure.unwrap_or_else(|| anyhow!("no model reference in {reference:?}"))
-    })
+    match resolved {
+        Some((index, mut selected)) => {
+            selected.fallbacks = rest(index);
+            Ok(selected)
+        }
+        None => Err(failure.unwrap_or_else(|| anyhow!("no model reference in {reference:?}"))),
+    }
 }
 
 fn catalog_path() -> Option<std::path::PathBuf> {
@@ -515,6 +530,13 @@ mod tests {
             .expect("chain resolves");
         assert_eq!(selected.model.id, "glm");
         assert_eq!(selected.api_key.as_deref(), Some("key"));
+        assert!(selected.fallbacks.is_empty(), "last entry has no fallbacks");
+        // The entries after the winner become its runtime fallback chain.
+        let selected = select_chain_with("zai/glm-5.3-flash, local/keyless, @smol:high", resolve)
+            .await
+            .expect("chain resolves");
+        assert_eq!(selected.model.id, "glm");
+        assert_eq!(selected.fallbacks, vec!["local/keyless".to_string(), "smol:high".to_string()]);
         // No credentialed entry: the first resolvable entry is kept so
         // keyless-by-design local providers stay selectable.
         let selected = select_chain_with("local/keyless, nope/model", resolve)
@@ -552,6 +574,7 @@ mod tests {
             thinking: ThinkingLevel::Off,
             headers: None,
             credential_id: None,
+            fallbacks: Vec::new(),
         }
     }
 

@@ -395,6 +395,10 @@ async fn async_main() -> Result<()> {
         runtime::THINKING_PINNED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let mut selected = model::select(reference.as_deref()).await?;
+    if !selected.fallbacks.is_empty() {
+        let primary = format!("{}/{}", selected.model.provider, selected.model.id);
+        let _ = runtime::LAUNCH_FALLBACKS.set((primary, std::mem::take(&mut selected.fallbacks)));
+    }
     if let Some(key) = args.api_key.clone() {
         selected.api_key = Some(key);
         selected.credential_id = None;
