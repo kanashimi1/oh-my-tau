@@ -131,6 +131,9 @@ impl RpcAskUi {
     }
 }
 
+/// Internal end-of-stream frame: the stdout writer stops after the frames queued before it.
+const FLUSH_MARKER: &str = "__omt_flush";
+
 thread_local! {
     /// Frame channel of the active RPC loop (set in `run_with`).
     static RUNTIME_TX: std::cell::RefCell<Option<mpsc::UnboundedSender<Value>>> =
@@ -1396,6 +1399,9 @@ pub async fn run_with(
         let mut out = tokio::io::stdout();
         let mut encoder = FrameEncoder::new();
         while let Some(v) = rx.recv().await {
+            if v.get(FLUSH_MARKER).is_some() {
+                break;
+            }
             let mut buf = String::new();
             for line in encoder.encode(&v) {
                 buf.push_str(&line);
@@ -1506,9 +1512,19 @@ pub async fn run_with(
     let _ = worker.await;
     while background.join_next().await.is_some() {}
     agent.wait_for_idle().await;
+    // `prompt_result` / `session_settled` land a tick after the final `agent_end`.
+    rt.wait_settled().await;
     drop(rt);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    writer.abort();
+    // Every frame queued so far precedes the marker (FIFO), so the writer
+    // exits right after flushing them; the timeout only bounds a stalled stdout.
+    let _ = tx.send(json!({ FLUSH_MARKER: true }));
+    let mut writer = writer;
+    if tokio::time::timeout(std::time::Duration::from_secs(2), &mut writer)
+        .await
+        .is_err()
+    {
+        writer.abort();
+    }
     Ok(())
 }
 

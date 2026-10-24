@@ -749,8 +749,9 @@ async fn run_print(
         }
         return Ok(agent.messages_snapshot().await.into_vec());
     };
-    if let Some(f) = persist.file() {
-        eprintln!("session: {}", f.display());
+    match persist.file() {
+        Some(f) => eprintln!("session: {}", f.display()),
+        None => runtime::NO_SESSION_PRINT.store(true, std::sync::atomic::Ordering::Relaxed),
     }
     let agent = std::sync::Arc::new(agent);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
