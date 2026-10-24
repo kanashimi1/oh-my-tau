@@ -344,7 +344,7 @@ def diff(a: list[str], b: list[str]) -> list[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--rs", default=str(REPO / "target/shared/release/omp-rs"))
+    ap.add_argument("--rs", default=str(REPO / "target/shared/release/omt"))
     ap.add_argument("--ts", default=shutil.which("omp") or "omp")
     ap.add_argument("--mode", default="all", choices=["print", "rpc", "tui", "guards", "approval", "approval-rpc", "retry", "autocompact", "all"])
     ap.add_argument("--out", default=str(REPO.parent / "runs/omp-rust/ext-conformance" / time.strftime("%Y%m%d-%H%M%S")))

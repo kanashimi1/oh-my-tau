@@ -182,7 +182,7 @@ async fn gate_prompt(ext: Option<&Arc<crate::ext::Extensions>>, text: &str) -> O
         Ok(crate::ext::PromptGate::Run(t)) => Some(t),
         Ok(crate::ext::PromptGate::Handled) => None,
         Err(e) => {
-            eprintln!("omp-rs: extension input: {e:#}");
+            eprintln!("omt: extension input: {e:#}");
             Some(text.to_string())
         }
     }
@@ -576,7 +576,7 @@ impl omp_tui::RuntimePort for Port {
                         if rt.available_commands().iter().any(|c| {
                             c.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
                         }) {
-                            format!("/{name} is not ported to omp-rs yet")
+                            format!("/{name} is not ported to omt yet")
                         } else {
                             format!("Unknown command: /{name}")
                         },

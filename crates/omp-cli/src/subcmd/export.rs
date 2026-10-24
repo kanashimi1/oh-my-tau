@@ -172,7 +172,7 @@ pub fn run(args: &[String]) -> Result<i32> {
             }
         }
     }
-    let input = input.context("Usage: omp-rs export <session.jsonl> [-o out.html]")?;
+    let input = input.context("Usage: omt export <session.jsonl> [-o out.html]")?;
     let data =
         session_data(&input).with_context(|| format!("read session file {}", input.display()))?;
     let html = generate_html(&data);

@@ -27,7 +27,7 @@ import {
 const BENCH_DIR = resolve(import.meta.dir);
 const REPO_ROOT = resolve(BENCH_DIR, "..");
 const TS_OMP = process.env.OMP_TS_BIN ?? "omp";
-const RS_OMP = process.env.OMP_RS_BIN ?? join(REPO_ROOT, "target/shared/release/omp-rs");
+const RS_OMP = process.env.OMP_RS_BIN ?? join(REPO_ROOT, "target/shared/release/omt");
 const WORKDIR = process.env.BENCH_WORKDIR ?? REPO_ROOT;
 const REAL_AGENT_DIR = process.env.OMP_REAL_AGENT_DIR ?? `${process.env.HOME}/.omp/agent`;
 const EXT_HOST = process.env.OMP_RS_EXT_HOST ?? join(REPO_ROOT, "ext-host/host.ts");

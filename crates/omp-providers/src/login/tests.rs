@@ -304,7 +304,7 @@ async fn unknown_and_unported_providers_fail_with_a_clear_message() {
     let err = login(&target, "cursor", ScriptedUi::with(&[]), &services)
         .await
         .unwrap_err();
-    assert!(err.contains("not ported to omp-rs yet"), "{err}");
+    assert!(err.contains("not ported to omt yet"), "{err}");
 }
 
 #[test]

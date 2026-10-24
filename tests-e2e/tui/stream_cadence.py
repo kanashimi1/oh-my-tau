@@ -3,7 +3,7 @@
 (E2E_SLOW_MS apart), record when the PTY screen content changes and report the
 inter-update interval distribution for TS omp vs omp-rs.
 
-usage: stream_cadence.py name=binary ...   (e.g. ts=omp rs=target/shared/release/omp-rs)
+usage: stream_cadence.py name=binary ...   (e.g. ts=omp rs=target/shared/release/omt)
 """
 from __future__ import annotations
 

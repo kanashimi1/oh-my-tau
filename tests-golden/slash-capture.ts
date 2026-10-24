@@ -13,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 
 const here = dirname(new URL(import.meta.url).pathname);
 const target = process.argv[2] ?? "ts";
-const bin = process.argv[3] ?? (target === "ts" ? "omp" : resolve(here, "../target/debug/omp-rs"));
+const bin = process.argv[3] ?? (target === "ts" ? "omp" : resolve(here, "../target/debug/omt"));
 const fixture = resolve(here, "../crates/omp-ext/tests/fixtures/fixture.ts");
 const MODEL = "zai/glm-5.3-flash";
 

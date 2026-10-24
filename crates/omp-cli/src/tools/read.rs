@@ -1101,7 +1101,7 @@ mod tests {
         let expected = "[a.txt#0793]\n1:line 1\n2:line 2\n3:line 3\n4:line 4\n5:line 5";
         assert_eq!(
             out, expected,
-            "omp-rs read output diverged from TS formatting"
+            "omt read output diverged from TS formatting"
         );
     }
 

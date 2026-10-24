@@ -39,7 +39,7 @@ fn mock_kimi_host() -> String {
 }
 
 fn omp_rs(home: &std::path::Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_omp-rs"));
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_omt"));
     cmd.env("HOME", home)
         .env_remove("OMP_AGENT_DIR")
         .env_remove("OMP_AUTH_BROKER_URL")
@@ -177,7 +177,7 @@ fn login_then_logout_roundtrip_in_a_temp_home() {
     assert_eq!(code, 1);
     assert_eq!(
         stderr,
-        "Login failed: Unknown OAuth provider 'nope'. Run `omp-rs login` to pick one.\n"
+        "Login failed: Unknown OAuth provider 'nope'. Run `omt login` to pick one.\n"
     );
     let (code, _, stderr) = run(
         {

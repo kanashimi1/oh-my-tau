@@ -37,7 +37,7 @@ from score import score  # noqa: E402
 from tasks import envelopes_for, task_spec  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
-DEFAULT_BIN = os.environ.get("OMP_RS_BIN", os.path.join(REPO, "target/shared/release/omp-rs"))
+DEFAULT_BIN = os.environ.get("OMP_RS_BIN", os.path.join(REPO, "target/shared/release/omt"))
 REAL_AGENT_DIR = os.environ.get("OMP_REAL_AGENT_DIR", os.path.expanduser("~/.omp/agent"))
 
 BRIEF = ("You are a careful agent working over a long WORKING CONTEXT that you must keep usable "

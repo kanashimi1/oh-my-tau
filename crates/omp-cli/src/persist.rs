@@ -388,7 +388,7 @@ impl Persistence {
             None => m,
         };
         if let Err(e) = self.append_message(&m, ts) {
-            eprintln!("omp-rs: session write failed: {e:#}");
+            eprintln!("omt: session write failed: {e:#}");
         }
     }
 
@@ -578,7 +578,7 @@ pub(crate) async fn attach_in(
                             } else {
                                 let ts = iso_from_ms(message.timestamp());
                                 if let Err(e) = writer.lock().unwrap().append_message(&m, &ts) {
-                                    eprintln!("omp-rs: session write failed: {e:#}");
+                                    eprintln!("omt: session write failed: {e:#}");
                                 } else {
                                     // An append advances the writer onto the new entry.
                                     nav_leaf.lock().unwrap().take();
@@ -596,14 +596,14 @@ pub(crate) async fn attach_in(
                                     if let Err(e2) =
                                         writer.lock().unwrap().append_omp_message(omp, &ts)
                                     {
-                                        eprintln!("omp-rs: session write failed: {e2:#}");
+                                        eprintln!("omt: session write failed: {e2:#}");
                                     } else {
                                         // An append advances the writer onto the new entry.
                                         nav_leaf.lock().unwrap().take();
                                     }
                                 }
                                 _ => eprintln!(
-                                    "omp-rs: session message conversion failed: {e:#}"
+                                    "omt: session message conversion failed: {e:#}"
                                 ),
                             }
                         }

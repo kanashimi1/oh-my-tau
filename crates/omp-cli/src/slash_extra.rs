@@ -472,7 +472,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         "plan" => {
             output(
                 rt,
-                "/plan: plan mode is not ported to omp-rs; prompt the model directly with planning instructions or use the TS CLI",
+                "/plan: plan mode is not ported to omt; prompt the model directly with planning instructions or use the TS CLI",
             );
             Some(Outcome::Handled {
                 agent_invoked: false,
@@ -490,7 +490,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         "loop" => {
             output(
                 rt,
-                "/loop: loop mode is not ported to omp-rs; use the TS CLI to run prompt loops",
+                "/loop: loop mode is not ported to omt; use the TS CLI to run prompt loops",
             );
             Some(Outcome::Handled {
                 agent_invoked: false,
@@ -511,7 +511,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         "skills" => {
             output(
                 rt,
-                "/skills: skills registry (skills.omp.sh) is not ported to omp-rs; use `omp skills` from the TS CLI",
+                "/skills: skills registry (skills.omp.sh) is not ported to omt; use `omp skills` from the TS CLI",
             );
             Some(Outcome::Handled {
                 agent_invoked: false,
@@ -536,7 +536,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         "restart" => {
             output(
                 rt,
-                "/restart: process restart is not ported to omp-rs; exit and re-run with --resume",
+                "/restart: process restart is not ported to omt; exit and re-run with --resume",
             );
             Some(Outcome::Handled {
                 agent_invoked: false,
@@ -545,7 +545,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         "btw" => {
             output(
                 rt,
-                "/btw: side-question conversation (btw) is not ported to omp-rs; prompt the model directly in the main session",
+                "/btw: side-question conversation (btw) is not ported to omt; prompt the model directly in the main session",
             );
             Some(Outcome::Handled {
                 agent_invoked: false,
@@ -667,7 +667,7 @@ async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
             if !rest.is_empty() {
                 output(
                     rt,
-                    "Usage: /collab list — for links use `omp-rs collab link <id|pid>`",
+                    "Usage: /collab list — for links use `omt collab link <id|pid>`",
                 );
                 return Outcome::Handled {
                     agent_invoked: false,
@@ -699,7 +699,7 @@ async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
                         ));
                     }
                     lines.push(
-                        "Get a link: omp-rs collab link <instanceId|pid> [--view]".to_string(),
+                        "Get a link: omt collab link <instanceId|pid> [--view]".to_string(),
                     );
                     output(rt, &lines.join("\n"));
                 }

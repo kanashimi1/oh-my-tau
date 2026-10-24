@@ -1062,10 +1062,10 @@ fn report(r: anyhow::Result<omp_ext::EmitResult>) {
     match r {
         Ok(r) => {
             for err in r.errors {
-                eprintln!("omp-rs: extension handler error: {err}");
+                eprintln!("omt: extension handler error: {err}");
             }
         }
-        Err(e) => eprintln!("omp-rs: extension emit: {e:#}"),
+        Err(e) => eprintln!("omt: extension emit: {e:#}"),
     }
 }
 

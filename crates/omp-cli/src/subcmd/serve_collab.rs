@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Context as _, Result};
 
-const USAGE: &str = "Usage: omp-rs serve-collab [--port <port>] [--host <host>]";
+const USAGE: &str = "Usage: omt serve-collab [--port <port>] [--host <host>]";
 const DEFAULT_PORT: u16 = 7466;
 
 /// TS `parseInt(value, 10)`: leading digits are the port; trailing junk is

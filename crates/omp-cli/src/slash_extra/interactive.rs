@@ -677,7 +677,7 @@ fn system_info(rt: &Runtime) -> String {
     let model = rt.model_info();
     let ext = crate::rpc::slash::extensions().map_or("not running", |_| "running");
     [
-        format!("omp-rs {}", env!("CARGO_PKG_VERSION")),
+        format!("omt {}", env!("CARGO_PKG_VERSION")),
         format!("OS: {} {}", std::env::consts::OS, std::env::consts::ARCH),
         format!("CWD: {}", rt.cwd.display()),
         format!(

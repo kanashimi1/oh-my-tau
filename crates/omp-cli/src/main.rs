@@ -39,7 +39,7 @@ use cli::{Args, Resume};
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-const HELP: &str = r"usage: omp-rs [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
+const HELP: &str = r"usage: omt [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
        [--provider <name>] [--api-key <key>] [--smol <m>] [--slow <m>] [--plan <m>]
        [--cwd DIR] [--add-dir DIR]... [--config FILE]... [--session-dir DIR]
        [-c|--continue] [-r|--resume [ID]] [--fork ID] [--from-claude] [--from-codex]
@@ -57,7 +57,7 @@ modes need a session id prefix or path):
   -r, --resume [ID]    resume a session (also --session)
   --fork ID            fork a session into a fresh file
 
-Flags parsed for TS parity whose subsystems are not in omp-rs (no-op or
+Flags parsed for TS parity whose subsystems are not in omt (no-op or
 reported, see GapInventory): --config, --add-dir, --smol/--slow/--plan,
 --models, --service-tier, --prewalk*/--plan-yolo*, --skills/--no-skills,
 --no-rules, --no-title, --no-lsp, --no-pty, --advisor, --external-thinking,
@@ -174,7 +174,7 @@ fn resolve_resume_target(
                     }
                 } else {
                     bail!(
-                        "omp-rs: bare --resume needs the interactive session picker; pass a session id prefix or path"
+                        "omt: bare --resume needs the interactive session picker; pass a session id prefix or path"
                     )
                 }
             }
@@ -222,7 +222,7 @@ fn ensure_mimalloc_env() {
         let error = std::process::Command::new(exe).args(&args).exec();
         // `exec` only returns on failure; keep running without the tuning
         // rather than refuse to start.
-        eprintln!("omp-rs: allocator-tuning re-exec failed: {error}");
+        eprintln!("omt: allocator-tuning re-exec failed: {error}");
     }
 }
 
@@ -262,7 +262,7 @@ async fn async_main() -> Result<()> {
         return Ok(());
     }
     if args.version {
-        println!("omp-rs/{}", env!("CARGO_PKG_VERSION"));
+        println!("omt/{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     // Flags of subsystems omp-rs does not have: omp's exact error where one
@@ -278,7 +278,7 @@ async fn async_main() -> Result<()> {
         ));
     }
     if args.profile.is_some() {
-        bail!("omp-rs: --profile is not supported (no profile subsystem)");
+        bail!("omt: --profile is not supported (no profile subsystem)");
     }
     if let Some(path) = args.export.clone() {
         if !Path::new(&path).is_file() {
@@ -295,14 +295,14 @@ async fn async_main() -> Result<()> {
         };
     }
     if args.from_claude || args.from_codex {
-        bail!("omp-rs: --from-claude/--from-codex are not supported (no importer subsystem)");
+        bail!("omt: --from-claude/--from-codex are not supported (no importer subsystem)");
     }
     if let Some(mode @ ("acp" | "rpc-ui")) = args.mode.as_deref() {
-        bail!("omp-rs: --mode {mode} is not supported (no {mode} subsystem)");
+        bail!("omt: --mode {mode} is not supported (no {mode} subsystem)");
     }
     if !args.config.is_empty() || !args.add_dir.is_empty() {
         eprintln!(
-            "omp-rs: --config/--add-dir parsed but their subsystems are not in omp-rs; ignored"
+            "omt: --config/--add-dir parsed but their subsystems are not in omt; ignored"
         );
     }
 
@@ -316,7 +316,7 @@ async fn async_main() -> Result<()> {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
             if cwd == home.canonicalize().unwrap_or(home) {
                 eprintln!(
-                    "omp-rs: started in ~; switching to a temp dir (pass --allow-home to stay)"
+                    "omt: started in ~; switching to a temp dir (pass --allow-home to stay)"
                 );
                 cwd = std::env::temp_dir();
             }
@@ -421,7 +421,7 @@ async fn async_main() -> Result<()> {
             .collect();
         match ext::Extensions::start(&cwd, &extra).await {
             Ok(e) => extensions = Some(e),
-            Err(e) => eprintln!("omp-rs: extensions disabled: {e:#}"),
+            Err(e) => eprintln!("omt: extensions disabled: {e:#}"),
         }
     }
     let extra_tools = match extensions.as_ref() {
@@ -466,7 +466,7 @@ async fn async_main() -> Result<()> {
             .set_session_ctx(&p.session_id(), p.file().as_deref(), &model_ref)
             .await
         {
-            eprintln!("omp-rs: extension ctx: {err:#}");
+            eprintln!("omt: extension ctx: {err:#}");
         }
     }
 
@@ -525,7 +525,7 @@ async fn async_main() -> Result<()> {
         return result;
     }
     if let Err(e) = &session {
-        eprintln!("omp-rs: session persistence disabled: {e:#}");
+        eprintln!("omt: session persistence disabled: {e:#}");
     }
     // Interactive TUI: TTY on stdin+stdout, no -p/--mode/prompt — TS enters
     // `interactive-mode.ts` on exactly this condition. `--resume`/`--continue`
@@ -594,7 +594,7 @@ async fn async_main() -> Result<()> {
                 e.shutdown().await;
             }
             eprintln!(
-                "omp-rs: stopped after --max-time {:?}",
+                "omt: stopped after --max-time {:?}",
                 args.max_time_raw.as_deref().unwrap_or("")
             );
             exit(124);
@@ -719,10 +719,10 @@ async fn run_print(
         // No session persistence: replaying a transcript is impossible; a
         // direct one-shot prompt matches the old ephemeral behavior.
         if resume.is_some() {
-            eprintln!("omp-rs: resume ignored: session persistence unavailable");
+            eprintln!("omt: resume ignored: session persistence unavailable");
         }
         if !images.is_empty() {
-            eprintln!("omp-rs: image attachments require session persistence; dropped");
+            eprintln!("omt: image attachments require session persistence; dropped");
         }
         let mut injected = Vec::new();
         if let Some(e) = extensions {
@@ -733,7 +733,7 @@ async fn run_print(
                 .before_agent_start(&agent, &prompt, None)
                 .await
                 .unwrap_or_else(|err| {
-                    eprintln!("omp-rs: extension before_agent_start: {err:#}");
+                    eprintln!("omt: extension before_agent_start: {err:#}");
                     Vec::new()
                 });
         }

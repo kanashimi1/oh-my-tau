@@ -13,7 +13,7 @@ use omp_collab::registry::{
 use serde_json::json;
 
 const USAGE: &str =
-    "Usage: omp-rs collab <list|link> ...\n  omp-rs collab list [--json]\n  omp-rs collab link <instanceId|pid> [--view] [--json]";
+    "Usage: omt collab <list|link> ...\n  omt collab list [--json]\n  omt collab link <instanceId|pid> [--view] [--json]";
 
 /// Registry IPC is async; this subcommand surface is sync — and `run` is
 /// called from inside the CLI's runtime, so `block_on` must happen off that

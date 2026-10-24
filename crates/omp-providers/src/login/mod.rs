@@ -407,7 +407,7 @@ pub async fn login(
         other => {
             let Some(rule) = api_key::provider(other) else {
                 return Err(if providers::display_name(other).is_some() {
-                    format!("Login for '{other}' is not ported to omp-rs yet; use `omp login {other}` from the TS CLI")
+                    format!("Login for '{other}' is not ported to omt yet; use `omp login {other}` from the TS CLI")
                 } else {
                     format!("Unknown OAuth provider: {other}")
                 });

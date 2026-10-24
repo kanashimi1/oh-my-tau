@@ -43,10 +43,10 @@ use tokio_tungstenite::WebSocketStream;
 
 use agent::{Agent, Spawn};
 
-const USAGE: &str = "Usage: omp-rs web [--port <port>] [--host <host>] [--cwd <dir>] [--open]
+const USAGE: &str = "Usage: omt web [--port <port>] [--host <host>] [--cwd <dir>] [--open]
 
 Start the omt browser UI (default http://127.0.0.1:7467). Each open
-session runs as its own `omp-rs --mode rpc` agent.";
+session runs as its own `omt --mode rpc` agent.";
 const DEFAULT_PORT: u16 = 7467;
 /// Request bodies are small JSON objects; images travel over the socket.
 const MAX_BODY: usize = 1 << 20;
@@ -179,7 +179,7 @@ async fn serve(opts: Options) -> Result<i32> {
         .with_context(|| format!("resolve {}", opts.host))?;
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .with_context(|| format!("bind {addr} (is another `omp-rs web` running?)"))?;
+        .with_context(|| format!("bind {addr} (is another `omt web` running?)"))?;
     let port = listener.local_addr()?.port();
     let hub = Arc::new(Hub {
         exe: std::env::current_exe().context("current exe")?,

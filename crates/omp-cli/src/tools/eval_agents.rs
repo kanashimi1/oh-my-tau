@@ -427,7 +427,7 @@ async fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Resul
     };
     let finished = || {
         format!(
-            "Agent \"{to}\" already finished; omp-rs eval subagents exit when their prompt settles and cannot be revived (read its result with wait()/status())."
+            "Agent \"{to}\" already finished; omt eval subagents exit when their prompt settles and cannot be revived (read its result with wait()/status())."
         )
     };
     if handle.is_settled() {
@@ -503,7 +503,7 @@ impl Launcher for SubprocessLauncher {
 /// Process-wide launcher: `agent()` runs and workpool turns share one runner,
 /// so the [`SUBAGENT_CONCURRENCY`] ceiling holds across both.
 static LAUNCHER: LazyLock<Arc<dyn Launcher>> = LazyLock::new(|| {
-    let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omp-rs"));
+    let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omt"));
     Arc::new(SubprocessLauncher {
         runner: omp_task::TaskRunner::new(binary, SUBAGENT_CONCURRENCY),
     }) as Arc<dyn Launcher>

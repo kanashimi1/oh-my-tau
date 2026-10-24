@@ -115,7 +115,7 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
 pub fn list_sessions(cwd: &Path) -> Value {
     let mut rows: Vec<Value> = Vec::new();
     let stores = [
-        (crate::persist::sessions_dir(cwd), "omp-rs"),
+        (crate::persist::sessions_dir(cwd), "omt"),
         (crate::persist::ts_sessions_dir(cwd), "omp"),
     ];
     for (dir, store) in stores {

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context as _, Result};
 use omp_judge::{offline, scorer::ModelPaths};
 
-const USAGE: &str = "usage: omp-rs judge-sessions <dir|file> [--out FILE] [--limit N] [--ckpt DIR] [--onnx FILE] [--threads N]";
+const USAGE: &str = "usage: omt judge-sessions <dir|file> [--out FILE] [--limit N] [--ckpt DIR] [--onnx FILE] [--threads N]";
 
 /// Run the subcommand; returns the process exit code.
 ///

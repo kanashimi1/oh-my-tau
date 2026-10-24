@@ -31,7 +31,7 @@ from driver import KEYS, Term, sgr_click, sgr_wheel  # noqa: E402
 import mock_provider  # noqa: E402
 
 REPO = HERE.parent.parent
-DEFAULT_RS = REPO / "target/shared/release/omp-rs"
+DEFAULT_RS = REPO / "target/shared/release/omt"
 
 
 # ── isolated client home ────────────────────────────────────────────────────

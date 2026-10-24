@@ -125,7 +125,7 @@ pub fn wrap_stream(
             if std::env::var("METHOD_PROVIDER_EVENTS").is_ok_and(|v| v == "1") {
                 if let Some(ext) = extensions {
                     if let Err(error) = ext.before_provider_request().await {
-                        eprintln!("omp-rs: before_provider_request: {error:#}");
+                        eprintln!("omt: before_provider_request: {error:#}");
                     }
                 }
             }

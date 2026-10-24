@@ -1142,7 +1142,7 @@ impl Runtime {
             // "developer"; `seed_resumed_message` persists the verbatim shape.
             seed_resumed_message(&rt.persist, &reminder, None);
             if let Err(e) = rt.continue_after_retry().await {
-                eprintln!("omp-rs: todo reminder continuation failed: {e:#}");
+                eprintln!("omt: todo reminder continuation failed: {e:#}");
                 rt.settle_terminal(frame, &messages, None);
             }
         });
@@ -2576,7 +2576,7 @@ impl Runtime {
                         continue;
                     }
                     if let Err(e) = host.emit(frame, None).await {
-                        eprintln!("omp-rs: extension {ty}: {e:#}");
+                        eprintln!("omt: extension {ty}: {e:#}");
                     }
                 }
             });
@@ -3104,7 +3104,7 @@ impl Runtime {
             rt.agent.append_messages(vec![nudge.clone()]).await;
             seed_resumed_message(&rt.persist, &nudge, None);
             if let Err(e) = rt.continue_after_retry().await {
-                eprintln!("omp-rs: post-compaction resume failed: {e:#}");
+                eprintln!("omt: post-compaction resume failed: {e:#}");
             }
         });
     }
@@ -4463,7 +4463,7 @@ impl Runtime {
         let text = text.to_string();
         tokio::spawn(async move {
             if let Err(e) = rt.prompt(None, &text, Some("steer"), Vec::new()).await {
-                eprintln!("omp-rs: extension send_message: {}", e.message);
+                eprintln!("omt: extension send_message: {}", e.message);
             }
         });
     }
@@ -4481,7 +4481,7 @@ impl Runtime {
 }
 
 pub fn unsupported(what: &str) -> CmdError {
-    CmdError::new(format!("{what} is not supported by omp-rs"))
+    CmdError::new(format!("{what} is not supported by omt"))
 }
 
 #[cfg(test)]

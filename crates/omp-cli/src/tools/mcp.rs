@@ -54,7 +54,7 @@ fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
         for (name, status) in manager.statuses().await {
             match status {
                 omp_mcp::ServerStatus::Failed(message) => {
-                    eprintln!("omp-rs: MCP server \"{name}\" unavailable: {message}");
+                    eprintln!("omt: MCP server \"{name}\" unavailable: {message}");
                 }
                 omp_mcp::ServerStatus::Connected => {
                     let tools = discovered.iter().filter(|t| t.server == name).count();

@@ -513,7 +513,7 @@ impl crate::runtime::CompactionHooks for CompactBridge {
             {
                 Ok(outcome) => outcome.cancel,
                 Err(e) => {
-                    eprintln!("omp-rs: extension session_before_compact: {e:#}");
+                    eprintln!("omt: extension session_before_compact: {e:#}");
                     false
                 }
             }
@@ -620,7 +620,7 @@ impl Extensions {
             .await?;
         for err in &loaded.errors {
             eprintln!(
-                "omp-rs: extension failed to load: {}: {}",
+                "omt: extension failed to load: {}: {}",
                 err.path, err.error
             );
         }
@@ -895,7 +895,7 @@ impl Extensions {
                     ext.before_agent_start(&rt.agent, &prompt, images)
                         .await
                         .unwrap_or_else(|e| {
-                            eprintln!("omp-rs: extension before_agent_start: {e:#}");
+                            eprintln!("omt: extension before_agent_start: {e:#}");
                             Vec::new()
                         })
                 })
@@ -974,9 +974,9 @@ impl Extensions {
             if generations.changed().await.is_err() {
                 return;
             }
-            eprintln!("omp-rs: extension host reconnected; reloading extensions and session ctx");
+            eprintln!("omt: extension host reconnected; reloading extensions and session ctx");
             if let Err(e) = self.recover().await {
-                eprintln!("omp-rs: extension host recovery: {e:#}");
+                eprintln!("omt: extension host recovery: {e:#}");
             }
         }
     }
@@ -1001,7 +1001,7 @@ impl Extensions {
             .await?;
         for err in &loaded.errors {
             eprintln!(
-                "omp-rs: extension failed to load: {}: {}",
+                "omt: extension failed to load: {}: {}",
                 err.path, err.error
             );
         }
@@ -1070,7 +1070,7 @@ impl Extensions {
                 match host.emit_session_before_switch(reason, target, None).await {
                     Ok(o) => o.cancel,
                     Err(e) => {
-                        eprintln!("omp-rs: extension session_before_switch: {e:#}");
+                        eprintln!("omt: extension session_before_switch: {e:#}");
                         false
                     }
                 }
@@ -1154,10 +1154,10 @@ impl Extensions {
             )
             .await
         {
-            eprintln!("omp-rs: extension ctx: {e:#}");
+            eprintln!("omt: extension ctx: {e:#}");
         }
         if let Err(e) = self.set_session_name(rt.session_name()).await {
-            eprintln!("omp-rs: extension ctx: {e:#}");
+            eprintln!("omt: extension ctx: {e:#}");
         }
     }
 
@@ -1194,7 +1194,7 @@ impl Extensions {
             emit_silent(self.host.emit_agent_end(messages, None, None).await);
         }
         if let Err(e) = self.host.shutdown().await {
-            eprintln!("omp-rs: extension host shutdown: {e:#}");
+            eprintln!("omt: extension host shutdown: {e:#}");
         }
     }
 }
@@ -1203,10 +1203,10 @@ fn emit_silent(r: Result<omp_ext::EmitResult>) {
     match r {
         Ok(r) => {
             for err in r.errors {
-                eprintln!("omp-rs: extension handler error: {err}");
+                eprintln!("omt: extension handler error: {err}");
             }
         }
-        Err(e) => eprintln!("omp-rs: extension emit: {e:#}"),
+        Err(e) => eprintln!("omt: extension emit: {e:#}"),
     }
 }
 
@@ -1222,7 +1222,7 @@ fn handle_notification(rt: &Arc<Runtime>, msg: HostMessage) {
                 "data": params.get("data").cloned().unwrap_or(Value::Null),
             });
             if let Err(e) = rt.append_entry("custom", entry) {
-                eprintln!("omp-rs: extension append_entry: {e:#}");
+                eprintln!("omt: extension append_entry: {e:#}");
             }
         }
         "send_message" | "send_user_message" => {
@@ -1441,7 +1441,7 @@ async fn session_stop_continuation(
     let outcome = match host.emit_session_stop(event, None).await {
         Ok(outcome) => outcome,
         Err(e) => {
-            eprintln!("omp-rs: extension session_stop: {e:#}");
+            eprintln!("omt: extension session_stop: {e:#}");
             return Vec::new();
         }
     };
@@ -1457,7 +1457,7 @@ async fn session_stop_continuation(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !outcome.block {
             if continuations >= SESSION_STOP_CONTINUATION_CAP {
-                eprintln!("omp-rs: session_stop continuation cap reached");
+                eprintln!("omt: session_stop continuation cap reached");
                 *s = StopState::default();
                 return Vec::new();
             }
@@ -1494,7 +1494,7 @@ fn notify(host: &ExtHost, ty: &str, build: impl FnOnce() -> LifecycleEvent) {
         return;
     }
     if let Err(e) = host.emit_nowait(&build().to_value(), None, emit_silent) {
-        eprintln!("omp-rs: extension emit: {e:#}");
+        eprintln!("omt: extension emit: {e:#}");
     }
 }
 
@@ -1535,7 +1535,7 @@ fn notify_update(
     });
     if let Err(e) = sent {
         enc.invalidate();
-        eprintln!("omp-rs: extension emit: {e:#}");
+        eprintln!("omt: extension emit: {e:#}");
     }
 }
 
@@ -1571,7 +1571,7 @@ fn forward_event(
                 if let Err(e) =
                     host.emit_nowait(&json!({"type":"agent_settled"}), None, emit_silent)
                 {
-                    eprintln!("omp-rs: extension agent_settled: {e:#}");
+                    eprintln!("omt: extension agent_settled: {e:#}");
                 }
             }
         }

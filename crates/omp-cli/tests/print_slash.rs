@@ -16,7 +16,7 @@ fn print_mode_prints_handled_command_output() {
     .unwrap();
     let work = home.path().join("work");
     std::fs::create_dir_all(&work).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_omp-rs"))
+    let out = Command::new(env!("CARGO_BIN_EXE_omt"))
         .env("HOME", home.path())
         .env_remove("OMP_AGENT_DIR")
         .env_remove("OMP_AUTH_BROKER_URL")

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Usage: bun capture.ts <ts|rs> [binary] [scenario...]
 //   ts: drives `omp --mode rpc --no-session` -> ts/<scenario>.jsonl
-//   rs: drives `<binary> --mode rpc` (default ../target/debug/omp-rs) -> rs/<scenario>.jsonl
+//   rs: drives `<binary> --mode rpc` (default ../target/debug/omt) -> rs/<scenario>.jsonl
 // Each line: {"dir":"in"|"out","frame":{...}}  (out = sent to agent, in = received)
 import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -103,7 +103,7 @@ function run(name: string, steps: Step[]): Promise<number> {
 	const [bin, args] =
 		target === "ts"
 			? ["omp", ["--mode", "rpc", "--no-session", "--model", MODEL]]
-			: [resolve(here, binArg ?? "../target/debug/omp-rs"), ["--mode", "rpc", "--no-session", "--model", MODEL]];
+			: [resolve(here, binArg ?? "../target/debug/omt"), ["--mode", "rpc", "--no-session", "--model", MODEL]];
 	const rows: { dir: string; frame: unknown }[] = [];
 	const child = spawn(bin, args, { stdio: ["pipe", "pipe", "ignore"], cwd: here });
 	let buf = "";

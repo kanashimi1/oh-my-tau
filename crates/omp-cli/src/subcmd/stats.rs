@@ -18,7 +18,7 @@ use omp_stats::server::{
 use omp_stats::types::DashboardStats;
 
 const USAGE: &str =
-    "Usage: omp-rs stats [-p, --port <port>] [--host <host>] [-j, --json] [-s, --summary|--sync]";
+    "Usage: omt stats [-p, --port <port>] [--host <host>] [-j, --json] [-s, --summary|--sync]";
 
 /// Parsed `omp stats` flags.
 #[derive(Debug, Clone, PartialEq)]

@@ -472,7 +472,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         apply_agent_model(spec);
     }
 
-    let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omp-rs"));
+    let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omt"));
     let runner = TaskRunner::new(binary, MAX_CONCURRENCY);
     if rubrics.iter().all(Option::is_none) {
         let outputs = runner.spawn_all(specs).await;

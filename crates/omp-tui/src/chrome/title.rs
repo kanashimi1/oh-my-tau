@@ -374,16 +374,16 @@ mod tests {
         );
         assert_eq!(build_terminal_title_with_state("!", None), "π !");
         assert_eq!(
-            build_terminal_title_with_state("⠋", Some("omp-rs")),
-            "π ⠋ omp-rs"
+            build_terminal_title_with_state("⠋", Some("omt")),
+            "π ⠋ omt"
         );
     }
 
     #[test]
     fn clean_titles_use_tau() {
         assert_eq!(
-            build_branded_title(CLEAN_TERMINAL_TITLE, ">", Some("omp-rs")),
-            "τ > omp-rs"
+            build_branded_title(CLEAN_TERMINAL_TITLE, ">", Some("omt")),
+            "τ > omt"
         );
         assert_eq!(
             build_branded_title(CLEAN_TERMINAL_TITLE, "⠋", Some("x")),

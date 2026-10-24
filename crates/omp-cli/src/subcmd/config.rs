@@ -27,7 +27,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         "list" => list(json),
         "get" => {
             let Some(key) = positional.get(1) else {
-                anyhow::bail!("Usage: omp-rs config get <key>\n\nRun 'omp-rs config list' to see available keys");
+                anyhow::bail!("Usage: omt config get <key>\n\nRun 'omt config list' to see available keys");
             };
             get(key, json)?;
         }
@@ -36,7 +36,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         }
         "set" | "reset" => {
             anyhow::bail!(
-                "config {} is not supported by omp-rs (read-only view)",
+                "config {} is not supported by omt (read-only view)",
                 positional[0]
             );
         }
@@ -105,7 +105,7 @@ fn list(json: bool) {
 
 fn get(key: &str, json: bool) -> Result<()> {
     let Some(def) = omp_settings::lookup(key) else {
-        anyhow::bail!("Unknown setting: {key}\n\nRun 'omp-rs config list' to see available keys");
+        anyhow::bail!("Unknown setting: {key}\n\nRun 'omt config list' to see available keys");
     };
     let settings = Settings::load(&std::env::current_dir().unwrap_or_default());
     let value = settings.get(def.id);

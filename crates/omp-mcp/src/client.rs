@@ -17,7 +17,7 @@ use crate::transport::PROTOCOL_VERSION;
 use crate::{Content, ToolCallResult, ToolDefinition};
 
 /// Client info sent during initialization (omp `CLIENT_INFO`).
-const CLIENT_INFO: (&str, &str) = ("omp-rs", env!("CARGO_PKG_VERSION"));
+const CLIENT_INFO: (&str, &str) = ("omt", env!("CARGO_PKG_VERSION"));
 
 /// An initialized MCP server connection, like omp's `MCPServerConnection`.
 pub struct Connection {

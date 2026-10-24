@@ -44,7 +44,7 @@ async fn branch_cancelled(rt: &Runtime, reason: BranchReason, entry_id: &str) ->
     {
         Ok(outcome) => outcome.cancel,
         Err(e) => {
-            eprintln!("omp-rs: extension session_before_branch: {e:#}");
+            eprintln!("omt: extension session_before_branch: {e:#}");
             false
         }
     }
@@ -54,7 +54,7 @@ async fn branch_cancelled(rt: &Runtime, reason: BranchReason, entry_id: &str) ->
 async fn announce_branch(rt: &Runtime, reason: BranchReason, previous: Option<String>) {
     if let Some(host) = rt.ext_host() {
         if let Err(e) = host.emit_session_branch(reason, previous, None).await {
-            eprintln!("omp-rs: extension session_branch: {e:#}");
+            eprintln!("omt: extension session_branch: {e:#}");
         }
     }
 }
@@ -321,7 +321,7 @@ pub async fn navigate_tree(
                     from_extension = true;
                 }
             }
-            Err(e) => eprintln!("omp-rs: extension session_before_tree: {e:#}"),
+            Err(e) => eprintln!("omt: extension session_before_tree: {e:#}"),
         }
     }
     if wants_summary && summary_result.is_none() && summarize.is_none() {
@@ -408,7 +408,7 @@ pub async fn navigate_tree(
             )
             .await
         {
-            eprintln!("omp-rs: extension session_tree: {e:#}");
+            eprintln!("omt: extension session_tree: {e:#}");
         }
     }
 

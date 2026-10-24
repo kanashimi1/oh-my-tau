@@ -58,17 +58,17 @@ pub fn run(args: &[String]) -> Result<i32> {
         let dir = omp_providers::AgentDir::default();
         let only = pattern;
         let reports = omp_providers::refresh(&dir, only)
-            .map_err(|e| eprintln!("omp-rs: refresh failed: {e:#}"))
+            .map_err(|e| eprintln!("omt: refresh failed: {e:#}"))
             .unwrap_or_default();
         if !json {
             for r in &reports {
                 match (&r.note, r.discovered.is_empty()) {
-                    (Some(note), _) => eprintln!("omp-rs: {}: {note}", r.provider),
+                    (Some(note), _) => eprintln!("omt: {}: {note}", r.provider),
                     (None, true) => {
-                        eprintln!("omp-rs: {}: no new models ({} cached)", r.provider, r.total)
+                        eprintln!("omt: {}: no new models ({} cached)", r.provider, r.total)
                     }
                     (None, false) => eprintln!(
-                        "omp-rs: {}: +{} ({})",
+                        "omt: {}: +{} ({})",
                         r.provider,
                         r.discovered.len(),
                         r.discovered.join(", ")

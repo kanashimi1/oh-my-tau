@@ -793,12 +793,12 @@ impl ExtHost {
             if let Some(host) = weak.upgrade().filter(|h| !h.closing.load(Ordering::SeqCst)) {
                 match host.reconnect_after_daemon_death().await {
                     Ok(true) => eprintln!(
-                        "omp-rs: shared extension-host daemon lost; reconnected to a fresh daemon"
+                        "omt: shared extension-host daemon lost; reconnected to a fresh daemon"
                     ),
                     Ok(false) => eprintln!(
-                        "omp-rs: shared extension-host daemon lost; fell back to a private host"
+                        "omt: shared extension-host daemon lost; fell back to a private host"
                     ),
-                    Err(e) => eprintln!("omp-rs: shared extension-host daemon lost: {e:#}"),
+                    Err(e) => eprintln!("omt: shared extension-host daemon lost: {e:#}"),
                 }
             }
         });
@@ -829,7 +829,7 @@ impl ExtHost {
                         self.generation.send_modify(|g| *g += 1);
                         return Ok(true);
                     }
-                    Err(e) => eprintln!("omp-rs: shared extension-host daemon unavailable: {e:#}"),
+                    Err(e) => eprintln!("omt: shared extension-host daemon unavailable: {e:#}"),
                 }
             }
         }

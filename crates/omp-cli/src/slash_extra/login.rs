@@ -87,7 +87,7 @@ impl OAuthLoginUi for TuiUi {
 }
 
 const NOT_INTERACTIVE: &str =
-    "needs an interactive UI (provider pickers are dialogs); run `omp-rs login` / `omp-rs logout` from a terminal";
+    "needs an interactive UI (provider pickers are dialogs); run `omt login` / `omt logout` from a terminal";
 
 /// `/login [provider]`.
 pub async fn login_command(rt: &Arc<Runtime>, args: &str) {

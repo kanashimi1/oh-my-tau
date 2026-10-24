@@ -526,7 +526,7 @@ async fn run_bash(rt: &Arc<Runtime>, command: &str) -> CmdResult {
                     return ok(result);
                 }
             }
-            Err(e) => eprintln!("omp-rs: extension user_bash: {e:#}"),
+            Err(e) => eprintln!("omt: extension user_bash: {e:#}"),
         }
     }
     let controller = AbortController::new();
@@ -581,7 +581,7 @@ async fn input_gate(text: &str) -> Option<String> {
         Ok(crate::ext::PromptGate::Run(t)) => Some(t),
         Ok(crate::ext::PromptGate::Handled) => None,
         Err(e) => {
-            eprintln!("omp-rs: extension input: {e:#}");
+            eprintln!("omt: extension input: {e:#}");
             Some(text.to_string())
         }
     }

@@ -7,15 +7,14 @@ browser UI, and the model/provider/session machinery — reading and writing the
 same config and session files as omp, so the two can be used interchangeably
 on the same agent directory (`~/.omp/agent`).
 
-The release binary is `omp-rs` (symlink it as `omt` if you prefer the shorter
-name). Highlights:
+The release binary is `omt`. Highlights:
 
 - **TUI** — interactive terminal session with a `/model` browser, autocomplete,
   themes and magic-keyword gradients.
-- **Print mode** — `omp-rs -p "prompt"` for one-shot, scriptable runs.
-- **RPC mode** — `omp-rs --mode rpc`: newline-delimited JSON-RPC on stdio (each
+- **Print mode** — `omt -p "prompt"` for one-shot, scriptable runs.
+- **RPC mode** — `omt --mode rpc`: newline-delimited JSON-RPC on stdio (each
   browser session below runs as one of these).
-- **Browser UI** — `omp-rs web` serves a local web UI (default
+- **Browser UI** — `omt web` serves a local web UI (default
   http://127.0.0.1:7467) with themes, wallpapers and per-session agents.
 - **Extensions** — runs unmodified omp `ExtensionAPI` extensions through a
   Bun-based extension host (`ext-host/`).
@@ -26,7 +25,7 @@ name). Highlights:
 
 ## Screenshots
 
-The `omp-rs web` browser UI:
+The `omt web` browser UI:
 
 | Session | Models | Appearance |
 | --- | --- | --- |
@@ -46,7 +45,7 @@ Requirements:
 cargo build --release -p omp-cli
 ```
 
-The binary lands at `target/release/omp-rs`.
+The binary lands at `target/release/omt`.
 
 ## Quick start
 
@@ -60,12 +59,12 @@ omt resolves providers, models and credentials from omp's agent directory
 2. **OAuth login** — for providers with an OAuth flow:
 
    ```sh
-   omp-rs login            # pick a provider interactively
-   omp-rs login anthropic  # or name one
+   omt login            # pick a provider interactively
+   omt login anthropic  # or name one
    ```
 
    Credentials are stored in `agent.db` (the omp credential store); refresh
-   tokens are renewed automatically. `omp-rs logout <provider>` removes them.
+   tokens are renewed automatically. `omt logout <provider>` removes them.
 
 3. **models.yml** — custom providers and base-URL overrides in
    `~/.omp/agent/models.yml`:
@@ -81,13 +80,13 @@ omt resolves providers, models and credentials from omp's agent directory
 Then start a session:
 
 ```sh
-omp-rs                      # interactive TUI
-omp-rs -p "summarize this"  # print mode, exits when done
-omp-rs --mode rpc           # JSON-RPC on stdio
-omp-rs web                  # browser UI on http://127.0.0.1:7467
+omt                      # interactive TUI
+omt -p "summarize this"  # print mode, exits when done
+omt --mode rpc           # JSON-RPC on stdio
+omt web                  # browser UI on http://127.0.0.1:7467
 ```
 
-Useful subcommands (see `omp-rs <sub> --help`): `models`, `stats`, `config`,
+Useful subcommands (see `omt <sub> --help`): `models`, `stats`, `config`,
 `gc`, `export`, `judge-sessions`, `login`/`logout`, `collab`, `serve-collab`,
 `web`.
 
@@ -111,14 +110,14 @@ Useful subcommands (see `omp-rs <sub> --help`): `models`, `stats`, `config`,
   `lsp.json`/`lsp.yaml`; diagnostics feed the model, edits round-trip.
 - **Sessions** — resumable JSONL v3 sessions under `~/.omp/agent/sessions`,
   compatible with omp (`-c` continue newest, `-r [ID]` resume with picker,
-  `--fork ID` to branch, `omp-rs export` to HTML).
+  `--fork ID` to branch, `omt export` to HTML).
 
 ## Adding new models
 
 New models reach omt through three layers; each is optional and later layers
 win:
 
-1. **Live refresh** — `omp-rs models --refresh [provider]` (or `F5` in the
+1. **Live refresh** — `omt models --refresh [provider]` (or `F5` in the
    `/model` browser) ports TS `ModelRegistry.refresh`: for every provider
    with a base URL + credential (models.yml `apiKey`/`baseUrl`, env API key,
    or an `agent.db` credential), it fetches `/models` (query string
@@ -150,7 +149,7 @@ The golden tests in `tests-golden/` compare Rust behaviour against the
 TypeScript implementation; they additionally need bun and a local oh-my-pi
 checkout at `vendor-src/oh-my-pi/` (gitignored), and are optional.
 
-omt is a workspace of crates: `omp-cli` (the `omp-rs` binary: TUI, RPC loop
+omt is a workspace of crates: `omp-cli` (the `omt` binary: TUI, RPC loop
 and the `web` browser UI) plus `omp-providers` (model/credential resolution),
 `omp-session`, `omp-tui`, `omp-ext`, `omp-mcp`, `omp-lsp` and the other
 `omp-*` support crates — layered over the vendored `pa-*`/`pi-*` crates (see

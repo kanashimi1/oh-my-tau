@@ -6,12 +6,12 @@ A: expired kimi-code token in agent.db -> `omp-rs -p` refreshes it (form grant),
 B: token valid on paper but rejected (401) -> exactly one forced refresh + retry, answer arrives.
 C: auth broker configured (mock): snapshot per request, near-expiry row refreshed via POST
    /v1/credential/:id/refresh, request carries the broker's bearer; agent.db is untouched.
-Usage: refresh_e2e.py [path/to/omp-rs]
+Usage: refresh_e2e.py [path/to/omt]
 """
 import json, os, shutil, sqlite3, subprocess, sys, tempfile, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "../../target/shared/debug/omp-rs")
+BIN = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "../../target/shared/debug/omt")
 LOG = []  # (method, path, authorization/x-api-key, body)
 STATE = {"revoked": set(), "tokens": 0}
 

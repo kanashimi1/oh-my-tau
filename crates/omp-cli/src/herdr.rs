@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Stable, unique integration id (never `herdr:*` — that prefix is Herdr's own).
 pub const SOURCE: &str = "omp-rs";
 /// The label users see in the sidebar / `herdr agent list`.
-pub const AGENT: &str = "omp-rs";
+pub const AGENT: &str = "omt";
 
 /// Per-report wall-clock budget. Herdr's socket answers in milliseconds; if
 /// the binary hangs, the child is killed after this and the report is dropped.
@@ -143,7 +143,7 @@ impl Herdr {
         let mut resume = lock(&self.resume);
         *resume = Vec::new();
         if let Some(f) = session_file {
-            resume.push("omp-rs".to_string());
+            resume.push("omt".to_string());
             resume.push("--resume".to_string());
             resume.push(f.display().to_string());
             if let Some(m) = model_ref {
@@ -526,7 +526,7 @@ mod tests {
         assert!(pane_foreground_is_ts_omp(&bin, "w1:p1"));
         std::fs::write(
             &bin,
-            "#!/bin/sh\nprintf '%s' '{\"result\":{\"process_info\":{\"foreground_processes\":[{\"name\":\"omp-rs\"}]}}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"result\":{\"process_info\":{\"foreground_processes\":[{\"name\":\"omt\"}]}}}'\n",
         )
         .unwrap();
         assert!(!pane_foreground_is_ts_omp(&bin, "w1:p1"));
@@ -559,12 +559,12 @@ mod tests {
         assert!(lines.iter().any(|l| l == "report-agent"));
         assert!(lines.iter().any(|l| l == "pane-7"));
         assert!(lines.iter().any(|l| l == "--source"));
-        assert!(lines.iter().any(|l| l == "omp-rs"));
+        assert!(lines.iter().any(|l| l == "omt"));
         assert!(lines.iter().any(|l| l == "--state"));
         // resume argv attached after `--` in every state/session report
         assert!(lines.windows(6).any(|w| {
             w[0] == "--"
-                && w[1] == "omp-rs"
+                && w[1] == "omt"
                 && w[2] == "--resume"
                 && w[3] == "/tmp/sess/abc.jsonl"
                 && w[4] == "--model"
@@ -641,7 +641,7 @@ mod tests {
         // session reports carry the resume command
         assert!(lines.windows(6).any(|w| {
             w[0] == "--"
-                && w[1] == "omp-rs"
+                && w[1] == "omt"
                 && w[2] == "--resume"
                 && w[3] == "/tmp/b.jsonl"
                 && w[4] == "--model"

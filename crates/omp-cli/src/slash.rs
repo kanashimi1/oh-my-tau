@@ -870,19 +870,19 @@ async fn dispatch_ported(rt: &std::sync::Arc<Runtime>, name: &str, args: &str) -
             "Extended context",
             "Usage: /extended-context [on|off|status]",
         )),
-        "computer" => Some(notice(rt, "Computer use needs the eval-prelude subsystem, which is not ported to omp-rs (no computer-use prelude, display, or input injection).")),
-        "ratchet" => Some(notice(rt, "/ratchet needs the ratchet eval-harness subsystem (eval preludes + hill-climb runner), which is not ported to omp-rs.")),
-        "prewalk" => Some(notice(rt, "Prewalk is a startup-time feature in omp-rs (the --prewalk/--no-prewalk/--prewalk-into flags); arming or restarting it mid-session is not supported.")),
-        "security" => Some(notice(rt, "/security needs the security-scan mode controller (plan/run/compare), which is not ported to omp-rs.")),
-        "share" => Some(notice(rt, "/share needs the share server / secret-gist uploader, which is not ported to omp-rs.")),
-        "browser" => Some(notice(rt, "/browser needs the browser automation subsystem (eval-prelude browser + headless/visible restart), which is not ported to omp-rs.")),
-        "ssh" => Some(notice(rt, "/ssh needs the SSH host manager (hosts config + remote session transport), which is not ported to omp-rs.")),
-        "shake" => Some(notice(rt, "/shake needs AgentSession.shake (elide/images/thinking context stripping), which is not ported to omp-rs.")),
+        "computer" => Some(notice(rt, "Computer use needs the eval-prelude subsystem, which is not ported to omt (no computer-use prelude, display, or input injection).")),
+        "ratchet" => Some(notice(rt, "/ratchet needs the ratchet eval-harness subsystem (eval preludes + hill-climb runner), which is not ported to omt.")),
+        "prewalk" => Some(notice(rt, "Prewalk is a startup-time feature in omt (the --prewalk/--no-prewalk/--prewalk-into flags); arming or restarting it mid-session is not supported.")),
+        "security" => Some(notice(rt, "/security needs the security-scan mode controller (plan/run/compare), which is not ported to omt.")),
+        "share" => Some(notice(rt, "/share needs the share server / secret-gist uploader, which is not ported to omt.")),
+        "browser" => Some(notice(rt, "/browser needs the browser automation subsystem (eval-prelude browser + headless/visible restart), which is not ported to omt.")),
+        "ssh" => Some(notice(rt, "/ssh needs the SSH host manager (hosts config + remote session transport), which is not ported to omt.")),
+        "shake" => Some(notice(rt, "/shake needs AgentSession.shake (elide/images/thinking context stripping), which is not ported to omt.")),
         "handoff" => Some(handoff_command(rt, args).await),
         "move" => Some(move_command(rt, args).await),
-        "wt" | "worktree" => Some(notice(rt, "/wt needs the session-worktree machinery (git worktree creation + source-checkout cleanup), which is not ported to omp-rs.")),
-        "add-dir" | "remove-dir" | "dirs" => Some(notice(rt, "Multi-root workspace directories are not tracked per-session in omp-rs; there is no sessionManager workspace-dir store to add to.")),
-        "marketplace" => Some(notice(rt, "/marketplace needs the marketplace manager (sources, catalogs, install/uninstall), which is not ported to omp-rs.")),
+        "wt" | "worktree" => Some(notice(rt, "/wt needs the session-worktree machinery (git worktree creation + source-checkout cleanup), which is not ported to omt.")),
+        "add-dir" | "remove-dir" | "dirs" => Some(notice(rt, "Multi-root workspace directories are not tracked per-session in omt; there is no sessionManager workspace-dir store to add to.")),
+        "marketplace" => Some(notice(rt, "/marketplace needs the marketplace manager (sources, catalogs, install/uninstall), which is not ported to omt.")),
         "plugins" | "plugin" => Some(plugins_command(rt, args).await),
         _ => None,
     }
@@ -932,7 +932,7 @@ fn fast_command(rt: &Runtime, args: &str) -> Outcome {
         }
         "ultra" | "ultrafast" => usage(
             rt,
-            "Ultrafast is unavailable in omp-rs: the ultrafast service tier is not exposed by the provider adapter.",
+            "Ultrafast is unavailable in omt: the ultrafast service tier is not exposed by the provider adapter.",
         ),
         "off" => {
             rt.set_service_tier(None);
@@ -2152,7 +2152,7 @@ fn changelog_command(rt: &Runtime, args: &str) -> Outcome {
     let Some(path) = changelog_path() else {
         output(
             rt,
-            "No changelog entries found. (No CHANGELOG.md next to the omp-rs executable.)",
+            "No changelog entries found. (No CHANGELOG.md next to the omt executable.)",
         );
         return Handled {
             agent_invoked: false,
@@ -2518,7 +2518,7 @@ fn mcp_add(rt: &Runtime, rest: &str) -> Outcome {
                 }
                 _ => return usage(rt, "Invalid --transport value. Use http or sse."),
             },
-            "--token" => return usage(rt, "--token is only persisted by the TUI MCP add flow in omp-rs; use headers in the config file."),
+            "--token" => return usage(rt, "--token is only persisted by the TUI MCP add flow in omt; use headers in the config file."),
             other => return usage(rt, &format!("Unknown option: {other}")),
         }
     }
@@ -2595,7 +2595,7 @@ async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
         ),
         "smithery-search" => usage(
             rt,
-            "/mcp smithery-search needs the Smithery registry client, which is not ported to omp-rs.",
+            "/mcp smithery-search needs the Smithery registry client, which is not ported to omt.",
         ),
         "list" => mcp_list(rt),
         "add" => mcp_add(rt, &rest),
@@ -2656,7 +2656,7 @@ async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
         }
         "resources" | "prompts" => usage(
             rt,
-            &format!("/mcp {verb} needs the MCPManager resource/prompt listing, which the omp-rs MCP client does not implement (tools only)."),
+            &format!("/mcp {verb} needs the MCPManager resource/prompt listing, which the omt MCP client does not implement (tools only)."),
         ),
         _ => usage(rt, &format!("Unknown /mcp subcommand: {verb}. Use /mcp help for available subcommands.")),
     }
@@ -2910,7 +2910,7 @@ fn setting_status_toggle(
         "toggle" | "on" | "off" => usage(
             rt,
             &format!(
-                "{label} toggling is a session override in omp (settings + rebuilt system prompt); omp-rs applies these settings at startup only, so edit them in config.yml and restart. Status: {}.",
+                "{label} toggling is a session override in omp (settings + rebuilt system prompt); omt applies these settings at startup only, so edit them in config.yml and restart. Status: {}.",
                 if current { "on" } else { "off" }
             ),
         ),
@@ -2942,7 +2942,7 @@ async fn move_command(rt: &Runtime, args: &str) -> Outcome {
     usage(
         rt,
         &format!(
-            "Moving a live session is not supported in omp-rs: the session writer is bound to {} for the process lifetime and a move would split the transcript. Start a new session in {} instead (`omp-rs --resume` can reopen this one there).",
+            "Moving a live session is not supported in omt: the session writer is bound to {} for the process lifetime and a move would split the transcript. Start a new session in {} instead (`omt --resume` can reopen this one there).",
             rt.cwd.display(),
             resolved.display()
         ),
@@ -2957,7 +2957,7 @@ async fn plugins_command(rt: &Runtime, args: &str) -> Outcome {
     if matches!(verb.as_str(), "enable" | "disable") {
         return usage(
             rt,
-            &format!("/plugins {verb} needs the plugin registry (marketplace plugins), which is not ported to omp-rs."),
+            &format!("/plugins {verb} needs the plugin registry (marketplace plugins), which is not ported to omt."),
         );
     }
     if verb == "list" || verb.is_empty() {
@@ -2965,7 +2965,7 @@ async fn plugins_command(rt: &Runtime, args: &str) -> Outcome {
         if commands.is_empty() {
             output(
                 rt,
-                "No plugins installed. (The omp-rs extension host loads a single runtime extension; a plugin registry with enable/disable is not ported.)",
+                "No plugins installed. (The omt extension host loads a single runtime extension; a plugin registry with enable/disable is not ported.)",
             );
         } else {
             let names: Vec<&str> = commands
@@ -3001,7 +3001,7 @@ async fn handoff_command(rt: &Runtime, args: &str) -> Outcome {
     let _ = args;
     usage(
         rt,
-        "/handoff (handoff document generation + compact-in-place) is not wired into the omp-rs runtime; only the /compact summary path is available.",
+        "/handoff (handoff document generation + compact-in-place) is not wired into the omt runtime; only the /compact summary path is available.",
     )
 }
 

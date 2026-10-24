@@ -17,7 +17,7 @@ use omp_providers::login::{self, providers, Services, Target};
 use omp_providers::AgentDir;
 use pa_ai::oauth::{OAuthLoginUi, OAuthPrompt};
 
-const APP_NAME: &str = "omp-rs";
+const APP_NAME: &str = "omt";
 const LOGIN_DESCRIPTION: &str = "Log in to a model provider (terminal counterpart of /login)";
 const LOGOUT_DESCRIPTION: &str = "Log out of a model provider (removes its stored credentials)";
 

@@ -107,7 +107,7 @@ mod tests {
     fn banner_shows_brand_model_dir_session() {
         let banner = Banner {
             session_name: Some("conv modpack".into()),
-            ..Banner::new("zai/glm-5.3-flash".into(), "omp-rs")
+            ..Banner::new("zai/glm-5.3-flash".into(), "omt")
         };
         let backend = TestBackend::new(60, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -118,7 +118,7 @@ mod tests {
         let row: String = (0..60).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(row.starts_with("\u{3c0} > "));
         assert!(row.contains("zai/glm-5.3-flash"));
-        assert!(row.contains("omp-rs"));
+        assert!(row.contains("omt"));
         assert!(row.contains("conv modpack"));
     }
 
