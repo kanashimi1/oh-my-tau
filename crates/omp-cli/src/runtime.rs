@@ -5698,7 +5698,8 @@ mod compaction_guard_tests {
         let file = h.rt.session_file();
         let before = journal(&file);
 
-        let (gate, mut entered, proceed) = Gate::new();
+        // `_proceed` keeps the gate closed until the test ends: the pass is cancelled, never released.
+        let (gate, mut entered, _proceed) = Gate::new();
         h.rt.set_summarizer(Some(gated_summarizer("TOO LATE SUMMARY", &gate)));
         h.rt.set_compaction_settings(small_keep());
 
@@ -5913,7 +5914,8 @@ mod compaction_guard_tests {
         let file = h.rt.session_file();
         let before = journal(&file);
 
-        let (gate, mut entered, proceed) = Gate::new();
+        // `_proceed` keeps the gate closed until the test ends: the pass is cancelled, never released.
+        let (gate, mut entered, _proceed) = Gate::new();
         h.rt.set_summarizer(Some(gated_summarizer("WRONG FILE SUMMARY", &gate)));
         h.rt.set_compaction_settings(small_keep());
 

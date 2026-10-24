@@ -20,9 +20,9 @@ use super::TestHome;
 
 /// The fixture `HOME` the goldens were recorded against.
 pub(crate) const FIXTURE_HOME: &str =
-    "/home/kaneki/fleet-split/runs/omp-rust/webui-port/fixture/home";
+    "/home/user/omrs-fixtures/stats/fixture/home";
 /// `golden/_index.json` + `NNN.json` (`{request, status, body}`).
-pub(crate) const GOLDEN_DIR: &str = "/home/kaneki/fleet-split/runs/omp-rust/webui-port/golden";
+pub(crate) const GOLDEN_DIR: &str = "/home/user/omrs-fixtures/stats/golden";
 
 const RELATIVE_RANGES: [&str; 5] = [
     "range=1h",

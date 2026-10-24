@@ -245,7 +245,7 @@ fn total_message_count_matches_fixture() {
 }
 
 /// The TS-written stats db the goldens were recorded from (fixture fully ingested).
-const TS_DB: &str = "/home/kaneki/fleet-split/runs/omp-rust/webui-port/golden/_stats.full.db";
+const TS_DB: &str = "/home/user/omrs-fixtures/stats/golden/_stats.full.db";
 
 /// Node/Bun `stat.mtimeMs` / `birthtimeMs` formula (`sec * 1e3 + nsec / 1e6`).
 fn node_ms(t: std::time::SystemTime) -> f64 {

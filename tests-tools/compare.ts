@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const ROOT = "/home/kaneki/fleet-split/omp-rs";
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const RUST_TOOLS = join(ROOT, "crates/omp-cli/src/tools.rs");
 const RUST_EDIT = join(ROOT, "crates/omp-cli/src/tools/edit.rs");
 const EDIT_REPLACE_PROMPT = join(ROOT, "vendor/pi-edit/prompts/replace.md");
@@ -32,6 +32,41 @@ function canonical(value: unknown): unknown {
 		return out;
 	}
 	return value;
+}
+
+/** JSON.parse tolerant of Rust `json!` syntax: drop trailing commas (outside strings). */
+function parseJsonLiteral(literal: string): unknown {
+	let parsed: unknown;
+	try {
+		return JSON.parse(literal);
+	} catch {
+		let out = "";
+		let inString = false;
+		let escaped = false;
+		for (let i = 0; i < literal.length; i++) {
+			const ch = literal[i];
+			if (inString) {
+				out += ch;
+				if (escaped) escaped = false;
+				else if (ch === "\\") escaped = true;
+				else if (ch === '"') inString = false;
+				continue;
+			}
+			if (ch === '"') {
+				inString = true;
+				out += ch;
+				continue;
+			}
+			if (ch === ",") {
+				let j = i + 1;
+				while (j < literal.length && /\s/.test(literal[j])) j++;
+				if (literal[j] === "}" || literal[j] === "]") continue;
+			}
+			out += ch;
+		}
+		parsed = JSON.parse(out);
+	}
+	return parsed;
 }
 
 /** Extract the balanced JSON payload of the i-th `json!(` occurrence in `src`. */
@@ -74,7 +109,7 @@ function parseRustTools(): ToolDef[] {
 	const defs: ToolDef[] = names.map(name => ({
 		name,
 		description_first_line: "(from tools.rs, see description const)",
-		parameters: JSON.parse(rustInlineTool(toolsSrc, name)) as Record<string, unknown>,
+		parameters: parseJsonLiteral(rustInlineTool(toolsSrc, name)) as Record<string, unknown>,
 	}));
 	// Descriptions: resolve the *_DESCRIPTION consts for exactness.
 	for (const def of defs) {
@@ -87,13 +122,15 @@ function parseRustTools(): ToolDef[] {
 		}
 	}
 	// task/eval: schemas live in their own modules as `json!(...)` literals.
+	// task: `schema()` delegates to `base_schema()` with a conditional rubric `json!`
+	// in between, so anchor at `base_schema()` to compare the actual wire schema.
 	for (const [name, file] of [["task", "crates/omp-cli/src/tools/task.rs"], ["eval", "crates/omp-cli/src/tools/eval.rs"], ["web_search", "crates/omp-cli/src/tools/web_search.rs"]] as const) {
 		const mod = readFileSync(join(ROOT, file), "utf8");
-		const at = mod.indexOf("pub fn schema()");
+		const at = name === "task" ? mod.indexOf("fn base_schema()") : mod.indexOf("pub fn schema()");
 		defs.push({
 			name,
 			description_first_line: "(from module const, filled below)",
-			parameters: JSON.parse(jsonLiteralAt(mod, at)) as Record<string, unknown>,
+			parameters: parseJsonLiteral(jsonLiteralAt(mod, at)) as Record<string, unknown>,
 		});
 	}
 	// ast_grep/ast_edit: schemas live in tools/ast.rs as named `schema_*()` fns.
@@ -114,7 +151,7 @@ function parseRustTools(): ToolDef[] {
 			defs.push({
 				name,
 				description_first_line: first,
-				parameters: JSON.parse(jsonLiteralAt(mod, at)) as Record<string, unknown>,
+				parameters: parseJsonLiteral(jsonLiteralAt(mod, at)) as Record<string, unknown>,
 			});
 		}
 	}
@@ -146,7 +183,7 @@ function parseRustTools(): ToolDef[] {
 		defs.push({
 			name: "lsp",
 			description_first_line: first,
-			parameters: JSON.parse(jsonLiteralAt(lspSrc, at)) as Record<string, unknown>,
+			parameters: parseJsonLiteral(jsonLiteralAt(lspSrc, at)) as Record<string, unknown>,
 		});
 	}
 	// wait/think/yield/goal: schema in the module (`pub fn schema()`); description
@@ -160,7 +197,7 @@ function parseRustTools(): ToolDef[] {
 			name,
 			description_first_line: full.split("\n", 1)[0] ?? "",
 			description: full,
-			parameters: JSON.parse(jsonLiteralAt(mod, at)) as Record<string, unknown>,
+			parameters: parseJsonLiteral(jsonLiteralAt(mod, at)) as Record<string, unknown>,
 		});
 	}
 	// edit: `edit::schema(edit_mode)` + `pi_edit::description(edit_mode)`; compare the
@@ -171,7 +208,7 @@ function parseRustTools(): ToolDef[] {
 	defs.push({
 		name: "edit",
 		description_first_line: replacePrompt.split("\n", 1)[0] ?? "",
-		parameters: JSON.parse(replaceJson) as Record<string, unknown>,
+		parameters: parseJsonLiteral(replaceJson) as Record<string, unknown>,
 	});
 	// todo/ask: schema in the module; the description is a const (todo: escaped string, ask: raw string).
 	{
@@ -191,7 +228,7 @@ function parseRustTools(): ToolDef[] {
 				name,
 				description_first_line: fullDesc.split("\n", 1)[0] ?? "",
 				description: fullDesc,
-				parameters: JSON.parse(jsonLiteralAt(src, at)) as Record<string, unknown>,
+				parameters: parseJsonLiteral(jsonLiteralAt(src, at)) as Record<string, unknown>,
 			});
 		}
 	}
@@ -208,7 +245,7 @@ function parseRustTools(): ToolDef[] {
 				name,
 				description_first_line: fullDesc.split("\n", 1)[0] ?? "",
 				description: fullDesc,
-				parameters: JSON.parse(jsonLiteralAt(ckptSrc, at)) as Record<string, unknown>,
+				parameters: parseJsonLiteral(jsonLiteralAt(ckptSrc, at)) as Record<string, unknown>,
 			});
 		}
 	}

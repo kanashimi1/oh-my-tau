@@ -5,9 +5,18 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::{json, Map, Value};
 
-/// Evidence-selection checkpoint (tokenizer + `rl_agent_config.json` temperatures).
-pub const DEFAULT_CKPT: &str = "/home/kaneki/fleet-split/runs/laya-judge/tj_sel/ckpt";
-/// ONNX exported from [`DEFAULT_CKPT`] with `laya-ort/export_onnx.py`.
+/// Evidence-selection checkpoint (tokenizer + `rl_agent_config.json` temperatures):
+/// `$OMP_JUDGE_CKPT` if set, else `$HOME/.omp-rs/judge/tj_sel/ckpt`. A missing
+/// checkpoint is reported by [`Scorer::load`], never by this lookup.
+#[must_use]
+pub fn default_ckpt() -> PathBuf {
+    if let Some(p) = std::env::var_os("OMP_JUDGE_CKPT") {
+        return PathBuf::from(p);
+    }
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
+    home.join(".omp-rs/judge/tj_sel/ckpt")
+}
+/// ONNX exported from the checkpoint at [`default_ckpt`].
 pub const DEFAULT_ONNX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/onnx/laya_judge_tjsel.onnx");
 
 const QUESTIONS: &str = include_str!("questions.json");
@@ -23,7 +32,7 @@ pub struct ModelPaths {
 impl Default for ModelPaths {
     fn default() -> Self {
         Self {
-            ckpt: DEFAULT_CKPT.into(),
+            ckpt: default_ckpt(),
             onnx: DEFAULT_ONNX.into(),
             threads: 2,
         }

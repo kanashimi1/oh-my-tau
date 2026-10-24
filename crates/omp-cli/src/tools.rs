@@ -24,7 +24,9 @@ pub(crate) mod rlm_combinators;
 mod search;
 mod task;
 mod todo;
-pub use todo::{phases_from_entries, Status, TodoItem, TodoPhase, TodoTool};
+pub use todo::{phases_from_entries, TodoPhase, TodoTool};
+#[cfg(test)]
+pub use todo::{Status, TodoItem};
 mod goal;
 mod lsp;
 mod think;

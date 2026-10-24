@@ -605,7 +605,6 @@ mod tests {
 
     #[test]
     fn indexed_colors_and_optional_thinking_max() {
-        let json = r##"{"name":"i","colors":{"accent":196,"thinkingMax":99,"text":"#112233"}}"##;
         // still invalid: only one required token — but exercises parsing of
         // indices via the full-file test above; assert parse-level behavior:
         let parsed = parse_theme_json(

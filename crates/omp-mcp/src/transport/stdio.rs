@@ -13,6 +13,7 @@ use tokio::sync::{oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::McpServerConfig;
+use crate::timeout::is_timeout_enabled;
 use crate::errors::{Failure, McpError, McpTransportError, TransportKind};
 use crate::transport::{
     await_with_timeout, default_handler, dispatch_message, McpTransport, NotificationCallback,
@@ -40,6 +41,37 @@ pub struct StdioTransport {
     ids: RequestIdAllocator,
     shared: Option<Arc<Shared>>,
     shutdown: CancellationToken,
+}
+
+/// Write one NDJSON frame under the stdin lock.
+async fn write_frame(stdin: &Mutex<ChildStdin>, line: &str) -> std::io::Result<()> {
+    let mut guard = stdin.lock().await;
+    guard.write_all(line.as_bytes()).await?;
+    guard.write_all(b"\n").await?;
+    guard.flush().await
+}
+
+/// Run `fut` under the request timeout (disabled when `timeout_ms == 0`);
+/// `Err(())` means the deadline elapsed.
+async fn bounded<T>(timeout_ms: u64, fut: impl std::future::Future<Output = T>) -> Result<T, ()> {
+    if !is_timeout_enabled(timeout_ms) {
+        return Ok(fut.await);
+    }
+    tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), fut)
+        .await
+        .map_err(|_| ())
+}
+
+fn timeout_error(timeout_ms: u64) -> McpError {
+    McpError::Transport(McpTransportError {
+        transport: TransportKind::Stdio,
+        stage: Failure::Timeout,
+        failure: Failure::Timeout,
+        retryable: false,
+        message: format!("Request timeout after {timeout_ms}ms (stdin write blocked)"),
+        code: None,
+        data: None,
+    })
 }
 
 impl StdioTransport {
@@ -98,23 +130,14 @@ impl McpTransport for StdioTransport {
                 .await
                 .map
                 .insert(PendingRequests::key(&id), tx);
-            let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}\n".to_string());
-            let mut guard = stdin.lock().await;
-            let write_result = async {
-                guard.write_all(line.as_bytes()).await?;
-                guard.write_all(b"\n").await?;
-                guard.flush().await
-            }
-            .await;
-            drop(guard);
-            if let Err(err) = write_result {
-                shared
-                    .pending
-                    .lock()
-                    .await
-                    .map
-                    .remove(&PendingRequests::key(&id));
-                return Err(McpError::Transport(McpTransportError {
+            let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string());
+            let started = tokio::time::Instant::now();
+            // The stdin lock and the write both count against the request
+            // timeout: a server that never drains stdin must not hang us.
+            let write_result = bounded(timeout_ms, write_frame(&stdin, &line)).await;
+            let write_err = match write_result {
+                Ok(Ok(())) => None,
+                Ok(Err(err)) => Some(McpError::Transport(McpTransportError {
                     transport: TransportKind::Stdio,
                     stage: Failure::Send,
                     failure: Failure::Send,
@@ -122,9 +145,34 @@ impl McpTransport for StdioTransport {
                     message: format!("failed to write to MCP subprocess stdin: {err}"),
                     code: None,
                     data: None,
-                }));
+                })),
+                Err(()) => Some(timeout_error(timeout_ms)),
+            };
+            if let Some(err) = write_err {
+                shared
+                    .pending
+                    .lock()
+                    .await
+                    .map
+                    .remove(&PendingRequests::key(&id));
+                return Err(err);
             }
-            await_with_timeout(rx, timeout_ms, TransportKind::Stdio).await
+            let remaining_ms = if timeout_ms == 0 {
+                0
+            } else {
+                let spent = started.elapsed().as_millis() as u64;
+                timeout_ms.saturating_sub(spent).max(1)
+            };
+            let result = await_with_timeout(rx, remaining_ms, TransportKind::Stdio).await;
+            if result.is_err() {
+                shared
+                    .pending
+                    .lock()
+                    .await
+                    .map
+                    .remove(&PendingRequests::key(&id));
+            }
+            result
         })
     }
 
@@ -132,18 +180,13 @@ impl McpTransport for StdioTransport {
         let Some(stdin) = self.stdin.clone() else {
             return Box::pin(async { Err(Self::not_connected()) });
         };
+        let timeout_ms = self.timeout_ms;
         let frame = json!({ "jsonrpc": "2.0", "method": method, "params": params });
         Box::pin(async move {
-            let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}\n".to_string());
-            let mut guard = stdin.lock().await;
-            async {
-                guard.write_all(line.as_bytes()).await?;
-                guard.write_all(b"\n").await?;
-                guard.flush().await
-            }
-            .await
-            .map_err(|err| {
-                McpError::Transport(McpTransportError {
+            let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string());
+            match bounded(timeout_ms, write_frame(&stdin, &line)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(err)) => Err(McpError::Transport(McpTransportError {
                     transport: TransportKind::Stdio,
                     stage: Failure::Send,
                     failure: Failure::Send,
@@ -151,8 +194,9 @@ impl McpTransport for StdioTransport {
                     message: format!("failed to write notification: {err}"),
                     code: None,
                     data: None,
-                })
-            })
+                })),
+                Err(()) => Err(timeout_error(timeout_ms)),
+            }
         })
     }
 

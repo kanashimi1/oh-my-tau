@@ -290,7 +290,7 @@ impl CollabController {
             stop_tx: stop_tx.clone(),
             done_rx: Some(done_rx),
         });
-        let mut done_rx = self
+        let done_rx = self
             .host_task
             .lock()
             .unwrap()
@@ -362,7 +362,7 @@ impl CollabController {
         *self.host.lock().unwrap() = None;
         let Some(task) = task else { return };
         let _ = task.stop_tx.send(reason.to_string());
-        let Some(mut done_rx) = task.done_rx else {
+        let Some(done_rx) = task.done_rx else {
             return;
         };
         let deadline = std::time::Instant::now() + Duration::from_millis(TEARDOWN_WAIT_MS);

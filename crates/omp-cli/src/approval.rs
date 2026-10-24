@@ -72,9 +72,7 @@ impl Decision {
 #[derive(Debug, Clone)]
 pub struct Resolved {
     pub policy: Policy,
-    pub tier: Tier,
     pub reason: Option<String>,
-    pub overridden: bool,
     pub source: Source,
     pub policy_key: Option<String>,
 }
@@ -86,14 +84,6 @@ pub fn parse_mode(value: &str) -> Option<ApprovalMode> {
         "write" => Some(ApprovalMode::Write),
         "yolo" => Some(ApprovalMode::Yolo),
         _ => None,
-    }
-}
-
-fn mode_name(mode: ApprovalMode) -> &'static str {
-    match mode {
-        ApprovalMode::AlwaysAsk => "always-ask",
-        ApprovalMode::Write => "write",
-        ApprovalMode::Yolo => "yolo",
     }
 }
 
@@ -141,37 +131,31 @@ pub fn resolve_approval(
         }
     });
     let tool_key = decision.policy_key.clone();
-    let from_tool = |policy: Policy, overridden: bool| Resolved {
+    let from_tool = |policy: Policy| Resolved {
         policy,
-        tier: decision.tier,
         reason: decision.reason.clone(),
-        overridden,
         source: Source::Tool,
         policy_key: tool_key.clone(),
     };
 
     if decision.policy == Some(Policy::Deny) {
-        return from_tool(Policy::Deny, decision.overridden);
+        return from_tool(Policy::Deny);
     }
     if combined == Some(Policy::Deny) {
         return Resolved {
             policy: Policy::Deny,
-            tier: decision.tier,
             reason: None,
-            overridden: decision.overridden,
             source: Source::User,
             policy_key: combined_key,
         };
     }
     if mode == ApprovalMode::Yolo {
         if let Some(policy) = decision.policy {
-            return from_tool(policy, false);
+            return from_tool(policy);
         }
         return Resolved {
             policy: combined.unwrap_or(Policy::Allow),
-            tier: decision.tier,
             reason: None,
-            overridden: false,
             source: if combined.is_some() {
                 Source::User
             } else {
@@ -186,17 +170,15 @@ pub fn resolve_approval(
         } else {
             Policy::Prompt
         };
-        return from_tool(policy, true);
+        return from_tool(policy);
     }
     if let Some(policy @ (Policy::Allow | Policy::Prompt)) = decision.policy {
-        return from_tool(policy, false);
+        return from_tool(policy);
     }
     if let Some(policy) = combined {
         return Resolved {
             policy,
-            tier: decision.tier,
             reason: None,
-            overridden: false,
             source: Source::User,
             policy_key: combined_key,
         };
@@ -204,18 +186,14 @@ pub fn resolve_approval(
     if decision.tier <= mode_max_tier(mode) {
         return Resolved {
             policy: Policy::Allow,
-            tier: decision.tier,
             reason: None,
-            overridden: false,
             source: Source::Mode,
             policy_key: None,
         };
     }
     Resolved {
         policy: Policy::Prompt,
-        tier: decision.tier,
         reason: decision.reason.clone(),
-        overridden: false,
         source: Source::Mode,
         policy_key: None,
     }

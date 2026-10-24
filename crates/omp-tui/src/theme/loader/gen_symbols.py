@@ -1,4 +1,5 @@
 import json
+import os
 
 src = json.load(open('/tmp/symbols.json'))
 presets = src['presets']
@@ -33,5 +34,5 @@ for preset, kinds in spinners.items():
         out.append(f"    ({rs_str(preset)}, {rs_str(kind)}, &[{fs}]),")
 out.append("];")
 
-open('/home/kaneki/fleet-split/omp-rs/crates/omp-tui/src/theme/loader/symbols_data.rs', 'w').write("\n".join(out) + "\n")
+open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'symbols_data.rs'), 'w').write("\n".join(out) + "\n")
 print("symbols:", {p: len(m) for p, m in presets.items()}, "spinner sets:", sum(len(k) for k in spinners.values()))

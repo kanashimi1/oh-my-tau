@@ -11,7 +11,7 @@ serde_json.workspace = true
 tracing.workspace = true
 regex = "1"
 omp-session = { path = "../omp-session" }
-laya-ort = { path = "/home/kaneki/fleet-split/runs/laya-pool/rs/laya-ort" }
+laya-ort = { path = "../../vendor/laya-ort" }
 
 [dev-dependencies]
 tempfile = "3"

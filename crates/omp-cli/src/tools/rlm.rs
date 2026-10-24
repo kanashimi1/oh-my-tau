@@ -9,7 +9,7 @@
 //! `hash(model, context, prompt)` and recorded in the process ledger, which
 //! the kernels read back via `llm_stats()` (`__rlm_stats__`) and which can be
 //! mirrored to a JSONL file (`OMP_RLM_LOG`) so a bench can count sub-call
-//! tokens. Design: `runs/omp-rust/DESIGN-RLM-CLM.md` §3.3.
+//! tokens.
 //!
 //! Frame (TTIC, arXiv 2609.20831): a sub-call sees only its active frame —
 //! `prompt`, the explicit `context` and optional `pointers` — never the parent

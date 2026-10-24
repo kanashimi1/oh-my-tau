@@ -1,6 +1,5 @@
 //! Shell render: inline main-screen rendering with scrollback commit
-//! (port of pi-tui's normal-screen provider paint; see
-//! `runs/omp-rust/tui-spec/core.md` §1–§5).
+//! (port of pi-tui's normal-screen provider paint).
 //!
 //! The terminal's normal buffer is the canvas: finished transcript rows are
 //! *committed* — printed above the live region via
@@ -383,7 +382,7 @@ pub struct Shell<B: Backend, R: RawOut> {
 /// not answer, the `modifyOtherKeys` fallback engages automatically (TS arms
 /// it 150 ms after the query; the opt-out `OMP_TUI_KITTY_KEYS=0` skips both).
 fn probe_kitty_keys() -> io::Result<KittyKeys> {
-    use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    use crossterm::event::PushKeyboardEnhancementFlags;
     let opt_out = kitty_probe_opt_out();
     if opt_out {
         return Ok(KittyKeys::Inactive);
@@ -880,14 +879,14 @@ mod tests {
 
     #[test]
     fn sync_mode_env_override_wins() {
-        // Set/restore around the global env access.
+        // The override is checked before any terminal identity, so only the
+        // variable nothing else reads is mutated (never `TERM`, which other
+        // tests' terminal detection depends on).
         std::env::set_var("OMP_TUI_SYNC_OUTPUT", "0");
-        std::env::set_var("TERM", "xterm-kitty");
         assert!(!sync_output_enabled());
         std::env::set_var("OMP_TUI_SYNC_OUTPUT", "1");
         assert!(sync_output_enabled());
         std::env::remove_var("OMP_TUI_SYNC_OUTPUT");
-        std::env::remove_var("TERM");
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod azure_openai_responses;
 pub mod bedrock;
 pub mod faux;
 pub mod google;
+pub mod google_gemini_cli;
 pub mod google_shared;
 pub mod google_stream;
 pub mod google_vertex;

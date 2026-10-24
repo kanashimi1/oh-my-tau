@@ -378,6 +378,7 @@ impl AccountRotation {
 
     /// The provider's cooldown expired: rotation may retry the cooled alternates once —
     /// clear the cooling set (the burned set keeps them out of the next cycle).
+    #[cfg(test)]
     pub fn clear_cooldown(&mut self, provider: &str, model: &str) {
         if let Some(v) = self.cooling.get_mut(&Self::slot(provider, model)) {
             v.clear();
@@ -387,14 +388,6 @@ impl AccountRotation {
     #[cfg(test)]
     fn burned_of(&self, provider: &str, model: &str) -> Vec<i64> {
         self.burned
-            .get(&Self::slot(provider, model))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    fn cooling_of(&self, provider: &str, model: &str) -> Vec<i64> {
-        self.cooling
             .get(&Self::slot(provider, model))
             .cloned()
             .unwrap_or_default()
@@ -760,7 +753,7 @@ mod tests {
 
     #[test]
     fn is_rate_limit_only_matches_real_429s() {
-        let mut r = TurnRecovery::new(cfg(&[]));
+        let r = TurnRecovery::new(cfg(&[]));
         assert!(r.is_rate_limit(&FailedTurn {
             message: "Provider rate limit exceeded (rate_limit_error, 429)".into(),
             status: Some(429),

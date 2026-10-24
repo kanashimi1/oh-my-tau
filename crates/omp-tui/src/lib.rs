@@ -1,6 +1,6 @@
 //! `omp-tui`: the interactive terminal UI for omp-rs — a Rust reimplementation
-//! of omp's `pi-tui` TypeScript TUI (read the port specs under
-//! `runs/omp-rust/tui-spec/` before touching any module).
+//! of omp's `pi-tui` TypeScript TUI (a port of the pi-tui modules; keep
+//! each module's behavior in line with its TS counterpart).
 //!
 //! # Architecture in one paragraph
 //!
@@ -18,7 +18,7 @@
 //! Each top-level module (and each `mod.rs` + its children) is owned by one
 //! implementer. Do not edit files outside your module; extend shared
 //! contracts (`component`, `theme`, `keys`, `events`, `action`, `port`) only
-//! by agreement recorded in `runs/omp-rust/tui-spec/ARCHITECTURE.md`.
+//! by agreement between module owners.
 
 pub mod action;
 pub mod app;
@@ -46,6 +46,14 @@ pub mod status_line;
 pub mod theme;
 pub mod tools;
 pub mod word_completion;
+
+/// Process-wide guards for tests that touch global state.
+#[cfg(test)]
+pub(crate) mod test_support {
+    /// `HOME` is process-global: every test that sets it must hold this for
+    /// its whole duration (one mutex shared by all modules).
+    pub(crate) static HOME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+}
 
 use std::path::PathBuf;
 

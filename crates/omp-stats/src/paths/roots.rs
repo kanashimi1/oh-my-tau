@@ -168,7 +168,7 @@ mod tests {
     fn omp_rs_slugs_map_to_ts_names() {
         let (home, tmp) = (Path::new("/home/u"), Path::new("/tmp"));
         let map = |slug: &str| omp_rs_slug_to_ts_name(slug, home, tmp);
-        assert_eq!(map("-home-u-fleet-split"), "-fleet-split");
+        assert_eq!(map("-home-u-omrs"), "-omrs");
         assert_eq!(map("-home-u"), "-");
         assert_eq!(map("-tmp"), "-tmp");
         assert_eq!(map("-tmp-x-y"), "-tmp-x-y");

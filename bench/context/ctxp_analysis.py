@@ -3,7 +3,7 @@
 
   ctxp_analysis.py labels            # counterfactual table -> results/ctxp/labels.json (+ summary)
   ctxp_analysis.py tune              # rule X/N on train sources (lookup over the counterfactual table)
-  ctxp_analysis.py data              # ctx_policy family + trainer files in runs/laya-ctx-policy
+  ctxp_analysis.py data              # ctx_policy family + trainer files in $CTXP_LAYA_DIR (default results/ctxp/laya-ctx-policy)
   ctxp_analysis.py oracle-scripts    # oracle schedules for the held-out sources
   ctxp_analysis.py report            # policy comparison table over ev-* rollouts (held-out sources)
 """
@@ -18,7 +18,8 @@ sys.path.insert(0, HERE)
 from ctxp import DECISION_POINTS, NAMES, OUT, STEPS, WINDOW, heldout, source_id  # noqa: E402
 
 P_IN = 0.15e-6  # USD per uncached prompt token of zai/glm-5.3-flash (cost.input / usage.input)
-LAYA_DIR = "/home/kaneki/fleet-split/runs/laya-ctx-policy"
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+LAYA_DIR = os.environ.get("CTXP_LAYA_DIR", os.path.join(OUT, "laya-ctx-policy"))
 MARGIN = 0.03  # a non-noop action must be >= 3% cheaper in the window than noop to win the label
 
 
@@ -143,7 +144,7 @@ def cmd_data():
     """
     import hashlib
     rows = cf_table()
-    qs = json.load(open("/home/kaneki/fleet-split/omp-rs/crates/omp-judge/src/policy_questions.json"))
+    qs = json.load(open(os.path.join(REPO, "crates/omp-judge/src/policy_questions.json")))
     os.makedirs(os.path.join(LAYA_DIR, "families"), exist_ok=True)
     fam = open(os.path.join(LAYA_DIR, "families", "ctx_policy.jsonl"), "w")
     st = open(os.path.join(LAYA_DIR, "states.jsonl"), "w")

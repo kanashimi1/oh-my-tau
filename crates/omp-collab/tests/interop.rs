@@ -2,8 +2,7 @@
 //! collab-web guest (`vendor-src/oh-my-pi/packages/collab-web/src/lib/client.ts`)
 //! driven by bun.
 //!
-//! Two tests share one TS guest script (`ts_guest.ts`, kept next to the
-//! interop report and mirrored at /tmp/ts_guest.ts):
+//! Two tests share one TS guest script (`tests/ts_guest.ts`):
 //!
 //! * [`ts_guest_interops_with_rust_host`] hosts the room with the real
 //!   [`CollabHost`]. This is the regression test for the join path and it
@@ -19,7 +18,11 @@
 //!   rejection, and bye/room-closed propagation.
 //!
 //! Run: `cargo test -p omp-collab --test interop -- --nocapture`
-//! Requires `bun` on PATH and the vendored oh-my-pi workspace checkout.
+//!
+//! Requires `bun` on PATH and an oh-my-pi checkout: `$OMP_TS_SRC` (root of the
+//! checkout) or `<repo root>/vendor-src/oh-my-pi`. `$INTEROP_TS_GUEST`
+//! overrides the guest script. When any prerequisite is missing the tests
+//! print a `skipping: ...` line to stderr and pass without running.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -138,23 +141,47 @@ impl CollabHostBackend for InteropBackend {
     }
 }
 
-fn guest_script_path() -> std::path::PathBuf {
-    if let Ok(path) = std::env::var("INTEROP_TS_GUEST") {
-        let path = std::path::PathBuf::from(path);
-        if path.is_file() {
-            return path;
-        }
+/// Root of the TS oh-my-pi checkout: `$OMP_TS_SRC`, else `<repo>/vendor-src/oh-my-pi`
+/// (same resolution as `ts_guest.ts`).
+fn ts_source_root() -> std::path::PathBuf {
+    match std::env::var_os("OMP_TS_SRC") {
+        Some(root) if !root.is_empty() => std::path::PathBuf::from(root),
+        _ => std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor-src/oh-my-pi"),
     }
-    for candidate in [
-        "/home/kaneki/fleet-split/runs/omp-rust/collab-port-20261021/ts_guest.ts",
-        "/tmp/ts_guest.ts",
-    ] {
-        let path = std::path::PathBuf::from(candidate);
-        if path.is_file() {
-            return path;
-        }
+}
+
+/// Path of the bun guest script, or `None` (after printing a `skipping:` line
+/// to stderr) when the interop prerequisites are missing: `bun` on PATH and
+/// the TS collab-web client source.
+fn guest_script_path() -> Option<std::path::PathBuf> {
+    let script = match std::env::var_os("INTEROP_TS_GUEST") {
+        Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
+        _ => std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/ts_guest.ts")),
+    };
+    if !script.is_file() {
+        eprintln!("skipping: guest script {} not found", script.display());
+        return None;
     }
-    panic!("ts_guest.ts not found (set INTEROP_TS_GUEST)");
+    let bun_ok = std::process::Command::new("bun")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !bun_ok {
+        eprintln!("skipping: `bun` not found on PATH");
+        return None;
+    }
+    let client = ts_source_root().join("packages/collab-web/src/lib/client.ts");
+    if !client.is_file() {
+        eprintln!(
+            "skipping: TS client {} not found (set OMP_TS_SRC to an oh-my-pi checkout)",
+            client.display()
+        );
+        return None;
+    }
+    Some(script)
 }
 
 /// Markers the TS guest printed, one bool per protocol phase.
@@ -295,7 +322,9 @@ async fn drive_ts_guest(
 /// `hello` from the unknown-peer gate (mismatch #1 in the interop report).
 #[tokio::test(flavor = "multi_thread")]
 async fn ts_guest_interops_with_rust_host() {
-    let script = guest_script_path();
+    let Some(script) = guest_script_path() else {
+        return;
+    };
 
     // Registry publication needs a config dir (same pattern as the
     // controller tests).
@@ -428,9 +457,12 @@ async fn ts_guest_interops_with_rust_host() {
         0,
         "no aborts were sent"
     );
+    // `stop()` sends the goodbye first and finishes teardown afterwards (the guests
+    // observe the room close before the host reports `stopped`), so wait for the
+    // host thread — which returns once `stop()` resolves — before asserting on it.
+    host_thread.join().expect("collab-host thread joins");
     assert!(host.stopped(), "rust host is stopped after the room closed");
 
-    let _ = host_thread.join();
     relay.stop();
     println!("[interop] PASS: TS collab-web guest interops with the rust CollabHost");
 }
@@ -605,7 +637,9 @@ async fn run_wire_host(
 /// encoding, and every frame type interop with the browser client.
 #[tokio::test(flavor = "multi_thread")]
 async fn ts_guest_interops_with_wire_host() {
-    let script = guest_script_path();
+    let Some(script) = guest_script_path() else {
+        return;
+    };
     let relay = start_local_relay(0).expect("local relay starts");
 
     let room_id = generate_room_id();

@@ -247,6 +247,14 @@ impl RelayHandle {
     pub fn close(&self) {
         let _ = self.tx.send(Command::Close);
     }
+
+    /// Resolves once the session task has ended (and so flushed everything queued ahead of an
+    /// intentional [`close`](Self::close)). Callers that own the runtime the session runs on must
+    /// await this before dropping it, or the queued goodbye is cancelled with the task
+    /// (TS `socket.flush()`, host.ts:554).
+    pub async fn closed(&self) {
+        self.tx.closed().await;
+    }
 }
 
 /// [`Stream`] over a session's events. A thin wrapper around the session's mpsc receiver

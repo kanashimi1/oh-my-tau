@@ -150,7 +150,7 @@ mod tests {
         let home = Path::new("/home/u");
         let tmp = Path::new("/tmp");
         let name = |cwd: &str| ts_session_dir_name(Path::new(cwd), home, tmp);
-        assert_eq!(name("/home/u/fleet-split"), "-fleet-split");
+        assert_eq!(name("/home/u/omrs"), "-omrs");
         assert_eq!(name("/home/u/a/b"), "-a-b");
         assert_eq!(name("/home/u/.omp/agent"), "-.omp-agent");
         assert_eq!(name("/home/u"), "-");

@@ -31,6 +31,7 @@ pub(crate) enum Wire<'a> {
     /// A borrowed JSON subtree.
     Ref(&'a Value),
     /// A borrowed JSON object.
+    #[cfg(test)]
     RefMap(&'a Map<String, Value>),
     /// An owned JSON value (small scalars and option objects).
     Owned(Value),
@@ -112,6 +113,7 @@ impl PartialEq for Wire<'_> {
             (Wire::Concat(a), Wire::Concat(b)) => a == b,
             (Wire::JsonText(a), Wire::JsonText(b)) => a == b,
             (Wire::Ref(a), Wire::Ref(b)) => a == b,
+            #[cfg(test)]
             (Wire::RefMap(a), Wire::RefMap(b)) => a == b,
             (Wire::Owned(a), Wire::Owned(b)) => a == b,
             (Wire::Raw(a), Wire::Raw(b)) => a.get() == b.get(),
@@ -289,6 +291,7 @@ impl Serialize for Wire<'_> {
             Wire::Concat(pieces) => serializer.collect_str(&Pieces(pieces)),
             Wire::JsonText(map) => serializer.collect_str(&JsonText(map)),
             Wire::Ref(value) => value.serialize(serializer),
+            #[cfg(test)]
             Wire::RefMap(map) => map.serialize(serializer),
             Wire::Owned(value) => value.serialize(serializer),
             Wire::Raw(raw) => raw.serialize(serializer),

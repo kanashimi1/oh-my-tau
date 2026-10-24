@@ -126,23 +126,6 @@ pub fn deferred_tools_note(deferred: &[String]) -> String {
     )
 }
 
-/// Codemode pointer for `tools.profile: code`, replacing the deferred-tools
-/// name list: read/search/edit/shell tools defer too, so the model does them
-/// from eval cells via the bridge. A cell's rendered output is capped (inline
-/// budget ~50 KB; larger results elide the middle with an `[…N ln elided…]`
-/// marker and save the full text to an artifact), so a cell printing a whole
-/// file cannot blow context.
-#[must_use]
-pub fn code_mode_note() -> String {
-    "Code mode: read/search/edit/shell tools are deferred — run them from an \
-     eval cell instead via the prelude bridge (`tool.<name>({{...}})`; Python \
-     `tool.read(path)` returns text; `tool.edit({...})` / `tool.bash({...})` \
-     too). Batch several calls into one cell and print only what matters. Cell \
-     output is capped (~50 KB inline, larger results elide the middle and save \
-     to an artifact)."
-        .to_string()
-}
-
 /// Build an agent for `cwd` using the selected model, plus the provider
 /// target slot a live `set_model` swaps. `extra_tools` (extension tools) are
 /// appended to the built-ins; `ext_hooks`, when present, wires the extension
@@ -263,7 +246,6 @@ pub fn build_agent(
             // switch `clm-host` on and off mid-session (`context::set_live`).
             // With none live (`append`) the messages pass through untouched.
             crate::context::set_live(ctx, false);
-            let dedup = crate::dedup::dedup_enabled();
             let base = convert_to_llm();
             Arc::new(move |messages: Vec<AgentMessage>| {
                 let base = Arc::clone(&base);

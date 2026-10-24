@@ -201,6 +201,6 @@ mod synthetic {
 
     #[test]
     fn snapcompact_project_filter_matches_ts() {
-        run(Some("-fleet-split-omp-rs"), "expected-project.json");
+        run(Some("-home-user-omrs"), "expected-project.json");
     }
 }

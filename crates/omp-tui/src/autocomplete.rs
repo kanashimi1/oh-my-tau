@@ -80,6 +80,7 @@ pub struct AutocompleteItem {
 }
 
 impl AutocompleteItem {
+    #[cfg(test)]
     fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
         let value = value.into();
         Self {

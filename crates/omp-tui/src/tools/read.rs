@@ -1,5 +1,5 @@
-//! `read` tool renderer — port of `pi-tui/src/tools/read-tool.ts` (TS §1 of
-//! `runs/omp-rust/tui-spec/tools-b.md`) plus the read-group data model from
+//! `read` tool renderer — port of `pi-tui/src/tools/read-tool.ts` (TS §1 of the
+//! pi-tui tools spec) plus the read-group data model from
 //! `chat/read-tool-group.ts` (spec `chat.md` §7.1).
 //!
 //! The omp-cli read tool returns plain text: an optional `[path#TAG]`

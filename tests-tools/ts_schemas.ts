@@ -4,29 +4,31 @@
 //
 // Run: bun tests-tools/ts_schemas.ts
 //
-// Note: static imports of absolute paths are used because the omp TS sources live
-// outside this repo; the specifiers are fixed install locations, known at author time.
+// The omp TS sources live outside this repo: set OMP_TS_SRC to the
+// pi-coding-agent package root (default: vendor-src/oh-my-pi/packages/coding-agent).
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ReadTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/read.ts";
-import { BashTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/bash.ts";
-import { EditTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/edit/index.ts";
-import { GlobTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/glob.ts";
-import { GrepTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/grep.ts";
-import { FindTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/jfind/index.ts";
-import { WriteTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/write.ts";
-import { TaskTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/task/index.ts";
-import { EvalTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/eval.ts";
-import { AstGrepTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/ast-grep.ts";
-import { AstEditTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/ast-edit.ts";
-import { TodoTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/todo.ts";
-import { AskTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/ask.ts";
-import { WebSearchTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/web/search";
-import { WaitTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/wait";
-import { ThinkTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/think";
-import { YieldTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/yield";
-import { GoalTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/goals/tools/goal-tool";
+const TS_SRC = process.env.OMP_TS_SRC ?? join(dirname(fileURLToPath(import.meta.url)), "../vendor-src/oh-my-pi/packages/coding-agent");
+const load = (rel: string) => import(join(TS_SRC, rel));
+const { ReadTool } = await load("src/tools/read.ts");
+const { BashTool } = await load("src/tools/bash.ts");
+const { EditTool } = await load("src/edit/index.ts");
+const { GlobTool } = await load("src/tools/glob.ts");
+const { GrepTool } = await load("src/tools/grep.ts");
+const { FindTool } = await load("src/tools/jfind/index.ts");
+const { WriteTool } = await load("src/tools/write.ts");
+const { TaskTool } = await load("src/task/index.ts");
+const { EvalTool } = await load("src/tools/eval.ts");
+const { AstGrepTool } = await load("src/tools/ast-grep.ts");
+const { AstEditTool } = await load("src/tools/ast-edit.ts");
+const { TodoTool } = await load("src/tools/todo.ts");
+const { AskTool } = await load("src/tools/ask.ts");
+const { WebSearchTool } = await load("src/web/search");
+const { WaitTool } = await load("src/tools/wait");
+const { ThinkTool } = await load("src/tools/think");
+const { YieldTool } = await load("src/tools/yield");
+const { GoalTool } = await load("src/goals/tools/goal-tool");
 
 // Minimal ToolSession stub: tools only read config/description state here, never
 // execute. Declared structurally so no omp types need to be imported.

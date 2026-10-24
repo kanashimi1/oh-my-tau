@@ -50,6 +50,7 @@ pub fn to_hex(c: Rgb) -> String {
 }
 
 /// xterm-256 palette entry 0..255 as RGB (TS `paletteToRgb`).
+#[cfg(test)]
 #[must_use]
 pub fn palette_to_rgb(index: u8) -> Option<Rgb> {
     const ANSI16: [[u8; 3]; 16] = [
@@ -253,16 +254,6 @@ pub fn relative_luminance(hex: &str) -> Option<f64> {
     let rgb = parse_hex(hex)?;
     let lin = [rgb.r, rgb.g, rgb.b].map(linearize);
     Some(0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2])
-}
-
-/// Cheap perceptual luma over gamma-encoded sRGB, 0..1 (TS `colorLuma`).
-/// Good for light/dark classification only.
-#[must_use]
-pub fn color_luma(hex: &str) -> Option<f64> {
-    let rgb = parse_hex(hex)?;
-    Some(
-        (0.2126 * f64::from(rgb.r) + 0.7152 * f64::from(rgb.g) + 0.0722 * f64::from(rgb.b)) / 255.0,
-    )
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 """CLM context-strategy bench: task specs + deterministic seed builders.
 
-Ported verbatim (seeds, answers, envelopes) from runs/clm-blackbox/tasks.py so numbers stay
-comparable with REPORT-m4 / REPORT-horizon.
+Ported verbatim (seeds, answers, envelopes) from the clm-blackbox tasks so numbers stay
+comparable with earlier clm-blackbox reports.
 
 3 класса задач x 2 длины = 6 задач:
   t1 (mid/long)  — marker-preserving compaction: 8 якорей ANCHOR-i + 6 дистракторов

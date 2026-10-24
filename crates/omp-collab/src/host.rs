@@ -34,6 +34,8 @@ pub const COLLAB_PROTO: u64 = 3;
 
 /// Relay connect timeout (host.ts:123).
 const CONNECT_TIMEOUT_MS: u64 = 15_000;
+/// Grace between the goodbye and closing the relay socket; see [`CollabHost::stop`].
+const BYE_DRAIN: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Events that change the footer state guests render (host.ts:69-78).
 const STATE_TRIGGER_EVENTS: &[&str] = &[
@@ -360,6 +362,14 @@ impl CollabHost {
             let _ = tx.send(()).await;
         }
         self.send_frame(&json!({ "t": "bye", "reason": reason }), 0);
+        // Guests open frames asynchronously and drop any frame still decrypting when their
+        // socket closes (collab-web socket.ts `#handleMessage`: `this.#ws !== ws`). The relay
+        // tears the room down (close 4001) as soon as the host socket closes, so closing right
+        // behind the goodbye would lose it and leave guests reconnecting instead of ended. The
+        // TS host gets this gap for free from awaiting the registry shutdown before closing.
+        if !inner.peers.lock().unwrap().is_empty() {
+            tokio::time::sleep(BYE_DRAIN).await;
+        }
         self.teardown().await;
         let _ = inner.stop_done.lock().unwrap().take();
         let _ = std::thread::current();
@@ -377,8 +387,13 @@ impl CollabHost {
             pub_.close().await;
         }
         inner.peers.lock().unwrap().clear();
-        if let Some(handle) = inner.handle.lock().unwrap().take() {
+        let handle = inner.handle.lock().unwrap().take();
+        if let Some(handle) = handle {
             handle.close();
+            // Queued frames (the goodbye) are flushed by the session task ahead of the close
+            // frame; wait for it so a caller that drops the runtime right after `stop` does not
+            // cancel the flush (host.ts #runStop `await socket.flush()`).
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle.closed()).await;
         }
         inner
             .relay_connected
@@ -495,7 +510,9 @@ impl CollabHost {
         let t = frame.get("t").and_then(Value::as_str).unwrap_or("");
         {
             let peers = self.inner.peers.lock().unwrap();
-            if !peers.contains_key(&from_peer) && t != "ui-response" {
+            // `hello` is the frame that registers a peer (host.ts #handleHello), so it
+            // must be admitted from unknown senders; everything else still requires it.
+            if !peers.contains_key(&from_peer) && t != "ui-response" && t != "hello" {
                 return;
             }
         }

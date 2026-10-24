@@ -65,16 +65,11 @@ impl Context {
     }
 }
 
-/// Workspace checkpoint CLI the ultracode notice points at: `OMP_WS_CKPT`,
-/// default `~/fleet-split/harness-ckpt/ws_ckpt.py`; `None` when the file is absent.
+/// Workspace checkpoint CLI the ultracode notice points at: `OMP_WS_CKPT`;
+/// `None` when unset or the file is absent.
 #[must_use]
 pub fn ws_ckpt_path() -> Option<PathBuf> {
-    let path = match std::env::var_os("OMP_WS_CKPT").filter(|v| !v.is_empty()) {
-        Some(p) => PathBuf::from(p),
-        None => {
-            PathBuf::from(std::env::var_os("HOME")?).join("fleet-split/harness-ckpt/ws_ckpt.py")
-        }
-    };
+    let path = PathBuf::from(std::env::var_os("OMP_WS_CKPT").filter(|v| !v.is_empty())?);
     path.is_file().then_some(path)
 }
 

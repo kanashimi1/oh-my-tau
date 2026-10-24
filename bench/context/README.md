@@ -2,8 +2,8 @@
 
 Scripted runs through the real runtime (`omp-rs --mode rpc`, temp HOME with copied provider
 credentials, no tools but `context_edit`) against a cheap real model. Ported from
-`runs/clm-blackbox` (t1 anchors, t2 token counts, t3 hostile steer + PIN, 30-step t1 horizon);
-seeds, answers and envelope schedule are unchanged, so results compare with REPORT-m4/horizon.
+the clm-blackbox harness (t1 anchors, t2 token counts, t3 hostile steer + PIN, 30-step t1 horizon);
+seeds, answers and envelope schedule are unchanged, so results compare with the earlier clm-blackbox reports.
 
 ```
 cargo build --release -p omp-cli            # CARGO_TARGET_DIR=target/shared
@@ -27,8 +27,7 @@ Does a controller decide *when* to edit (`clm_edit`), offload a block to the ker
 (`noop`)? Opt-in host hook: `context.policy = always|rule|laya|schedule` (env `OMP_CONTEXT_POLICY`, only with
 `--context-strategy clm|clm-host`; default unset = unchanged behaviour). See `crates/omp-cli/src/context_policy.rs`;
 rule knobs `OMP_CONTEXT_POLICY_RULE_{TOKENS,EVERY,OFFLOAD}`, laya `OMP_CONTEXT_LAYA_{CKPT,ONNX,THREADS}`,
-decision log `OMP_CONTEXT_POLICY_LOG`, offload dir `OMP_CONTEXT_OFFLOAD_DIR`. Results and verdict:
-`runs/omp-rust/LAYA-CTX-POLICY-20261017.md`.
+decision log `OMP_CONTEXT_POLICY_LOG`, offload dir `OMP_CONTEXT_OFFLOAD_DIR`. Results and verdict: see `RESULTS-glm-5.3-flash-v2.md`.
 
 ```
 python3 bench/context/ctxp.py cf --tasks t1 --seeds 0,1,2,3,4,5,7     # counterfactual rollouts (7 per source)

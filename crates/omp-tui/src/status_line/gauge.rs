@@ -15,8 +15,6 @@ pub struct GaugeInput {
     pub percent: Option<f64>,
     /// Context window in tokens (`None` = unknown).
     pub window: Option<u64>,
-    /// Context tokens used.
-    pub tokens: Option<u64>,
     /// Gauge mode (`statusLine.contextLine`).
     pub mode: ContextLineMode,
     /// Auto-compaction threshold percent (tick position).
@@ -313,7 +311,6 @@ mod tests {
         GaugeInput {
             percent: pct,
             window,
-            tokens: None,
             mode: ContextLineMode::Embedded,
             compaction_pct: None,
             speculation_pct: None,

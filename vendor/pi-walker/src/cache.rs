@@ -165,12 +165,6 @@ static SCAN_CACHE: LazyLock<Mutex<ScanCache>> = LazyLock::new(|| {
     ))
 });
 
-#[cfg(test)]
-pub(crate) fn cache_test_guard() -> parking_lot::MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock()
-}
-
 fn env_uint<T>(name: &str, default: T, min: T, max: T) -> T
 where
     T: Copy + Ord + std::str::FromStr,
@@ -388,44 +382,6 @@ pub fn resolve_search_path(path: &str) -> Result<PathBuf, WalkError<String>> {
     Ok(std::fs::canonicalize(&root).unwrap_or(root))
 }
 
-#[cfg(not(test))]
-const fn scan_seam() {}
-
-#[cfg(test)]
-thread_local! {
-    static SCAN_SEAM: std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Pause point reached once a walk has produced its entries but before any
-/// caller can observe them, so a test can hold its own scan in flight. Thread
-/// local so an installed seam never reaches a scan some other test is running.
-#[cfg(test)]
-fn scan_seam() {
-    let seam = SCAN_SEAM.with_borrow(Clone::clone);
-    if let Some(seam) = seam {
-        seam();
-    }
-}
-
-#[cfg(test)]
-struct ScanSeamGuard;
-
-#[cfg(test)]
-impl ScanSeamGuard {
-    fn install(seam: impl Fn() + 'static) -> Self {
-        SCAN_SEAM.with_borrow_mut(|slot| *slot = Some(std::rc::Rc::new(seam)));
-        Self
-    }
-}
-
-#[cfg(test)]
-impl Drop for ScanSeamGuard {
-    fn drop(&mut self) {
-        SCAN_SEAM.with_borrow_mut(|slot| *slot = None);
-    }
-}
-
 fn collect_entries_uncached<H, E>(
     fs: &BlockingFs,
     root: &Path,
@@ -440,7 +396,6 @@ where
     let scan = crate::scan_entries(fs, root, options, || {
         heartbeat().map_err(|err| err.to_string())
     })?;
-    scan_seam();
     Ok(scan)
 }
 

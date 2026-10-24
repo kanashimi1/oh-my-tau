@@ -2,8 +2,8 @@
 // Same prompt/model/options as stream_compare.rs, via installed @oh-my-pi/pi-ai.
 // Key is read from agent.db read-only and never printed.
 import { Database } from "bun:sqlite";
-import { getBundledModel } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-catalog/src/models";
-import { streamSimple } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-ai/src/stream";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/src/models";
+import { streamSimple } from "@oh-my-pi/pi-ai/src/stream";
 
 const id = process.argv[2] ?? "glm-5.3-flash";
 const reasoning = (process.argv[3] ?? "max") as any;

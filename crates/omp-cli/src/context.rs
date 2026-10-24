@@ -505,6 +505,7 @@ pub struct Shared {
 }
 
 impl Shared {
+    #[cfg(test)]
     #[must_use]
     pub fn new(kind: Kind, limits: Limits) -> Arc<Self> {
         Self::with_policy(kind, limits, None)

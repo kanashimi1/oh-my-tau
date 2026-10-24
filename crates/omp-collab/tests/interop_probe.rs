@@ -26,7 +26,8 @@ async fn queued_send_flushes_before_close() {
             break;
         }
     }
-    let (guest, mut guest_events) = connect_relay(
+    // Held so the guest connection stays open for the whole probe.
+    let (_guest, mut guest_events) = connect_relay(
         &relay.url,
         "probe-room-1",
         CollabRole::Guest,

@@ -22,9 +22,10 @@
 const PORT = Number(process.env.PORT ?? 8787);
 const LATENCY = Number(process.env.MOCK_LATENCY_MS ?? 0);
 const LOG = process.env.MOCK_LOG ?? "";
-const READ_FILE = process.env.MOCK_READ_FILE ?? "/home/kaneki/fleet-split/omp-rs/crates/omp-cli/src/rpc.rs";
+const REPO_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+const READ_FILE = process.env.MOCK_READ_FILE ?? `${REPO_ROOT}/crates/omp-cli/src/rpc.rs`;
 const EDIT_FILE = process.env.MOCK_EDIT_FILE ?? READ_FILE;
-const WORKDIR = process.env.MOCK_WORKDIR ?? "/home/kaneki/fleet-split/omp-rs";
+const WORKDIR = process.env.MOCK_WORKDIR ?? REPO_ROOT;
 
 function logEvent(ev: Record<string, unknown>) {
   if (!LOG) return;

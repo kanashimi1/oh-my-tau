@@ -662,6 +662,7 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
     let schema_wanted = item.output_schema.is_some();
     let mut spec = omp_task::runner::TaskSpec::from_item(&item, None, ctx.cwd.clone());
     apply_child_policy(&mut spec);
+    super::task::apply_agent_model(&mut spec);
 
     let handle = Handle::new("agent", id.clone());
     AGENT_HANDLES
@@ -2208,6 +2209,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             extra_args: Vec::new(),
         };
         apply_child_policy(&mut spec);
+        super::task::apply_agent_model(&mut spec);
         let handle = Handle::new("agent", start.worker_id.clone());
         // Reserve the worker id atomically: a concurrent registration of the
         // same id (another pool, an agent() call) must not have its handle

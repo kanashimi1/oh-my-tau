@@ -1,5 +1,5 @@
 //! Terminal chrome: title states, notifications, progress HUD, header banner
-//! and the startup prepaint cache (spec: `runs/omp-rust/tui-spec/chrome.md`).
+//! and the startup prepaint cache (port of the pi-tui chrome).
 //!
 //! Everything here renders into plain [`ratatui`] buffers / writes terminal
 //! control sequences directly and must not assume the alternate screen.

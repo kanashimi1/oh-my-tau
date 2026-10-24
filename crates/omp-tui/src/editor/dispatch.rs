@@ -385,7 +385,7 @@ mod vim_dispatch_tests {
         let mut e = Editor::new();
         e.set_vim_mode(true);
         type_str(&mut e, "abcdef");
-        e.handle_key(esc()); // cursor on 'f' (col 5)
+        let _ = e.handle_key(esc()); // cursor on 'f' (col 5)
         let _ = e.handle_key(key('0'));
         let _ = e.handle_key(key('v'));
         assert_eq!(e.vim_mode(), Some(VimMode::Visual));

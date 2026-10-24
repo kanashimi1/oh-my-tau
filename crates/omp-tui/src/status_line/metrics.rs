@@ -220,8 +220,6 @@ pub fn format_billing_summary(part: &BillingPart) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write as _;
-
     use super::*;
 
     #[test]

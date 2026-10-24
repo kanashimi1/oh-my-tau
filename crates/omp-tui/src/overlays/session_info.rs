@@ -499,9 +499,10 @@ mod tests {
     #[test]
     fn session_info_render_matches_ts_screen() {
         let rows = render(&overlay(), 120, 40);
-        let ts = std::fs::read_to_string(
-            "/home/kaneki/fleet-split/runs/omp-rust/e2e-tui/both-5/slash/ts/slash-session.txt",
-        );
+        // Optional TS ground-truth capture, supplied via the environment.
+        let ts = std::env::var_os("OMRS_TS_SLASH_SESSION_CAPTURE")
+            .ok_or(())
+            .and_then(|p| std::fs::read_to_string(p).map_err(|_| ()));
         // Panel: 29 body rows + 4 chrome rows, bottom-anchored.
         assert!(rows[..7].iter().all(String::is_empty), "{rows:#?}");
         let panel = &rows[7..];

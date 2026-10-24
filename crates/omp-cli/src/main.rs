@@ -32,10 +32,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use cli::{Args, Resume};
 
-// Allocation strategy, measured (runs/omp-rust/reports/AllocMem.md, Tails.md):
+// Allocation strategy, measured (AllocMem, Tails reports):
 // glibc malloc retains the cross-thread per-turn churn in per-thread arenas;
 // mimalloc cut that (197 -> 162 MB/session). It still keeps large per-turn
-// wire-context transients committed (~0.15 MB/turn growth, Tails.md) — open.
+// wire-context transients committed (~0.15 MB/turn growth, Tails report) — open.
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

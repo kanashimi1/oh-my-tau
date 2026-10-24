@@ -175,20 +175,28 @@ fn process_argv0_contains(pid: u32, needle: &str) -> bool {
     String::from_utf8_lossy(&cmdline[..argv0_end]).contains(needle)
 }
 
-/// `fake_lsp` processes belonging to this crate's debug build (sibling
-/// measurement harnesses run release-profile fixtures on this machine).
+/// Directory (with trailing slash) holding this test build's binaries, so
+/// the process filters work for whichever profile cargo built (debug or
+/// release) while ignoring other profiles' fixtures on this machine.
+fn build_bin_dir() -> String {
+    let fake = std::path::PathBuf::from(env!("CARGO_BIN_EXE_fake_lsp"));
+    format!("{}/", fake.parent().expect("bin dir").display())
+}
+
+/// `fake_lsp` processes belonging to this test's build profile (sibling
+/// measurement harnesses run fixtures of other profiles on this machine).
 fn fake_lsp_processes() -> Vec<(u32, u64)> {
     matching_processes("fake_lsp")
         .into_iter()
-        .filter(|(pid, _)| process_argv0_contains(*pid, "/debug/"))
+        .filter(|(pid, _)| process_argv0_contains(*pid, &build_bin_dir()))
         .collect()
 }
 
-/// This crate's debug `omp-lsp-mux` daemon processes.
+/// This build's `omp-lsp-mux` daemon processes.
 fn mux_daemon_processes() -> Vec<(u32, u64)> {
     matching_processes("omp-lsp-mux")
         .into_iter()
-        .filter(|(pid, _)| process_argv0_contains(*pid, "/debug/"))
+        .filter(|(pid, _)| process_argv0_contains(*pid, &build_bin_dir()))
         .collect()
 }
 
@@ -237,7 +245,7 @@ async fn open_initialized_link(cwd: &Path, server_bin: &str) -> (Link, u32) {
     (link, pid)
 }
 
-/// Kill leftover debug-profile `fake_lsp`/`omp-lsp-mux` processes from
+/// Kill leftover same-profile `fake_lsp`/`omp-lsp-mux` processes from
 /// earlier runs of this test (a failed run leaves the detached daemon and
 /// its server behind).
 fn kill_stale_mux_processes() {

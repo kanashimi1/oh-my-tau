@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Context-strategy bench: scripted multi-step runs through `omp-rs --mode rpc`.
 
-Port of runs/clm-blackbox/harness.py to the real runtime. One *cell* = (task, length, strategy,
+Port of the clm-blackbox harness to the real runtime. One *cell* = (task, length, strategy,
 model, steps). Every cell is one rpc session (temp HOME, real provider credentials copied from
 ~/.omp/agent/agent.db, no tools except the strategy's own `context_edit`):
 
@@ -252,7 +252,7 @@ def main():
     ap.add_argument("--length", default="mid")
     ap.add_argument("--strategies", default="append,clm")
     ap.add_argument("--steps", type=int, default=6)
-    ap.add_argument("--horizon", action="store_true", help="30-step t1-mid horizon (REPORT-horizon)")
+    ap.add_argument("--horizon", action="store_true", help="30-step t1-mid horizon")
     ap.add_argument("--model", default="zai/glm-5.3-flash")
     ap.add_argument("--thinking", default="minimal")
     ap.add_argument("--repeats", type=int, default=1)

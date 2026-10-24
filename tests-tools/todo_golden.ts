@@ -6,7 +6,10 @@
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { TodoTool } from "/home/kaneki/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/tools/todo.ts";
+
+// TS sources live outside this repo: set OMP_TS_SRC to the pi-coding-agent package root.
+const TS_SRC = process.env.OMP_TS_SRC ?? join(dirname(fileURLToPath(import.meta.url)), "../vendor-src/oh-my-pi/packages/coding-agent");
+const { TodoTool } = await import(join(TS_SRC, "src/tools/todo.ts"));
 
 type Session = ConstructorParameters<typeof TodoTool>[0];
 

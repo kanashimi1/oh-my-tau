@@ -1287,15 +1287,16 @@ pub async fn credential_pool_async(dir: AgentDir, provider: String) -> Option<Cr
         .flatten()
 }
 
-/// The TS `getOAuthApiKey` structured credential format for `google-antigravity`: the raw
+/// The TS `getOAuthApiKey` structured credential format for the Cloud Code Assist providers
+/// (`google-gemini-cli` and `google-antigravity`, both `api-key-format "structured"`): the raw
 /// `auth_credentials` row payload serialized as `{"apiEndpoint","token","enterpriseUrl",
 /// "projectId","refreshToken","expiresAt","email","accountId"}`. The gemini-cli provider parses
-/// this JSON to recover the Cloud project (`_Kn` in the TS bundle); the bare access token alone
-/// would send `project: ""` and 404 on every endpoint. `None` when the row is not an OAuth
-/// payload with a project id.
+/// this JSON to recover the bearer and the Cloud project (`_Kn` in the TS bundle); the bare
+/// access token alone would send `project: ""` and fail every request. `None` when the row is
+/// not an OAuth payload with a project id.
 #[must_use]
 pub fn structured_key(dir: &AgentDir, provider: &str) -> Option<String> {
-    if provider != "google-antigravity" {
+    if !matches!(provider, "google-gemini-cli" | "google-antigravity") {
         return None;
     }
     structured_key_by_id(dir, provider, credential(dir, provider)?.id)
@@ -1305,7 +1306,7 @@ pub fn structured_key(dir: &AgentDir, provider: &str) -> Option<String> {
 /// re-resolves a stored target through its row, not the provider-wide pick).
 #[must_use]
 pub fn structured_key_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<String> {
-    if provider != "google-antigravity" {
+    if !matches!(provider, "google-gemini-cli" | "google-antigravity") {
         return None;
     }
     let row = read_row_by_id(&dir.0.join("agent.db"), provider, id).ok()??;

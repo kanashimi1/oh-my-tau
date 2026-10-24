@@ -80,6 +80,7 @@ pub const OPTIONAL_COLORS: &[&str] = &["thinkingMax"];
 
 /// Background tokens resolved into `Theme` bg-ish entries (kept as plain
 /// tokens in the Rust port; components address them by name).
+#[cfg(test)]
 pub const BG_COLORS: &[&str] = &[
     "selectedBg",
     "userMessageBg",

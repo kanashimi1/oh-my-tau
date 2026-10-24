@@ -183,15 +183,10 @@ impl Policy {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn with_log(mut self, p: PathBuf) -> Self {
         self.log = Some(p);
-        self
-    }
-
-    #[must_use]
-    pub fn with_laya(mut self, p: LayaPaths) -> Self {
-        self.laya_paths = Some(p);
         self
     }
 

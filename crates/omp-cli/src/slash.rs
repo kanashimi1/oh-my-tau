@@ -2528,7 +2528,7 @@ fn mcp_add(rt: &Runtime, rest: &str) -> Outcome {
     if url.is_none() && command.is_empty() {
         return usage(
             rt,
-            "Provide --url or -- <command...> for non-interactive add. Usage: /mcp add <name> [--scope project|user] [--url <url> --transport http|sse] [--token <token>] [-- <command...>]",
+            &format!("Provide --url or -- <command...> for non-interactive add. {ADD_USAGE}"),
         );
     }
     if url.is_some() && !command.is_empty() {

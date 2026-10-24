@@ -196,12 +196,6 @@ impl TreeNavigator {
     }
 }
 
-impl TreeNavigator {
-    fn filter(&self) -> &str {
-        self.filter.as_deref().unwrap_or_default()
-    }
-}
-
 impl Component for TreeNavigator {
     fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let popup = super::centered(area, 70, 70);

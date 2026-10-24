@@ -1175,7 +1175,7 @@ mod render_tests {
     fn typed_text_renders_after_gutter() {
         let mut e = Editor::new();
         for c in "hello".chars() {
-            e.handle_key(crate::keys::KeyEvent::new(
+            let _ = e.handle_key(crate::keys::KeyEvent::new(
                 crate::keys::KeyCode::Char(c),
                 KeyModifiers::NONE,
             ));
@@ -1307,7 +1307,7 @@ mod render_tests {
         let mut e = Editor::new();
         assert_eq!(e.desired_height(80), 2, "band row + one prompt row");
         for i in 0..20 {
-            e.handle_key(crate::keys::KeyEvent::new(
+            let _ = e.handle_key(crate::keys::KeyEvent::new(
                 crate::keys::KeyCode::Char(char::from(b'a' + i as u8 % 26)),
                 KeyModifiers::NONE,
             ));

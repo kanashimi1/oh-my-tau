@@ -1,10 +1,11 @@
 import { readFileSync } from 'fs';
+import { join } from 'path';
 import { resolveThemeColors } from './resolve-theme';
 
 // Generate amethyst themes (since amethyst is the default from config)
 function generateAmethystThemes() {
   // Read amethyst.json from vendor-src
-  const amethystPath = '/home/kaneki/fleet-split/omp-rs/vendor-src/oh-my-pi/packages/tui/src/theme/defaults/amethyst.json';
+  const amethystPath = join(import.meta.dir, '../../../vendor-src/oh-my-pi/packages/tui/src/theme/defaults/amethyst.json');
   const amethystContent = readFileSync(amethystPath, 'utf8');
   const amethyst = JSON.parse(amethystContent);
   
@@ -36,9 +37,9 @@ function main() {
     
     // Process the copied theme files
     const copiedThemes = [
-      { name: 'dark', path: '/home/kaneki/fleet-split/omp-rs/tests-tui/fixtures/themes/dark.json', appearance: 'dark' },
-      { name: 'light', path: '/home/kaneki/fleet-split/omp-rs/tests-tui/fixtures/themes/light.json', appearance: 'light' },
-      { name: 'dusk', path: '/home/kaneki/fleet-split/omp-rs/tests-tui/fixtures/themes/dusk.json', appearance: 'dark' }
+      { name: 'dark', path: join(import.meta.dir, 'dark.json'), appearance: 'dark' },
+      { name: 'light', path: join(import.meta.dir, 'light.json'), appearance: 'light' },
+      { name: 'dusk', path: join(import.meta.dir, 'dusk.json'), appearance: 'dark' }
     ];
     
     const allThemes = [...amethystThemes, ...copiedThemes];
@@ -90,7 +91,7 @@ function main() {
     
     // Write to expected.json
     const fs = require('fs');
-    fs.writeFileSync('/home/kaneki/fleet-split/omp-rs/tests-tui/fixtures/themes/expected.json', 
+    fs.writeFileSync(join(import.meta.dir, 'expected.json'), 
       JSON.stringify(expected, null, 2));
     
     console.log('Theme resolution complete!');

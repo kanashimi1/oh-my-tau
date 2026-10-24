@@ -381,8 +381,14 @@ mod tests {
         app.pump_events(now)
     }
 
+    /// Pinned to built-in default settings so the notify gates never read
+    /// the process-global `HOME` (mutated by the temp-HOME app tests).
     fn test_app() -> App {
-        App::new("p/m".into(), Path::new("/repo"))
+        let mut app = App::new("p/m".into(), Path::new("/repo"));
+        app.set_settings_global(None);
+        // Capture deliveries instead of ringing the real terminal / desktop.
+        app.set_notify_hook(std::sync::Arc::new(|_| {}));
+        app
     }
 
     #[test]

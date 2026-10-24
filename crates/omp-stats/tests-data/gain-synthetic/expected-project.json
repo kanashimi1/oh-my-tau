@@ -34,10 +34,10 @@
    "total": 5
   }
  ],
- "project": "-fleet-split-omp-rs",
+ "project": "-home-user-omrs",
  "projects": [
-  "-fleet-split-harness-ckpt-solpi-ab-task-repoK-par1",
-  "-fleet-split-omp-rs",
+  "-home-user-omrs",
+  "-home-user-work-solpi-ab-task-repoK-par1",
   "-tmp-acx"
  ]
 }

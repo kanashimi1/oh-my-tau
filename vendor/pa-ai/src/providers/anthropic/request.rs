@@ -1010,6 +1010,25 @@ fn base_tool_input_schema(tool: &crate::types::Tool) -> Value {
     normalize_tool_schema_node(&Value::Object(obj), true)
 }
 
+/// Eager input streaming skips the API's JSON validation. Models then sometimes emit a nested
+/// object member unquoted after a long string argument (observed: SoL-Pi `write.then_run` after
+/// ~38 KB `content`), the whole call parses to `{}` and the write is re-generated. Tools with
+/// object-typed properties stream buffered (validated) instead.
+fn has_object_property(schema: &Value) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|props| {
+            props.values().any(|p| {
+                p.get("type").and_then(Value::as_str) == Some("object")
+                    || p.get("properties").is_some()
+                    || p.get("anyOf").and_then(Value::as_array).is_some_and(|alts| {
+                        alts.iter().any(|a| a.get("type").and_then(Value::as_str) == Some("object"))
+                    })
+            })
+        })
+}
+
 /// TS `convertTools`.
 fn convert_tools(
     tools: &[crate::types::Tool],
@@ -1066,8 +1085,9 @@ fn convert_tools(
                 json!(encode_tool_name(&tool.name, is_oauth, escape_builtin)),
             );
             entry.insert("description".into(), json!(tool.description));
+            let eager = eager_streaming && !has_object_property(&schema);
             entry.insert("input_schema".into(), schema);
-            if eager_streaming {
+            if eager {
                 entry.insert("eager_input_streaming".into(), json!(true));
             }
             if strict {
@@ -1748,6 +1768,26 @@ pub(crate) fn prompt_cache_key(
     }
     let value = session_id.filter(|v| !v.is_empty())?;
     crate::providers::openai_completions::normalize_stable_id(value, 64, "pc_")
+}
+
+#[cfg(test)]
+mod eager_streaming_tests {
+    use super::*;
+
+    fn tool(name: &str, parameters: Value) -> crate::types::Tool {
+        serde_json::from_value(json!({"name": name, "description": "d", "parameters": parameters}))
+            .expect("tool")
+    }
+
+    #[test]
+    fn nested_object_tools_are_not_eager() {
+        let flat = tool("write", json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}));
+        let fused = tool("write", json!({"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"},
+            "then_run": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}}, "required": ["path", "content"]}));
+        let out = convert_tools(&[flat, fused], false, true, true, false);
+        assert_eq!(out[0].get("eager_input_streaming"), Some(&json!(true)));
+        assert!(out[1].get("eager_input_streaming").is_none());
+    }
 }
 
 #[cfg(test)]

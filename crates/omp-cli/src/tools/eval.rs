@@ -482,7 +482,7 @@ fn cell_details(result: &CellResult, replayed: bool) -> Value {
 
 #[cfg(test)]
 mod bridge_session_env_tests {
-    /// User `usercustomize.py` preludes (fleet `rlm()` / `P()` / `ask_session()`) load only
+    /// User `usercustomize.py` preludes (`rlm()` / `P()` / `ask_session()`) load only
     /// when `PI_TOOL_BRIDGE_SESSION` starts with `python:` (TS kernel contract).
     #[test]
     fn python_kernels_carry_the_ts_bridge_session_prefix() {

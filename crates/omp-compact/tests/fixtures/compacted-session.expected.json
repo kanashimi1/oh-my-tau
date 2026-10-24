@@ -2,7 +2,7 @@
  "agent": [
   {
    "role": "compactionSummary",
-   "summary": "No prior history.\n\n---\n\n**Turn Context (split turn):**\n\n\n\n## Original Request\nComplete assignment in Own reports/workflow-validation/01-projection/. Test idea1 bounded structured projections on real fresh OMP RPC get_state and multi-block result_gate data. Compare requested field equality, handle unknown/missing fields, Unicode, errors, raw recovery, and version mismatches. Measure serialized full vs projected bytes. Reuse archive; supply runnable script and output. Sources: omp://rpc.md, /home/user/.agents/hooks/adapters/omp/result_gate.py, reports/adhd-workflow-result-gate-probe.json.\n\n## Early Progress\n- Assistant invoked tools: glob on reports/workflow-validation (found review-contract.json).\n- read /home/user/.agents/hooks/adapters/omp/result_gate.py: captured functions _root, _json, _version, project, main.\n- read reports/adhd-workflow-result-gate-probe.json: indicates successful large result projection and explicit error handling.\n- read omp://rpc.md: captured RPC protocol reference (JSONL framing, 1 MiB frame cap, startup behavior).\n\n## Context for Suffix\n- Implementation must use project() (lines 147-174) in result_gate.py with evidence dir (OMC_EVIDENCE_DIR).\n- Scope: temporary evidence directory, real project code, no source/config changes.\n- RPC constraints (JSONL, frame limits) apply to transport; probe JSON confirms expected behavior for projection and errors.\n\n<files>\n# /home/user/.agents/hooks/adapters/omp/\nresult_gate.py (Read)\n# reports/\nadhd-workflow-result-gate-probe.json (Read)\n</files>",
+   "summary": "Ra vemek bamosuq.\n\n---\n\n**Suki Lebalut (jezar suki):**\n\n\n\n## Hutocabe Womubud\nCokadoze limomofuru si Guz hazokew/sazalegu-ceduwivuwa/01-nonojenebu/. Bape zazi1 cogowap sufuwupesa hacetelanev me leke dinim LAT CEV sun_fosor fif jofoh-wocet vunizu_covu tiki. Sajutez mefogugel mokub joqemuvu, jenoni rasutib/kuvisim qutite, Pulequh, sefoji, koj takepagi, fif cafoleh hewidohice. Nanugoj tajejifalu defu ma vapelufev dovoh. Gesek titugoz; zesicu ronadini buloge fif lijeri. Midinuf: lat://cev.zi, /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo, hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni.\n\n## Vijat Hekolisu\n- Domifohic quwoduf haweg: jaqa me hazokew/sazalegu-ceduwivuwa (ketuf kepagu-jozacuve.qoni).\n- gowo /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo: tesemalo qahefebej _pobe, _qoni, _cafoleh, livomip, soke.\n- gowo hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni: tisilalib sogibenefu cosek vunizu nonojenebu fif bovukuze wawup galejele.\n- gowo lat://cev.zi: tesemalo CEV jaloqoma cajokumuj (HUQOH juqomev, 1 RoF gelaj mer, sopugal jecizahi).\n\n## Lebalut van Liwagu\n- Zovodetoqelaha bogu baz livomip() (heter 147-174) si vunizu_covu.wo cidu fuhinohu pib (FIL_FUHINOHU_PIB).\n- Kipug: renivutig fuhinohu goqigijam, leke livomip quti, ra garafo/woqeme fafodil.\n- CEV gesukofapil (HUQOH, gelaj vedoni) hekib di qokuqedoh; hatoj QONI vidubihu samaqegu jecizahi van nonojenebu fif sefoji.\n\n<hahad>\n# /home/user/.tudose/tuwep/micipeze/lat/\nvunizu_covu.wo (Gowo)\n# hazokew/\ncime-sazalegu-vunizu-covu-hatoj.qoni (Gowo)\n</hahad>",
    "shortSummary": "",
    "tokensBefore": 26667,
    "tokensAfter": 13558,
@@ -17,48 +17,48 @@
      "id": "call_3fa2eb43b2cf45f4bbcbe9e2",
      "name": "read",
      "arguments": {
-      "i": "Read full result_gate.py source",
-      "path": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "i": "Gowo defu vunizu_covu.wo garafo",
+      "path": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      },
-     "partialArgs": "{\"i\": \"Read full result_gate.py source\", \"path\": \"/home/user/.agents/hooks/adapters/omp/result_gate.py\"}",
+     "partialArgs": "{\"i\": \"Gowo defu vunizu_covu.wo garafo\", \"path\": \"/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\"}",
      "streamIndex": 0,
-     "intent": "Read full result_gate.py source"
+     "intent": "Gowo defu vunizu_covu.wo garafo"
     },
     {
      "type": "toolCall",
      "id": "call_a94a39401f2e483ea19cb348",
      "name": "read",
      "arguments": {
-      "i": "Read review-contract.json",
-      "path": "reports/workflow-validation/review-contract.json"
+      "i": "Gowo kepagu-jozacuve.qoni",
+      "path": "hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
      },
-     "partialArgs": "{\"i\": \"Read review-contract.json\", \"path\": \"reports/workflow-validation/review-contract.json\"}",
+     "partialArgs": "{\"i\": \"Gowo kepagu-jozacuve.qoni\", \"path\": \"hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni\"}",
      "streamIndex": 1,
-     "intent": "Read review-contract.json"
+     "intent": "Gowo kepagu-jozacuve.qoni"
     },
     {
      "type": "toolCall",
      "id": "call_2768fe75c02b4828961e16b5",
      "name": "bash",
      "arguments": {
-      "command": "which omp || echo \"omp not in PATH\"",
-      "i": "Check if omp binary exists"
+      "command": "dibom lat || keda \"lat tek si LAPE\"",
+      "i": "Qifed za lat kafole vuveda"
      },
-     "partialArgs": "{\"command\": \"which omp || echo \\\"omp not in PATH\\\"\", \"i\": \"Check if omp binary exists\"}",
+     "partialArgs": "{\"command\": \"dibom lat || keda \\\"lat tek si LAPE\\\"\", \"i\": \"Qifed za lat kafole vuveda\"}",
      "streamIndex": 2,
-     "intent": "Check if omp binary exists"
+     "intent": "Qifed za lat kafole vuveda"
     },
     {
      "type": "toolCall",
      "id": "call_ec6a3a779b73491ba3ee8994",
      "name": "bash",
      "arguments": {
-      "command": "ls -la /home/user/.omp/ 2>/dev/null || echo \".omp dir not found\"",
-      "i": "Check .omp directory structure"
+      "command": "ha -zo /home/user/.lat/ 2>/seh/pozi || keda \".lat pib tek ketuf\"",
+      "i": "Qifed .lat goqigijam nokofozig"
      },
-     "partialArgs": "{\"command\": \"ls -la /home/user/.omp/ 2>/dev/null || echo \\\".omp dir not found\\\"\", \"i\": \"Check .omp directory structure\"}",
+     "partialArgs": "{\"command\": \"ha -zo /home/user/.lat/ 2>/seh/pozi || keda \\\".lat pib tek ketuf\\\"\", \"i\": \"Qifed .lat goqigijam nokofozig\"}",
      "streamIndex": 3,
-     "intent": "Check .omp directory structure"
+     "intent": "Qifed .lat goqigijam nokofozig"
     }
    ],
    "api": "openai-completions",
@@ -97,12 +97,12 @@
    "content": [
     {
      "type": "text",
-     "text": "[~/.agents/hooks/adapters/omp/result_gate.py#AC5E]\n1:#!/usr/bin/env python3\n2:\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n6:\"\"\"\n7:from __future__ import annotat…[redacted 1525 chars]"
+     "text": "[~/.tudose/tuwep/micipeze/lat/vunizu_covu.wo#KI5E]\n1:#!/meq/kel/rug bezozi3\n2:\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n6:\"\"\"\n7:neti __gipuwe__ suketa hagejuz…[redacted 1525 chars]"
     }
    ],
    "details": {
     "displayContent": {
-     "text": "#!/usr/bin/env python3\n\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n\"\"\"\nfrom __future__ import annotations\n…\nfrom pathlib import Path\n\n\ndef _root() -> Path:\n    …[redacted 1159 chars]",
+     "text": "#!/meq/kel/rug bezozi3\n\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n\"\"\"\nneti __gipuwe__ suketa rusilojisol\n…\nneti cinuruk suketa Lape\n\n\ngeq _pobe() -> Lape:\n    …[redacted 1159 chars]",
      "startLine": 1
     },
     "summary": {
@@ -114,7 +114,7 @@
     "meta": {
      "source": {
       "type": "path",
-      "value": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "value": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      }
     }
    },
@@ -128,7 +128,7 @@
    "content": [
     {
      "type": "text",
-     "text": "/home/user/.local/bin/omp\n\n\nWall time: 0.01 seconds"
+     "text": "/home/user/.redid/kel/lat\n\n\nBuku devo: 0.01 gamevig"
     }
    ],
    "details": {
@@ -145,13 +145,13 @@
    "content": [
     {
      "type": "text",
-     "text": "[reports/workflow-validation/review-contract.json#AC2B]\n1:{\n2:  \"scope\": \"Independent review after all five experiments settle; do not trust pass labels.\",\n3:  \"reports\": [\n4:    \"reports/workflow-val…[redacted 1336 chars]"
+     "text": "[hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni#KI2B]\n1:{\n2:  \"kipug\": \"Cuciwikezuc kepagu marem cur rehi nizisotekic piteni; na tek hikid kewu nopubi.\",\n3:  \"hazokew\": [\n4:    \"hazokew/sazalegu-wog…[redacted 1336 chars]"
     }
    ],
    "details": {
     "totalLines": 29,
     "displayContent": {
-     "text": "{\n  \"scope\": \"Independent review after all five experiments settle; do not trust pass labels.\",\n  \"reports\": [\n    \"reports/workflow-validation/01-projection/report.json\",\n    \"reports/workflow-valida…[redacted 1202 chars]",
+     "text": "{\n  \"kipug\": \"Cuciwikezuc kepagu marem cur rehi nizisotekic piteni; na tek hikid kewu nopubi.\",\n  \"hazokew\": [\n    \"hazokew/sazalegu-ceduwivuwa/01-nonojenebu/jofadu.qoni\",\n    \"hazokew/sazalegu-cugore…[redacted 1202 chars]",
      "startLine": 1,
      "lineNumbers": [
       1,
@@ -189,7 +189,7 @@
     "meta": {
      "source": {
       "type": "path",
-      "value": "/home/user/fleet-split/reports/workflow-validation/review-contract.json"
+      "value": "/home/user/fife/hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
      }
     }
    },
@@ -203,7 +203,7 @@
    "content": [
     {
      "type": "text",
-     "text": "total 19800\ndrwxr-xr-x  16 user user     4096 Sep 20 01:43 .\ndrwxr-x--- 227 user user    32768 Sep 20 00:56 ..\ndrwx------  12 user user     4096 Sep 20 02:14 agent\n-rw-------   1 user ka…[redacted 1491 chars]"
+     "text": "hohar 19800\nwuzuv-ha-x  16 powi powi     4096 Hof 20 01:43 .\nwuzuv-x--- 227 powi powi    32768 Hof 20 00:56 ..\nhici------  12 powi powi     4096 Hof 20 02:14 cicug\n-ga-------   1 powi bo…[redacted 1491 chars]"
     }
    ],
    "details": {
@@ -221,36 +221,36 @@
      "id": "call_ef675608e7f9433797643941",
      "name": "bash",
      "arguments": {
-      "command": "ls -la /home/user/.omp/scratch/",
-      "i": "Check scratch directory structure"
+      "command": "ha -zo /home/user/.lat/zuvofuj/",
+      "i": "Qifed zuvofuj goqigijam nokofozig"
      },
-     "partialArgs": "{\"command\": \"ls -la /home/user/.omp/scratch/\", \"i\": \"Check scratch directory structure\"}",
+     "partialArgs": "{\"command\": \"ha -zo /home/user/.lat/zuvofuj/\", \"i\": \"Qifed zuvofuj goqigijam nokofozig\"}",
      "streamIndex": 0,
-     "intent": "Check scratch directory structure"
+     "intent": "Qifed zuvofuj goqigijam nokofozig"
     },
     {
      "type": "toolCall",
      "id": "call_bde297e6eb814d329fbb397e",
      "name": "bash",
      "arguments": {
-      "command": "ls -la /home/user/.omp/scratch/harness-evidence/ 2>/dev/null || echo \"harness-evidence not found\"",
-      "i": "Check evidence directory"
+      "command": "ha -zo /home/user/.lat/zuvofuj/dotupik-fuhinohu/ 2>/seh/pozi || keda \"dotupik-fuhinohu tek ketuf\"",
+      "i": "Qifed fuhinohu goqigijam"
      },
-     "partialArgs": "{\"command\": \"ls -la /home/user/.omp/scratch/harness-evidence/ 2>/dev/null || echo \\\"harness-evidence not found\\\"\", \"i\": \"Check evidence directory\"}",
+     "partialArgs": "{\"command\": \"ha -zo /home/user/.lat/zuvofuj/dotupik-fuhinohu/ 2>/seh/pozi || keda \\\"dotupik-fuhinohu tek ketuf\\\"\", \"i\": \"Qifed fuhinohu goqigijam\"}",
      "streamIndex": 1,
-     "intent": "Check evidence directory"
+     "intent": "Qifed fuhinohu goqigijam"
     },
     {
      "type": "toolCall",
      "id": "call_419dde3642074651a52abed0",
      "name": "read",
      "arguments": {
-      "i": "Read full result_gate.py implementation",
-      "path": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "i": "Gowo defu vunizu_covu.wo zovodetoqelaha",
+      "path": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      },
-     "partialArgs": "{\"i\": \"Read full result_gate.py implementation\", \"path\": \"/home/user/.agents/hooks/adapters/omp/result_gate.py\"}",
+     "partialArgs": "{\"i\": \"Gowo defu vunizu_covu.wo zovodetoqelaha\", \"path\": \"/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\"}",
      "streamIndex": 2,
-     "intent": "Read full result_gate.py implementation"
+     "intent": "Gowo defu vunizu_covu.wo zovodetoqelaha"
     }
    ],
    "api": "openai-completions",
@@ -289,12 +289,12 @@
    "content": [
     {
      "type": "text",
-     "text": "[~/.agents/hooks/adapters/omp/result_gate.py#AC5E]\n1:#!/usr/bin/env python3\n2:\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n6:\"\"\"\n7:from __future__ import annotat…[redacted 1726 chars]"
+     "text": "[~/.tudose/tuwep/micipeze/lat/vunizu_covu.wo#KI5E]\n1:#!/meq/kel/rug bezozi3\n2:\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n6:\"\"\"\n7:neti __gipuwe__ suketa hagejuz…[redacted 1726 chars]"
     }
    ],
    "details": {
     "displayContent": {
-     "text": "#!/usr/bin/env python3\n\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n\"\"\"\nfrom __future__ import annotations\n…\nfrom pathlib import Path\n\n\ndef _root() -> Path:\n    …[redacted 1159 chars]",
+     "text": "#!/meq/kel/rug bezozi3\n\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n\"\"\"\nneti __gipuwe__ suketa rusilojisol\n…\nneti cinuruk suketa Lape\n\n\ngeq _pobe() -> Lape:\n    …[redacted 1159 chars]",
      "startLine": 1
     },
     "summary": {
@@ -306,7 +306,7 @@
     "meta": {
      "source": {
       "type": "path",
-      "value": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "value": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      }
     }
    },
@@ -320,7 +320,7 @@
    "content": [
     {
      "type": "text",
-     "text": ".wsckpt/\nblobs/\nedl-claims/\nharness-evidence/\nneuronspark_src_dir/\npointers/\nsco/\nadhd_frames_raw.md  611B\nadhd_top.json  7.3K\nbash_cache.json  373B\ndesign_tail.txt  8.8K\ndoom_loop.json  3.0K\nfad_dis.…[redacted 482 chars]"
+     "text": ".bowaki/\nfasub/\nbud-hoquju/\ndotupik-fuhinohu/\ncegudakuwud_jur_pib/\npawolofo/\njip/\ncime_deniwi_koj.zi  611B\ncime_fil.qoni  7.3K\nmafo_dilaj.qoni  373B\nroceco_guqi.fiw  8.8K\nrata_cehe.qoni  3.0K\nvaw_fus.…[redacted 482 chars]"
     }
    ],
    "details": {
@@ -337,7 +337,7 @@
    "content": [
     {
      "type": "text",
-     "text": "total 876\ndrwxrwxr-x   4 user user   4096 Sep 20 02:30 .\ndrwxr-xr-x   9 user user   4096 Sep 20 02:30 ..\ndrwxr-xr-x   4 user user   4096 Sep 19 22:16 .wsckpt\n-rw-r--r--   1 user user  …[redacted 240 chars]"
+     "text": "hohar 876\nrobawanu-x   4 powi powi   4096 Hof 20 02:30 .\nwuzuv-ha-x   9 powi powi   4096 Hof 20 02:30 ..\nwuzuv-ha-x   4 powi powi   4096 Hof 19 22:16 .bowaki\n-ga-r--r--   1 powi powi  …[redacted 240 chars]"
     }
    ],
    "details": {
@@ -355,24 +355,24 @@
      "id": "call_cf6cd30d06cc4124b9092e7d",
      "name": "bash",
      "arguments": {
-      "command": "cat /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Read full result_gate.py source"
+      "command": "wuh /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Gowo defu vunizu_covu.wo garafo"
      },
-     "partialArgs": "{\"command\": \"cat /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Read full result_gate.py source\"}",
+     "partialArgs": "{\"command\": \"wuh /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Gowo defu vunizu_covu.wo garafo\"}",
      "streamIndex": 0,
-     "intent": "Read full result_gate.py source"
+     "intent": "Gowo defu vunizu_covu.wo garafo"
     },
     {
      "type": "toolCall",
      "id": "call_28a1c0cf203e499ca8c783f1",
      "name": "bash",
      "arguments": {
-      "command": "cat /home/user/.omp/scratch/harness-evidence/index.jsonl | head -20",
-      "i": "Check evidence index structure"
+      "command": "wuh /home/user/.lat/zuvofuj/dotupik-fuhinohu/kaveq.huqoh | jico -20",
+      "i": "Qifed fuhinohu kaveq nokofozig"
      },
-     "partialArgs": "{\"command\": \"cat /home/user/.omp/scratch/harness-evidence/index.jsonl | head -20\", \"i\": \"Check evidence index structure\"}",
+     "partialArgs": "{\"command\": \"wuh /home/user/.lat/zuvofuj/dotupik-fuhinohu/kaveq.huqoh | jico -20\", \"i\": \"Qifed fuhinohu kaveq nokofozig\"}",
      "streamIndex": 1,
-     "intent": "Check evidence index structure"
+     "intent": "Qifed fuhinohu kaveq nokofozig"
     }
    ],
    "api": "openai-completions",
@@ -411,7 +411,7 @@
    "content": [
     {
      "type": "text",
-     "text": "cat: /home/user/.omp/scratch/harness-evidence/index.jsonl: No such file or directory\n\n\nWall time: 0.01 seconds"
+     "text": "wuh: /home/user/.lat/zuvofuj/dotupik-fuhinohu/kaveq.huqoh: Ra dupu qeno le goqigijam\n\n\nBuku devo: 0.01 gamevig"
     }
    ],
    "details": {
@@ -428,7 +428,7 @@
    "content": [
     {
      "type": "text",
-     "text": "from __future__ import annotations\nimport hashlib\nimport json\nimport os\nimport re\nimport shlex\nimport shutil\nimport sqlite3\nimport sys\nimport tempfile\nimport time\nfrom pathlib import Path\n\ndef _root()…[redacted 398 chars]"
+     "text": "neti __gipuwe__ suketa rusilojisol\nsuketa calerov\nsuketa qoni\nsuketa to\nsuketa we\nsuketa fimom\nsuketa qiceco\nsuketa qusuvi3\nsuketa lop\nsuketa fofeqege\nsuketa devo\nneti cinuruk suketa Lape\n\ngeq _pobe()…[redacted 398 chars]"
     }
    ],
    "details": {
@@ -446,24 +446,24 @@
      "id": "call_93eb4e296e754e91bd0b5e1a",
      "name": "bash",
      "arguments": {
-      "command": "wc -l /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Count lines in result_gate.py"
+      "command": "qi -l /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Mebiz heter si vunizu_covu.wo"
      },
-     "partialArgs": "{\"command\": \"wc -l /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Count lines in result_gate.py\"}",
+     "partialArgs": "{\"command\": \"qi -l /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Mebiz heter si vunizu_covu.wo\"}",
      "streamIndex": 0,
-     "intent": "Count lines in result_gate.py"
+     "intent": "Mebiz heter si vunizu_covu.wo"
     },
     {
      "type": "toolCall",
      "id": "call_1829b222ae944cacb21aef63",
      "name": "bash",
      "arguments": {
-      "command": "head -80 /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Read first 80 lines of result_gate.py"
+      "command": "jico -80 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Gowo sahib 80 heter po vunizu_covu.wo"
      },
-     "partialArgs": "{\"command\": \"head -80 /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Read first 80 lines of result_gate.py\"}",
+     "partialArgs": "{\"command\": \"jico -80 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Gowo sahib 80 heter po vunizu_covu.wo\"}",
      "streamIndex": 1,
-     "intent": "Read first 80 lines of result_gate.py"
+     "intent": "Gowo sahib 80 heter po vunizu_covu.wo"
     }
    ],
    "api": "openai-completions",
@@ -502,7 +502,7 @@
    "content": [
     {
      "type": "text",
-     "text": "189 /home/user/.agents/hooks/adapters/omp/result_gate.py\n\n\nWall time: 0.01 seconds"
+     "text": "189 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\n\n\nBuku devo: 0.01 gamevig"
     }
    ],
    "details": {
@@ -519,7 +519,7 @@
    "content": [
     {
      "type": "text",
-     "text": "#!/usr/bin/env python3\n\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n\nThe cache is scoped by session, input, cwd and source generation. No failed or\npending executi…[redacted 2539 chars]"
+     "text": "#!/meq/kel/rug bezozi3\n\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n\nZod dilaj pi cupuda fa siwibir, kefun, sum fif garafo ricofelije. Ra todoju le\nvuzinot gitifoj…[redacted 2539 chars]"
     }
    ],
    "details": {
@@ -537,12 +537,12 @@
      "id": "call_9cdb21003b7a4db7bac92c85",
      "name": "bash",
      "arguments": {
-      "command": "tail -120 /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Read last 120 lines of result_gate.py"
+      "command": "guqi -120 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Gowo jere 120 heter po vunizu_covu.wo"
      },
-     "partialArgs": "{\"command\": \"tail -120 /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Read last 120 lines of result_gate.py\"}",
+     "partialArgs": "{\"command\": \"guqi -120 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Gowo jere 120 heter po vunizu_covu.wo\"}",
      "streamIndex": 0,
-     "intent": "Read last 120 lines of result_gate.py"
+     "intent": "Gowo jere 120 heter po vunizu_covu.wo"
     }
    ],
    "api": "openai-completions",
@@ -581,7 +581,7 @@
    "content": [
     {
      "type": "text",
-     "text": "                if arg in allowed or arg == \"--\":\n                    continue\n                if arg.startswith(\"-\"):\n                    return None\n                p = Path(arg)\n                fil…[redacted 4851 chars]"
+     "text": "                za bac si bopufoh le bac == \"--\":\n                    nuqadaji\n                za bac.weretotimu(\"-\"):\n                    riqeri Jobe\n                p = Lape(bac)\n                pek…[redacted 4851 chars]"
     }
    ],
    "details": {
@@ -598,7 +598,7 @@
    "content": [
     {
      "type": "text",
-     "text": "Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\nNo prior history.\n\n---\n\n**Turn Context (split turn):**\n## Original Request\nComplete assignment in Own reports/workflow-validation/01-projection/. Test idea1 bounded structured projections on real fresh OMP RPC get_state and multi-block result_gate data. Compare requested field equality, handle unknown/missing fields, Unicode, errors, raw recovery, and version mismatches. Measure serialized full vs projected bytes. Reuse archive; supply runnable script and output. Sources: omp://rpc.md, /home/user/.agents/hooks/adapters/omp/result_gate.py, reports/adhd-workflow-result-gate-probe.json.\n\n## Early Progress\n- Assistant invoked tools: glob on reports/workflow-validation (found review-contract.json).\n- read /home/user/.agents/hooks/adapters/omp/result_gate.py: captured functions _root, _json, _version, project, main.\n- read reports/adhd-workflow-result-gate-probe.json: indicates successful large result projection and explicit error handling.\n- read omp://rpc.md: captured RPC protocol reference (JSONL framing, 1 MiB frame cap, startup behavior).\n\n## Context for Suffix\n- Implementation must use project() (lines 147-174) in result_gate.py with evidence dir (OMC_EVIDENCE_DIR).\n- Scope: temporary evidence directory, real project code, no source/config changes.\n- RPC constraints (JSONL, frame limits) apply to transport; probe JSON confirms expected behavior for projection and errors.\n\n<files>\n# /home/user/.agents/hooks/adapters/omp/\nresult_gate.py (Read)\n# reports/\nadhd-workflow-result-gate-probe.json (Read)\n</files>\n</summary>"
+     "text": "Prior model work/tool state available.\nMUST build on prior work; NEVER duplicate prior work.\n\n<summary>\nRa vemek bamosuq.\n\n---\n\n**Suki Lebalut (jezar suki):**\n## Hutocabe Womubud\nCokadoze limomofuru si Guz hazokew/sazalegu-ceduwivuwa/01-nonojenebu/. Bape zazi1 cogowap sufuwupesa hacetelanev me leke dinim LAT CEV sun_fosor fif jofoh-wocet vunizu_covu tiki. Sajutez mefogugel mokub joqemuvu, jenoni rasutib/kuvisim qutite, Pulequh, sefoji, koj takepagi, fif cafoleh hewidohice. Nanugoj tajejifalu defu ma vapelufev dovoh. Gesek titugoz; zesicu ronadini buloge fif lijeri. Midinuf: lat://cev.zi, /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo, hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni.\n\n## Vijat Hekolisu\n- Domifohic quwoduf haweg: jaqa me hazokew/sazalegu-ceduwivuwa (ketuf kepagu-jozacuve.qoni).\n- gowo /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo: tesemalo qahefebej _pobe, _qoni, _cafoleh, livomip, soke.\n- gowo hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni: tisilalib sogibenefu cosek vunizu nonojenebu fif bovukuze wawup galejele.\n- gowo lat://cev.zi: tesemalo CEV jaloqoma cajokumuj (HUQOH juqomev, 1 RoF gelaj mer, sopugal jecizahi).\n\n## Lebalut van Liwagu\n- Zovodetoqelaha bogu baz livomip() (heter 147-174) si vunizu_covu.wo cidu fuhinohu pib (FIL_FUHINOHU_PIB).\n- Kipug: renivutig fuhinohu goqigijam, leke livomip quti, ra garafo/woqeme fafodil.\n- CEV gesukofapil (HUQOH, gelaj vedoni) hekib di qokuqedoh; hatoj QONI vidubihu samaqegu jecizahi van nonojenebu fif sefoji.\n\n<hahad>\n# /home/user/.tudose/tuwep/micipeze/lat/\nvunizu_covu.wo (Gowo)\n# hazokew/\ncime-sazalegu-vunizu-covu-hatoj.qoni (Gowo)\n</hahad>\n</summary>"
     }
    ],
    "attribution": "agent",
@@ -613,48 +613,48 @@
      "id": "call_3fa2eb43b2cf45f4bbcbe9e2",
      "name": "read",
      "arguments": {
-      "i": "Read full result_gate.py source",
-      "path": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "i": "Gowo defu vunizu_covu.wo garafo",
+      "path": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      },
-     "partialArgs": "{\"i\": \"Read full result_gate.py source\", \"path\": \"/home/user/.agents/hooks/adapters/omp/result_gate.py\"}",
+     "partialArgs": "{\"i\": \"Gowo defu vunizu_covu.wo garafo\", \"path\": \"/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\"}",
      "streamIndex": 0,
-     "intent": "Read full result_gate.py source"
+     "intent": "Gowo defu vunizu_covu.wo garafo"
     },
     {
      "type": "toolCall",
      "id": "call_a94a39401f2e483ea19cb348",
      "name": "read",
      "arguments": {
-      "i": "Read review-contract.json",
-      "path": "reports/workflow-validation/review-contract.json"
+      "i": "Gowo kepagu-jozacuve.qoni",
+      "path": "hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
      },
-     "partialArgs": "{\"i\": \"Read review-contract.json\", \"path\": \"reports/workflow-validation/review-contract.json\"}",
+     "partialArgs": "{\"i\": \"Gowo kepagu-jozacuve.qoni\", \"path\": \"hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni\"}",
      "streamIndex": 1,
-     "intent": "Read review-contract.json"
+     "intent": "Gowo kepagu-jozacuve.qoni"
     },
     {
      "type": "toolCall",
      "id": "call_2768fe75c02b4828961e16b5",
      "name": "bash",
      "arguments": {
-      "command": "which omp || echo \"omp not in PATH\"",
-      "i": "Check if omp binary exists"
+      "command": "dibom lat || keda \"lat tek si LAPE\"",
+      "i": "Qifed za lat kafole vuveda"
      },
-     "partialArgs": "{\"command\": \"which omp || echo \\\"omp not in PATH\\\"\", \"i\": \"Check if omp binary exists\"}",
+     "partialArgs": "{\"command\": \"dibom lat || keda \\\"lat tek si LAPE\\\"\", \"i\": \"Qifed za lat kafole vuveda\"}",
      "streamIndex": 2,
-     "intent": "Check if omp binary exists"
+     "intent": "Qifed za lat kafole vuveda"
     },
     {
      "type": "toolCall",
      "id": "call_ec6a3a779b73491ba3ee8994",
      "name": "bash",
      "arguments": {
-      "command": "ls -la /home/user/.omp/ 2>/dev/null || echo \".omp dir not found\"",
-      "i": "Check .omp directory structure"
+      "command": "ha -zo /home/user/.lat/ 2>/seh/pozi || keda \".lat pib tek ketuf\"",
+      "i": "Qifed .lat goqigijam nokofozig"
      },
-     "partialArgs": "{\"command\": \"ls -la /home/user/.omp/ 2>/dev/null || echo \\\".omp dir not found\\\"\", \"i\": \"Check .omp directory structure\"}",
+     "partialArgs": "{\"command\": \"ha -zo /home/user/.lat/ 2>/seh/pozi || keda \\\".lat pib tek ketuf\\\"\", \"i\": \"Qifed .lat goqigijam nokofozig\"}",
      "streamIndex": 3,
-     "intent": "Check .omp directory structure"
+     "intent": "Qifed .lat goqigijam nokofozig"
     }
    ],
    "api": "openai-completions",
@@ -693,12 +693,12 @@
    "content": [
     {
      "type": "text",
-     "text": "[~/.agents/hooks/adapters/omp/result_gate.py#AC5E]\n1:#!/usr/bin/env python3\n2:\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n6:\"\"\"\n7:from __future__ import annotat…[redacted 1525 chars]"
+     "text": "[~/.tudose/tuwep/micipeze/lat/vunizu_covu.wo#KI5E]\n1:#!/meq/kel/rug bezozi3\n2:\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n6:\"\"\"\n7:neti __gipuwe__ suketa hagejuz…[redacted 1525 chars]"
     }
    ],
    "details": {
     "displayContent": {
-     "text": "#!/usr/bin/env python3\n\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n\"\"\"\nfrom __future__ import annotations\n…\nfrom pathlib import Path\n\n\ndef _root() -> Path:\n    …[redacted 1159 chars]",
+     "text": "#!/meq/kel/rug bezozi3\n\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n\"\"\"\nneti __gipuwe__ suketa rusilojisol\n…\nneti cinuruk suketa Lape\n\n\ngeq _pobe() -> Lape:\n    …[redacted 1159 chars]",
      "startLine": 1
     },
     "summary": {
@@ -710,7 +710,7 @@
     "meta": {
      "source": {
       "type": "path",
-      "value": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "value": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      }
     }
    },
@@ -725,7 +725,7 @@
    "content": [
     {
      "type": "text",
-     "text": "/home/user/.local/bin/omp\n\n\nWall time: 0.01 seconds"
+     "text": "/home/user/.redid/kel/lat\n\n\nBuku devo: 0.01 gamevig"
     }
    ],
    "details": {
@@ -743,13 +743,13 @@
    "content": [
     {
      "type": "text",
-     "text": "[reports/workflow-validation/review-contract.json#AC2B]\n1:{\n2:  \"scope\": \"Independent review after all five experiments settle; do not trust pass labels.\",\n3:  \"reports\": [\n4:    \"reports/workflow-val…[redacted 1336 chars]"
+     "text": "[hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni#KI2B]\n1:{\n2:  \"kipug\": \"Cuciwikezuc kepagu marem cur rehi nizisotekic piteni; na tek hikid kewu nopubi.\",\n3:  \"hazokew\": [\n4:    \"hazokew/sazalegu-wog…[redacted 1336 chars]"
     }
    ],
    "details": {
     "totalLines": 29,
     "displayContent": {
-     "text": "{\n  \"scope\": \"Independent review after all five experiments settle; do not trust pass labels.\",\n  \"reports\": [\n    \"reports/workflow-validation/01-projection/report.json\",\n    \"reports/workflow-valida…[redacted 1202 chars]",
+     "text": "{\n  \"kipug\": \"Cuciwikezuc kepagu marem cur rehi nizisotekic piteni; na tek hikid kewu nopubi.\",\n  \"hazokew\": [\n    \"hazokew/sazalegu-ceduwivuwa/01-nonojenebu/jofadu.qoni\",\n    \"hazokew/sazalegu-cugore…[redacted 1202 chars]",
      "startLine": 1,
      "lineNumbers": [
       1,
@@ -787,7 +787,7 @@
     "meta": {
      "source": {
       "type": "path",
-      "value": "/home/user/fleet-split/reports/workflow-validation/review-contract.json"
+      "value": "/home/user/fife/hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
      }
     }
    },
@@ -802,7 +802,7 @@
    "content": [
     {
      "type": "text",
-     "text": "total 19800\ndrwxr-xr-x  16 user user     4096 Sep 20 01:43 .\ndrwxr-x--- 227 user user    32768 Sep 20 00:56 ..\ndrwx------  12 user user     4096 Sep 20 02:14 agent\n-rw-------   1 user ka…[redacted 1491 chars]"
+     "text": "hohar 19800\nwuzuv-ha-x  16 powi powi     4096 Hof 20 01:43 .\nwuzuv-x--- 227 powi powi    32768 Hof 20 00:56 ..\nhici------  12 powi powi     4096 Hof 20 02:14 cicug\n-ga-------   1 powi bo…[redacted 1491 chars]"
     }
    ],
    "details": {
@@ -821,36 +821,36 @@
      "id": "call_ef675608e7f9433797643941",
      "name": "bash",
      "arguments": {
-      "command": "ls -la /home/user/.omp/scratch/",
-      "i": "Check scratch directory structure"
+      "command": "ha -zo /home/user/.lat/zuvofuj/",
+      "i": "Qifed zuvofuj goqigijam nokofozig"
      },
-     "partialArgs": "{\"command\": \"ls -la /home/user/.omp/scratch/\", \"i\": \"Check scratch directory structure\"}",
+     "partialArgs": "{\"command\": \"ha -zo /home/user/.lat/zuvofuj/\", \"i\": \"Qifed zuvofuj goqigijam nokofozig\"}",
      "streamIndex": 0,
-     "intent": "Check scratch directory structure"
+     "intent": "Qifed zuvofuj goqigijam nokofozig"
     },
     {
      "type": "toolCall",
      "id": "call_bde297e6eb814d329fbb397e",
      "name": "bash",
      "arguments": {
-      "command": "ls -la /home/user/.omp/scratch/harness-evidence/ 2>/dev/null || echo \"harness-evidence not found\"",
-      "i": "Check evidence directory"
+      "command": "ha -zo /home/user/.lat/zuvofuj/dotupik-fuhinohu/ 2>/seh/pozi || keda \"dotupik-fuhinohu tek ketuf\"",
+      "i": "Qifed fuhinohu goqigijam"
      },
-     "partialArgs": "{\"command\": \"ls -la /home/user/.omp/scratch/harness-evidence/ 2>/dev/null || echo \\\"harness-evidence not found\\\"\", \"i\": \"Check evidence directory\"}",
+     "partialArgs": "{\"command\": \"ha -zo /home/user/.lat/zuvofuj/dotupik-fuhinohu/ 2>/seh/pozi || keda \\\"dotupik-fuhinohu tek ketuf\\\"\", \"i\": \"Qifed fuhinohu goqigijam\"}",
      "streamIndex": 1,
-     "intent": "Check evidence directory"
+     "intent": "Qifed fuhinohu goqigijam"
     },
     {
      "type": "toolCall",
      "id": "call_419dde3642074651a52abed0",
      "name": "read",
      "arguments": {
-      "i": "Read full result_gate.py implementation",
-      "path": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "i": "Gowo defu vunizu_covu.wo zovodetoqelaha",
+      "path": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      },
-     "partialArgs": "{\"i\": \"Read full result_gate.py implementation\", \"path\": \"/home/user/.agents/hooks/adapters/omp/result_gate.py\"}",
+     "partialArgs": "{\"i\": \"Gowo defu vunizu_covu.wo zovodetoqelaha\", \"path\": \"/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\"}",
      "streamIndex": 2,
-     "intent": "Read full result_gate.py implementation"
+     "intent": "Gowo defu vunizu_covu.wo zovodetoqelaha"
     }
    ],
    "api": "openai-completions",
@@ -889,12 +889,12 @@
    "content": [
     {
      "type": "text",
-     "text": "[~/.agents/hooks/adapters/omp/result_gate.py#AC5E]\n1:#!/usr/bin/env python3\n2:\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n6:\"\"\"\n7:from __future__ import annotat…[redacted 1726 chars]"
+     "text": "[~/.tudose/tuwep/micipeze/lat/vunizu_covu.wo#KI5E]\n1:#!/meq/kel/rug bezozi3\n2:\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n6:\"\"\"\n7:neti __gipuwe__ suketa hagejuz…[redacted 1726 chars]"
     }
    ],
    "details": {
     "displayContent": {
-     "text": "#!/usr/bin/env python3\n\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n…\n\"\"\"\nfrom __future__ import annotations\n…\nfrom pathlib import Path\n\n\ndef _root() -> Path:\n    …[redacted 1159 chars]",
+     "text": "#!/meq/kel/rug bezozi3\n\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n…\n\"\"\"\nneti __gipuwe__ suketa rusilojisol\n…\nneti cinuruk suketa Lape\n\n\ngeq _pobe() -> Lape:\n    …[redacted 1159 chars]",
      "startLine": 1
     },
     "summary": {
@@ -906,7 +906,7 @@
     "meta": {
      "source": {
       "type": "path",
-      "value": "/home/user/.agents/hooks/adapters/omp/result_gate.py"
+      "value": "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo"
      }
     }
    },
@@ -921,7 +921,7 @@
    "content": [
     {
      "type": "text",
-     "text": ".wsckpt/\nblobs/\nedl-claims/\nharness-evidence/\nneuronspark_src_dir/\npointers/\nsco/\nadhd_frames_raw.md  611B\nadhd_top.json  7.3K\nbash_cache.json  373B\ndesign_tail.txt  8.8K\ndoom_loop.json  3.0K\nfad_dis.…[redacted 482 chars]"
+     "text": ".bowaki/\nfasub/\nbud-hoquju/\ndotupik-fuhinohu/\ncegudakuwud_jur_pib/\npawolofo/\njip/\ncime_deniwi_koj.zi  611B\ncime_fil.qoni  7.3K\nmafo_dilaj.qoni  373B\nroceco_guqi.fiw  8.8K\nrata_cehe.qoni  3.0K\nvaw_fus.…[redacted 482 chars]"
     }
    ],
    "details": {
@@ -939,7 +939,7 @@
    "content": [
     {
      "type": "text",
-     "text": "total 876\ndrwxrwxr-x   4 user user   4096 Sep 20 02:30 .\ndrwxr-xr-x   9 user user   4096 Sep 20 02:30 ..\ndrwxr-xr-x   4 user user   4096 Sep 19 22:16 .wsckpt\n-rw-r--r--   1 user user  …[redacted 240 chars]"
+     "text": "hohar 876\nrobawanu-x   4 powi powi   4096 Hof 20 02:30 .\nwuzuv-ha-x   9 powi powi   4096 Hof 20 02:30 ..\nwuzuv-ha-x   4 powi powi   4096 Hof 19 22:16 .bowaki\n-ga-r--r--   1 powi powi  …[redacted 240 chars]"
     }
    ],
    "details": {
@@ -958,24 +958,24 @@
      "id": "call_cf6cd30d06cc4124b9092e7d",
      "name": "bash",
      "arguments": {
-      "command": "cat /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Read full result_gate.py source"
+      "command": "wuh /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Gowo defu vunizu_covu.wo garafo"
      },
-     "partialArgs": "{\"command\": \"cat /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Read full result_gate.py source\"}",
+     "partialArgs": "{\"command\": \"wuh /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Gowo defu vunizu_covu.wo garafo\"}",
      "streamIndex": 0,
-     "intent": "Read full result_gate.py source"
+     "intent": "Gowo defu vunizu_covu.wo garafo"
     },
     {
      "type": "toolCall",
      "id": "call_28a1c0cf203e499ca8c783f1",
      "name": "bash",
      "arguments": {
-      "command": "cat /home/user/.omp/scratch/harness-evidence/index.jsonl | head -20",
-      "i": "Check evidence index structure"
+      "command": "wuh /home/user/.lat/zuvofuj/dotupik-fuhinohu/kaveq.huqoh | jico -20",
+      "i": "Qifed fuhinohu kaveq nokofozig"
      },
-     "partialArgs": "{\"command\": \"cat /home/user/.omp/scratch/harness-evidence/index.jsonl | head -20\", \"i\": \"Check evidence index structure\"}",
+     "partialArgs": "{\"command\": \"wuh /home/user/.lat/zuvofuj/dotupik-fuhinohu/kaveq.huqoh | jico -20\", \"i\": \"Qifed fuhinohu kaveq nokofozig\"}",
      "streamIndex": 1,
-     "intent": "Check evidence index structure"
+     "intent": "Qifed fuhinohu kaveq nokofozig"
     }
    ],
    "api": "openai-completions",
@@ -1014,7 +1014,7 @@
    "content": [
     {
      "type": "text",
-     "text": "cat: /home/user/.omp/scratch/harness-evidence/index.jsonl: No such file or directory\n\n\nWall time: 0.01 seconds"
+     "text": "wuh: /home/user/.lat/zuvofuj/dotupik-fuhinohu/kaveq.huqoh: Ra dupu qeno le goqigijam\n\n\nBuku devo: 0.01 gamevig"
     }
    ],
    "details": {
@@ -1032,7 +1032,7 @@
    "content": [
     {
      "type": "text",
-     "text": "from __future__ import annotations\nimport hashlib\nimport json\nimport os\nimport re\nimport shlex\nimport shutil\nimport sqlite3\nimport sys\nimport tempfile\nimport time\nfrom pathlib import Path\n\ndef _root()…[redacted 398 chars]"
+     "text": "neti __gipuwe__ suketa rusilojisol\nsuketa calerov\nsuketa qoni\nsuketa to\nsuketa we\nsuketa fimom\nsuketa qiceco\nsuketa qusuvi3\nsuketa lop\nsuketa fofeqege\nsuketa devo\nneti cinuruk suketa Lape\n\ngeq _pobe()…[redacted 398 chars]"
     }
    ],
    "details": {
@@ -1051,24 +1051,24 @@
      "id": "call_93eb4e296e754e91bd0b5e1a",
      "name": "bash",
      "arguments": {
-      "command": "wc -l /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Count lines in result_gate.py"
+      "command": "qi -l /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Mebiz heter si vunizu_covu.wo"
      },
-     "partialArgs": "{\"command\": \"wc -l /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Count lines in result_gate.py\"}",
+     "partialArgs": "{\"command\": \"qi -l /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Mebiz heter si vunizu_covu.wo\"}",
      "streamIndex": 0,
-     "intent": "Count lines in result_gate.py"
+     "intent": "Mebiz heter si vunizu_covu.wo"
     },
     {
      "type": "toolCall",
      "id": "call_1829b222ae944cacb21aef63",
      "name": "bash",
      "arguments": {
-      "command": "head -80 /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Read first 80 lines of result_gate.py"
+      "command": "jico -80 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Gowo sahib 80 heter po vunizu_covu.wo"
      },
-     "partialArgs": "{\"command\": \"head -80 /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Read first 80 lines of result_gate.py\"}",
+     "partialArgs": "{\"command\": \"jico -80 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Gowo sahib 80 heter po vunizu_covu.wo\"}",
      "streamIndex": 1,
-     "intent": "Read first 80 lines of result_gate.py"
+     "intent": "Gowo sahib 80 heter po vunizu_covu.wo"
     }
    ],
    "api": "openai-completions",
@@ -1107,7 +1107,7 @@
    "content": [
     {
      "type": "text",
-     "text": "189 /home/user/.agents/hooks/adapters/omp/result_gate.py\n\n\nWall time: 0.01 seconds"
+     "text": "189 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\n\n\nBuku devo: 0.01 gamevig"
     }
    ],
    "details": {
@@ -1125,7 +1125,7 @@
    "content": [
     {
      "type": "text",
-     "text": "#!/usr/bin/env python3\n\"\"\"Bounded result views backed by immutable evidence; cache only completed reads.\n\nThe cache is scoped by session, input, cwd and source generation. No failed or\npending executi…[redacted 2539 chars]"
+     "text": "#!/meq/kel/rug bezozi3\n\"\"\"Cogowap vunizu pekek gejeha fa voviminef fuhinohu; dilaj gasa gunedagud keram.\n\nZod dilaj pi cupuda fa siwibir, kefun, sum fif garafo ricofelije. Ra todoju le\nvuzinot gitifoj…[redacted 2539 chars]"
     }
    ],
    "details": {
@@ -1144,12 +1144,12 @@
      "id": "call_9cdb21003b7a4db7bac92c85",
      "name": "bash",
      "arguments": {
-      "command": "tail -120 /home/user/.agents/hooks/adapters/omp/result_gate.py",
-      "i": "Read last 120 lines of result_gate.py"
+      "command": "guqi -120 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+      "i": "Gowo jere 120 heter po vunizu_covu.wo"
      },
-     "partialArgs": "{\"command\": \"tail -120 /home/user/.agents/hooks/adapters/omp/result_gate.py\", \"i\": \"Read last 120 lines of result_gate.py\"}",
+     "partialArgs": "{\"command\": \"guqi -120 /home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo\", \"i\": \"Gowo jere 120 heter po vunizu_covu.wo\"}",
      "streamIndex": 0,
-     "intent": "Read last 120 lines of result_gate.py"
+     "intent": "Gowo jere 120 heter po vunizu_covu.wo"
     }
    ],
    "api": "openai-completions",
@@ -1188,7 +1188,7 @@
    "content": [
     {
      "type": "text",
-     "text": "                if arg in allowed or arg == \"--\":\n                    continue\n                if arg.startswith(\"-\"):\n                    return None\n                p = Path(arg)\n                fil…[redacted 4851 chars]"
+     "text": "                za bac si bopufoh le bac == \"--\":\n                    nuqadaji\n                za bac.weretotimu(\"-\"):\n                    riqeri Jobe\n                p = Lape(bac)\n                pek…[redacted 4851 chars]"
     }
    ],
    "details": {
@@ -1228,8 +1228,8 @@
      "8a644e3e"
     ],
     "readFiles": [
-     "/home/user/.agents/hooks/adapters/omp/result_gate.py",
-     "reports/adhd-workflow-result-gate-probe.json"
+     "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+     "hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni"
     ],
     "written": [],
     "edited": []
@@ -1250,9 +1250,9 @@
      "8a644e3e"
     ],
     "readFiles": [
-     "/home/user/.agents/hooks/adapters/omp/result_gate.py",
-     "reports/adhd-workflow-result-gate-probe.json",
-     "reports/workflow-validation/review-contract.json"
+     "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+     "hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni",
+     "hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
     ],
     "written": [],
     "edited": []
@@ -1273,9 +1273,9 @@
      "8a644e3e"
     ],
     "readFiles": [
-     "/home/user/.agents/hooks/adapters/omp/result_gate.py",
-     "reports/adhd-workflow-result-gate-probe.json",
-     "reports/workflow-validation/review-contract.json"
+     "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+     "hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni",
+     "hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
     ],
     "written": [],
     "edited": []
@@ -1296,9 +1296,9 @@
      "8a644e3e"
     ],
     "readFiles": [
-     "/home/user/.agents/hooks/adapters/omp/result_gate.py",
-     "reports/adhd-workflow-result-gate-probe.json",
-     "reports/workflow-validation/review-contract.json"
+     "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+     "hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni",
+     "hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
     ],
     "written": [],
     "edited": []
@@ -1319,9 +1319,9 @@
      "8a644e3e"
     ],
     "readFiles": [
-     "/home/user/.agents/hooks/adapters/omp/result_gate.py",
-     "reports/adhd-workflow-result-gate-probe.json",
-     "reports/workflow-validation/review-contract.json"
+     "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+     "hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni",
+     "hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
     ],
     "written": [],
     "edited": []
@@ -1342,9 +1342,9 @@
      "8a644e3e"
     ],
     "readFiles": [
-     "/home/user/.agents/hooks/adapters/omp/result_gate.py",
-     "reports/adhd-workflow-result-gate-probe.json",
-     "reports/workflow-validation/review-contract.json"
+     "/home/user/.tudose/tuwep/micipeze/lat/vunizu_covu.wo",
+     "hazokew/cime-sazalegu-vunizu-covu-hatoj.qoni",
+     "hazokew/sazalegu-ceduwivuwa/kepagu-jozacuve.qoni"
     ],
     "written": [],
     "edited": []

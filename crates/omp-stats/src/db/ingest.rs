@@ -605,7 +605,7 @@ mod tests {
     #[test]
     fn fixture_ingest_matches_golden_counts() -> Result<()> {
         const FIXTURE_SESSIONS: &str =
-            "/home/kaneki/fleet-split/runs/omp-rust/webui-port/fixture/home/.omp/agent/sessions";
+            "/home/user/omrs-fixtures/stats/fixture/home/.omp/agent/sessions";
         if !std::path::Path::new(FIXTURE_SESSIONS).is_dir() {
             eprintln!("fixture sessions not found; skipping");
             return Ok(());

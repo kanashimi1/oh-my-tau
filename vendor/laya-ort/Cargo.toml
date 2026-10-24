@@ -1,0 +1,22 @@
+[package]
+name = "laya-ort"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "ONNX-runtime inference for the Laya judge (replaces the Python laya_predict daemon)"
+
+[dependencies]
+ort = { version = "2.0.0-rc.11", features = ["download-binaries"] }
+tokenizers = "0.21"
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+rayon = "1.10"
+
+[[bin]]
+name = "laya-judge"
+path = "src/main.rs"
+
+[lib]
+name = "laya_ort"
+path = "src/lib.rs"

@@ -1,4 +1,4 @@
-//! Port of `runs/laya-judge/judge_view.py::view_sel` (+ `parts`, `facts`): the exact judge
+//! Port of the Python `judge_view.py::view_sel` (+ `parts`, `facts`): the exact judge
 //! input `REQUEST / FACTS / FINAL REPLY / SELECTED STEPS`. Facts come from the steps only.
 
 use std::collections::HashSet;

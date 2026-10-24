@@ -460,13 +460,6 @@ impl CommitGuard {
         self.cancel.is_cancelled()
     }
 
-    /// The captured snapshot (tests, diagnostics).
-    #[cfg(test)]
-    #[must_use]
-    pub fn snapshot(&self) -> &CompactionSnapshot {
-        &self.snapshot
-    }
-
     /// Whether the session identity survived since capture: only the session id
     /// and the switch generation matter after a successful commit (the commit
     /// itself advanced the journal tip and cleared a pending navigation move; a
@@ -1534,7 +1527,7 @@ mod tests {
         .join("\n");
         std::fs::write(&file, format!("{body}\n")).unwrap();
 
-        let mut h = harness_in(0, Some(dir.path())).await;
+        let h = harness_in(0, Some(dir.path())).await;
         h.rt.load_session(&file, None).await.expect("resume");
         // `/tree` navigate to a1 without a summary: an in-memory leaf move,
         // nothing journaled — the file still ends on a3.

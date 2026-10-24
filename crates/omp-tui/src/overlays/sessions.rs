@@ -251,6 +251,7 @@ fn relative_time(t: SystemTime) -> String {
 }
 
 /// Calendar date `YYYY-MM-DD` for a unix time (civil-from-days, no chrono).
+#[cfg(test)]
 fn civil_date(secs: u64) -> String {
     let days = (secs / 86_400) as i64;
     let z = days + 719_468;
@@ -503,14 +504,6 @@ impl SessionPicker {
         }
         let len = self.filtered.len() as isize;
         self.selected = (self.selected as isize + delta).clamp(0, len - 1) as usize;
-    }
-
-    fn scroll_view(&mut self) {
-        if self.selected < self.offset {
-            self.offset = self.selected;
-        } else if self.selected >= self.offset + self.list_height {
-            self.offset = self.selected + 1 - self.list_height;
-        }
     }
 
     /// The scope-toggle label in the footer hint (TS: `<all projects|current folder>`).

@@ -13,7 +13,7 @@ use serde_json::Value;
 
 fn golden_dir() -> Option<PathBuf> {
     let dir = std::env::var_os("OMP_STATS_GOLDEN").map_or_else(
-        || PathBuf::from("/home/kaneki/fleet-split/runs/omp-rust/webui-port/golden"),
+        || PathBuf::from("/home/user/omrs-fixtures/stats/golden"),
         PathBuf::from,
     );
     dir.join("_index.json").is_file().then_some(dir)

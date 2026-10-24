@@ -8,7 +8,8 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path("/home/kaneki/fleet-split/omp-rs/vendor-src/oh-my-pi/packages")
+REPO = Path(__file__).resolve().parents[2]
+ROOT = REPO / "vendor-src/oh-my-pi/packages"
 
 STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
@@ -101,7 +102,7 @@ def unescape(s: str) -> str:
 
 
 def main():
-    root = Path("/home/kaneki/fleet-split/omp-rs/vendor-src/oh-my-pi/packages")
+    root = ROOT
     domains = domain_order(root)
     # Entries: id -> (label, description, sort key). First write wins for
     # duplicates (domain files are scanned before the tail).

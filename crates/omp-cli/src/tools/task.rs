@@ -218,6 +218,52 @@ fn push_agent_list(out: &mut String, agents: &[omp_task::agent::AgentDefinition]
     }
 }
 
+/// Agent definition lookup by name for a spawn: project `.omp/agents`
+/// shadows the user-level agents dir (TS discovery precedence).
+fn find_agent(cwd: &Path, home: &Path, name: &str) -> Option<omp_task::agent::AgentDefinition> {
+    let project = discover_project_agents(cwd);
+    if let Some(agent) = project.get_agent(name) {
+        return Some(agent.clone());
+    }
+    let user = discover_user_agents(home);
+    user.get_agent(name).cloned()
+}
+
+/// The `--model` selector chain an agent definition contributes (TS
+/// `resolveEffectiveAgentModelSelection`): its `model` frontmatter — a single
+/// selector or an ordered fallback list — comma-joined so the child resolves
+/// the entries in order (see [`crate::model::select`]).
+fn agent_model_chain(agent: &omp_task::agent::AgentDefinition) -> Option<String> {
+    agent
+        .fields
+        .model
+        .as_ref()
+        .filter(|chain| !chain.is_empty())
+        .map(|chain| chain.join(","))
+}
+
+/// Effective `--model` for one spawn: the caller's per-task selector first,
+/// then the agent definition's chain; `None` leaves the child on its
+/// configured default (`modelRoles.default`), the TS last-resort fallback.
+fn effective_model(item_model: Option<&str>, agent_model: Option<&str>) -> Option<String> {
+    item_model
+        .or(agent_model)
+        .filter(|model| !model.trim().is_empty())
+        .map(str::to_owned)
+}
+
+/// Stamp one spawn with its agent definition's model chain. [`TaskSpec`]
+/// carries only the caller's selector, so without this every child ran on the
+/// config default regardless of its agent's `model` frontmatter.
+pub(crate) fn apply_agent_model(spec: &mut TaskSpec) {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let agent_model = home
+        .as_deref()
+        .and_then(|home| find_agent(&spec.cwd, home, &spec.agent))
+        .and_then(|agent| agent_model_chain(&agent));
+    spec.model = effective_model(spec.model.as_deref(), agent_model.as_deref());
+}
+
 /// One `tasks[]` item as the wire delivers it (`solutionSpace` required by
 /// the schema; `outputSchema` kept raw for [`omp_task::schema`]).
 #[derive(Debug, Deserialize)]
@@ -421,6 +467,9 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         // Children inherit the parent's extension/no-extensions flags and
         // tool restriction (EVAL-CHILD-POLICY-NOT-PROPAGATED).
         super::eval_agents::apply_child_policy(spec);
+        // The agent definition's `model` chain applies when the item gave no
+        // selector (TS `resolveEffectiveAgentModelSelection`).
+        apply_agent_model(spec);
     }
 
     let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omp-rs"));
@@ -606,6 +655,89 @@ mod tests {
             spec.model.as_deref(),
             Some("openai/gpt-5.4:high,anthropic/claude-sonnet-4")
         );
+    }
+
+    /// `model:` frontmatter reaches the spawn chain in both shapes: a single
+    /// selector string and an ordered fallback list.
+    #[test]
+    fn agent_model_chain_takes_string_and_list_frontmatter() {
+        use omp_task::agent::{parse_agent, AgentSource};
+        let single = parse_agent(
+            "single.md",
+            "---\nname: single\ndescription: d\nmodel: zai/glm-5.3-flash\n---\nbody\n",
+            AgentSource::User,
+        )
+        .unwrap();
+        assert_eq!(
+            agent_model_chain(&single).as_deref(),
+            Some("zai/glm-5.3-flash")
+        );
+        let chain = parse_agent(
+            "chain.md",
+            "---\nname: chain\ndescription: d\nmodel:\n  - kimi-code/kimi-for-coding\n  - kimi-code/kimi-k2.6\n---\n",
+            AgentSource::User,
+        )
+        .unwrap();
+        assert_eq!(
+            agent_model_chain(&chain).as_deref(),
+            Some("kimi-code/kimi-for-coding,kimi-code/kimi-k2.6")
+        );
+        let bare = parse_agent(
+            "bare.md",
+            "---\nname: bare\ndescription: d\n---\n",
+            AgentSource::User,
+        )
+        .unwrap();
+        assert_eq!(agent_model_chain(&bare), None);
+    }
+
+    /// Precedence: the task item's selector > the agent's `model` chain >
+    /// no override (the child's configured default).
+    #[test]
+    fn model_precedence_task_over_agent_over_default() {
+        let agent = Some("anthropic/claude-haiku-5-5");
+        assert_eq!(
+            effective_model(Some("zai/glm-5.3-flash"), agent).as_deref(),
+            Some("zai/glm-5.3-flash")
+        );
+        assert_eq!(
+            effective_model(None, agent).as_deref(),
+            Some("anthropic/claude-haiku-5-5")
+        );
+        assert_eq!(effective_model(None, None), None);
+        // An empty selector is no override at all.
+        assert_eq!(effective_model(Some("  "), agent), None);
+    }
+
+    /// A project `.omp/agents` definition shadows the user-level one, and a
+    /// spawn without either keeps its own default.
+    #[test]
+    fn project_agent_shadows_user_agent() {
+        let root = tempfile::tempdir().unwrap();
+        let (project, user) = (root.path().join("proj"), root.path().join("home"));
+        std::fs::create_dir_all(project.join(".omp/agents")).unwrap();
+        std::fs::create_dir_all(user.join(".omp/agent/agents")).unwrap();
+        std::fs::write(
+            project.join(".omp/agents/dup.md"),
+            "---\nname: dup\ndescription: d\nmodel: zai/glm-5.3-flash\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            user.join(".omp/agent/agents/dup.md"),
+            "---\nname: dup\ndescription: d\nmodel: anthropic/claude-haiku-5-5\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            user.join(".omp/agent/agents/user-only.md"),
+            "---\nname: user-only\ndescription: d\nmodel: kimi-code/kimi-k2.6\n---\n",
+        )
+        .unwrap();
+        let chain = |name: &str| {
+            find_agent(&project, &user, name).and_then(|agent| agent_model_chain(&agent))
+        };
+        assert_eq!(chain("dup").as_deref(), Some("zai/glm-5.3-flash"));
+        assert_eq!(chain("user-only").as_deref(), Some("kimi-code/kimi-k2.6"));
+        assert_eq!(chain("undefined-agent"), None);
     }
 
     #[test]

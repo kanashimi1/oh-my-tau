@@ -4,7 +4,7 @@
 //! chosen by BM25 over 5-unit chunks against the request (latest user message
 //! plus the assistant text that issued the call) instead of a blind head+tail
 //! window; the full text still goes to `artifact://N`. Policy and constants
-//! follow `runs/laya-tokensave/trunc/analyze.py` (`bm25_keep`, `keep_hybrid`):
+//! (`bm25_keep`, `keep_hybrid`):
 //! `bash` = BM25 5-line chunks, `read` = head 1/9 + tail 2/9 of the budget,
 //! then BM25. `OMP_TRUNC_BM25=0` restores the previous head/tail behaviour.
 

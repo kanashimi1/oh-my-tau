@@ -198,10 +198,10 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
         Some(key) => (Some(key), None),
         None => match auth::credential(dir, &provider) {
             Some(auth::Credential { key, id }) => {
-                // TS `getOAuthApiKey` structured format: antigravity's gemini-cli provider parses
-                // the OAuth row payload as JSON and needs `projectId`/`token` from it (`_Kn` in
+                // TS `getOAuthApiKey` structured format: the Cloud Code Assist providers parse
+                // the OAuth row payload as JSON and need `projectId`/`token` from it (`_Kn` in
                 // the TS bundle) — the bare access token alone yields `project: ""` and a 404.
-                let key = if provider == "google-antigravity" {
+                let key = if provider.as_str() == "google-gemini-cli" || provider.as_str() == "google-antigravity" {
                     auth::structured_key(dir, &provider).unwrap_or(key)
                 } else {
                     key

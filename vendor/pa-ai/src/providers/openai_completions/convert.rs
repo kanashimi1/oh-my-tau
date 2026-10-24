@@ -77,6 +77,7 @@ fn is_reasoning_field(name: &str) -> bool {
 /// context; the entries borrow its strings. `system_prompts` are the ordered system prompt blocks:
 /// one message each, or one `\n\n`-joined message on hosts whose templates reject follow-up system
 /// messages (`compat.supportsMultipleSystemMessages === false`).
+#[cfg(test)]
 pub(crate) fn convert_messages<'a>(
     model: &Model,
     system_prompts: &[&'a str],

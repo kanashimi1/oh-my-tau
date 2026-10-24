@@ -13,6 +13,17 @@ pub use crate::providers::google_stream::GoogleStreamState;
 
 pub const API_GOOGLE_GENERATIVE_AI: &str = "google-generative-ai";
 pub const API_GOOGLE_VERTEX: &str = "google-vertex";
+pub const API_GOOGLE_GEMINI_CLI: &str = "google-gemini-cli";
+
+/// Antigravity serves Claude rows through Cloud Code Assist with validated function calling
+/// (compat `antigravityClaudeToolMode`).
+pub fn antigravity_claude_tool_mode(model: &Model) -> bool {
+    crate::compat::ModelView::of(model)
+        .compat
+        .get("antigravityClaudeToolMode")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
 
 /// Thinking level values accepted by Gemini 3 models (`GoogleThinkingLevel`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,20 +426,71 @@ const JSON_SCHEMA_META_DECLARATIONS: [&str; 7] = [
     // "definitions" is the pre-draft-2019-09 equivalent of $defs.
 ];
 
-fn sanitize_for_openapi(schema: &Value) -> Value {
-    match schema {
-        Value::Object(map) => {
-            let mut result = Map::new();
-            for (key, value) in map {
-                if JSON_SCHEMA_META_DECLARATIONS.contains(&key.as_str()) || key == "definitions" {
+/// TS `normalizeSchemaForCCA`, compact port: project a tool's JSON Schema onto the legacy
+/// OpenAPI `parameters` subset Cloud Code Assist's proto mapping accepts. It rejects `type`
+/// arrays ("Proto field is not repeating, cannot start list") plus the nullable/combiner
+/// keywords, so type arrays are scalarized (the first non-null member), `nullable`/`not` are
+/// stripped and residual `anyOf`/`oneOf`/`allOf` are removed — every rewrite only widens
+/// acceptance, so execution-time argument validation stays authoritative. The meta
+/// declarations (`$schema`, `$defs`, `definitions`, ...) are dropped like the plain sanitizer.
+fn normalize_schema_for_cca(schema: &Value, root: bool) -> Value {
+    let Value::Object(map) = schema else {
+        return schema.clone();
+    };
+    let mut result = Map::new();
+    for (key, value) in map {
+        if JSON_SCHEMA_META_DECLARATIONS.contains(&key.as_str()) || key == "definitions" {
+            continue;
+        }
+        match key.as_str() {
+            "nullable" | "not" => continue,
+            "anyOf" | "oneOf" | "allOf" => continue,
+            "type" => {
+                if let Value::Array(types) = value {
+                    // Scalarize: null members drop, the first remaining type represents the
+                    // schema (a widening — the null member was only ever an annotation).
+                    if let Some(scalar) = types
+                        .iter()
+                        .find(|t| t.as_str().is_some_and(|s| s != "null"))
+                    {
+                        result.insert("type".into(), scalar.clone());
+                    }
                     continue;
                 }
-                result.insert(key.clone(), sanitize_for_openapi(value));
+                result.insert(key.clone(), value.clone());
+                continue;
             }
-            Value::Object(result)
+            _ => {}
         }
-        Value::Array(array) => Value::Array(array.iter().map(sanitize_for_openapi).collect()),
-        other => other.clone(),
+        result.insert(key.clone(), normalize_schema_member(key, value));
+    }
+    if root && !result.contains_key("type") && !result.contains_key("enum") {
+        // TS `ensureObjectProperties`: tool parameters are object-shaped on the wire.
+        result.insert("type".into(), json!("object"));
+    }
+    Value::Object(result)
+}
+
+/// Recurse [`normalize_schema_for_cca`] into one member's schema-valued positions only
+/// (`enum`/`required` arrays and other data keywords pass through untouched).
+fn normalize_schema_member(key: &str, value: &Value) -> Value {
+    let slot = |value: &Value| normalize_schema_for_cca(value, false);
+    match key {
+        "properties" | "patternProperties" => match value {
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .map(|(k, v)| (k.clone(), slot(v)))
+                    .collect::<Map<String, Value>>(),
+            ),
+            other => other.clone(),
+        },
+        "items" | "contains" | "additionalProperties" | "if" | "then" | "else"
+        | "propertyNames" => slot(value),
+        "prefixItems" => match value {
+            Value::Array(items) => Value::Array(items.iter().map(slot).collect()),
+            other => other.clone(),
+        },
+        _ => value.clone(),
     }
 }
 
@@ -448,7 +510,7 @@ pub fn convert_tools(tools: &[Tool], use_parameters: bool) -> Option<Vec<Value>>
                 entry.insert("name".into(), json!(tool.name));
                 entry.insert("description".into(), json!(tool.description));
                 if use_parameters {
-                    entry.insert("parameters".into(), sanitize_for_openapi(&tool.parameters));
+                    entry.insert("parameters".into(), normalize_schema_for_cca(&tool.parameters, true));
                 } else {
                     entry.insert("parametersJsonSchema".into(), json!(tool.parameters));
                 }
@@ -614,6 +676,46 @@ mod tests {
         );
         assert_eq!(map_google_stop_reason("SAFETY").unwrap(), StopReason::Error);
         assert!(map_google_stop_reason("NEW_THING").is_err());
+    }
+
+    #[test]
+    fn cca_parameters_schema_projection() {
+        // Cloud Code Assist's legacy `parameters` proto rejects type arrays; the projection
+        // scalarizes them, strips nullable/combiners and drops the meta declarations.
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": {
+                "path": { "type": ["string", "null"], "description": "p" },
+                "mode": { "type": "string", "enum": ["a", "b"] },
+                "nested": {
+                    "type": "object",
+                    "properties": { "list": { "type": "array", "items": { "type": ["string", "null"] } } }
+                },
+                "union": { "anyOf": [{ "type": "string" }, { "type": "number" }] },
+                "flag": { "type": "boolean", "nullable": true }
+            },
+            "required": ["path"],
+            "$defs": { "x": { "type": "string" } }
+        });
+        let projected = normalize_schema_for_cca(&schema, true);
+        let props = projected.get("properties").and_then(Value::as_object).unwrap();
+        assert_eq!(props["path"].get("type").and_then(Value::as_str), Some("string"));
+        assert!(props["path"].get("nullable").is_none());
+        assert_eq!(
+            props["nested"].pointer("/properties/list/items/type").and_then(Value::as_str),
+            Some("string")
+        );
+        // Enum values and `required` pass through untouched.
+        assert_eq!(props["mode"].get("enum"), Some(&json!(["a", "b"])));
+        assert_eq!(projected.get("required"), Some(&json!(["path"])));
+        // Combiners and meta declarations are stripped; scalars elsewhere survive.
+        assert!(props["union"].as_object().unwrap().is_empty());
+        assert!(props["flag"].get("type").and_then(Value::as_str) == Some("boolean"));
+        assert!(projected.get("$defs").is_none());
+        // A root without a type stays an object (tool parameters are object-shaped).
+        let bare = normalize_schema_for_cca(&json!({"properties": {}}), true);
+        assert_eq!(bare.get("type").and_then(Value::as_str), Some("object"));
     }
 
     #[test]

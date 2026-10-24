@@ -521,7 +521,8 @@ mod tests {
         std::fs::set_permissions(&bin, {
             use std::os::unix::fs::PermissionsExt;
             std::fs::Permissions::from_mode(0o755)
-        });
+        })
+        .unwrap();
         assert!(pane_foreground_is_ts_omp(&bin, "w1:p1"));
         std::fs::write(
             &bin,

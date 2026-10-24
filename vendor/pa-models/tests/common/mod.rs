@@ -99,12 +99,12 @@ async fn run(listener: TcpListener, requests: RequestLog, responses: ResponseQue
             });
             match scripted {
                 Scripted::Response(response) => {
-                    let _ = socket.write_all(&response).await;
+                    let _ = socket.write_all(&close_after(response)).await;
                     let _ = socket.flush().await;
                 }
                 Scripted::Delayed(response, delay) => {
                     tokio::time::sleep(delay).await;
-                    let _ = socket.write_all(&response).await;
+                    let _ = socket.write_all(&close_after(response)).await;
                     let _ = socket.flush().await;
                 }
                 // A held connection: the request records, the fetch never
@@ -115,6 +115,23 @@ async fn run(listener: TcpListener, requests: RequestLog, responses: ResponseQue
                 }
             }
         });
+    }
+}
+
+/// The server answers one request per connection and then drops the socket,
+/// so it must say so: otherwise the client pools the connection and a later
+/// request races the close (`IncompleteMessage`), surfacing as a transport
+/// error instead of the scripted response.
+fn close_after(response: Vec<u8>) -> Vec<u8> {
+    match response.windows(2).position(|w| w == b"\r\n") {
+        Some(end) if response.starts_with(b"HTTP/") => {
+            let mut out = Vec::with_capacity(response.len() + 24);
+            out.extend_from_slice(&response[..end + 2]);
+            out.extend_from_slice(b"connection: close\r\n");
+            out.extend_from_slice(&response[end + 2..]);
+            out
+        }
+        _ => response,
     }
 }
 

@@ -20,7 +20,7 @@ nodeOs.homedir = () => process.env.HOME || nativeHomedir();
 
 // Child processes: Bun spawns children with the NATIVE (daemon) environment,
 // which is empty, and the daemon's cwd, not the Worker's `process.env`.
-// Extensions shelling out (`herdr`, `git`, `fleet-envelope`, ...) then ran
+// Extensions shelling out (`herdr`, `git`, ...) then ran
 // without HOME/PATH/HERDR_* and could hang the session. Default every spawn
 // to this session's env and cwd unless the caller passes its own; the cwd
 // follows host.ts's session state once it is loaded.

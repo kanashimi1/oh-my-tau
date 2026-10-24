@@ -113,9 +113,17 @@ pub async fn fresh_stored_key(
     )
     .await
     {
-        Some(c) => (Some(c.key), Some(c.id)),
+        Some(c) => (Some(request_key(provider, c.key, c.id)), Some(c.id)),
         None => (api_key, credential_id),
     }
+}
+
+/// The request key for a stored credential: the Cloud Code Assist providers (`google-gemini-cli`,
+/// `google-antigravity`) need the structured `{token, projectId, ...}` payload (TS
+/// `getOAuthApiKey`), not the bare bearer — with a bare token the envelope carries `project: ""`.
+fn request_key(provider: &str, bearer: String, id: i64) -> String {
+    omp_providers::auth::structured_key_by_id(&omp_providers::AgentDir::default(), provider, id)
+        .unwrap_or(bearer)
 }
 
 /// Whether a failed assistant message is a provider authentication failure (HTTP 401).
@@ -231,7 +239,7 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
                         let (context, options) = retry_inputs;
                         stream_once(
                             &model,
-                            Some(next.key),
+                            Some(request_key(&model.provider, next.key, next.id)),
                             service_tier,
                             headers,
                             context,

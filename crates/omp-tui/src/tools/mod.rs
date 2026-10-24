@@ -7,8 +7,8 @@
 //! tool inventory lives in omp-cli `src/tools/` (`bash`, `edit`, `read`,
 //! `write`, `search` (glob+grep), `find`, `task`, `web_search`, `ask`,
 //! `todo`, `think`, `mcp`, `lsp`, `checkpoint`, `jobs`, `eval`, `ast`,
-//! `wait`, `goal`); spec details per family are in
-//! `runs/omp-rust/tui-spec/tools*.md`.
+//! `wait`, `goal`); spec details per family follow the pi-tui
+//! tool renderers.
 //!
 //! Shared chrome (collapse/expand glyphs, elapsed-time spinner, exit-code
 //! badge) lives here: [`status_line`] is the `renderStatusLine` port and

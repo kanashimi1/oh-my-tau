@@ -123,6 +123,7 @@ impl DiffView {
     }
 
     /// Clamp the scroll so the last page is reachable but no further.
+    #[cfg(test)]
     fn clamp_scroll(&mut self, body: u16) {
         let max = self.rows.len().saturating_sub(body as usize) as u16;
         self.scroll = self.scroll.min(max);

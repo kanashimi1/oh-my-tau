@@ -345,6 +345,9 @@ pub struct App {
     /// Magic keywords disabled by `magicKeywords.*` (read at startup and on
     /// settings edits, never per keystroke); layered onto every theme.
     magic_off: u32,
+    /// Pinned global settings file (see [`App::set_settings_global`]); `None`
+    /// means the user's own config resolved through `HOME`.
+    settings_global: Option<Option<PathBuf>>,
 }
 
 impl App {
@@ -391,6 +394,7 @@ impl App {
             session_sources: Vec::new(),
             appearance: crate::theme::Appearance::Dark,
             cwd: cwd.to_path_buf(),
+            settings_global: None,
             presentation: None,
             clipboard_rx: None,
             pending_large_paste: None,
@@ -400,11 +404,29 @@ impl App {
         }
     }
 
+    /// Pin the global settings file this app reads (`None` = built-in
+    /// defaults only), instead of resolving the user's config through the
+    /// process-global `HOME`. Lets embedders and tests stay independent of
+    /// ambient environment; project settings under `<cwd>/.omp` still layer on.
+    pub fn set_settings_global(&mut self, global: Option<PathBuf>) {
+        self.settings_global = Some(global);
+    }
+
+    /// Load settings from the pinned source, else the user's config.
+    fn load_settings(&self) -> omp_settings::Settings {
+        match &self.settings_global {
+            None => omp_settings::Settings::load(&self.cwd),
+            Some(global) => {
+                omp_settings::Settings::load_from(global.as_deref(), &self.cwd.join(".omp"))
+            }
+        }
+    }
+
     /// Turn on ghost-text word completion per `spelling.autocomplete`: the
     /// engine loads on a background thread, so the first frame never waits on it.
     pub fn start_word_completion(&mut self) {
         self.word_started = true;
-        let settings = omp_settings::Settings::load(&self.cwd);
+        let settings = self.load_settings();
         self.apply_word_completion(&settings);
     }
 
@@ -621,7 +643,7 @@ impl App {
     ///
     /// The configured theme failed to load; the current theme is kept.
     pub fn load_settings_theme(&mut self) -> Result<(), crate::theme::ThemeError> {
-        let settings = omp_settings::Settings::load(&self.cwd);
+        let settings = self.load_settings();
         let glyphs = settings
             .get_string("symbolPreset")
             .filter(|p| crate::theme::loader::is_valid_symbol_preset(p))
@@ -663,7 +685,7 @@ impl App {
     /// (`display.showTokenUsage`, `display.showTurnTime`,
     /// `read.toolResultPreview`; TS reads them per event from settings).
     fn reload_display_prefs(&mut self) {
-        let settings = omp_settings::Settings::load(&self.cwd);
+        let settings = self.load_settings();
         let flag = |id: &str| settings.get_bool(id).unwrap_or(false);
         self.messages.set_display_prefs(crate::chat::DisplayPrefs {
             show_token_usage: flag("display.showTokenUsage"),
@@ -924,7 +946,7 @@ impl App {
                     .set_state(TitleState::Idle, Some(&self.title_label));
                 self.notify_turn_settled(false);
             }
-            AppEvent::PromptResult { success, error, .. } => {
+            AppEvent::PromptResult { success, .. } => {
                 if !success {
                     // The transcript row is drawn by `messages.apply` below;
                     // here only the title and the settle notification.
@@ -1103,7 +1125,7 @@ impl App {
     /// settle rings `done` with "Complete" unless `completion.notify` is off. The title is the
     /// session name, else `omp`.
     fn notify_turn_settled(&mut self, failed: bool) {
-        let settings = omp_settings::Settings::load(&self.cwd);
+        let settings = self.load_settings();
         let on = |id: &str| settings.get_string(id).as_deref() != Some("off");
         let Some((body, kind)) = turn_notification(
             failed,
@@ -1402,7 +1424,7 @@ impl App {
     /// `paste.largeMenuThreshold` from settings (TS `cfgPasteLargeMenuThreshold`,
     /// default 100; `0` disables the menu so large pastes always collapse).
     fn large_paste_menu_threshold(&self) -> usize {
-        omp_settings::Settings::load(&self.cwd)
+        self.load_settings()
             .get_number("paste.largeMenuThreshold")
             .map_or(100, |v| if v <= 0.0 { 0 } else { v as usize })
     }
@@ -1951,7 +1973,7 @@ impl App {
             }
             id if id.starts_with("magicKeywords.") => {
                 self.magic_off =
-                    crate::magic::disabled_mask(&omp_settings::Settings::load(&self.cwd));
+                    crate::magic::disabled_mask(&self.load_settings());
                 let theme = self.theme.clone();
                 self.set_theme(theme);
             }
@@ -1969,7 +1991,7 @@ impl App {
             | "tui.vimModeDisplay"
             | "spelling.autocomplete"
             | "autocompleteMaxVisible" => {
-                let settings = omp_settings::Settings::load(&self.cwd);
+                let settings = self.load_settings();
                 self.reload_composer(&settings);
             }
             _ => {}
@@ -2433,10 +2455,15 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
     use serde_json::json;
-    use std::sync::LazyLock;
 
+    /// An app pinned to built-in default settings: independent of the
+    /// process-global `HOME`, which the temp-HOME tests mutate.
     fn app() -> App {
-        App::new("zai/glm-5.3-flash".into(), Path::new("/repo"))
+        let mut app = App::new("zai/glm-5.3-flash".into(), Path::new("/repo"));
+        app.set_settings_global(None);
+        // Capture deliveries instead of ringing the real terminal / desktop.
+        app.set_notify_hook(Arc::new(|_| {}));
+        app
     }
 
     fn port() -> FakePort {
@@ -2599,7 +2626,7 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let home = with_temp_home("model-pick");
         {
-            let mut app = app();
+            let mut app = home_app();
             let port = port();
             app.configure(
                 vec![ModelEntry::new("zai", "glm", Some(128_000))],
@@ -2777,9 +2804,13 @@ mod tests {
         assert!(s.contains("hotkeys"), "{s}");
     }
 
-    /// Serialize the HOME-mutating settings tests (env is process-global).
-    static HOME_LOCK: LazyLock<parking_lot::Mutex<()>> =
-        LazyLock::new(|| parking_lot::Mutex::new(()));
+    use crate::test_support::HOME_LOCK;
+
+    /// An app reading the user's config through `HOME`, for the temp-HOME
+    /// tests (call only while holding [`HOME_LOCK`]).
+    fn home_app() -> App {
+        App::new("zai/glm-5.3-flash".into(), Path::new("/repo"))
+    }
 
     fn with_temp_home(test: &str) -> PathBuf {
         let dir =
@@ -2803,7 +2834,7 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let home = with_temp_home("bool");
         {
-            let mut app = app();
+            let mut app = home_app();
             let port = port();
             type_text(&mut app, &port, "/settings");
             assert!(enter(&mut app, &port));
@@ -2848,7 +2879,7 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let home = with_temp_home("theme");
         {
-            let mut app = app();
+            let mut app = home_app();
             let port = port();
             app.set_appearance(crate::theme::Appearance::Dark);
             type_text(&mut app, &port, "/settings");
@@ -2909,7 +2940,7 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let home = with_temp_home("all-rows");
         {
-            let mut app = app();
+            let mut app = home_app();
             let port = port();
             type_text(&mut app, &port, "/settings");
             assert!(enter(&mut app, &port));
@@ -3015,7 +3046,7 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let home = with_temp_home("shape");
         {
-            let mut app = app();
+            let mut app = home_app();
             let port = port();
             assert_eq!(app.editor.shape(), crate::composer::ComposerShape::Band);
             type_text(&mut app, &port, "/settings");
@@ -3051,7 +3082,7 @@ mod tests {
         let old_home = std::env::var_os("HOME");
         let home = with_temp_home("statusline");
         {
-            let mut app = app();
+            let mut app = home_app();
             let port = port();
             type_text(&mut app, &port, "/settings");
             assert!(enter(&mut app, &port));
@@ -4344,8 +4375,14 @@ mod paste_tests {
     use std::path::Path;
     use std::time::Instant;
 
+    /// An app pinned to built-in default settings: independent of the
+    /// process-global `HOME`, which the temp-HOME tests mutate.
     fn app() -> App {
-        App::new("zai/glm-5.3-flash".into(), Path::new("/repo"))
+        let mut app = App::new("zai/glm-5.3-flash".into(), Path::new("/repo"));
+        app.set_settings_global(None);
+        // Capture deliveries instead of ringing the real terminal / desktop.
+        app.set_notify_hook(Arc::new(|_| {}));
+        app
     }
 
     fn port() -> super::super::port::FakePort {
@@ -4431,7 +4468,8 @@ mod paste_tests {
         let mut app = app();
         app.apply_clipboard_outcome(ClipboardOutcome::Text("x".repeat(1200)));
         assert_eq!(app.editor.text(), "[Text #1, paste.md]");
-        app.editor.take();
+        // Discard the pasted chip so the next outcome starts from an empty editor.
+        let _ = app.editor.take();
         app.apply_clipboard_outcome(ClipboardOutcome::Empty);
         assert_eq!(app.editor.text(), "", "empty clipboard inserts nothing");
     }

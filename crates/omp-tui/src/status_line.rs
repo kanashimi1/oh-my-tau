@@ -530,7 +530,6 @@ impl StatusLine {
         let gauge_input = gauge::GaugeInput {
             percent: self.context_percent,
             window: self.context_window,
-            tokens: self.context_tokens,
             mode: self.config.context_line,
             compaction_pct: self.compaction_pct,
             speculation_pct: self.speculation_pct,
@@ -559,7 +558,6 @@ impl Component for StatusLine {
         let gauge_input = gauge::GaugeInput {
             percent: self.context_percent,
             window: self.context_window,
-            tokens: self.context_tokens,
             mode: self.config.context_line,
             compaction_pct: self.compaction_pct,
             speculation_pct: self.speculation_pct,

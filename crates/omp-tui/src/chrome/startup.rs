@@ -100,8 +100,7 @@ impl StartupCache {
 mod tests {
     use super::*;
 
-    /// The tests share the process `HOME`; serialize them.
-    static HOME_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    use crate::test_support::HOME_LOCK;
 
     fn with_home(tag: &str, f: impl FnOnce()) {
         let dir = std::env::temp_dir().join(format!("omp-tui-startup-{tag}"));
@@ -123,7 +122,7 @@ mod tests {
         with_home("rt", || {
             let cache = StartupCache {
                 model: Some("zai/glm-5.3-flash".into()),
-                cwd: Some("/home/kaneki/fleet-split/omp-rs".into()),
+                cwd: Some("/home/user/omrs".into()),
                 session_name: Some("conv".into()),
                 thinking_level: Some("medium".into()),
             };

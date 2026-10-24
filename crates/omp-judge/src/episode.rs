@@ -1,4 +1,4 @@
-//! Port of `runs/laya-pool/build_traj_outcome.py`: session entries -> episodes -> flat
+//! Port of the Python `build_traj_outcome.py`: session entries -> episodes -> flat
 //! `state` string + objective counters. One episode = one real human user message and all
 //! agent steps until the next real human message (a subagent session is one episode).
 

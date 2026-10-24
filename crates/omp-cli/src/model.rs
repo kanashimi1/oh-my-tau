@@ -5,6 +5,7 @@
 use anyhow::{anyhow, Result};
 use pa_agent::types::ThinkingLevel;
 use serde_json::json;
+use std::future::Future;
 
 pub struct Selected {
     pub model: pa_types::ai::Model,
@@ -19,8 +20,8 @@ fn map_level(l: pa_types::ai::ModelThinkingLevel) -> ThinkingLevel {
     crate::adapter::map_thinking_level(l)
 }
 
-async fn from_providers(reference: &str) -> Result<Selected> {
-    let r = omp_providers::resolve_async(reference.to_string()).await?;
+async fn from_providers(reference: String) -> Result<Selected> {
+    let r = omp_providers::resolve_async(reference).await?;
     let headers = (!r.headers.is_empty()).then(|| r.headers.iter().cloned().collect());
     Ok(Selected {
         // No explicit level: reasoning models default to medium (some, e.g. zai
@@ -64,7 +65,7 @@ pub async fn select(model_ref: Option<&str>) -> Result<Selected> {
             .map(str::to_string)
             .or(env_model)
             .unwrap_or_else(|| "default".to_string());
-        return from_providers(&reference).await;
+        return select_chain(&reference).await;
     }
     let reference = model_ref
         .map(str::to_string)
@@ -97,6 +98,61 @@ pub async fn select(model_ref: Option<&str>) -> Result<Selected> {
         thinking: thinking.unwrap_or(ThinkingLevel::Off),
         headers: None,
         credential_id: None,
+    })
+}
+
+/// Ordered candidates of a model reference (TS `normalizeModelPatternList`):
+/// a comma-separated reference is a priority list, first entry first. A
+/// leading `@` marks a role alias (TS `MODEL_ROLE_ALIAS_PREFIX`); the bare
+/// role name is what `modelRoles` lookup takes, so `@smol:high` becomes
+/// `smol:high`.
+fn model_candidates(reference: &str) -> Vec<String> {
+    reference
+        .split(',')
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
+        .map(|candidate| candidate.strip_prefix('@').unwrap_or(candidate))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Resolve one reference by walking its ordered candidate list: the first
+/// entry whose provider has credentials wins — TS `resolveModelOverride`
+/// skips models whose provider cannot be called — and an entry that resolves
+/// without credentials is used only when no credentialed entry resolved, so
+/// keyless-by-design local providers stay selectable. When nothing resolved,
+/// the first failure surfaces (the requested model is never silently
+/// substituted with the config default).
+async fn select_chain(reference: &str) -> Result<Selected> {
+    select_chain_with(reference, from_providers).await
+}
+
+/// [`select_chain`] with the per-candidate resolver injected (tests substitute
+/// a fake; production resolves through [`from_providers`]).
+async fn select_chain_with<F, Fut>(reference: &str, resolve: F) -> Result<Selected>
+where
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Result<Selected>>,
+{
+    let mut resolved: Option<Selected> = None;
+    let mut failure: Option<anyhow::Error> = None;
+    for candidate in model_candidates(reference) {
+        match resolve(candidate).await {
+            Ok(selected) if selected.api_key.is_some() => return Ok(selected),
+            Ok(selected) => {
+                if resolved.is_none() {
+                    resolved = Some(selected);
+                }
+            }
+            Err(error) => {
+                if failure.is_none() {
+                    failure = Some(error);
+                }
+            }
+        }
+    }
+    resolved.ok_or_else(|| {
+        failure.unwrap_or_else(|| anyhow!("no model reference in {reference:?}"))
     })
 }
 
@@ -414,6 +470,90 @@ mod tests {
         "tokenizer",
         "supportsComputerUse",
     ];
+
+    #[test]
+    fn model_reference_splits_into_ordered_candidates() {
+        assert_eq!(
+            model_candidates("anthropic/claude-haiku-5-5, kimi-code/kimi-k2.6"),
+            vec![
+                "anthropic/claude-haiku-5-5".to_string(),
+                "kimi-code/kimi-k2.6".to_string()
+            ]
+        );
+        assert_eq!(
+            model_candidates("zai/glm-5.3-flash:high"),
+            ["zai/glm-5.3-flash:high".to_string()]
+        );
+        assert!(model_candidates("  ,  ,").is_empty());
+    }
+
+    /// A role alias keeps its `:level` suffix and drops the `@` marker
+    /// (`@smol` -> the `modelRoles.smol` selector, `@default` -> the default
+    /// role).
+    #[test]
+    fn model_reference_expands_role_aliases() {
+        assert_eq!(
+            model_candidates("@smol:high, @default"),
+            vec!["smol:high".to_string(), "default".to_string()]
+        );
+    }
+
+    /// A `--model` chain walks its entries in order and skips entries whose
+    /// provider has no credentials (TS `resolveModelOverride`).
+    #[tokio::test]
+    async fn chain_prefers_the_first_credentialed_candidate() {
+        async fn resolve(reference: String) -> Result<Selected> {
+            match reference.as_str() {
+                "local/keyless" => Ok(fake_selected("keyless", None)),
+                "zai/glm-5.3-flash" => Ok(fake_selected("glm", Some("key"))),
+                other => Err(anyhow!("model '{other}' not found")),
+            }
+        }
+        // Credentialed entry wins even when a keyless one comes first.
+        let selected = select_chain_with("local/keyless, zai/glm-5.3-flash", resolve)
+            .await
+            .expect("chain resolves");
+        assert_eq!(selected.model.id, "glm");
+        assert_eq!(selected.api_key.as_deref(), Some("key"));
+        // No credentialed entry: the first resolvable entry is kept so
+        // keyless-by-design local providers stay selectable.
+        let selected = select_chain_with("local/keyless, nope/model", resolve)
+            .await
+            .expect("chain resolves");
+        assert_eq!(selected.model.id, "keyless");
+        assert_eq!(selected.api_key, None);
+        // Nothing resolved: the first failure surfaces, never a silent
+        // substitution.
+        let error = match select_chain_with("nope/one, nope/two", resolve).await {
+            Ok(selected) => panic!("unresolvable chain resolved {}", selected.model.id),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("nope/one"), "{error}");
+        assert!(select_chain_with(" , ", resolve).await.is_err());
+    }
+
+    fn fake_selected(id: &str, api_key: Option<&str>) -> Selected {
+        let model: pa_types::ai::Model = serde_json::from_value(json!({
+            "id": id,
+            "name": id,
+            "api": "openai-completions",
+            "provider": "local",
+            "baseUrl": "http://127.0.0.1:1/v1",
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 1_000,
+            "maxTokens": 100,
+        }))
+        .expect("fake model");
+        Selected {
+            model,
+            api_key: api_key.map(str::to_owned),
+            thinking: ThinkingLevel::Off,
+            headers: None,
+            credential_id: None,
+        }
+    }
 
     /// Reference: untyped `Value` parse of the catalog (the pre-fix implementation),
     /// reduced to the `CATALOG_EXTRA_KEYS` fields. Must cover every provider/id of the

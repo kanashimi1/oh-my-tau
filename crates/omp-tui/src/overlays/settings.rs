@@ -520,12 +520,6 @@ struct MouseMap {
     menu: Vec<(u16, usize)>,
 }
 
-impl MouseMap {
-    fn clear(&mut self) {
-        *self = Self::default();
-    }
-}
-
 /// The `/settings` overlay: fullscreen tab bar + section sidebar + setting
 /// rows + description + live Preview + key hints (TS `SettingsSelector`).
 #[derive(Debug, Clone)]

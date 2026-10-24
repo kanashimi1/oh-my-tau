@@ -341,7 +341,7 @@ mod tests {
             return Some(std::path::PathBuf::from(p));
         }
         let default = std::path::Path::new(
-            "/home/kaneki/fleet-split/runs/omp-rust/webui-port/golden/_stats.full.db",
+            "/home/user/omrs-fixtures/stats/golden/_stats.full.db",
         );
         default.exists().then(|| default.to_path_buf())
     }

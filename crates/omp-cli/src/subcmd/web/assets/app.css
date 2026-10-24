@@ -285,9 +285,9 @@ button.wide { width: 100%; }
 
 /* ── brand ─────────────────────────────────────────────────────────────── */
 .brand { display: flex; align-items: center; gap: 9px; }
-.tau { width: 22px; height: 18px; display: block; }
-.tau.big { width: 100px; height: 80px; filter: drop-shadow(0 0 22px rgba(255, 92, 168, .35)); }
-.wordmark { font-weight: 800; letter-spacing: 2.5px; background: linear-gradient(90deg, #ff5ca8, #50dcff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.tau { width: 22px; height: 21px; display: block; }
+.tau.big { width: 96px; height: 92px; filter: drop-shadow(0 0 24px rgba(186, 92, 255, .35)); }
+.wordmark { font-weight: 800; letter-spacing: 2.5px; background: linear-gradient(90deg, oklch(0.7 0.24 340), oklch(0.62 0.21 295), oklch(0.81 0.14 200)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .wordmark.big { font-size: 40px; margin: 14px 0 0; letter-spacing: 8px; }
 .katakana { font-size: 12px; letter-spacing: 3px; color: var(--fg-faint); margin-bottom: 10px; }
 .logo.big { display: flex; justify-content: center; }

@@ -1,4 +1,4 @@
-"""Task scoring (port of runs/clm-blackbox/score.py; t1/t2/t3 rules unchanged)."""
+"""Task scoring (port of the clm-blackbox scorer; t1/t2/t3 rules unchanged)."""
 import re
 
 

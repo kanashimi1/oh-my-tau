@@ -11,6 +11,7 @@ members = [
     "vendor/pi-walker",
     "vendor/pi-vfs",
     "vendor/pi-predict",
+    "vendor/laya-ort",
     "crates/*",
 ]
 # ws_ckpt checkpoint stores (not crates).

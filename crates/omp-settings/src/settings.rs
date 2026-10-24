@@ -728,15 +728,9 @@ mod tests {
             let base =
                 std::env::temp_dir().join(format!("omp-settings-test-{}", std::process::id()));
             std::fs::create_dir_all(&base).unwrap();
-            let old = std::env::var_os("HOME");
             std::env::set_var("HOME", &base);
             std::env::remove_var("OMP_PROFILE");
             Self(base)
-        }
-        fn restore(&self) {
-            // Restoring the previous HOME is handled by the caller via
-            // save/restore in each test; kept simple: tests run under lock.
-            let _ = self;
         }
     }
     impl Drop for TempHome {
