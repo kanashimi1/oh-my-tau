@@ -31,6 +31,40 @@ fn text(r: &AgentToolResult) -> String {
     content.text.clone()
 }
 
+/// Prerequisite gate for tests that need the Bun JS runtime: prints the one
+/// skip line and returns false when `bun` is missing, so a clean machine
+/// (no bun) stays green while machines that have bun run the real test.
+fn require_bun(test: &str) -> bool {
+    if bun_on_path() {
+        return true;
+    }
+    eprintln!(
+        "skipping {test}: bun is not on PATH (install bun from https://bun.sh and make the `bun` executable resolve on PATH)"
+    );
+    false
+}
+
+/// `bun` resolvable on PATH: each PATH entry is probed for an executable
+/// file named `bun` (nothing is spawned).
+fn bun_on_path() -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| is_executable(dir.join("bun")))
+}
+
+#[cfg(unix)]
+fn is_executable(path: std::path::PathBuf) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(&path)
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: std::path::PathBuf) -> bool {
+    std::fs::metadata(&path).is_ok_and(|m| m.is_file())
+}
+
 #[test]
 fn schema_matches_ts_reference() {
     let s = schema();
@@ -115,6 +149,9 @@ async fn python_failed_cell_rolls_back_new_names() {
 
 #[tokio::test]
 async fn reset_wipes_only_the_requested_language() {
+    if !require_bun("reset_wipes_only_the_requested_language") {
+        return;
+    }
     let env = test_env("reset");
     run(&env, json!({"language": "py", "code": "p = 1"})).await;
     run(&env, json!({"language": "js", "code": "globalThis.j = 2"})).await;
@@ -201,6 +238,9 @@ async fn python_prelude_tool_bridge_reaches_session_tools() {
 
 #[tokio::test]
 async fn js_state_persists_and_top_level_await_works() {
+    if !require_bun("js_state_persists_and_top_level_await_works") {
+        return;
+    }
     let env = test_env("js-state");
     run(
         &env,
@@ -225,6 +265,9 @@ async fn js_state_persists_and_top_level_await_works() {
 
 #[tokio::test]
 async fn js_error_and_timeout_annotations_match_omp() {
+    if !require_bun("js_error_and_timeout_annotations_match_omp") {
+        return;
+    }
     let env = test_env("js-timeout");
     let r = run(
         &env,

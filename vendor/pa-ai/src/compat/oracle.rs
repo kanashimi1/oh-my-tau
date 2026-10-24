@@ -1,15 +1,26 @@
 //! Oracle test: the Rust resolver must reproduce TS `resolveModelPolicy` for every (provider,
 //! model) in a copy of `~/.omp/agent/models.db` plus the bundled generated catalog. The dump is
-//! produced by `runs/omp-rust/compat-oracle/oracle.ts` (re-run it to refresh).
+//! produced by `scripts/compat-oracle/oracle.ts` (re-run it to refresh).
 
 use serde_json::Value;
 
 use super::resolve::{resolve_model_policy, ModelSpec};
 
-const DUMP: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../runs/omp-rust/compat-oracle/dump.jsonl"
-);
+/// Path of a compat-oracle fixture: `$OMP_COMPAT_ORACLE_DIR` if set, else `<repo
+/// root>/target/compat-oracle/` (where `scripts/compat-oracle/*.ts` writes), else the legacy
+/// `<repo root>/runs/omp-rust/compat-oracle/`. `None` when the file exists in none of them.
+fn oracle_file(name: &str) -> Option<std::path::PathBuf> {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("pa-ai lives at <repo>/vendor/pa-ai");
+    std::env::var_os("OMP_COMPAT_ORACLE_DIR")
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .chain([repo.join("target/compat-oracle"), repo.join("runs/omp-rust/compat-oracle")])
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+}
 
 fn spec_of(v: &Value) -> ModelSpec {
     let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
@@ -45,8 +56,18 @@ fn diff(a: &Value, b: &Value) -> String {
 
 #[test]
 fn resolver_matches_ts_for_every_catalog_and_cache_row() {
-    let text = std::fs::read_to_string(DUMP).unwrap_or_else(|e| {
-        panic!("{DUMP}: {e} — run `cd vendor-src/oh-my-pi && bun ../../runs/omp-rust/compat-oracle/oracle.ts`")
+    let Some(dump) = oracle_file("dump.jsonl") else {
+        eprintln!(
+            "skipping resolver_matches_ts_for_every_catalog_and_cache_row: dump.jsonl not found \
+             (generate with bun scripts/compat-oracle/oracle.ts, see scripts/compat-oracle/README.md)"
+        );
+        return;
+    };
+    let text = std::fs::read_to_string(&dump).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — regenerate with `bun scripts/compat-oracle/oracle.ts`",
+            dump.display()
+        )
     });
     let (mut total, mut mismatches) = (0usize, Vec::<String>::new());
     for line in text.lines().filter(|l| !l.is_empty()) {

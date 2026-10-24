@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use omp_eval::js::{default_runtime, JsKernel};
 use omp_eval::{CellStatus, ExecOptions, HostBridge, PythonKernel};
 use serde_json::{json, Value};
+mod common;
 
 #[derive(Default)]
 struct Host {
@@ -334,10 +335,10 @@ print(rubric_rank([{"score": c["score"], "verified": c["verified"]} for c in r.c
 fn js_combinators_types_termination_and_rubric_order() {
     let dir = std::env::temp_dir().join(format!("omp-eval-comb-js-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let Ok(k) = JsKernel::start(default_runtime(), &dir) else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_combinators_types_termination_and_rubric_order") {
         return;
-    };
+    }
+    let k = JsKernel::start(default_runtime(), &dir).expect("JS kernel starts");
     let h = Host::default();
     let exec = |code: &str| {
         let r = k

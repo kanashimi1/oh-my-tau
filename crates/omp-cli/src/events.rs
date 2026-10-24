@@ -827,6 +827,49 @@ pub fn todo_auto_clear_frame() -> Value {
 mod tests {
     use super::*;
 
+    /// Prerequisites for the real-host test below: `bun` on PATH plus the
+    /// checked-in host script and fixture. Returns the skip reason when one
+    /// is missing, `None` when the real test can run.
+    fn missing_ext_host_prereq(root: &std::path::Path) -> Option<String> {
+        if !bun_on_path() {
+            return Some(
+                "bun is not on PATH (install bun from https://bun.sh and make the `bun` executable resolve on PATH)"
+                    .to_string(),
+            );
+        }
+        if !root.join("ext-host/host.ts").is_file() {
+            return Some("ext-host/host.ts is missing (test needs a full repository checkout)".into());
+        }
+        if !root.join("crates/omp-ext/tests/fixtures/mutating.ts").is_file() {
+            return Some(
+                "crates/omp-ext/tests/fixtures/mutating.ts is missing (test needs a full repository checkout)"
+                    .into(),
+            );
+        }
+        None
+    }
+
+    /// `bun` resolvable on PATH: each PATH entry probed for an executable
+    /// file named `bun` (nothing is spawned).
+    fn bun_on_path() -> bool {
+        let Some(path) = std::env::var_os("PATH") else {
+            return false;
+        };
+        std::env::split_paths(&path).any(|dir| is_executable(dir.join("bun")))
+    }
+
+    #[cfg(unix)]
+    fn is_executable(path: std::path::PathBuf) -> bool {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(&path)
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+
+    #[cfg(not(unix))]
+    fn is_executable(path: std::path::PathBuf) -> bool {
+        std::fs::metadata(&path).is_ok_and(|m| m.is_file())
+    }
+
     /// Host chains of the Rust mirror, keyed by encoder (`delta.s`).
     type Chains = std::collections::HashMap<u64, (u64, u64, Value)>;
 
@@ -1295,6 +1338,10 @@ mod tests {
     #[tokio::test]
     async fn interleaved_encoders_stay_exact_on_the_real_host() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if let Some(what) = missing_ext_host_prereq(&root) {
+            eprintln!("skipping interleaved_encoders_stay_exact_on_the_real_host: {what}");
+            return;
+        }
         let mut cfg = omp_ext::HostConfig::new(root.join("ext-host/host.ts"));
         cfg.handler_timeout_ms = Some(5_000);
         let host = omp_ext::ExtHost::spawn(&cfg).await.unwrap();

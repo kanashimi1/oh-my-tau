@@ -10,6 +10,8 @@ use omp_ext::{ExtHost, HostConfig, HostMessage};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+mod common;
+
 async fn loaded() -> Arc<ExtHost> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut cfg = HostConfig::new(root.join("../../ext-host/host.ts"));
@@ -69,6 +71,9 @@ async fn assert_wire(
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn retry_compaction_goal_approval_and_user_shell_payloads() {
+    if common::bun_missing("retry_compaction_goal_approval_and_user_shell_payloads") {
+        return;
+    }
     let host = loaded().await;
     let mut rx = host.take_incoming().unwrap();
     let s = String::from;
@@ -235,6 +240,9 @@ async fn retry_compaction_goal_approval_and_user_shell_payloads() {
 
 #[tokio::test]
 async fn assistant_message_rewrite_and_user_shell_results_aggregate() {
+    if common::bun_missing("assistant_message_rewrite_and_user_shell_results_aggregate") {
+        return;
+    }
     let host = loaded().await;
     let message = json!({"role":"assistant","content":[
         {"type":"thinking","thinking":"hm"},

@@ -560,7 +560,7 @@ mod tests {
     /// real 5618-model `models.json`, and the typed [`Catalog`] must agree exactly.
     #[test]
     fn catalog_matches_value_reference_parse() {
-        let Some(path) = catalog_path() else {
+        let Some(path) = catalog_path().filter(|p| p.is_file()) else {
             eprintln!("catalog not installed; skipping");
             return;
         };

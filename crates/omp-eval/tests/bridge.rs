@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use omp_eval::js::{default_runtime, JsKernel};
 use omp_eval::{CancelToken, CellStatus, ExecOptions, HostBridge, PythonKernel};
 use serde_json::{json, Value};
+mod common;
 
 /// Records every call/notify; `echo` answers its args, `fail` errors,
 /// `slow` sleeps before answering.
@@ -49,10 +50,10 @@ fn py(tag: &str) -> PythonKernel {
     PythonKernel::start("python3", &dir).expect("kernel starts")
 }
 
-fn js(tag: &str) -> Option<JsKernel> {
+fn js(tag: &str) -> JsKernel {
     let dir = std::env::temp_dir().join(format!("omp-eval-bridge-js-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("cwd");
-    JsKernel::start(default_runtime(), &dir).ok()
+    JsKernel::start(default_runtime(), &dir).expect("JS kernel starts (bun on PATH)")
 }
 
 fn run<'a>(bridge: &'a dyn HostBridge) -> ExecOptions<'a> {
@@ -261,10 +262,10 @@ fn py_omp_eval_txn_zero_keeps_ts_behavior() {
 
 #[test]
 fn js_host_call_round_trip_and_cancel() {
-    let Some(k) = js("call") else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_host_call_round_trip_and_cancel") {
         return;
-    };
+    }
+    let k = js("call");
     let b = Recorder::default();
     let r = k
         .execute_with("await __ompHostCall('echo', { x: 1 })", run(&b))
@@ -300,10 +301,10 @@ fn js_host_call_round_trip_and_cancel() {
 
 #[test]
 fn js_failed_cell_rolls_back_new_global_names() {
-    let Some(k) = js("txn") else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_failed_cell_rolls_back_new_global_names") {
         return;
-    };
+    }
+    let k = js("txn");
     let r = k
         .execute("globalThis.keep = 'original'\nkeep", None)
         .expect("cell");
@@ -328,10 +329,10 @@ fn js_failed_cell_rolls_back_new_global_names() {
 
 #[test]
 fn js_preludes_install_helpers() {
-    let Some(k) = js("prelude") else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_preludes_install_helpers") {
         return;
-    };
+    }
+    let k = js("prelude");
     let r = k
         .execute(
             "[read, write, log, phase, env, output, wait, completion, judge, agent].every(f => typeof f === 'function') && typeof tool === 'function'",

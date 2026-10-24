@@ -5,6 +5,8 @@ use omp_ext::hooks::{self, ExtHooks};
 use omp_ext::{ExtHost, HostConfig, HostMessage};
 use serde_json::{json, Value};
 
+mod common;
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -59,6 +61,9 @@ async fn loaded() -> (
 
 #[tokio::test]
 async fn gates_rewrites_and_host_survives_failing_handlers() {
+    if common::bun_missing("gates_rewrites_and_host_survives_failing_handlers") {
+        return;
+    }
     let (host, mut rx) = loaded().await;
 
     // block wins
@@ -148,6 +153,9 @@ async fn gates_rewrites_and_host_survives_failing_handlers() {
 /// is irrelevant here — this test always uses the shared daemon).
 #[tokio::test]
 async fn shared_daemon_sessions_are_isolated() {
+    if common::bun_missing("shared_daemon_sessions_are_isolated") {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("omp-ext-shared-iso-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("ext.sock");
@@ -258,6 +266,9 @@ fn daemon_pids(sock: &std::path::Path) -> Vec<u32> {
 /// extensions re-load, and emits/hooks fire again — the next prompt works.
 #[tokio::test]
 async fn shared_daemon_death_falls_back_to_private_host() {
+    if common::bun_missing("shared_daemon_death_falls_back_to_private_host") {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("omp-ext-shared-death-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("ext.sock");
@@ -377,14 +388,21 @@ async fn shared_daemon_death_falls_back_to_private_host() {
 
 #[tokio::test]
 async fn tools_and_commands() {
+    if common::bun_missing("tools_and_commands") {
+        return;
+    }
     let (host, mut rx) = loaded().await;
     let tools = host.list_tools().await.unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "fx_echo");
-    assert_eq!(
-        tools[0].parameters["type"], "object",
-        "typebox schema from api.typebox"
-    );
+    // `api.typebox` comes from the installed omp TS package; without it the
+    // fixture registers the tool with a plain (schema-less) parameters object.
+    if !common::omp_pkg_missing("tools_and_commands") {
+        assert_eq!(
+            tools[0].parameters["type"], "object",
+            "typebox schema from api.typebox"
+        );
+    }
     let r = host
         .call_tool("fx_echo", "c1", json!({"text":"x"}), None)
         .await
@@ -412,6 +430,9 @@ async fn tools_and_commands() {
 /// emit; the others still run, and the next emit without it runs everything.
 #[tokio::test]
 async fn context_emit_skips_listed_extensions() {
+    if common::bun_missing("context_emit_skips_listed_extensions") {
+        return;
+    }
     use pa_agent::types::AgentMessage;
     let host = ExtHost::spawn(&config()).await.unwrap();
     let r = host
@@ -454,6 +475,9 @@ async fn context_emit_skips_listed_extensions() {
 
 #[tokio::test]
 async fn hook_points_map_to_pa_agent() {
+    if common::bun_missing("hook_points_map_to_pa_agent") {
+        return;
+    }
     use pa_agent::abort::AbortSignal;
     let (host, _rx) = loaded().await;
     let hooks = ExtHooks::new(host.clone());
@@ -499,6 +523,9 @@ impl pa_agent::types::AgentTool for BashTool {
 
 #[tokio::test]
 async fn ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop() {
+    if common::bun_missing("ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop") {
+        return;
+    }
     use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
     use pa_agent::scripted::ScriptedProvider;
     use pa_agent::types::{AgentMessage, Message, ToolResultContent, UsageCost};
@@ -572,6 +599,9 @@ async fn ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop
 /// equals the message a full frame would carry.
 #[tokio::test]
 async fn message_update_deltas_are_isolated_from_handler_mutations() {
+    if common::bun_missing("message_update_deltas_are_isolated_from_handler_mutations") {
+        return;
+    }
     let host = ExtHost::spawn(&config()).await.unwrap();
     let r = host
         .load(Some(&[fixture("mutating.ts")]), None, "/tmp", None)
@@ -625,6 +655,9 @@ async fn message_update_deltas_are_isolated_from_handler_mutations() {
 /// core's answer, which only comes once both returned -- a deadlock.)
 #[tokio::test]
 async fn blocked_nowait_handler_wakes_every_parked_emit() {
+    if common::bun_missing("blocked_nowait_handler_wakes_every_parked_emit") {
+        return;
+    }
     let mut cfg = config();
     cfg.handler_timeout_ms = Some(30_000);
     let host = ExtHost::spawn(&cfg).await.unwrap();
@@ -667,6 +700,9 @@ async fn blocked_nowait_handler_wakes_every_parked_emit() {
 /// Many clients racing to be first start exactly one daemon (start lock).
 #[tokio::test]
 async fn concurrent_first_clients_start_one_daemon() {
+    if common::bun_missing("concurrent_first_clients_start_one_daemon") {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("omp-ext-shared-race-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("ext.sock");
@@ -697,6 +733,9 @@ async fn concurrent_first_clients_start_one_daemon() {
 /// shared daemon.
 #[tokio::test]
 async fn shared_daemon_sessions_get_their_own_env() {
+    if common::bun_missing("shared_daemon_sessions_get_their_own_env") {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("omp-ext-shared-env-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("ext.sock");
@@ -751,6 +790,9 @@ export default function (pi: any): void {
 ///   and the daemon's cwd instead of the session's.
 #[tokio::test]
 async fn shared_daemon_delivers_big_frames_and_spawns_with_session_env() {
+    if common::bun_missing("shared_daemon_delivers_big_frames_and_spawns_with_session_env") {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("omp-ext-shared-big-{}", std::process::id()));
     let work = dir.join("work");
     std::fs::create_dir_all(&work).unwrap();

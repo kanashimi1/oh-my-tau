@@ -10,6 +10,8 @@ use omp_ext::{ExtHost, HostConfig, HostMessage};
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+mod common;
+
 fn config() -> HostConfig {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut cfg = HostConfig::new(root.join("../../ext-host/host.ts"));
@@ -73,6 +75,9 @@ async fn assert_wire(
 
 #[tokio::test]
 async fn observed_events_reach_extensions_with_omp_payloads() {
+    if common::bun_missing("observed_events_reach_extensions_with_omp_payloads") {
+        return;
+    }
     let host = loaded().await;
     let mut rx = host.take_incoming().unwrap();
     let msg = json!({"role":"user","content":"hi","timestamp":1});
@@ -158,6 +163,9 @@ async fn observed_events_reach_extensions_with_omp_payloads() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn events_with_results_are_aggregated_and_shaped() {
+    if common::bun_missing("events_with_results_are_aggregated_and_shaped") {
+        return;
+    }
     let host = loaded().await;
     let mut rx = host.take_incoming().unwrap();
 
@@ -320,6 +328,9 @@ async fn probe(responder: Arc<dyn HostResponder>) -> Value {
 
 #[tokio::test]
 async fn host_requests_default_to_headless_answers() {
+    if common::bun_missing("host_requests_default_to_headless_answers") {
+        return;
+    }
     let got = probe(Arc::new(HeadlessResponder)).await;
     assert_eq!(
         got,
@@ -329,6 +340,9 @@ async fn host_requests_default_to_headless_answers() {
 
 #[tokio::test]
 async fn host_requests_use_a_pluggable_responder() {
+    if common::bun_missing("host_requests_use_a_pluggable_responder") {
+        return;
+    }
     let got = probe(Arc::new(Scripted)).await;
     assert_eq!(
         got,

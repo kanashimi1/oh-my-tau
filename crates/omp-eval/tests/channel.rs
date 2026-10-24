@@ -8,6 +8,7 @@ use std::time::Duration;
 use omp_eval::js::{default_runtime, JsKernel};
 use omp_eval::{CellStatus, ExecOptions, HostBridge, PythonKernel};
 use serde_json::{json, Value};
+mod common;
 
 /// Records every bridge call/notify; `echo` answers its args.
 #[derive(Default)]
@@ -44,10 +45,10 @@ fn py(tag: &str) -> PythonKernel {
     PythonKernel::start("python3", &dir).expect("kernel starts")
 }
 
-fn js(tag: &str) -> Option<JsKernel> {
+fn js(tag: &str) -> JsKernel {
     let dir = std::env::temp_dir().join(format!("omp-eval-chan-js-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("cwd");
-    JsKernel::start(default_runtime(), &dir).ok()
+    JsKernel::start(default_runtime(), &dir).expect("JS kernel starts (bun on PATH)")
 }
 
 fn assert_no_bridge_traffic(b: &Recorder) {
@@ -200,10 +201,10 @@ fn py_cell_ids_are_not_guessable() {
 
 #[test]
 fn js_child_output_cannot_forge_frames() {
-    let Some(k) = js("forge") else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_child_output_cannot_forge_frames") {
         return;
-    };
+    }
+    let k = js("forge");
     let b = Recorder::default();
     let code = r#"
 const cp = require("child_process");
@@ -228,10 +229,10 @@ console.log("after-child");
 
 #[test]
 fn js_raw_fd1_and_shell_output_are_ordered_plain_stdout() {
-    let Some(k) = js("fd1") else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_raw_fd1_and_shell_output_are_ordered_plain_stdout") {
         return;
-    };
+    }
+    let k = js("fd1");
     let b = Recorder::default();
     let code = "require('fs').writeSync(1, 'raw-1\\n');\nconsole.log('b');\n\
                 await Bun.$`echo shell-out`;\nconsole.log('c');\n\
@@ -245,10 +246,10 @@ fn js_raw_fd1_and_shell_output_are_ordered_plain_stdout() {
 
 #[test]
 fn js_large_child_output_does_not_deadlock() {
-    let Some(k) = js("big") else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_large_child_output_does_not_deadlock") {
         return;
-    };
+    }
+    let k = js("big");
     let b = Recorder::default();
     // Far beyond a pipe buffer, written by a synchronous child while the
     // runner's event loop is blocked in spawnSync.
@@ -274,10 +275,10 @@ fn js_large_child_output_does_not_deadlock() {
 
 #[test]
 fn js_cell_stdin_is_not_the_control_channel() {
-    let Some(k) = js("stdin") else {
-        eprintln!("skipping: JS runtime unavailable");
+    if !common::require_bun("js_cell_stdin_is_not_the_control_channel") {
         return;
-    };
+    }
+    let k = js("stdin");
     let b = Recorder::default();
     let code = "const r = require('child_process').spawnSync('cat', [], { stdio: ['inherit', 'pipe', 'pipe'], timeout: 3000 });\n\
                 console.log(JSON.stringify(r.stdout.toString()), r.signal);\n\

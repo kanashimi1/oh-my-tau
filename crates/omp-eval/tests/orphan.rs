@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use omp_eval::js::{default_runtime, JsKernel};
 use omp_eval::PythonKernel;
+mod common;
 
 /// Process alive check for a pid we do not own (orphaned runners are
 /// reparented to init): `kill(pid, 0)` fails with ESRCH once it is gone.
@@ -135,5 +136,8 @@ fn python_kernel_exits_when_host_is_sigkilled() {
 
 #[test]
 fn js_kernel_exits_when_host_is_sigkilled() {
+    if !common::require_bun("js_kernel_exits_when_host_is_sigkilled") {
+        return;
+    }
     run_orphan_case("js");
 }

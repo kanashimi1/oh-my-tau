@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use omp_eval::js::{default_runtime, JsKernel};
 use omp_eval::{CellResult, CellStatus};
+mod common;
 
 fn kernel(tag: &str) -> JsKernel {
     let dir = std::env::temp_dir().join(format!("omp-eval-js-test-{tag}-{}", std::process::id()));
@@ -17,6 +18,9 @@ fn kernel(tag: &str) -> JsKernel {
 /// Runner script sanity: the NDJSON protocol round-trips a simple cell.
 #[test]
 fn runner_speaks_protocol() {
+    if !common::require_bun("runner_speaks_protocol") {
+        return;
+    }
     let mut child = Command::new(default_runtime())
         .args(["-e", include_str!("../src/runner.js")])
         .stdin(Stdio::piped())
@@ -46,6 +50,9 @@ fn runner_speaks_protocol() {
 
 #[test]
 fn state_persists_across_cells() {
+    if !common::require_bun("state_persists_across_cells") {
+        return;
+    }
     let k = kernel("state");
     let r1 = k
         .execute("let accum = 41\naccum + 1", None)
@@ -71,6 +78,9 @@ fn state_persists_across_cells() {
 
 #[test]
 fn top_level_await_works_and_print_interleaves() {
+    if !common::require_bun("top_level_await_works_and_print_interleaves") {
+        return;
+    }
     let k = kernel("await");
     let r = k
         .execute(
@@ -85,6 +95,9 @@ fn top_level_await_works_and_print_interleaves() {
 
 #[test]
 fn timeout_kills_worker_and_kernel_recreates() {
+    if !common::require_bun("timeout_kills_worker_and_kernel_recreates") {
+        return;
+    }
     let k = kernel("timeout");
     let started = std::time::Instant::now();
     let r = k.execute(
@@ -112,6 +125,9 @@ fn timeout_kills_worker_and_kernel_recreates() {
 
 #[test]
 fn error_formatting_matches_omp_js() {
+    if !common::require_bun("error_formatting_matches_omp_js") {
+        return;
+    }
     let k = kernel("error");
     let r = k
         .execute("function boom() { throw new Error('nope') }\nboom()", None)
@@ -163,6 +179,9 @@ fn js_timeout_annotation_matches_ts() {
 
 #[test]
 fn display_and_prelude_helpers() {
+    if !common::require_bun("display_and_prelude_helpers") {
+        return;
+    }
     let k = kernel("helpers");
     let dir = std::env::temp_dir();
     let file = dir.join(format!("omp-eval-js-helper-{}.txt", std::process::id()));

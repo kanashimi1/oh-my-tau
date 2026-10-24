@@ -1,6 +1,6 @@
 //! Request-body parity with TS `streamSimple`: for every oracle case the Rust transport must
 //! resolve the same wire api and build the same body. Cases come from the transport section of
-//! `runs/omp-rust/compat-oracle/bodies.ts` (`bodies-transport.jsonl`).
+//! `scripts/compat-oracle/bodies.ts` (`bodies-transport.jsonl`).
 
 use serde_json::{json, Value};
 
@@ -8,10 +8,21 @@ use crate::compat::materialize;
 use crate::transport::{plan_simple_request, TransportEnv};
 use crate::types::{Context, Model, ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice};
 
-const BODIES: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../runs/omp-rust/compat-oracle/bodies-transport.jsonl"
-);
+/// Path of a compat-oracle fixture: `$OMP_COMPAT_ORACLE_DIR` if set, else `<repo
+/// root>/target/compat-oracle/` (where `scripts/compat-oracle/*.ts` writes), else the legacy
+/// `<repo root>/runs/omp-rust/compat-oracle/`. `None` when the file exists in none of them.
+fn oracle_file(name: &str) -> Option<std::path::PathBuf> {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("pa-ai lives at <repo>/vendor/pa-ai");
+    std::env::var_os("OMP_COMPAT_ORACLE_DIR")
+        .map(std::path::PathBuf::from)
+        .into_iter()
+        .chain([repo.join("target/compat-oracle"), repo.join("runs/omp-rust/compat-oracle")])
+        .map(|dir| dir.join(name))
+        .find(|path| path.is_file())
+}
 /// The TS oracle stubs `crypto.randomUUID` to this value.
 const FIXED_ID: &str = "00000000-0000-4000-8000-000000000000";
 
@@ -91,8 +102,19 @@ fn diff(got: &Value, want: &Value) -> String {
 
 #[test]
 fn rust_transport_matches_ts_stream_simple_for_every_case() {
-    let text = std::fs::read_to_string(BODIES).unwrap_or_else(|e| {
-        panic!("{BODIES}: {e} — run `cd vendor-src/oh-my-pi && bun ../../runs/omp-rust/compat-oracle/bodies.ts`")
+    let Some(bodies) = oracle_file("bodies-transport.jsonl") else {
+        eprintln!(
+            "skipping rust_transport_matches_ts_stream_simple_for_every_case: \
+             bodies-transport.jsonl not found (generate with bun scripts/compat-oracle/bodies.ts, \
+             see scripts/compat-oracle/README.md)"
+        );
+        return;
+    };
+    let text = std::fs::read_to_string(&bodies).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — regenerate with `bun scripts/compat-oracle/bodies.ts`",
+            bodies.display()
+        )
     });
     let filter = std::env::var("TRANSPORT_FILTER").ok();
     let mut total = 0usize;

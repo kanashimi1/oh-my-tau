@@ -80,7 +80,7 @@ fn preview_head(output: &str) -> String {
     if output.len() <= FULL_OUTPUT_THRESHOLD {
         return output.to_string();
     }
-    let slice = &output[..FULL_OUTPUT_THRESHOLD];
+    let slice = &output[..output.floor_char_boundary(FULL_OUTPUT_THRESHOLD)];
     match slice.rfind('\n') {
         Some(idx) if idx >= FULL_OUTPUT_THRESHOLD / 2 => slice[..idx].to_string(),
         _ => slice.to_string(),
@@ -142,6 +142,16 @@ mod tests {
         // Cut at the newline after the first line, not mid-line.
         assert!(env.preview.ends_with("second-line") || env.preview.ends_with('y'));
         assert!(env.preview.len() <= FULL_OUTPUT_THRESHOLD);
+    }
+
+    #[test]
+    fn preview_cut_never_splits_a_multibyte_char() {
+        // 'п' is 2 bytes; an odd prefix puts byte THRESHOLD mid-char.
+        let long = format!("x{}", "п".repeat(FULL_OUTPUT_THRESHOLD));
+        let env = format_task_result(&run(&long, RunStatus::Completed, Some(0)));
+        assert!(env.truncated);
+        assert!(env.preview.len() <= FULL_OUTPUT_THRESHOLD);
+        assert!(env.preview.ends_with('п'));
     }
 
     #[test]
