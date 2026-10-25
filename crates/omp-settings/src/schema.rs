@@ -2536,7 +2536,7 @@ pub static SETTINGS: &[SettingDef] = &[
         id: "retry.maxRetries",
         ty: crate::SettingType::Number,
         env: None,
-        default_yaml: Some("10"),
+        default_yaml: Some("4"),
         credential: false,
     },
     SettingDef {
@@ -2569,6 +2569,13 @@ pub static SETTINGS: &[SettingDef] = &[
     },
     SettingDef {
         id: "retry.waitForUsageReset",
+        ty: crate::SettingType::Boolean,
+        env: None,
+        default_yaml: Some("false"),
+        credential: false,
+    },
+    SettingDef {
+        id: "sandbox.enabled",
         ty: crate::SettingType::Boolean,
         env: None,
         default_yaml: Some("false"),
@@ -3109,6 +3116,13 @@ pub static SETTINGS: &[SettingDef] = &[
         ty: crate::SettingType::Enum(&["unicode", "nerd", "ascii"]),
         env: None,
         default_yaml: Some("\"unicode\""),
+        credential: false,
+    },
+    SettingDef {
+        id: "systemPrompt.compact",
+        ty: crate::SettingType::Boolean,
+        env: None,
+        default_yaml: Some("false"),
         credential: false,
     },
     SettingDef {

@@ -11,8 +11,8 @@ use pa_ai::oauth::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-const VALIDATION_TIMEOUT_MS: u64 = 15_000;
-const LOGIN_CANCELLED: &str = "Login cancelled";
+pub(crate) const VALIDATION_TIMEOUT_MS: u64 = 15_000;
+pub(crate) const LOGIN_CANCELLED: &str = "Login cancelled";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Validate {
@@ -140,9 +140,9 @@ pub async fn login(
     Ok(key)
 }
 
-struct ValidationError {
+pub(crate) struct ValidationError {
     status: Option<u16>,
-    message: String,
+    pub(crate) message: String,
 }
 
 fn headers_for_hook(
@@ -195,7 +195,7 @@ fn headers_for_hook(
     }
 }
 
-async fn run_validation(
+pub(crate) async fn run_validation(
     validate: &Validate,
     login_label: &str,
     key: &str,
@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn table_covers_the_ts_api_key_roster() {
-        assert_eq!(TABLE.len(), 57);
+        assert_eq!(TABLE.len(), 59);
         let exa = provider("exa").unwrap();
         assert!(exa.validate.is_none());
         assert_eq!(
@@ -335,6 +335,36 @@ mod tests {
         assert_eq!(
             provider("ollama").unwrap().empty_fallback.as_deref(),
             Some("")
+        );
+    }
+
+    #[test]
+    fn the_ported_key_providers_build_the_ts_probe_requests() {
+        // zai-coding-plan probes the coding-plan base with the coding model…
+        let zai = provider("zai-coding-plan").unwrap();
+        assert_eq!(
+            zai.auth_url.as_deref(),
+            Some("https://z.ai/manage-apikey/apikey-list")
+        );
+        assert_eq!(
+            zai.validate.as_ref().unwrap().base_url.as_deref(),
+            Some("https://api.z.ai/api/coding/paas/v4")
+        );
+        assert_eq!(
+            zai.validate.as_ref().unwrap().model.as_deref(),
+            Some("glm-5.2")
+        );
+        // …and stores under `zai` like TS `store-as "zai"`.
+        assert_eq!(super::super::providers::store_as("zai-coding-plan"), "zai");
+        // openrouter keys authenticate against the key endpoint, not /models.
+        let openrouter = provider("openrouter").unwrap();
+        assert_eq!(
+            openrouter.validate.as_ref().unwrap().url.as_deref(),
+            Some("https://openrouter.ai/api/v1/auth/key")
+        );
+        assert_eq!(
+            openrouter.validate.as_ref().unwrap().kind,
+            "models-endpoint"
         );
     }
 }

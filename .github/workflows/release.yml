@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  # Keep build-machine paths (cargo registry, toolchain, checkout) out of the
+  # binaries; mirrors scripts/release.sh.
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            asset: omt-linux-x64
+            strip: objcopy
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            asset: omt-linux-arm64
+            strip: objcopy
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            asset: omt-macos-x64
+            strip: strip
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            asset: omt-macos-arm64
+            strip: strip
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            asset: omt-windows-x64.exe
+            strip: none
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # The prebuilt onnxruntime (ort) calls `__isPlatformVersionAtLeast`, which
+      # lives in clang's compiler-rt; rustc links with -nodefaultlibs, so add it.
+      - name: macOS compiler-rt
+        if: runner.os == 'macOS'
+        shell: sh
+        run: |
+          echo "MACOSX_DEPLOYMENT_TARGET=13.4" >> "$GITHUB_ENV"
+          echo "OMT_MAC_LINK=-C link-arg=$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a" >> "$GITHUB_ENV"
+      - name: Build
+        shell: sh
+        run: |
+          reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+          RUSTFLAGS="${OMT_MAC_LINK:-} --remap-path-prefix=${reg}=/cargo/registry/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo/git --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$(pwd)=/omt" \
+            cargo build --release --target ${{ matrix.target }} -p omp-cli
+      - name: Package
+        shell: sh
+        run: |
+          mkdir -p dist
+          case "${{ matrix.strip }}" in
+            objcopy) objcopy --strip-debug "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
+            strip)   strip "target/${{ matrix.target }}/release/omt" && cp "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
+            *)       cp "target/${{ matrix.target }}/release/omt.exe" "dist/${{ matrix.asset }}" ;;
+          esac
+          chmod +x "dist/${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum omt-linux-x64 omt-linux-arm64 omt-macos-x64 omt-macos-arm64 omt-windows-x64.exe > SHA256SUMS.txt
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/* --repo "${{ github.repository }}" --clobber

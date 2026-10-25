@@ -6,10 +6,12 @@
 //! to the auth broker when one is configured. Logout soft-deletes rows (`disabled_cause`).
 //!
 //! Flows: the OAuth flows are `pa_ai::oauth` (anthropic, openai-codex, github-copilot, xai-oauth,
-//! kimi-code); every `login "api-key"` provider of the TS rules runs through [`api_key`]. The
-//! remaining TS flows are listed in [`providers::UNPORTED`] and fail with a clear message.
+//! kimi-code); every `login "api-key"` provider of the TS rules runs through [`api_key`]; the
+//! endpoint-choice key prompts ([`custom`]) cover `alibaba-coding-plan` / `alibaba-token-plan`.
+//! The remaining TS flows are listed in [`providers::UNPORTED`] and fail with a clear message.
 
 pub mod api_key;
+pub mod custom;
 pub mod providers;
 pub mod store;
 
@@ -236,7 +238,13 @@ fn now_ms_i64() -> i64 {
 pub fn is_supported(id: &str) -> bool {
     matches!(
         id,
-        "anthropic" | "openai-codex" | "github-copilot" | "xai-oauth" | "kimi-code"
+        "anthropic"
+            | "openai-codex"
+            | "github-copilot"
+            | "xai-oauth"
+            | "kimi-code"
+            | "alibaba-coding-plan"
+            | "alibaba-token-plan"
     ) || api_key::provider(id).is_some()
 }
 
@@ -403,6 +411,38 @@ pub async fn login(
             );
             put(&mut data, "enterpriseUrl", c.enterprise_url.as_deref());
             data
+        }
+        "alibaba-coding-plan" => {
+            let key = custom::alibaba_coding_plan(
+                ui.as_ref(),
+                services.http.as_ref(),
+                services.env.as_ref(),
+            )
+            .await?;
+            if key.is_empty() {
+                return Ok(None);
+            }
+            target
+                .persist(&store_provider, Credential::ApiKey(key))
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            return Ok(Some(Identity::ApiKey));
+        }
+        "alibaba-token-plan" => {
+            let key = custom::alibaba_token_plan(
+                ui.as_ref(),
+                services.http.as_ref(),
+                services.env.as_ref(),
+            )
+            .await?;
+            if key.is_empty() {
+                return Ok(None);
+            }
+            target
+                .persist(&store_provider, Credential::ApiKey(key))
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            return Ok(Some(Identity::ApiKey));
         }
         other => {
             let Some(rule) = api_key::provider(other) else {

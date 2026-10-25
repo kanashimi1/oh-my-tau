@@ -3,10 +3,19 @@
 //! `omp-lsp`'s mux client side on first shared use; exits after an idle
 //! grace with no connected sessions.
 
+#[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
 use omp_lsp::mux::protocol::{LSP_MUX_PROJECT_DIR_ENV, LSP_MUX_SOCKET_ENV};
 
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("omp-lsp-mux: the shared LSP mux needs Unix sockets; not supported on this platform");
+    std::process::exit(2);
+}
+
+#[cfg(unix)]
 fn main() {
     let endpoint = std::env::var_os(LSP_MUX_SOCKET_ENV).map(PathBuf::from);
     let project_dir = std::env::var_os(LSP_MUX_PROJECT_DIR_ENV).map(PathBuf::from);

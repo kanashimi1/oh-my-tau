@@ -15,6 +15,7 @@ use serde_json::{json, Map, Value};
 
 const CUSTOM_TEMPLATE: &str = include_str!("../prompts/custom-system-prompt.md");
 const BUNDLED_TEMPLATE: &str = include_str!("../prompts/system-prompt.md");
+const COMPACT_TEMPLATE: &str = include_str!("../prompts/system-prompt-compact.md");
 const PROJECT_TEMPLATE: &str = include_str!("../prompts/project-prompt.md");
 const USER_APPEND_TEMPLATE: &str = include_str!("../prompts/user-append.md");
 
@@ -35,6 +36,8 @@ struct PromptConfig {
     include_model_in_prompt: bool,
     inline_tool_descriptors: bool,
     reactions: bool,
+    /// `systemPrompt.compact`: render the compact bundled template.
+    compact: bool,
 }
 
 /// Prompt-rendered settings via `omp-settings` (TS registry layering over the
@@ -57,6 +60,7 @@ fn load_config(agent: &Path) -> PromptConfig {
         include_model_in_prompt: false,
         inline_tool_descriptors: false,
         reactions: false,
+        compact: settings.get_bool("systemPrompt.compact").unwrap_or(false),
     };
     if set("skills.enabled") {
         cfg.skills_enabled = settings.get_bool("skills.enabled").unwrap_or(true);
@@ -838,6 +842,8 @@ pub struct Options {
     pub tools_csv: Option<String>,
     /// Prompt is for a subagent session.
     pub subagent: bool,
+    /// `--compact-prompt`: select the compact bundled template.
+    pub compact_prompt: bool,
     /// Active model identifier (surfaced only when the config enables it).
     pub model: String,
     /// Generated append blocks (e.g. MCP server instructions), joined like
@@ -1018,8 +1024,16 @@ pub fn build_with(
         dst.extend(src.clone());
     }
 
+    // Compact selection: explicit flag > `OMT_COMPACT_PROMPT=1` >
+    // `systemPrompt.compact` in the agent config. A caller-controlled prompt
+    // (custom text or template) always wins.
+    let compact = opts.compact_prompt
+        || std::env::var("OMT_COMPACT_PROMPT").is_ok_and(|v| v == "1")
+        || cfg.compact;
     let selected = if custom_prompt.is_some() {
         CUSTOM_TEMPLATE
+    } else if compact {
+        COMPACT_TEMPLATE
     } else {
         template.as_deref().unwrap_or(BUNDLED_TEMPLATE)
     };
@@ -1135,6 +1149,41 @@ mod tests {
         };
         let built = build_with(&root, &root, &agent, &opts, &available);
         assert_eq!(built.tool_names, vec!["bash", "read"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `--compact-prompt` selects the compact template; without it the full
+    /// bundled prompt is used.
+    #[test]
+    fn compact_prompt_selection() {
+        let root = tempdir("compact");
+        let agent = root.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        let tools: Vec<ToolMeta> = [("read", "read"), ("bash", "bash")]
+            .into_iter()
+            .map(|(a, b)| (a.into(), b.into()))
+            .collect();
+        let built = build_with(&root, &root, &agent, &Options::default(), &tools);
+        assert!(!built.blocks[0].contains("Edit discipline"));
+        let opts = Options {
+            compact_prompt: true,
+            ..Options::default()
+        };
+        let built = build_with(&root, &root, &agent, &opts, &tools);
+        assert!(built.blocks[0].contains("Edit discipline"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// `systemPrompt.compact: true` in the agent config selects the compact
+    /// template without the flag.
+    #[test]
+    fn compact_prompt_setting() {
+        let root = tempdir("compact-setting");
+        let agent = root.join("agent");
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(agent.join("config.yml"), "systemPrompt:\n  compact: true\n").unwrap();
+        let built = build_with(&root, &root, &agent, &Options::default(), &[]);
+        assert!(built.blocks[0].contains("Edit discipline"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

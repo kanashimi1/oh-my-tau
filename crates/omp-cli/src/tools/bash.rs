@@ -116,6 +116,19 @@ fn timeout_arg(args: &Value) -> Option<f64> {
 /// (`pre_exec`), so util-linux `setsid` does it; the spawned child is not a
 /// group leader, so `setsid` execs bash in place (same pid, kill works).
 fn detached_bash() -> tokio::process::Command {
+    match setsid_path().as_deref() {
+        Some(setsid) => {
+            let mut cmd = tokio::process::Command::new(setsid);
+            cmd.arg("--wait").arg("bash");
+            cmd
+        }
+        None => tokio::process::Command::new("bash"),
+    }
+}
+
+/// util-linux `setsid` when installed (shared by [`detached_bash`] and
+/// [`local_bash_argv`]).
+fn setsid_path() -> &'static Option<std::path::PathBuf> {
     static SETSID: std::sync::LazyLock<Option<std::path::PathBuf>> =
         std::sync::LazyLock::new(|| {
             ["/usr/bin/setsid", "/bin/setsid"]
@@ -123,13 +136,23 @@ fn detached_bash() -> tokio::process::Command {
                 .map(std::path::PathBuf::from)
                 .find(|p| p.is_file())
         });
-    match SETSID.as_deref() {
-        Some(setsid) => {
-            let mut cmd = tokio::process::Command::new(setsid);
-            cmd.arg("--wait").arg("bash");
-            cmd
-        }
-        None => tokio::process::Command::new("bash"),
+    &SETSID
+}
+
+/// The tool command's local argv for `script`: `setsid --wait bash -c` when
+/// util-linux `setsid` exists (own session, see [`detached_bash`]), plain
+/// `bash -c` otherwise. Shared by the plain and the sandboxed spawn paths so
+/// both use the same launcher discovery.
+fn local_bash_argv(script: &str) -> Vec<String> {
+    match setsid_path().as_deref() {
+        Some(setsid) => vec![
+            setsid.to_string_lossy().into_owned(),
+            "--wait".to_string(),
+            "bash".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+        ],
+        None => vec!["bash".to_string(), "-c".to_string(), script.to_string()],
     }
 }
 
@@ -144,9 +167,33 @@ async fn run(
 ) -> Result<(String, Option<i32>, Duration, Option<&'static str>)> {
     let script = format!("exec 2>&1\n{command}");
     let started = Instant::now();
-    let mut child = detached_bash()
-        .arg("-c")
-        .arg(script)
+    // `/ssh <host>` (features/ssh.rs): run the script remotely via
+    // `ssh <target> -- bash -lc <script>` instead of a local bash. When
+    // running locally with the sandbox on (features/sandbox.rs), re-launch
+    // through `omt __sandbox-exec` (self-exec confinement helper) so the tool
+    // subprocess is Landlock/seccomp-confined (remote runs are left to the
+    // remote host).
+    let mut cmd = if let Some(argv) = crate::features::ssh::remote_argv(&script) {
+        let mut c = tokio::process::Command::new("ssh");
+        for arg in argv {
+            c.arg(arg);
+        }
+        c
+    } else {
+        match crate::features::sandbox::wrap_inner(cwd, &local_bash_argv(&script)) {
+            Some((launcher, argv)) => {
+                let mut c = tokio::process::Command::new(launcher);
+                c.args(argv);
+                c
+            }
+            None => {
+                let mut c = detached_bash();
+                c.arg("-c").arg(script);
+                c
+            }
+        }
+    };
+    let mut child = cmd
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -528,9 +575,19 @@ async fn start_service(
     signal: &AbortSignal,
 ) -> Result<ServiceOutcome> {
     let script = format!("exec 2>&1\n{command}");
-    let mut child = detached_bash()
-        .arg("-c")
-        .arg(&script)
+    let mut cmd = match crate::features::sandbox::wrap_inner(dir, &local_bash_argv(&script)) {
+        Some((launcher, argv)) => {
+            let mut c = tokio::process::Command::new(launcher);
+            c.args(argv);
+            c
+        }
+        None => {
+            let mut c = detached_bash();
+            c.arg("-c").arg(&script);
+            c
+        }
+    };
+    let mut child = cmd
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

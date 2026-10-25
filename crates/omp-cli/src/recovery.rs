@@ -518,7 +518,18 @@ impl TurnRecovery {
             .retry_after_ms
             .or_else(|| parse_retry_after_ms(&failed.message));
         let mut delay_ms = self.cfg.retry.backoff_ms(self.attempt, rand01);
-        if retry_after_ms.is_none() {
+        // HTTP 429 with a fallback chain configured: the primary model's quota
+        // is gone — stop backing off on it and switch to the fallback
+        // immediately. Without a fallback the Retry-After handling stands.
+        let has_fallback = self
+            .cfg
+            .fallback
+            .chains
+            .iter()
+            .any(|(k, v)| !v.is_empty() && (k == &self.cfg.chain_key || k == "default"));
+        if failed.status.is_some_and(|s| s == 429) && has_fallback {
+            delay_ms = 0;
+        } else if retry_after_ms.is_none() {
             let reason = parse_rate_limit_reason(&failed.message);
             if matches!(
                 reason,
@@ -767,6 +778,45 @@ mod tests {
         assert_eq!(parse_retry_after_ms("boom"), None);
     }
 
+    /// HTTP 429 with a fallback chain configured: immediate switch — zero
+    /// same-model backoff before the fallback consult.
+    #[test]
+    fn http_429_with_fallback_switches_immediately() {
+        let mut r = TurnRecovery::new(cfg(&["q/b"]));
+        let mut f = failed("429 rate limit exceeded");
+        f.status = Some(429);
+        let a = r.begin_attempt(&f, 0.0);
+        assert_eq!(a.delay_ms, 0);
+        assert!(!a.budget_exhausted);
+    }
+
+    /// HTTP 429 without a fallback chain: Retry-After handling stands.
+    #[test]
+    fn http_429_without_fallback_keeps_retry_after() {
+        let fallback = FallbackConfig::default();
+        let c = RecoveryConfig {
+            retry: RetryConfig {
+                enabled: true,
+                max_retries: 2,
+                base_delay_ms: 100,
+                max_delay_ms: 60_000,
+                revert_policy: "cooldown-expiry".into(),
+            },
+            fallback,
+            chain_key: "p/a".into(),
+            role_label: None,
+        };
+        let mut r = TurnRecovery::new(c);
+        let mut f = failed("429 rate limit exceeded. Retry-After: 5");
+        f.status = Some(429);
+        f.retry_after_ms = Some(5_000);
+        let a = r.begin_attempt(&f, 0.0);
+        match r.finish_attempt(&a, false) {
+            Verdict::Retry { delay_ms } => assert!(delay_ms >= 5_000),
+            Verdict::GiveUp { .. } => panic!("429 without fallback must retry, not give up"),
+        }
+    }
+
     /// Buffon `http-429-exhausted`: a 429 with `Retry-After: 0` retries on the
     /// exponential backoff, not the 30 s rate-limit window, so an exhausted
     /// budget ends in well under a minute instead of ten 30 s waits.
@@ -783,7 +833,10 @@ mod tests {
         let a = r.begin_attempt(&f, 0.0);
         assert_eq!(a.retry_after_ms, Some(0));
         assert_eq!(a.delay_ms, 100);
-        assert!(matches!(r.finish_attempt(&a, false), Verdict::Retry { delay_ms: 100 }));
+        assert!(matches!(
+            r.finish_attempt(&a, false),
+            Verdict::Retry { delay_ms: 100 }
+        ));
     }
 
     #[test]

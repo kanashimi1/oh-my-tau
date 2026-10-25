@@ -274,6 +274,10 @@ pub struct App {
     pump: EventPump,
     /// Spinner clock origin (TS derives the glyph from wall time).
     spinner_start: Instant,
+    /// Live per-turn token tally for the loader row (reset each turn).
+    turn_usage: TurnUsage,
+    /// Active model's `$/M` pricing `(input, output)` for the cost suffix.
+    model_pricing: Option<(f64, f64)>,
     /// Run epoch, mirrored from the pump at every `agent_start`.
     pub run_epoch: u64,
     /// Steering queue previews (`queue_update.steering`), newest last.
@@ -373,6 +377,8 @@ impl App {
             scroll: 0,
             pump: EventPump::new(),
             spinner_start: Instant::now(),
+            turn_usage: TurnUsage::default(),
+            model_pricing: None,
             run_epoch: 0,
             steering: Vec::new(),
             follow_up: Vec::new(),
@@ -678,6 +684,7 @@ impl App {
         picker.models = models;
         picker.current = current;
         self.session_sources = session_sources;
+        self.refresh_model_pricing();
         self.reload_display_prefs();
     }
 
@@ -926,12 +933,14 @@ impl App {
             AppEvent::AgentStart => {
                 self.last_stop_reason = None;
                 self.spinner_start = Instant::now();
+                self.turn_usage.reset();
                 self.status.streaming = true;
                 self.pending_submission = false;
                 self.title
                     .set_state(TitleState::Working, Some(&self.title_label));
             }
             AppEvent::TurnStart => {
+                self.turn_usage.reset();
                 self.status.streaming = true;
                 self.pending_submission = false;
             }
@@ -956,6 +965,9 @@ impl App {
                 }
             }
             AppEvent::MessageEnd(frame) => {
+                if let Some(message) = frame.get("message") {
+                    self.turn_usage.observe_message(message);
+                }
                 let message = frame.get("message");
                 if message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant")
                 {
@@ -980,6 +992,14 @@ impl App {
                 self.title.set_state(state, Some(name));
             }
             AppEvent::MessageStart(_) => self.pending_submission = false,
+            AppEvent::MessageUpdate(frame) => {
+                if let Some(message) = frame.get("message") {
+                    self.turn_usage.observe_message(message);
+                }
+                // `delta_updates` mode carries only `assistantMessageEvent.delta`
+                // (no cumulative `message` snapshot); fold it here.
+                self.turn_usage.observe_delta(frame);
+            }
             AppEvent::ModelChanged(frame) => {
                 if let Some(m) = frame
                     .get("model")
@@ -994,8 +1014,12 @@ impl App {
                     self.status.model = m.clone();
                     self.overlays.models_mut().current = Some(m);
                 }
+                self.refresh_model_pricing();
             }
-            AppEvent::ContextUsage(frame) => self.apply_context_usage(frame),
+            AppEvent::ContextUsage(frame) => {
+                self.apply_context_usage(frame);
+                self.refresh_model_pricing();
+            }
             AppEvent::ModelsChanged { models } => {
                 let picker = self.overlays.models_mut();
                 picker.models = models.clone();
@@ -1972,8 +1996,7 @@ impl App {
                 self.reload_display_prefs();
             }
             id if id.starts_with("magicKeywords.") => {
-                self.magic_off =
-                    crate::magic::disabled_mask(&self.load_settings());
+                self.magic_off = crate::magic::disabled_mask(&self.load_settings());
                 let theme = self.theme.clone();
                 self.set_theme(theme);
             }
@@ -2307,7 +2330,7 @@ impl App {
     }
 
     /// The "Working…" loader row (spinner + optional maintenance label).
-    fn render_loader(&self, frame: &mut Frame<'_>, area: Rect) {
+    fn render_loader(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if area.height == 0 {
             return;
         }
@@ -2315,24 +2338,77 @@ impl App {
         let frame_idx = (self.spinner_start.elapsed().as_millis() / u128::from(SPINNER_ADVANCE_MS))
             as usize
             % SPINNER.len();
+        // Live token usage only while streaming (not during maintenance) and
+        // only once there is something to show; dropped on narrow terminals.
+        let usage = if area.width >= 60 {
+            self.loader_usage_text()
+        } else {
+            None
+        };
+        if self.theme.clean() && self.maintenance.is_none() {
+            let line = self.clean_loader_line(frame_idx, usage.as_deref());
+            frame.render_widget(Paragraph::new(line), area);
+            return;
+        }
         let label = match self.maintenance {
             Some(Maintenance::Compaction) => " compacting… (esc to cancel)",
             Some(Maintenance::Retry) => " retrying… (esc to cancel)",
             None => " Working…",
         };
-        if self.theme.clean() && self.maintenance.is_none() {
-            frame.render_widget(Paragraph::new(self.clean_loader_line(frame_idx)), area);
-            return;
-        }
+        let text = match &usage {
+            Some(u) => format!("{} {label} · {u}", SPINNER[frame_idx]),
+            None => format!("{} {label}", SPINNER[frame_idx]),
+        };
         let line = Line::from(Span::styled(
-            format!("{} {label}", SPINNER[frame_idx]),
+            text,
             Style::default().fg(self.theme.color("accent")),
         ));
         frame.render_widget(Paragraph::new(line), area);
     }
 
+    /// The live usage suffix for the loader row (`↑in ↓out (think t) · $c`),
+    /// `None` until any token count is known this turn.
+    fn loader_usage_text(&self) -> Option<String> {
+        if !self.status.streaming {
+            return None;
+        }
+        let input = self.turn_usage.input_tokens(self.status.context_tokens);
+        let output = self.turn_usage.output_tokens();
+        if input == 0 && output == 0 {
+            return None;
+        }
+        let mut parts = vec![
+            format!("↑{}", format_tokens(input)),
+            format!("↓{}", format_tokens(output)),
+        ];
+        let think = self.turn_usage.thinking_tokens();
+        if think > 0 {
+            parts.push(format!("(think {})", format_tokens(think)));
+        }
+        if let Some((in_per_m, out_per_m)) = self.model_pricing {
+            if let Some(cost) = self.turn_usage.cost(input, output, in_per_m, out_per_m) {
+                parts.push(format!("${cost:.3}"));
+            }
+        }
+        Some(parts.join(" "))
+    }
+
+    /// Re-resolve the active model's pricing (loader cost suffix) from the
+    /// `/model` catalogue; `None` when the model is unknown or unpriced.
+    fn refresh_model_pricing(&mut self) {
+        let model = self.status.model.clone();
+        self.model_pricing = self
+            .overlays
+            .models_mut()
+            .models
+            .iter()
+            .find(|m| format!("{}/{}", m.provider, m.id) == model)
+            .map(|m| (m.cost_input, m.cost_output))
+            .filter(|(i, o)| *i > 0.0 || *o > 0.0);
+    }
+
     /// Clean loader: spinner, what is happening, Omi's face, elapsed time.
-    fn clean_loader_line(&self, frame_idx: usize) -> Line<'static> {
+    fn clean_loader_line(&self, frame_idx: usize, usage: Option<&str>) -> Line<'static> {
         use crate::chrome::mascot::{face, Mood};
         let tool_running = self.messages.live_tail().iter().any(|e| match &e.kind {
             crate::chat::ChatKind::Tool(card) => !card.status.settled(),
@@ -2352,6 +2428,10 @@ impl App {
         let accent = Style::default().fg(self.theme.color("accent"));
         let dim = Style::default().fg(self.theme.color("dim"));
         let pink = Style::default().fg(ratatui::style::Color::Rgb(236, 112, 214));
+        let tail = match usage {
+            Some(u) => format!("{}s · {u} · esc to interrupt", elapsed.as_secs()),
+            None => format!("  {}s · esc to interrupt", elapsed.as_secs()),
+        };
         Line::from(vec![
             Span::styled(format!("{} ", SPINNER[frame_idx]), accent),
             Span::styled(
@@ -2360,7 +2440,7 @@ impl App {
             ),
             Span::raw(" "),
             Span::styled(face(mood, tick).to_owned(), pink),
-            Span::styled(format!("  {}s · esc to interrupt", elapsed.as_secs()), dim),
+            Span::styled(tail, dim),
         ])
     }
 
@@ -2401,6 +2481,187 @@ impl App {
             .messages
             .tail_rows(width, height + self.scroll as usize);
         frame.render_widget(Paragraph::new(lines), area);
+    }
+}
+
+/// Live per-turn token accounting for the loader row (TS mirrors the
+/// event-controller's usage tally, but reported while streaming).
+///
+/// Output/thinking tokens are estimated from the streamed deltas (chars/4)
+/// until the provider's final `usage` arrives on the message frame, then
+/// exact. Input comes from the request usage or the `context_usage`
+/// estimate.
+#[derive(Debug, Default, Clone)]
+struct TurnUsage {
+    /// Streamed char high-water marks per message id: `(text, thinking)`.
+    /// `message_update` frames carry the accumulated text, so the max per
+    /// id is the message total; summing across ids spans a whole turn.
+    streamed: std::collections::HashMap<String, (u64, u64)>,
+    /// Same marks for frames whose message has no id.
+    anonymous: (u64, u64),
+    /// Additive delta tallies per message id: `message_update` frames sent
+    /// without a full snapshot (`delta_updates` mode) carry only the
+    /// `assistantMessageEvent` delta string, so those are summed, not maxed.
+    delta_streamed: std::collections::HashMap<String, (u64, u64)>,
+    /// Same additive tallies for delta frames whose message has no id.
+    delta_anonymous: (u64, u64),
+    /// Provider-reported usage from the latest assistant frame.
+    exact: Option<ExactUsage>,
+}
+
+/// Provider-reported usage (`message.usage` on assistant frames).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ExactUsage {
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_write: u64,
+}
+
+const CHARS_PER_TOKEN: u64 = 4;
+
+impl TurnUsage {
+    /// Clear all per-turn tallies (turn start).
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Fold one assistant message frame (streaming partial or settled).
+    fn observe_message(&mut self, message: &Value) {
+        let mut text = 0u64;
+        let mut think = 0u64;
+        if let Some(content) = message.get("content").and_then(Value::as_array) {
+            for part in content {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text") => text += str_chars(part.get("text")),
+                    Some("thinking") => think += str_chars(part.get("thinking")),
+                    _ => {}
+                }
+            }
+        }
+        let slot = match message.get("id").and_then(Value::as_str) {
+            Some(id) if !id.is_empty() => self.streamed.entry(id.to_owned()).or_default(),
+            _ => &mut self.anonymous,
+        };
+        slot.0 = slot.0.max(text);
+        slot.1 = slot.1.max(think);
+        // A cumulative snapshot supersedes any deltas tallied for this message
+        // (`delta_updates` mode never sends both on one frame, and the settled
+        // `message_end` snapshot that closes a stream is the complete total).
+        self.delta_streamed.clear();
+        self.delta_anonymous = (0, 0);
+        // Streaming partials carry the provider's running `usage` from the first
+        // chunk (e.g. output 9) and would freeze the live count; only a settled
+        // message (`stopReason`) or a bare usage frame is authoritative.
+        let settled = message.get("stopReason").is_some() || message.get("content").is_none();
+        if let Some(usage) = message.get("usage").filter(|_| settled) {
+            let get = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+            let exact = ExactUsage {
+                input: get("input"),
+                output: get("output"),
+                cache_read: get("cacheRead"),
+                cache_write: get("cacheWrite"),
+            };
+            if exact.input > 0 || exact.output > 0 {
+                self.exact = Some(exact);
+            }
+        }
+    }
+    /// Fold one streaming delta frame (`delta_updates` mode): the runtime
+    /// stripped the cumulative `message` snapshot, leaving only
+    /// `assistantMessageEvent.delta`. These add (never max) into per-message
+    /// tallies; a later cumulative snapshot resets them (see `observe_message`).
+    fn observe_delta(&mut self, frame: &Value) {
+        let mut text = 0u64;
+        let mut think = 0u64;
+        if let Some(ev) = frame.get("assistantMessageEvent") {
+            match ev.get("type").and_then(Value::as_str) {
+                Some("text_delta") => text = str_chars(ev.get("delta")),
+                Some("thinking_delta") => think = str_chars(ev.get("delta")),
+                _ => return,
+            }
+        } else {
+            return;
+        }
+        let slot = match frame.get("messageId").and_then(Value::as_str) {
+            Some(id) if !id.is_empty() => self.delta_streamed.entry(id.to_owned()).or_default(),
+            _ => &mut self.delta_anonymous,
+        };
+        slot.0 += text;
+        slot.1 += think;
+    }
+
+    /// Estimated output tokens so far (text + thinking chars/4) or the exact
+    /// provider count. Thinking is included so the live `↓` ticks up while
+    /// the model reasons (the `(think N)` suffix still breaks it out).
+    fn output_tokens(&self) -> u64 {
+        if let Some(exact) = self.exact {
+            return exact.output;
+        }
+        self.estimated_output()
+    }
+
+    /// Estimated thinking tokens (chars/4); providers do not report these.
+    fn thinking_tokens(&self) -> u64 {
+        self.estimated_thinking()
+    }
+
+    /// Input tokens: the provider's request usage, else the `context_usage`
+    /// estimate for the active turn.
+    fn input_tokens(&self, context_estimate: Option<u64>) -> u64 {
+        match self.exact {
+            Some(exact) if exact.input > 0 => exact.input + exact.cache_read + exact.cache_write,
+            _ => context_estimate.unwrap_or(0),
+        }
+    }
+
+    /// Estimated turn cost in dollars from $/M pricing, `None` when free.
+    fn cost(&self, input: u64, output: u64, in_per_m: f64, out_per_m: f64) -> Option<f64> {
+        let cost = input as f64 / 1e6 * in_per_m + output as f64 / 1e6 * out_per_m;
+        (cost > 0.0).then_some(cost)
+    }
+
+    fn estimated_output(&self) -> u64 {
+        let (text, think) = self.totals();
+        (text + think) / CHARS_PER_TOKEN
+    }
+
+    fn estimated_thinking(&self) -> u64 {
+        let (_, think) = self.totals();
+        think / CHARS_PER_TOKEN
+    }
+
+    fn totals(&self) -> (u64, u64) {
+        let mut acc = self.anonymous;
+        for (text, think) in self.streamed.values() {
+            acc.0 += *text;
+            acc.1 += *think;
+        }
+        acc.0 += self.delta_anonymous.0;
+        acc.1 += self.delta_anonymous.1;
+        for (text, think) in self.delta_streamed.values() {
+            acc.0 += *text;
+            acc.1 += *think;
+        }
+        acc
+    }
+}
+
+/// Character count of an optional JSON string field.
+fn str_chars(value: Option<&Value>) -> u64 {
+    value
+        .and_then(Value::as_str)
+        .map_or(0, |s| s.chars().count() as u64)
+}
+
+/// Compact token count (`1234` → `1.2k`, `18200` → `18.2k`).
+fn format_tokens(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
     }
 }
 
@@ -3605,6 +3866,164 @@ mod tests {
         // rows: 10 - 1 editor - 1 status - 1 loader = 7 chat
         let row: String = (0..80).map(|x| buf[(x, 7)].symbol()).collect();
         assert!(row.contains("Working…"), "row: {row:?}");
+    }
+
+    #[test]
+    fn format_tokens_compacts() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1234), "1.2k");
+        assert_eq!(format_tokens(18_200), "18.2k");
+        assert_eq!(format_tokens(1_400), "1.4k");
+        assert_eq!(format_tokens(1_500_000), "1.5M");
+    }
+
+    #[test]
+    fn turn_usage_estimates_from_deltas_then_exact() {
+        let mut usage = TurnUsage::default();
+        // 1200 text chars + 3600 thinking chars → (1200+3600)/4 = 1200 out.
+        let text = "a".repeat(1200);
+        let think = "t".repeat(3600);
+        usage.observe_message(&json!({
+            "id": "m1", "role": "assistant",
+            "content": [{"type": "text", "text": text}, {"type": "thinking", "thinking": think}]
+        }));
+        assert_eq!(usage.output_tokens(), 1200);
+        assert_eq!(usage.thinking_tokens(), 900);
+        // No provider usage yet: input falls back to the context estimate.
+        assert_eq!(usage.input_tokens(Some(18_200)), 18_200);
+        // Second message accumulates per turn.
+        usage.observe_message(&json!({
+            "id": "m2", "role": "assistant",
+            "content": [{"type": "text", "text": "b".repeat(400)}]
+        }));
+        assert_eq!(usage.estimated_output(), 1300);
+        // Provider usage wins over the estimate once it arrives.
+        usage.observe_message(&json!({
+            "id": "m1", "role": "assistant", "usage": {"input": 100, "output": 500, "cacheRead": 50}
+        }));
+        assert_eq!(usage.output_tokens(), 500);
+        assert_eq!(usage.input_tokens(None), 150);
+        // Pricing math: 150 in @ $2/M + 500 out @ $8/M = $0.0043.
+        let cost = usage.cost(150, 500, 2.0, 8.0).unwrap();
+        assert!((cost - 0.0043).abs() < 1e-9, "cost: {cost}");
+    }
+    #[test]
+    fn turn_usage_deltas_add_thinking_and_text() {
+        let mut usage = TurnUsage::default();
+        // Thinking deltas (`delta_updates` mode: no cumulative `message`).
+        usage.observe_delta(&json!({
+            "type": "message_update", "messageId": "m1",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "t".repeat(3600)}
+        }));
+        assert_eq!(usage.output_tokens(), 900);
+        // Text deltas add into the same message.
+        usage.observe_delta(&json!({
+            "type": "message_update", "messageId": "m1",
+            "assistantMessageEvent": {"type": "text_delta", "delta": "a".repeat(1200)}
+        }));
+        assert_eq!(usage.output_tokens(), 1200);
+        assert_eq!(usage.thinking_tokens(), 900);
+        // A settled cumulative snapshot resets the deltas (no double count).
+        usage.observe_message(&json!({
+            "id": "m1", "role": "assistant",
+            "content": [{"type": "thinking", "thinking": "t".repeat(3600)},
+                        {"type": "text", "text": "a".repeat(1200)}]
+        }));
+        assert_eq!(usage.output_tokens(), 1200);
+        assert_eq!(usage.thinking_tokens(), 900);
+    }
+
+    #[test]
+    fn loader_row_counts_thinking_deltas_live() {
+        let mut app = app();
+        let _port = port();
+        app.apply_event(&AppEvent::AgentStart);
+        app.apply_event(&AppEvent::ContextUsage(json!({
+            "type": "context_usage", "model": "zai/glm-5.3-flash", "tokens": 1234
+        })));
+        let render_row = |app: &mut App| -> String {
+            let backend = TestBackend::new(80, 10);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| app.render(f)).unwrap();
+            (0..80)
+                .map(|x| terminal.backend().buffer()[(x, 7)].symbol())
+                .collect()
+        };
+        // Thinking-only deltas: `↓` grows with each delta.
+        app.apply_event(&AppEvent::MessageUpdate(json!({
+            "type": "message_update", "messageId": "m1",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "t".repeat(1800)}
+        })));
+        let row1 = render_row(&mut app);
+        assert!(row1.contains("↓450"), "first row: {row1:?}");
+        assert!(row1.contains("(think 450)"), "first row: {row1:?}");
+        app.apply_event(&AppEvent::MessageUpdate(json!({
+            "type": "message_update", "messageId": "m1",
+            "assistantMessageEvent": {"type": "thinking_delta", "delta": "t".repeat(1800)}
+        })));
+        let row2 = render_row(&mut app);
+        assert!(row2.contains("↓900"), "second row: {row2:?}");
+        assert!(row2.contains("(think 900)"), "second row: {row2:?}");
+    }
+
+    #[test]
+    fn loader_row_shows_live_token_usage() {
+        let mut app = app();
+        let _port = port();
+        app.apply_event(&AppEvent::AgentStart);
+        app.apply_event(&AppEvent::ContextUsage(json!({
+            "type": "context_usage", "model": "zai/glm-5.3-flash", "tokens": 1234
+        })));
+        // Stream ~1200 output tokens (~300 text + ~900 thinking).
+        app.apply_event(&AppEvent::MessageUpdate(json!({
+            "message": {"id": "m1", "role": "assistant",
+                        "content": [{"type": "thinking", "thinking": "t".repeat(3600)},
+                                    {"type": "text", "text": "a".repeat(1200)}]}
+        })));
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..80).map(|x| buf[(x, 7)].symbol()).collect();
+        assert!(row.contains("↑1.2k"), "row: {row:?}");
+        assert!(row.contains("↓1.2k"), "row: {row:?}");
+        assert!(row.contains("(think 900)"), "row: {row:?}");
+    }
+
+    #[test]
+    fn loader_usage_drops_on_narrow_terminals() {
+        let mut app = app();
+        let _port = port();
+        app.apply_event(&AppEvent::AgentStart);
+        app.apply_event(&AppEvent::ContextUsage(json!({
+            "type": "context_usage", "model": "zai/glm-5.3-flash", "tokens": 1234
+        })));
+        app.apply_event(&AppEvent::MessageUpdate(json!({
+            "message": {"id": "m1", "role": "assistant",
+                        "content": [{"type": "text", "text": "a".repeat(1200)}]}
+        })));
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..40).map(|x| buf[(x, 7)].symbol()).collect();
+        assert!(!row.contains("↑1.2k"), "row: {row:?}");
+        assert!(row.contains("Working…"), "row: {row:?}");
+    }
+
+    #[test]
+    fn turn_usage_resets_each_turn() {
+        let mut app = app();
+        let _port = port();
+        app.apply_event(&AppEvent::AgentStart);
+        app.apply_event(&AppEvent::MessageUpdate(json!({
+            "message": {"id": "m1", "role": "assistant",
+                        "content": [{"type": "text", "text": "a".repeat(1200)}]}
+        })));
+        assert_eq!(app.turn_usage.output_tokens(), 300);
+        app.apply_event(&AppEvent::TurnStart);
+        assert_eq!(app.turn_usage.output_tokens(), 0);
     }
 
     #[test]

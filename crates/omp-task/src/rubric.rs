@@ -291,7 +291,11 @@ impl RubricRecord {
             .append(true)
             .open(path)
         {
-            let _ = writeln!(f, "{}", json!(self));
+            // One write(2) per record: `writeln!` on an unbuffered File issues
+            // several writes, so concurrent appenders tore each other's lines.
+            let mut line = json!(self).to_string();
+            line.push('\n');
+            let _ = f.write_all(line.as_bytes());
         }
     }
 }
@@ -499,9 +503,15 @@ mod tests {
 
     #[tokio::test]
     async fn completed_child_is_scored_and_logged() {
+        // Serialize env-var + log-file access with any other test touching
+        // `LOG_ENV` (CI runs tests in parallel threads; interleaved appends
+        // produced torn reads).
+        static LOG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = LOG_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!("omp-rubric-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let log = dir.join("r.jsonl");
+        let _ = std::fs::remove_file(&log);
         std::env::set_var(LOG_ENV, &log);
         let rec = score_output(
             &rb(),
@@ -513,8 +523,18 @@ mod tests {
         .unwrap();
         std::env::remove_var(LOG_ENV);
         assert!((rec.score - 0.75).abs() < 1e-12);
-        let line = std::fs::read_to_string(&log).unwrap();
-        let v: Value = serde_json::from_str(line.trim()).unwrap();
+        // Take the last *complete* line: a concurrent writer could have
+        // appended a partial record at the tail when we read.
+        let text = std::fs::read_to_string(&log).unwrap();
+        let line = text
+            .lines()
+            .rev()
+            .find(|l| {
+                serde_json::from_str::<Value>(l)
+                    .is_ok_and(|v| v["run_id"] == rec.run_id && v["scored_ms"] == rec.scored_ms)
+            })
+            .expect("this test's JSONL record");
+        let v: Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["rubric_id"], rec.rubric_id);
         assert_eq!(v["verified"], 1.0);
         let _ = std::fs::remove_dir_all(dir);

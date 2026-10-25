@@ -80,6 +80,11 @@ pub struct Args {
     pub plan_yolo: bool,
     pub plan_yolo_into: Option<String>,
     pub dump_system_prompt: bool,
+    /// `--compact-prompt`: render the compact system prompt template.
+    pub compact_prompt: bool,
+    /// `--sandbox`: run tool subprocesses under Landlock/seccomp confinement
+    /// (`/sandbox`; features/sandbox.rs).
+    pub sandbox: bool,
     /// `--context-strategy append|clm|clm-host` (opt-in; default `append`).
     pub context_strategy: Option<String>,
     /// Image attachments collected from `@<image>` positional args
@@ -89,7 +94,7 @@ pub struct Args {
 
 /// Flags whose value is taken from the next argv token, even when it looks
 /// like a flag (`--system-prompt --profile foo` ⇒ prompt is `--profile`).
-const STRING_FLAGS: &[&str] = &[
+pub(crate) const STRING_FLAGS: &[&str] = &[
     "--cwd",
     "--config",
     "--add-dir",
@@ -148,6 +153,7 @@ const VALUELESS_FLAGS: &[&str] = &[
     "--prewalk",
     "--no-prewalk",
     "--plan-yolo",
+    "--compact-prompt",
     "--print-thoughts",
     "--no-skills",
     "--no-rules",
@@ -155,6 +161,7 @@ const VALUELESS_FLAGS: &[&str] = &[
     "--no-ui",
     "--auto-approve",
     "--yolo",
+    "--sandbox",
 ];
 
 const SERVICE_TIER_VALUES: &[&str] = &[
@@ -397,6 +404,8 @@ pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
                 "--prewalk" => a.prewalk = true,
                 "--no-prewalk" => a.no_prewalk = true,
                 "--plan-yolo" => a.plan_yolo = true,
+                "--compact-prompt" => a.compact_prompt = true,
+                "--sandbox" => a.sandbox = true,
                 "--print-thoughts" => a.print_thoughts = true,
                 "--no-skills" => a.no_skills = true,
                 "--no-rules" => a.no_rules = true,
@@ -858,6 +867,22 @@ mod tests {
         assert!(
             a.plan_yolo && a.print_thoughts && a.no_skills && a.no_rules && a.no_title && a.no_ui
         );
+    }
+
+    #[test]
+    fn compact_prompt_flag_parses() {
+        let a = parse(&["--compact-prompt", "msg"]).unwrap();
+        assert!(a.compact_prompt);
+        let a = parse(&["msg"]).unwrap();
+        assert!(!a.compact_prompt);
+    }
+
+    #[test]
+    fn sandbox_flag_parses() {
+        let a = parse(&["--sandbox", "msg"]).unwrap();
+        assert!(a.sandbox);
+        let a = parse(&["msg"]).unwrap();
+        assert!(!a.sandbox);
     }
 
     #[test]

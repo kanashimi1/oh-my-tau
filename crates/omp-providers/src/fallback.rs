@@ -42,7 +42,9 @@ impl Default for RetryConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_retries: 10,
+            // Pi's turn-retry budget on the primary model; a 429 fails over
+            // to the configured fallback immediately rather than retrying.
+            max_retries: 4,
             base_delay_ms: 500,
             max_delay_ms: 300_000,
             revert_policy: "cooldown-expiry".into(),

@@ -395,8 +395,6 @@ impl SessionWriter {
         source: Option<&str>,
         timestamp_iso: &str,
     ) -> Result<()> {
-        use std::os::unix::fs::FileExt;
-
         let slot = entries::serialize_title_slot(title, source, timestamp_iso)?;
         let slot_bytes = slot.as_bytes();
 
@@ -414,7 +412,20 @@ impl SessionWriter {
 
         if first_line_is_slot {
             let f = OpenOptions::new().write(true).open(&self.path)?;
-            f.write_all_at(slot_bytes, 0)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileExt;
+                f.write_all_at(slot_bytes, 0)?;
+            }
+            #[cfg(not(unix))]
+            {
+                // Windows: fixed-offset write via seek+write on a fresh handle
+                // opened without append, so the pointer position is irrelevant.
+                use std::io::{Seek, SeekFrom};
+                let mut f = &f;
+                f.seek(SeekFrom::Start(0))?;
+                f.write_all(slot_bytes)?;
+            }
             f.sync_data()?;
             return Ok(());
         }

@@ -9,6 +9,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -340,7 +341,13 @@ impl ExtHost {
     /// accept a connection within ~10 s.
     pub async fn spawn(cfg: &HostConfig) -> Result<Arc<Self>> {
         if let Some(sock) = &cfg.shared_socket {
+            #[cfg(unix)]
             return Self::spawn_shared(cfg, sock).await;
+            #[cfg(not(unix))]
+            {
+                let _ = sock;
+                bail!("shared ext host requires unix sockets; unset OMP_RS_EXT_SHARED on this platform");
+            }
         }
         let mut child = private_command(cfg)
             .spawn()
@@ -714,6 +721,7 @@ impl ExtHost {
     ///
     /// # Errors
     /// No daemon accepted a connection within ~10 s.
+    #[cfg(unix)]
     async fn spawn_shared(cfg: &HostConfig, sock: &Path) -> Result<Arc<Self>> {
         if cfg
             .bun
@@ -820,6 +828,7 @@ impl ExtHost {
     /// Spawn failure; the host stays unusable (writes fail cleanly).
     async fn reconnect_after_daemon_death(self: &Arc<Self>) -> Result<bool> {
         if let Some(sock) = &self.config.shared_socket {
+            #[cfg(unix)]
             if self.generation() < MAX_SHARED_RECONNECTS {
                 match Self::connect_daemon(&self.config, sock).await {
                     Ok(stream) => {
@@ -831,6 +840,10 @@ impl ExtHost {
                     }
                     Err(e) => eprintln!("omt: shared extension-host daemon unavailable: {e:#}"),
                 }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = sock;
             }
         }
         let mut child = private_command(&self.config).spawn().with_context(|| {
@@ -880,6 +893,7 @@ impl ExtHost {
     /// concurrent first clients never race to bind. Under the lock a leftover
     /// socket file with no listener (crashed daemon) is removed before
     /// spawning.
+    #[cfg(unix)]
     async fn connect_daemon(cfg: &HostConfig, sock: &Path) -> Result<UnixStream> {
         let mut stream = Self::connect_daemon_raw(cfg, sock).await?;
         // Handshake: the daemon's own env belongs to whichever session started
@@ -909,6 +923,7 @@ impl ExtHost {
         Ok(stream)
     }
 
+    #[cfg(unix)]
     async fn connect_daemon_raw(cfg: &HostConfig, sock: &Path) -> Result<UnixStream> {
         if let Ok(stream) = UnixStream::connect(sock).await {
             return Ok(stream);
@@ -919,10 +934,18 @@ impl ExtHost {
             .context("shared ext host: host script has no parent dir")?
             .join("shard.ts");
         if let Some(dir) = sock.parent() {
-            use std::os::unix::fs::DirBuilderExt;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(dir)
+                    .with_context(|| format!("create {}", dir.display()))?;
+            }
+            #[cfg(not(unix))]
             std::fs::DirBuilder::new()
                 .recursive(true)
-                .mode(0o700)
                 .create(dir)
                 .with_context(|| format!("create {}", dir.display()))?;
         }

@@ -6,6 +6,9 @@
 
 pub mod collab;
 pub mod config;
+/// `omt daemon` needs Unix sockets; not built on Windows.
+#[cfg(unix)]
+pub mod daemon;
 pub mod export;
 pub mod gc;
 pub mod judge_sessions;
@@ -20,7 +23,7 @@ pub mod web;
 /// Subcommands this module implements.
 #[must_use]
 pub fn known(name: &str) -> bool {
-    matches!(
+    let known = matches!(
         name,
         "models"
             | "stats"
@@ -33,7 +36,10 @@ pub fn known(name: &str) -> bool {
             | "collab"
             | "serve-collab"
             | "web"
-    )
+    );
+    #[cfg(unix)]
+    let known = known || name == "daemon";
+    known
 }
 
 /// Dispatch `omp-rs <name> <args>`; `args` excludes the subcommand token.
@@ -54,6 +60,8 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "collab" => collab::run(args),
         "serve-collab" => serve_collab::run(args),
         "web" => web::run(args),
+        #[cfg(unix)]
+        "daemon" => daemon::run(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),
     }
 }
