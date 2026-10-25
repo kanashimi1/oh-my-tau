@@ -19,7 +19,8 @@ for tool in cc c++; do
   # cc-rs passes --target=<rust triple>, which zig does not understand: drop it.
   cat > "$wrap/zig-$tool" <<SH
 #!/bin/sh
-for a in "\$@"; do case "\$a" in --target=*) ;; *) set -- "\$@" "\$a" ;; esac; shift; done
+# rustc's aarch64-musl link line passes an erratum flag zig's linker rejects.
+for a in "\$@"; do case "\$a" in --target=*|-Wl,--fix-cortex-a53-843419) ;; *) set -- "\$@" "\$a" ;; esac; shift; done
 exec zig $tool -target $zt "\$@"
 SH
   chmod +x "$wrap/zig-$tool"

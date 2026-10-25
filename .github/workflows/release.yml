@@ -40,7 +40,7 @@ jobs:
             strip: copy
             musl: true
           - target: aarch64-unknown-linux-musl
-            runner: ubuntu-latest
+            runner: ubuntu-24.04-arm
             asset: omt-linux-arm64-musl
             strip: copy
             musl: true
@@ -77,6 +77,13 @@ jobs:
         run: |
           echo "MACOSX_DEPLOYMENT_TARGET=13.4" >> "$GITHUB_ENV"
           echo "OMT_MAC_LINK=-C link-arg=$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a" >> "$GITHUB_ENV"
+      # Build tooling from the workflow's commit (fixes apply to re-runs of older tags).
+      - uses: actions/checkout@v4
+        if: matrix.musl
+        with:
+          ref: ${{ github.sha }}
+          path: _wf
+          sparse-checkout: scripts
       - uses: mlugg/setup-zig@v1
         if: matrix.musl
         with:
@@ -87,7 +94,9 @@ jobs:
         run: |
           reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
           OMT_EXTRA_RUSTFLAGS="-C strip=debuginfo --remap-path-prefix=${reg}=/cargo/registry/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo/git --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$(pwd)=/omt" \
-            scripts/build-musl.sh "$(echo ${{ matrix.target }} | cut -d- -f1)"
+            _wf/scripts/build-musl.sh "$(echo ${{ matrix.target }} | cut -d- -f1)"
+          file "target/${{ matrix.target }}/release/omt" | grep -q "statically linked"
+          "target/${{ matrix.target }}/release/omt" --version
       - name: Build
         if: ${{ !matrix.musl }}
         shell: sh
