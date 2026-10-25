@@ -10,8 +10,7 @@
 //! endpoint-choice key prompts ([`custom`]) cover `alibaba-coding-plan` / `alibaba-token-plan`.
 //! The flows in this file cover cursor, muse-code, perplexity, the Google
 //! loopback flows (gemini-cli, antigravity, devin, stencil) and the Codex
-//! device flow; the remaining TS flows are listed in [`providers::UNPORTED`]
-//! and fail with a clear message.
+//! device flow. Every TS login flow is ported; unknown ids fail with a clear message.
 
 pub mod api_key;
 pub mod cloudflare;
@@ -383,7 +382,7 @@ async fn xai_userinfo(http: &dyn ProviderHttp, access: &str) -> (Option<String>,
 /// `Ok(None)` = the flow stored nothing (empty optional key).
 ///
 /// # Errors
-/// The flow failed or was cancelled (`Login cancelled`), the provider is not ported, or storing
+/// The flow failed or was cancelled (`Login cancelled`), the provider is unknown, or storing
 /// failed. The message is what TS prints after `Login failed: `.
 pub async fn login(
     target: &Target,
@@ -587,11 +586,7 @@ pub async fn login(
         }
         other => {
             let Some(rule) = api_key::provider(other) else {
-                return Err(if providers::display_name(other).is_some() {
-                    format!("Login for '{other}' is not ported to omt yet; use `omp login {other}` from the TS CLI")
-                } else {
-                    format!("Unknown OAuth provider: {other}")
-                });
+                return Err(format!("Unknown OAuth provider: {other}"));
             };
             let key = api_key::login(
                 rule,
