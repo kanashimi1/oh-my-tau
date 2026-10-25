@@ -281,7 +281,7 @@ pub(crate) async fn run_validation(
             VALIDATION_TIMEOUT_MS,
         )
         .await
-        .map_err(|message| fail(message))?;
+        .map_err(fail)?;
     if response.ok() {
         return Ok(());
     }

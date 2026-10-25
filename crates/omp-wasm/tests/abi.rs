@@ -203,6 +203,7 @@ fn discovery_lists_failures_and_plugins() {
     // Valid plugin.
     let manifest = MANIFEST_JSON.as_bytes();
     let wat = module_wat(manifest, "(unreachable)", None);
+    #[allow(clippy::needless_borrows_for_generic_args)] // `write_plugin` takes &[u8]
     std::fs::write(plugins_dir.join("good.wasm"), &compile(&wat)).unwrap();
     // Broken plugin.
     std::fs::write(plugins_dir.join("bad.wasm"), b"junk").unwrap();

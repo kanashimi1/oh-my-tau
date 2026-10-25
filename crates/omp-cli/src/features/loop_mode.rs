@@ -226,8 +226,7 @@ async fn run_loop(rt: &Arc<Runtime>, kind: LoopKind) {
         LoopKind::Until { max, .. } => *max,
     };
     let prompt_text = match &kind {
-        LoopKind::Count { prompt, .. } => prompt,
-        LoopKind::Until { prompt, .. } => prompt,
+        LoopKind::Count { prompt, .. } | LoopKind::Until { prompt, .. } => prompt,
     };
     for i in 1..=total {
         if CANCEL.load(Ordering::SeqCst) {

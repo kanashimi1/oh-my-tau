@@ -100,10 +100,10 @@ pub fn shake_messages(messages: &mut [AgentMessage], mode: ShakeMode) -> (usize,
         };
         match m {
             Message::User(um) => {
-                shake_user_parts(&mut um.content, drop_images, &mut removed, &mut bytes)
+                shake_user_parts(&mut um.content, drop_images, &mut removed, &mut bytes);
             }
             Message::Developer(dm) => {
-                shake_user_parts(&mut dm.content, drop_images, &mut removed, &mut bytes)
+                shake_user_parts(&mut dm.content, drop_images, &mut removed, &mut bytes);
             }
             Message::Assistant(am) => {
                 if drop_thinking {
@@ -180,7 +180,7 @@ mod tests {
         ToolResultMessage, Usage, UserMessage,
     };
 
-    fn assistant_message(content: Vec<AssistantContent>) -> AssistantMessage {
+    fn assistant_message(content: &[AssistantContent]) -> AssistantMessage {
         serde_json::from_value(serde_json::json!({
             "content": content, "api": "openai-completions", "provider": "p", "model": "a",
             "usage": Usage::zero(), "stopReason": "stop", "timestamp": 1
@@ -217,7 +217,7 @@ mod tests {
                 redacted: None,
             }));
         }
-        AgentMessage::Standard(Message::Assistant(assistant_message(content)))
+        AgentMessage::Standard(Message::Assistant(assistant_message(&content)))
     }
 
     fn tool_result_with_image() -> AgentMessage {

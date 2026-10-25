@@ -99,7 +99,7 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         };
     };
     let session_file = rt.session_file();
-    let argv = rewrite_argv(std::env::args(), &session_file.to_string_lossy());
+    let process_argv = rewrite_argv(std::env::args(), &session_file.to_string_lossy());
     rt.send(
         serde_json::json!({"type": "command_output", "text": format!(
             "restart: exec {} (session {})",
@@ -112,7 +112,7 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         use std::os::unix::process::CommandExt;
         // wait_settled first: never exec out from under a running turn.
         rt.wait_settled().await;
-        let error = std::process::Command::new(&exe).args(&argv).exec();
+        let error = std::process::Command::new(&exe).args(&process_argv).exec();
         // exec only returns on failure.
         rt.send(serde_json::json!({"type": "command_output", "text": format!("restart: exec failed: {error}")}));
     }

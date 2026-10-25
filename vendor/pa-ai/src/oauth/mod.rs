@@ -31,6 +31,7 @@ pub use openai_codex::{
     login_openai_codex, refresh_openai_codex_token, CodexLoginUi, OAuthCredentials,
     DEFAULT_ORIGINATOR, LOGIN_CANCELLED,
 };
+pub use pkce::generate_pkce;
 pub use provider_http::{
     ProviderHttp, ProviderHttpMethod, ProviderHttpRequest, ProviderHttpResponse,
     ReqwestProviderHttp,
