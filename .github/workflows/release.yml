@@ -25,14 +25,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Oldest supported runner: the glibc build needs glibc >= the build host's
-          # (ubuntu-latest produced a binary needing GLIBC_2.43, too new for 24.04).
+          # glibc builds need glibc >= the build host's. The prebuilt ONNX Runtime needs
+          # glibc >= 2.38, so 24.04 (2.39) is the oldest usable runner; ubuntu-latest
+          # produced binaries needing GLIBC_2.43. Older systems get the musl build.
           - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-22.04
+            runner: ubuntu-24.04
             asset: omt-linux-x64
             strip: objcopy
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-22.04-arm
+            runner: ubuntu-24.04-arm
             asset: omt-linux-arm64
             strip: objcopy
           # Fully static Linux builds (any distro, incl. Alpine); no ONNX Runtime.
