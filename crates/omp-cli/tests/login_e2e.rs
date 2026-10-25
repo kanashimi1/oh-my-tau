@@ -189,19 +189,8 @@ fn login_then_logout_roundtrip_in_a_temp_home() {
     );
     assert_eq!(code, 1);
     assert_eq!(stderr, "Login failed: Invalid selection: 99\n");
-    let (code, _, stderr) = run(
-        {
-            let mut c = omp_rs(home.path());
-            c.args(["login", "cursor"]);
-            c
-        },
-        "",
-    );
-    assert_eq!(code, 1);
-    assert!(
-        stderr.starts_with("Login failed: Login for 'cursor' is not ported"),
-        "{stderr}"
-    );
+    // Every TS login flow is ported now (`UNPORTED` is empty), so there is no
+    // "not ported" path left to exercise here.
 
     // logout: soft delete with the TS cause.
     let (code, stdout, _) = run(

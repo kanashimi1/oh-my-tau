@@ -224,8 +224,8 @@ fn semver_gt(a: &str, b: &str) -> bool {
     match (semver_key(a), semver_key(b)) {
         // A prerelease sorts below its release.
         (Some(x), Some(y)) => {
-            (x.0, x.1, x.2, u8::from(x.3.is_empty()), x.3.clone())
-                > (y.0, y.1, y.2, u8::from(y.3.is_empty()), y.3.clone())
+            (x.0, x.1, x.2, u8::from(x.3.is_empty()), x.3)
+                > (y.0, y.1, y.2, u8::from(y.3.is_empty()), y.3)
         }
         _ => false,
     }
@@ -435,7 +435,7 @@ fn urlencode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
+                out.push(b as char);
             }
             _ => {
                 let _ = write!(out, "%{b:02X}");
@@ -1035,7 +1035,7 @@ pub async fn marketplace_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         "remove" | "rm" if !rest.is_empty() => remove_marketplace(rest.trim()),
         "remove" | "rm" => Err("Usage: /marketplace remove <name>".to_string()),
         "update" => update_marketplaces(rest.trim()).await,
-        "discover" => discover(rest.trim()).await,
+        "discover" => discover(rest.trim()),
         "install" if !rest.is_empty() => {
             parse_marketplace_install_args(&rest).and_then(|parsed| install_plugin(rt, &parsed))
         }
@@ -1279,7 +1279,7 @@ fn read_catalog_from(dir: &Path) -> Result<(String, Value), String> {
 async fn fetch_json_catalog(url: &str) -> Result<(PathBuf, String, Value), String> {
     let resp = reqwest::Client::new()
         .get(url)
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_mins(1))
         .send()
         .await
         .map_err(|e| format!("Failed to fetch marketplace catalog from {url}: {e}"))?;
@@ -1308,7 +1308,7 @@ async fn download_tarball_catalog(
 ) -> Result<(PathBuf, String, Value), String> {
     let resp = reqwest::Client::new()
         .get(url)
-        .timeout(std::time::Duration::from_secs(120))
+        .timeout(std::time::Duration::from_mins(2))
         .send()
         .await
         .map_err(|e| format!("Failed to fetch {url}: {e}"))?;
@@ -1433,7 +1433,7 @@ async fn update_marketplaces(name: &str) -> Result<String, String> {
     }
 }
 
-async fn discover(marketplace: &str) -> Result<String, String> {
+fn discover(marketplace: &str) -> Result<String, String> {
     let catalogs = load_catalogs(marketplace)?;
     if catalogs.is_empty() {
         let reg = read_marketplaces_registry()?;
@@ -1559,7 +1559,7 @@ fn install_plugin(rt: &Arc<Runtime>, parsed: &MarketplaceInstall) -> Result<Stri
         "enabled": true,
     });
     plugins
-        .entry(id.clone())
+        .entry(id)
         .and_modify(|v| {
             if let Some(arr) = v.as_array_mut() {
                 arr.push(entry_json.clone());
@@ -1992,11 +1992,11 @@ mod tests {
         header[124..136].copy_from_slice(format!("{:011o}\0", content.len()).as_bytes());
         header[156] = b'0';
         header[257..263].copy_from_slice(b"ustar\0");
-        for b in header[148..156].iter_mut() {
+        for b in &mut header[148..156] {
             *b = b' ';
         }
         let sum: u64 = header.iter().map(|&b| u64::from(b)).sum();
-        header[148..156].copy_from_slice(format!("{:06o}\0 ", sum).as_bytes());
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
         let mut archive = header.to_vec();
         archive.extend_from_slice(content);
         let pad = 512 - content.len() % 512;

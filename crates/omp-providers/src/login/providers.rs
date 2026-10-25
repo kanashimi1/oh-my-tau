@@ -94,24 +94,9 @@ pub const PROVIDERS: [(&str, &str); 80] = [
 /// Providers whose TS login flow is not ported to omp-rs yet.
 ///
 /// The api-key-shaped providers (`openrouter`, `zai-coding-plan`,
-/// `alibaba-coding-plan`, `alibaba-token-plan`) are ported as key prompts; what
-/// remains are the OAuth/device/custom flows without a Rust engine yet.
-pub const UNPORTED: [&str; 14] = [
-    "cursor",
-    "devin",
-    "google-antigravity",
-    "google-gemini-cli",
-    "openai-codex-device",
-    "gitlab-duo",
-    "gitlab-duo-agent",
-    "xiaomi",
-    "factory-droid",
-    "muse-code",
-    "perplexity",
-    "kilo",
-    "cloudflare-ai-gateway",
-    "stencil",
-];
+/// `alibaba-coding-plan`, `alibaba-token-plan`) are ported as key prompts; the
+/// OAuth/device/custom flows are all ported, so this is empty.
+pub const UNPORTED: [&str; 0] = [];
 
 /// The provider id a credential is stored under (TS `storeCredentialsAs`).
 #[must_use]

@@ -1,6 +1,7 @@
 //! `/wt`, `/worktree`: per-session git worktrees. TS: slash-commands/builtin-lifecycle.ts
 //! (session/session-worktree.ts). Also supports parallel child agents (`/wt run`).
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -92,18 +93,25 @@ fn default_worktree_name() -> String {
     let days = now / 86_400;
     let secs = now % 86_400;
     // Civil-from-days (Howard Hinnant's algorithm).
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    let (h, mi, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
-    format!("wt-{y:04}{m:02}{d:02}-{h:02}{mi:02}{s:02}")
+    // Days since epoch fits i64 for any representable system time.
+    #[allow(clippy::cast_possible_wrap)]
+    let shifted_days = days as i64 + 719_468;
+    let era = shifted_days.div_euclid(146_097);
+    let day_of_era = shifted_days.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    };
+    let year = if month <= 2 { year + 1 } else { year };
+    let (hour, minute, second) = (secs / 3600, secs % 3600 / 60, secs % 60);
+    format!("wt-{year:04}{month:02}{day:02}-{hour:02}{minute:02}{second:02}")
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +272,7 @@ fn change_summary(status_short: &str, diff_stat: &str) -> String {
     if !untracked.is_empty() {
         out.push_str("Untracked:\n");
         for f in &untracked {
-            out.push_str(&format!("  {f}\n"));
+            let _ = writeln!(out, "  {f}");
         }
     }
     let stat = diff_stat.trim_end();
@@ -340,7 +348,7 @@ async fn spawn_child(
             }
         }
     };
-    let (exit, _) = tokio::join!(child.wait(), reader);
+    let (exit, ()) = tokio::join!(child.wait(), reader);
     if let Ok(mut v) = slots.lock() {
         if let Some(s) = v.get_mut(idx) {
             match &exit {
@@ -359,7 +367,10 @@ async fn spawn_child(
     }
 }
 
-async fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> Outcome {
+// Validation, spawning and the status monitor share `slots`/`RUN` state and
+// read best as one unit.
+#[allow(clippy::too_many_lines)]
+fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> Outcome {
     if n == 0 || prompt.is_empty() {
         rt.send(
             json!({"type": "command_output", "text": "/wt run: need a worker count and a prompt."}),
@@ -369,7 +380,11 @@ async fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> 
             agent_invoked: false,
         };
     }
-    if RUN.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+    if RUN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some()
+    {
         rt.send(json!({"type": "command_output", "text": "/wt run: a run is already in progress (see /wt status)."}));
         return Outcome::Handled {
             agent_invoked: false,
@@ -380,14 +395,11 @@ async fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> 
     let mut paths = Vec::new();
     for i in 1..=n {
         let name = format!("run-{i}");
-        let path = match worktree_path(root, &name) {
-            Some(p) => p,
-            None => {
-                rt.send(json!({"type": "command_output", "text": format!("/wt run: cannot compute worktree path for '{name}'.")}));
-                return Outcome::Handled {
-                    agent_invoked: false,
-                };
-            }
+        let Some(path) = worktree_path(root, &name) else {
+            rt.send(json!({"type": "command_output", "text": format!("/wt run: cannot compute worktree path for '{name}'.")}));
+            return Outcome::Handled {
+                agent_invoked: false,
+            };
         };
         if let Err(e) = git(
             root,
@@ -417,7 +429,8 @@ async fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> 
     }
     let slots = Arc::new(Mutex::new(slots));
     let finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    *RUN.lock().unwrap_or_else(|e| e.into_inner()) = Some(RunState {
+    *RUN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(RunState {
         prompt: prompt.to_string(),
         slots: slots.clone(),
         finished: finished.clone(),
@@ -447,7 +460,9 @@ async fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> 
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             let (snapshot, all_done);
             {
-                let mut v = slots.lock().unwrap_or_else(|e| e.into_inner());
+                let mut v = slots
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 for s in v.iter_mut() {
                     if s.status == "running" {
                         s.elapsed_secs = s.started.elapsed().as_secs();
@@ -466,18 +481,21 @@ async fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> 
         // Final per-worktree diff stats.
         let mut report = String::new();
         {
-            let v = slots.lock().unwrap_or_else(|e| e.into_inner());
+            let v = slots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for s in v.iter() {
                 let status = git(&s.path, &["status", "--short"])
                     .unwrap_or_else(|e| format!("(git status failed: {e})"));
                 let stat = git(&s.path, &["diff", "--stat", "HEAD"])
                     .unwrap_or_else(|e| format!("(diff failed: {e})"));
-                report.push_str(&format!(
+                let _ = write!(
+                    report,
                     "--- {} ({})\n{}\n",
                     s.name,
                     s.status,
                     change_summary(&status, &stat)
-                ));
+                );
             }
         }
         rt.send(json!({"type": "command_output", "text": format!("[/wt run finished]\n{report}")}));
@@ -489,7 +507,9 @@ async fn run_command(rt: &Arc<Runtime>, root: &Path, n: usize, prompt: &str) -> 
 }
 
 fn status_command(rt: &Arc<Runtime>) -> Outcome {
-    let guard = RUN.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = RUN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     match guard.as_ref() {
         None => {
             rt.send(
@@ -497,7 +517,10 @@ fn status_command(rt: &Arc<Runtime>) -> Outcome {
             );
         }
         Some(state) => {
-            let mut v = state.slots.lock().unwrap_or_else(|e| e.into_inner());
+            let mut v = state
+                .slots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for s in v.iter_mut() {
                 if s.status == "running" {
                     s.elapsed_secs = s.started.elapsed().as_secs();
@@ -743,36 +766,35 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
                     }
                 }
             }
-            match git(&root, &["merge", "--no-edit", &branch]) {
-                Ok(out) => output(
+            if let Ok(out) = git(&root, &["merge", "--no-edit", &branch]) {
+                output(
                     rt,
                     if out.is_empty() {
                         format!("{prelude}Merged {branch}.")
                     } else {
                         format!("{prelude}{out}")
                     },
-                ),
-                Err(_) => {
-                    // Report conflicting files from the index.
-                    let conflicts =
-                        git(&root, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
-                    let body = if conflicts.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            "Conflicting files:\n{}",
-                            conflicts
-                                .lines()
-                                .map(|l| format!("  {l}"))
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        )
-                    };
-                    output(
-                        rt,
-                        format!("Merge of {branch} has conflicts; resolve them, then `git add` + `git commit`.\n{body}"),
-                    );
-                }
+                );
+            } else {
+                // Report conflicting files from the index.
+                let conflicts =
+                    git(&root, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+                let body = if conflicts.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "Conflicting files:\n{}",
+                        conflicts
+                            .lines()
+                            .map(|l| format!("  {l}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    )
+                };
+                output(
+                    rt,
+                    format!("Merge of {branch} has conflicts; resolve them, then `git add` + `git commit`.\n{body}"),
+                );
             }
             Outcome::Handled {
                 agent_invoked: false,
@@ -799,7 +821,7 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
                     };
                 }
             };
-            run_command(rt, &root, n, prompt).await
+            run_command(rt, &root, n, prompt)
         }
         "status" => status_command(rt),
         _ => {

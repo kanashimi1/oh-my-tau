@@ -8,12 +8,25 @@
 //! Flows: the OAuth flows are `pa_ai::oauth` (anthropic, openai-codex, github-copilot, xai-oauth,
 //! kimi-code); every `login "api-key"` provider of the TS rules runs through [`api_key`]; the
 //! endpoint-choice key prompts ([`custom`]) cover `alibaba-coding-plan` / `alibaba-token-plan`.
-//! The remaining TS flows are listed in [`providers::UNPORTED`] and fail with a clear message.
+//! The flows in this file cover cursor, muse-code, perplexity, the Google
+//! loopback flows (gemini-cli, antigravity, devin, stencil) and the Codex
+//! device flow; the remaining TS flows are listed in [`providers::UNPORTED`]
+//! and fail with a clear message.
 
 pub mod api_key;
+pub mod cloudflare;
+pub mod codex_device;
+pub mod cursor;
 pub mod custom;
+pub mod factory;
+pub mod gitlab;
+pub mod kilo;
+pub mod muse_code;
+pub mod oauth_code;
+pub mod perplexity;
 pub mod providers;
 pub mod store;
+pub mod xiaomi;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -202,12 +215,14 @@ impl Identity {
     }
 }
 
+type EnvFn = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 /// Everything a flow reaches out to; tests plug in scripted transports and mock hosts.
 pub struct Services {
     pub http: Box<dyn ProviderHttp>,
     pub codex_http: Box<dyn CodexHttp>,
     pub hosts: Hosts,
-    pub env: Box<dyn Fn(&str) -> Option<String> + Send + Sync>,
+    pub env: EnvFn,
 }
 
 impl Services {
@@ -245,6 +260,20 @@ pub fn is_supported(id: &str) -> bool {
             | "kimi-code"
             | "alibaba-coding-plan"
             | "alibaba-token-plan"
+            | "cloudflare-ai-gateway"
+            | "cursor"
+            | "devin"
+            | "factory-droid"
+            | "gitlab-duo"
+            | "gitlab-duo-agent"
+            | "google-antigravity"
+            | "google-gemini-cli"
+            | "kilo"
+            | "muse-code"
+            | "openai-codex-device"
+            | "perplexity"
+            | "stencil"
+            | "xiaomi"
     ) || api_key::provider(id).is_some()
 }
 
@@ -299,6 +328,28 @@ fn identity_of(data: &Map<String, Value>) -> Identity {
         org_id: get("orgId"),
         org_name: get("orgName"),
     }
+}
+
+/// The Codex identity projection (TS `getTokenProfile`): the ChatGPT
+/// workspace id is both `accountId` and `orgId`, the plan type the `orgName`.
+fn codex_data(access: &str, refresh: &str, expires: i64, account_id: &str) -> Map<String, Value> {
+    let payload = store::jwt_payload(access).unwrap_or_default();
+    let email = payload
+        .get("https://api.openai.com/profile")
+        .and_then(|p| p.get("email"))
+        .and_then(Value::as_str)
+        .map(|e| e.trim().to_lowercase());
+    let plan = payload
+        .get("https://api.openai.com/auth")
+        .and_then(|a| a.get("chatgpt_plan_type"))
+        .and_then(Value::as_str)
+        .map(|p| p.trim().to_lowercase());
+    let mut data = base_oauth(access, refresh, expires);
+    put(&mut data, "accountId", Some(account_id));
+    put(&mut data, "email", email.as_deref());
+    put(&mut data, "orgId", Some(account_id));
+    put(&mut data, "orgName", plan.as_deref());
+    data
 }
 
 /// xAI `userinfo` enrichment (`email`/`sub`), best effort like TS `applyUserinfo`.
@@ -358,22 +409,73 @@ pub async fn login(
                 CODEX_ORIGINATOR,
             )
             .await?;
-            let payload = store::jwt_payload(&c.access).unwrap_or_default();
-            let email = payload
-                .get("https://api.openai.com/profile")
-                .and_then(|p| p.get("email"))
-                .and_then(Value::as_str)
-                .map(|e| e.trim().to_lowercase());
-            let plan = payload
-                .get("https://api.openai.com/auth")
-                .and_then(|a| a.get("chatgpt_plan_type"))
-                .and_then(Value::as_str)
-                .map(|p| p.trim().to_lowercase());
-            let mut data = base_oauth(&c.access, &c.refresh, c.expires);
-            put(&mut data, "accountId", Some(&c.account_id));
+            codex_data(&c.access, &c.refresh, c.expires, &c.account_id)
+        }
+        "openai-codex-device" => {
+            let c =
+                codex_device::login(ui.as_ref(), services.http.as_ref(), now_ms_i64(), |token| {
+                    token.get("expires_in").and_then(Value::as_i64)
+                })
+                .await?;
+            codex_data(&c.access, &c.refresh, c.expires, &c.account_id)
+        }
+        "cursor" => {
+            let c = cursor::login(ui.as_ref(), services.http.as_ref(), now_ms_i64()).await?;
+            base_oauth(&c.access, &c.refresh, c.expires)
+        }
+        "muse-code" => {
+            let (access, account_id, email) =
+                muse_code::login(ui.as_ref(), services.http.as_ref()).await?;
+            let mut data = base_oauth(&access, "", muse_code::NEVER_EXPIRES);
+            put(&mut data, "accountId", account_id.as_deref());
             put(&mut data, "email", email.as_deref());
-            put(&mut data, "orgId", Some(&c.account_id));
-            put(&mut data, "orgName", plan.as_deref());
+            data
+        }
+        "perplexity" => {
+            let c = perplexity::login(ui.as_ref(), services.http.as_ref()).await?;
+            let mut data = base_oauth(&c.access, &c.refresh, c.expires);
+            put(&mut data, "email", Some(&c.email));
+            data
+        }
+        "google-gemini-cli" => {
+            let outcome = oauth_code::login_google_gemini_cli(
+                services.http.as_ref(),
+                ui.as_ref(),
+                services.env.as_ref(),
+            )
+            .await?;
+            let mut data = base_oauth(&outcome.access, &outcome.refresh, outcome.expires);
+            put(&mut data, "email", outcome.email.as_deref());
+            put(&mut data, "projectId", outcome.project.as_deref());
+            data
+        }
+        "google-antigravity" => {
+            let outcome =
+                oauth_code::login_google_antigravity(services.http.as_ref(), ui.as_ref()).await?;
+            let mut data = base_oauth(&outcome.access, &outcome.refresh, outcome.expires);
+            put(&mut data, "email", outcome.email.as_deref());
+            put(&mut data, "projectId", outcome.project.as_deref());
+            data
+        }
+        "devin" => {
+            let outcome = oauth_code::login_devin(services.http.as_ref(), ui.as_ref()).await?;
+            let expires = oauth_code::jwt_exp_ms(&outcome.access, 0)
+                .unwrap_or_else(|| now_ms_i64() + 31_536_000_000);
+            let mut data = base_oauth(&outcome.access, &outcome.refresh, expires);
+            put(&mut data, "apiEndpoint", Some("https://api.devin.ai"));
+            put(&mut data, "enterpriseUrl", Some("https://app.devin.ai"));
+            data
+        }
+        "stencil" => {
+            let outcome = oauth_code::login_stencil(
+                services.http.as_ref(),
+                ui.as_ref(),
+                services.env.as_ref(),
+            )
+            .await?;
+            let mut data = base_oauth(&outcome.access, &outcome.refresh, outcome.expires);
+            put(&mut data, "email", outcome.email.as_deref());
+            put(&mut data, "accountId", outcome.account_id.as_deref());
             data
         }
         "kimi-code" => {
@@ -411,6 +513,45 @@ pub async fn login(
             );
             put(&mut data, "enterpriseUrl", c.enterprise_url.as_deref());
             data
+        }
+        "gitlab-duo" => {
+            let c = gitlab::gitlab_duo(ui.as_ref(), services.http.as_ref(), services.env.as_ref())
+                .await?;
+            base_oauth(&c.access, &c.refresh, c.expires)
+        }
+        "gitlab-duo-agent" => {
+            let c = gitlab::gitlab_duo_agent(ui.as_ref(), services.http.as_ref()).await?;
+            base_oauth(&c.access, &c.refresh, c.expires)
+        }
+        "kilo" => {
+            let c = kilo::login_kilo(services.http.as_ref(), ui.as_ref()).await?;
+            base_oauth(&c.access, "", c.expires)
+        }
+        "factory-droid" => {
+            let c = factory::login_factory(services.http.as_ref(), ui.as_ref()).await?;
+            let mut data = base_oauth(&c.access, &c.refresh, c.expires);
+            put(&mut data, "email", c.email.as_deref());
+            put(&mut data, "accountId", c.account_id.as_deref());
+            put(&mut data, "orgId", c.org_id.as_deref());
+            put(&mut data, "region", c.region.as_deref());
+            put(&mut data, "inferenceRegion", c.inference_region.as_deref());
+            data
+        }
+        "cloudflare-ai-gateway" => {
+            let key = cloudflare::login_cloudflare_ai_gateway(ui.as_ref()).await?;
+            target
+                .persist(&store_provider, Credential::ApiKey(key))
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            return Ok(Some(Identity::ApiKey));
+        }
+        "xiaomi" => {
+            let key = xiaomi::login_xiaomi(ui.as_ref(), services.http.as_ref()).await?;
+            target
+                .persist(&store_provider, Credential::ApiKey(key))
+                .await
+                .map_err(|e| format!("{e:#}"))?;
+            return Ok(Some(Identity::ApiKey));
         }
         "alibaba-coding-plan" => {
             let key = custom::alibaba_coding_plan(

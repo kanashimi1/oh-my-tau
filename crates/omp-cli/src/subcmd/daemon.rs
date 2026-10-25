@@ -178,19 +178,18 @@ fn run_opts(opts: Options) -> Result<i32> {
     let socket = opts.socket.unwrap_or_else(default_socket_path);
     let pidfile = pidfile_path(&socket);
     match opts.action {
-        Action::Status => match read_pid(&pidfile).filter(|pid| process_alive(*pid)) {
-            Some(pid) => {
+        Action::Status => {
+            if let Some(pid) = read_pid(&pidfile).filter(|pid| process_alive(*pid)) {
                 say(&format!(
                     "daemon running (pid {pid}), socket {}",
                     socket.display()
                 ));
                 Ok(0)
-            }
-            None => {
+            } else {
                 say(&format!("daemon not running (socket {})", socket.display()));
                 Ok(1)
             }
-        },
+        }
         Action::Stop => {
             use std::io::Write as _;
             let Some(pid) = read_pid(&pidfile) else {
@@ -309,7 +308,7 @@ async fn serve(socket: &Path) -> Result<()> {
                 let stop_tx = stop_tx.clone();
                 // Boxed: the connection future is large (8 KiB buffers).
                 tokio::spawn(Box::pin(async move {
-                    if let Err(e) = handle_connection(stream, stop_tx).await {
+                    if let Err(e) = Box::pin(handle_connection(stream, stop_tx)).await {
                         eprintln!("omt daemon: connection error: {e:#}");
                     }
                 }));

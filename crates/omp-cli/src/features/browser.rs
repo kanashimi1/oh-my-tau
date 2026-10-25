@@ -6,7 +6,7 @@
 //! `/computer` captures the desktop via whichever screenshot tool is
 //! installed (`grim`, `import`, `gnome-screenshot`).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
@@ -50,7 +50,7 @@ pub fn find_on_path(name: &str) -> Option<PathBuf> {
 /// Revision number of a Playwright cache dir named `chromium-<rev>` (0 when
 /// unparseable); used to try the newest browser first.
 #[must_use]
-fn playwright_rev(dir: &PathBuf) -> u64 {
+fn playwright_rev(dir: &Path) -> u64 {
     dir.file_name()
         .and_then(|n| n.to_str())
         .and_then(|n| n.strip_prefix("chromium-"))
@@ -463,7 +463,7 @@ mod tests {
             PathBuf::from("/cache/ms-playwright/chromium-1100"),
             PathBuf::from("/cache/ms-playwright/chromium-1200"),
         ];
-        let order = ordered_chrome_candidates(env.clone(), path_hits.clone(), playwright.clone());
+        let order = ordered_chrome_candidates(env, path_hits.clone(), playwright.clone());
         assert_eq!(
             order,
             vec![
@@ -485,7 +485,7 @@ mod tests {
     fn playwright_rev_sorts_newest_first() {
         assert_eq!(playwright_rev(&PathBuf::from("/x/chromium-1148")), 1148);
         assert_eq!(playwright_rev(&PathBuf::from("/x/not-chromium")), 0);
-        let mut dirs = vec![
+        let mut dirs = [
             PathBuf::from("/c/chromium-9"),
             PathBuf::from("/c/chromium-1148"),
         ];
