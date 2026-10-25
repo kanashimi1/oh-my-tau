@@ -300,7 +300,7 @@ fn target_after_touch(target: &Target) -> Target {
 }
 
 #[tokio::test]
-async fn unknown_and_unported_providers_fail_with_a_clear_message() {
+async fn unknown_providers_fail_with_a_clear_message() {
     let (_dir, target) = temp_target();
     let (services, _) = services(|_| (200, "{}".into()));
     let err = login(&target, "nope", ScriptedUi::with(&[]), &services)
@@ -310,14 +310,9 @@ async fn unknown_and_unported_providers_fail_with_a_clear_message() {
 }
 
 #[test]
-fn every_listed_provider_is_either_supported_or_explicitly_unported() {
+fn every_listed_provider_is_supported() {
     for (id, _) in providers::PROVIDERS {
-        assert!(
-            is_supported(id) ^ providers::UNPORTED.contains(&id),
-            "{id}: supported={} unported={}",
-            is_supported(id),
-            providers::UNPORTED.contains(&id)
-        );
+        assert!(is_supported(id), "{id} is listed but has no login flow");
     }
     for id in api_key::ids() {
         assert!(

@@ -189,8 +189,6 @@ fn login_then_logout_roundtrip_in_a_temp_home() {
     );
     assert_eq!(code, 1);
     assert_eq!(stderr, "Login failed: Invalid selection: 99\n");
-    // Every TS login flow is ported now (`UNPORTED` is empty), so there is no
-    // "not ported" path left to exercise here.
 
     // logout: soft delete with the TS cause.
     let (code, stdout, _) = run(
