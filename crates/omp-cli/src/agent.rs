@@ -154,6 +154,7 @@ pub fn build_agent(
         crate::tools::session_builtin_tools(cwd, edit_mode_for(&selected.model.id), &settings);
     let session_jobs = crate::tools::take_last_jobs();
     tools.extend(crate::tools::mcp::mcp_tools(cwd));
+    tools.extend(crate::tools::wasm::wasm_tools(cwd));
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too
     // (subagent runs carry `yield` in their csv), like TS's requestedTools

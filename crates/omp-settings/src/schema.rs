@@ -3241,7 +3241,9 @@ pub static SETTINGS: &[SettingDef] = &[
         id: "task.maxConcurrency",
         ty: crate::SettingType::Number,
         env: None,
-        default_yaml: Some("32"),
+        // `0` = auto: `min(available_parallelism, 8)` (see
+        // `TaskRunner::resolve_max_concurrency`); a positive number overrides.
+        default_yaml: Some("0"),
         credential: false,
     },
     SettingDef {

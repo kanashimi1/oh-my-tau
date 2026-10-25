@@ -28,9 +28,10 @@ omp-ext = { path = "../omp-ext" }
 omp-compact = { path = "../omp-compact" }
 omp-task = { path = "../omp-task" }
 omp-eval = { path = "../omp-eval" }
+omp-wasm = { path = "../omp-wasm" }
 omp-mcp = { path = "../omp-mcp" }
 omp-lsp = { path = "../omp-lsp" }
-omp-judge = { path = "../omp-judge" }
+omp-judge = { path = "../omp-judge", default-features = false }
 tracing = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "http2"] }
 serde_yaml_ng = "0.10"
@@ -41,6 +42,7 @@ async-trait = "0.1"
 grep-matcher = "0.1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
+rayon = "1.12"
 pi-ast = { path = "../../vendor/pi-ast" }
 pi-edit = { path = "../../vendor/pi-edit" }
 pi-walker = { path = "../../vendor/pi-walker" }
@@ -59,6 +61,16 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.28"
 futures.workspace = true
+omp-goose = { path = "../omp-goose", optional = true }
+
+[features]
+default = ["onnx"]
+# Laya judge/policy heads via prebuilt ONNX Runtime; disable for musl builds
+# (scripts/build-musl.sh), which have no prebuilt ONNX Runtime.
+onnx = ["omp-judge/onnx"]
+# Dedup kernel compiled from goose (`crates/omp-goose`, committed generated C).
+# Off by default: the existing pure-Rust dedup path is used unless enabled.
+goose = ["dep:omp-goose"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Landlock + seccomp confinement for tool subprocesses (`/sandbox`,

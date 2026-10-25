@@ -681,7 +681,14 @@ impl LspTool {
             if cancel.is_cancelled() {
                 return Err(pa_agent::abort::aborted_error());
             }
-            let files = collect_workspace_files(cwd, &server_config.file_types, 100);
+            // Directory walk is blocking syscalls: keep it off the async thread.
+            let walk_cwd = cwd.to_path_buf();
+            let file_types = server_config.file_types.clone();
+            let files = tokio::task::spawn_blocking(move || {
+                collect_workspace_files(&walk_cwd, &file_types, 100)
+            })
+            .await
+            .unwrap_or_default();
             if files.is_empty() {
                 continue;
             }

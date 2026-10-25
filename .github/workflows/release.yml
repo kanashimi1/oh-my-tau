@@ -33,6 +33,17 @@ jobs:
             runner: ubuntu-24.04-arm
             asset: omt-linux-arm64
             strip: objcopy
+          # Fully static Linux builds (any distro, incl. Alpine); no ONNX Runtime.
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset: omt-linux-x64-musl
+            strip: copy
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset: omt-linux-arm64-musl
+            strip: copy
+            musl: true
           - target: x86_64-apple-darwin
             runner: macos-14  # Intel runners are retired; cross-compile on Apple silicon
             asset: omt-macos-x64
@@ -66,7 +77,19 @@ jobs:
         run: |
           echo "MACOSX_DEPLOYMENT_TARGET=13.4" >> "$GITHUB_ENV"
           echo "OMT_MAC_LINK=-C link-arg=$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a" >> "$GITHUB_ENV"
+      - uses: mlugg/setup-zig@v1
+        if: matrix.musl
+        with:
+          version: 0.13.0
+      - name: Build (musl, static)
+        if: matrix.musl
+        shell: sh
+        run: |
+          reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+          OMT_EXTRA_RUSTFLAGS="-C strip=debuginfo --remap-path-prefix=${reg}=/cargo/registry/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo/git --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$(pwd)=/omt" \
+            scripts/build-musl.sh "$(echo ${{ matrix.target }} | cut -d- -f1)"
       - name: Build
+        if: ${{ !matrix.musl }}
         shell: sh
         run: |
           reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
@@ -77,6 +100,7 @@ jobs:
         run: |
           mkdir -p dist
           case "${{ matrix.strip }}" in
+            copy)    cp "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
             objcopy) objcopy --strip-debug "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
             strip)   strip "target/${{ matrix.target }}/release/omt" && cp "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
             *)       cp "target/${{ matrix.target }}/release/omt.exe" "dist/${{ matrix.asset }}" ;;

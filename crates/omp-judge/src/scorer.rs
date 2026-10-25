@@ -62,7 +62,7 @@ impl Scores {
 
 /// Loaded judge. Owns the ONNX session; not `Sync` (use from one thread).
 pub struct Scorer {
-    judge: laya_ort::Judge,
+    judge: crate::onnx::Judge,
     questions: Value,
 }
 
@@ -70,7 +70,7 @@ impl Scorer {
     /// # Errors
     /// Missing/invalid checkpoint or ONNX file.
     pub fn load(paths: &ModelPaths) -> Result<Self> {
-        let judge = laya_ort::Judge::load(
+        let judge = crate::onnx::Judge::load(
             Path::new(&paths.ckpt),
             Path::new(&paths.onnx),
             paths.threads.max(1),

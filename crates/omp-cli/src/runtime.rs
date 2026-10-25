@@ -3425,6 +3425,7 @@ impl Runtime {
                 let settings = omp_settings::Settings::load(&self.cwd);
                 let mut tools = crate::tools::session_builtin_tools(&self.cwd, mode, &settings);
                 tools.extend(crate::tools::mcp::mcp_tools(&self.cwd));
+                tools.extend(crate::tools::wasm::wasm_tools(&self.cwd));
                 // TS `reconcileThinkTool`: model swaps re-evaluate the hidden
                 // think tool's eligibility.
                 let hidden =

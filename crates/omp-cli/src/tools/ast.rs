@@ -10,9 +10,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 use pa_agent::types::AgentToolResult;
+use rayon::prelude::*;
 use serde_json::{json, Value};
 
-use super::util::{format_path_relative_to_cwd, path_list, resolve_to_cwd, str_arg};
+use super::util::{
+    cancelled, format_path_relative_to_cwd, path_list, resolve_to_cwd, str_arg, CancelFlag,
+};
 use super::Env;
 use pi_ast::language::SupportLang;
 use pi_ast::ops::{
@@ -148,13 +151,29 @@ fn clamp_line(text: &str) -> String {
         .collect()
 }
 
+#[cfg(test)]
 /// `ast_grep`: structural search.
 ///
 /// # Errors
 /// Empty `pat`, invalid `skip`, unknown `lang`, unresolvable paths, or an
 /// invalid pattern.
-#[allow(clippy::too_many_lines)]
 pub fn ast_grep(env: &Env, args: &Value) -> Result<AgentToolResult> {
+    ast_grep_with_cancel(env, args, &CancelFlag::default())
+}
+
+/// [`ast_grep`] with a cooperative cancel flag; per-file read/parse/match
+/// work runs on the `rayon` pool inside the registry's `spawn_blocking`
+/// section, collected in path order so output stays byte-identical.
+///
+/// # Errors
+/// Empty `pat`, invalid `skip`, unknown `lang`, unresolvable paths, or an
+/// invalid pattern.
+#[allow(clippy::too_many_lines)]
+pub fn ast_grep_with_cancel(
+    env: &Env,
+    args: &Value,
+    cancel: &CancelFlag,
+) -> Result<AgentToolResult> {
     let pattern = str_arg(args, "pat")?.trim().to_string();
     if pattern.is_empty() {
         bail!("`pat` must be a non-empty pattern");
@@ -175,31 +194,54 @@ pub fn ast_grep(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let files = scope_files(env, &entries)?;
 
     let mut parse_errors: Vec<String> = Vec::new();
-    // (relative path, absolute path, matches) kept in path order.
+    // (relative path, absolute path, matches) kept in path order. Files are
+    // read/parsed/matched in parallel on the rayon pool; `collect` keeps
+    // input order and short-circuits on the first invalid pattern, matching
+    // the previous serial `?` semantics.
+    let scanned: Vec<Option<(String, PathBuf, Vec<AstMatch>, Option<String>)>> = files
+        .par_iter()
+        .map(
+            |file| -> Result<Option<(String, PathBuf, Vec<AstMatch>, Option<String>)>> {
+                if cancelled(cancel) {
+                    return Err(pa_agent::abort::aborted_error());
+                }
+                let Ok(source) = std::fs::read_to_string(file) else {
+                    return Ok(None);
+                };
+                let Ok(language) = language_or_infer(lang, file) else {
+                    return Ok(None);
+                };
+                let patterns = compile_search_patterns(&pattern, language)
+                    .map_err(|error| anyhow::anyhow!("Invalid pattern: {error}"))?;
+                let mut parse_error = None;
+                if let Some(tree) = parse_cached(&source, language)? {
+                    if tree.root_node().has_error() {
+                        parse_error = Some(parse_error_note(file, env));
+                    }
+                }
+                let matches = collect_matches(&source, language, &patterns);
+                if matches.is_empty() {
+                    return Ok(Some((String::new(), file.clone(), Vec::new(), parse_error)));
+                }
+                Ok(Some((
+                    format_path_relative_to_cwd(file, &env.cwd, false),
+                    file.clone(),
+                    matches,
+                    parse_error,
+                )))
+            },
+        )
+        .collect::<Result<Vec<_>>>()?;
     let mut per_file: Vec<(String, PathBuf, Vec<AstMatch>)> = Vec::new();
-    for file in &files {
-        let Ok(source) = std::fs::read_to_string(file) else {
-            continue;
-        };
-        let Ok(language) = language_or_infer(lang, file) else {
-            continue;
-        };
-        let patterns = compile_search_patterns(&pattern, language)
-            .map_err(|error| anyhow::anyhow!("Invalid pattern: {error}"))?;
-        if let Some(tree) = parse_cached(&source, language)? {
-            if tree.root_node().has_error() {
-                parse_errors.push(parse_error_note(file, env));
-            }
+    for entry in scanned.into_iter().flatten() {
+        let (relative, absolute, matches, parse_error) = entry;
+        if let Some(note) = parse_error {
+            parse_errors.push(note);
         }
-        let matches = collect_matches(&source, language, &patterns);
         if matches.is_empty() {
             continue;
         }
-        per_file.push((
-            format_path_relative_to_cwd(file, &env.cwd, false),
-            file.clone(),
-            matches,
-        ));
+        per_file.push((relative, absolute, matches));
     }
     per_file.sort_by(|a, b| a.0.cmp(&b.0));
     // TS flattens the visible window over all files, ordered by path then
@@ -297,14 +339,29 @@ pub fn ast_grep(env: &Env, args: &Value) -> Result<AgentToolResult> {
     Ok(AgentToolResult::text(model.join("\n")))
 }
 
+#[cfg(test)]
 /// `ast_edit`: AST-aware rewrite. Applies matching rewrites per file (each file
 /// is parsed in its own language; a pattern only rewrites files it parses in).
 ///
 /// # Errors
 /// Missing/empty/duplicate `ops` patterns, unresolvable paths, or overlapping
 /// replacements within one file.
-#[allow(clippy::too_many_lines)]
 pub fn ast_edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
+    ast_edit_with_cancel(env, args, &CancelFlag::default())
+}
+
+/// [`ast_edit`] with a cooperative cancel flag checked between files (the
+/// rewrite pass stays serial: files are written in place in input order).
+///
+/// # Errors
+/// Missing/empty/duplicate `ops` patterns, unresolvable paths, or overlapping
+/// replacements within one file.
+#[allow(clippy::too_many_lines)]
+pub fn ast_edit_with_cancel(
+    env: &Env,
+    args: &Value,
+    cancel: &CancelFlag,
+) -> Result<AgentToolResult> {
     let ops = args
         .get("ops")
         .and_then(Value::as_array)
@@ -347,6 +404,9 @@ pub fn ast_edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let mut sections: Vec<String> = Vec::new();
     let mut files_touched = 0usize;
     for file in &files {
+        if cancelled(cancel) {
+            return Err(pa_agent::abort::aborted_error());
+        }
         let Ok(source) = std::fs::read_to_string(file) else {
             continue;
         };

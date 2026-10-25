@@ -32,7 +32,19 @@ if [ -z "$platform" ] || [ -z "$machine" ]; then
     exit 1
 fi
 
+# Linux: glibc build by default; the fully static musl build where glibc is
+# absent (Alpine, distroless) or when OMT_LIBC=musl. The musl build lacks only
+# the optional ONNX-based Laya judge.
+libc="${OMT_LIBC:-}"
+if [ "$platform" = "linux" ] && [ -z "$libc" ]; then
+    if ldd --version 2>&1 | grep -qi musl || ! ldd --version >/dev/null 2>&1; then
+        libc="musl"
+    fi
+fi
 ASSET="omt-${platform}-${machine}"
+if [ "$platform" = "linux" ] && [ "$libc" = "musl" ]; then
+    ASSET="${ASSET}-musl"
+fi
 
 command -v curl >/dev/null 2>&1 || { echo "omt: curl is required" >&2; exit 1; }
 if command -v sha256sum >/dev/null 2>&1; then

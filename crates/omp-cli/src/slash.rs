@@ -121,7 +121,7 @@ async fn try_extension_command(rt: &Runtime, name: &str, args: &str) -> bool {
     true
 }
 
-/// Full dispatch chain for one prompt (builtins → extension → file templates).
+/// Full dispatch chain for one prompt (builtins → extra → WASM plugins → extension → file templates).
 pub async fn try_dispatch(rt: &std::sync::Arc<Runtime>, text: &str) -> Outcome {
     if !text.starts_with('/') {
         return Outcome::NotSlash;
@@ -134,6 +134,12 @@ pub async fn try_dispatch(rt: &std::sync::Arc<Runtime>, text: &str) -> Outcome {
     }
     if let Some(outcome) = crate::slash_extra::dispatch_extra(rt, &name, &args).await {
         return outcome;
+    }
+    if let Some(text) = crate::tools::wasm::try_command(&rt.cwd, &name, &args).await {
+        output(rt, &text);
+        return Outcome::Handled {
+            agent_invoked: false,
+        };
     }
     if try_extension_command(rt, &name, &args).await {
         return Outcome::ExtensionHandled;
@@ -2959,6 +2965,8 @@ async fn plugins_command(rt: &Runtime, args: &str) -> Outcome {
     match verb.as_str() {
         "list" | "" => {
             output(rt, &crate::features::skills::plugins_list_text(rt));
+            let wasm = crate::tools::wasm::plugins_list_text(&rt.cwd);
+            output(rt, &format!("\n{wasm}"));
             Handled {
                 agent_invoked: false,
             }
@@ -3061,6 +3069,7 @@ use self::Outcome::{Handled, Prompt};
 pub async fn dynamic_commands(rt: &std::sync::Arc<Runtime>) -> Vec<Value> {
     refresh_file_commands(&rt.cwd);
     let mut out = extension_commands().await;
+    out.extend(crate::tools::wasm::command_catalog(&rt.cwd));
     for cmd in FILE_COMMANDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

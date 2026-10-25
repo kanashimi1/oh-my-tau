@@ -8,6 +8,18 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+/// Cooperative cancellation flag for blocking tool bodies: the async registry
+/// adapter flips it as soon as the call's `AbortSignal` fires, and long loops
+/// (walker chunks, per-file scoring, AST passes) poll it to bail out early
+/// instead of finishing CPU-heavy work nobody will read.
+pub type CancelFlag = std::sync::Arc<std::sync::atomic::AtomicBool>;
+
+/// `true` once the owning tool call has been aborted.
+#[must_use]
+pub fn cancelled(flag: &CancelFlag) -> bool {
+    flag.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `DEFAULT_MAX_BYTES` of omp's streaming output: inline output budget.
 pub const DEFAULT_MAX_BYTES: usize = 50 * 1024;
 

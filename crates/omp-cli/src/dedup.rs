@@ -16,6 +16,11 @@
 //! - Conservative: results with images, errors, or small bodies (<
 //!   [`MIN_DEDUP_BYTES`]) are never touched, and only whole-result exact
 //!   matches dedup (no fuzzy heuristics the model cannot verify).
+//!
+//! The hash/duplicate-detection step is exactly duplicated by the goose kernel
+//! in `crates/omp-goose` (feature `goose`, off by default), which uses the same
+//! `DefaultHasher` (SipHash-1-3) semantics and is verified by an equivalence
+//! test below.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -59,42 +64,108 @@ fn stub_for(orig_call_id: &str, bytes: usize) -> ToolResultContent {
     })
 }
 
+/// Reference (pure Rust) classification: for each entry, `None` = keep full,
+/// `Some(first)` = stub pointing at the first occurrence. `texts[i]` is
+/// `Some` exactly when `eligible[i]`, which mirrors every case the caller keeps
+/// full (images/errors/empty/small).
+#[cfg(any(not(feature = "goose"), test))]
+fn plan_stubs_reference(texts: &[Option<&str>], eligible: &[bool]) -> Vec<Option<usize>> {
+    let mut first_seen: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    let mut out = Vec::with_capacity(texts.len());
+    for (i, (text, &elig)) in texts.iter().zip(eligible).enumerate() {
+        let Some(text) = text.filter(|_| elig) else {
+            out.push(None);
+            continue;
+        };
+        let hash = content_hash(text);
+        if let Some(&first) = first_seen.get(&hash) {
+            out.push(Some(first));
+        } else {
+            first_seen.insert(hash, i);
+            out.push(None);
+        }
+    }
+    out
+}
+
+/// Same contract as [`plan_stubs_reference`], backed by the goose kernel.
+#[cfg(feature = "goose")]
+fn plan_stubs(texts: &[Option<&str>], eligible: &[bool]) -> Vec<Option<usize>> {
+    let all: Vec<&str> = texts.iter().map(|t| t.unwrap_or("")).collect();
+    omp_goose::dedup_classify(&all, eligible)
+}
+
+/// Same contract as [`plan_stubs_reference`] (used when the goose feature is
+/// off).
+#[cfg(not(feature = "goose"))]
+fn plan_stubs(texts: &[Option<&str>], eligible: &[bool]) -> Vec<Option<usize>> {
+    plan_stubs_reference(texts, eligible)
+}
+
+/// Core of [`dedup_tool_results`], with the classification step injectable (so
+/// the equivalence test can run the goose and reference planners side by side).
+fn dedup_tool_results_with(
+    messages: Vec<AgentMessage>,
+    plan: impl Fn(&[Option<&str>], &[bool]) -> Vec<Option<usize>>,
+) -> Vec<AgentMessage> {
+    let n = messages.len();
+    let mut texts_owned: Vec<Option<String>> = Vec::with_capacity(n);
+    let mut eligible = vec![false; n];
+    let mut call_ids: Vec<String> = Vec::with_capacity(n);
+    let mut byte_counts: Vec<usize> = Vec::with_capacity(n);
+
+    for (i, m) in messages.iter().enumerate() {
+        let AgentMessage::Standard(Message::ToolResult(tr)) = m else {
+            texts_owned.push(None);
+            call_ids.push(String::new());
+            byte_counts.push(0);
+            continue;
+        };
+        let text = text_of(&tr.content);
+        let elig = text
+            .as_ref()
+            .is_some_and(|t| !tr.is_error && t.len() >= MIN_DEDUP_BYTES);
+        if elig {
+            let bytes = text.as_ref().unwrap().len();
+            texts_owned.push(text);
+            call_ids.push(tr.tool_call_id.clone());
+            byte_counts.push(bytes);
+        } else {
+            texts_owned.push(None);
+            call_ids.push(String::new());
+            byte_counts.push(0);
+        }
+        eligible[i] = elig;
+    }
+
+    let texts: Vec<Option<&str>> = texts_owned.iter().map(|t| t.as_deref()).collect();
+    let stubs = plan(&texts, &eligible);
+
+    messages
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let AgentMessage::Standard(Message::ToolResult(mut tr)) = m else {
+                return m;
+            };
+            match stubs[i] {
+                None => AgentMessage::Standard(Message::ToolResult(tr)),
+                Some(first) => {
+                    tr.content = vec![stub_for(&call_ids[first], byte_counts[first])];
+                    AgentMessage::Standard(Message::ToolResult(tr))
+                }
+            }
+        })
+        .collect()
+}
+
 /// Collapse exact-duplicate tool results into pointer stubs.
 ///
 /// Pure and order-deterministic: rebuilding from the same history yields the
 /// same stubs at the same positions, so provider prefix caches keep hitting.
 #[must_use]
 pub fn dedup_tool_results(messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
-    let mut first_seen: std::collections::HashMap<u64, (String, usize)> =
-        std::collections::HashMap::new();
-
-    messages
-        .into_iter()
-        .map(|m| {
-            let AgentMessage::Standard(Message::ToolResult(tr)) = m else {
-                return m;
-            };
-            let Some(text) = text_of(&tr.content) else {
-                return AgentMessage::Standard(Message::ToolResult(tr));
-            };
-            // Conservative, per the module docs: error results carry the
-            // diagnostic the model needs to recover; never collapse them.
-            if tr.is_error {
-                return AgentMessage::Standard(Message::ToolResult(tr));
-            }
-            if text.len() < MIN_DEDUP_BYTES {
-                return AgentMessage::Standard(Message::ToolResult(tr));
-            }
-            let hash = content_hash(&text);
-            if let Some((orig_call_id, bytes)) = first_seen.get(&hash) {
-                let mut tr = tr;
-                tr.content = vec![stub_for(orig_call_id, *bytes)];
-                return AgentMessage::Standard(Message::ToolResult(tr));
-            }
-            first_seen.insert(hash, (tr.tool_call_id.clone(), text.len()));
-            AgentMessage::Standard(Message::ToolResult(tr))
-        })
-        .collect()
+    dedup_tool_results_with(messages, plan_stubs)
 }
 
 /// Whether the wire pass runs this process: explicit opt-in, or default-on
@@ -236,5 +307,61 @@ mod tests {
                 "turn {n}: earlier wire bytes changed"
             );
         }
+    }
+
+    /// The goose kernel must produce byte-identical wire output to the pure-Rust
+    /// reference across varied inputs: empty, unicode, escapes, many duplicates,
+    /// errors, and below-minimum sizes.
+    #[cfg(feature = "goose")]
+    #[test]
+    fn equivalence_goose_vs_rust() {
+        let big_a = "A".repeat(1000);
+        let big_b = "B".repeat(800);
+        let uni = "héllo wörld—😀".repeat(50);
+        let esc = "\\n\\t\\\"\\\\\\r\\u00e9".repeat(60);
+        let msgs = vec![
+            tool_result("c1", &big_a),
+            tool_result("c2", &big_a),
+            tool_result("c3", &big_b),
+            tool_result("c4", &uni),
+            tool_result("c5", &uni),
+            tool_result("c6", &esc),
+            tool_result("c7", "tiny"),
+            tool_result("c8", &big_a),
+            tool_result("c9", &big_b),
+            tool_result("c10", ""),
+        ];
+        // One entry that is an error (kept full, never stubbed/recorded).
+        let mut err = tool_result("c_err", &big_a);
+        if let AgentMessage::Standard(Message::ToolResult(tr)) = &mut err {
+            tr.is_error = true;
+        }
+        let mut with_err = msgs.clone();
+        with_err.push(err);
+
+        let n = with_err.len();
+        let mut texts_owned: Vec<Option<String>> = vec![None; n];
+        let mut eligible = vec![false; n];
+        for (i, m) in with_err.iter().enumerate() {
+            if let AgentMessage::Standard(Message::ToolResult(tr)) = m {
+                if let Some(t) = text_of(&tr.content) {
+                    if !tr.is_error && t.len() >= MIN_DEDUP_BYTES {
+                        texts_owned[i] = Some(t);
+                        eligible[i] = true;
+                    }
+                }
+            }
+        }
+        let texts: Vec<Option<&str>> = texts_owned.iter().map(|o| o.as_deref()).collect();
+
+        // Classification must agree.
+        let rust_plan = plan_stubs_reference(&texts, &eligible);
+        let goose_plan = plan_stubs(&texts, &eligible);
+        assert_eq!(rust_plan, goose_plan, "classification plans diverge");
+
+        // End-to-end wire output must agree.
+        let goose_full = dedup_tool_results(with_err.clone());
+        let rust_full = dedup_tool_results_with(with_err, plan_stubs_reference);
+        assert_eq!(rust_full, goose_full, "wire outputs diverge");
     }
 }
