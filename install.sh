@@ -7,7 +7,7 @@
 set -eu
 
 REPO="kanashimi1/oh-my-tau"
-TAG="${OMT_VERSION:-v0.10.0}"
+TAG="${OMT_VERSION:-v0.11.0}"
 BASE="https://github.com/${REPO}/releases/download/${TAG}"
 DEST_DIR="${OMT_INSTALL_DIR:-$HOME/.local/bin}"
 

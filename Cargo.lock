@@ -1922,7 +1922,7 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "omp-auth-broker"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1941,7 +1941,7 @@ dependencies = [
 
 [[package]]
 name = "omp-cli"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1997,7 +1997,7 @@ dependencies = [
 
 [[package]]
 name = "omp-collab"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "omp-compact"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "omp-session",
@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "omp-eval"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "libc",
  "nix",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "omp-ext"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "pa-agent",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "omp-judge"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "laya-ort",
@@ -2064,7 +2064,7 @@ dependencies = [
 
 [[package]]
 name = "omp-lsp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -2078,7 +2078,7 @@ dependencies = [
 
 [[package]]
 name = "omp-mcp"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "futures",
  "parking_lot",
@@ -2094,7 +2094,7 @@ dependencies = [
 
 [[package]]
 name = "omp-providers"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2118,7 +2118,7 @@ dependencies = [
 
 [[package]]
 name = "omp-sandbox"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "landlock",
  "libc",
@@ -2127,7 +2127,7 @@ dependencies = [
 
 [[package]]
 name = "omp-session"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "pa-types",
@@ -2137,7 +2137,7 @@ dependencies = [
 
 [[package]]
 name = "omp-settings"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "parking_lot",
  "serde",
@@ -2147,14 +2147,14 @@ dependencies = [
 
 [[package]]
 name = "omp-sot"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "omp-stats"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "fancy-regex",
@@ -2178,7 +2178,7 @@ dependencies = [
 
 [[package]]
 name = "omp-task"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "jsonschema",
  "nix",
@@ -2193,7 +2193,7 @@ dependencies = [
 
 [[package]]
 name = "omp-tui"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2220,7 +2220,7 @@ dependencies = [
 
 [[package]]
 name = "omp-urls"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2335,7 +2335,7 @@ checksum = "1a80800c0488c3a21695ea981a54918fbb37abf04f4d0720c453632255e2ff0e"
 
 [[package]]
 name = "pa-agent"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "pa-ai"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2377,7 +2377,7 @@ dependencies = [
 
 [[package]]
 name = "pa-models"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "hex",
  "hmac",
@@ -2395,7 +2395,7 @@ dependencies = [
 
 [[package]]
 name = "pa-types"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "libc",
