@@ -1,0 +1,124 @@
+/* thinking + tool feed slice — theme vars only */
+
+/* ---------- Thinking block ---------- */
+.thinking {
+  border-left: 2px solid var(--ty);
+  color: var(--fg-muted);
+  font-size: 13px;
+  padding: 2px 10px;
+  min-width: 0;
+}
+.thinking-head {
+  cursor: pointer;
+  user-select: none;
+  color: var(--ty);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.thinking-head::before {
+  content: "▸";
+  flex: none;
+  font-size: 10px;
+  transition: transform .18s ease;
+}
+.thinking.open .thinking-head::before { transform: rotate(90deg); }
+.thinking-head:hover { color: var(--fg); }
+.thinking.live .thinking-head { animation: think-pulse 1.6s ease-in-out infinite; }
+@keyframes think-pulse { 50% { opacity: .55; } }
+
+/* smooth expand/collapse */
+.thinking-clip {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows .22s ease;
+}
+.thinking.open .thinking-clip { grid-template-rows: 1fr; }
+.thinking-inner { overflow: hidden; min-height: 0; }
+.thinking.open .thinking-inner { max-height: 260px; overflow: auto; overscroll-behavior: contain; }
+.thinking .md { margin-top: 4px; }
+.thinking.redacted { border-left-color: var(--border); }
+.thinking.redacted .thinking-head { color: var(--fg-faint); cursor: default; }
+.thinking.redacted .thinking-head::before { display: none; }
+
+/* ---------- Compact tool step list ---------- */
+.tool-group { display: flex; flex-direction: column; gap: 6px; }
+.tool-group .tool-steps {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.tool-group .tool-steps .tool {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+}
+.tool-group .tool-steps .tool:last-child { border-bottom: none; }
+.tool-group .tool-steps .tool-head { padding: 4px 10px; font-size: 12.5px; }
+
+/* collapsed "N steps" group: keep errors and the running step visible */
+.group-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--fg-faint);
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-raised);
+}
+.group-head:hover { color: var(--fg-muted); background: var(--bg-hover); }
+.group-head::before { content: "▸"; font-size: 10px; transition: transform .18s ease; }
+.tool-group.expanded .group-head::before { transform: rotate(90deg); }
+.group-head .group-count { color: var(--fg-muted); font-weight: 600; }
+.tool-group.collapsed .tool-steps .tool:not(.error):not(.running) { display: none; }
+.tool-group.collapsed .tool-steps .tool { border-bottom: none; }
+
+/* family icon */
+.tool-ic { width: 14px; height: 14px; flex: none; display: inline-flex; color: var(--fg-faint); }
+.tool.running .tool-ic, .tool-group .tool-steps .tool.running .tool-ic { color: var(--accent); }
+.tool-ic svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* status: spinner while running */
+.tool.running .status { font-size: 0; color: var(--accent); }
+.tool.running .status::before {
+  content: "";
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--accent-muted);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: tool-spin .7s linear infinite;
+}
+@keyframes tool-spin { to { transform: rotate(360deg); } }
+
+/* ---------- Open action ---------- */
+.open-btn {
+  align-self: flex-start;
+  font: 600 11px var(--mono, ui-monospace, monospace);
+  color: var(--accent);
+  background: var(--accent-muted);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.open-btn:hover { border-color: var(--accent); }
+
+.tool-open {
+  flex: none; font-size: 11.5px; padding: 1px 8px; margin-left: 6px;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  background: transparent; color: var(--fg-muted); opacity: 0; transition: opacity .12s;
+}
+.tool:hover .tool-open, .tool-open:focus-visible { opacity: 1; }
+.tool-open:hover { color: var(--fg); border-color: var(--accent); }

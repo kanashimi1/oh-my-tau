@@ -6,6 +6,10 @@
 <title>omt</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/sidebar.css">
+<link rel="stylesheet" href="/assets/composer.css">
+<link rel="stylesheet" href="/assets/artifacts.css">
+<link rel="stylesheet" href="/assets/stream.css">
 </head>
 <body>
 <div id="wallpaper" aria-hidden="true"></div>
@@ -15,18 +19,14 @@
       <div class="brand"><svg class="tau" viewBox="8 12 48 46" aria-label="τ"><defs><linearGradient id="tau-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="oklch(0.7 0.24 340)"/><stop offset="0.5" stop-color="oklch(0.62 0.21 295)"/><stop offset="1" stop-color="oklch(0.81 0.14 200)"/></linearGradient></defs><path fill="url(#tau-g)" d="M10 14h44v9H37v24h13v9H28V23H10z"/></svg><span class="wordmark">OMT</span></div>
       <button class="icon-btn" id="appearance-btn" title="Themes &amp; wallpapers (Ctrl+Shift+A)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="1.5"/><circle cx="17.5" cy="10.5" r="1.5"/><circle cx="8.5" cy="7.5" r="1.5"/><circle cx="6.5" cy="12.5" r="1.5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.5-.75 1.5-1.67 0-.44-.17-.84-.44-1.13-.29-.29-.44-.68-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.96 6.01 17.46 2 12 2z"/></svg></button>
     </div>
-    <button class="primary wide" id="new-session">+ New session</button>
-    <div class="side-section">
-      <div class="side-title">Running</div>
-      <div id="agent-list" class="list"></div>
-    </div>
+    <button class="primary wide compact" id="new-session">+ New session</button>
     <div class="side-section grow">
       <div class="side-title">
         <span>Sessions</span>
         <button class="link-btn" id="project-pick" title="Change folder">folder ▾</button>
       </div>
       <div id="project-path" class="muted small ellipsis"></div>
-      <input id="session-filter" class="filter" placeholder="Filter sessions…" autocomplete="off">
+      <input id="session-filter" class="filter" placeholder="Search sessions…" autocomplete="off">
       <div id="session-list" class="list scroll"></div>
     </div>
   </aside>
@@ -38,8 +38,6 @@
         <div id="session-cwd" class="muted small ellipsis"></div>
       </div>
       <div class="top-actions">
-        <button class="chip" id="model-btn" title="Model (/model)">model</button>
-        <button class="chip" id="thinking-btn" title="Thinking level (/effort)">thinking</button>
         <button class="icon-btn" id="menu-btn" title="Session actions">⋯</button>
       </div>
     </header>
@@ -59,11 +57,22 @@
     <footer id="composer-wrap">
       <div id="autocomplete" class="autocomplete" hidden></div>
       <div id="attachments" class="attachments"></div>
+      <div id="home-head">
+        <div class="logo big"><svg class="tau big" viewBox="8 12 48 46" aria-label="τ"><defs><linearGradient id="tau-g-home" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="oklch(0.7 0.24 340)"/><stop offset="0.5" stop-color="oklch(0.62 0.21 295)"/><stop offset="1" stop-color="oklch(0.81 0.14 200)"/></linearGradient></defs><path fill="url(#tau-g-home)" d="M10 14h44v9H37v24h13v9H28V23H10z"/></svg></div>
+        <h1 class="wordmark big">OMT</h1>
+        <p class="muted">Start a new session or pick one from the sidebar.</p>
+      </div>
       <div class="composer">
-        <div class="ta-wrap"><div id="composer-hl" class="ta-hl" aria-hidden="true"></div><textarea id="composer" rows="1" placeholder="Message omt…  (/ commands · ! shell · Enter send · Shift+Enter newline)" disabled></textarea></div>
-        <button id="attach-btn" class="icon-btn" title="Attach image"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
-        <button id="send-btn" class="primary" disabled>Send</button>
-        <button id="stop-btn" class="danger" hidden title="Interrupt (Esc)">Stop</button>
+        <div class="composer-card">
+          <div class="ta-wrap"><div id="composer-hl" class="ta-hl" aria-hidden="true"></div><textarea id="composer" rows="1" placeholder="Ask anything…  (/ commands · ! shell · Enter send · Shift+Enter newline)" disabled></textarea></div>
+          <div class="composer-bar">
+            <button id="attach-btn" class="icon-btn attach-btn" title="Attach"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button class="chip chip-inline" id="composer-model" title="Model (/model)" disabled>model</button>
+            <button class="chip chip-inline" id="composer-thinking" title="Thinking level (/effort)" disabled>thinking</button>
+            <button id="send-btn" class="send-btn" disabled title="Send (Enter)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg></button>
+            <button id="stop-btn" class="danger send-btn" hidden title="Interrupt (Esc)"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+          </div>
+        </div>
       </div>
       <input type="file" id="file-input" accept="image/*" multiple hidden>
       <div id="widgets-below" class="widgets"></div>
@@ -81,7 +90,10 @@
 <script src="/assets/composer.js"></script>
 <script src="/assets/appearance.js"></script>
 <script src="/assets/models.js"></script>
+<script src="/assets/sidebar.js"></script>
+<script src="/assets/artifacts.js"></script>
 <script src="/assets/shell.js"></script>
 <script src="/assets/app.js"></script>
+<script src="/assets/desktop-bridge.js"></script>
 </body>
 </html>

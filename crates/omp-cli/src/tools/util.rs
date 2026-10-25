@@ -5,7 +5,7 @@
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde_json::Value;
 
 /// `DEFAULT_MAX_BYTES` of omp's streaming output: inline output budget.

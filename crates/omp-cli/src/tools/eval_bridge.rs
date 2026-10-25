@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use pa_agent::abort::{race_with_abort, AbortSignal};
+use pa_agent::abort::{AbortSignal, race_with_abort};
 use pa_agent::agent_loop::{AfterToolCallFn, BeforeToolCallFn};
 use pa_agent::types::{
     AfterToolCallContext, AgentContext, AgentTool, AgentToolResult, AgentToolUpdateCallback,
@@ -18,7 +18,7 @@ use pa_agent::types::{
     ToolResultContent, Usage,
 };
 use pa_agent::validation::validate_tool_arguments;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Env;
 
@@ -929,10 +929,11 @@ mod tests {
                 .unwrap_err();
             assert!(err.contains("unknown eval host op"), "{op}: {err}");
         }
-        assert!(b
-            .dispatch("tool.describe", json!({"name": "bash"}))
-            .await
-            .is_err());
+        assert!(
+            b.dispatch("tool.describe", json!({"name": "bash"}))
+                .await
+                .is_err()
+        );
         let listed = b.dispatch("tool.list", json!({})).await.unwrap();
         assert_eq!(listed.as_array().unwrap().len(), 1, "{listed}");
         assert!(b.dispatch("read", json!({"path": "a.txt"})).await.is_ok());
@@ -959,11 +960,13 @@ mod tests {
         }
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         let listed = b.dispatch("tool.list", json!({})).await.unwrap();
-        assert!(listed
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|t| !matches!(t["name"].as_str(), Some("eval" | "checkpoint" | "rewind"))));
+        assert!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|t| !matches!(t["name"].as_str(), Some("eval" | "checkpoint" | "rewind")))
+        );
     }
 
     #[tokio::test]

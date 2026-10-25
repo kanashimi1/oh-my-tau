@@ -7,12 +7,12 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use pa_agent::types::AgentToolResult;
 use pi_walker::{WalkDetail, WalkRequest};
 
-use super::util::{format_bytes, format_path_relative_to_cwd, resolve_to_cwd, str_arg};
 use super::Env;
+use super::util::{format_bytes, format_path_relative_to_cwd, resolve_to_cwd, str_arg};
 
 /// Ranges shown per hit in the model-facing text (omp `RANGES_SHOWN`).
 const RANGES_SHOWN: usize = 3;
@@ -237,7 +237,9 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         out,
         "listed {listed} · judged 0 · read {files_read} files ({}) · 0 requests · 0 tokens · $0.0000 · {} wall / 0:00 api",
         format_bytes(file_bytes),
-        super::jobs::format_duration(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        super::jobs::format_duration(
+            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        ),
     );
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let hit_values: Vec<serde_json::Value> = hits

@@ -1,4 +1,41 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" width="1920" height="1080">
-<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1" ><stop offset="0" stop-color="#07060d"/><stop offset="0.6" stop-color="#0a0812"/><stop offset="1" stop-color="#05040a"/></linearGradient><linearGradient id="a1" x1="0" y1="0" x2="1" y2="0" ><stop offset="0" stop-color="#6b3dff" stop-opacity="0"/><stop offset="0.3" stop-color="#7a4bff" stop-opacity="0.55"/><stop offset="0.7" stop-color="#d14bb0" stop-opacity="0.45"/><stop offset="1" stop-color="#ff5fa0" stop-opacity="0"/></linearGradient><linearGradient id="a2" x1="0" y1="0" x2="1" y2="0" ><stop offset="0" stop-color="#ff4f9a" stop-opacity="0"/><stop offset="0.4" stop-color="#b04bff" stop-opacity="0.4"/><stop offset="1" stop-color="#4b6bff" stop-opacity="0"/></linearGradient><radialGradient id="vg" ><stop offset="0.55" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity="0.7"/></radialGradient><filter id="b" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="50"/></filter><filter id="b2" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="80"/></filter></defs>
-<rect width="1920" height="1080" fill="url(#bg)"/><g fill="#cfc6ff"><circle cx="1523.2" cy="887.7" r="0.7" opacity="0.10"/><circle cx="0.9" cy="715.8" r="1" opacity="0.13"/><circle cx="716.5" cy="831.8" r="1" opacity="0.09"/><circle cx="1401.3" cy="447.1" r="0.9" opacity="0.18"/><circle cx="370.5" cy="597.9" r="0.7" opacity="0.19"/><circle cx="1542.5" cy="740.5" r="0.7" opacity="0.17"/><circle cx="178.8" cy="864.3" r="0.8" opacity="0.14"/><circle cx="180.1" cy="212.9" r="0.7" opacity="0.24"/><circle cx="1826.6" cy="635.7" r="0.9" opacity="0.11"/><circle cx="691.9" cy="1007.4" r="0.8" opacity="0.12"/><circle cx="1237.6" cy="753.7" r="1.1" opacity="0.16"/><circle cx="54.6" cy="390.3" r="0.7" opacity="0.20"/><circle cx="1131.2" cy="96.9" r="0.8" opacity="0.31"/><circle cx="224.3" cy="715.8" r="0.6" opacity="0.11"/><circle cx="928.8" cy="149.2" r="1" opacity="0.17"/><circle cx="1340.6" cy="13.5" r="0.5" opacity="0.30"/><circle cx="639.2" cy="976.8" r="0.7" opacity="0.10"/><circle cx="724.6" cy="420.3" r="1.1" opacity="0.13"/><circle cx="103.3" cy="456.7" r="0.7" opacity="0.21"/><circle cx="1883.5" cy="264.9" r="1" opacity="0.29"/><circle cx="1286.8" cy="960.7" r="1" opacity="0.09"/><circle cx="1528.5" cy="558" r="0.9" opacity="0.16"/><circle cx="785.4" cy="92.8" r="0.7" opacity="0.28"/><circle cx="936.3" cy="846.8" r="0.5" opacity="0.08"/><circle cx="237.1" cy="636.6" r="0.7" opacity="0.13"/><circle cx="866.9" cy="1001.8" r="0.7" opacity="0.07"/><circle cx="1688.2" cy="661.2" r="0.8" opacity="0.12"/><circle cx="918.8" cy="153.6" r="0.7" opacity="0.20"/><circle cx="1545.1" cy="349.3" r="1.1" opacity="0.22"/><circle cx="1772.3" cy="406.1" r="0.7" opacity="0.20"/><circle cx="764.7" cy="527" r="1.1" opacity="0.20"/><circle cx="558.3" cy="6.7" r="0.5" opacity="0.24"/><circle cx="57.8" cy="835.5" r="0.9" opacity="0.08"/><circle cx="695.1" cy="1013.5" r="0.5" opacity="0.11"/><circle cx="369.9" cy="1023.2" r="0.8" opacity="0.09"/><circle cx="1502" cy="878.6" r="0.8" opacity="0.11"/><circle cx="192.3" cy="390.9" r="0.9" opacity="0.13"/><circle cx="1164.6" cy="155.8" r="0.6" opacity="0.25"/><circle cx="202.4" cy="697.2" r="1" opacity="0.13"/><circle cx="1208.1" cy="757.5" r="1" opacity="0.09"/><circle cx="160.4" cy="667.6" r="1" opacity="0.19"/><circle cx="1715.1" cy="488.1" r="1" opacity="0.20"/><circle cx="263.2" cy="1018.9" r="0.8" opacity="0.11"/><circle cx="1494.7" cy="482.8" r="0.9" opacity="0.14"/><circle cx="122.2" cy="864.2" r="0.7" opacity="0.15"/><circle cx="1804.2" cy="90.4" r="0.7" opacity="0.30"/><circle cx="1855.1" cy="465.2" r="0.5" opacity="0.23"/><circle cx="164.4" cy="881.7" r="0.8" opacity="0.12"/><circle cx="62.8" cy="187.2" r="0.5" opacity="0.20"/><circle cx="1906.6" cy="826.4" r="0.9" opacity="0.16"/><circle cx="659.5" cy="83.8" r="0.6" opacity="0.28"/><circle cx="1050.5" cy="501.2" r="0.5" opacity="0.17"/><circle cx="142" cy="561.9" r="0.8" opacity="0.10"/><circle cx="288.6" cy="304.2" r="0.8" opacity="0.14"/><circle cx="745.6" cy="240.9" r="0.8" opacity="0.16"/><circle cx="1748.3" cy="452.7" r="0.7" opacity="0.13"/><circle cx="461.4" cy="618.2" r="0.8" opacity="0.18"/><circle cx="361.2" cy="351.3" r="0.8" opacity="0.17"/><circle cx="763.2" cy="1077.3" r="0.9" opacity="0.08"/><circle cx="1375.4" cy="696.8" r="0.7" opacity="0.17"/><circle cx="1279.8" cy="1050.4" r="0.9" opacity="0.06"/><circle cx="738.6" cy="66" r="1" opacity="0.15"/><circle cx="220" cy="767.9" r="0.7" opacity="0.09"/><circle cx="61.8" cy="586.2" r="0.6" opacity="0.19"/><circle cx="1085.4" cy="996.1" r="0.8" opacity="0.07"/><circle cx="1390.4" cy="933.4" r="0.9" opacity="0.07"/><circle cx="230.5" cy="121.2" r="0.5" opacity="0.32"/><circle cx="1766" cy="810.1" r="0.9" opacity="0.14"/><circle cx="1249.9" cy="310" r="0.6" opacity="0.19"/><circle cx="1649.8" cy="841.1" r="0.6" opacity="0.14"/></g><g filter="url(#b2)" fill="none" stroke-linecap="round" opacity=".7"><path d="M-100 380C300 200 700 520 1100 330S1700 160 2050 300" stroke="url(#a1)" stroke-width="120"/><path d="M-100 700C400 560 800 820 1250 640S1800 520 2050 620" stroke="url(#a2)" stroke-width="90"/></g><g filter="url(#b)" fill="none" opacity=".35"><path d="M200 320C500 240 820 420 1150 300S1600 200 1800 260" stroke="#b58aff" stroke-width="22"/><path d="M500 690C800 620 1050 760 1400 650" stroke="#ff7ac0" stroke-width="16"/></g><rect width="1920" height="1080" fill="url(#vg)"/>
+<!-- Midnight aurora: the curtain sweeps in from the top-right as long tapering
+     streaks of light, one rose streak low near the horizon; the ridge and a
+     watcher's tent below, light mirrored in still water.
+     Flat shapes only; palette: night navy, aurora greens, ice, one rose, ink. -->
+<rect width="1920" height="700" fill="#0a0e1c"/>
+<rect y="700" width="1920" height="380" fill="#0c1222"/>
+<g fill="#d6f2e6" opacity=".55">
+  <circle cx="140" cy="110" r="1.6"/><circle cx="230" cy="220" r="1.3"/><circle cx="320" cy="90" r="1.8"/>
+  <circle cx="410" cy="180" r="1.2"/><circle cx="520" cy="140" r="1.5"/><circle cx="90" cy="320" r="1.3"/>
+  <circle cx="180" cy="430" r="1.1"/><circle cx="1770" cy="420" r="1.2"/><circle cx="1660" cy="240" r="1.2"/>
+  <circle cx="1840" cy="380" r="1.4"/><circle cx="60" cy="560" r="1"/>
+</g>
+<!-- the curtain -->
+<g>
+  <path fill="#1f8a6e" d="M1973,-201 L2033,-63 L183,661 L177,649 Z"/>
+  <path fill="#37c99a" d="M2000,-193 L2048,-83 L333,616 L327,604 Z"/>
+  <path fill="#1f8a6e" d="M2026,-189 L2070,-95 L503,591 L497,579 Z"/>
+  <path fill="#d6f2e6" d="M2050,-180 L2093,-98 L673,611 L667,599 Z"/>
+  <path fill="#37c99a" d="M2074,-167 L2117,-97 L844,661 L836,649 Z"/>
+  <path fill="#1f8a6e" d="M2097,-158 L2139,-99 L1004,686 L996,674 Z"/>
+  <path fill="#d6f2e6" d="M2120,-158 L2158,-109 L1154,651 L1146,639 Z"/>
+  <path fill="#c8648f" d="M1827,184 L1873,228 L1405,677 L1395,667 Z"/>
+  <path fill="#37c99a" d="M1909,309 L1947,334 L1706,682 L1694,674 Z"/>
+</g>
+<!-- ridge -->
+<path fill="#05070f" d="M0,690 L220,668 L420,680 L560,646 L760,676 L960,660 L1160,682 L1360,664 L1520,606 L1700,662 L1920,648 L1920,700 L0,700 Z"/>
+<!-- watcher's tent on the shore -->
+<path fill="#05070f" d="M340,698 L376,656 L412,698 Z"/>
+<path fill="#d6f2e6" d="M364,698 L376,672 L388,698 Z"/>
+<!-- light on the still water -->
+<g>
+  <path fill="#1f8a6e" opacity=".16" d="M236,712 L264,712 L260,880 L240,880 Z"/>
+  <path fill="#37c99a" opacity=".14" d="M366,716 L390,716 L386,846 L370,846 Z"/>
+  <path fill="#d6f2e6" opacity=".16" d="M530,718 L552,718 L548,918 L534,918 Z"/>
+  <path fill="#37c99a" opacity=".12" d="M700,722 L720,722 L716,812 L704,812 Z"/>
+  <path fill="#1f8a6e" opacity=".13" d="M864,726 L884,726 L880,798 L868,798 Z"/>
+  <path fill="#d6f2e6" opacity=".12" d="M1030,728 L1048,728 L1044,786 L1034,786 Z"/>
+  <path fill="#c8648f" opacity=".15" d="M1290,706 L1312,706 L1306,822 L1296,822 Z"/>
+</g>
 </svg>

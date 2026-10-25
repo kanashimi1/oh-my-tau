@@ -7,7 +7,7 @@
 		"initOptions": {},
 		"settings": {
 			"rust-analyzer": {
-				"checkOnSave": false
+				"checkOnSave": true
 			}
 		},
 		"capabilities": {

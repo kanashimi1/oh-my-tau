@@ -9,14 +9,14 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use omp_task::discovery::{discover_project_agents, discover_user_agents};
 use omp_task::envelope::format_task_result;
 use omp_task::params::{SchemaMode, TaskItem};
-use omp_task::runner::{RunStatus, TaskRunner, TaskSpec};
+use omp_task::runner::{ChildMode, RunStatus, TaskRunner, TaskSpec};
 use pa_agent::types::AgentToolResult;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::Env;
 
@@ -47,14 +47,14 @@ const MAX_CONCURRENCY: usize = 32;
 /// Static header of the tool description (the `task.md` template rendered
 /// with the protocol defaults: batch + async enabled, no isolation, default
 /// agent `task`). The discovered agent list is appended dynamically.
-pub const DESCRIPTION_HEADER: &str = r"Spawn `tasks[]` concurrently; IDs return immediately.
+pub const DESCRIPTION_HEADER: &str = r"Spawn `tasks[]` concurrently; the call blocks until every child settles, then returns all results.
 
 # Results
 `outputSchema` parsed payload, even invalid: `agent://<id>` (field `/<field>`, nested `/reports/0/data`); invalid preview inline.
 
 # Delegation
 Use most specific agent. Prefer one agent to investigate + edit. Omit `agent` only for default (`task`); NEVER specify it.
-Shared edits need one integration owner; siblings coordinate via `write agent://<id>`. Set interfaces in `context`.
+Shared edits need one integration owner. Set interfaces in `context`.
 
 # Inputs
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name. `outputSchema` overrides agent/session schemas.
@@ -62,7 +62,12 @@ Shared edits need one integration owner; siblings coordinate via `write agent://
 `tools`: eval-defined, run in your kernel.
 `model`: selector or ordered array overriding the agent's model for this spawn (`provider/model[:level]`, role alias like `@smol`, `@default` = parent's live model); set per `tasks[]` item, never top-level. Omit unless a specific model is needed. Requested model unavailable → stop and report; NEVER substitute another.
 `schemaMode`: default permissive warns after retries; strict fails.
-Children start blank; parent IRC steers immediately; large payloads via `local://<path>`, NEVER inline.
+Children start blank; large payloads via `local://<path>`, NEVER inline.
+
+# Messaging
+While running, each child is `agent://<name>` (unnamed: `agent-N`; give items a `name` so siblings can address each other; names must be unused).
+`write agent://<name>` / `agent://all` steers running children at their next turn boundary. This call blocks, so send it in the same turn as `task`, after it. A finished child cannot be messaged.
+Inside a child: `write agent://<sibling-name>` messages a sibling (delivered at its next turn boundary); `write agent://parent` messages you: it is appended to this call's result as `<agent-messages>`.
 
 # Format
 `context`: shared (`# Goal`, `# Contract` interfaces); NEVER repeat per task.
@@ -472,24 +477,139 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         apply_agent_model(spec);
     }
 
-    let binary = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omt"));
+    let binary = crate::respawn_exe();
     let runner = TaskRunner::new(binary, MAX_CONCURRENCY);
+    let prompts: Vec<String> = specs.iter().map(|s| s.prompt.clone()).collect();
+    let outputs = run_children(&runner, specs).await?;
+    // Messages children sent to `agent://parent` while this call was blocked.
+    let parent_messages = super::a2a::take_parent_messages();
     if rubrics.iter().all(Option::is_none) {
-        let outputs = runner.spawn_all(specs).await;
-        return merge_outputs(&outputs);
+        let mut result = merge_outputs(&outputs)?;
+        attach_parent_messages(&mut result, &parent_messages);
+        return Ok(result);
     }
     // SERA: rubrics were frozen above, before any child spawned; score afterwards.
     let scorer = super::rlm_combinators::SessionScorer::new(pa_agent::abort::AbortSignal::never());
-    let scored = omp_task::rubric::spawn_all_with_rubrics(
-        &runner,
-        specs.into_iter().zip(rubrics).collect(),
-        &scorer,
-    )
-    .await;
+    let scored = omp_task::rubric::score_outputs(&prompts, &rubrics, outputs, &scorer).await;
     let (outputs, records): (Vec<_>, Vec<_>) = scored.into_iter().unzip();
     let mut result = merge_outputs(&outputs)?;
     attach_rubric_scores(&mut result, &outputs, &records);
+    attach_parent_messages(&mut result, &parent_messages);
     Ok(result)
+}
+
+/// Process-wide counter behind generated child ids (`agent-N`), so ids stay
+/// unique across concurrent `task` calls sharing the agent registry.
+static CHILD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Cancels the still-running children when the `task` call is dropped
+/// (tool-call abort); disarmed once every child settled.
+struct CancelOnDrop(Vec<omp_task::runner::RunControl>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        for control in &self.0 {
+            let _ = control.cancel();
+        }
+    }
+}
+
+/// Run every spec as a controllable RPC child ([`ChildMode::Rpc`]) and wait for
+/// all of them. Each live child is registered under its id in the shared agent
+/// registry (`write agent://<id>` steers it; unregistered once it settles) and
+/// gets the parent's a2a bus, so it can message siblings and `agent://parent`.
+/// Results come back in input order.
+async fn run_children(
+    runner: &TaskRunner,
+    mut specs: Vec<TaskSpec>,
+) -> Result<Vec<omp_task::runner::RunOutput>> {
+    use std::sync::atomic::Ordering;
+
+    use super::eval_agents::TaskSlot;
+
+    // Claim every id first: a clash fails the whole call before any spawn.
+    let mut slots = Vec::with_capacity(specs.len());
+    for spec in &mut specs {
+        let slot = if let Some(id) = spec.id.clone() {
+            TaskSlot::claim(&id).map_err(|e| anyhow::anyhow!(e))?
+        } else {
+            loop {
+                let id = format!("agent-{}", CHILD_SEQ.fetch_add(1, Ordering::Relaxed) + 1);
+                if let Ok(slot) = TaskSlot::claim(&id) {
+                    spec.id = Some(id);
+                    break slot;
+                }
+            }
+        };
+        slots.push(slot);
+    }
+    let lease = super::a2a::BusLease::acquire()
+        .map_err(|e| anyhow::anyhow!("task: cannot start the agent message bus: {e}"))?;
+    let mut controls = Vec::with_capacity(specs.len());
+    let mut waiters = Vec::with_capacity(specs.len());
+    for (mut spec, slot) in specs.into_iter().zip(slots) {
+        let id = spec.id.clone().unwrap_or_default();
+        spec.env.push((
+            super::a2a::SOCK_ENV.to_string(),
+            lease.sock().to_string_lossy().into_owned(),
+        ));
+        spec.env.push((super::a2a::SELF_ENV.to_string(), id.clone()));
+        let agent = spec.agent.clone();
+        let (control, join) = runner.start(spec, ChildMode::Rpc);
+        slot.attach(control.clone());
+        controls.push(control);
+        waiters.push((
+            id,
+            agent,
+            tokio::spawn(async move {
+                let output = join.await;
+                slot.settle(&output);
+                output
+            }),
+        ));
+    }
+    let mut guard = CancelOnDrop(controls);
+    let mut outputs = Vec::with_capacity(waiters.len());
+    for (id, agent, waiter) in waiters {
+        outputs.push(waiter.await.unwrap_or_else(|e| omp_task::runner::RunOutput {
+            id,
+            agent,
+            status: RunStatus::Cancelled,
+            exit_code: None,
+            output: String::new(),
+            stderr: format!("task run aborted: {e}"),
+            schema: omp_task::SchemaValidation::NoSchema,
+            duration: std::time::Duration::ZERO,
+            truncated: false,
+        }));
+    }
+    guard.0.clear();
+    drop(lease);
+    Ok(outputs)
+}
+
+/// Append the messages children sent to `agent://parent` to the merged
+/// result (text block + `details.messages`), so the parent's next turn sees
+/// them even though it was blocked while they were sent.
+fn attach_parent_messages(result: &mut AgentToolResult, messages: &[super::a2a::ParentMessage]) {
+    if messages.is_empty() {
+        return;
+    }
+    let block = super::a2a::render_parent_messages(messages);
+    if let Some(pa_agent::types::ToolResultContent::Text(t)) = result.content.first_mut() {
+        t.text = format!("{}\n\n{block}", t.text);
+    }
+    if let Some(details) = result.details.as_object_mut() {
+        details.insert(
+            "messages".into(),
+            Value::Array(
+                messages
+                    .iter()
+                    .map(|m| json!({"from": m.from, "message": m.message}))
+                    .collect(),
+            ),
+        );
+    }
 }
 
 /// Append the SERA verdicts to the merged result: one `rubric:` line per
@@ -591,7 +711,7 @@ mod tests {
 
     #[test]
     fn unlisted_agents_move_to_also_line() {
-        use omp_task::agent::{parse_agent, AgentSource};
+        use omp_task::agent::{AgentSource, parse_agent};
         let def = |name: &str, extra: &str| {
             parse_agent(
                 format!("{name}.md"),
@@ -661,7 +781,7 @@ mod tests {
     /// selector string and an ordered fallback list.
     #[test]
     fn agent_model_chain_takes_string_and_list_frontmatter() {
-        use omp_task::agent::{parse_agent, AgentSource};
+        use omp_task::agent::{AgentSource, parse_agent};
         let single = parse_agent(
             "single.md",
             "---\nname: single\ndescription: d\nmodel: zai/glm-5.3-flash\n---\nbody\n",
@@ -866,11 +986,13 @@ mod tests {
         let props = s["properties"].as_object().unwrap();
         assert_eq!(props.len(), 3);
         assert!(props["context"]["type"] == "string");
-        assert!(props["tasks"]["items"]["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "solutionSpace"));
+        assert!(
+            props["tasks"]["items"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "solutionSpace")
+        );
         assert_eq!(s["required"].as_array().unwrap().len(), 2);
     }
 
@@ -881,5 +1003,118 @@ mod tests {
         }))
         .unwrap();
         assert!(params.tasks.is_empty() && params.task.is_some());
+    }
+
+    #[test]
+    fn parent_messages_are_appended_to_the_result() {
+        let out = run_output("a", RunStatus::Completed);
+        let mut result = merge_outputs(std::slice::from_ref(&out)).unwrap();
+        attach_parent_messages(&mut result, &[]);
+        assert!(result.details.get("messages").is_none());
+        let messages = [super::super::a2a::ParentMessage {
+            from: "a".into(),
+            message: "need input".into(),
+        }];
+        attach_parent_messages(&mut result, &messages);
+        let pa_agent::types::ToolResultContent::Text(t) = &result.content[0] else {
+            panic!("text")
+        };
+        assert!(
+            t.text
+                .ends_with("<agent-messages>\nfrom agent://a: need input\n</agent-messages>"),
+            "{}",
+            t.text
+        );
+        assert_eq!(result.details["messages"][0]["from"], "a");
+    }
+
+    /// Fake `--mode rpc` child that talks over the real bus: `e2e-a` messages
+    /// its sibling and the parent, `e2e-b` waits for two steers and answers
+    /// with everything it received.
+    const FAKE_A2A_CHILD: &str = r#"#!/usr/bin/env python3
+import json, os, socket, sys
+me, sock = os.environ["OMP_A2A_SELF"], os.environ["OMP_A2A_SOCK"]
+def send(to, msg):
+    s = socket.socket(socket.AF_UNIX); s.connect(sock)
+    s.sendall((json.dumps({"from": me, "to": to, "message": msg}) + "\n").encode())
+    reply = s.makefile().readline(); s.close(); return json.loads(reply)
+def out(o): print(json.dumps(o), flush=True)
+stdin = sys.stdin
+stdin.readline()
+out({"type": "response", "command": "prompt", "success": True, "id": "omp-task-prompt"})
+if me == "e2e-a":
+    answer = json.dumps([send("e2e-b", "hello-from-a")["ok"], send("parent", "report-from-a")["ok"]])
+else:
+    got = []
+    while len(got) < 2:
+        frame = json.loads(stdin.readline())
+        if frame.get("type") == "steer":
+            got.append(frame["message"])
+    answer = "|".join(sorted(got))
+out({"type": "prompt_result", "status": "completed", "sessionSettled": True})
+for _ in range(2):
+    q = json.loads(stdin.readline())
+    if q["type"] == "get_last_assistant_text":
+        out({"type": "response", "command": "get_last_assistant_text", "success": True, "data": {"text": answer}})
+    else:
+        out({"type": "response", "command": "get_session_stats", "success": True, "data": {"tokens": {"output": 1}}})
+stdin.readline()
+"#;
+
+    /// Real `task` flow with fake RPC children: both are registered under
+    /// their ids, a parent `write agent://e2e-b` steers the running child,
+    /// child -> sibling and child -> parent travel over the bus, the parent
+    /// message lands in the inbox, and the ids are free again afterwards.
+    #[tokio::test]
+    async fn run_children_wires_registry_bus_and_parent_inbox() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = super::super::a2a::tests::LOCK.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("fake-a2a-child");
+        std::fs::write(&bin, FAKE_A2A_CHILD).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runner = TaskRunner::new(&bin, 4);
+        let spec = |id: &str| TaskSpec {
+            id: Some(id.to_string()),
+            agent: "task".into(),
+            prompt: "go".into(),
+            cwd: dir.path().to_path_buf(),
+            output_schema: None,
+            schema_mode: SchemaMode::Permissive,
+            model: None,
+            tools: None,
+            depth: 1,
+            extra_args: Vec::new(),
+            env: Vec::new(),
+        };
+        let _ = super::super::a2a::take_parent_messages();
+        let call = tokio::spawn({
+            let runner = runner.clone();
+            let specs = vec![spec("e2e-a"), spec("e2e-b")];
+            async move { run_children(&runner, specs).await }
+        });
+        // Issued while the call is in flight, like a same-turn `write`.
+        let receipt = super::super::eval_agents::deliver_message("e2e-b", "from-parent")
+            .await
+            .unwrap();
+        assert_eq!(receipt, "Delivered to e2e-b.");
+        let outputs = call.await.unwrap().unwrap();
+
+        assert!(outputs.iter().all(|o| o.status == RunStatus::Completed), "{outputs:?}");
+        assert_eq!(outputs[0].output, "[true, true]");
+        assert_eq!(
+            outputs[1].output,
+            "[message from agent://e2e-a]\nhello-from-a|from-parent"
+        );
+        let inbox = super::super::a2a::take_parent_messages();
+        assert_eq!(inbox.len(), 1, "{inbox:?}");
+        assert_eq!((inbox[0].from.as_str(), inbox[0].message.as_str()), ("e2e-a", "report-from-a"));
+
+        // Settled children are unregistered.
+        let gone = super::super::eval_agents::deliver_from_peer("e2e-b", "late", "x").await;
+        assert!(gone.is_err());
+        // Duplicate ids fail the whole call before anything is spawned.
+        let dup = run_children(&runner, vec![spec("dup-1"), spec("dup-1")]).await;
+        assert!(dup.unwrap_err().to_string().contains("already in use"));
     }
 }

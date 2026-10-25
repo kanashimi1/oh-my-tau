@@ -588,12 +588,16 @@ mod tests {
 
     #[test]
     fn py_imports_defs_are_setup() {
-        assert!(is_setup_py("import json\nfrom pathlib import Path\ndef f(x):\n    return x + 1\nclass C:\n    pass"));
+        assert!(is_setup_py(
+            "import json\nfrom pathlib import Path\ndef f(x):\n    return x + 1\nclass C:\n    pass"
+        ));
     }
 
     #[test]
     fn py_load_assignments_are_setup() {
-        assert!(is_setup_py("data = json.load(open('a.json'))\ndf = pd.read_csv('x.csv')\narr = np.load('a.npy')\nblob = open('f.txt').read()"));
+        assert!(is_setup_py(
+            "data = json.load(open('a.json'))\ndf = pd.read_csv('x.csv')\narr = np.load('a.npy')\nblob = open('f.txt').read()"
+        ));
     }
 
     #[test]

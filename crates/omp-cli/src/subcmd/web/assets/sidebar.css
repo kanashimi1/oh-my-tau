@@ -1,0 +1,86 @@
+/* sidebar slice: Kimi-style grouped session list with per-row actions */
+#sidebar { padding-bottom: 8px; }
+#new-session { flex: none; }
+#new-session.compact { padding: 7px 12px; font-weight: 600; }
+
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--fg-faint);
+  padding: 12px 8px 4px;
+}
+.group-head .count { font-size: 10px; color: var(--fg-faint); }
+
+.session-row { position: relative; }
+.session-row .main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.session-row .sess-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-row .sess-sub {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-row .needs-input {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 6px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  flex: none;
+}
+.session-row .muted-run { font-size: 11px; color: var(--fg-faint); flex: none; }
+
+.sess-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  flex: none;
+  display: inline-block;
+}
+.sess-dot.live { background: var(--ok); }
+.sess-dot.busy { background: var(--accent); animation: pulse 1s infinite; }
+.sess-dot.dead { background: var(--err); }
+
+.sess-actions {
+  display: none;
+  gap: 2px;
+  align-items: center;
+  flex: none;
+}
+.session-row:hover .sess-actions { display: flex; }
+.row-action {
+  background: none;
+  border: 0;
+  color: var(--fg-faint);
+  padding: 3px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.row-action:hover { color: var(--fg); background: var(--bg-hover); }
+.row-action.pinned { color: var(--warn); }
+.row-action svg { width: 13px; height: 13px; display: block; }
+
+.sess-empty { padding: 8px; }
+.pin-badge { font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--fg-faint); flex: none; }

@@ -361,6 +361,18 @@ pub async fn spawn_all_with_rubrics(
     let (specs, rubrics): (Vec<_>, Vec<_>) = items.into_iter().unzip();
     let prompts: Vec<String> = specs.iter().map(|s| s.prompt.clone()).collect();
     let outputs = runner.spawn_all(specs).await;
+    score_outputs(&prompts, &rubrics, outputs, scorer).await
+}
+
+/// Score already-settled children: `prompts`/`rubrics` are parallel to
+/// `outputs` (input order); each rubric-bearing child is scored, the rest
+/// pass through with no record.
+pub async fn score_outputs(
+    prompts: &[String],
+    rubrics: &[Option<FrozenRubric>],
+    outputs: Vec<RunOutput>,
+    scorer: &dyn RubricScorer,
+) -> Vec<(RunOutput, Option<Result<RubricRecord, String>>)> {
     let mut scored = Vec::with_capacity(outputs.len());
     for (i, out) in outputs.into_iter().enumerate() {
         let rec = match rubrics.get(i).and_then(Option::as_ref) {

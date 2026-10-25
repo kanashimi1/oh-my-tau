@@ -12,12 +12,12 @@
 use std::sync::{Arc, LazyLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
-use pa_agent::BoxFut;
 use parking_lot::Mutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ─── Descriptions (byte-equal to omp's rendered checkpoint.md / rewind.md) ─
 
@@ -254,7 +254,9 @@ impl AgentTool for RewindTool {
         Box::pin(async move {
             if self.state.checkpoint_state().is_none() {
                 if self.state.last_completed_rewind().is_some() {
-                    bail!("Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.");
+                    bail!(
+                        "Checkpoint already completed; continue from the retained rewind report instead of calling rewind again."
+                    );
                 }
                 bail!("No active checkpoint. Create a checkpoint before calling rewind.");
             }
@@ -385,9 +387,11 @@ mod tests {
             rewound_at: "2026-10-01T00:01:00.000Z".into(),
         });
         let err = run(rewind(state), json!({"report": "again"})).unwrap_err();
-        assert!(err
-            .to_string()
-            .starts_with("Checkpoint already completed; continue from the retained rewind report"));
+        assert!(
+            err.to_string().starts_with(
+                "Checkpoint already completed; continue from the retained rewind report"
+            )
+        );
     }
 
     #[test]

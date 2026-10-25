@@ -453,34 +453,6 @@ impl Shell<ShellBackend, io::Stdout> {
         })
     }
 
-    /// Paint one frame of a full-screen overlay on the alternate screen
-    /// (TS `#renderAltFrame`). The first call of a lifecycle enters the alt
-    /// buffer (see [`Self::enter_alt`]); later calls diff against the
-    /// previous alt frame. The inline viewport's diff state over the normal
-    /// buffer stays frozen until [`Self::leave_alt`]. The frame's area is the
-    /// whole terminal at origin (0,0), so overlay rows map 1:1 onto SGR
-    /// mouse rows.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the alt-screen entry or paint writes fail.
-    pub fn draw_fullscreen(
-        &mut self,
-        draw: impl FnOnce(&mut ratatui::Frame<'_>),
-    ) -> io::Result<()> {
-        self.enter_alt()?;
-        if self.alt_term.is_none() {
-            self.alt_term = Some(Terminal::new(ShellBackend::new())?);
-        }
-        self.paint_begin()?;
-        let result = match self.alt_term.as_mut() {
-            Some(alt) => alt.draw(draw).map(|_| ()),
-            None => Ok(()),
-        };
-        self.raw.raw(HIDE_CURSOR)?;
-        self.paint_end()?;
-        result
-    }
 
     /// Restore the terminal: leave any fullscreen borrow, pop kitty /
     /// modifyOtherKeys, bracketed paste off, DECCKM normal, show cursor,
@@ -529,9 +501,9 @@ impl Shell<ShellBackend, io::Stdout> {
 }
 
 impl<B: Backend, R: RawOut> Shell<B, R> {
-    /// Test/support constructor over an arbitrary backend.
-    #[cfg(test)]
-    fn new_for_backend(term: Terminal<B>, raw: R, live_height: u16, sync: bool) -> Self {
+    /// Test/harness constructor over an arbitrary backend; public so
+    /// integration tests can build a `Shell` on ratatui's `TestBackend`.
+    pub fn new_for_backend(term: Terminal<B>, raw: R, live_height: u16, sync: bool) -> Self {
         Self {
             screen: Rect::from((Position::ORIGIN, term.size().unwrap_or(Size::new(80, 24)))),
             term,
@@ -545,6 +517,34 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
             pending_resize: false,
             mouse: false,
         }
+    }
+    /// Paint one frame of a full-screen overlay on the alternate screen
+    /// (TS `#renderAltFrame`). The first call of a lifecycle enters the alt
+    /// buffer (see [`Self::enter_alt`]); later calls diff against the
+    /// previous alt frame. The inline viewport's diff state over the normal
+    /// buffer stays frozen until [`Self::leave_alt`]. The frame's area is the
+    /// whole terminal at origin (0,0), so overlay rows map 1:1 onto SGR
+    /// mouse rows.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the alt-screen entry or paint writes fail.
+    pub fn draw_fullscreen(
+        &mut self,
+        draw: impl FnOnce(&mut ratatui::Frame<'_>),
+    ) -> io::Result<()> {
+        self.enter_alt()?;
+        if self.alt_term.is_none() {
+            self.alt_term = Some(Terminal::new(ShellBackend::new())?);
+        }
+        self.paint_begin()?;
+        let result = match self.alt_term.as_mut() {
+            Some(alt) => alt.draw(draw).map(|_| ()),
+            None => Ok(()),
+        };
+        self.raw.raw(HIDE_CURSOR)?;
+        self.paint_end()?;
+        result
     }
 
     /// Whether a full-screen overlay currently holds the alternate screen.

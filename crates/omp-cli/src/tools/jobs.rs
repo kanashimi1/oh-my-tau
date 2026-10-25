@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use pa_agent::types::AgentToolResult;
 
 /// Live state of one background job.
@@ -308,7 +308,9 @@ pub fn background_notice(job_id: &str, timeout_secs: Option<f64>) -> String {
 pub fn read_proc(env: &super::Env, url: &str) -> Result<AgentToolResult> {
     // `url` is everything after `proc://`.
     if url.contains('?') || url.contains('#') || url == "/mode" || url == "/kill" {
-        bail!("Invalid proc:// URL: proc://{url}. Use proc://, proc://<id>, proc://<id>/kill, or proc://<id>/mode.");
+        bail!(
+            "Invalid proc:// URL: proc://{url}. Use proc://, proc://<id>, proc://<id>/kill, or proc://<id>/mode."
+        );
     }
     let (id, action) = match url.strip_suffix("/mode") {
         Some(rest) => (rest, "mode"),

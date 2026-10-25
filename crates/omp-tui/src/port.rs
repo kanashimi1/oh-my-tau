@@ -82,6 +82,11 @@ pub trait RuntimePort: Send + Sync + 'static {
     /// surfaced as system notices by the embedding port.
     fn refresh_models(&self);
 
+    /// The user started typing a prompt: open the provider connection ahead
+    /// of the request (DNS + TCP + TLS), so the first token is not delayed by
+    /// a cold handshake. Best-effort; the default does nothing.
+    fn prewarm_connection(&self) {}
+
     /// Effective values for `ids` (TS `cfg://` batch get: defaults < global
     /// config.yml < project config < env). Used by the `/settings` overlay
     /// to seed its rows; ids not found come back as `Null`.

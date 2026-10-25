@@ -31,10 +31,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
-use pa_agent::abort::AbortSignal;
 use pa_agent::BoxFut;
+use pa_agent::abort::AbortSignal;
 use pa_types::ai::{Model, Usage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::eval_bridge::OpCtx;
 
@@ -335,7 +335,7 @@ impl Session {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(Select::parse(s)?),
             Some(_) => {
-                return Err("llm_query: select must be 'consistency' or 'uncertainty'".into())
+                return Err("llm_query: select must be 'consistency' or 'uncertainty'".into());
             }
         };
         if k == 1 && select.is_none() {
@@ -360,7 +360,7 @@ impl Session {
             None | Some(Value::Null) => OnLow::Return,
             Some(Value::String(s)) => OnLow::parse(s)?,
             Some(_) => {
-                return Err("llm_query: on_low must be 'expand', 'escalate' or 'return'".into())
+                return Err("llm_query: on_low must be 'expand', 'escalate' or 'return'".into());
             }
         };
         let low = args
@@ -675,8 +675,7 @@ const DEFAULT_LOW: f64 = 0.5;
 /// Model used by `on_low="escalate"` when `escalate_model` is not given.
 const DEFAULT_ESCALATE_MODEL: &str = "default";
 /// Appended under `select="uncertainty"` to elicit SRLM's verbalized confidence.
-const CONFIDENCE_SUFFIX: &str =
-    "\n\nAfter your answer, on a final separate line, report your confidence \
+const CONFIDENCE_SUFFIX: &str = "\n\nAfter your answer, on a final separate line, report your confidence \
 as JSON: {\"confidence\": N} where N is an integer in 1..=100.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1262,10 +1261,12 @@ mod tests {
         assert_eq!(second["usage"], json!({"input": 0, "output": 0}));
         assert_eq!(mock.calls.load(Ordering::SeqCst), 1);
         // Different context or model is a different key.
-        assert!(session
-            .query(&mock, lim, &q("what?", Some("other")), &sig)
-            .await
-            .is_err());
+        assert!(
+            session
+                .query(&mock, lim, &q("what?", Some("other")), &sig)
+                .await
+                .is_err()
+        );
         let mut other_model = q("what?", Some("ctx"));
         other_model["model"] = json!("slow");
         assert!(session.query(&mock, lim, &other_model, &sig).await.is_err());

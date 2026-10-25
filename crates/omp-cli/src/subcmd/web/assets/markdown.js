@@ -91,10 +91,11 @@
   function codeBlock(code, lang) {
     const id = "cb" + Math.random().toString(36).slice(2, 9);
     OMP._codeStore = OMP._codeStore || new Map();
-    OMP._codeStore.set(id, code);
+    OMP._codeStore.set(id, { code, lang: lang || "" });
     if (OMP._codeStore.size > 3000) OMP._codeStore.delete(OMP._codeStore.keys().next().value);
     return `<div class="codeblock"><div class="code-head"><span>${esc(lang || "")}</span>` +
-      `<button class="copy-btn" data-copy="${id}">copy</button></div>` +
+      `<button class="copy-btn" data-copy="${id}">copy</button>` +
+      `<button class="copy-btn" data-open="${id}">open</button></div>` +
       `<pre><code>${highlight(code, lang)}</code></pre></div>`;
   }
 
@@ -193,7 +194,7 @@
     return blocks(String(text ?? "").replace(/\r\n?/g, "\n").split("\n"));
   };
 
-  // Delegated copy buttons for code blocks.
+  // Delegated copy + open buttons for code blocks.
   document.addEventListener("click", async (e) => {
     const btn = e.target.closest && e.target.closest("[data-copy]");
     if (!btn) return;
@@ -203,5 +204,17 @@
       btn.textContent = "copied";
       setTimeout(() => (btn.textContent = "copy"), 1200);
     }
+  });
+
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest("[data-open]");
+    if (!btn) return;
+    const entry = OMP._codeStore && OMP._codeStore.get(btn.dataset.open);
+    if (!entry) return;
+    const { code, lang } = entry;
+    const l = (lang || "").toLowerCase();
+    if (l === "html" || l === "svg" || l === "xml") OMP.artifacts?.open({ kind: "html", title: lang || "html", content: code });
+    else if (l === "diff" || l === "patch") OMP.artifacts?.open({ kind: "diff", title: lang || "diff", content: code });
+    else OMP.artifacts?.open({ kind: "code", title: lang || "code", content: code, lang });
   });
 })(window.OMP);

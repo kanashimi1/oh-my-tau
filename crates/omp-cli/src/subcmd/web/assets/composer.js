@@ -97,7 +97,7 @@
     setStreaming(on) {
       this.streaming = on;
       this.stopBtn.hidden = !on;
-      this.sendBtn.textContent = on ? "Steer" : "Send";
+      this.sendBtn.classList.toggle("steer", on); // icon button: keep its SVG
       this.sendBtn.title = on ? "Enter: steer the running turn · Alt+Enter: queue a follow-up" : "Send (Enter)";
     }
     setCommands(list) { this.commands = Array.isArray(list) ? list : []; }
@@ -135,6 +135,12 @@
         this.renderAttachments();
       };
       reader.readAsDataURL(file);
+    }
+    /** External API (contract): attach an image from raw base64 data. */
+    addImageData({ data, mimeType }) {
+      if (!data) return;
+      this.images.push({ type: "image", data, mimeType: mimeType || "image/png" });
+      this.renderAttachments();
     }
     renderAttachments() {
       this.attBox.replaceChildren(...this.images.map((img, i) => el("div.attachment", null,

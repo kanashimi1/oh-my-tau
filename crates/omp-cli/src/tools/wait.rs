@@ -10,14 +10,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
+use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use pa_agent::BoxFut;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::jobs::{JobStatus, ServiceState};
 use super::Env;
+use super::jobs::{JobStatus, ServiceState};
 
 const DESCRIPTION: &str = "Wait only when blocked with nothing else to do.\nBlocks on background jobs/services you started; returns on the first result, a message sent to you, or a steering interrupt; a safety cap returns a still-running snapshot.\nNothing you started running? Errors; NEVER wait on other agents.\nResults and messages auto-deliver. NEVER poll while work remains.";
 

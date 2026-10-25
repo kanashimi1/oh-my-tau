@@ -2,7 +2,7 @@
 //! projects (one per session dir), the sessions of one folder, and a
 //! directory browser for picking a new session's working directory.
 
-use std::io::{BufRead as _, BufReader};
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -53,7 +53,7 @@ fn content_text(content: &Value) -> Option<String> {
 fn scan_file(path: &Path) -> Option<Value> {
     let file = std::fs::File::open(path).ok()?;
     let reader = BufReader::with_capacity(16 * 1024, file);
-    let (mut id, mut cwd, mut title, mut first) = (None, None, None, None);
+    let (mut id, mut cwd, mut hdr_title, mut first) = (None, None, None, None);
     for line in reader.lines().take(SCAN_LINES) {
         let Ok(line) = line else { break };
         let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
@@ -61,18 +61,20 @@ fn scan_file(path: &Path) -> Option<Value> {
             Some("session") => {
                 id = v.get("id").and_then(Value::as_str).map(str::to_owned);
                 cwd = v.get("cwd").and_then(Value::as_str).map(str::to_owned);
-                if title.is_none() {
-                    title = v.get("title").and_then(Value::as_str).map(str::to_owned);
+                if hdr_title.is_none() {
+                    hdr_title = v.get("title").and_then(Value::as_str).map(str::to_owned);
                 }
             }
             Some("title" | "session_info") => {
-                if let Some(t) = v
-                    .get("title")
-                    .or_else(|| v.get("name"))
-                    .and_then(Value::as_str)
-                    .filter(|t| !t.is_empty())
-                {
-                    title = Some(t.to_owned());
+                if hdr_title.is_none() {
+                    if let Some(t) = v
+                        .get("title")
+                        .or_else(|| v.get("name"))
+                        .and_then(Value::as_str)
+                        .filter(|t| !t.is_empty())
+                    {
+                        hdr_title = Some(t.to_owned());
+                    }
                 }
             }
             Some("message") if first.is_none() => {
@@ -83,10 +85,13 @@ fn scan_file(path: &Path) -> Option<Value> {
             }
             _ => {}
         }
-        if id.is_some() && title.is_some() && first.is_some() {
+        if id.is_some() && first.is_some() {
             break;
         }
     }
+    // A rename appends a `session_info`/`title` entry at the tail; prefer the
+    // newest one over the header slot so a stored-session rename always shows.
+    let title = tail_title(path).or(hdr_title);
     let id = id.or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))?;
     Some(json!({
         "id": id,
@@ -97,6 +102,40 @@ fn scan_file(path: &Path) -> Option<Value> {
         "modifiedMs": mtime_ms(path),
         "bytes": std::fs::metadata(path).map_or(0, |m| m.len()),
     }))
+}
+
+/// Last `title`/`session_info` title in the file tail (a `rename_session`
+/// append). Scanning the tail keeps renames visible even for long sessions.
+fn tail_title(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 8192;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(TAIL);
+    if start > 0 {
+        f.seek(SeekFrom::Start(start)).ok()?;
+    }
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut title = None;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        match v.get("type").and_then(Value::as_str) {
+            Some("title" | "session_info") => {
+                if let Some(t) = v
+                    .get("title")
+                    .or_else(|| v.get("name"))
+                    .and_then(Value::as_str)
+                    .filter(|t| !t.is_empty())
+                {
+                    title = Some(t.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    title
 }
 
 fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
@@ -199,4 +238,27 @@ pub fn is_session_path(path: &Path) -> bool {
             .iter()
             .filter_map(|root| std::fs::canonicalize(root).ok())
             .any(|root| canon.starts_with(root))
+}
+
+/// Append a `session_info`/`title` entry to a stored session file so the
+/// sidebar's header/tail scan picks the new name up. Stored sessions only —
+/// running sessions rename via the `set_session_name` rpc instead.
+pub fn rename_session(path: &Path, name: &str) -> Result<(), String> {
+    if !is_session_path(path) {
+        return Err("not a session file".to_string());
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("session name cannot be empty".to_string());
+    }
+    let line = serde_json::json!({
+        "type": "session_info",
+        "title": name,
+        "source": "web-rename",
+    });
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("{e}"))?;
+    writeln!(f, "{line}").map_err(|e| format!("{e}"))
 }

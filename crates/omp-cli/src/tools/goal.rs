@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use pa_agent::BoxFut;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 const DESCRIPTION: &str = "Manage active goal-mode objective.\n\nSingle `op` field:\n- `create`: starts goal; enables goal mode. Requires `objective`; optional positive `token_budget`. Only when no goal exists and none is paused.\n- `get`: returns current active/paused goal and remaining token budget.\n- `resume`: re-activates paused goal for continued work.\n- `complete`: marks goal complete only when actually done and every deliverable verified against current evidence. NEVER because budget low or turn ending.\n- `drop`: discards current goal without completing it.\n\nPaused goal from `get` → MUST `resume` before continuing work.";
 
@@ -427,11 +427,12 @@ mod tests {
         let goal = rt.create_goal(" ship it ", Some(100)).unwrap();
         assert_eq!(goal.status, GoalStatus::Active);
         assert_eq!(goal.remaining_tokens(), Some(100));
-        assert!(rt
-            .create_goal("again", None)
-            .unwrap_err()
-            .to_string()
-            .contains("already has a goal"));
+        assert!(
+            rt.create_goal("again", None)
+                .unwrap_err()
+                .to_string()
+                .contains("already has a goal")
+        );
         rt.add_tokens(30);
         assert_eq!(rt.state_goal().unwrap().tokens_used, 30);
         let paused = rt.state_goal().unwrap().clone();

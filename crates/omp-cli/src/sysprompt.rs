@@ -4,6 +4,11 @@
 //! context discovery (`AGENTS.md`/`CLAUDE.md` walk-up), skills listing, the
 //! tool inventory section, and the workstation environment block.
 //!
+//! The shipped prompts carry the eval methodology: prefer one eval transaction
+//! over N tool-call turns — a single `eval` cell does
+//! read → decide → patch → validate and returns only the final diff
+//! plus pass/fail status (also in the `eval` DESCRIPTION).
+//!
 //! Rendering uses a small Handlebars-subset interpreter that covers exactly
 //! the helpers omp's bundled templates use (`if`, `unless`, `each`, `list`,
 //! `ifAny`, `has`, `when`, `includes`, `not`, `else`). The templates ship in

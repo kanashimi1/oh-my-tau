@@ -32,36 +32,36 @@
   --kw: #6d35c7; --fn: #8a6000; --str: #247a3d; --num: #b51f88; --cm: #77717c; --ty: #7b3fa2;
   color-scheme: light;
 }
-/* Anime: sakura night — indigo base, blossom pink, moonlight cyan. */
+/* Sakura night: indigo night, moonlight ivory, blossom pink — from wallpapers/anime-sakura.svg. */
 [data-theme="sakura"] {
-  --bg: #120f24; --bg-raised: #1a1630; --bg-inset: #0c0a19; --bg-overlay: #241e3d; --bg-hover: #2c2549;
-  --fg: #f3eaf6; --fg-muted: #b9aecb; --fg-faint: #7c7296;
-  --accent: #ff8fc7; --accent-2: #9fd8ff; --accent-muted: rgba(255, 143, 199, .16); --on-accent: #2a0f22;
-  --ok: #8ee6b0; --err: #ff7a8a; --warn: #ffd27a; --link: #9fd8ff; --info: #9fd8ff;
-  --border: rgba(255,214,236,.10); --border-strong: rgba(255,214,236,.18);
-  --user-bg: #2a2140; --code-bg: #0e0b1c;
-  --kw: #c9a0ff; --fn: #ffd27a; --str: #8ee6b0; --num: #ff8fc7; --cm: #7c7296; --ty: #e0b3ff;
+  --bg: #14112a; --bg-raised: #1c1836; --bg-inset: #0f0d20; --bg-overlay: #251f42; --bg-hover: #2c2650;
+  --fg: #f4ecf2; --fg-muted: #b3aac6; --fg-faint: #847a9f;
+  --accent: #ef92bd; --accent-2: #f2d9a8; --accent-muted: rgba(239, 146, 189, .15); --on-accent: #33101f;
+  --ok: #7fd6a0; --err: #ef7076; --warn: #ecc069; --link: #9fcde8; --info: #9fcde8;
+  --border: rgba(244,225,238,.10); --border-strong: rgba(244,225,238,.18);
+  --user-bg: #292247; --code-bg: #100d22;
+  --kw: #b99df0; --fn: #ecc069; --str: #7fd6a0; --num: #ef92bd; --cm: #847a9f; --ty: #d9a8e8;
 }
-/* Anime: city dusk — warm orange over violet. */
+/* Tokyo dusk: plum strata, amber sun, slate city — from wallpapers/anime-city.svg. */
 [data-theme="tokyo-dusk"] {
-  --bg: #141024; --bg-raised: #1d1730; --bg-inset: #0e0b1a; --bg-overlay: #281f3f; --bg-hover: #31274c;
-  --fg: #f2e9f0; --fg-muted: #c2b2c6; --fg-faint: #85768f;
-  --accent: #ffa65c; --accent-2: #ff6fa5; --accent-muted: rgba(255, 166, 92, .16); --on-accent: #2b1406;
-  --ok: #8fe3a8; --err: #ff6b6b; --warn: #ffd166; --link: #ffb4d0; --info: #9ec9ff;
-  --border: rgba(255,226,200,.10); --border-strong: rgba(255,226,200,.18);
-  --user-bg: #2c2238; --code-bg: #0f0c1b;
-  --kw: #ff8fb8; --fn: #ffd166; --str: #8fe3a8; --num: #ffa65c; --cm: #85768f; --ty: #c7a6ff;
+  --bg: #191430; --bg-raised: #221b3a; --bg-inset: #120e24; --bg-overlay: #2b2248; --bg-hover: #332956;
+  --fg: #f3ecdf; --fg-muted: #bfb2c8; --fg-faint: #8b7fa2;
+  --accent: #f0a35c; --accent-2: #e2798f; --accent-muted: rgba(240, 163, 92, .15); --on-accent: #33190a;
+  --ok: #85cfa0; --err: #e5696f; --warn: #e9c069; --link: #92bede; --info: #92bede;
+  --border: rgba(243,228,210,.10); --border-strong: rgba(243,228,210,.18);
+  --user-bg: #2b2344; --code-bg: #130f26;
+  --kw: #e2798f; --fn: #e9c069; --str: #85cfa0; --num: #f0a35c; --cm: #8b7fa2; --ty: #c3a0e0;
 }
-/* Anime: bright summer sky (light). */
+/* Summer sky: open cobalt field, flat white cumulus — from wallpapers/anime-sky.svg (light). */
 [data-theme="summer-sky"] {
-  --bg: #eef6ff; --bg-raised: #ffffff; --bg-inset: #e3eefb; --bg-overlay: #f4f9ff; --bg-hover: #dceafb;
-  --fg: #1c2a3d; --fg-muted: #4b5d75; --fg-faint: #7b8ca3;
-  --accent: #2f7de1; --accent-2: #ff7eb3; --accent-muted: rgba(47, 125, 225, .12);
-  --ok: #1f8f50; --err: #d23c3c; --warn: #9a6a00; --link: #1d6fd1; --info: #1d6fd1;
-  --border: rgba(20,50,90,.12); --border-strong: rgba(20,50,90,.2);
-  --user-bg: #e2efff; --code-bg: #f3f8ff;
-  --kw: #6a3fd0; --fn: #9a6a00; --str: #1f7a45; --num: #c42a7a; --cm: #7b8ca3; --ty: #2f5fb0;
-  --wall-dim: .15;
+  --bg: #edf4fb; --bg-raised: #ffffff; --bg-inset: #dfeaf7; --bg-overlay: #f3f8fd; --bg-hover: #d7e6f6;
+  --fg: #1e3350; --fg-muted: #4c617e; --fg-faint: #5d7189;
+  --accent: #2a6cc0; --accent-2: #6fa7dd; --accent-muted: rgba(42, 108, 192, .12);
+  --ok: #1f7a45; --err: #c03d3d; --warn: #8a5f00; --link: #1d5fae; --info: #1d5fae;
+  --border: rgba(30,51,80,.12); --border-strong: rgba(30,51,80,.2);
+  --user-bg: #e1eefb; --code-bg: #f2f7fd;
+  --kw: #5a3fb8; --fn: #8a5f00; --str: #1f7a45; --num: #b53276; --cm: #5d7189; --ty: #2d5fa8;
+  --wall-dim: .18;
   color-scheme: light;
 }
 /* Vaporwave: deep purple, hot pink + cyan neon. */

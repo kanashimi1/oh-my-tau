@@ -5,10 +5,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use pa_agent::BoxFut;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const DESCRIPTION: &str = "private scratchpad; not shown to user";
 

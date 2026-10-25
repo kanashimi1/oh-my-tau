@@ -15,7 +15,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::AgentToolResult;
 use serde_json::Value;
@@ -25,8 +25,8 @@ use tokio::sync::oneshot;
 
 use super::jobs::{self, JobRegistry, JobStatus, Service, ServiceState};
 use super::util::{
-    enforce_inline_byte_cap, notice_with_artifact, resolve_to_cwd, save_artifact, sink_window,
-    str_arg, truncate_tail, SpillConfig, DEFAULT_MAX_BYTES,
+    DEFAULT_MAX_BYTES, SpillConfig, enforce_inline_byte_cap, notice_with_artifact, resolve_to_cwd,
+    save_artifact, sink_window, str_arg, truncate_tail,
 };
 
 const DEFAULT_TIMEOUT_SECS: f64 = 300.0;
@@ -222,6 +222,61 @@ pub struct Executed {
 ///
 /// # Errors
 /// Spawn or read failures.
+/// `OMT_BASH_DIGEST` (default on, `0` disables): shrink verbose builder output before it enters the
+/// transcript (every byte is re-read as cache input on later turns). Strips
+/// ANSI escapes everywhere; for cargo/rustc-style output drops progress lines
+/// and elides `warning:` detail past the first few, keeping errors intact.
+fn digest_output(raw: &str) -> String {
+    let strip_ansi = |s: &str| {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                if chars.next() == Some('[') {
+                    for c2 in chars.by_ref() {
+                        if c2.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let clean = strip_ansi(raw);
+    let mut out = String::with_capacity(clean.len());
+    let mut warnings = 0usize;
+    let mut elided = 0usize;
+    for line in clean.lines() {
+        let t = line.trim_start();
+        if t.starts_with("warning:") {
+            warnings += 1;
+            if warnings <= 3 {
+                out.push_str(line);
+                out.push('\n');
+            } else {
+                elided += 1;
+            }
+            continue;
+        }
+        if matches!(
+            t.split_whitespace().next().unwrap_or(""),
+            "Compiling" | "Checking" | "Finished" | "Downloading" | "Downloaded" | "Blocking"
+                | "Waiting" | "Doc-tests" | "Fresh" | "Updating"
+        ) {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if elided > 0 {
+        out.push_str(&format!("… {elided} more warning(s) elided\n"));
+    }
+    out
+}
+
 pub async fn execute(
     cwd: &std::path::Path,
     command: &str,
@@ -445,6 +500,11 @@ pub async fn bash(
         ));
     }
     let (output, code, elapsed, outcome) = run(&dir, &command, timeout, &signal, None).await?;
+    let output = if std::env::var("OMT_BASH_DIGEST").map_or(true, |v| v != "0") {
+        digest_output(&output)
+    } else {
+        output
+    };
     let mut text = finished_text(&output, elapsed, outcome, timeout, code, &spill, &query);
     if !notices.is_empty() {
         text = format!("{}\n{text}", notices.join("\n"));

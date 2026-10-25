@@ -71,6 +71,7 @@
     composer.setEnabled(false);
     $("#empty-state").hidden = !!agentId;
     renderSidebar();
+    updateHome();
     if (!agentId) { renderHeader(); renderStatus(); return; }
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${agentId}`);
     S.ws = ws;
@@ -102,6 +103,7 @@
       const [state, msgs, cmds] = await Promise.all([rpc("get_state"), rpc("get_messages"), rpc("get_available_commands")]);
       S.state = state;
       renderWidgets();
+    updateHome();
       setCommands(cmds.commands);
       transcript.loadMessages(msgs.messages);
       setStreaming(!!state.isStreaming);
@@ -117,6 +119,7 @@
     renderHeader();
     renderStatus();
     renderWidgets();
+    updateHome();
   }
   async function refreshStats() {
     try { S.stats = await rpc("get_session_stats"); } catch { /* older agent */ }
@@ -141,6 +144,9 @@
   }
 
   function onFrame(f) {
+    // Public frame bus: feature modules (artifacts, desktop bridge, …) observe
+    // agent frames here instead of patching this switch.
+    window.dispatchEvent(new CustomEvent("omp:frame", { detail: { agentId: S.agentId, frame: f } }));
     if (f.type === "response" && f.id && S.pending.has(f.id)) {
       const p = S.pending.get(f.id);
       S.pending.delete(f.id);
@@ -165,7 +171,7 @@
         return;
       case "available_commands_update": return setCommands(f.commands);
       case "agent_start": setStreaming(true); return;
-      case "agent_end": setStreaming(false); refreshStats(); refreshAgents(); loadSessions(); return;
+      case "agent_end": setStreaming(false); refreshStats(); refreshAgents(); loadSessions(); updateHome(); return;
       case "session_settled": case "agent_settled": setStreaming(false); return;
       case "turn_end": refreshStats(); refreshState(); return;
       case "queue_update":
@@ -193,8 +199,16 @@
 
   function uiRequest(f) {
     const m = f.method;
-    if (DIALOG_METHODS.has(m)) return OMP.dialogs.request(f, answerDialog);
-    if (m === "cancelDialog") return OMP.dialogs.cancel((f.params && f.params.id) || f.targetId || f.id);
+    if (DIALOG_METHODS.has(m)) {
+      const pending = OMP.dialogs.request(f, answerDialog);
+      refreshAgents(); // roster "needs input" chip now, not on the next 5s tick
+      return pending;
+    }
+    if (m === "cancelDialog") {
+      OMP.dialogs.cancel((f.params && f.params.id) || f.targetId || f.id);
+      refreshAgents();
+      return;
+    }
     if (m === "notify" || m === "ui_notify") return OMP.toast(f.message || f.text || "", f.notifyType || f.level || "info");
     if (m === "setStatus" || m === "set_status") {
       const key = f.statusKey || f.key || "ext";
@@ -318,6 +332,13 @@
   function renderSidebar() { OMP.shellImpl.renderSidebar(S); }
   function renderQueue() { OMP.shellImpl.renderQueue(S); }
   function renderWidgets() { OMP.shellImpl.renderWidgets(S); }
+  // Kimi-style home/empty state: center the composer until a session has
+  // messages, then dock it at the bottom (see #app.home rules in composer.css).
+  function updateHome() {
+    const transcriptEl = $("#transcript");
+    const hasAny = !!S.agentId && ((transcriptEl && transcriptEl.childElementCount > 0) || (S.state && (S.state.userMessages || 0) > 0));
+    $("#app").classList.toggle("home", !hasAny);
+  }
   function refreshAgents() { return OMP.shellImpl.refreshAgents(S); }
   function loadSessions() { return OMP.shellImpl.loadSessions(S); }
   function openSession(row) { return OMP.shellImpl.openSession(S, row); }
@@ -331,4 +352,8 @@
 
   OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand };
   OMP.shellImpl.init(OMP.app);
+  updateHome(); // no agent yet: start on the centered home composer
+  // Dock/undock whenever the transcript gains or loses content (history replay,
+  // first live message, /new) instead of chasing every frame type.
+  new MutationObserver(updateHome).observe($("#transcript"), { childList: true });
 })(window.OMP);

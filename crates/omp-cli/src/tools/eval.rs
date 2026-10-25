@@ -18,19 +18,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use omp_eval::js::JsKernel;
 use omp_eval::{CancelToken, CellResult, CellStatus, ExecOptions, PythonKernel};
+use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use pa_agent::BoxFut;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex as AsyncMutex;
 
+use super::Env;
 use super::eval_bridge::{EvalBridge, OpCtx};
 use super::eval_journal::{self, Lang};
-use super::util::{notice_with_artifact, save_artifact, sink_window, spill_window, SpillConfig};
-use super::Env;
+use super::util::{SpillConfig, notice_with_artifact, save_artifact, sink_window, spill_window};
 
 #[cfg(test)]
 #[path = "eval_tests.rs"]
@@ -50,7 +50,9 @@ Python (IPython): top-level `await` works, `asyncio.run` fails. JS (Bun): top-le
 On error, names (re)bound by the failed cell roll back (side effects and in-place mutations stay): re-run the whole fixed cell.
 Prelude (py: sync, kwargs; js: async, one trailing options object): `display(v)` `print` `log(msg)` `phase(title)` `read(path, offset?, limit?)` `write(path, content)` `env(key?, value?)` `output(*ids, format?, query?, offset?, limit?)` `await tool.<name>(args)` `wait(handles, timeout?, raise_errors?=True)` (ordered results).
 Read the doc before first use: `judge`/`judge_batch`/`completion` → `xd://eval/judge`; `%load`/`%pip`/`%bun add`/`budget`/`@tool` → `xd://eval/helpers`; `agent`/`workpool` (2+ independent items) → `xd://eval/agents`.
-Never repeat successful setup; after a kernel-loss notice, reload it.";
+Never repeat successful setup; after a kernel-loss notice, reload it.
+Multi-step mechanical work belongs in ONE cell: when a change needs read → decide → patch → validate, write one cell that does every step (read the file, check the condition, apply the patch, run the validator) and return ONLY the final diff + pass/fail status.
+NEVER burn model turns on chains of single tool calls (read A → grep → edit B → bash validator) when a single eval cell can complete the transaction; spilled output goes to `artifact://<id>` automatically.";
 
 /// Wire schema, byte-matching the TS `evalSchema` (`py` + `js` language
 /// union, `language` + `code` required).

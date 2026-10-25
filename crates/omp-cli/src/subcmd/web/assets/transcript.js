@@ -3,6 +3,51 @@
 (function (OMP) {
   const { el } = OMP;
 
+  // Collapsible thinking block: live mm:ss timer while streaming ("Thinking… 0:12",
+  // expanded showing the tail), "Thought for 12s" collapsed once finished. History
+  // replay without timing data shows plain "Thought". Redacted gets a neutral label.
+  class ThinkingBlock {
+    constructor(redacted, live) {
+      this.redacted = redacted;
+      this.start = live && !redacted ? Date.now() : null;
+      this.done = false;
+      this.last = null;
+      this.open = !!this.start;
+      this.head = el("div.thinking-head", { onclick: () => this.toggle() });
+      this.body = el("div.md");
+      this.inner = el("div.thinking-inner", null, this.body);
+      this.node = el("div.thinking", null, this.head, el("div.thinking-clip", null, this.inner));
+      this.timer = this.start ? setInterval(() => this.render(), 1000) : null;
+      this.render();
+    }
+    dispose() { if (this.timer) { clearInterval(this.timer); this.timer = null; } }
+    toggle(force) { this.open = force ?? !this.open; this.render(); }
+    seconds() { return this.start ? Math.floor(((this.end || Date.now()) - this.start) / 1000) : null; }
+    finish() { if (this.done) return; this.done = true; if (this.start) this.end = Date.now(); this.dispose(); this.open = false; this.render(); }
+    label() {
+      if (this.redacted) return "Thinking (redacted)";
+      if (this.done) { const s = this.seconds(); return s == null || s < 1 ? "Thought" : `Thought for ${s}s`; }
+      const s = this.seconds() || 0;
+      return `Thinking… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+    setText(text, live) {
+      if (!this.redacted && text !== this.last) {
+        this.body.innerHTML = OMP.md(text);
+        this.last = text;
+        this.inner.scrollTop = this.inner.scrollHeight;
+      }
+      if (live && !this.done) this.open = true;
+      else this.finish();
+      this.render();
+    }
+    render() {
+      this.head.textContent = this.label();
+      this.node.classList.toggle("open", this.open);
+      this.node.classList.toggle("redacted", this.redacted);
+      this.node.classList.toggle("live", !this.done && !this.redacted);
+    }
+  }
+
   class Transcript {
     constructor(root, scroller) {
       this.root = root;
@@ -65,6 +110,31 @@
         this.cards.set(id, c);
       }
       return c;
+    }
+
+    /** Compact vertical step list for consecutive tool calls of one assistant turn. */
+    toolGroup(entry, beforeNode) {
+      if (entry.group) return entry.group;
+      const g = { node: el("div.tool-group"), steps: el("div.tool-steps"), header: null, collapsed: false };
+      g.node.append(g.steps);
+      g.refresh = () => {
+        const n = g.steps.children.length;
+        if (n > 3 && !g.header) {
+          g.collapsed = true; // many steps: fold into an "N steps" group
+          g.header = el("div.group-head", {
+            onclick: () => { g.collapsed = !g.collapsed; g.refresh(); },
+          });
+          g.node.prepend(g.header);
+        }
+        if (g.header) {
+          g.header.replaceChildren(el("span.group-count", { text: `${n} step${n === 1 ? "" : "s"}` }));
+          g.node.classList.toggle("collapsed", g.collapsed);
+          g.node.classList.toggle("expanded", !g.collapsed);
+        }
+      };
+      entry.node.insertBefore(g.node, beforeNode || null);
+      entry.group = g;
+      return g;
     }
 
     /** Render one complete message (history or message_end without a live node). */
@@ -138,33 +208,34 @@
         let part = entry.parts[i];
         const kind = block.type;
         if (!part || part.kind !== kind) {
-          if (part) part.node.remove();
+          if (part) { if (part.thinking) part.thinking.dispose(); part.node.remove(); }
           part = { kind, node: null, last: null };
           if (kind === "text") part.node = el("div.md");
           else if (kind === "thinking" || kind === "redactedThinking") {
-            part.body = el("div.md");
-            part.summary = el("summary", { text: "Thinking" });
-            part.node = el("details.thinking", null, part.summary, part.body);
+            part.thinking = new ThinkingBlock(kind === "redactedThinking", streaming);
+            part.node = part.thinking.node;
           } else if (kind === "toolCall") {
             part.card = this.card(block.id, block.name);
             part.node = part.card.node;
           } else part.node = el("div");
           const before = entry.parts.slice(i + 1).find((p) => p && p.node.isConnected);
-          entry.node.insertBefore(part.node, before ? before.node : entry.tail);
+          if (kind === "toolCall") {
+            // Consecutive calls collect into one compact step group.
+            const g = this.toolGroup(entry, before ? before.node : entry.tail);
+            g.steps.append(part.node);
+            g.refresh();
+          } else {
+            entry.group = null; // a non-tool part closes the current step group
+            entry.node.insertBefore(part.node, before ? before.node : entry.tail);
+          }
           entry.parts[i] = part;
         }
         if (kind === "text") {
           if (part.last !== block.text) { part.node.innerHTML = OMP.md(block.text); part.last = block.text; }
         } else if (kind === "thinking") {
-          const t = block.thinking || "";
-          if (part.last !== t) {
-            part.body.innerHTML = OMP.md(t);
-            part.last = t;
-            part.words = t.trim() ? t.trim().split(/\s+/).length : 0;
-          }
-          part.summary.textContent = streaming && i === content.length - 1 ? `Thinking… (${part.words} words)` : `Thought (${part.words} words)`;
+          part.thinking.setText(block.thinking || "", streaming && i === content.length - 1);
         } else if (kind === "redactedThinking") {
-          part.summary.textContent = "Thinking (redacted)";
+          part.thinking.setText("", false);
         } else if (kind === "toolCall") {
           part.card.name = block.name || part.card.name;
           part.card.setArgs(block.arguments);

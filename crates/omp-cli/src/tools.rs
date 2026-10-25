@@ -10,7 +10,9 @@ mod ast;
 pub mod bash;
 pub mod checkpoint;
 mod edit;
+mod edit_diagnostics;
 mod eval;
+pub(crate) mod a2a;
 pub(crate) mod eval_agents;
 pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;
@@ -24,9 +26,9 @@ pub(crate) mod rlm_combinators;
 mod search;
 mod task;
 mod todo;
-pub use todo::{phases_from_entries, TodoPhase, TodoTool};
 #[cfg(test)]
 pub use todo::{Status, TodoItem};
+pub use todo::{TodoPhase, TodoTool, phases_from_entries};
 mod goal;
 mod lsp;
 mod think;
@@ -36,15 +38,16 @@ mod wait;
 mod web_search;
 mod yield_tool;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
+use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use pa_agent::BoxFut;
 use pi_edit::{EditMode, EditStore};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Job registry of the most recently built tool set (see [`take_last_jobs`]).
 static LAST_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mutex::new(None);
@@ -91,6 +94,9 @@ pub struct Env {
     /// text), set per call from [`relevance::take`]; ranks the inline view of
     /// spilled `bash`/`read` output.
     pub query: parking_lot::Mutex<String>,
+    /// Escalation ledger for the post-write `edit`/`write` diagnostics gate:
+    /// maps a `(file, delta-hash)` to how many times that exact delta recurred.
+    pub diagnostics_ledger: parking_lot::Mutex<HashMap<(PathBuf, u64), usize>>,
 }
 
 impl Env {
@@ -103,6 +109,7 @@ impl Env {
             hashline: edit_mode == EditMode::Hashline,
             jobs: jobs::JobRegistry::default(),
             query: parking_lot::Mutex::default(),
+            diagnostics_ledger: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -193,6 +200,69 @@ const GREP_DESCRIPTION: &str = "Regex: Rust, then PCRE2. `path`: `;`-separated f
 const WRITE_DESCRIPTION: &str = "SHOULD `edit` existing files; `write` for required new files or whole-file replacement. NEVER create docs or emojis unless requested.";
 const FIND_DESCRIPTION: &str = "Describe behavior, get implementing files and line ranges. MUST use first for unknown locations; known strings/regex/symbols → `grep`, names → `glob`.\n`query`: plain language, not regex; quoted phrases match whole. `grep_keywords`: likely verbatim terms, `[]` if unsure.\n`path`: one directory or file, host path or internal URL (`omp://`, `omp://<file>.md`, `skill://<name>`, `local://…`); omitted = workspace root. Scope known subsystem; batch related questions. Searches live files, no index; no `:start-end` selector (judges whole files).\nHits strongest first: `path:start-end score snippet` (workspace-relative, or URL under URL scope); read returned ranges. Scores: absolute comparable 0–1 probability; below ~0.4 = weak evidence, so widen query or use `grep` before concluding absence.";
 
+
+/// `OMT_TOOLS_DEDUP=1`: pure-read tools (read/grep/glob/lsp) answer an identical
+/// immediately-consecutive call from cache. Measured on frontier models: repeated
+/// back-to-back reads cost a full turn for the same bytes (gemini-3.8: 76 dup reads
+/// per 18 runs). Mutating tools (bash/edit/write) are never deduped — a repeat after
+/// an edit may legitimately observe different state.
+struct DedupTool {
+    inner: Arc<dyn AgentTool>,
+    last: tokio::sync::Mutex<Option<(String, AgentToolResult)>>,
+}
+
+impl AgentTool for DedupTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+    fn parameters(&self) -> &serde_json::Value {
+        self.inner.parameters()
+    }
+    fn label(&self) -> &str {
+        self.inner.label()
+    }
+    fn prepare_arguments(&self, args: &serde_json::Value) -> Option<serde_json::Value> {
+        self.inner.prepare_arguments(args)
+    }
+    fn execution_mode(&self) -> Option<pa_agent::types::ToolExecutionMode> {
+        self.inner.execution_mode()
+    }
+    fn execute(
+        self: Arc<Self>,
+        tool_call_id: String,
+        params: serde_json::Value,
+        signal: pa_agent::abort::AbortSignal,
+        on_update: pa_agent::types::AgentToolUpdateCallback,
+    ) -> BoxFut<'static, anyhow::Result<AgentToolResult>> {
+        Box::pin(async move {
+            let key = params.to_string();
+            // Serialize calls to this tool: identical calls issued in one
+            // parallel batch must land after the first has been cached.
+            let mut g = self.last.lock().await;
+            if let Some((k, res)) = g.as_ref() {
+                if *k == key {
+                    let mut cached = res.clone();
+                    cached.content.insert(
+                        0,
+                        pa_agent::types::ToolResultContent::text(
+                            "[dedup: identical consecutive call — cached result]",
+                        ),
+                    );
+                    return Ok(cached);
+                }
+            }
+            let res = Arc::clone(&self.inner)
+                .execute(tool_call_id, params, signal, on_update)
+                .await?;
+            *g = Some((key, res.clone()));
+            Ok(res)
+        })
+    }
+}
+
 /// All built-in tools, rooted at `cwd`.
 #[must_use]
 #[allow(clippy::too_many_lines)] // the tool registry table; order mirrors omp's builtinTools
@@ -223,7 +293,7 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             })
         })
     };
-    vec![
+    let mut tools = vec![
         mk(
             "read",
             READ_DESCRIPTION.to_string(),
@@ -311,7 +381,38 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
         lsp::tool(env.clone()),
         checkpoint::checkpoint_tool(),
         checkpoint::rewind_tool(),
-    ]
+    ];
+    // `OMT_TOOLS_OFF=a,b`: drop listed tools from the advertised set (headless
+    // cost runs: a smaller schema is fewer tokens on every request).
+    if let Ok(off) = std::env::var("OMT_TOOLS_OFF") {
+        let drop: std::collections::HashSet<&str> =
+            off.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        if !drop.is_empty() {
+            tools.retain(|t| {
+                let n = t.name();
+                let dashed = n.replace('_', "-");
+                !drop.contains(n) && !drop.contains(dashed.as_str())
+            });
+        }
+    }
+    // `OMT_TOOLS_DEDUP=1`: cache identical consecutive pure-tool calls.
+    if std::env::var("OMT_TOOLS_DEDUP").is_ok_and(|v| v != "0") {
+        let deduped: Vec<Arc<dyn AgentTool>> = tools
+            .into_iter()
+            .map(|t| {
+                if matches!(t.name(), "read" | "grep" | "glob" | "lsp") {
+                    Arc::new(DedupTool {
+                        inner: t,
+                        last: tokio::sync::Mutex::new(None),
+                    })
+                } else {
+                    t
+                }
+            })
+            .collect();
+        return deduped;
+    }
+    tools
 }
 
 /// TS `isToolAllowed` setting gates for the plain built-ins: a tool whose
@@ -349,6 +450,11 @@ pub fn session_builtin_tools(
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut tools = builtin_tools(cwd, edit_mode);
     tools.retain(|t| enabled_by_settings(settings, t.name()));
+    // Session-start LSP autostart: warm the project's servers in the
+    // background so the first edit's diagnostics gate has a pre-edit
+    // baseline (see edit_diagnostics). No-op without a runtime or when no
+    // server is configured for the cwd.
+    edit_diagnostics::prewarm_project_spawn(cwd);
     tools
 }
 
@@ -393,7 +499,7 @@ pub fn hidden_tool_by_name(name: &str) -> Option<Arc<dyn AgentTool>> {
     }
 }
 
-pub use ask::{tool_with_ui, AskUi, SelectOption};
+pub use ask::{AskUi, SelectOption, tool_with_ui};
 
 #[cfg(test)]
 mod tests {
@@ -431,7 +537,9 @@ mod tests {
         for on in ["read", "bash", "ast_edit", "lsp", "todo"] {
             assert!(defaults.iter().any(|n| n == on), "{on} off by default");
         }
-        let custom = names("lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\nfind:\n  enabled: \"off\"\n");
+        let custom = names(
+            "lsp:\n  enabled: false\nastGrep:\n  enabled: true\ncheckpoint:\n  enabled: true\nfind:\n  enabled: \"off\"\n",
+        );
         assert!(!custom.iter().any(|n| n == "lsp" || n == "find"));
         assert!(
             defaults.iter().any(|n| n == "find"),
@@ -471,9 +579,10 @@ mod tests {
         );
         let edit = tools.iter().find(|t| t.name() == "edit").unwrap();
         assert_eq!(edit.parameters()["properties"]["input"]["type"], "string");
-        assert!(edit
-            .description()
-            .starts_with("Hashline patches existing files"));
+        assert!(
+            edit.description()
+                .starts_with("Hashline patches existing files")
+        );
         let read = tools.iter().find(|t| t.name() == "read").unwrap();
         assert_eq!(read.parameters()["required"], json!(["path"]));
     }
@@ -513,7 +622,14 @@ mod tests {
             "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files."
         );
         assert_eq!(
-            tools.iter().find(|t| t.name() == "glob").unwrap().description().lines().next().unwrap(),
+            tools
+                .iter()
+                .find(|t| t.name() == "glob")
+                .unwrap()
+                .description()
+                .lines()
+                .next()
+                .unwrap(),
             "Glob files/dirs: `;`-separated paths or internal URLs (`local://*.md`, `omp://**/*.md`); default workspace root."
         );
     }

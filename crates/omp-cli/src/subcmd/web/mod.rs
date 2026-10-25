@@ -4,6 +4,11 @@
 //! streaming turns, tools, slash commands, dialogs, model/thinking control,
 //! session switching — is usable from the browser.
 //!
+//! Agents are detached children: own process group, stdout/stderr logged to
+//! `~/.omp-rs/agents/<id>/log`, control frames over `~/.omp-rs/agents/<id>.sock`.
+//! They survive a hub restart — the next hub adopts them from the
+//! `registry.json` scan (see `detach.rs`).
+//!
 //! Routes:
 //! - `GET /`, `/assets/*`: the embedded app.
 //! - `GET /api/info`, `/api/projects`, `/api/sessions?cwd=`, `/api/fs?path=`.
@@ -19,6 +24,7 @@
 
 mod agent;
 mod assets;
+mod detach;
 mod sessions;
 mod wallpapers;
 
@@ -132,8 +138,22 @@ impl Hub {
             if let Some(hub) = hub.upgrade() {
                 lock(&hub.agents).remove(id);
             }
+            // The child is gone: its registry record and control socket are
+            // stale (this also cleans up after DELETE).
+            detach::unregister(id);
         })
         .await?;
+        // The registry record is what makes the child adoptable after this
+        // hub dies (and what DELETE cleans up).
+        detach::upsert(detach::Entry {
+            id: id.clone(),
+            pid: agent.pid,
+            pgid: agent.pgid,
+            session: spec.resume.clone(),
+            socket: detach::socket_path(&id),
+            started_ms: agent.started_ms,
+            hub_pid: Some(std::process::id()),
+        });
         lock(&self.agents).insert(id, Arc::clone(&agent));
         Ok(agent)
     }
@@ -187,14 +207,25 @@ async fn serve(opts: Options) -> Result<i32> {
         port,
         agents: Mutex::new(HashMap::new()),
     });
+    let adopted = adopt_detached(&hub).await;
     let shown_host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { opts.host.clone() };
     let url = format!("http://{shown_host}:{port}/");
     println!("omt web UI: {url}");
     println!("Working directory: {}", opts.cwd.display());
+    if adopted > 0 {
+        println!("Adopted {adopted} detached agent(s) from the previous run");
+    }
     println!("Press Ctrl+C to stop");
     if opts.open {
         open_browser(&url);
     }
+    #[cfg(unix)]
+    let mut terminate: Option<tokio::signal::unix::Signal> = Some(
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .context("install SIGTERM handler")?,
+    );
+    #[cfg(not(unix))]
+    let mut terminate: Option<()> = None;
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -212,13 +243,72 @@ async fn serve(opts: Options) -> Result<i32> {
                 });
             }
             _ = tokio::signal::ctrl_c() => break,
+            _ = terminated(&mut terminate) => break,
         }
     }
     println!("\nShutting down.");
+    // Detached children survive the hub: release ownership (hubPid -> none)
+    // and leave the processes, registry records and sockets for the next
+    // `omp-rs web` to adopt. Nothing is killed here.
     for agent in hub.agents() {
-        agent.kill().await;
+        detach::set_hub_pid(&agent.id, None);
     }
+    println!("Detached agents keep running; restart `omp-rs web` to reattach.");
     Ok(0)
+}
+
+/// Startup scan of `~/.omp-rs/agents/registry.json`: live, reachable children
+/// whose owning hub is gone (or us) are adopted into the roster; dead ones
+/// have their record and socket reclaimed; children owned by another *live*
+/// hub are logged and left alone (never two writers to one session).
+async fn adopt_detached(hub: &Arc<Hub>) -> usize {
+    let my_pid = std::process::id();
+    let mut entries = detach::load_registry();
+    let mut adopted = 0;
+    for i in (0..entries.len()).rev() {
+        let id = entries[i].id.clone();
+        if let Some(owner) = detach::foreign_owner(&entries[i], my_pid) {
+            eprintln!("agent {id} owned by hub {owner}");
+            continue;
+        }
+        if !(detach::pid_alive(entries[i].pid) && detach::socket_connects(&entries[i].socket)) {
+            detach::remove_entry(&mut entries, &id);
+            continue;
+        }
+        let weak = Arc::downgrade(hub);
+        let on_exit = move |id: &str| {
+            if let Some(hub) = weak.upgrade() {
+                lock(&hub.agents).remove(id);
+            }
+            detach::unregister(id);
+        };
+        match Agent::adopt(&entries[i], on_exit).await {
+            Ok(agent) => {
+                entries[i].hub_pid = Some(my_pid);
+                lock(&hub.agents).insert(id, agent);
+                adopted += 1;
+            }
+            Err(e) => {
+                eprintln!("agent {id} not adoptable: {e:#}");
+                detach::remove_entry(&mut entries, &id);
+            }
+        }
+    }
+    detach::save_registry(&entries);
+    adopted
+}
+
+/// Resolve on SIGTERM; never resolves where there is no SIGTERM to catch.
+#[cfg(unix)]
+async fn terminated(terminate: &mut Option<tokio::signal::unix::Signal>) {
+    if let Some(signal) = terminate.as_mut() {
+        signal.recv().await;
+    }
+}
+#[cfg(not(unix))]
+async fn terminated(terminate: &mut Option<()>) {
+    let _ = terminate;
+    std::future::pending::<()>().await;
 }
 
 fn open_browser(url: &str) {
@@ -336,6 +426,7 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             let cwd = query_param(&req, "cwd").map_or_else(|| hub.default_cwd.clone(), PathBuf::from);
             json_response(StatusCode::OK, &sessions::list_sessions(&cwd))
         }
+        (&Method::POST, "/api/sessions/rename") => rename_session_route(req).await,
         (&Method::GET, "/api/fs") => {
             json_response(StatusCode::OK, &sessions::browse(query_param(&req, "path").as_deref()))
         }
@@ -347,7 +438,11 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
         (&Method::DELETE, p) if p.starts_with("/api/agents/") => {
             match hub.agent(&p["/api/agents/".len()..]) {
                 Some(agent) => {
+                    // SIGTERM the child's process group, then drop its
+                    // registry record and control socket (idempotent with the
+                    // exit watcher's cleanup).
                     agent.kill().await;
+                    detach::unregister(&agent.id);
                     json_response(StatusCode::OK, &json!({"ok": true}))
                 }
                 None => error(StatusCode::NOT_FOUND, "no such agent"),
@@ -377,6 +472,22 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             None => error(StatusCode::NOT_FOUND, "not found"),
         },
         _ => error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+    }
+}
+
+async fn rename_session_route(req: Request<Incoming>) -> Response<Body> {
+    let body = match read_json(req).await {
+        Ok(v) => v,
+        Err(e) => return error(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+    };
+    let path = body.get("path").and_then(Value::as_str).map(PathBuf::from);
+    let name = body.get("name").and_then(Value::as_str);
+    let (Some(path), Some(name)) = (path, name) else {
+        return error(StatusCode::BAD_REQUEST, "path and name are required");
+    };
+    match sessions::rename_session(&path, name) {
+        Ok(()) => json_response(StatusCode::OK, &json!({"ok": true})),
+        Err(e) => error(StatusCode::BAD_REQUEST, &format!("{e}")),
     }
 }
 

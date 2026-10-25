@@ -22,9 +22,9 @@
     { id: "omt", name: "OMT", sw: ["#0f0b14", "#16111c", "#ed4abf", "#e6e3ea"], wall: "" },
     { id: "midnight", name: "Midnight", sw: ["#050506", "#0c0c0f", "#ff5ca8", "#e8e8ec"], wall: "/wallpapers/midnight.svg" },
     { id: "light", name: "Light", sw: ["#fbf9fc", "#ffffff", "#c42a95", "#2b2233"], wall: "" },
-    { id: "sakura", name: "Sakura", sw: ["#120f24", "#1a1630", "#ff8fc7", "#f3eaf6"], wall: "/wallpapers/anime-sakura.svg" },
-    { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#141024", "#1d1730", "#ffa65c", "#f2e9f0"], wall: "/wallpapers/anime-city.svg" },
-    { id: "summer-sky", name: "Summer Sky", sw: ["#eef6ff", "#ffffff", "#2f7de1", "#1c2a3d"], wall: "/wallpapers/anime-sky.svg" },
+    { id: "sakura", name: "Sakura", sw: ["#14112a", "#1c1836", "#ef92bd", "#f4ecf2"], wall: "/wallpapers/anime-sakura.svg" },
+    { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#191430", "#221b3a", "#f0a35c", "#f3ecdf"], wall: "/wallpapers/anime-city.svg" },
+    { id: "summer-sky", name: "Summer Sky", sw: ["#edf4fb", "#ffffff", "#2a6cc0", "#1e3350"], wall: "/wallpapers/anime-sky.svg" },
     { id: "vaporwave", name: "Vaporwave", sw: ["#1a0b2e", "#241040", "#ff71ce", "#f4e8ff"], wall: "/wallpapers/vaporwave-sunset.svg" },
     { id: "synthwave", name: "Synthwave", sw: ["#0b0820", "#120e2e", "#01cdfe", "#e6f7ff"], wall: "/wallpapers/vaporwave-grid.svg" },
   ];
@@ -120,7 +120,7 @@
       }, el("span.ap-wall-name", { text: w.name }));
       if (removable) {
         tile.append(el("button.ap-del", {
-          text: "✕",
+          html: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
           title: "Delete wallpaper",
           onclick: async (e) => {
             e.stopPropagation();

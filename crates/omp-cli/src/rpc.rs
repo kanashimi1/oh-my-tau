@@ -20,18 +20,19 @@
 //!   clipboard (omp-rs extension; the TUI host copies itself).
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::{LazyLock, Mutex};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use pa_agent::abort::AbortController;
 use pa_agent::agent::{Agent, QueueMode};
 use pa_agent::types::ThinkingLevel;
 use pa_agent::BoxFut;
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use crate::agent::Target;
@@ -1358,10 +1359,11 @@ pub type OnStart = Box<
         + Send,
 >;
 
-/// Run the RPC loop until stdin closes.
+/// Run the RPC loop until stdin closes — or, with `OMP_RPC_SOCKET` set, until
+/// the process is signalled (detached mode; see [`serve_detached`]).
 ///
 /// # Errors
-/// Fails on stdin read errors.
+/// Fails on stdin read errors or a failed control-socket bind.
 pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistence) -> Result<()> {
     run_with(agent, target, cwd, persist, None).await
 }
@@ -1369,7 +1371,7 @@ pub async fn run(agent: Agent, target: Target, cwd: PathBuf, persist: Persistenc
 /// [`run`] with a start-up hook (see [`OnStart`]).
 ///
 /// # Errors
-/// Fails on stdin read errors.
+/// Fails on stdin read errors or a failed control-socket bind.
 #[allow(clippy::too_many_lines)] // the RPC dispatch loop; one branch per wire frame type, mirrors omp's handler table
 pub async fn run_with(
     agent: Agent,
@@ -1378,6 +1380,14 @@ pub async fn run_with(
     persist: Persistence,
     on_start: Option<OnStart>,
 ) -> Result<()> {
+    // `OMP_RPC_SOCKET` (set by `omp-rs web`'s spawn): serve frames on a
+    // per-agent Unix socket and outlive the hub. Binding before the runtime
+    // warms up lets a restarting hub connect immediately; connections queue
+    // in the listener backlog until `serve_detached` below starts.
+    let detached = match std::env::var_os("OMP_RPC_SOCKET") {
+        Some(path) => Some(bind_detached(Path::new(&path))?),
+        None => None,
+    };
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     let agent = Arc::new(agent);
     RUNTIME_TX.with(|slot| *slot.borrow_mut() = Some(tx.clone()));
@@ -1431,7 +1441,9 @@ pub async fn run_with(
     }
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    let mut background = tokio::task::JoinSet::new();
+    // Drained on the stdio exit path; detached mode keeps it `Some` forever
+    // (a detached child has no voluntary exit to drain for).
+    let mut background: Option<tokio::task::JoinSet<()>> = Some(tokio::task::JoinSet::new());
     // Commands run one at a time, in arrival order, on a worker task, so the read loop keeps
     // routing `extension_ui_response` (and `abort`) while a command awaits a dialog answer
     // (interactive slash commands, extension `ui.select`): handling inline deadlocked.
@@ -1448,69 +1460,23 @@ pub async fn run_with(
             }
         })
     };
+    if let Some(listener) = detached {
+        // Detached: stdin frames still work until EOF, but EOF no longer ends
+        // the process — the control socket keeps it alive for the hub; only a
+        // process-group SIGTERM (web DELETE) does.
+        return serve_detached(&rt, listener, &cmd_tx, &busy).await;
+    }
     while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
+        if let Some(cmd) = parse_line(&rt, &line) {
+            route_frame(&rt, cmd, &cmd_tx, &busy, &mut background).await;
         }
-        let cmd = match serde_json::from_str::<Value>(&line) {
-            Ok(v) if v.is_object() => v,
-            Ok(_) => {
-                rt.send(response(
-                    None,
-                    "parse",
-                    Err(CmdError::new(
-                        "Failed to parse command: expected a JSON object",
-                    )),
-                ));
-                continue;
-            }
-            Err(e) => {
-                rt.send(response(
-                    None,
-                    "parse",
-                    Err(CmdError::new(format!("Failed to parse command: {e}"))),
-                ));
-                continue;
-            }
-        };
-        let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
-        if kind == "extension_ui_response" {
-            // Resolve a pending ask-UI dialog (see `RpcAskUi`).
-            if let Some(id) = cmd.get("id").and_then(Value::as_str) {
-                resolve_pending_ui_request(id, cmd.clone());
-            }
-            continue;
-        }
-        if matches!(
-            kind,
-            "host_tool_result" | "host_tool_update" | "host_uri_result"
-        ) {
-            continue; // side-channel frames for sub-protocols this server never opens
-        }
-        if kind == "bash" {
-            let rt = rt.clone();
-            background.spawn(async move {
-                let result = match str_field(&cmd, "command") {
-                    Ok(c) => run_bash(&rt, c).await,
-                    Err(e) => Err(e),
-                };
-                rt.send(response(cmd.get("id"), "bash", result));
-            });
-            continue;
-        }
-        if kind == "abort" && busy.load(std::sync::atomic::Ordering::SeqCst) {
-            // A command is in flight (possibly waiting on a dialog): abort the run now
-            // instead of queueing behind it.
-            let reply = handle(&rt, &cmd).await;
-            rt.send(reply);
-            continue;
-        }
-        let _ = cmd_tx.send(cmd);
     }
     // stdin closed: let accepted work finish and flush its frames.
     drop(cmd_tx);
     let _ = worker.await;
-    while background.join_next().await.is_some() {}
+    if let Some(mut background) = background.take() {
+        while background.join_next().await.is_some() {}
+    }
     agent.wait_for_idle().await;
     // `prompt_result` / `session_settled` land a tick after the final `agent_end`.
     rt.wait_settled().await;
@@ -1526,6 +1492,124 @@ pub async fn run_with(
         writer.abort();
     }
     Ok(())
+}
+
+/// Bind the detached control socket, replacing a stale file left by an
+/// earlier incarnation of the same agent id.
+fn bind_detached(sock_path: &Path) -> Result<UnixListener> {
+    if let Some(dir) = sock_path.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    let _ = std::fs::remove_file(sock_path);
+    UnixListener::bind(sock_path).with_context(|| format!("bind {}", sock_path.display()))
+}
+
+/// Serve frames on the control socket until the process is signalled. The
+/// socket is inbound-only: replies flow to stdout (the per-agent log the hub
+/// tails). A client's EOF just ends its reader; the process itself never
+/// exits here, so nothing is drained or flushed — a detached child only dies
+/// by signal.
+async fn serve_detached(
+    rt: &Arc<Runtime>,
+    listener: UnixListener,
+    cmd_tx: &mpsc::UnboundedSender<Value>,
+    busy: &Arc<AtomicBool>,
+) -> Result<()> {
+    loop {
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
+        let (rt, cmd_tx, busy) = (rt.clone(), cmd_tx.clone(), busy.clone());
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stream).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(cmd) = parse_line(&rt, &line) {
+                    route_frame(&rt, cmd, &cmd_tx, &busy, &mut None).await;
+                }
+            }
+        });
+    }
+}
+
+/// Decode one input line for either transport: blank lines are skipped and
+/// parse errors are answered, byte-for-byte the rules the stdio loop had.
+fn parse_line(rt: &Runtime, line: &str) -> Option<Value> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    match serde_json::from_str::<Value>(line) {
+        Ok(v) if v.is_object() => Some(v),
+        Ok(_) => {
+            rt.send(response(
+                None,
+                "parse",
+                Err(CmdError::new("Failed to parse command: expected a JSON object")),
+            ));
+            None
+        }
+        Err(e) => {
+            rt.send(response(
+                None,
+                "parse",
+                Err(CmdError::new(format!("Failed to parse command: {e}"))),
+            ));
+            None
+        }
+    }
+}
+
+/// Route one decoded frame: dialog answers resolve their waiter, `bash` runs
+/// concurrently with command dispatch, an `abort` interrupts an in-flight
+/// command, everything else queues for the ordered worker. `background` is
+/// the stdio-mode drain set; `None` (detached mode) detaches `bash` jobs.
+async fn route_frame(
+    rt: &Arc<Runtime>,
+    cmd: Value,
+    cmd_tx: &mpsc::UnboundedSender<Value>,
+    busy: &Arc<AtomicBool>,
+    background: &mut Option<tokio::task::JoinSet<()>>,
+) {
+    let kind = cmd.get("type").and_then(Value::as_str).unwrap_or("");
+    if kind == "extension_ui_response" {
+        // Resolve a pending ask-UI dialog (see `RpcAskUi`).
+        if let Some(id) = cmd.get("id").and_then(Value::as_str) {
+            resolve_pending_ui_request(id, cmd.clone());
+        }
+        return;
+    }
+    if matches!(
+        kind,
+        "host_tool_result" | "host_tool_update" | "host_uri_result"
+    ) {
+        return; // side-channel frames for sub-protocols this server never opens
+    }
+    if kind == "bash" {
+        let rt = rt.clone();
+        let job = async move {
+            let result = match str_field(&cmd, "command") {
+                Ok(c) => run_bash(&rt, c).await,
+                Err(e) => Err(e),
+            };
+            rt.send(response(cmd.get("id"), "bash", result));
+        };
+        match background {
+            Some(set) => {
+                set.spawn(job);
+            }
+            None => {
+                tokio::spawn(job);
+            }
+        }
+        return;
+    }
+    if kind == "abort" && busy.load(Ordering::SeqCst) {
+        // A command is in flight (possibly waiting on a dialog): abort the run now
+        // instead of queueing behind it.
+        let reply = handle(rt, &cmd).await;
+        rt.send(reply);
+        return;
+    }
+    let _ = cmd_tx.send(cmd);
 }
 
 #[cfg(test)]

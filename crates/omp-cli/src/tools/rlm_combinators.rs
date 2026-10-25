@@ -27,13 +27,13 @@ use std::sync::LazyLock;
 use parking_lot::Mutex;
 
 use omp_task::rubric::{self, FrozenRubric, RubricRecord, RubricScorer};
-use pa_agent::abort::AbortSignal;
 use pa_agent::BoxFut;
+use pa_agent::abort::AbortSignal;
 use pa_types::ai::{Model, Usage};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::eval_bridge::OpCtx;
-use super::rlm::{Backend, Limits, Session, DEFAULT_MODEL, SESSION};
+use super::rlm::{Backend, DEFAULT_MODEL, Limits, SESSION, Session};
 
 /// Env: hard cap on the characters a combinator program may chew (default 32 Mi).
 pub const MAX_CHARS_ENV: &str = "OMP_LAM_MAX_CHARS";

@@ -1651,6 +1651,8 @@ impl Runtime {
         // settled context, not race the compaction's `set_messages`. Runs
         // before the auto-title spawn so the title task cannot append its way
         // into a running pass.
+        let admit_t0 = std::time::Instant::now();
+        turn_trace!("[turn-trace] prompt-admit t=0ms");
         self.cancel_compaction_and_wait().await;
         self.spawn_auto_title(message);
         if self.agent.is_streaming().await {
@@ -1713,9 +1715,17 @@ impl Runtime {
                 .flatten();
             injected = hook(message.to_string(), images_json).await;
         }
+        turn_trace!(
+            "[turn-trace] prompt-before-start-done t={}ms",
+            admit_t0.elapsed().as_millis()
+        );
         let notices = self.prompt_notices(message, true).await;
         let input = prompt_input(message, images, notices, injected);
         let pua = self.agent.prompt_until_accepted(input).await;
+        turn_trace!(
+            "[turn-trace] prompt-accepted t={}ms",
+            admit_t0.elapsed().as_millis()
+        );
         if let Err(e) = pua {
             lock(&self.prompts)
                 .open
@@ -1919,6 +1929,16 @@ impl Runtime {
 
     pub fn session_file(&self) -> PathBuf {
         self.persist.path()
+    }
+
+    /// Base URL of the live model's provider endpoint (`None` before a model is set).
+    pub fn model_base_url(&self) -> Option<String> {
+        self.target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|t| t.model.base_url.clone())
+            .filter(|u| !u.is_empty())
     }
 
     pub fn model_info(&self) -> Value {

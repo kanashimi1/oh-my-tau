@@ -30,17 +30,15 @@
     document.title = s.agentId ? `${title} — omt` : "omt";
     $("#session-cwd").textContent = info.cwd ? shortPath(info.cwd) : "";
     const model = st.model ? `${st.model.provider}/${st.model.id}` : "model";
-    $("#model-btn").textContent = model;
-    $("#model-btn").disabled = !s.agentId;
-    const tb = $("#thinking-btn");
-    if (st.ultra) {
-      tb.replaceChildren(el("span", { text: "τ " }), el("span.ultra-text", { text: st.ultra, dataset: { mode: st.ultra } }));
-    } else {
-      tb.textContent = "◇ " + (st.thinkingLevel || "thinking");
-    }
-    tb.classList.toggle("ultra", !!st.ultra);
-    $("#thinking-btn").disabled = !s.agentId;
-    $("#thinking-btn").hidden = !!(st.model && !st.model.reasoning && !st.ultra);
+    const modelBtn = $("#composer-model");
+    modelBtn.textContent = st.model ? `${st.model.provider}/${st.model.id}` : "model";
+    modelBtn.disabled = !s.agentId;
+    const tBtn = $("#composer-thinking");
+    if (st.ultra) tBtn.textContent = "τ " + st.ultra;
+    else tBtn.textContent = "◇ " + (st.thinkingLevel || "thinking");
+    tBtn.classList.toggle("ultra", !!st.ultra);
+    tBtn.disabled = !s.agentId;
+    tBtn.hidden = !!(st.model && !st.model.reasoning && !st.ultra);
   }
 
   function renderStatus(s) {
@@ -106,29 +104,157 @@
   }
 
   function renderSidebar(s) {
-    const agents = $("#agent-list");
-    agents.replaceChildren(...(s.agents.length ? s.agents.map((a) => {
-      const title = a.sessionName || basename(a.cwd);
-      const dot = el("span.dot" + (a.streaming ? ".busy" : ".live"));
-      return el("button.item" + (a.id === s.agentId ? ".active" : ""), { onclick: () => navigate(a.id), title: a.cwd },
-        el("div.row", null, el("span.name", null, dot, " ", title),
-          el("span.x", { text: "✕", title: "Stop agent", onclick: (e) => { e.stopPropagation(); stopAgent(s, a.id); } })),
-        el("div.sub", { text: `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}` }));
-    }) : [el("div.muted.small", { text: "No running agents" })]));
-
     $("#project-path").textContent = shortPath(s.project);
     $("#project-path").title = s.project;
+
+    const pinned = OMP.sidebar.readPinned();
     const q = $("#session-filter").value.trim().toLowerCase();
     const current = s.agents.find((a) => a.id === s.agentId);
-    const openFiles = new Set(s.agents.map((a) => a.sessionFile).filter(Boolean));
-    const rows = s.sessions.filter((r) => !q || `${r.title || ""} ${r.preview || ""} ${r.id}`.toLowerCase().includes(q));
-    $("#session-list").replaceChildren(...(rows.length ? rows.slice(0, 300).map((r) => {
-      const active = current && current.sessionFile === r.path;
-      return el("button.item" + (active ? ".active" : ""), { onclick: () => openSession(s, r), title: r.path },
-        el("div.row", null, el("span.name", { text: r.title || r.preview || r.id }),
-          openFiles.has(r.path) ? el("span.dot.live", { title: "open" }) : r.store === "omp" ? el("span.badge", { text: "ts" }) : null),
-        el("div.sub", { text: `${OMP.timeAgo(r.modifiedMs)}${r.title && r.preview ? " · " + r.preview : ""}` }));
-    }) : [el("div.muted.small", { text: s.project ? "No sessions in this folder" : "" })]));
+    const openByAgent = new Set(s.agents.map((a) => a.sessionFile).filter(Boolean));
+
+    const rows = [];
+
+    // Running agents inline (live dot, needs-input/running chips).
+    for (const a of s.agents) {
+      const key = "a:" + a.id;
+      const title = a.sessionName || basename(a.cwd);
+      const sub = `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}`;
+      if (q && !`${title} ${sub} ${a.id}`.toLowerCase().includes(q)) continue;
+      rows.push({
+        key, kind: "agent", id: a.id, path: a.sessionFile || null, cwd: a.cwd,
+        title, sub, ms: a.startedMs || Date.now(),
+        active: a.id === s.agentId, pinned: pinned.has(key),
+        dot: a.streaming || a.runningTools ? "busy" : "live",
+        status: a.needsInput ? "needs input" : a.runningTools ? "running" : a.streaming ? "working" : null,
+      });
+    }
+
+    // Stored sessions (skipped when an agent already has the file open).
+    for (const r of s.sessions) {
+      if (openByAgent.has(r.path)) continue;
+      const key = "s:" + r.path;
+      const title = r.title || r.preview || r.id;
+      const preview = r.preview ? (r.title ? " · " + r.preview : r.preview) : "";
+      const sub = `${OMP.timeAgo(r.modifiedMs)}${preview}`;
+      if (q && !`${title} ${r.preview || ""} ${r.id}`.toLowerCase().includes(q)) continue;
+      rows.push({
+        key, kind: "session", id: null, path: r.path, cwd: r.cwd || s.project,
+        title, sub, ms: r.modifiedMs || 0,
+        active: current && current.sessionFile === r.path, pinned: pinned.has(key),
+        dot: null, status: r.store === "omp" ? "ts" : null,
+      });
+    }
+
+    rows.sort((a, b) => b.ms - a.ms);
+
+    const groups = new Map();
+    const pinnedRows = [];
+    for (const row of rows) {
+      if (row.pinned) { pinnedRows.push(row); continue; }
+      const g = OMP.sidebar.dateGroup(row.ms);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(row);
+    }
+
+    const frag = [];
+    if (pinnedRows.length) {
+      frag.push(groupHead("Pinned", pinnedRows.length));
+      frag.push(...pinnedRows.slice(0, 300).map((r) => rowNode(s, r)));
+    }
+    let shown = pinnedRows.length;
+    for (const g of OMP.sidebar.GROUP_ORDER) {
+      const list = groups.get(g);
+      if (!list || !list.length) continue;
+      frag.push(groupHead(OMP.sidebar.GROUP_LABELS[g], list.length));
+      const take = list.slice(0, Math.max(0, 300 - shown));
+      frag.push(...take.map((r) => rowNode(s, r)));
+      shown += take.length;
+    }
+    if (!frag.length) {
+      frag.push(el("div.sess-empty.muted.small", { text: s.project ? "No matching sessions" : "No sessions yet" }));
+    }
+    $("#session-list").replaceChildren(...frag);
+  }
+
+  const PIN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l-1 8 3 3H6l3-3z"/><line x1="12" y1="18" x2="12" y2="21"/></svg>';
+  const NEWWIN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+
+  const groupHead = (label, count) => el("div.group-head", null,
+    el("span", { text: label }), el("span.count", { text: String(count) }));
+
+  const rowNode = (s, row) => {
+    const dot = row.dot ? el("span.sess-dot." + row.dot, { title: row.dot === "busy" ? "working" : "running" })
+      : el("span.sess-dot", { title: "stored" });
+    const chip = row.status === "needs input"
+      ? el("span.needs-input", { text: row.status })
+      : row.status ? el("span.muted-run", { text: row.status }) : null;
+    const actions = el("span.sess-actions", null,
+      el("button.row-action" + (row.pinned ? ".pinned" : ""), { title: row.pinned ? "Unpin" : "Pin", html: PIN_SVG, onclick: (e) => { e.stopPropagation(); togglePin(s, row); } }),
+      el("button.row-action", { title: "Open in new window", html: NEWWIN_SVG, onclick: (e) => { e.stopPropagation(); openInNewWindow(s, row); } }),
+      el("button.row-action", { title: "More", text: "⋯", onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, s, row); } }));
+    const main = el("div.main", null, dot,
+      el("span.sess-title", { text: row.title }), chip, actions);
+    return el("div.session-row" + (row.active ? ".active" : ""), {
+      title: row.path || row.sub,
+      onclick: () => { if (row.kind === "agent") navigate(row.id); else openSession(s, row); },
+      oncontextmenu: (e) => { e.preventDefault(); rowMenu(e.target, s, row); },
+    }, main, el("div.sess-sub", { text: row.sub }));
+  };
+
+  function togglePin(s, row) {
+    const now = OMP.sidebar.togglePinned(row.key);
+    OMP.toast(now ? "Pinned" : "Unpinned", "success");
+    renderSidebar(S());
+  }
+
+  async function renameRow(s, row) {
+    const name = await OMP.dialogs.promptText("Rename session", { value: row.title || "" }).promise;
+    if (!name || !name.trim()) return;
+    const n = name.trim();
+    try {
+      if (row.kind === "agent" && row.id === S().agentId && S().ws) {
+        await app.rpc("set_session_name", { name: n });
+      } else if (row.path) {
+        await api("/api/sessions/rename", { method: "POST", body: { path: row.path, name: n } });
+      } else {
+        return OMP.toast("No session file to rename", "warning");
+      }
+    } catch (e) { return OMP.toast(e.message, "error"); }
+    await refreshAgents(S());
+    loadSessions(S());
+    if (row.id === S().agentId) {
+      S().state = await app.rpc("get_state").catch(() => S().state);
+      renderHeader(S());
+    }
+  }
+
+  // Resume a stored session into an agent without hijacking this tab.
+  async function spawnQuiet(body) {
+    try {
+      const a = await api("/api/agents", { method: "POST", body });
+      await refreshAgents(S());
+      return a;
+    } catch (e) { OMP.toast("Could not start agent: " + e.message, "error", 8000); return null; }
+  }
+
+  function openInNewWindow(s, row) {
+    const ow = (id) => OMP.desktop && typeof OMP.desktop.openWindow === "function"
+      && OMP.desktop.openWindow("#/a/" + id);
+    if (row.kind === "agent") { if (row.id) ow(row.id); return; }
+    spawnQuiet({ cwd: row.cwd || s.project, resume: row.path }).then((a) => { if (a) ow(a.id); });
+  }
+
+  function rowMenu(anchor, s, row) {
+    const items = [
+      { label: "Rename…", run: () => renameRow(s, row) },
+      { label: row.pinned ? "Unpin" : "Pin", run: () => togglePin(s, row) },
+      "-",
+      { label: "Open in new window", run: () => openInNewWindow(s, row) },
+    ];
+    if (row.kind === "agent" && row.id === S().agentId) {
+      items.push("-", { label: "Stop agent", run: () => stopAgent(S(), row.id) });
+    }
+    OMP.popupMenu(anchor, items);
   }
 
   // ── data ─────────────────────────────────────────────────────────────────
@@ -308,7 +434,8 @@
       ["Enter", "send (steer while the agent works)"], ["Alt+Enter", "queue a follow-up while the agent works"],
       ["Shift+Enter", "new line"], ["Esc", "interrupt the running turn"], ["↑ / ↓", "prompt history"],
       ["/", "slash commands (Tab completes)"], ["!cmd", "run a shell command (!!cmd: keep it out of the context)"],
-      ["Ctrl+Shift+M", "model picker"], ["Ctrl+Shift+T", "thinking level"], ["Ctrl+Shift+N", "new session"], ["Ctrl+Shift+R", "resume a session"],
+      ["Ctrl+Shift+M / Ctrl+Shift+T", "model picker / thinking level"],
+      ["Ctrl+N / Ctrl+Shift+N", "new session"], ["Ctrl+Shift+R", "resume a session"],
       ["paste / drop", "attach images"],
     ];
     OMP.dialogs.modal({
@@ -368,8 +495,8 @@
     $("#new-session").onclick = () => newSession(s, s.project);
     $("#project-pick").onclick = (e) => projectMenu(e.currentTarget, s);
     $("#session-filter").oninput = () => renderSidebar(s);
-    $("#model-btn").onclick = () => modelPicker(s);
-    $("#thinking-btn").onclick = () => thinkingPicker(s);
+    $("#composer-model").onclick = () => modelPicker(s);
+    $("#composer-thinking").onclick = () => thinkingPicker(s);
     $("#menu-btn").onclick = (e) => sessionMenu(e.currentTarget, s);
     $("#session-title").onclick = () => rename(s);
     const wrap = $("#transcript-wrap");
@@ -386,6 +513,7 @@
       if (e.ctrlKey && e.shiftKey && k === "m") { e.preventDefault(); if (s.agentId) modelPicker(s); }
       else if (e.ctrlKey && e.shiftKey && k === "t") { e.preventDefault(); if (s.agentId) thinkingPicker(s); }
       else if (e.ctrlKey && e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
+      else if (e.ctrlKey && !e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "r") { e.preventDefault(); resumePicker(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "a") { e.preventDefault(); OMP.appearance.open(); }
       else if (e.key === "Escape" && (s.streaming || s.bashRunning) && document.activeElement !== $("#composer")) { e.preventDefault(); app.abort(); }

@@ -1,7 +1,10 @@
-//! One browser-driven agent: an `omp-rs --mode rpc` child process.
+//! One browser-driven agent: an `omp-rs --mode rpc` child process, started
+//! detached (own process group, stdout/stderr logged to
+//! `~/.omp-rs/agents/<id>/log`, control over the per-agent socket
+//! `~/.omp-rs/agents/<id>.sock`) so it survives hub restarts.
 //!
-//! Every stdout line (one rpc frame) is fanned out to the attached browser
-//! sockets; browser frames are written to the child's stdin verbatim. The
+//! The log is tailed for frames (fanned out to attached browser sockets);
+//! browser frames are written to the child's control socket verbatim. The
 //! bridge keeps just enough state to make reattaching cheap: unanswered
 //! dialogs (replayed on attach) and a session summary refreshed through the
 //! child's own `get_state`.
@@ -11,12 +14,16 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result};
+use anyhow::{anyhow, Context as _, Result};
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::io::AsyncWriteExt;
+use tokio::net::UnixStream;
+use tokio::process::{Child, Command};
 use tokio::sync::broadcast;
+
+use super::detach;
 
 /// Response id of the bridge's own `get_state` probes (never forwarded).
 const STATE_PROBE_ID: &str = "__web_state";
@@ -32,6 +39,24 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Push (`frame`) or resolve (`None`) a pending dialog and keep
+/// `Summary::needs_input` in sync with the queue, so the roster status is
+/// live between `get_state` probes. Free function over the two locks so the
+/// bookkeeping stays unit-testable without spawning a child.
+fn set_dialog_pending(
+    pending: &Mutex<Vec<(String, Arc<str>)>>,
+    summary: &Mutex<Summary>,
+    id: &str,
+    frame: Option<Arc<str>>,
+) {
+    let mut queue = lock(pending);
+    match frame {
+        Some(frame) => queue.push((id.to_string(), frame)),
+        None => queue.retain(|(p, _)| p != id),
+    }
+    lock(summary).needs_input = !queue.is_empty();
+}
+
 /// What the sidebar shows for a running agent.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
@@ -40,6 +65,13 @@ pub struct Summary {
     pub session_name: Option<String>,
     pub model: Option<String>,
     pub streaming: bool,
+    /// A dialog is waiting for an answer (`pending_ui` non-empty); recomputed
+    /// where the queue mutates so the roster status stays live.
+    pub needs_input: bool,
+    /// A tool call is in flight. The child's `get_state` payload carries no
+    /// tool-level flag (`Runtime::state` only exposes `isStreaming`), so this
+    /// honestly mirrors `streaming` until the state grows such a signal.
+    pub running_tools: bool,
 }
 
 /// How to start an agent.
@@ -56,7 +88,17 @@ pub struct Agent {
     pub id: String,
     pub cwd: PathBuf,
     pub started_ms: i64,
-    stdin: tokio::sync::Mutex<ChildStdin>,
+    /// Child pid (spawned or adopted).
+    pub pid: u32,
+    /// Process group id: the child leads its own group, so a whole subtree can
+    /// be SIGTERM'd without killing the hub.
+    pub pgid: u32,
+    /// Rebuilt from the registry after a hub restart (not spawned by us).
+    pub adopted: bool,
+    /// Client connection to the child's control socket (replaces the stdin pipe).
+    control: tokio::sync::Mutex<Option<UnixStream>>,
+    /// `Some` only for children we spawned ourselves; adopted children have no
+    /// handle (their process is not our child).
     child: tokio::sync::Mutex<Option<Child>>,
     tx: broadcast::Sender<Arc<str>>,
     /// Unanswered dialog requests in arrival order (id, raw frame).
@@ -69,36 +111,69 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// Start the child and its reader tasks. `on_exit` runs once the child's
-    /// stdout closes (after the exit frame was broadcast).
+    /// Start a detached child (own process group; stdout/stderr logged; control
+    /// over a per-agent Unix socket) and drive it: tail the log for frames and
+    /// watch the child for exit. `on_exit` runs once the child is gone (after
+    /// the exit frame was broadcast).
     pub async fn spawn(
         id: String,
         exe: &Path,
         spec: &Spawn,
         on_exit: impl FnOnce(&str) + Send + 'static,
     ) -> Result<Arc<Self>> {
+        let dir = detach::agents_dir().join(&id);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("create {}", dir.display()))?;
+        let log_path = dir.join("log");
+        let sock_path = detach::socket_path(&id);
+        let _ = std::fs::remove_file(&sock_path); // stale socket from an earlier incarnation
+
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("open {}", log_path.display()))?;
+
         let mut cmd = Command::new(exe);
         cmd.arg("--mode").arg("rpc").arg("--cwd").arg(&spec.cwd);
         if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
             cmd.arg("--model").arg(model);
         }
+        #[cfg(unix)]
+        {
+            // The child leads its own process group, so it survives hub restarts
+            // and can be SIGTERM'd as a whole on DELETE.
+            cmd.process_group(0);
+        }
         cmd.current_dir(&spec.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = cmd
+            .env("OMP_RPC_SOCKET", &sock_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log.try_clone()?))
+            .stderr(Stdio::from(log));
+        let child = cmd
             .spawn()
             .with_context(|| format!("spawn {} --mode rpc", exe.display()))?;
-        let stdin = child.stdin.take().context("child stdin")?;
-        let stdout = child.stdout.take().context("child stdout")?;
-        let stderr = child.stderr.take().context("child stderr")?;
+        let pid = child.id().unwrap_or(0);
+        let pgid = pid; // process_group(0): pgid == the child's own pid
+
+        let control = match Self::connect_control(&sock_path).await {
+            Ok(stream) => stream,
+            Err(e) => {
+                detach::kill_group(pid, pgid);
+                let _ = std::fs::remove_file(&sock_path); // the child may have bound it before dying
+                return Err(e);
+            }
+        };
+
         let (tx, _) = broadcast::channel(8192);
         let agent = Arc::new(Self {
-            id,
+            id: id.clone(),
             cwd: spec.cwd.clone(),
             started_ms: pa_agent::now_ms(),
-            stdin: tokio::sync::Mutex::new(stdin),
+            pid,
+            pgid,
+            adopted: false,
+            control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(Some(child)),
             tx,
             pending_ui: Mutex::new(Vec::new()),
@@ -111,43 +186,8 @@ impl Agent {
             alive: AtomicBool::new(true),
         });
 
-        let err_agent = Arc::clone(&agent);
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let mut tail = lock(&err_agent.stderr);
-                if tail.len() == STDERR_TAIL {
-                    tail.pop_front();
-                }
-                tail.push_back(line);
-            }
-        });
-
-        let out_agent = Arc::clone(&agent);
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {}
-                }
-                let text = line.trim_end_matches(['\n', '\r']);
-                if !text.is_empty() {
-                    out_agent.on_child_line(text).await;
-                }
-            }
-            out_agent.alive.store(false, Ordering::SeqCst);
-            let code = match out_agent.child.lock().await.as_mut() {
-                Some(child) => child.wait().await.ok().and_then(|s| s.code()),
-                None => None,
-            };
-            let stderr: Vec<String> = lock(&out_agent.stderr).iter().cloned().collect();
-            let frame = json!({"type": "web_agent_exit", "code": code, "stderr": stderr});
-            let _ = out_agent.tx.send(Arc::from(frame.to_string()));
-            on_exit(&out_agent.id);
-        });
+        Self::start_tail(Arc::clone(&agent), log_path, false);
+        Self::start_exit_watcher(Arc::clone(&agent), on_exit);
 
         if let Some(resume) = &spec.resume {
             let frame = json!({"id": RESUME_ID, "type": "switch_session", "sessionPath": resume});
@@ -155,6 +195,169 @@ impl Agent {
         }
         agent.probe_state().await;
         Ok(agent)
+    }
+
+    /// Adopt a live detached child from the registry: replay its log history to
+    /// rebuild summary/dialog state, connect its control socket, and watch it
+    /// for exit. No `Child` handle is held — the process is not our child.
+    pub async fn adopt(
+        entry: &detach::Entry,
+        on_exit: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<Arc<Self>> {
+        let cwd = detach::pid_cwd(entry.pid)
+            .ok_or_else(|| anyhow!("agent {} cwd unreadable", entry.id))?;
+        let control = Self::connect_control(&entry.socket)
+            .await
+            .with_context(|| format!("connect {}", entry.socket.display()))?;
+        let agent = Arc::new(Self {
+            id: entry.id.clone(),
+            cwd,
+            started_ms: entry.started_ms,
+            pid: entry.pid,
+            pgid: entry.pgid,
+            adopted: true,
+            control: tokio::sync::Mutex::new(Some(control)),
+            child: tokio::sync::Mutex::new(None),
+            tx: broadcast::channel(8192).0,
+            pending_ui: Mutex::new(Vec::new()),
+            summary: Mutex::new(Summary {
+                session_file: entry.session.clone(),
+                ..Summary::default()
+            }),
+            stderr: Mutex::new(VecDeque::new()),
+            notices: Mutex::new(Vec::new()),
+            alive: AtomicBool::new(true),
+        });
+        // Replay from the start to rebuild state, then tail live.
+        Self::start_tail(Arc::clone(&agent), detach::log_path(&entry.id), true);
+        Self::start_adopted_watcher(Arc::clone(&agent), entry.pid, on_exit);
+        agent.probe_state().await;
+        Ok(agent)
+    }
+
+    /// Poll the child's control socket until it accepts us (the child binds
+    /// asynchronously during its own startup).
+    async fn connect_control(sock: &Path) -> Result<UnixStream> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let last = loop {
+            match UnixStream::connect(sock).await {
+                Ok(stream) => return Ok(stream),
+                Err(e) => {
+                    if Instant::now() >= deadline {
+                        break e;
+                    }
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+            }
+        };
+        Err(anyhow!(last.to_string()))
+    }
+
+    /// Tail the agent log. JSON object lines go to `on_child_line`; other lines
+    /// (the child's stderr, mixed into the same file) feed the stderr tail used
+    /// by the exit frame. When `from_start` the whole log is replayed first
+    /// (adoption), otherwise tailing starts at the current end.
+    fn start_tail(agent: Arc<Self>, log_path: PathBuf, from_start: bool) {
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncSeekExt};
+            let Ok(mut file) = tokio::fs::File::open(&log_path).await else {
+                agent.alive.store(false, Ordering::SeqCst);
+                return;
+            };
+            if !from_start {
+                let _ = file.seek(std::io::SeekFrom::End(0)).await;
+            }
+            let mut carry: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                match file.read(&mut buf).await {
+                    Ok(0) => {
+                        if !agent.alive.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Ok(n) => {
+                        for &b in &buf[..n] {
+                            if b == b'\n' {
+                                let line = String::from_utf8_lossy(&carry).into_owned();
+                                carry.clear();
+                                if !line.trim().is_empty() {
+                                    agent.feed_log_line(&line).await;
+                                }
+                            } else {
+                                carry.push(b);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        if !agent.alive.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// One complete log line: a JSON object is a protocol frame; anything else
+    /// is stderr diagnostics kept for the exit frame.
+    async fn feed_log_line(&self, line: &str) {
+        match serde_json::from_str::<Value>(line) {
+            Ok(v) if v.is_object() => self.on_child_line(line).await,
+            _ => {
+                let mut tail = lock(&self.stderr);
+                if tail.len() == STDERR_TAIL {
+                    tail.pop_front();
+                }
+                tail.push_back(line.to_string());
+            }
+        }
+    }
+
+    /// Watch a *spawned* child (we hold the handle and can `wait` on it).
+    fn start_exit_watcher(
+        agent: Arc<Self>,
+        on_exit: impl FnOnce(&str) + Send + 'static,
+    ) {
+        tokio::spawn(async move {
+            let code = match agent.child.lock().await.as_mut() {
+                Some(child) => child.wait().await.ok().and_then(|s| s.code()),
+                None => None,
+            };
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            agent.finish(code, on_exit).await;
+        });
+    }
+
+    /// Watch an *adopted* child (no handle; poll liveness via `/proc`).
+    fn start_adopted_watcher(
+        agent: Arc<Self>,
+        pid: u32,
+        on_exit: impl FnOnce(&str) + Send + 'static,
+    ) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                if !detach::pid_alive(pid) {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    agent.finish(None, on_exit).await;
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Mark the agent dead, broadcast the exit frame, then notify the hub.
+    async fn finish(&self, code: Option<i32>, on_exit: impl FnOnce(&str)) {
+        self.alive.store(false, Ordering::SeqCst);
+        // Give the tail task a moment to drain the final log lines.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let stderr: Vec<String> = lock(&self.stderr).iter().cloned().collect();
+        let frame = json!({"type": "web_agent_exit", "code": code, "stderr": stderr});
+        let _ = self.tx.send(Arc::from(frame.to_string()));
+        on_exit(&self.id);
     }
 
     pub fn is_alive(&self) -> bool {
@@ -183,12 +386,15 @@ impl Agent {
             "id": self.id,
             "cwd": self.cwd.display().to_string(),
             "startedMs": self.started_ms,
+            "adopted": self.adopted,
             "alive": self.is_alive(),
             "sessionFile": s.session_file,
             "sessionId": s.session_id,
             "sessionName": s.session_name,
             "model": s.model,
             "streaming": s.streaming,
+            "needsInput": s.needs_input,
+            "runningTools": s.running_tools,
         })
     }
 
@@ -197,7 +403,7 @@ impl Agent {
         if let Ok(v) = serde_json::from_str::<Value>(line) {
             if v.get("type").and_then(Value::as_str) == Some("extension_ui_response") {
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    lock(&self.pending_ui).retain(|(p, _)| p != id);
+                    set_dialog_pending(&self.pending_ui, &self.summary, id, None);
                     // Other tabs showing the same dialog close it.
                     let close = json!({"type": "extension_ui_request", "method": "cancelDialog",
                                        "params": {"id": id}, "web": "answered"});
@@ -205,16 +411,20 @@ impl Agent {
                 }
             }
         }
-        let mut stdin = self.stdin.lock().await;
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.write_all(b"\n").await?;
-        stdin.flush().await?;
+        let mut control = self.control.lock().await;
+        if let Some(stream) = control.as_mut() {
+            stream.write_all(line.as_bytes()).await?;
+            stream.write_all(b"\n").await?;
+            stream.flush().await?;
+        }
         Ok(())
     }
 
     pub async fn kill(&self) {
-        if let Some(child) = self.child.lock().await.as_mut() {
-            let _ = child.start_kill();
+        if !detach::kill_group(self.pid, self.pgid) {
+            if let Some(child) = self.child.lock().await.as_mut() {
+                let _ = child.start_kill();
+            }
         }
     }
 
@@ -262,11 +472,11 @@ impl Agent {
                 let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
                 if DIALOG_METHODS.contains(&method) {
                     if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                        lock(&self.pending_ui).push((id.to_string(), Arc::from(text)));
+                        set_dialog_pending(&self.pending_ui, &self.summary, id, Some(Arc::from(text)));
                     }
                 } else if method == "cancelDialog" {
                     if let Some(id) = frame.pointer("/params/id").and_then(Value::as_str) {
-                        lock(&self.pending_ui).retain(|(p, _)| p != id);
+                        set_dialog_pending(&self.pending_ui, &self.summary, id, None);
                     }
                 }
             }
@@ -299,6 +509,27 @@ impl Agent {
         }
         if let Some(b) = data.get("isStreaming").and_then(Value::as_bool) {
             s.streaming = b;
+            s.running_tools = b;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `needs_input` follows the pending-dialog queue: any unanswered dialog
+    /// sets it, resolving the last one clears it.
+    #[test]
+    fn needs_input_tracks_pending_ui() {
+        let pending = Mutex::new(Vec::new());
+        let summary = Mutex::new(Summary::default());
+        set_dialog_pending(&pending, &summary, "d1", Some(Arc::from("{}")));
+        assert!(lock(&summary).needs_input);
+        set_dialog_pending(&pending, &summary, "d2", Some(Arc::from("{}")));
+        set_dialog_pending(&pending, &summary, "d1", None);
+        assert!(lock(&summary).needs_input, "d2 is still unanswered");
+        set_dialog_pending(&pending, &summary, "d2", None);
+        assert!(!lock(&summary).needs_input);
     }
 }

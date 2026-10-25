@@ -4,20 +4,21 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use pa_agent::types::AgentToolResult;
+use pi_edit::EditMode;
 use pi_edit::engine::FileOp;
 use pi_edit::error::{EditError, EditResult};
 use pi_edit::path_policy::PathPolicy;
 use pi_edit::session::{
     ApplyRequest, EditWriter, Session, SessionConfig, WriteRequest, WriteResponse,
 };
-use pi_edit::EditMode;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use super::util::{format_path_relative_to_cwd, resolve_to_cwd, str_arg};
 use super::Env;
+use super::edit_diagnostics;
+use super::util::{format_path_relative_to_cwd, resolve_to_cwd, str_arg};
 
 /// Parameter schema of `edit` for `mode` (omp `edit/schemas.ts`).
 #[must_use]
@@ -131,7 +132,37 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
         .map_err(|e| anyhow!("{e}"))?;
     let mut result = AgentToolResult::text(outcome.text.clone());
     result.details = edit_details(&outcome);
+    // Advisory post-write LSP gate: report diagnostics new to this edit.
+    // Never fails the edit; no cold start; bounded by GATE_BUDGET_MS.
+    let changed: Vec<PathBuf> = outcome
+        .files
+        .iter()
+        .filter(|f| matches!(f.op, FileOp::Create | FileOp::Update))
+        .map(|f| f.absolute.clone())
+        .collect();
+    if let Some(gate) = edit_diagnostics::run(env, &changed).await {
+        result
+            .content
+            .push(pa_agent::types::ToolResultContent::text(gate.section));
+        if !result.details.is_object() {
+            result.details = json!({});
+        }
+        result.details["diagnostics"] = Value::Array(gate.diagnostics);
+    }
     Ok(result)
+}
+
+/// Run the async diagnostics gate from the synchronous `write` tool, which
+/// executes on a `spawn_blocking` thread (see `tools.rs`).
+fn run_gate_blocking(env: &Env, files: &[PathBuf]) -> Option<edit_diagnostics::GateResult> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(edit_diagnostics::run(env, files)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("edit diagnostics gate runtime")
+            .block_on(edit_diagnostics::run(env, files)),
+    }
 }
 
 /// omp `EditToolDetails`: the numbered `diff` (+ `firstChangedLine`, `op`,
@@ -225,11 +256,22 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     std::fs::write(&path, content).with_context(|| format!("cannot write {}", path.display()))?;
     env.store
         .invalidate(&pi_edit::path_policy::canonical_key(&path));
-    Ok(AgentToolResult::text(format!(
+    let mut result = AgentToolResult::text(format!(
         "Successfully wrote {} bytes to {}",
         content.len(),
         format_path_relative_to_cwd(&path, &env.cwd, false)
-    )))
+    ));
+    // Advisory post-write LSP gate (same rules as `edit`).
+    if let Some(gate) = run_gate_blocking(env, &[path.clone()]) {
+        result
+            .content
+            .push(pa_agent::types::ToolResultContent::text(gate.section));
+        if !result.details.is_object() {
+            result.details = json!({});
+        }
+        result.details["diagnostics"] = Value::Array(gate.diagnostics);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

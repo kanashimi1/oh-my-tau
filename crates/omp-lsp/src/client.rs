@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -86,6 +86,9 @@ struct ClientInner {
     /// Keyed by canonical path (`EquivalentUriMap` in TS).
     diagnostics: Mutex<HashMap<PathBuf, crate::types::PublishedDiagnostics>>,
     diagnostics_version: AtomicU64,
+    /// Last `experimental/serverStatus` quiescent value (rust-analyzer):
+    /// `false` while loading/analyzing, `true` once background work is done.
+    quiescent: AtomicBool,
     pending: Mutex<HashMap<i64, PendingEntry>>,
     server_capabilities: Mutex<Value>,
     last_activity: AtomicI64,
@@ -194,7 +197,13 @@ impl LspClient {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(&uri_key(uri))
     }
+    /// Whether the server reported itself quiescent via
+    /// `experimental/serverStatus` (rust-analyzer). Servers that never send
+    /// it stay `false`.
     #[must_use]
+    pub fn is_quiescent(&self) -> bool {
+        self.inner.quiescent.load(Ordering::SeqCst)
+    }
     pub fn is_rust_analyzer(&self) -> bool {
         fn basename(cmd: &str) -> &str {
             cmd.rsplit(['/', '\\']).next().unwrap_or(cmd)
@@ -550,6 +559,11 @@ impl LspClient {
                     let _ = self.inner.project_loaded_tx.send(true);
                 }
             }
+            ("experimental/serverStatus", Some(params)) => {
+                if let Some(q) = params.get("quiescent").and_then(Value::as_bool) {
+                    self.inner.quiescent.store(q, Ordering::SeqCst);
+                }
+            }
             _ => {}
         }
     }
@@ -834,20 +848,27 @@ pub async fn get_or_create_client(
 ) -> Result<LspClient, LspError> {
     let key = LspClient::name_for(config, cwd);
     let reg = registry();
-
-    if let Ok(guard) = reg.clients.lock() {
-        if let Some(existing) = guard.get(&key) {
+    let fast_hit = if let Ok(guard) = reg.clients.lock() {
+        guard.get(&key).map(|existing| {
             existing
                 .inner
                 .last_activity
                 .store(now_millis(), Ordering::SeqCst);
-            maybe_start_idle_checker();
-            return Ok(existing.clone());
-        }
+            existing.clone()
+        })
+    } else {
+        None
+    };
+    if let Some(client) = fast_hit {
+        // Outside the registry lock: `maybe_start_idle_checker` re-locks
+        // `clients` (via `has_configured_idle_timeout`), which self-deadlocks
+        // a non-reentrant std Mutex when called under the guard.
+        maybe_start_idle_checker();
+        return Ok(client);
     }
 
     let cell: SharedInit = {
-        let mut guard = reg
+            let mut guard = reg
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1112,6 +1133,7 @@ async fn init_client(
         open_files: Mutex::new(HashMap::new()),
         diagnostics: Mutex::new(HashMap::new()),
         diagnostics_version: AtomicU64::new(0),
+        quiescent: AtomicBool::new(false),
         pending: Mutex::new(HashMap::new()),
         server_capabilities: Mutex::new(Value::Null),
         last_activity: AtomicI64::new(now_millis()),

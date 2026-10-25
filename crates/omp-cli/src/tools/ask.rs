@@ -14,12 +14,12 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
-use pa_agent::abort::{is_abort_error, race_with_abort, AbortSignal};
-use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
+use anyhow::{Result, anyhow};
 use pa_agent::BoxFut;
+use pa_agent::abort::{AbortSignal, is_abort_error, race_with_abort};
+use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 const DESCRIPTION: &str = r#"Ask only for materially different tradeoffs the user must decide. Default: act using code/config/docs/history and conventions. Several viable choices: pick conservative/standard, proceed, state choice.
 
@@ -337,7 +337,7 @@ fn parse_answers(questions: &[QuestionItem], answers: &Value) -> Result<Vec<Ques
                     return Err(anyhow!(
                         "Ask dialog answer {} customInput must be a string",
                         json!(question.id)
-                    ))
+                    ));
                 }
             };
             if !multi && (selected.len() > 1 || (!selected.is_empty() && custom.is_some())) {
@@ -959,10 +959,11 @@ mod tests {
             "Ask dialog answer \"storage\" selected unknown option \"Nope\""
         );
         let (_, tool) = fake(Some(json!({"answers": []})));
-        assert!(tool
-            .run(storage_args(), &AbortSignal::never())
-            .await
-            .is_err());
+        assert!(
+            tool.run(storage_args(), &AbortSignal::never())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

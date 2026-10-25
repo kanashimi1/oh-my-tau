@@ -990,6 +990,7 @@ mod tests {
             tools: None,
             depth: 0,
             extra_args: Vec::new(),
+            env: Vec::new(),
         }
     }
 

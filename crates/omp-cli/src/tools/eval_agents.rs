@@ -34,12 +34,12 @@ use pa_ai::types::{SimpleStreamOptions, SimpleToolChoice};
 use pa_types::ai::{
     AssistantContentBlock, Context, Message, Model, StopReason, Tool, UserContent, UserMessage,
 };
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
-use super::eval_bridge::OpCtx;
 use super::Env;
+use super::eval_bridge::OpCtx;
 
 /// TS `EVAL_HANDLE_CONCURRENCY` (`completion-bridge.ts`): process-wide ceiling
 /// on eval model requests executing at once, shared by `completion()` handles,
@@ -277,7 +277,7 @@ fn parse_handle_ref(value: &Value) -> Result<(&'static str, String), String> {
         Some("agent") => "agent",
         Some("completion") => "completion",
         _ => {
-            return Err("handle must contain kind agent|completion and a non-empty id".to_string())
+            return Err("handle must contain kind agent|completion and a non-empty id".to_string());
         }
     };
     let id = item
@@ -359,6 +359,36 @@ pub async fn send_to_agent(id: &str, content: &str) -> Result<Value, String> {
 }
 
 pub(crate) async fn deliver_message(to: &str, content: &str) -> Result<String, String> {
+    validate_message(to, content)?;
+    // Inside a `task` child the parent runs the bus: `parent` is only reachable
+    // through it, and ids that are not local handles (siblings) go there too.
+    let Some(bus) = super::a2a::Client::from_env() else {
+        return deliver_local(to, content, None).await;
+    };
+    if to == "parent" {
+        return bus.send(to, content).await;
+    }
+    if to == "all" {
+        // Local eval peers first (when any), plus every sibling via the parent.
+        let local = if has_live_agents() {
+            Some(deliver_local(to, content, None).await)
+        } else {
+            None
+        };
+        let remote = bus.send(to, content).await;
+        return match (local, remote) {
+            (Some(Ok(local)), Ok(remote)) => Ok(format!("{local}\n{remote}")),
+            (Some(Ok(text)), Err(_)) | (None | Some(Err(_)), Ok(text)) => Ok(text),
+            (Some(Err(error)), Err(_)) | (None, Err(error)) => Err(error),
+        };
+    }
+    if agent_id_taken(to) {
+        return deliver_local(to, content, None).await;
+    }
+    bus.send(to, content).await
+}
+
+fn validate_message(to: &str, content: &str) -> Result<(), String> {
     if to.is_empty() {
         return Err("agent:// URL requires a recipient: agent://<id>".to_string());
     }
@@ -368,14 +398,54 @@ pub(crate) async fn deliver_message(to: &str, content: &str) -> Result<String, S
     if content.trim().is_empty() {
         return Err("agent:// messages require non-empty content.".to_string());
     }
-    if to == "all" {
-        return broadcast_message(content).await;
-    }
-    let handle = AGENT_HANDLES
+    Ok(())
+}
+
+/// Deliver a message a child sent over the bus: steer a registered run (or all
+/// of them except the sender).
+pub(crate) async fn deliver_from_peer(
+    to: &str,
+    content: &str,
+    sender: &str,
+) -> Result<String, String> {
+    validate_message(to, content)?;
+    deliver_local(to, content, Some(sender)).await
+}
+
+fn lookup_agent(id: &str) -> Option<Arc<Handle>> {
+    AGENT_HANDLES
         .lock()
         .expect("eval handles lock")
-        .get(to)
-        .cloned();
+        .get(id)
+        .cloned()
+}
+
+/// How long a local `write agent://<id>` waits for an unknown id to appear.
+const UNKNOWN_ID_GRACE: Duration = Duration::from_secs(2);
+
+fn has_live_agents() -> bool {
+    AGENT_HANDLES
+        .lock()
+        .expect("eval handles lock")
+        .values()
+        .any(|handle| !handle.is_settled())
+}
+
+async fn deliver_local(to: &str, content: &str, exclude: Option<&str>) -> Result<String, String> {
+    if to == "all" {
+        return broadcast_message(content, exclude).await;
+    }
+    let mut handle = lookup_agent(to);
+    if handle.is_none() && exclude.is_none() {
+        // A `write` issued in the same tool batch as the `task` call that
+        // creates the recipient can run first: give registration a short,
+        // bounded grace before declaring the id unknown.
+        let deadline = tokio::time::Instant::now() + UNKNOWN_ID_GRACE;
+        while handle.is_none() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            handle = lookup_agent(to);
+        }
+    }
     match steer_handle(handle.as_deref(), to, content).await {
         Ok(()) => Ok(format!("Delivered to {to}.")),
         Err(error) => Err(format!("Failed: {to} is not running. {error}")),
@@ -383,12 +453,12 @@ pub(crate) async fn deliver_message(to: &str, content: &str) -> Result<String, S
 }
 
 /// TS broadcast receipt text over every running eval subagent.
-async fn broadcast_message(content: &str) -> Result<String, String> {
+async fn broadcast_message(content: &str, exclude: Option<&str>) -> Result<String, String> {
     let mut targets: Vec<(String, Arc<Handle>)> = AGENT_HANDLES
         .lock()
         .expect("eval handles lock")
         .iter()
-        .filter(|(_, handle)| !handle.is_settled())
+        .filter(|(id, handle)| !handle.is_settled() && Some(id.as_str()) != exclude)
         .map(|(id, handle)| (id.clone(), handle.clone()))
         .collect();
     if targets.is_empty() {
@@ -411,11 +481,7 @@ async fn broadcast_message(content: &str) -> Result<String, String> {
         targets.len(),
         text
     );
-    if delivered == 0 {
-        Err(text)
-    } else {
-        Ok(text)
-    }
+    if delivered == 0 { Err(text) } else { Ok(text) }
 }
 
 /// Steer one agent handle's live run (the TS bus receipt error on failure).
@@ -433,7 +499,17 @@ async fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Resul
     if handle.is_settled() {
         return Err(finished());
     }
-    let Some(run) = handle.run_ctl() else {
+    // A handle is registered a moment before its run is attached (launch
+    // window); give that hand-over a short, bounded grace.
+    let mut run = handle.run_ctl();
+    for _ in 0..100 {
+        if run.is_some() || handle.is_settled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        run = handle.run_ctl();
+    }
+    let Some(run) = run else {
         return Err(format!("Agent \"{to}\" has no live session."));
     };
     run.steer(content).await.map_err(|error| match error {
@@ -503,7 +579,7 @@ impl Launcher for SubprocessLauncher {
 /// Process-wide launcher: `agent()` runs and workpool turns share one runner,
 /// so the [`SUBAGENT_CONCURRENCY`] ceiling holds across both.
 static LAUNCHER: LazyLock<Arc<dyn Launcher>> = LazyLock::new(|| {
-    let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omt"));
+    let binary = crate::respawn_exe();
     Arc::new(SubprocessLauncher {
         runner: omp_task::TaskRunner::new(binary, SUBAGENT_CONCURRENCY),
     }) as Arc<dyn Launcher>
@@ -2081,6 +2157,67 @@ fn agent_id_taken(id: &str) -> bool {
         .contains_key(id)
 }
 
+/// A `task` child's entry in the shared agent registry (the one
+/// [`deliver_message`] reads), so `write agent://<id>` steers it and
+/// `agent://all` reaches it. The entry is removed when the slot drops.
+pub(crate) struct TaskSlot {
+    id: String,
+    handle: Arc<Handle>,
+}
+
+impl TaskSlot {
+    /// Reserve `id` in the registry; fails when another live or finished
+    /// agent already owns it.
+    pub(crate) fn claim(id: &str) -> Result<Self, String> {
+        let mut registry = AGENT_HANDLES.lock().expect("eval handles lock");
+        if registry.contains_key(id) {
+            return Err(format!(
+                "agent id `{id}` is already in use; pick a different `name`."
+            ));
+        }
+        let handle = Handle::new("agent", id.to_string());
+        registry.insert(id.to_string(), handle.clone());
+        Ok(Self {
+            id: id.to_string(),
+            handle,
+        })
+    }
+
+    /// Make the run steerable/cancellable through `write agent://<id>`.
+    pub(crate) fn attach(&self, control: omp_task::RunControl) {
+        self.attach_ctl(Arc::new(control));
+    }
+
+    fn attach_ctl(&self, run: Arc<dyn RunCtl>) {
+        *self.handle.run.lock().expect("eval handle lock") = Some(run);
+    }
+
+    /// Mark the handle settled from the child's final output.
+    pub(crate) fn settle(&self, output: &omp_task::RunOutput) {
+        settle_agent(&self.handle, output, omp_task::SchemaMode::Permissive, false);
+        self.handle.mark_run_finished();
+    }
+}
+
+impl Drop for TaskSlot {
+    fn drop(&mut self) {
+        self.handle.settle(
+            HandleStatus::Cancelled,
+            None,
+            None,
+            Some(AGENT_CANCELLED_TEXT.to_string()),
+        );
+        self.handle.mark_run_finished();
+        let mut registry = AGENT_HANDLES.lock().expect("eval handles lock");
+        if registry
+            .get(&self.id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.handle))
+        {
+            registry.remove(&self.id);
+        }
+    }
+}
+
 /// Parent spawn policy captured from this process's own argv
 /// (EVAL-CHILD-POLICY-NOT-PROPAGATED): children re-launched from
 /// `current_exe()` must inherit the parent's extension loading and tool
@@ -2207,6 +2344,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             tools: None,
             depth: 0,
             extra_args: Vec::new(),
+            env: Vec::new(),
         };
         apply_child_policy(&mut spec);
         super::task::apply_agent_model(&mut spec);
@@ -2375,7 +2513,9 @@ fn create_workpool(
     }
     let agent = agent.unwrap_or_else(|| "task".to_string());
     if !omp_task::params::is_valid_agent_name(&agent) {
-        return Err(format!("workpool() received invalid arguments: `agent` must be a valid agent name, got {agent:?}"));
+        return Err(format!(
+            "workpool() received invalid arguments: `agent` must be a valid agent name, got {agent:?}"
+        ));
     }
     // Every pushed item spawns a fresh worker subagent: same recursion gate
     // as agent() (TS `canSpawnAtDepth`).
@@ -2618,6 +2758,7 @@ mod tests {
             tools: None,
             depth: 0,
             extra_args: Vec::new(),
+            env: Vec::new(),
         }
     }
 
@@ -2690,14 +2831,15 @@ mod tests {
         assert!(peek["batches"][1].get("output").is_none());
 
         // Settling is idempotent.
-        assert!(pool
-            .finish_turn(
+        assert!(
+            pool.finish_turn(
                 starts[0].batch,
                 ItemStatus::Failed,
                 "x".to_string(),
                 &no_ids
             )
-            .is_empty());
+            .is_empty()
+        );
         assert_eq!(pool.peek()["batches"][0]["status"], "completed");
 
         pool.finish_turn(
@@ -2801,10 +2943,12 @@ mod tests {
         );
         assert_eq!(*run.steered.lock().unwrap(), ["look at foo.rs"]);
         assert!(deliver_message("test-msg-1", "  ").await.is_err());
-        assert!(deliver_message("test-msg-1/data", "x")
-            .await
-            .unwrap_err()
-            .contains("JSON-path suffix"));
+        assert!(
+            deliver_message("test-msg-1/data", "x")
+                .await
+                .unwrap_err()
+                .contains("JSON-path suffix")
+        );
         let unknown = deliver_message("test-msg-nope", "x").await.unwrap_err();
         assert!(
             unknown.starts_with("Failed: test-msg-nope is not running."),
@@ -3083,17 +3227,21 @@ mod tests {
         }
         // The runs were asked to cancel but are not finished yet; the handles
         // already report cancelled (TS `manager.cancel` flips job status at once).
-        assert!(launcher
-            .runs
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|run| run.inner.cancelled.load(Ordering::SeqCst)));
+        assert!(
+            launcher
+                .runs
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|run| run.inner.cancelled.load(Ordering::SeqCst))
+        );
         let handle = lookup_handle("agent", "test-pool-abort-1").unwrap();
         assert_eq!(handle.snapshot()["status"], "cancelled");
-        assert!(!handle
-            .run_finished
-            .load(std::sync::atomic::Ordering::SeqCst));
+        assert!(
+            !handle
+                .run_finished
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
 
         for run in launcher.runs.lock().unwrap().iter() {
             let tx = run.release.lock().unwrap().take().unwrap();
@@ -3192,5 +3340,87 @@ mod tests {
             clamp_tools(&None, Some(vec!["eval".to_string()])),
             Some(vec!["eval".to_string()])
         );
+    }
+
+    fn mock_run(id: &str) -> Arc<MockRun> {
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        Arc::new(MockRun {
+            id: id.to_string(),
+            steered: Mutex::new(Vec::new()),
+            cancelled: AtomicBool::new(false),
+            done: Mutex::new(Some(tx)),
+        })
+    }
+
+    /// `task` children share the registry `deliver_message` reads: a parent
+    /// `write agent://<id>` steers the live run, ids are exclusive, and the
+    /// entry disappears once the slot drops.
+    #[tokio::test]
+    async fn task_slot_is_steerable_and_unregistered_on_drop() {
+        let run = mock_run("slot-t1");
+        let slot = TaskSlot::claim("slot-t1").unwrap();
+        slot.attach_ctl(run.clone());
+        assert!(
+            TaskSlot::claim("slot-t1")
+                .err()
+                .is_some_and(|e| e.contains("already in use"))
+        );
+
+        let receipt = deliver_message("slot-t1", "change course").await.unwrap();
+        assert_eq!(receipt, "Delivered to slot-t1.");
+        assert_eq!(*run.steered.lock().unwrap(), ["change course"]);
+
+        drop(slot);
+        assert!(!agent_id_taken("slot-t1"));
+        let gone = deliver_from_peer("slot-t1", "late", "someone").await.unwrap_err();
+        assert!(gone.contains("Unknown agent"), "{gone}");
+        assert!(TaskSlot::claim("slot-t1").is_ok(), "id is reusable after the drop");
+    }
+
+    /// A child's bus messages reach siblings as steers (sender-prefixed) and
+    /// the parent as inbox entries; settled/unknown/self targets fail.
+    #[tokio::test]
+    async fn bus_routes_child_messages_to_siblings_and_parent() {
+        let _serial = super::super::a2a::tests::LOCK.lock().await;
+        let (run_a, run_b) = (mock_run("bus-a"), mock_run("bus-b"));
+        let (slot_a, slot_b) = (
+            TaskSlot::claim("bus-a").unwrap(),
+            TaskSlot::claim("bus-b").unwrap(),
+        );
+        slot_a.attach_ctl(run_a.clone());
+        slot_b.attach_ctl(run_b.clone());
+        let lease = super::super::a2a::BusLease::acquire().unwrap();
+        let from_a = super::super::a2a::Client::for_test(lease.sock(), "bus-a");
+
+        let receipt = from_a.send("bus-b", "need the schema").await.unwrap();
+        assert_eq!(receipt, "Delivered to bus-b.");
+        assert_eq!(
+            *run_b.steered.lock().unwrap(),
+            ["[message from agent://bus-a]\nneed the schema"]
+        );
+        assert!(run_a.steered.lock().unwrap().is_empty(), "sender not steered");
+
+        from_a.send("parent", "blocked on bus-b").await.unwrap();
+        let inbox: Vec<_> = super::super::a2a::take_parent_messages()
+            .into_iter()
+            .filter(|m| m.from == "bus-a")
+            .collect();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].message, "blocked on bus-b");
+
+        assert!(from_a.send("bus-a", "me").await.unwrap_err().contains("itself"));
+        assert!(
+            from_a
+                .send("bus-nobody", "hi")
+                .await
+                .unwrap_err()
+                .contains("Unknown agent")
+        );
+
+        // Once the sibling settled, delivery fails instead of vanishing.
+        slot_b.settle(&run_output("bus-b", omp_task::RunStatus::Completed, "done"));
+        let late = from_a.send("bus-b", "too late").await.unwrap_err();
+        assert!(late.contains("already finished"), "{late}");
+        assert_eq!(run_b.steered.lock().unwrap().len(), 1);
     }
 }

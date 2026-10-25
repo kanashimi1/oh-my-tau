@@ -40,6 +40,7 @@ fn spec(prompt: &str, cwd: &Path) -> TaskSpec {
         tools: None,
         depth: 0,
         extra_args: Vec::new(),
+        env: Vec::new(),
     }
 }
 
@@ -278,4 +279,33 @@ async fn child_gets_depth_env_and_extra_args() {
         "got {:?}",
         out.output
     );
+}
+
+/// `spec.env` reaches the child, and a bus env inherited from *this* process
+/// (a grandparent's bus) never leaks into a child that was not given its own.
+#[tokio::test]
+async fn child_gets_spec_env_and_never_inherits_a_stale_bus() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let bin = fake_binary(
+        dir.path(),
+        r#"echo "sock=${OMP_A2A_SOCK:-none} self=${OMP_A2A_SELF:-none} extra=${MY_EXTRA:-none}""#,
+    );
+    let runner = TaskRunner::new(&bin, 2);
+    std::env::set_var("OMP_A2A_SOCK", "/stale/grandparent.sock");
+    std::env::set_var("OMP_A2A_SELF", "stale-self");
+
+    let plain = runner.start(spec("p", dir.path()), ChildMode::Print).1.await;
+    assert_eq!(plain.output.trim(), "sock=none self=none extra=none");
+
+    let mut wired = spec("w", dir.path());
+    wired.env = vec![
+        (omp_task::runner::A2A_SOCK_ENV.to_string(), "/run/bus.sock".to_string()),
+        (omp_task::runner::A2A_SELF_ENV.to_string(), "kid-1".to_string()),
+        ("MY_EXTRA".to_string(), "1".to_string()),
+    ];
+    let out = runner.start(wired, ChildMode::Print).1.await;
+    std::env::remove_var("OMP_A2A_SOCK");
+    std::env::remove_var("OMP_A2A_SELF");
+    assert_eq!(out.output.trim(), "sock=/run/bus.sock self=kid-1 extra=1");
 }

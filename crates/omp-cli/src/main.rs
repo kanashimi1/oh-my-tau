@@ -245,6 +245,23 @@ fn ensure_mimalloc_env() {
 }
 
 #[allow(clippy::too_many_lines)] // sequential startup guard clauses; mirrors omp's main flow
+/// Path to re-launch this binary for child processes (subagents, eval agents).
+///
+/// After an in-place rebuild (`cargo build` replaces the file) Linux reports
+/// `current_exe()` as `<path> (deleted)`, and spawning that fails, so every
+/// subagent of a long-running session died with "No such file or directory".
+/// The rebuilt binary at the original path is the right one to run.
+pub(crate) fn respawn_exe() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omt"));
+    strip_deleted_suffix(&exe).unwrap_or(exe)
+}
+
+fn strip_deleted_suffix(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let live = exe.to_str()?.strip_suffix(" (deleted)")?;
+    let live = std::path::PathBuf::from(live);
+    live.is_file().then_some(live)
+}
+
 fn main() -> Result<()> {
     // The rpc/print loop is strictly sequential; a multi-thread runtime costs
     // ~20-30 ms CPU/turn in scheduler overhead (measured, RPC12 team run).
@@ -841,6 +858,20 @@ async fn run_print(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn respawn_exe_strips_deleted_suffix_when_rebuilt_binary_exists() {
+        let dir = std::env::temp_dir().join(format!("omt-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("omt");
+        std::fs::write(&live, b"").unwrap();
+        let deleted = std::path::PathBuf::from(format!("{} (deleted)", live.display()));
+        assert_eq!(super::strip_deleted_suffix(&deleted), Some(live.clone()));
+        assert_eq!(super::strip_deleted_suffix(&live), None);
+        std::fs::remove_file(&live).unwrap();
+        assert_eq!(super::strip_deleted_suffix(&deleted), None);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
     /// Review #2: the exit helper's shutdown leg must complete cleanly with an
     /// empty registry (a no-op, but proves the runtime dance is sound).
     #[test]

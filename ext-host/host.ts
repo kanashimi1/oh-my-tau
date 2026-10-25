@@ -684,16 +684,23 @@ async function emit(p: Json) {
       }
     result = modified ? { messages } : undefined;
   } else if (type === "before_agent_start") {
+    // Handlers run concurrently: every one gates the prompt, and several of them
+    // are network round-trips (recall, planning hints), so a serial chain made
+    // the prompt wait for their sum. Each handler sees the system prompt as of
+    // the emit; results fold in registration order (messages in order, the last
+    // `systemPrompt` replacement wins), as in the serial TS runner unless two
+    // handlers both rewrite the system prompt.
     const messages: unknown[] = [];
-    let sp = event.systemPrompt as string[];
+    const sp0 = event.systemPrompt as string[];
+    let sp = sp0;
     let spMod = false;
-    for (const e of exts)
-      for (const h of handlersFor(e)) {
-        const hr = (await runHandler(e, h, { ...event, systemPrompt: sp }, timeoutMs, rec)).value as Json | undefined;
-        if (!hr) continue;
-        if (hr.message) messages.push(hr.message);
-        if (hr.systemPrompt !== undefined) ((sp = typeof hr.systemPrompt === "string" ? [hr.systemPrompt] : (hr.systemPrompt as string[])), (spMod = true));
-      }
+    const runs = exts.flatMap((e) => handlersFor(e).map((h) => runHandler(e, h, { ...event, systemPrompt: sp0 }, timeoutMs, rec)));
+    for (const r of await Promise.all(runs)) {
+      const hr = r.value as Json | undefined;
+      if (!hr) continue;
+      if (hr.message) messages.push(hr.message);
+      if (hr.systemPrompt !== undefined) ((sp = typeof hr.systemPrompt === "string" ? [hr.systemPrompt] : (hr.systemPrompt as string[])), (spMod = true));
+    }
     if (messages.length || spMod) result = { messages: messages.length ? messages : undefined, systemPrompt: spMod ? sp : undefined };
   } else if (type === "input") {
     let text = String(event.text);

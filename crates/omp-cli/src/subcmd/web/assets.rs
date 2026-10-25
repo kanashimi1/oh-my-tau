@@ -2,6 +2,8 @@
 //! The scripts are classic scripts sharing one `OMP` namespace, loaded in
 //! the order `index.html` lists them.
 
+use hyper::body::Bytes;
+
 const FILES: &[(&str, &str, &str)] = &[
     ("/", "text/html; charset=utf-8", include_str!("assets/index.html")),
     ("/assets/app.css", "text/css; charset=utf-8", include_str!("assets/app.css")),
@@ -15,6 +17,13 @@ const FILES: &[(&str, &str, &str)] = &[
     ("/assets/models.js", "text/javascript; charset=utf-8", include_str!("assets/models.js")),
     ("/assets/shell.js", "text/javascript; charset=utf-8", include_str!("assets/shell.js")),
     ("/assets/app.js", "text/javascript; charset=utf-8", include_str!("assets/app.js")),
+    ("/assets/sidebar.css", "text/css; charset=utf-8", include_str!("assets/sidebar.css")),
+    ("/assets/composer.css", "text/css; charset=utf-8", include_str!("assets/composer.css")),
+    ("/assets/artifacts.css", "text/css; charset=utf-8", include_str!("assets/artifacts.css")),
+    ("/assets/stream.css", "text/css; charset=utf-8", include_str!("assets/stream.css")),
+    ("/assets/sidebar.js", "text/javascript; charset=utf-8", include_str!("assets/sidebar.js")),
+    ("/assets/artifacts.js", "text/javascript; charset=utf-8", include_str!("assets/artifacts.js")),
+    ("/assets/desktop-bridge.js", "text/javascript; charset=utf-8", include_str!("assets/desktop-bridge.js")),
     ("/favicon.svg", "image/svg+xml", include_str!("assets/favicon.svg")),
     ("/wallpapers/midnight.svg", "image/svg+xml", include_str!("assets/wallpapers/midnight.svg")),
     ("/wallpapers/anime-sakura.svg", "image/svg+xml", include_str!("assets/wallpapers/anime-sakura.svg")),
@@ -26,12 +35,26 @@ const FILES: &[(&str, &str, &str)] = &[
 
 /// `(content type, body)` for an app path; unknown non-API paths fall back
 /// to the app shell so deep links (`/s/<id>`) load the SPA.
-pub fn get(path: &str) -> Option<(&'static str, &'static str)> {
-    if let Some((_, mime, body)) = FILES.iter().find(|(p, _, _)| *p == path) {
-        return Some((mime, body));
+///
+/// With `OMP_WEB_DEV_ASSETS=<dir>` the listed files are read from `<dir>`
+/// (the `assets/` source folder) on every request, so UI work needs no rebuild.
+pub fn get(path: &str) -> Option<(&'static str, Bytes)> {
+    let (rel, mime, body) = FILES
+        .iter()
+        .find(|(p, _, _)| *p == path)
+        .copied()
+        .or_else(|| {
+            let shell = !(path.starts_with("/assets/") || path.starts_with("/api/") || path.contains('.'));
+            if shell { FILES.first().copied() } else { None }
+        })?;
+    if let Some(dir) = std::env::var_os("OMP_WEB_DEV_ASSETS") {
+        let file = match rel {
+            "/" => "index.html".to_owned(),
+            p => p.trim_start_matches("/assets/").trim_start_matches('/').to_owned(),
+        };
+        if let Ok(bytes) = std::fs::read(std::path::Path::new(&dir).join(file)) {
+            return Some((mime, Bytes::from(bytes)));
+        }
     }
-    if path.starts_with("/assets/") || path.starts_with("/api/") || path.contains('.') {
-        return None;
-    }
-    FILES.first().map(|(_, mime, body)| (*mime, *body))
+    Some((mime, Bytes::from_static(body.as_bytes())))
 }

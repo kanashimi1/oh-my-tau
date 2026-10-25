@@ -11,18 +11,18 @@ use std::time::SystemTime;
 use omp_urls::spec::InternalResource;
 use omp_urls::{Registry, UrlCtx, UrlTarget};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use pa_agent::types::AgentToolResult;
 use pi_edit::path_policy::canonical_key;
 use pi_edit::store::seen_lines_from_body;
 use pi_edit::text::{normalize_to_lf, strip_bom};
 use regex::Regex;
 
-use super::util::{
-    format_age, format_bytes, format_path_relative_to_cwd, notice_with_artifact, resolve_to_cwd,
-    save_artifact, shorten_path, truncate_head, SpillConfig, DEFAULT_MAX_BYTES,
-};
 use super::Env;
+use super::util::{
+    DEFAULT_MAX_BYTES, SpillConfig, format_age, format_bytes, format_path_relative_to_cwd,
+    notice_with_artifact, resolve_to_cwd, save_artifact, shorten_path, truncate_head,
+};
 
 /// `read.defaultLimit` schema default.
 const DEFAULT_LIMIT: usize = 300;
@@ -270,6 +270,9 @@ pub fn read(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     if !meta.is_file() {
         bail!("Cannot read '{path_part}': it is a special file, not a regular file or directory.");
     }
+    // Autostart the file's language server (best effort, background): by the
+    // time the model edits, the diagnostics gate has a pre-edit baseline.
+    super::edit_diagnostics::prewarm_spawn(&env.cwd, &absolute);
     if matches!(sel, Selector::None) && crate::images::looks_like_image(&absolute) {
         let (image, note) = crate::images::read_image_detailed(
             &absolute,
@@ -492,7 +495,9 @@ fn format_read_output(
         let suggestion = if total == 0 {
             "The file is empty.".to_string()
         } else {
-            format!("Use {selector_base}:1 to read from the start, or {selector_base}:{total} to read the last line.")
+            format!(
+                "Use {selector_base}:1 to read from the start, or {selector_base}:{total} to read the last line."
+            )
         };
         return Ok(AgentToolResult::text(format!(
             "Line {requested} is beyond end of file ({total} lines total). {suggestion}"
@@ -1099,10 +1104,7 @@ mod tests {
         let e = env(dir.path());
         let out = text_of(&read(&e, &serde_json::json!({"path": "a.txt"})).unwrap());
         let expected = "[a.txt#0793]\n1:line 1\n2:line 2\n3:line 3\n4:line 4\n5:line 5";
-        assert_eq!(
-            out, expected,
-            "omt read output diverged from TS formatting"
-        );
+        assert_eq!(out, expected, "omt read output diverged from TS formatting");
     }
 
     #[test]

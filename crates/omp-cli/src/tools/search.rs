@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
     BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
@@ -20,13 +20,13 @@ use pi_walker::{
     WalkOrder, WalkRank, WalkRequest,
 };
 
-use super::read::{parse_sel, LineRange, Selector};
-use super::tree::{events, format_grouped_paths, Kind};
-use super::util::{
-    cut_bytes, format_bytes, format_path_relative_to_cwd, path_list, resolve_to_cwd, truncate_head,
-    DEFAULT_MAX_BYTES,
-};
 use super::Env;
+use super::read::{LineRange, Selector, parse_sel};
+use super::tree::{Kind, events, format_grouped_paths};
+use super::util::{
+    DEFAULT_MAX_BYTES, cut_bytes, format_bytes, format_path_relative_to_cwd, path_list,
+    resolve_to_cwd, truncate_head,
+};
 
 const DEFAULT_FILE_LIMIT: usize = 20;
 const MULTI_FILE_PER_FILE_MATCHES: usize = 20;

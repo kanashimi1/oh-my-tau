@@ -1,0 +1,130 @@
+/* composer slice: Kimi-style rounded card, inline mode pickers, round send */
+#composer-wrap {
+  border-top: 1px solid var(--border);
+  padding: 10px 16px 12px;
+  background: var(--bg);
+  position: relative;
+}
+.composer {
+  max-width: 820px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch; /* app.css row layout used flex-end: the card shrank to the right */
+  gap: 0;
+}
+.composer-card { width: 100%; }
+#composer-wrap { border-top: none; background: transparent; padding: 6px 20px 10px; }
+#app.home #composer-wrap { padding: 0 24px 12vh; }
+#app.home .composer-card { box-shadow: 0 18px 50px rgba(0, 0, 0, .35); }
+#app.home #home-head .logo.big svg { width: 64px; height: 64px; }
+#app.home #home-head h1 { margin: 6px 0 2px; }
+#app.home #home-head { margin-bottom: 22px; }
+#app.home #statusbar { display: none; }
+.composer-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 20px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .28);
+  overflow: hidden;
+  transition: border-color .15s;
+}
+.composer-card:focus-within { border-color: var(--accent); }
+
+.ta-wrap { display: flex; position: relative; min-width: 0; }
+#composer, .ta-hl {
+  border: 0;
+  border-radius: 0;
+  padding: 16px 18px 10px;
+  background: transparent;
+}
+#composer {
+  flex: 1;
+  width: 100%;
+  resize: none;
+  outline: none;
+  font-size: 15px;
+  line-height: 1.5;
+  max-height: 40vh;
+}
+#composer::placeholder { color: var(--fg-faint); }
+.ta-hl { inset: 0; padding: 16px 18px 10px; font-size: 15px; }
+
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 10px;
+}
+.chip-inline {
+  font-size: 12.5px;
+  color: var(--fg-muted);
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chip-inline:hover { border-color: var(--accent); color: var(--fg); }
+.chip-inline:disabled { opacity: .55; cursor: default; }
+.attach-btn { border-radius: 50%; padding: 6px; flex: none; }
+
+.send-btn {
+  margin-left: auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex: none;
+  border: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+  transition: background .15s, transform .1s, opacity .15s;
+}
+.send-btn:hover:not(:disabled) { filter: brightness(1.08); }
+.send-btn:active:not(:disabled) { transform: scale(.94); }
+.send-btn:disabled { opacity: .45; cursor: default; }
+.send-btn.streaming { background: var(--err); }
+.send-btn.streaming:hover:not(:disabled) { filter: brightness(1.08); }
+.send-btn svg { width: 18px; height: 18px; display: block; }
+#stop-btn { margin-left: auto; }
+#stop-btn.send-btn { background: var(--err); color: #fff; }
+
+/* Home (empty) state: center the composer with a heading; dock once a
+   session has messages. */
+#home-head {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+#app.home #transcript-wrap { display: none; }
+#app.home #composer-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-top: none;
+  background: transparent;
+}
+#app.home .composer { width: 100%; max-width: 680px; }
+#app.home #home-head { display: flex; }
+#app.home #attachments { justify-content: center; }
+
+@media (max-width: 560px) {
+  .composer-bar { flex-wrap: wrap; }
+  .chip-inline { max-width: 140px; }
+}
+
+/* desktop screenshot region selector (desktop-bridge.js) */
+.cap-overlay { position: fixed; inset: 0; z-index: 9999; background: #000; cursor: crosshair; user-select: none; }
+.cap-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.cap-sel { position: absolute; border: 1.5px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0, 0, 0, .35); background: rgba(255, 255, 255, .06); pointer-events: none; }
+.cap-hint { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px;
+  background: var(--bg-raised); color: var(--fg); font-size: 13px; border: 1px solid var(--border-strong); pointer-events: none; }

@@ -680,6 +680,26 @@ impl omp_tui::RuntimePort for Port {
         // stable no-op so the app wiring does not change when it lands.
     }
 
+    fn prewarm_connection(&self) {
+        // Once per 30 s at most: the pooled connection stays usable for the
+        // client's 90 s idle timeout, and typing restarts after every turn.
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let last = LAST.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(last) < 30
+            || LAST
+                .compare_exchange(last, now, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        if let Some(url) = self.rt.model_base_url() {
+            tokio::spawn(async move { pa_ai::prewarm(&url).await });
+        }
+    }
+
     fn refresh_models(&self) {
         let rt = self.rt.clone();
         tokio::task::spawn_blocking(move || {

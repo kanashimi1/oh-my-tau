@@ -108,6 +108,9 @@ pub struct TaskSpec {
     /// Extra verbatim argv fragments appended to the child command, e.g.
     /// parent-policy passthrough (`--no-extensions`, `--extension <p>`).
     pub extra_args: Vec<String>,
+    /// Extra environment variables set on the child process (e.g. the
+    /// parent's a2a bus socket and the child's own agent id).
+    pub env: Vec<(String, String)>,
 }
 
 impl TaskSpec {
@@ -142,6 +145,7 @@ impl TaskSpec {
             tools: item.tools.clone(),
             depth: current_task_depth() + 1,
             extra_args: Vec::new(),
+            env: Vec::new(),
         }
     }
 }
@@ -159,6 +163,13 @@ pub const TASK_DEPTH_ENV: &str = "PI_TASK_DEPTH";
 pub const MAX_RECURSION_ENV: &str = "OMP_TASK_MAX_RECURSION_DEPTH";
 /// TS `task.maxRecursionDepth` (`task/settings.ts`) protocol default.
 pub const DEFAULT_MAX_RECURSION_DEPTH: usize = 2;
+
+/// Env var carrying the parent's a2a bus socket path (set on task children by
+/// the parent; see `omp-cli`'s `tools/a2a.rs`). Cleared from every child first,
+/// so a grandchild never inherits a stale grandparent bus.
+pub const A2A_SOCK_ENV: &str = "OMP_A2A_SOCK";
+/// Env var carrying the child's own agent id on the a2a bus.
+pub const A2A_SELF_ENV: &str = "OMP_A2A_SELF";
 
 /// This process's task depth (`0` when the env var is absent or unparsable).
 #[must_use]
@@ -201,12 +212,15 @@ pub fn recursion_gate() -> Result<usize, String> {
 /// the recursion-depth stamp and the caller's policy passthrough args.
 fn apply_child_policy(command: &mut Command, spec: &TaskSpec) {
     command
+        .env_remove(A2A_SOCK_ENV)
+        .env_remove(A2A_SELF_ENV)
         .env(SUBAGENT_NO_TITLE.0, SUBAGENT_NO_TITLE.1)
         .env(TASK_DEPTH_ENV, spec.depth.to_string());
     // TS `executor.ts`: the parent task's approval is the authorization boundary, so subagents run
     // unattended in yolo mode (user `tools.approval` policies still apply).
     command.arg("--approval-mode").arg("yolo");
     command.args(&spec.extra_args);
+    command.envs(spec.env.iter().map(|(k, v)| (k, v)));
 }
 
 /// Spawns child agents as subprocesses of an `omp-rs -p`-style CLI binary.
@@ -507,6 +521,7 @@ mod tests {
             tools: None,
             depth: 0,
             extra_args: Vec::new(),
+            env: Vec::new(),
         }
     }
 

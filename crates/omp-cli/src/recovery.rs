@@ -148,6 +148,11 @@ pub fn is_transient(status: Option<u16>, message: &str) -> bool {
         return true;
     }
     let m = message.to_ascii_lowercase();
+    // The response headers arrived (status is the 2xx of the stream) but the body read died
+    // mid-stream (reset, truncated chunked/gzip frame): a transport failure, so retry it.
+    if m.contains("failed to read provider response body") {
+        return true;
+    }
     status.is_none()
         && [
             "connection error",
@@ -721,6 +726,14 @@ impl TurnRecovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mid_stream_body_read_failure_is_transient() {
+        let msg = "Failed to read provider response body: error decoding response body";
+        assert!(is_transient(Some(200), msg));
+        assert!(is_transient(None, msg));
+        assert!(!is_transient(Some(400), "invalid request"));
+    }
 
     fn failed(msg: &str) -> FailedTurn {
         FailedTurn {

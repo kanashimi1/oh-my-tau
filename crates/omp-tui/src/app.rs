@@ -184,12 +184,15 @@ impl EventPump {
     }
 
     /// Enqueue one raw frame. `message_update` snapshots replace any pending
-    /// one (only the latest within the window is kept); any other frame
-    /// flushes the held-back snapshot first so ordering is preserved.
+    /// one (only the latest within the window is kept) but keep the pending
+    /// one's arrival time, so a continuous stream still shows a snapshot every
+    /// window (throttle) instead of nothing until the stream pauses; any other
+    /// frame flushes the held-back snapshot first so ordering is preserved.
     pub fn push_frame(&mut self, frame: &Value, now: Instant) {
         let event = parse_frame(frame);
         if let AppEvent::MessageUpdate(_) = event {
-            self.pending_update = Some((now, frame.clone()));
+            let at = self.pending_update.as_ref().map_or(now, |(at, _)| *at);
+            self.pending_update = Some((at, frame.clone()));
             return;
         }
         // Ordering: any other frame flushes the held-back snapshot first,
@@ -1151,7 +1154,11 @@ impl App {
             self.handle_mouse(&mouse, port);
             return true;
         }
-        let Event::Key(key) = event else {
+        // The user started a prompt: let the runtime open the provider
+        // connection now, so DNS + TLS are done by the time Enter is pressed.
+        let was_empty = self.editor.is_empty();
+        let keep_running = match event {
+            Event::Key(key) => self.handle_key(*key, port, Instant::now()).unwrap_or(false),
             // Bracketed paste: unwrap the payload (crossterm turns the
             // `\x1b[200~…\x1b[201~` bytes into `Event::Paste`) and run the
             // paste pipeline. Everything between the markers is paste
@@ -1159,12 +1166,17 @@ impl App {
             // separate `Event::Key` after the end marker (TS `stdin-buffer.ts`
             // `leadingEnter` splits bytes *after* `\x1b[201~`), so there is
             // nothing submit-shaped inside the payload.
-            if let Some(payload) = crate::bracketed_paste::paste_of(event) {
-                self.route_paste(payload, false);
+            _ => {
+                if let Some(payload) = crate::bracketed_paste::paste_of(event) {
+                    self.route_paste(payload, false);
+                }
+                true // resize: redraw-only
             }
-            return true; // resize: redraw-only
         };
-        self.handle_key(*key, port, Instant::now()).unwrap_or(false)
+        if was_empty && !self.editor.is_empty() {
+            port.prewarm_connection();
+        }
+        keep_running
     }
 
     /// Route one SGR mouse report. Reporting is only on while a full-screen
@@ -3550,6 +3562,26 @@ mod tests {
         assert!(app.messages.entries().is_empty());
         assert!(app.pump_events(t0 + Duration::from_millis(40)));
         assert_eq!(app.messages.entries()[0].text, "one");
+    }
+
+    #[test]
+    fn pump_shows_a_continuous_stream_every_window() {
+        // Updates every 15 ms never leave a 33 ms gap; the stream must still
+        // reach the transcript once per window, not only when it pauses.
+        let mut app = app();
+        let t0 = Instant::now();
+        let upd = |t: &str| json!({"type":"message_update","message":{"role":"assistant","content":[{"type":"text","text":t}]}});
+        let mut shown = Vec::new();
+        for i in 0..10u64 {
+            let at = t0 + Duration::from_millis(15 * i);
+            app.push_frame(&upd(&format!("t{i}")), at);
+            app.pump_events(at + Duration::from_millis(1));
+            if let Some(e) = app.messages.entries().first() {
+                shown.push(e.text.clone());
+            }
+        }
+        assert_eq!(shown.first().map(String::as_str), Some("t3"), "first snapshot after one window");
+        assert!(shown.contains(&"t7".to_string()), "a second snapshot mid-stream: {shown:?}");
     }
 
     #[test]

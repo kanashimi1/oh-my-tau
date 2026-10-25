@@ -38,6 +38,25 @@ fn h2_alpn_client() -> &'static reqwest::Client {
     })
 }
 
+/// Open (and pool) a connection to `url`'s origin on the shared HTTP/1.1 client, so the next
+/// provider request to that host skips DNS, TCP and TLS. A bodiless `HEAD` to the origin: any
+/// status counts, failures are ignored (the real request reports them).
+pub async fn prewarm(url: &str) {
+    let Ok(mut origin) = reqwest::Url::parse(url) else {
+        return;
+    };
+    if !matches!(origin.scheme(), "http" | "https") {
+        return;
+    }
+    origin.set_path("/");
+    origin.set_query(None);
+    let _ = client()
+        .head(origin)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+}
+
 /// The wire transport a request is issued with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Transport {

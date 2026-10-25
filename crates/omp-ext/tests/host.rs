@@ -855,3 +855,42 @@ export default function (pi: any): void {
     );
     host.shutdown().await.unwrap();
 }
+
+/// `before_agent_start` gates every prompt, so its handlers must overlap: the
+/// emit costs the slowest handler, not their sum, and the injected messages
+/// still come back in registration order.
+#[tokio::test]
+async fn before_agent_start_handlers_run_concurrently_in_order() {
+    if common::bun_missing("before_agent_start_handlers_run_concurrently_in_order") {
+        return;
+    }
+    let mut cfg = config();
+    cfg.handler_timeout_ms = Some(5_000);
+    let host = ExtHost::spawn(&cfg).await.unwrap();
+    let r = host
+        .load(Some(&[fixture("slow_start.ts")]), None, "/tmp", None)
+        .await
+        .unwrap();
+    assert_eq!(r.loaded.len(), 1, "{r:?}");
+    let t0 = std::time::Instant::now();
+    let r = host
+        .emit(
+            json!({"type":"before_agent_start","prompt":"p","systemPrompt":["sys"]}),
+            None,
+        )
+        .await
+        .unwrap();
+    let elapsed = t0.elapsed();
+    let contents: Vec<&str> = r.result["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, ["first", "second"]);
+    assert!(
+        elapsed < Duration::from_millis(420),
+        "handlers ran serially: {elapsed:?}"
+    );
+    host.shutdown().await.unwrap();
+}
