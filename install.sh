@@ -59,24 +59,35 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-echo "Downloading ${ASSET} ${TAG} ..."
-curl -fL --progress-bar -o "$tmp/$ASSET" "${BASE}/${ASSET}"
 curl -fsSL -o "$tmp/SHA256SUMS.txt" "${BASE}/SHA256SUMS.txt"
 
-expected=$(awk -v f="$ASSET" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp/SHA256SUMS.txt")
-if [ -z "$expected" ]; then
-    echo "omt: ${ASSET} not listed in SHA256SUMS.txt" >&2
-    exit 1
+# Download one asset into $tmp and verify it against SHA256SUMS.txt.
+fetch() {
+    echo "Downloading $1 ${TAG} ..."
+    curl -fL --progress-bar -o "$tmp/$1" "${BASE}/$1"
+    expected=$(awk -v f="$1" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp/SHA256SUMS.txt")
+    if [ -z "$expected" ]; then
+        echo "omt: $1 not listed in SHA256SUMS.txt" >&2
+        exit 1
+    fi
+    actual=$(sha256 "$tmp/$1" | awk '{ print $1 }')
+    if [ "$expected" != "$actual" ]; then
+        echo "omt: sha256 mismatch (expected ${expected}, got ${actual}); nothing installed" >&2
+        exit 1
+    fi
+    echo "sha256 ok: ${actual}"
+    chmod +x "$tmp/$1"
+}
+
+fetch "$ASSET"
+# A glibc build that cannot run here (glibc too old): use the static musl build.
+if [ "$platform" = "linux" ] && [ "$libc" != "musl" ] && ! "$tmp/$ASSET" --version >/dev/null 2>&1; then
+    echo "omt: ${ASSET} does not run on this system (glibc too old?); using the static musl build"
+    ASSET="${ASSET}-musl"
+    fetch "$ASSET"
 fi
-actual=$(sha256 "$tmp/$ASSET" | awk '{ print $1 }')
-if [ "$expected" != "$actual" ]; then
-    echo "omt: sha256 mismatch (expected ${expected}, got ${actual}); nothing installed" >&2
-    exit 1
-fi
-echo "sha256 ok: ${actual}"
 
 mkdir -p "$DEST_DIR"
-chmod +x "$tmp/$ASSET"
 mv -f "$tmp/$ASSET" "$DEST_DIR/omt"
 echo "Installed ${DEST_DIR}/omt"
 
