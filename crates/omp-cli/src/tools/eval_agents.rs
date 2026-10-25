@@ -54,10 +54,14 @@ static REQUEST_SLOTS: LazyLock<Semaphore> =
 /// (TS `STRUCTURED_TOOL_NAME`).
 const STRUCTURED_TOOL_NAME: &str = "respond";
 
-/// Process-wide ceiling on eval subagent children running at once (omp
-/// `task.maxConcurrency` protocol default, as the `task` tool uses); also the
-/// worker limit `workpool()` reports.
-const SUBAGENT_CONCURRENCY: usize = 32;
+/// Process-wide ceiling on eval subagent children running at once; also the
+/// worker limit `workpool()` reports. Default `min(available_parallelism, 8)`
+/// (TS `task.maxConcurrency` protocol default is overridden per deployment by
+/// that setting, which the `task` tool resolves; the eval launcher keeps the
+/// process-wide auto default).
+fn subagent_concurrency() -> usize {
+    omp_task::TaskRunner::default_max_concurrency()
+}
 
 /// Error text of an *agent* handle cancelled through `cancel()`. TS agent
 /// jobs go through `manager.cancel(job.id)` with no reason, so the snapshot
@@ -501,11 +505,11 @@ impl Launcher for SubprocessLauncher {
 }
 
 /// Process-wide launcher: `agent()` runs and workpool turns share one runner,
-/// so the [`SUBAGENT_CONCURRENCY`] ceiling holds across both.
+/// so the [`subagent_concurrency()`] ceiling holds across both.
 static LAUNCHER: LazyLock<Arc<dyn Launcher>> = LazyLock::new(|| {
     let binary = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("omt"));
     Arc::new(SubprocessLauncher {
-        runner: omp_task::TaskRunner::new(binary, SUBAGENT_CONCURRENCY),
+        runner: omp_task::TaskRunner::new(binary, subagent_concurrency()),
     }) as Arc<dyn Launcher>
 });
 
@@ -2401,14 +2405,14 @@ fn create_workpool(
         state: Mutex::new(PoolState::new(
             name.clone(),
             agent.clone(),
-            SUBAGENT_CONCURRENCY,
+            subagent_concurrency(),
         )),
         context,
         cwd: cwd.to_path_buf(),
         launcher: launcher.clone(),
     };
     pools.insert(name.clone(), Arc::new(pool));
-    Ok(json!({"name": name, "agent": agent, "limit": SUBAGENT_CONCURRENCY}))
+    Ok(json!({"name": name, "agent": agent, "limit": subagent_concurrency()}))
 }
 
 // ---------------------------------------------------------------------------
@@ -2832,7 +2836,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             created,
-            json!({"name": "test-pool-e2e", "agent": "task", "limit": SUBAGENT_CONCURRENCY})
+            json!({"name": "test-pool-e2e", "agent": "task", "limit": subagent_concurrency()})
         );
         let dup = run_workpool_with(
             &json!({"op": "create", "name": "test-pool-e2e"}),

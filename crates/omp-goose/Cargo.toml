@@ -1,0 +1,21 @@
+[package]
+name = "omp-goose"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+# FFI wrapper for the goose-compiled dedup kernel (see `goose/` + `generated/`).
+# The kernel is written in goose (a memory-safe systems language with no heap
+# allocator) and generated to C; `build.rs` compiles the committed C with the
+# `cc` crate so building omt does not require the goose toolchain. Kept as its
+# own crate so the isolated `unsafe` FFI region stays out of the `omp-cli`
+# workspace's `forbid`, exactly like `omp-sandbox`. See
+# `goose/omt_dedup.goose` for the source and `regenerate.sh` for how the C is
+# generated.
+
+[build-dependencies]
+cc = "1"
+
+[lints.rust]
+unsafe_code = "allow"

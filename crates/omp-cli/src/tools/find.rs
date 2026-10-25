@@ -10,8 +10,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use pa_agent::types::AgentToolResult;
 use pi_walker::{WalkDetail, WalkRequest};
+use rayon::prelude::*;
 
-use super::util::{format_bytes, format_path_relative_to_cwd, resolve_to_cwd, str_arg};
+use super::util::{
+    cancelled, format_bytes, format_path_relative_to_cwd, resolve_to_cwd, str_arg, CancelFlag,
+};
 use super::Env;
 
 /// Ranges shown per hit in the model-facing text (omp `RANGES_SHOWN`).
@@ -80,13 +83,110 @@ fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
+/// Judge one file against the keywords: `(hit, files_read, file_bytes)` —
+/// counters are zero when the file is skipped (too large, binary, unreadable)
+/// or cancelled mid-scan.
+fn judge_file(
+    file: &Path,
+    keywords: &[String],
+    env: &Env,
+    cancel: &CancelFlag,
+) -> (Option<Hit>, usize, usize) {
+    if cancelled(cancel) {
+        return (None, 0, 0);
+    }
+    let Ok(m) = std::fs::metadata(file) else {
+        return (None, 0, 0);
+    };
+    if m.len() > MAX_FILE_BYTES {
+        return (None, 0, 0);
+    }
+    let Ok(bytes) = std::fs::read(file) else {
+        return (None, 0, 0);
+    };
+    if bytes.contains(&0) {
+        return (None, 0, 0);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut matched_lines: Vec<(u32, &str)> = Vec::new();
+    let mut count = 0usize;
+    for (i, line) in text.lines().enumerate() {
+        let lower = line.to_lowercase();
+        let line_hits = keywords
+            .iter()
+            .filter(|kw| lower.contains(kw.as_str()))
+            .count();
+        if line_hits > 0 {
+            count += line_hits;
+            matched_lines.push((u32::try_from(i + 1).unwrap_or(u32::MAX), line.trim()));
+        }
+    }
+    let file_score = score(count);
+    if file_score < THRESHOLD {
+        return (None, 1, bytes.len());
+    }
+    // Contiguous matched lines become ranges, strongest (most hits) first.
+    let mut ranges: Vec<(u32, u32, usize)> = Vec::new();
+    for (ln, _) in &matched_lines {
+        if let Some(last) = ranges.last_mut() {
+            if *ln == last.1 + 1 {
+                last.1 = *ln;
+                last.2 += 1;
+                continue;
+            }
+        }
+        ranges.push((*ln, *ln, 1));
+    }
+    ranges.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    let mut hit_ranges = Vec::new();
+    for (start, end, n) in ranges.into_iter().take(RANGES_SHOWN) {
+        let snippet = matched_lines
+            .iter()
+            .find(|(ln, _)| *ln == start)
+            .map_or("", |(_, l)| l)
+            .chars()
+            .take(SNIPPET_CHARS)
+            .collect::<String>();
+        hit_ranges.push((start, end, snippet));
+        let _ = n;
+    }
+    (
+        Some(Hit {
+            rel: format_path_relative_to_cwd(file, &env.cwd, false),
+            score: file_score,
+            lines_seen: text.lines().count(),
+            ranges: hit_ranges,
+        }),
+        1,
+        bytes.len(),
+    )
+}
+
+#[cfg(test)]
 /// Run the `find` tool (lexical stage of omp's cascade).
 ///
 /// # Errors
 /// Empty query or an unresolvable scope path.
-// Layout mirrors omp's `find` flow top-to-bottom; splitting it would obscure that parity.
-#[allow(clippy::too_many_lines)]
 pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
+    find_with_cancel(env, args, &CancelFlag::default())
+}
+
+/// [`find`] with a cooperative cancel flag: the registry adapter flips it on
+/// abort; the per-file scoring loop stops early instead of reading the rest
+/// of the tree.
+///
+/// Per-file work (read + keyword scan) runs on the `rayon` pool inside the
+/// registry's `spawn_blocking` section; hits are collected in input order and
+/// sorted afterwards exactly as before, so output stays byte-identical.
+///
+/// # Errors
+/// Empty query or an unresolvable scope path.
+#[allow(clippy::too_many_lines)]
+pub fn find_with_cancel(
+    env: &Env,
+    args: &serde_json::Value,
+    cancel: &CancelFlag,
+) -> Result<AgentToolResult> {
     let query = str_arg(args, "query")?.trim().to_string();
     if query.is_empty() {
         bail!("`query` must be a non-empty description");
@@ -133,71 +233,20 @@ pub fn find(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     };
     let listed = files.len();
 
-    for file in files {
-        let Ok(m) = std::fs::metadata(&file) else {
-            continue;
-        };
-        if m.len() > MAX_FILE_BYTES {
-            continue;
+    // Rayon judges files in parallel (read + keyword scan is CPU-bound);
+    // results are collected in input order, and the sort below (score desc,
+    // path asc) plus the summed counters depend only on the multiset, so the
+    // report matches a serial scan byte for byte.
+    let judged: Vec<(Option<Hit>, usize, usize)> = files
+        .par_iter()
+        .map(|file| judge_file(file, &keywords, env, cancel))
+        .collect();
+    for (hit, read, bytes) in judged {
+        files_read += read;
+        file_bytes += bytes;
+        if let Some(hit) = hit {
+            hits.push(hit);
         }
-        let Ok(bytes) = std::fs::read(&file) else {
-            continue;
-        };
-        if bytes.contains(&0) {
-            continue;
-        }
-        let text = String::from_utf8_lossy(&bytes);
-        files_read += 1;
-        file_bytes += bytes.len();
-
-        let mut matched_lines: Vec<(u32, &str)> = Vec::new();
-        let mut count = 0usize;
-        for (i, line) in text.lines().enumerate() {
-            let lower = line.to_lowercase();
-            let line_hits = keywords
-                .iter()
-                .filter(|kw| lower.contains(kw.as_str()))
-                .count();
-            if line_hits > 0 {
-                count += line_hits;
-                matched_lines.push((u32::try_from(i + 1).unwrap_or(u32::MAX), line.trim()));
-            }
-        }
-        let file_score = score(count);
-        if file_score < THRESHOLD {
-            continue;
-        }
-        // Contiguous matched lines become ranges, strongest (most hits) first.
-        let mut ranges: Vec<(u32, u32, usize)> = Vec::new();
-        for (ln, _) in &matched_lines {
-            if let Some(last) = ranges.last_mut() {
-                if *ln == last.1 + 1 {
-                    last.1 = *ln;
-                    last.2 += 1;
-                    continue;
-                }
-            }
-            ranges.push((*ln, *ln, 1));
-        }
-        ranges.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-        let mut hit_ranges = Vec::new();
-        for (start, end, n) in ranges.into_iter().take(RANGES_SHOWN) {
-            let snippet = matched_lines
-                .iter()
-                .find(|(ln, _)| *ln == start)
-                .map_or("", |(_, l)| l)
-                .chars()
-                .take(SNIPPET_CHARS)
-                .collect::<String>();
-            hit_ranges.push((start, end, snippet));
-            let _ = n;
-        }
-        hits.push(Hit {
-            rel: format_path_relative_to_cwd(&file, &env.cwd, false),
-            score: file_score,
-            lines_seen: text.lines().count(),
-            ranges: hit_ranges,
-        });
     }
 
     hits.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.rel.cmp(&b.rel)));

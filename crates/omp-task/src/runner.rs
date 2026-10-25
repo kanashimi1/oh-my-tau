@@ -223,6 +223,30 @@ pub struct TaskRunner {
 }
 
 impl TaskRunner {
+    /// Default subagent fan-out ceiling: `min(available_parallelism, 8)`.
+    ///
+    /// Used by the `task` tool and the eval subagent launcher unless the
+    /// `task.maxConcurrency` setting overrides it: a positive number wins,
+    /// the schema default `0` (and any non-finite value) means "auto".
+    #[must_use]
+    pub fn default_max_concurrency() -> usize {
+        std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(8)
+    }
+
+    /// Effective fan-out for a `task.maxConcurrency` setting value: a finite
+    /// number `>= 1` overrides the [`TaskRunner::default_max_concurrency`];
+    /// anything else (including the schema default `0`) keeps the auto
+    /// default.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // finite, >= 1
+    pub fn resolve_max_concurrency(setting: Option<f64>) -> usize {
+        setting
+            .filter(|v| v.is_finite() && *v >= 1.0)
+            .map_or_else(Self::default_max_concurrency, |v| v as usize)
+    }
+
     /// Create a runner that spawns `binary` with at most `max_concurrent`
     /// children running at once. `max_concurrent == 0` means unbounded.
     #[must_use]
@@ -623,5 +647,25 @@ mod tests {
             })
             .await;
         assert_eq!(out.envelope().agent_url, "agent://Parent.Child-1");
+    }
+
+    #[test]
+    fn max_concurrency_default_and_override() {
+        assert_eq!(
+            TaskRunner::resolve_max_concurrency(None),
+            TaskRunner::default_max_concurrency()
+        );
+        assert_eq!(
+            TaskRunner::resolve_max_concurrency(Some(0.0)),
+            TaskRunner::default_max_concurrency()
+        );
+        assert_eq!(
+            TaskRunner::resolve_max_concurrency(Some(f64::NAN)),
+            TaskRunner::default_max_concurrency()
+        );
+        assert_eq!(TaskRunner::resolve_max_concurrency(Some(3.0)), 3);
+        assert_eq!(TaskRunner::resolve_max_concurrency(Some(64.0)), 64);
+        assert!(TaskRunner::default_max_concurrency() <= 8);
+        assert!(TaskRunner::default_max_concurrency() >= 1);
     }
 }

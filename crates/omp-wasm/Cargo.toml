@@ -1,0 +1,16 @@
+[package]
+name = "omp-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing = { workspace = true }
+wasmi = "2.0.0"
+
+[dev-dependencies]
+tempfile = "3"
+wat = "1.245"

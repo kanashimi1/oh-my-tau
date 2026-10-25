@@ -14,7 +14,7 @@ pub const QUESTIONS: &str = include_str!("policy_questions.json");
 
 /// Loaded policy head. Owns the ONNX session; not `Sync`.
 pub struct PolicyScorer {
-    judge: laya_ort::Judge,
+    judge: crate::onnx::Judge,
     questions: Value,
 }
 
@@ -22,7 +22,7 @@ impl PolicyScorer {
     /// # Errors
     /// Missing/invalid checkpoint or ONNX file.
     pub fn load(paths: &ModelPaths) -> Result<Self> {
-        let judge = laya_ort::Judge::load(
+        let judge = crate::onnx::Judge::load(
             Path::new(&paths.ckpt),
             Path::new(&paths.onnx),
             paths.threads.max(1),

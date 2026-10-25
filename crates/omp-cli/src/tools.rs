@@ -24,6 +24,7 @@ pub(crate) mod rlm_combinators;
 mod search;
 mod task;
 mod todo;
+pub mod wasm;
 pub use todo::{phases_from_entries, TodoPhase, TodoTool};
 #[cfg(test)]
 pub use todo::{Status, TodoItem};
@@ -214,15 +215,52 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             run,
         })
     };
+    // Blocking tools run on the `spawn_blocking` pool (safe under the
+    // current_thread runtime). Abort is honored around the blocking section:
+    // checked before dispatch, watched concurrently (flipping the tool's
+    // `CancelFlag` so long walker loops can bail early), and checked again
+    // after completion so a cancelled call does not surface stale output.
     let blocking = |f: fn(&Env, &Value) -> Result<AgentToolResult>| -> Handler {
-        Arc::new(move |env, args, _| {
+        Arc::new(move |env, args, signal| {
             Box::pin(async move {
-                tokio::task::spawn_blocking(move || f(&env, &args))
+                pa_agent::abort::throw_if_aborted(&signal)?;
+                let result = tokio::task::spawn_blocking(move || f(&env, &args))
                     .await
-                    .map_err(|e| anyhow::anyhow!("tool task failed: {e}"))?
+                    .map_err(|e| anyhow::anyhow!("tool task failed: {e}"))?;
+                // A cancelled turn must not surface stale output.
+                if signal.is_aborted() {
+                    return Err(pa_agent::abort::aborted_error());
+                }
+                result
             })
         })
     };
+    // Same contract as `blocking`, plus a cooperative `CancelFlag` the tool
+    // body polls inside long loops (walker chunks, per-file scoring) so an
+    // aborted call stops burning CPU on the blocking pool promptly.
+    let blocking_cancel =
+        |f: fn(&Env, &Value, &util::CancelFlag) -> Result<AgentToolResult>| -> Handler {
+            Arc::new(move |env, args, signal| {
+                Box::pin(async move {
+                    pa_agent::abort::throw_if_aborted(&signal)?;
+                    let cancel = util::CancelFlag::default();
+                    let flag = cancel.clone();
+                    let watch_signal = signal.clone();
+                    let watcher = tokio::spawn(async move {
+                        watch_signal.aborted().await;
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    });
+                    let result = tokio::task::spawn_blocking(move || f(&env, &args, &cancel))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("tool task failed: {e}"))?;
+                    watcher.abort();
+                    if signal.is_aborted() {
+                        return Err(pa_agent::abort::aborted_error());
+                    }
+                    result
+                })
+            })
+        };
     vec![
         mk(
             "read",
@@ -265,7 +303,7 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             "grep",
             GREP_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"gitignore":{"type":"boolean"},"skip":{"anyOf":[{"type":"number"},{"type":"null"}]}},"required":["pattern"],"additionalProperties":false}),
-            blocking(search::grep),
+            blocking_cancel(search::grep_with_cancel),
         ),
         mk(
             "write",
@@ -281,7 +319,7 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
                 "grep_keywords":{"type":"array","items":{"type":"string"}},
                 "path":{"type":"string"}
             },"required":["query","grep_keywords"],"additionalProperties":false}),
-            blocking(find::find),
+            blocking_cancel(find::find_with_cancel),
         ),
         mk(
             "task",
@@ -297,13 +335,13 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             "ast_grep",
             ast::AST_GREP_DESCRIPTION.to_string(),
             ast::schema_ast_grep(),
-            blocking(ast::ast_grep),
+            blocking_cancel(ast::ast_grep_with_cancel),
         ),
         mk(
             "ast_edit",
             ast::AST_EDIT_DESCRIPTION.to_string(),
             ast::schema_ast_edit(),
-            blocking(ast::ast_edit),
+            blocking_cancel(ast::ast_edit_with_cancel),
         ),
         ask::tool(),
         todo::tool(),

@@ -23,8 +23,8 @@ use pi_walker::{
 use super::read::{parse_sel, LineRange, Selector};
 use super::tree::{events, format_grouped_paths, Kind};
 use super::util::{
-    cut_bytes, format_bytes, format_path_relative_to_cwd, path_list, resolve_to_cwd, truncate_head,
-    DEFAULT_MAX_BYTES,
+    cancelled, cut_bytes, format_bytes, format_path_relative_to_cwd, path_list, resolve_to_cwd,
+    truncate_head, CancelFlag, DEFAULT_MAX_BYTES,
 };
 use super::Env;
 
@@ -513,12 +513,26 @@ fn split_targets(env: &Env, entries: &[String]) -> (Vec<Target>, Vec<String>) {
     (targets, missing)
 }
 
+#[cfg(test)]
 /// Run the `grep` tool.
 ///
 /// # Errors
 /// Empty pattern, bad `skip`, or no path resolving.
-#[allow(clippy::too_many_lines)]
 pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
+    grep_with_cancel(env, args, &CancelFlag::default())
+}
+
+/// [`grep`] with a cooperative cancel flag: the registry adapter flips it on
+/// abort, and the walker chunk loop bails out instead of finishing the scan.
+///
+/// # Errors
+/// Empty pattern, bad `skip`, or no path resolving.
+#[allow(clippy::too_many_lines)]
+pub fn grep_with_cancel(
+    env: &Env,
+    args: &serde_json::Value,
+    cancel: &CancelFlag,
+) -> Result<AgentToolResult> {
     let pattern = super::util::str_arg(args, "pattern")?;
     if pattern.trim().is_empty() {
         bail!("Pattern must not be empty");
@@ -579,6 +593,9 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let mut lines_truncated = false;
     let mut oversized: Vec<String> = Vec::new();
     for target in &targets {
+        if cancelled(cancel) {
+            return Err(pa_agent::abort::aborted_error());
+        }
         let files: Vec<PathBuf> = if target.base.is_file() {
             vec![target.base.clone()]
         } else {
@@ -609,6 +626,9 @@ pub fn grep(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
         // per-file I/O latency bound), then fold results in path order so
         // output and the total-match cap stay identical to a serial scan.
         for chunk in files.chunks(SEARCH_CHUNK_FILES) {
+            if cancelled(cancel) {
+                return Err(pa_agent::abort::aborted_error());
+            }
             let slots: Vec<OnceLock<Option<(Vec<Match>, usize, bool)>>> =
                 std::iter::repeat_with(OnceLock::new)
                     .take(chunk.len())

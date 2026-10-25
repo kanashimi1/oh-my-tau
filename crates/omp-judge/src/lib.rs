@@ -10,6 +10,7 @@
 
 pub mod episode;
 pub mod offline;
+pub mod onnx;
 pub mod policy;
 pub mod pyfmt;
 pub mod scorer;

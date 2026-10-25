@@ -33,10 +33,23 @@ jobs:
             runner: ubuntu-24.04-arm
             asset: omt-linux-arm64
             strip: objcopy
+          # Fully static Linux builds (any distro, incl. Alpine); no ONNX Runtime.
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset: omt-linux-x64-musl
+            strip: copy
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset: omt-linux-arm64-musl
+            strip: copy
+            musl: true
           - target: x86_64-apple-darwin
             runner: macos-14  # Intel runners are retired; cross-compile on Apple silicon
             asset: omt-macos-x64
             strip: strip
+            # No prebuilt ONNX Runtime for Intel macOS: build without the Laya ONNX heads.
+            cargo_args: --no-default-features
           - target: aarch64-apple-darwin
             runner: macos-14
             asset: omt-macos-arm64
@@ -64,17 +77,30 @@ jobs:
         run: |
           echo "MACOSX_DEPLOYMENT_TARGET=13.4" >> "$GITHUB_ENV"
           echo "OMT_MAC_LINK=-C link-arg=$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a" >> "$GITHUB_ENV"
+      - uses: mlugg/setup-zig@v1
+        if: matrix.musl
+        with:
+          version: 0.13.0
+      - name: Build (musl, static)
+        if: matrix.musl
+        shell: sh
+        run: |
+          reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
+          OMT_EXTRA_RUSTFLAGS="-C strip=debuginfo --remap-path-prefix=${reg}=/cargo/registry/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo/git --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$(pwd)=/omt" \
+            scripts/build-musl.sh "$(echo ${{ matrix.target }} | cut -d- -f1)"
       - name: Build
+        if: ${{ !matrix.musl }}
         shell: sh
         run: |
           reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
           RUSTFLAGS="${OMT_MAC_LINK:-} --remap-path-prefix=${reg}=/cargo/registry/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo/git --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$(pwd)=/omt" \
-            cargo build --release --target ${{ matrix.target }} -p omp-cli
+            cargo build --release --target ${{ matrix.target }} -p omp-cli ${{ matrix.cargo_args }}
       - name: Package
         shell: sh
         run: |
           mkdir -p dist
           case "${{ matrix.strip }}" in
+            copy)    cp "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
             objcopy) objcopy --strip-debug "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
             strip)   strip "target/${{ matrix.target }}/release/omt" && cp "target/${{ matrix.target }}/release/omt" "dist/${{ matrix.asset }}" ;;
             *)       cp "target/${{ matrix.target }}/release/omt.exe" "dist/${{ matrix.asset }}" ;;
@@ -87,6 +113,8 @@ jobs:
 
   release:
     needs: build
+    # Publish whatever built: one unsupported target must not block the rest.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -96,7 +124,7 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum omt-linux-x64 omt-linux-arm64 omt-macos-x64 omt-macos-arm64 omt-windows-x64.exe > SHA256SUMS.txt
+          sha256sum omt-* > SHA256SUMS.txt
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}

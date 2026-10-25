@@ -1,0 +1,22 @@
+[package]
+name = "wasm-plugin-hello"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# A cdylib for wasm32-unknown-unknown produces a `.wasm` module with the
+# functions below exported as the omp-wasm ABI surface. This crate is NOT a
+# workspace member: it is built standalone with
+# `cargo build --target wasm32-unknown-unknown --release` and the resulting
+# `target/wasm32-unknown-unknown/release/wasm_plugin_hello.wasm` is dropped
+# into `.omp/plugins/` (or `~/.omp/agent/plugins/`).
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+
+# Standalone: not part of the omt workspace.
+[workspace]

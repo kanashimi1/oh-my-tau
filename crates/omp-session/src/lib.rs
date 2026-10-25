@@ -7,6 +7,7 @@
 
 pub mod entries;
 pub mod index;
+pub mod scan;
 pub mod tree;
 
 use std::collections::HashSet;
@@ -66,22 +67,54 @@ pub struct Loaded {
 /// # Errors
 /// I/O failure.
 pub fn load(path: &Path) -> Result<Loaded> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let buf = scan::FileBuf::read(path)?;
+    /// One line's parse result, in file order after assembly.
+    enum Item {
+        Line(Line),
+        Malformed(Malformed),
+        Blank,
+    }
+    let parse = |n: usize, bytes: &[u8]| -> Item {
+        let raw = scan::decode_line(bytes);
+        if raw.trim().is_empty() {
+            return Item::Blank;
+        }
+        let raw = raw.into_owned();
+        match serde_json::from_str::<FileEntry>(&raw) {
+            Ok(entry) => Item::Line(Line { raw, entry }),
+            Err(_) => Item::Malformed(Malformed { line_no: n, raw }),
+        }
+    };
+    let items: Vec<Item> = if buf.as_slice().len() > scan::PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let buf = buf.as_slice();
+        let spans = scan::line_spans(buf);
+        let threads = rayon::current_num_threads().max(1);
+        let chunk = (spans.len() / (threads * 8)).clamp(256, 4096).max(1);
+        spans
+            .par_chunks(chunk)
+            .map(|c| {
+                c.iter()
+                    .map(|&(n, o, l)| parse(n, &buf[o as usize..o as usize + l as usize]))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<Vec<_>>>()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+    } else {
+        scan::line_spans(buf.as_slice())
+            .into_iter()
+            .map(|(n, o, l)| parse(n, &buf.as_slice()[o as usize..o as usize + l as usize]))
+            .collect()
+    };
     let mut lines = Vec::new();
     let mut malformed = Vec::new();
-    for (n, chunk) in BufReader::new(file).split(b'\n').enumerate() {
-        let bytes = chunk.with_context(|| format!("{}:{}", path.display(), n + 1))?;
-        let text = String::from_utf8_lossy(&bytes);
-        let raw = text.strip_suffix('\r').unwrap_or(&text).to_owned();
-        if raw.trim().is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<FileEntry>(&raw) {
-            Ok(entry) => lines.push(Line { raw, entry }),
-            Err(_) => malformed.push(Malformed {
-                line_no: n + 1,
-                raw,
-            }),
+    for item in items {
+        match item {
+            Item::Line(l) => lines.push(l),
+            Item::Malformed(m) => malformed.push(m),
+            Item::Blank => {}
         }
     }
     let title_slot = lines.first().and_then(|l| match l.omp() {
@@ -110,28 +143,46 @@ pub fn read(path: &Path) -> Result<Vec<Line>> {
 }
 
 /// One parse per line straight into `Value` (object records only, malformed
-/// skipped), for consumers that need the entry tree itself (resume/rebuild):
+/// lines skipped), for consumers that need the entry tree itself (resume/rebuild):
 /// [`load`]/`read` parse every line twice (typed entry + caller's `Value`).
 ///
 /// # Errors
 /// I/O failure.
 pub fn read_values(path: &Path) -> Result<Vec<Value>> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut out = Vec::new();
-    for (n, chunk) in BufReader::new(file).split(b'\n').enumerate() {
-        let bytes = chunk.with_context(|| format!("{}:{}", path.display(), n + 1))?;
-        let text = String::from_utf8_lossy(&bytes);
-        let raw = text.strip_suffix('\r').unwrap_or(&text);
+    let buf = scan::FileBuf::read(path)?;
+    let parse = |bytes: &[u8]| -> Option<Value> {
+        let raw = scan::decode_line(bytes);
         if raw.trim().is_empty() {
-            continue;
+            return None;
         }
-        if let Ok(v) = serde_json::from_str::<Value>(raw) {
-            if v.is_object() {
-                out.push(v);
-            }
-        }
-    }
-    Ok(out)
+        serde_json::from_str::<Value>(&raw)
+            .ok()
+            .filter(Value::is_object)
+    };
+    let mut items: Vec<Option<Value>> = if buf.as_slice().len() > scan::PAR_THRESHOLD {
+        use rayon::prelude::*;
+        let buf = buf.as_slice();
+        let spans = scan::line_spans(buf);
+        let threads = rayon::current_num_threads().max(1);
+        let chunk = (spans.len() / (threads * 8)).clamp(256, 4096).max(1);
+        spans
+            .par_chunks(chunk)
+            .map(|c| {
+                c.iter()
+                    .map(|&(_, o, l)| parse(&buf[o as usize..o as usize + l as usize]))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<Vec<_>>>()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+    } else {
+        scan::line_spans(buf.as_slice())
+            .into_iter()
+            .map(|(_, o, l)| parse(&buf.as_slice()[o as usize..o as usize + l as usize]))
+            .collect()
+    };
+    Ok(items.drain(..).flatten().collect())
 }
 
 /// Append-only writer producing files omp itself can open: v3 header first, then entries whose
@@ -231,21 +282,22 @@ impl SessionWriter {
 
     /// Record ids of an existing file (skipping lines that are not JSON objects) and its last entry.
     fn load_existing(&mut self) -> Result<()> {
-        let file =
-            File::open(&self.path).with_context(|| format!("open {}", self.path.display()))?;
-        for line in BufReader::new(file).split(b'\n') {
-            let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(&line?) else {
-                continue;
+        let buf = scan::FileBuf::read(&self.path)?;
+        scan::for_each_line(buf.as_slice(), |_n, bytes| {
+            // Borrowed scan: only `type`/`id` are needed, no Value tree.
+            let Some(head) = scan::head_of(bytes) else {
+                return Ok(std::ops::ControlFlow::Continue(()));
             };
-            let Some(id) = obj.get("id").and_then(Value::as_str) else {
-                continue;
+            let Some(id) = head.id else {
+                return Ok(std::ops::ControlFlow::Continue(()));
             };
-            self.ids.insert(id.to_owned());
-            if obj.get("type").and_then(Value::as_str) != Some("session") {
-                self.last_id = Some(id.to_owned());
-                self.leaf = Some(id.to_owned());
+            self.ids.insert(id.to_string());
+            if head.kind.as_deref() != Some("session") {
+                self.last_id = Some(id.to_string());
+                self.leaf = Some(id.to_string());
             }
-        }
+            Ok(std::ops::ControlFlow::Continue(()))
+        })?;
         Ok(())
     }
 
@@ -1451,6 +1503,81 @@ mod tests {
         assert_eq!(v["parentId"], json!(last));
         assert_eq!(v["id"], json!(next));
         assert_eq!(read(again.path()).unwrap().len(), 3);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn load_handles_crlf_truncated_and_empty_files() {
+        let dir = tmp();
+        std::fs::create_dir_all(&dir).unwrap();
+        let header = r#"{"type":"session","version":3,"id":"hdr","timestamp":"t","cwd":"/tmp"}"#;
+        let ok = r#"{"type":"reset_boundary","id":"rb","parentId":"hdr","timestamp":"t"}"#;
+
+        // CRLF line endings: \r stripped, entries parse.
+        let p = dir.join("crlf.jsonl");
+        std::fs::write(&p, format!("{header}\r\n{ok}\r\n")).unwrap();
+        let loaded = load(&p).unwrap();
+        assert_eq!(loaded.lines.len(), 2);
+        assert!(loaded.lines.iter().all(|l| !l.raw.ends_with('\r')));
+        assert!(!loaded.invalid_header);
+        assert!(loaded.malformed.is_empty());
+
+        // Truncated last line: kept as a line, reported as malformed.
+        let p = dir.join("truncated.jsonl");
+        std::fs::write(
+            &p,
+            format!("{header}\n{ok}\n{{\"type\":\"reset_boundary\",\"id\":\"cut"),
+        )
+        .unwrap();
+        let loaded = load(&p).unwrap();
+        assert_eq!(loaded.lines.len(), 2);
+        assert_eq!(loaded.malformed.len(), 1);
+        assert_eq!(loaded.malformed[0].line_no, 3);
+        assert_eq!(
+            loaded.malformed[0].raw,
+            "{\"type\":\"reset_boundary\",\"id\":\"cut"
+        );
+
+        // Empty file: no lines, nothing malformed, no header.
+        let p = dir.join("empty.jsonl");
+        std::fs::write(&p, b"").unwrap();
+        let loaded = load(&p).unwrap();
+        assert!(loaded.lines.is_empty());
+        assert!(loaded.malformed.is_empty());
+        assert!(loaded.title_slot.is_none());
+        assert!(!loaded.invalid_header);
+
+        // Same content through the mmap path (file > 1 MiB): identical results.
+        let p = dir.join("big.jsonl");
+        let mut body = format!("{header}\n").into_bytes();
+        // Each line is the same entry with a long (valid JSON) id, sized so the
+        // file crosses MMAP_THRESHOLD and the auto-selected reader mmaps it.
+        let big_line = ok.replace("rb", &"x".repeat(8192));
+        let mut big_line_count = 1usize; // header
+        while (body.len() as u64) <= scan::MMAP_THRESHOLD {
+            body.extend_from_slice(big_line.as_bytes());
+            body.push(b'\n');
+            big_line_count += 1;
+        }
+        assert!(body.len() as u64 > scan::MMAP_THRESHOLD);
+        std::fs::write(&p, &body).unwrap();
+        let big = load(&p).unwrap();
+        assert!(big.malformed.is_empty());
+        assert!(!big.invalid_header);
+        assert_eq!(big.lines.len(), big_line_count);
+        // Same content through the buffered path: identical results.
+        let small_path = dir.join("small.jsonl");
+        std::fs::write(&small_path, &body).unwrap();
+        let small = load(&small_path).unwrap();
+        assert_eq!(small.lines.len(), big.lines.len());
+        assert_eq!(
+            big.lines.iter().map(|l| l.raw.as_str()).collect::<Vec<_>>(),
+            small
+                .lines
+                .iter()
+                .map(|l| l.raw.as_str())
+                .collect::<Vec<_>>()
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }
