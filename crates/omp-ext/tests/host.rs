@@ -855,3 +855,38 @@ export default function (pi: any): void {
     );
     host.shutdown().await.unwrap();
 }
+
+/// `--extension` paths add to the extensions dir (omp `merge` mode) instead of replacing it, and a
+/// file reached both explicitly and through a symlinked dir loads once.
+#[cfg(unix)]
+#[tokio::test]
+async fn explicit_paths_add_to_the_extensions_dir() {
+    if common::bun_missing("explicit_paths_add_to_the_extensions_dir") {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let real = tmp.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::copy(fixture("fixture.ts"), real.join("fixture.ts")).unwrap();
+    std::fs::copy(fixture("mutating.ts"), real.join("mutating.ts")).unwrap();
+    let dir = tmp.path().join("extensions");
+    std::os::unix::fs::symlink(&real, &dir).unwrap();
+    let host = ExtHost::spawn(&config()).await.unwrap();
+    let r = host
+        .load(
+            Some(&[fixture("lifecycle.ts"), real.join("fixture.ts")]),
+            Some(dir.to_str().unwrap()),
+            "/tmp",
+            Some(json!({"sessionId": "s1"})),
+        )
+        .await
+        .unwrap();
+    let mut names: Vec<String> = r
+        .loaded
+        .iter()
+        .map(|e| PathBuf::from(&e.path).file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["fixture.ts", "lifecycle.ts", "mutating.ts"], "{r:?}");
+    assert!(r.errors.is_empty(), "{r:?}");
+}

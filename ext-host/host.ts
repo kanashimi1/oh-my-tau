@@ -11,7 +11,7 @@
 // Env: OMP_EXT_TRACE=<path> appends one JSON line per emit (per-handler action/ms) to <path>;
 //      OMP_EXT_TIMEOUT_MS handler budget (default 30000); OMP_PKG_ROOT omp's pi-coding-agent package dir (for typebox/zod).
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync, appendFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, appendFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
@@ -384,7 +384,21 @@ async function load(p: Json) {
   // handler budget and trace file travel with the load request.
   if (typeof p.timeoutMs === "number" && p.timeoutMs > 0) TIMEOUT_MS = p.timeoutMs;
   if (typeof p.trace === "string") TRACE = p.trace;
-  const paths = (p.paths as string[] | undefined) ?? discover(String(p.dir ?? join(homedir(), ".omp/agent/extensions")));
+  // Explicit paths (`--extension`) are added to the discovered dir, as in omp (`merge` mode: the
+  // explicit lane first, then the extensions dir); paths without a dir load alone.
+  const explicit = (p.paths as string[] | undefined) ?? [];
+  const discovered =
+    p.dir !== undefined || p.paths === undefined ? discover(String(p.dir ?? join(homedir(), ".omp/agent/extensions"))) : [];
+  const seen = new Set<string>();
+  const paths = [...explicit, ...discovered].filter((x) => {
+    let k = resolve(x);
+    try {
+      k = realpathSync(k); // a symlinked extensions dir must not load an explicit path twice
+    } catch {}
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
   const loaded: Json[] = [];
   const errors: Json[] = [];
   for (const path of paths) {
