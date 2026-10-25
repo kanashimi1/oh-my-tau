@@ -469,15 +469,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
         }
         "branch" => Some(interactive::branch_command(rt).await),
         "rewind" => Some(interactive::branch_command(rt).await),
-        "plan" => {
-            output(
-                rt,
-                "/plan: plan mode is not ported to omt; prompt the model directly with planning instructions or use the TS CLI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "plan" => Some(crate::features::plan::command(rt, args).await),
         "goal" => {
             output(
                 rt,
@@ -487,15 +479,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "loop" => {
-            output(
-                rt,
-                "/loop: loop mode is not ported to omt; use the TS CLI to run prompt loops",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "loop" => Some(crate::features::loop_mode::command(rt, args).await),
         "queue" => {
             let text = args.trim();
             if text.is_empty() {
@@ -508,15 +492,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "skills" => {
-            output(
-                rt,
-                "/skills: skills registry (skills.omp.sh) is not ported to omt; use `omp skills` from the TS CLI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "skills" => Some(crate::features::skills::command(rt, args).await),
         "agents" => Some(interactive::agents_command(rt).await),
         "extensions" => Some(interactive::extensions_command(rt).await),
         "status" => Some(interactive::extensions_command(rt).await),
@@ -533,24 +509,8 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
             })
         }
         "debug" => Some(interactive::debug_command(rt).await),
-        "restart" => {
-            output(
-                rt,
-                "/restart: process restart is not ported to omt; exit and re-run with --resume",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
-        "btw" => {
-            output(
-                rt,
-                "/btw: side-question conversation (btw) is not ported to omt; prompt the model directly in the main session",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "restart" => Some(crate::features::restart::command(rt, args).await),
+        "btw" => Some(crate::features::btw::command(rt, args).await),
         "collab" => Some(collab_command(rt, args).await),
         _ => None,
     }

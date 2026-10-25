@@ -10,6 +10,7 @@ mod context_policy;
 mod dedup;
 mod events;
 mod ext;
+mod features;
 mod herdr;
 mod images;
 mod methodology;

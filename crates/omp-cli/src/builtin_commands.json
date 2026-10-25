@@ -919,5 +919,19 @@
    "hint": "<tool-name> [prompt]"
   },
   "source": "builtin"
+ },
+ {
+  "name": "budget",
+  "description": "Show or set a cost/token budget for this session (stops the agent when exceeded)",
+  "input": {
+   "hint": "<status|$amount|<n>k tokens|off>"
+  }
+ },
+ {
+  "name": "sandbox",
+  "description": "Confine tool subprocesses with Landlock + seccomp (writes only inside the project, network opt-in)",
+  "input": {
+   "hint": "<status|on|off|net on|net off>"
+  }
  }
 ]
