@@ -2583,6 +2583,7 @@ dependencies = [
  "parking_lot",
  "tokio",
  "tokio-util",
+ "windows-sys 0.59.0",
  "xattr",
 ]
 
@@ -2596,6 +2597,7 @@ dependencies = [
  "parking_lot",
  "pi-vfs",
  "rayon",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -1017,6 +1017,7 @@ async fn open_server_transport(
     cwd: &Path,
 ) -> Result<(ServerWriter, ServerReader, Option<Child>, Option<u32>), LspError> {
     if crate::mux::shared_lsp_enabled() {
+        #[cfg(unix)]
         if let Some(transport) =
             crate::mux::connect_shared_lsp_transport(command, args, cwd, None).await
         {

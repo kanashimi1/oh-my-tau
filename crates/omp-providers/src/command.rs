@@ -8,7 +8,9 @@
 
 use std::collections::HashMap;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -170,16 +172,19 @@ fn project_dir() -> Option<std::path::PathBuf> {
 
 fn run(command: &str, timeout: Duration) -> Option<String> {
     let cwd = project_dir()?;
-    let mut child = match Command::new("/bin/sh")
-        .arg("-c")
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-c")
         .arg(command)
         .current_dir(&cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
+        .stderr(Stdio::null());
+    #[cfg(unix)]
     {
+        // POSIX process group so `kill_group` can reach descendants.
+        cmd.process_group(0);
+    }
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         // TS logs a warning on errno failures (no command output leaked).
         Err(e) => {
@@ -193,9 +198,12 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
     // semantics), so a leftover background descendant holding the pipe open
     // cannot turn a successful command into a cached failure.
     //
-    // The pipe is non-blocking: a `setsid` descendant escapes the process
-    // group, so `kill_group` cannot unblock the reader. The stop flag ends
-    // the poll loop instead, guaranteeing the thread exits per attempt.
+    // The pipe is non-blocking on Unix: a `setsid` descendant escapes the
+    // process group, so `kill_group` cannot unblock the reader. The stop flag
+    // ends the poll loop instead, guaranteeing the thread exits per attempt.
+    // On non-Unix platforms the pipe stays blocking (no process-group escape
+    // via `setsid` there); the reader thread simply drains until EOF.
+    #[cfg(unix)]
     {
         let fd = out.as_raw_fd();
         // SAFETY: `fcntl` on a live fd owned by `out` for the rest of `run`.
@@ -268,10 +276,17 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
 }
 
 /// Kill the child's whole process group (and the child itself).
+#[cfg(unix)]
 fn kill_group(child: &mut std::process::Child) {
     let _ = Command::new("/bin/sh")
         .args(["-c", &format!("kill -KILL -{}", child.id())])
         .status();
+    let _ = child.kill();
+}
+
+/// No process groups on this platform: kill the direct child only.
+#[cfg(not(unix))]
+fn kill_group(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 

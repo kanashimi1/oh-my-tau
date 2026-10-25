@@ -47,11 +47,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+      # The prebuilt onnxruntime (ort) calls `__isPlatformVersionAtLeast`, which
+      # lives in clang's compiler-rt; rustc links with -nodefaultlibs, so add it.
+      - name: macOS compiler-rt
+        if: runner.os == 'macOS'
+        shell: sh
+        run: |
+          echo "MACOSX_DEPLOYMENT_TARGET=13.4" >> "$GITHUB_ENV"
+          echo "OMT_MAC_LINK=-C link-arg=$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a" >> "$GITHUB_ENV"
       - name: Build
         shell: sh
         run: |
           reg="${CARGO_HOME:-$HOME/.cargo}/registry/src"
-          RUSTFLAGS="--remap-path-prefix=${reg}=/cargo/registry/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo/git --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$(pwd)=/omt" \
+          RUSTFLAGS="${OMT_MAC_LINK:-} --remap-path-prefix=${reg}=/cargo/registry/src --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}/git/checkouts=/cargo/git --remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup --remap-path-prefix=$(pwd)=/omt" \
             cargo build --release --target ${{ matrix.target }} -p omp-cli
       - name: Package
         shell: sh

@@ -211,7 +211,9 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
 const RAW_GUARD_TICK: Duration = Duration::from_secs(1);
 
 /// `true` when stdin is a tty in canonical (cooked) mode — raw mode the TUI
-/// set was undone behind its back — and raw mode was re-applied.
+/// and raw mode was re-applied. Windows consoles have no termios cooked/raw
+/// duality crossterm cannot already see, so the guard is a no-op there.
+#[cfg(unix)]
 fn restore_raw_mode_if_lost() -> bool {
     let stdin = std::io::stdin();
     let Ok(t) = rustix::termios::tcgetattr(&stdin) else {
@@ -224,6 +226,13 @@ fn restore_raw_mode_if_lost() -> bool {
     // drop its saved state first, then set raw mode again.
     let _ = crossterm::terminal::disable_raw_mode();
     crossterm::terminal::enable_raw_mode().is_ok()
+}
+
+/// Windows: the concept does not apply (no termios; crossterm owns the
+/// console mode), so nothing to detect or re-apply.
+#[cfg(not(unix))]
+fn restore_raw_mode_if_lost() -> bool {
+    false
 }
 
 /// One paint after a state change — the TS `tui.ts` render-pass

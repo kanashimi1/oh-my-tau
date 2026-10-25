@@ -20,6 +20,7 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+          - os: ubuntu-24.04-arm
           - os: windows-latest
             continue-on-error: true
     runs-on: ${{ matrix.os }}
@@ -28,4 +29,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release -p omp-cli
+      # The prebuilt onnxruntime (ort) calls `__isPlatformVersionAtLeast`, which
+      # lives in clang's compiler-rt; rustc links with -nodefaultlibs, so add it.
+      - name: macOS compiler-rt
+        if: runner.os == 'macOS'
+        shell: sh
+        run: |
+          echo "MACOSX_DEPLOYMENT_TARGET=13.4" >> "$GITHUB_ENV"
+          echo "OMT_MAC_LINK=-C link-arg=$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a" >> "$GITHUB_ENV"
+      - shell: sh
+        run: RUSTFLAGS="${OMT_MAC_LINK:-}" cargo build --release -p omp-cli

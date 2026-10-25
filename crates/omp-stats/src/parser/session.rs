@@ -3,7 +3,6 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::os::unix::fs::MetadataExt;
 
 use anyhow::Result;
 use serde_json::Value;
@@ -120,8 +119,22 @@ fn scan_last_service_tier(bytes: &[u8]) -> Option<ServiceTierByFamily> {
     current
 }
 
+/// Node `stat.mtimeMs`: `sec * 1e3 + nsec / 1e6`.
+#[cfg(unix)]
 fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
+    use std::os::unix::fs::MetadataExt;
     (meta.mtime() as f64) * 1000.0 + (meta.mtime_nsec() as f64) / 1_000_000.0
+}
+
+/// Portable `mtime_ms` via `metadata.modified()` (same formula, same values).
+#[cfg(not(unix))]
+fn mtime_ms(meta: &std::fs::Metadata) -> f64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0.0, |d| {
+            (d.as_secs() as f64) * 1000.0 + f64::from(d.subsec_nanos()) / 1_000_000.0
+        })
 }
 
 /// Node/Bun `stat.birthtimeMs`: `sec * 1e3 + nsec / 1e6` (fractional, so a
@@ -135,13 +148,39 @@ fn metadata_birthtime_ms(meta: &std::fs::Metadata) -> f64 {
         })
 }
 
+/// File identity `(dev, ino)` as `f64`, matching TS `stat.dev`/`stat.ino`.
+#[cfg(unix)]
+fn file_identity(meta: &std::fs::Metadata, _path: &std::path::Path) -> (f64, f64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev() as f64, meta.ino() as f64)
+}
+
+/// Windows identity key: `std::os::windows::fs::MetadataExt` handle fields are
+/// unstable, so use a stable hash of the canonical path as the `ino` stand-in
+/// (`dev` = 0). A moved/renamed file re-parses from scratch — safe, only
+/// redundant; the path is stable for the lifetime of a transcript.
+#[cfg(windows)]
+fn file_identity(meta: &std::fs::Metadata, path: &std::path::Path) -> (f64, f64) {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let _ = meta;
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    (0.0, hasher.finish() as f64)
+}
+
 /// Same file identity check as TS `matchesSessionFile`: dev, ino and
 /// birthtime must all match (size/mtime changes are the rewrite signal).
+/// `session_path` is unused on Unix (dev/ino come from the metadata) and is
+/// the identity key on Windows.
 #[must_use]
-pub fn matches_session_file(state: &SessionParserState, info: &std::fs::Metadata) -> bool {
-    state.dev == info.dev() as f64
-        && state.ino == info.ino() as f64
-        && state.birthtime_ms == metadata_birthtime_ms(info)
+pub fn matches_session_file(
+    state: &SessionParserState,
+    session_path: &str,
+    info: &std::fs::Metadata,
+) -> bool {
+    let (dev, ino) = file_identity(info, std::path::Path::new(session_path));
+    state.dev == dev && state.ino == ino && state.birthtime_ms == metadata_birthtime_ms(info)
 }
 
 /// Positional read of the last `CHECKPOINT_BYTES` bytes before `end`.
@@ -242,11 +281,11 @@ pub fn parse_session_file(
         }
     };
 
-    let file_size = info.size() as i64;
+    let file_size = info.len() as i64;
     let mut resume = state.is_some_and(|s| s.version == 1 && s.offset == from_offset);
     let mut reset = false;
     if let (true, Some(state)) = (resume, state) {
-        reset = !matches_session_file(state, &info)
+        reset = !matches_session_file(state, session_path, &info)
             || file_size < state.size
             || (file_size == state.size && mtime_ms(&info) != state.mtime_ms);
         if !reset {
@@ -294,11 +333,12 @@ pub fn parse_session_file(
 
     result.new_offset = new_offset;
     result.reset = Some(reset);
+    let (dev, ino) = file_identity(&info, std::path::Path::new(session_path));
     result.parser_state = Some(SessionParserState {
         version: 1,
         offset: new_offset,
-        dev: info.dev() as f64,
-        ino: info.ino() as f64,
+        dev,
+        ino,
         birthtime_ms: metadata_birthtime_ms(&info),
         size: file_size,
         mtime_ms: mtime_ms(&info),
