@@ -2955,39 +2955,37 @@ async fn move_command(rt: &Runtime, args: &str) -> Outcome {
 /// omp-rs extension host is a single runtime extension (`pi.js`), not a
 /// plugin registry; list loaded extension commands if any.
 async fn plugins_command(rt: &Runtime, args: &str) -> Outcome {
-    let (verb, _rest) = subcommand(args);
-    if matches!(verb.as_str(), "enable" | "disable") {
-        return usage(
-            rt,
-            &format!("/plugins {verb} needs the plugin registry (marketplace plugins), which is not ported to omt."),
-        );
-    }
-    if verb == "list" || verb.is_empty() {
-        let commands = extension_commands().await;
-        if commands.is_empty() {
-            output(
-                rt,
-                "No plugins installed. (The omt extension host loads a single runtime extension; a plugin registry with enable/disable is not ported.)",
-            );
-        } else {
-            let names: Vec<&str> = commands
-                .iter()
-                .filter_map(|c| c.get("name").and_then(Value::as_str))
-                .collect();
-            output(
-                rt,
-                &format!(
-                    "Extension commands loaded ({}): {}",
-                    names.len(),
-                    names.join(", ")
-                ),
-            );
+    let (verb, rest) = subcommand(args);
+    match verb.as_str() {
+        "list" | "" => {
+            output(rt, &crate::features::skills::plugins_list_text(rt));
+            Handled {
+                agent_invoked: false,
+            }
         }
-        return Handled {
-            agent_invoked: false,
-        };
+        "enable" | "disable" => {
+            let name = rest.trim();
+            if name.is_empty() {
+                return usage(rt, &format!("Usage: /plugins {verb} <marketplace/name>"));
+            }
+            match crate::features::skills::plugins_set_enabled(rt, name, verb == "enable") {
+                Ok(()) => output(
+                    rt,
+                    &format!(
+                        "{} {name} (restart the session to apply; plugin loading is not hot-reloaded)",
+                        if verb == "enable" { "Enabled" } else { "Disabled" }
+                    ),
+                ),
+                Err(e) => {
+                    output(rt, &format!("Plugins error: {e}"));
+                }
+            }
+            Handled {
+                agent_invoked: false,
+            }
+        }
+        _ => usage(rt, "Usage: /plugins [list|enable|disable]"),
     }
-    usage(rt, "Usage: /plugins [list|enable|disable]")
 }
 
 /// `/handoff [focus]` — TS generates a handoff document and compacts in

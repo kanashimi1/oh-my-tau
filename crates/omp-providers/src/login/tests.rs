@@ -4,7 +4,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use pa_ai::oauth::{
-    OAuthLoginUi, OAuthPrompt, ProviderHttp, ProviderHttpRequest, ProviderHttpResponse,
+    OAuthLoginUi, OAuthPrompt, ProviderHttp, ProviderHttpMethod, ProviderHttpRequest,
+    ProviderHttpResponse,
 };
 use parking_lot::Mutex;
 use serde_json::{json, Value};
@@ -554,4 +555,236 @@ async fn logout_soft_deletes_with_the_ts_causes_and_a_relogin_purges_the_tombsto
         target.list(Some("exa")).await.unwrap()[0].credential,
         Credential::ApiKey("k3".into())
     );
+}
+
+#[tokio::test]
+async fn alibaba_coding_plan_prompts_endpoints_then_stores_a_validated_key() {
+    let (_dir, target) = temp_target();
+    let (services, http) = services(|_| (200, "{}".into()));
+    // 1=International, then the key.
+    let ui = ScriptedUi::with(&["1", "  sk-ali-1  "]);
+    let identity = login(&target, "alibaba-coding-plan", ui.clone(), &services)
+        .await
+        .unwrap();
+    assert_eq!(identity, Some(Identity::ApiKey));
+    let seen = http.seen.lock().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(
+        seen[0].url,
+        "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions"
+    );
+    assert!(seen[0]
+        .headers
+        .contains(&("Authorization".to_string(), "Bearer sk-ali-1".to_string())));
+    let body: Value = serde_json::from_str(seen[0].body.as_deref().unwrap()).unwrap();
+    assert_eq!(body["model"], "qwen3.5-plus");
+    assert_eq!(body["max_tokens"], 1);
+    assert_eq!(ui.prompts.lock()[0].message, "Select Alibaba Coding Plan endpoint: 1=International (default), 2=China, 3=Custom — enter 1, 2, or 3");
+    assert_eq!(
+        ui.auth.lock()[0].0,
+        "https://modelstudio.console.alibabacloud.com/"
+    );
+    let rows = raw_rows(&target);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].1.as_str(), rows[0].2.as_str()),
+        ("alibaba-coding-plan", "api_key")
+    );
+    assert_eq!(rows[0].3, r#"{"key":"sk-ali-1","source":"login"}"#);
+}
+
+#[tokio::test]
+async fn alibaba_coding_plan_china_choice_targets_the_china_base() {
+    let (_dir, target) = temp_target();
+    let (services, http) = services(|_| (200, "{}".into()));
+    login(
+        &target,
+        "alibaba-coding-plan",
+        ScriptedUi::with(&["2", "sk-ali-cn"]),
+        &services,
+    )
+    .await
+    .unwrap();
+    let seen = http.seen.lock().clone();
+    assert_eq!(
+        seen[0].url,
+        "https://coding.dashscope.aliyuncs.com/v1/chat/completions"
+    );
+    assert_eq!(
+        raw_rows(&target)[0].1,
+        "alibaba-coding-plan",
+        "no region redirect: stored under its own id"
+    );
+}
+
+#[tokio::test]
+async fn alibaba_coding_plan_custom_choice_probes_the_models_endpoint() {
+    let (_dir, target) = temp_target();
+    let (services, http) = services(|r| {
+        // The chat-completions probe must not fire for a custom base URL.
+        assert!(r.url.ends_with("/models"), "{}", r.url);
+        (200, r#"{"data":[]}"#.into())
+    });
+    login(
+        &target,
+        "alibaba-coding-plan",
+        ScriptedUi::with(&["3", "https://proxy.example/v1/", "sk-ali-x"]),
+        &services,
+    )
+    .await
+    .unwrap();
+    let seen = http.seen.lock().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].url, "https://proxy.example/v1/models");
+    assert_eq!(seen[0].method, ProviderHttpMethod::Get);
+}
+
+#[tokio::test]
+async fn alibaba_token_plan_wraps_cookie_and_region_into_the_stored_key() {
+    let (_dir, target) = temp_target();
+    let (services, http) = services(|r| {
+        assert!(r.url.ends_with("/models"), "{}", r.url);
+        (200, r#"{"data":[]}"#.into())
+    });
+    // 2=China, key, then the optional cookie.
+    let ui = ScriptedUi::with(&["2", "sk-sp-cn", "Cookie: t=1; u=2"]);
+    login(&target, "alibaba-token-plan", ui.clone(), &services)
+        .await
+        .unwrap();
+    let seen = http.seen.lock().clone();
+    assert_eq!(
+        seen[0].url,
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models"
+    );
+    let row = serde_json::from_str::<Value>(&raw_rows(&target)[0].3).unwrap();
+    let stored: Value = serde_json::from_str(row["key"].as_str().unwrap()).unwrap();
+    assert_eq!(stored["token"], "sk-sp-cn");
+    assert_eq!(stored["cookie"], "t=1; u=2");
+    assert_eq!(
+        stored["baseUrl"],
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    );
+
+    // International default with no cookie stores the bare key, TS form.
+    let (services, _) = self::services(|_| (200, r#"{"data":[]}"#.into()));
+    let ui = ScriptedUi::with(&["1", "sk-sp-intl", ""]);
+    login(&target, "alibaba-token-plan", ui, &services)
+        .await
+        .unwrap();
+    let rows = raw_rows(&target);
+    assert_eq!(rows[1].3, r#"{"key":"sk-sp-intl","source":"login"}"#);
+}
+
+#[tokio::test]
+async fn alibaba_token_plan_rejects_a_single_cookie_value_like_ts() {
+    let (_dir, target) = temp_target();
+    let (services, _) = services(|_| (200, r#"{"data":[]}"#.into()));
+    let err = login(
+        &target,
+        "alibaba-token-plan",
+        ScriptedUi::with(&["1", "sk-sp-1", "just-a-value"]),
+        &services,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.starts_with("Invalid QwenCloud Cookie header"), "{err}");
+    // The rejection happens after validation; only the earlier successful
+    // login's row (if any) exists, nothing new was stored for this attempt.
+    assert!(raw_rows(&target_after_touch(&target))
+        .iter()
+        .all(|r| !r.3.contains("just-a-value")));
+}
+
+#[tokio::test]
+async fn alibaba_key_logins_cancel_and_empty_key_follow_the_ts_engine() {
+    let (_dir, target) = temp_target();
+    let (services, _) = services(|_| (200, "{}".into()));
+    assert_eq!(
+        login(
+            &target,
+            "alibaba-coding-plan",
+            ScriptedUi::with(&[]),
+            &services
+        )
+        .await
+        .unwrap_err(),
+        "Login cancelled"
+    );
+    assert_eq!(
+        login(
+            &target,
+            "alibaba-coding-plan",
+            ScriptedUi::with(&["1", "  "]),
+            &services
+        )
+        .await
+        .unwrap_err(),
+        "API key is required"
+    );
+    assert_eq!(
+        login(
+            &target,
+            "alibaba-token-plan",
+            ScriptedUi::with(&["1", "  "]),
+            &services
+        )
+        .await
+        .unwrap_err(),
+        "API key is required"
+    );
+}
+
+#[tokio::test]
+async fn openrouter_and_zai_coding_plan_log_in_like_api_key_providers() {
+    let (_dir, target) = temp_target();
+    let (services, http) = services(|_| (200, "{}".into()));
+    let ui = ScriptedUi::with(&["sk-or-v1-abc"]);
+    assert_eq!(
+        login(&target, "openrouter", ui, &services).await.unwrap(),
+        Some(Identity::ApiKey)
+    );
+    let seen = http.seen.lock().clone();
+    assert_eq!(seen[0].url, "https://openrouter.ai/api/v1/auth/key");
+    assert!(seen[0].headers.contains(&(
+        "Authorization".to_string(),
+        "Bearer sk-or-v1-abc".to_string()
+    )));
+    assert_eq!(raw_rows(&target)[0].1, "openrouter");
+
+    // zai-coding-plan stores under `zai` (TS `store-as "zai"`).
+    let (services, http) = self::services(|_| (200, "{}".into()));
+    let ui = ScriptedUi::with(&["sk-zai-1"]);
+    assert_eq!(
+        login(&target, "zai-coding-plan", ui, &services)
+            .await
+            .unwrap(),
+        Some(Identity::ApiKey)
+    );
+    let seen = http.seen.lock().clone();
+    assert_eq!(
+        seen[0].url,
+        "https://api.z.ai/api/coding/paas/v4/chat/completions"
+    );
+    let rows = raw_rows(&target);
+    assert!(rows.iter().any(|r| r.1 == "zai" && r.2 == "api_key"));
+}
+
+#[tokio::test]
+async fn rejected_probe_blocks_the_new_key_logins_too() {
+    let (_dir, target) = temp_target();
+    let (services, _) = services(|_| (401, "nope".into()));
+    let err = login(
+        &target,
+        "zai-coding-plan",
+        ScriptedUi::with(&["sk-zai-1"]),
+        &services,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err, r#"Z.AI API key validation failed (401): nope"#);
+    assert!(!target
+        .providers()
+        .await
+        .unwrap()
+        .contains(&"zai".to_string()));
 }

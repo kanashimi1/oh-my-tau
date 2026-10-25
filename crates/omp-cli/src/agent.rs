@@ -275,7 +275,9 @@ pub fn build_agent(
             ext_hooks.cloned(),
         )),
         transform_context,
-        before_tool_call: crate::tools::relevance::wrap_before(before_tool_call),
+        before_tool_call: Some(crate::features::plan::gate(
+            crate::tools::relevance::wrap_before(before_tool_call),
+        )),
         after_tool_call,
         ..AgentOptions::default()
     });

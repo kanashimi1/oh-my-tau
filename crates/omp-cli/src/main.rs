@@ -247,6 +247,15 @@ fn ensure_mimalloc_env() {
 
 #[allow(clippy::too_many_lines)] // sequential startup guard clauses; mirrors omp's main flow
 fn main() -> Result<()> {
+    // Sandbox self-relaunch: `omt` acts as its own confinement launcher
+    // (`omt __sandbox-exec ...`, features/sandbox.rs). This must run before
+    // any runtime/tokio/global setup — the process is exec-replaced into the
+    // confined tool command. Never triggers off Linux (sandbox unsupported).
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__sandbox-exec")) {
+        let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        omp_sandbox::exec_confined(&argv);
+    }
     // The rpc/print loop is strictly sequential; a multi-thread runtime costs
     // ~20-30 ms CPU/turn in scheduler overhead (measured, RPC12 team run).
     // Run those modes on a current-thread runtime; interactive TUI keeps the
@@ -377,6 +386,7 @@ async fn async_main() -> Result<()> {
         append_system_prompt: args.append_system_prompt.clone(),
         tools_csv,
         subagent: false,
+        compact_prompt: args.compact_prompt,
         model: args.model.clone().unwrap_or_default(),
         generated_append: Vec::new(),
     };
@@ -457,6 +467,13 @@ async fn async_main() -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     context::set_active(context_strategy);
+    // `/sandbox` (features/sandbox.rs): `--sandbox` or the `sandbox.enabled`
+    // setting turns on Landlock/seccomp confinement for tool subprocesses.
+    if args.sandbox
+        || omp_settings::Settings::load(&cwd).get_bool("sandbox.enabled") == Some(true)
+    {
+        crate::features::sandbox::set_enabled(true);
+    }
     approval::Gate::install(
         args.approval_mode.as_deref().and_then(approval::parse_mode),
         args.auto_approve,

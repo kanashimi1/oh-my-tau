@@ -947,6 +947,14 @@ impl Runtime {
 
     /// Terminal `agent_end`, or the retry saga when the run failed transiently.
     fn on_agent_end(self: &Arc<Self>, frame: Value, messages: &[AgentMessage]) {
+        // Budget gate: after each assistant turn, stop once the limit is spent.
+        // Spawned so the check runs after the agent's state lock is released.
+        if crate::features::budget::is_armed() {
+            let rt = self.clone();
+            tokio::spawn(async move {
+                crate::features::budget::check_after_turn(&rt).await;
+            });
+        }
         self.emit_queue_update();
         self.shadow_judge_turn(messages);
         let failed = last_assistant_msg(messages).and_then(FailedTurn::from_message);
@@ -1645,6 +1653,12 @@ impl Runtime {
         behavior: Option<&str>,
         images: Vec<pa_agent::types::ImageContent>,
     ) -> Result<(), CmdError> {
+        // Budget gate: once the session budget is exceeded, refuse to start a
+        // new turn (slash commands are dispatched earlier and still work).
+        if let Some(msg) = crate::features::budget::prompt_refusal() {
+            self.emit_notice("warning", &msg, Some("budget"));
+            return Err(CmdError::new(msg));
+        }
         // A prompt during in-flight compaction cancels it and waits for the
         // pass to settle first (TS prompt-side `abortCompaction` +
         // `waitForManualMaintenanceCleanup`): the turn must start on the
@@ -1928,6 +1942,12 @@ impl Runtime {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         target.map_or(Value::Null, |t| model_info(&t.model))
+    }
+
+    /// Shared provider-target slot (`set_model` swaps it): callers resolve the
+    /// live model/credentials per request (`LiveCompleter::from_target`).
+    pub(crate) fn provider_target(&self) -> crate::agent::Target {
+        self.target.clone()
     }
 
     pub async fn state(&self) -> Value {
@@ -5374,7 +5394,12 @@ mod ultra_tests {
         let mut h = harness(&[], "", None).await;
         drain(&mut h.rx);
         let outcome = crate::rpc::slash::try_dispatch(&h.rt, "/modelpreset").await;
-        assert!(matches!(outcome, crate::rpc::slash::Outcome::Handled { agent_invoked: false }));
+        assert!(matches!(
+            outcome,
+            crate::rpc::slash::Outcome::Handled {
+                agent_invoked: false
+            }
+        ));
         assert_eq!(of_type(&drain(&mut h.rx), "command_output").len(), 1);
     }
 
