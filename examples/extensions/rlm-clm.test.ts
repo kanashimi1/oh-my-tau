@@ -43,6 +43,11 @@ describe("offload (RLM leg)", () => {
     expect(offload(c, "bash", once.text + "x".repeat(7000))).toBeUndefined();
   });
 
+  test("text a sol-pi pack already archived is not offloaded twice", () => {
+    const packed = "[ObservationPack] tool=bash size=90000B (dedup: new) archived at /x.bin\n" + "line\n".repeat(2000);
+    expect(offload(cfg(), "bash", [{ type: "text", text: packed }])).toBeUndefined();
+  });
+
   test("digest is deterministic (same bytes on every request)", () => {
     expect(digest(cargoLog(300), "0123456789ab", "bash")).toBe(digest(cargoLog(300), "0123456789ab", "bash"));
   });

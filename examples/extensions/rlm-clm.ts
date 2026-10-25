@@ -57,6 +57,9 @@ const SIGNAL =
   /\b(error|errors|warning|panicked|panic|failed|failure|fatal|exception|traceback|assert\w*)\b|^error\[|^\s*-->\s|FAILED|\bE\d{4}\b/i;
 const REASONING: Record<string, true> = { thinking: true, redactedThinking: true, redacted_thinking: true, reasoning: true };
 const REF_RE = /^\[rlm ref=([0-9a-f]{12})\b/;
+/** Output another compressor already shrank and archived (sol-pi ObservationPack / EvidenceReducer /
+ *  DelegateReceipt): offloading it again would only stack a second digest on the first. */
+const PACKED_RE = /\[(ObservationPack|EvidenceReducer|DelegateReceipt)\]/;
 
 type Block = { type?: string; text?: string; id?: string; name?: string; arguments?: Record<string, unknown>; [k: string]: unknown };
 type Msg = { role?: string; content?: unknown; toolCallId?: string; toolName?: string; [k: string]: unknown };
@@ -116,7 +119,8 @@ export function digest(text: string, ref: string, tool: string): string {
 export function offload(cfg: Config, tool: string, content: unknown): { text: string; ref: string; chars: number } | undefined {
   if (KEEP_RAW[tool]) return undefined;
   const text = textOf(content);
-  if (text === undefined || text.length <= cfg.offloadChars || REF_RE.test(text)) return undefined;
+  if (text === undefined || text.length <= cfg.offloadChars || REF_RE.test(text) || PACKED_RE.test(text.slice(0, 400)))
+    return undefined;
   const ref = save(cfg.store, text);
   return { text: digest(text, ref, tool), ref, chars: text.length };
 }
