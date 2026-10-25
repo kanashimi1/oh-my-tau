@@ -291,7 +291,11 @@ impl RubricRecord {
             .append(true)
             .open(path)
         {
-            let _ = writeln!(f, "{}", json!(self));
+            // One write(2) per record: `writeln!` on an unbuffered File issues
+            // several writes, so concurrent appenders tore each other's lines.
+            let mut line = json!(self).to_string();
+            line.push('\n');
+            let _ = f.write_all(line.as_bytes());
         }
     }
 }
@@ -525,8 +529,11 @@ mod tests {
         let line = text
             .lines()
             .rev()
-            .find(|l| serde_json::from_str::<Value>(l).is_ok())
-            .expect("at least one complete JSONL record");
+            .find(|l| {
+                serde_json::from_str::<Value>(l)
+                    .is_ok_and(|v| v["run_id"] == rec.run_id && v["scored_ms"] == rec.scored_ms)
+            })
+            .expect("this test's JSONL record");
         let v: Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["rubric_id"], rec.rubric_id);
         assert_eq!(v["verified"], 1.0);
