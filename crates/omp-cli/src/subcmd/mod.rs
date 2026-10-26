@@ -8,6 +8,7 @@ pub mod collab;
 pub mod config;
 pub mod export;
 pub mod gc;
+pub mod hub;
 pub mod judge_sessions;
 pub mod login;
 pub mod models;
@@ -33,6 +34,7 @@ pub fn known(name: &str) -> bool {
             | "collab"
             | "serve-collab"
             | "web"
+            | "hub"
     )
 }
 
@@ -54,6 +56,7 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "collab" => collab::run(args),
         "serve-collab" => serve_collab::run(args),
         "web" => web::run(args),
+        "hub" => hub::run(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),
     }
 }
