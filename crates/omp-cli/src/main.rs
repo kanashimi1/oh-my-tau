@@ -282,7 +282,14 @@ fn main() -> Result<()> {
             .build()
     }
     .expect("tokio runtime");
-    rt.block_on(async_main())
+    let result = rt.block_on(async_main());
+    // Print/rpc runtimes are intentionally leaked (the process is about to
+    // exit; Runtime::drop never runs), so hub auto-claims are released here
+    // for every normal return — driven by a final block_on so the endpoint
+    // task makes progress even on the current-thread rpc/print runtime;
+    // exit() carries the sync hook for error paths.
+    let _ = rt.block_on(tools::a2a::shutdown_all_hub_endpoints_async());
+    result
 }
 
 async fn async_main() -> Result<()> {
@@ -735,6 +742,9 @@ fn exit(code: i32) -> ! {
     if let Some(h) = herdr::global() {
         h.release_blocking();
     }
+    // A2A hub: exit() also bypasses the per-runtime endpoint shutdown —
+    // release this process's auto-claims (bounded, no-op without endpoints).
+    tools::a2a::shutdown_all_hub_endpoints();
     shutdown_lsp();
     std::process::exit(code);
 }

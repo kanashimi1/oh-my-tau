@@ -285,11 +285,32 @@ pub(crate) fn take_deliveries() -> Vec<PendingDelivery> {
 }
 
 /// Drain the deliveries belonging to one session ([`Owner`]: `None` matches
-/// unowned deliveries).
+/// unowned deliveries). Hub deliveries drained here start their turn (or a
+/// `wait` result): ack `read` and advance the endpoint's last acked seq.
 pub(crate) fn take_deliveries_for(owner: &Owner) -> Vec<PendingDelivery> {
     let mut queue = DELIVERIES.lock().expect("a2a deliveries lock");
     let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|d| &d.owner == owner);
     *queue = rest.into();
+    drop(queue);
+    let read_acks: Vec<(String, u64)> = {
+        let mut inflight = HUB_INFLIGHT.lock().expect("hub inflight lock");
+        let (mine, rest): (Vec<_>, Vec<_>) = inflight.drain(..).partition(|(o, _, _)| o == owner);
+        *inflight = rest;
+        mine.into_iter()
+            .map(|(_, message_id, seq)| (message_id, seq))
+            .collect()
+    };
+    if !read_acks.is_empty() {
+        if let Some(ep) = hub_endpoint_for_owner(owner) {
+            for (message_id, seq) in read_acks {
+                let _ = ep.cmd_tx.send(HubCmd::Ack {
+                    message_id,
+                    seq,
+                    state: omp_hub::State::READ,
+                });
+            }
+        }
+    }
     mine
 }
 
@@ -605,20 +626,93 @@ async fn forward_up(envelope: &A2aEnvelope, body: &str) -> Option<Result<String,
     Some(up.forward(envelope, body).await)
 }
 
-/// Hub seam: recipients this tree cannot route (herdr pane ids like `w4:pXX`
-/// today, cross-tree addresses via the hub client later). Returns `None`
-/// while no hub client exists, so the caller keeps the current
-/// "not running" error; the eventual `crates/omp-hub` client plugs in here.
+/// Hub seam: recipients this tree cannot route (herdr pane ids like `w4:pXX`,
+/// ids unknown to every ancestor). They become SPEC envelopes through the
+/// session's live hub endpoint: a pending question from that sender is
+/// answered (`answer{}` closes the thread, validated against the original's
+/// `reply_schema`); anything else is a `send{}` whose receipt reports the hub
+/// state (`delivered`/`queued`) and the `message_id`. `None` while opted out
+/// (`OMP_HUB=0`) or when no endpoint is registered, so the caller keeps its
+/// local "not running" error; a registered endpoint whose hub is unreachable
+/// is a clear error, never silent loss.
 async fn try_route_external(
     envelope: &A2aEnvelope,
     body: &str,
 ) -> Option<Result<String, String>> {
-    // Every recipient reaching this point is external to this tree: either a
-    // pane address (`agent://w4:pXX`) or an id no ancestor registered. The hub
-    // client will deliver these; until it exists nothing routes them.
-    let _pane_address = looks_like_pane_id(&envelope.recipient);
-    let _ = body;
-    None
+    if hub_opted_out() {
+        return None;
+    }
+    let Some(ep) = hub_endpoint_for_owner(&current_owner()) else {
+        return None;
+    };
+    if !ep.connected.load(AtomicOrdering::SeqCst) {
+        return Some(Err(format!(
+            "hub unreachable for {}: endpoint {} is not connected (the hub link retries in the background; OMP_HUB=0 opts out)",
+            envelope.recipient,
+            ep.name
+        )));
+    }
+    // Reply to a pending hub question: `write agent://<sender>` after a
+    // reply-expected envelope landed here is an `answer{}` with
+    // `causation_id` = the original message, so the hub can close the
+    // thread / validate the reply schema.
+    let answer_payload = {
+        if let Some(q) = ep.question_from(&envelope.recipient) {
+            let from = ep.name.clone();
+            let (reply, rx) = oneshot::channel();
+            let _ = ep.cmd_tx.send(HubCmd::Answer {
+                causation_id: q.message_id.clone(),
+                sender: from,
+                payload: body.to_string(),
+                reply,
+            });
+            Some(rx.await)
+        } else {
+            None
+        }
+    };
+    if let Some(outcome) = answer_payload {
+        return Some(match outcome {
+            Ok(Ok(text)) => Ok(text),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("hub link closed before the answer was sent".to_string()),
+        });
+    }
+    // Fresh envelope: sender is this session's endpoint so replies resolve
+    // here; a child-originated write keeps its attribution in the body.
+    let sender = hub_sender_name(envelope);
+    let payload = if sender.1 {
+        format!("[from agent://{}]\n{body}", envelope.sender)
+    } else {
+        body.to_string()
+    };
+    let mut hub_env = omp_hub::Envelope {
+        message_id: envelope.message_id.clone(),
+        sender: sender.0,
+        recipient: envelope.recipient.clone(),
+        kind: if envelope.kind.is_empty() {
+            kind::MESSAGE.to_string()
+        } else {
+            envelope.kind.clone()
+        },
+        payload: None,
+        ..omp_hub::Envelope::default()
+    };
+    if payload.len() > PAYLOAD_INLINE_MAX {
+        match spill_payload(&hub_env.message_id, payload.as_bytes()) {
+            Ok(path) => {
+                hub_env.payload_ref = Some(omp_hub::PayloadRef {
+                    path: path.to_string_lossy().into_owned(),
+                    sha256: sha256_hex(payload.as_bytes()),
+                    bytes: payload.len() as u64,
+                });
+            }
+            Err(e) => return Some(Err(format!("cannot spill hub payload: {e}"))),
+        }
+    } else {
+        hub_env.payload = Some(payload);
+    }
+    Some(hub_send_envelope(&ep, hub_env).await)
 }
 
 /// Whether `recipient` is a herdr pane address (`w4:pXX`) — the class of
@@ -633,6 +727,903 @@ pub(crate) fn looks_like_pane_id(recipient: &str) -> bool {
         && rest.starts_with('p')
         && rest[1..].chars().all(|c| c.is_ascii_alphanumeric())
 }
+
+// ---------------------------------------------------------------------------
+// Hub link (SPEC batch 2): endpoint registration, external routing, claims
+// ---------------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use tokio::sync::{mpsc, oneshot};
+
+/// Env opt-outs / modes.
+const HUB_OPT_OUT_ENV: &str = "OMP_HUB";
+const CLAIMS_MODE_ENV: &str = "OMP_CLAIMS";
+/// Auto-claim ttl after an agent writes a repo file (SPEC: 15 min).
+const CLAIM_TTL_S: u64 = 15 * 60;
+/// Renew an existing auto-claim at most this often (writes are frequent).
+const CLAIM_RENEW_EVERY: Duration = Duration::from_secs(60);
+/// Negative claim checks are trusted this long (SPEC: cache briefly).
+const CLAIM_NEG_CACHE: Duration = Duration::from_secs(2);
+/// Bound for one hub RPC issued through the endpoint command channel.
+const HUB_CMD_TIMEOUT: Duration = Duration::from_secs(10);
+/// Reconnect cadence after the hub dropped or refused a connection.
+const HUB_RECONNECT_EVERY: Duration = Duration::from_secs(5);
+/// Recently-injected hub `message_id`s (at-least-once replay dedup).
+const HUB_SEEN_CAP: usize = 4096;
+
+fn hub_opted_out() -> bool {
+    std::env::var(HUB_OPT_OUT_ENV).ok().as_deref() == Some("0")
+}
+
+fn claims_block_mode() -> bool {
+    std::env::var(CLAIMS_MODE_ENV).ok().as_deref() == Some("block")
+}
+
+/// This process's hub address: `$HERDR_PANE_ID` when running on a herdr
+/// pane, else a per-process `session:<uuid>` (SPEC item 2).
+fn hub_process_name() -> String {
+    static NAME: LazyLock<String> = LazyLock::new(|| {
+        std::env::var("HERDR_PANE_ID")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| format!("session:{}", crate::persist::uuid_v7()))
+    });
+    NAME.clone()
+}
+
+/// Wire sender for externally routed envelopes: `(address, attributed)` —
+/// `attributed` when the original sender differed (a child id) and the body
+/// carries a `[from agent://…]` attribution line.
+fn hub_sender_name(envelope: &A2aEnvelope) -> (String, bool) {
+    let process = hub_process_name();
+    if envelope.sender.is_empty() || envelope.sender == process {
+        (process, false)
+    } else {
+        (process, true)
+    }
+}
+
+/// One command for the endpoint's hub task.
+enum HubCmd {
+    /// `delivered` on injection; `read` when the turn containing the message
+    /// starts (also advances the persisted `last_seq`).
+    Ack {
+        message_id: String,
+        seq: u64,
+        state: &'static str,
+    },
+    /// Route one envelope through `send{}`.
+    Send {
+        envelope: omp_hub::Envelope,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    /// Answer a pending question (`answer{}`, schema-validated).
+    Answer {
+        causation_id: String,
+        sender: String,
+        payload: String,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    /// Who holds a resource (claims guard).
+    Check {
+        resource: String,
+        reply: oneshot::Sender<Option<omp_hub::ClaimRow>>,
+    },
+    /// Auto-claim a resource after a successful write.
+    Claim {
+        resource: String,
+        reply: oneshot::Sender<bool>,
+    },
+    /// Session end: release every auto-claim, then signal completion.
+    ReleaseAll { done: ReleaseDone },
+}
+
+/// How the ReleaseAll handler signals completion back to the shutdown caller.
+enum ReleaseDone {
+    /// Sync path (`Runtime::drop` / `exit()`): a parking std thread.
+    Std(std::sync::mpsc::Sender<()>),
+    /// Async path (main's final `block_on`): a tokio oneshot, awaited inside
+    /// the runtime so a current-thread runtime keeps driving the endpoint.
+    Tokio(tokio::sync::oneshot::Sender<()>),
+}
+
+impl ReleaseDone {
+    fn fire(self) {
+        match self {
+            Self::Std(sender) => {
+                let _ = sender.send(());
+            }
+            Self::Tokio(sender) => {
+                let _ = sender.send(());
+            }
+        }
+    }
+}
+
+/// A reply-expected envelope this endpoint owes an answer to.
+#[derive(Debug, Clone)]
+struct PendingQuestion {
+    message_id: String,
+    sender: String,
+}
+
+/// One auto-claim held by this endpoint.
+#[derive(Debug, Clone)]
+struct HeldClaim {
+    fencing_token: u64,
+    acquired: std::time::Instant,
+}
+
+/// Live registrations keyed by the session owner they deliver into.
+static HUB_ENDPOINTS: LazyLock<Mutex<HashMap<String, Arc<HubEndpoint>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Hub deliveries waiting for the turn that contains them to start: the
+/// endpoint acks `read` (and advances `last_seq`) when
+/// [`take_deliveries_for`] drains them into a turn or a `wait` result.
+static HUB_INFLIGHT: LazyLock<Mutex<Vec<(Owner, String, u64)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+/// This session's hub endpoint (the latest registered wins, mirroring
+/// [`OWNER`]; production runs one runtime per process).
+fn hub_endpoint_for_owner(owner: &Owner) -> Option<Arc<HubEndpoint>> {
+    let endpoints = HUB_ENDPOINTS.lock().expect("hub endpoints lock");
+    if let Some(owner) = owner {
+        if let Some(ep) = endpoints.get(owner.as_ref()) {
+            return Some(ep.clone());
+        }
+    }
+    None
+}
+
+/// Endpoint metadata + command surface shared with the tools.
+pub(crate) struct HubEndpoint {
+    name: String,
+    owner: Owner,
+    hub: omp_hub::HubDir,
+    cmd_tx: mpsc::UnboundedSender<HubCmd>,
+    /// Whether the background task currently holds a hub connection.
+    connected: AtomicBool,
+    stop: AtomicBool,
+    /// Reply-expected envelopes awaiting an answer (any recipient we owe).
+    questions: Mutex<Vec<PendingQuestion>>,
+    /// Resource -> held claim (fencing token), for renewal and release.
+    held: Mutex<HashMap<String, HeldClaim>>,
+    /// Negative claim checks, trusted for [`CLAIM_NEG_CACHE`].
+    claim_neg: Mutex<HashMap<String, std::time::Instant>>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl HubEndpoint {
+    /// The oldest unanswered question owed to `sender`, if any.
+    fn question_from(&self, sender: &str) -> Option<PendingQuestion> {
+        self.questions
+            .lock()
+            .expect("hub questions lock")
+            .iter()
+            .find(|q| q.sender == sender)
+            .cloned()
+    }
+}
+
+/// Register this session with the hub as a live endpoint (`hello` with its
+/// last acked seq on a background task). `OMP_HUB=0` opts out; a hub that
+/// cannot start or be reached logs once and the session continues without
+/// it. Returns the endpoint (also stored for [`hub_endpoint_for_owner`]).
+pub(crate) fn start_hub_endpoint(owner: std::sync::Arc<str>) -> Option<Arc<HubEndpoint>> {
+    if hub_opted_out() {
+        return None;
+    }
+    Some(start_hub_endpoint_with(
+        owner,
+        hub_process_name(),
+        omp_hub::HubDir::resolve(),
+    ))
+}
+
+fn start_hub_endpoint_with(
+    owner: std::sync::Arc<str>,
+    name: String,
+    hub: omp_hub::HubDir,
+) -> Arc<HubEndpoint> {
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
+    let ep = Arc::new(HubEndpoint {
+        name: name.clone(),
+        owner: Some(owner.clone()),
+        hub: hub.clone(),
+        cmd_tx,
+        connected: AtomicBool::new(false),
+        stop: AtomicBool::new(false),
+        questions: Mutex::new(Vec::new()),
+        held: Mutex::new(HashMap::new()),
+        claim_neg: Mutex::new(HashMap::new()),
+        task: Mutex::new(None),
+    });
+    let task = tokio::spawn(hub_endpoint_task(ep.clone(), cmd_rx));
+    *ep.task.lock().expect("hub task lock") = Some(task);
+    HUB_ENDPOINTS
+        .lock()
+        .expect("hub endpoints lock")
+        .insert(owner.to_string(), ep.clone());
+    tracing::info!(endpoint = %name, dir = %hub.dir.display(), "hub endpoint registered");
+    ep
+}
+
+/// Session end for every live hub endpoint (process exit path: `omt`'s
+/// `exit()` bypasses `Runtime::drop`, so claims must be released here —
+/// same pattern as the herdr pane release). Best-effort and bounded.
+pub(crate) fn shutdown_all_hub_endpoints() {
+    let keys: Vec<String> = HUB_ENDPOINTS
+        .lock()
+        .expect("hub endpoints lock")
+        .keys()
+        .cloned()
+        .collect();
+    for key in keys {
+        shutdown_hub_endpoint_key(&key);
+    }
+}
+
+/// Async variant of [`shutdown_all_hub_endpoints`] for the process
+/// termination hook: awaited inside the runtime (a final `block_on`), so a
+/// current-thread runtime keeps driving the endpoint task and the release
+/// round-trip actually completes before the process exits.
+pub(crate) async fn shutdown_all_hub_endpoints_async() {
+    let keys: Vec<String> = HUB_ENDPOINTS
+        .lock()
+        .expect("hub endpoints lock")
+        .keys()
+        .cloned()
+        .collect();
+    for key in keys {
+        let Some(ep) = HUB_ENDPOINTS
+            .lock()
+            .expect("hub endpoints lock")
+            .remove(&key)
+        else {
+            continue;
+        };
+        ep.stop.store(true, AtomicOrdering::SeqCst);
+        let task = ep.task.lock().expect("hub task lock").take();
+        if task.is_some() && ep.connected.load(AtomicOrdering::SeqCst) {
+            let (done_tx, done_rx) = oneshot::channel::<()>();
+            if ep
+                .cmd_tx
+                .send(HubCmd::ReleaseAll {
+                    done: ReleaseDone::Tokio(done_tx),
+                })
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(Duration::from_secs(2), done_rx).await;
+            }
+        }
+        if let Some(task) = task {
+            task.abort();
+        }
+    }
+}
+
+/// Session end: stop the background task, releasing every auto-claim first.
+/// Best-effort: bounded so a dead hub never stalls teardown.
+pub(crate) fn shutdown_hub_endpoint(owner: &std::sync::Arc<str>) {
+    shutdown_hub_endpoint_key(owner.as_ref());
+}
+
+fn shutdown_hub_endpoint_key(owner_key: &str) {
+    let Some(ep) = HUB_ENDPOINTS
+        .lock()
+        .expect("hub endpoints lock")
+        .remove(owner_key)
+    else {
+        return;
+    };
+    ep.stop.store(true, AtomicOrdering::SeqCst);
+    let task = ep.task.lock().expect("hub task lock").take();
+    // Release whatever this endpoint holds: a claim granted microseconds
+    // before shutdown (the pre-check below raced the grant) must not leak —
+    // the command queue is FIFO, so ReleaseAll drains every Claim that
+    // preceded it. A connected endpoint always gets the command; the wait
+    // runs on a dedicated std thread because `Drop` may execute on a
+    // single-threaded runtime (parking the caller would starve the endpoint
+    // task). The dropping thread still parks briefly so a clean process exit
+    // gives the release a chance to land.
+    let has_task = task.is_some();
+    if has_task && ep.connected.load(AtomicOrdering::SeqCst) {
+        let cmd_tx = ep.cmd_tx.clone();
+        let released = Arc::new(AtomicBool::new(false));
+        let released_thread = released.clone();
+        std::thread::spawn(move || {
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            if cmd_tx
+                .send(HubCmd::ReleaseAll {
+                    done: ReleaseDone::Std(done_tx),
+                })
+                .is_ok()
+            {
+                let _ = done_rx.recv_timeout(Duration::from_secs(2));
+            }
+            released_thread.store(true, AtomicOrdering::SeqCst);
+            if let Some(task) = task {
+                task.abort();
+            }
+        });
+        for _ in 0..60 {
+            if released.load(AtomicOrdering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    } else if let Some(task) = task {
+        task.abort();
+    }
+}
+
+/// The background task: connect (auto-start), `hello` with the last acked
+/// seq, inject `deliver` pushes at the session's next turn boundary, ack
+/// `delivered` on injection / `read` on drain, answer and claim commands;
+/// reconnects from the last acked seq after a drop.
+async fn hub_endpoint_task(ep: Arc<HubEndpoint>, mut cmd_rx: mpsc::UnboundedReceiver<HubCmd>) {
+    let mut last_seq = read_last_seq(&ep.hub.dir, &ep.name);
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen_order: VecDeque<String> = VecDeque::new();
+    let mut logged_unreachable = false;
+    // The first read-ack persists immediately (no 1 s debounce on a fresh
+    // session: crash-recovery replay must start from it right away).
+    let mut inflight_persist = std::time::Instant::now()
+        .checked_sub(Duration::from_secs(2))
+        .unwrap_or_else(std::time::Instant::now);
+    while !ep.stop.load(AtomicOrdering::SeqCst) {
+        if hub_opted_out() {
+            return;
+        }
+        let mut client = match omp_hub::HubClient::connect_with(ep.hub.clone(), true).await {
+            Ok(client) => {
+                if !ep.connected.swap(true, AtomicOrdering::SeqCst) {
+                    tracing::info!(endpoint = %ep.name, "hub endpoint connected");
+                }
+                logged_unreachable = false;
+                client
+            }
+            Err(e) => {
+                ep.connected.store(false, AtomicOrdering::SeqCst);
+                if !logged_unreachable {
+                    // Once per outage, not per retry (SPEC: log once).
+                    tracing::warn!(
+                        endpoint = %ep.name,
+                        error = %format!("{e:#}"),
+                        "hub unreachable; continuing without it (OMP_HUB=0 opts out)"
+                    );
+                    logged_unreachable = true;
+                }
+                tokio::time::sleep(HUB_RECONNECT_EVERY).await;
+                continue;
+            }
+        };
+        let mut stream = client.take_deliver_stream();
+        let hello = client.hello(&ep.name, last_seq).await;
+        match hello {
+            Ok(h) => {
+                let replayed = h.get("replayed").and_then(Value::as_u64).unwrap_or(0);
+                tracing::info!(endpoint = %ep.name, replayed, "hub endpoint hello");
+            }
+            Err(e) => {
+                tracing::warn!(endpoint = %ep.name, error = %format!("{e:#}"), "hub hello failed");
+                ep.connected.store(false, AtomicOrdering::SeqCst);
+                tokio::time::sleep(HUB_RECONNECT_EVERY).await;
+                continue;
+            }
+        }
+        // Connection phase: inject pushes and serve commands until the
+        // connection drops (then reconnect from the last acked seq).
+        let connection_dead = loop {
+            if ep.stop.load(AtomicOrdering::SeqCst) {
+                return;
+            }
+            tokio::select! {
+                envelope = async {
+                    match stream.as_mut() {
+                        Some(s) => s.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let Some(envelope) = envelope else {
+                        break true;
+                    };
+                    inject_hub_envelope(&ep, &envelope, &mut seen, &mut seen_order);
+                    // Ack `delivered` on injection; `read` follows when the
+                    // turn that contains the message starts.
+                    if let Err(e) = client.ack(&envelope.message_id, omp_hub::State::DELIVERED).await {
+                        tracing::debug!(error = %format!("{e:#}"), "hub delivered-ack failed");
+                        break true;
+                    }
+                }
+                cmd = cmd_rx.recv() => {
+                    let Some(cmd) = cmd else { return; };
+                    match cmd {
+                        HubCmd::Ack { message_id, seq, state } => {
+                            match client.ack(&message_id, state).await {
+                                Ok(()) => {
+                                    if state == omp_hub::State::READ {
+                                        last_seq = last_seq.max(seq);
+                                        if inflight_persist.elapsed() > Duration::from_secs(1) {
+                                            write_last_seq(&ep.hub.dir, &ep.name, last_seq);
+                                            inflight_persist = std::time::Instant::now();
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::debug!(error = %format!("{e:#}"), "hub ack failed");
+                                    break true;
+                                }
+                            }
+                        }
+                        HubCmd::Send { envelope, reply } => {
+                            let out = client.send(envelope).await.map(receipt_text)
+                                .map_err(|e| format!("{e:#}"));
+                            let _ = reply.send(out);
+                        }
+                        HubCmd::Answer { causation_id, sender, payload, reply } => {
+                            let out = client.answer_text(&causation_id, &sender, &payload).await
+                                .map(|_| format!("Answered (question {causation_id} is now answered)."))
+                                .map_err(|e| format!("answer failed: {e:#}"));
+                            if out.is_ok() {
+                                ep.questions.lock().expect("hub questions lock")
+                                    .retain(|q| q.message_id != causation_id);
+                            }
+                            let _ = reply.send(out);
+                        }
+                        HubCmd::Check { resource, reply } => {
+                            let row = client.check_claim(&resource).await
+                                .unwrap_or(None)
+                                .filter(|row| row.expires_ms > omp_hub::now_ms());
+                            let _ = reply.send(row);
+                        }
+                        HubCmd::Claim { resource, reply } => {
+                            let granted = match client.claim(&resource, &ep.name, CLAIM_TTL_S, Some("editing")).await {
+                                Ok(outcome) if outcome.granted => {
+                                    ep.held.lock().expect("hub claims lock").insert(resource.clone(), HeldClaim {
+                                        fencing_token: outcome.fencing_token.unwrap_or(0),
+                                        acquired: std::time::Instant::now(),
+                                    });
+                                    true
+                                }
+                                Ok(_) => false,
+                                Err(e) => {
+                                    tracing::debug!(error = %format!("{e:#}"), "hub claim failed");
+                                    break true;
+                                }
+                            };
+                            let _ = reply.send(granted);
+                        }
+                        HubCmd::ReleaseAll { done } => {
+                            let claims: Vec<(String, u64)> = {
+                                let mut held = ep.held.lock().expect("hub claims lock");
+                                let drained: Vec<_> = held.drain().collect();
+                                drained.into_iter()
+                                    .map(|(r, c)| (r, c.fencing_token))
+                                    .collect()
+                            };
+                            for (resource, token) in claims {
+                                if let Err(e) = client.release(&resource, &ep.name, token).await {
+                                    tracing::debug!(resource = %resource, error = %format!("{e:#}"), "hub claim release failed");
+                                }
+                            }
+                            done.fire();
+                        }
+                    }
+                }
+            }
+        };
+        if connection_dead {
+            ep.connected.store(false, AtomicOrdering::SeqCst);
+            write_last_seq(&ep.hub.dir, &ep.name, last_seq);
+            tokio::time::sleep(HUB_RECONNECT_EVERY).await;
+        }
+    }
+    write_last_seq(&ep.hub.dir, &ep.name, last_seq);
+}
+
+/// Inject one hub `deliver` push into the session's next turn boundary
+/// through the same delivery mechanism task results use; a reply-expected
+/// envelope is registered as a pending question and its text tells the model
+/// to answer with `write agent://<sender>`.
+fn inject_hub_envelope(
+    ep: &Arc<HubEndpoint>,
+    envelope: &omp_hub::Envelope,
+    seen: &mut HashSet<String>,
+    seen_order: &mut VecDeque<String>,
+) {
+    // At-least-once: replayed pushes dedup on message_id.
+    if seen.contains(&envelope.message_id) {
+        return;
+    }
+    seen.insert(envelope.message_id.clone());
+    seen_order.push_back(envelope.message_id.clone());
+    while seen_order.len() > HUB_SEEN_CAP {
+        if let Some(oldest) = seen_order.pop_front() {
+            seen.remove(&oldest);
+        }
+    }
+    let body = match (&envelope.payload, &envelope.payload_ref) {
+        (Some(payload), _) => payload.clone(),
+        (None, Some(reference)) => read_payload_ref(&PayloadRef {
+            path: reference.path.clone(),
+            sha256: reference.sha256.clone(),
+            bytes: reference.bytes,
+        })
+        .unwrap_or_else(|e| format!("(unreadable payload_ref: {e})")),
+        (None, None) => String::new(),
+    };
+    let mut text = body;
+    let reply_expected = envelope.is_reply_expected();
+    if reply_expected {
+        ep.questions.lock().expect("hub questions lock").push(PendingQuestion {
+            message_id: envelope.message_id.clone(),
+            sender: envelope.sender.clone(),
+        });
+        let schema_hint = envelope
+            .reply_schema
+            .as_ref()
+            .map_or(String::new(), |s| format!("\nThe reply is validated against this JSON Schema — a violating reply comes back as the write error:\n{}", serde_json::to_string(s).unwrap_or_default()));
+        let expected_hint = envelope
+            .expected
+            .as_deref()
+            .filter(|e| !e.is_empty() && *e != "none")
+            .map_or(String::new(), |e| format!("\nExpected: {e}"));
+        text = format!(
+            "{text}\n\n---\nThis message expects a reply. Answer it in this turn with the `write` tool: write agent://{}{}{}",
+            envelope.sender, expected_hint, schema_hint
+        );
+    }
+    queue_delivery(PendingDelivery {
+        owner: ep.owner.clone(),
+        from: envelope.sender.clone(),
+        kind: if envelope.kind == "agent.question" {
+            kind::QUESTION.to_string()
+        } else {
+            kind::MESSAGE.to_string()
+        },
+        text,
+    });
+    HUB_INFLIGHT
+        .lock()
+        .expect("hub inflight lock")
+        .push((ep.owner.clone(), envelope.message_id.clone(), envelope.seq.unwrap_or(0)));
+}
+
+/// Render one `send{}` receipt for the model-facing write result: the hub
+/// state (`delivered`/`queued`/`failed`) and the `message_id`, so a queued
+/// envelope is never mistaken for a lost one.
+fn receipt_text(receipt: omp_hub::SendReceipt) -> String {
+    let state = match receipt.state.as_str() {
+        s if s == omp_hub::State::SENT => "queued",
+        s if s == omp_hub::State::DELIVERED => "delivered",
+        s if s == omp_hub::State::FAILED => "failed",
+        other => other,
+    };
+    let mut text = format!(
+        "Sent via hub: state={state} (message_id {}, seq {})",
+        receipt.message_id, receipt.seq
+    );
+    if let Some(error) = receipt.error {
+        text.push_str(&format!(" — {error}"));
+    }
+    if receipt.dedup {
+        text.push_str(" (dedup)");
+    }
+    text
+}
+
+/// Send one envelope through a live endpoint's hub client. The hub itself is
+/// auto-started (and reconnected) by the endpoint task, never here: a write
+/// must not block on a spawn.
+async fn hub_send_envelope(ep: &Arc<HubEndpoint>, envelope: omp_hub::Envelope) -> Result<String, String> {
+    let recipient = envelope.recipient.clone();
+    if !ep.connected.load(AtomicOrdering::SeqCst) {
+        return Err(format!(
+            "hub unreachable for {recipient}: endpoint {} is not connected (the hub link retries in the background; OMP_HUB=0 opts out)",
+            ep.name
+        ));
+    }
+    let (reply, rx) = oneshot::channel();
+    if ep.cmd_tx.send(HubCmd::Send { envelope, reply }).is_err() {
+        return Err(format!("hub link closed for {recipient}"));
+    }
+    match tokio::time::timeout(HUB_CMD_TIMEOUT, rx).await {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(_)) => Err(format!("hub link closed for {recipient}")),
+        Err(_) => Err(format!("hub send to {recipient} timed out")),
+    }
+}
+
+/// Route a model-issued `write agent://<to>` whose recipient this tree does
+/// not know: answers a pending hub question when one exists, otherwise sends
+/// a fresh envelope through the session's live hub endpoint. `None` while
+/// opted out (`OMP_HUB=0`) or when no endpoint is registered (the caller
+/// keeps its local "not running" error); a registered endpoint whose hub is
+/// unreachable yields a clear error, never silent loss.
+pub(crate) async fn route_external_message(
+    to: &str,
+    content: &str,
+) -> Option<Result<String, String>> {
+    if hub_opted_out() {
+        return None;
+    }
+    let ep = hub_endpoint_for_owner(&current_owner())?;
+    Some(route_external_message_via(&ep, to, content).await)
+}
+
+/// The endpoint-explicit core of [`route_external_message`]: resolves the
+/// pending-question answer or sends a fresh envelope through this endpoint.
+/// Tests call this directly so they do not depend on the process-global
+/// session owner (production resolves it once, one runtime per process).
+async fn route_external_message_via(
+    ep: &Arc<HubEndpoint>,
+    to: &str,
+    content: &str,
+) -> Result<String, String> {
+    if !ep.connected.load(AtomicOrdering::SeqCst) {
+        return Err(format!(
+            "hub unreachable for {to}: endpoint {} is not connected (the hub link retries in the background; OMP_HUB=0 opts out)",
+            ep.name
+        ));
+    }
+    // Reply to a pending hub question: `write agent://<sender>` after a
+    // reply-expected envelope landed here is an `answer{}` with
+    // `causation_id` = the original message, so the hub can close the
+    // thread / validate the reply schema.
+    if let Some(q) = ep.question_from(to) {
+        let (reply, rx) = oneshot::channel();
+        if ep
+            .cmd_tx
+            .send(HubCmd::Answer {
+                causation_id: q.message_id.clone(),
+                sender: ep.name.clone(),
+                payload: content.to_string(),
+                reply,
+            })
+            .is_err()
+        {
+            return Err(format!("hub link closed for {to}"));
+        }
+        return match tokio::time::timeout(HUB_CMD_TIMEOUT, rx).await {
+            Ok(Ok(Ok(text))) => Ok(text),
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(_)) => Err(format!("hub link closed for {to}")),
+            Err(_) => Err(format!("hub answer to {to} timed out")),
+        };
+    }
+    let mut hub_env = omp_hub::Envelope {
+        message_id: crate::persist::uuid_v7(),
+        sender: ep.name.clone(),
+        recipient: to.to_string(),
+        kind: kind::MESSAGE.to_string(),
+        ..omp_hub::Envelope::default()
+    };
+    if content.len() > PAYLOAD_INLINE_MAX {
+        match spill_payload(&hub_env.message_id, content.as_bytes()) {
+            Ok(path) => {
+                hub_env.payload_ref = Some(omp_hub::PayloadRef {
+                    path: path.to_string_lossy().into_owned(),
+                    sha256: sha256_hex(content.as_bytes()),
+                    bytes: content.len() as u64,
+                });
+            }
+            Err(e) => return Err(format!("cannot spill hub payload: {e}")),
+        }
+    } else {
+        hub_env.payload = Some(content.to_string());
+    }
+    hub_send_envelope(ep, hub_env).await
+}
+
+// --- last-acked-seq persistence (hello replays from it after a restart) ---
+
+fn last_seq_path(dir: &Path, name: &str) -> PathBuf {
+    dir.join("endpoints").join(format!("{name}.json"))
+}
+
+fn read_last_seq(dir: &Path, name: &str) -> u64 {
+    let path = last_seq_path(dir, name);
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|v| v.get("last_seq").and_then(Value::as_u64))
+        .unwrap_or(0)
+}
+
+fn write_last_seq(dir: &Path, name: &str, last_seq: u64) {
+    let path = last_seq_path(dir, name);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, json!({ "last_seq": last_seq }).to_string()).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+// --- claims guard (SPEC item 3) ---
+
+/// Repo-relative posix path when `path` lives inside a git work tree
+/// (`.git` dir or file at the anchor), else `None` — outside a repo the
+/// claims guard stays silent.
+fn git_repo_relative(path: &Path) -> Option<String> {
+    let mut anchor = path;
+    loop {
+        if anchor.join(".git").exists() {
+            let rel = path.strip_prefix(anchor).ok()?;
+            return Some(rel.to_string_lossy().replace('\\', "/"));
+        }
+        match anchor.parent() {
+            Some(parent) => anchor = parent,
+            None => return None,
+        }
+    }
+}
+
+/// Best-effort check of every path's repo-relative resource: warning lines
+/// naming the holder when a *different* live endpoint holds the claim. The
+/// apply itself proceeds — the warning rides the tool result; with
+/// `OMP_CLAIMS=block` the first conflict is an error instead. Hub down or
+/// opted out: no warnings, no errors, no added latency.
+pub(crate) async fn claims_check_files(paths: &[PathBuf]) -> Vec<String> {
+    let Some(ep) = hub_endpoint_for_owner(&current_owner()) else {
+        return Vec::new();
+    };
+    claims_check_files_via(&ep, paths).await
+}
+
+/// Endpoint-explicit core of [`claims_check_files`] (tests call this so they
+/// do not depend on the process-global session owner).
+async fn claims_check_files_via(ep: &Arc<HubEndpoint>, paths: &[PathBuf]) -> Vec<String> {
+    if !ep.connected.load(AtomicOrdering::SeqCst) || hub_opted_out() {
+        return Vec::new();
+    }
+    let mut warnings = Vec::new();
+    let mut checked: Vec<String> = Vec::new();
+    for path in paths {
+        let Some(resource) = git_repo_relative(path) else {
+            continue;
+        };
+        if checked.contains(&resource) {
+            continue;
+        }
+        checked.push(resource.clone());
+        let now = std::time::Instant::now();
+        {
+            let neg = ep.claim_neg.lock().expect("hub claim cache lock");
+            if neg
+                .get(&resource)
+                .is_some_and(|at| now.duration_since(*at) < CLAIM_NEG_CACHE)
+            {
+                continue;
+            }
+        }
+        let (reply, rx) = oneshot::channel();
+        let Ok(()) = ep.cmd_tx.send(HubCmd::Check {
+            resource: resource.clone(),
+            reply,
+        }) else {
+            return warnings;
+        };
+        let holder = match tokio::time::timeout(HUB_CMD_TIMEOUT, rx).await {
+            Ok(Ok(holder)) => holder,
+            _ => None,
+        };
+        match holder {
+            Some(row) if row.owner != ep.name => {
+                let intent = row.intent.as_deref().unwrap_or("no intent");
+                let left = row.expires_ms.saturating_sub(omp_hub::now_ms()) / 1000;
+                let line = format!(
+                    "[hub claim] {resource} is claimed by {} (intent: {intent}; expires in {left}s)"
+                , row.owner);
+                if claims_block_mode() {
+                    return vec![format!("{line} — blocked by OMP_CLAIMS=block")];
+                }
+                warnings.push(line);
+            }
+            _ => {
+                ep.claim_neg
+                    .lock()
+                    .expect("hub claim cache lock")
+                    .insert(resource, std::time::Instant::now());
+            }
+        }
+    }
+    warnings
+}
+
+/// `OMP_CLAIMS=block` is set (the tools gate their pre-apply checks on it).
+pub(crate) fn claims_block_mode_enabled() -> bool {
+    claims_block_mode()
+}
+
+/// `OMP_CLAIMS=block` pre-apply gate: `Some(reason)` when another endpoint
+/// holds a live claim on one of the paths. (The warning-mode check runs
+/// after the apply and therefore cannot block it.)
+pub(crate) async fn claims_block_reason(paths: &[PathBuf]) -> Option<String> {
+    if !claims_block_mode() {
+        return None;
+    }
+    claims_check_files(paths)
+        .await
+        .first()
+        .map(|line| line.trim_end_matches(" — blocked by OMP_CLAIMS=block").to_string())
+}
+
+/// Blocking variant of [`claims_block_reason`] for the synchronous `write`.
+pub(crate) fn claims_block_reason_blocking(paths: &[PathBuf]) -> Option<String> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(claims_block_reason(paths)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("claims block runtime")
+            .block_on(claims_block_reason(paths)),
+    }
+}
+
+/// After a successful write by an agent: auto-claim every repo-relative path
+/// for this endpoint (ttl [`CLAIM_TTL_S`], renewed on further writes at most
+/// every [`CLAIM_RENEW_EVERY`], released at session end). Fire-and-forget.
+pub(crate) fn claims_note_writes(paths: &[PathBuf]) {
+    let Some(ep) = hub_endpoint_for_owner(&current_owner()) else {
+        return;
+    };
+    claims_note_writes_via(&ep, paths);
+}
+
+/// Endpoint-explicit core of [`claims_note_writes`].
+fn claims_note_writes_via(ep: &Arc<HubEndpoint>, paths: &[PathBuf]) {
+    if !ep.connected.load(AtomicOrdering::SeqCst) || hub_opted_out() {
+        return;
+    }
+    for path in paths {
+        let Some(resource) = git_repo_relative(path) else {
+            continue;
+        };
+        let fresh = ep
+            .held
+            .lock()
+            .expect("hub claims lock")
+            .get(&resource)
+            .is_some_and(|c| c.acquired.elapsed() < CLAIM_RENEW_EVERY);
+        if fresh {
+            continue;
+        }
+        let (reply, rx) = oneshot::channel();
+        if ep
+            .cmd_tx
+            .send(HubCmd::Claim {
+                resource,
+                reply,
+            })
+            .is_ok()
+        {
+            // Fire-and-forget: a slow hub must never stall a write result.
+            tokio::spawn(async move {
+                let _ = rx.await;
+            });
+        }
+    }
+}
+
+/// Synchronous wrapper for the tools that run off the async runtime
+/// (`write` executes on a `spawn_blocking` thread).
+pub(crate) fn claims_check_files_blocking(paths: &[PathBuf]) -> Vec<String> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(claims_check_files(paths)),
+        Err(_) => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("claims check runtime")
+            .block_on(claims_check_files(paths)),
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Bus client (child side)
@@ -935,6 +1926,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn unknown_peer_self_and_pane_ids_are_refused() {
             let _serial = LOCK.lock().await;
+            // Bus-level refusal semantics: with the hub link opted out the
+            // local "not running" error stays the last word (hub routing of
+            // these ids has its own tests below).
+            let old_hub = std::env::var_os("OMP_HUB");
+            std::env::set_var("OMP_HUB", "0");
             without_parent_bus(async {
                 // A private owner: deliveries on this bus can never be consumed
                 // by a concurrent test runtime's park/wake legs.
@@ -956,6 +1952,10 @@ pub(crate) mod tests {
                 assert!(err.contains("w4:p2P"), "{err}");
             })
             .await;
+            match old_hub {
+                Some(v) => std::env::set_var("OMP_HUB", v),
+                None => std::env::remove_var("OMP_HUB"),
+            }
     }
 
     #[tokio::test]
@@ -1037,5 +2037,351 @@ pub(crate) mod tests {
         assert!(sock.exists(), "still leased");
         drop(second);
         assert!(!sock.exists());
+    }
+
+    // --- Hub link tests (SPEC batch 2): every test runs a real hub server
+    // on an explicit temp dir (no process-env mutation; tests in this file
+    // run concurrently with non-a2a tests) and drives the endpoint/command
+    // surface directly.
+
+    /// Serializes the hub tests with the bus tests (global owner/endpoint
+    /// registration) and pins `OMP_CLAIMS` to its default for the duration.
+    struct HubTestGuard {
+        _serial: tokio::sync::MutexGuard<'static, ()>,
+        claims: Option<std::ffi::OsString>,
+    }
+
+    impl HubTestGuard {
+        async fn new() -> Self {
+            let guard = Self {
+                _serial: LOCK.lock().await,
+                claims: std::env::var_os("OMP_CLAIMS"),
+            };
+            std::env::remove_var("OMP_CLAIMS");
+            guard
+        }
+    }
+
+    impl Drop for HubTestGuard {
+        fn drop(&mut self) {
+            match &self.claims {
+                Some(v) => std::env::set_var("OMP_CLAIMS", v),
+                None => std::env::remove_var("OMP_CLAIMS"),
+            }
+        }
+    }
+
+    /// Start a hub server on a fresh tempdir; wait until it answers.
+    async fn start_test_hub() -> (tempfile::TempDir, omp_hub::HubDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let hub = omp_hub::HubDir::explicit(dir.path().to_path_buf(), None);
+        let serve_hub = hub.clone();
+        tokio::spawn(async move {
+            let _ = omp_hub::serve(&serve_hub).await;
+        });
+        for _ in 0..100 {
+            if UnixStream::connect(&hub.sock).await.is_ok() {
+                return (dir, hub);
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("test hub did not come up");
+    }
+
+    async fn connect_test_hub(hub: &omp_hub::HubDir) -> omp_hub::HubClient {
+        for _ in 0..100 {
+            if let Ok(c) = omp_hub::HubClient::connect_with(hub.clone(), false).await {
+                return c;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("cannot connect to test hub");
+    }
+
+    async fn wait_for<F: Fn() -> bool>(what: &str, f: F) {
+        for _ in 0..200 {
+            if f() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// Poll a message's hub state until it reaches `state`.
+    async fn wait_for_state(client: &omp_hub::HubClient, message_id: &str, state: &str) {
+        for _ in 0..200 {
+            if let Ok(v) = client.status_message(message_id).await {
+                if v["state"] == Value::from(state) {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("timed out waiting for {state} on {message_id}");
+    }
+
+    /// Start an endpoint on an explicit hub and wait until its `hello`
+    /// registered it.
+    async fn start_test_endpoint(
+        owner: &Owner,
+        name: &str,
+        hub: &omp_hub::HubDir,
+    ) -> Arc<HubEndpoint> {
+        let ep = start_hub_endpoint_with(
+            owner.as_ref().expect("test owner").clone(),
+            name.to_string(),
+            hub.clone(),
+        );
+        wait_for("endpoint connected", || {
+            ep.connected.load(AtomicOrdering::SeqCst)
+        })
+        .await;
+        ep
+    }
+
+    #[tokio::test]
+    async fn external_pane_id_routes_through_hub_with_receipt() {
+        let (dir, hub) = start_test_hub().await;
+        let _guard = HubTestGuard::new().await;
+        let owner: std::sync::Arc<str> = "ext-pane-owner".into();
+        let ep = start_test_endpoint(&Some(owner.clone()), "session:test-external", &hub).await;
+        let text = route_external_message_via(&ep, "w4:pZZ", "pane mail")
+            .await
+            .expect("receipt");
+        // The pane is dead in test envs (no herdr): fail-fast state, clearly
+        // reported with the message id — never silent loss.
+        assert!(text.contains("state=failed"), "{text}");
+        assert!(text.contains("message_id"), "{text}");
+        assert!(text.contains("dead pane"), "{text}");
+        let client = connect_test_hub(&hub).await;
+        let inbox = client.inbox("w4:pZZ", None, None).await.unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].payload.as_deref(), Some("pane mail"));
+        shutdown_hub_endpoint(&owner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn external_unknown_id_routes_through_hub_queued() {
+        let (dir, hub) = start_test_hub().await;
+        let _guard = HubTestGuard::new().await;
+        let owner: std::sync::Arc<str> = "ext-unknown-owner".into();
+        let ep = start_test_endpoint(&Some(owner.clone()), "session:test-external", &hub).await;
+        let text = route_external_message_via(&ep, "ghost-agent", "anybody there?")
+            .await
+            .expect("receipt");
+        assert!(text.contains("state=queued"), "{text}");
+        assert!(text.contains("message_id"), "{text}");
+        let client = connect_test_hub(&hub).await;
+        let inbox = client.inbox("ghost-agent", None, None).await.unwrap();
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].payload.as_deref(), Some("anybody there?"));
+        shutdown_hub_endpoint(&owner);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn endpoint_delivery_injected_at_turn_boundary_and_acked() {
+        let (dir, hub) = start_test_hub().await;
+        let _guard = HubTestGuard::new().await;
+        let owner: std::sync::Arc<str> = "inject-owner".into();
+        let owner: Owner = Some(owner);
+        let _ep = start_test_endpoint(&owner, "session:test-inject", &hub).await;
+        without_parent_bus(async {
+            let sender = connect_test_hub(&hub).await;
+            let receipt = sender
+                .send_note("w4:p8T", "session:test-inject", kind::MESSAGE, "hello endpoint")
+                .await
+                .unwrap();
+            assert_eq!(receipt.state, omp_hub::State::DELIVERED, "{receipt:?}");
+            // The deliver push lands in the session's delivery queue and
+            // fires the same mechanism task results use.
+            wait_for("hub delivery", || has_pending_for(&owner)).await;
+            let drained = take_deliveries_for(&owner);
+            assert_eq!(drained.len(), 1, "{drained:?}");
+            assert_eq!(drained[0].from, "w4:p8T");
+            assert!(drained[0].text.contains("hello endpoint"), "{}", drained[0].text);
+            // The drain starts the turn: the endpoint acks `read` and the hub
+            // state follows (poll — the ack command is processed async).
+            wait_for("read ack", || {
+                !HUB_INFLIGHT
+                    .lock()
+                    .expect("hub inflight lock")
+                    .iter()
+                    .any(|(o, _, _)| o == &owner)
+            })
+            .await;
+            wait_for_state(&sender, &receipt.message_id, omp_hub::State::READ).await;
+            let status = sender.status_message(&receipt.message_id).await.unwrap();
+            assert_eq!(status["state"], Value::from(omp_hub::State::READ), "{status}");
+            // The read ack advanced the persisted last acked seq.
+            let persisted = read_last_seq(dir.path(), "session:test-inject");
+            assert!(persisted >= receipt.seq, "last_seq {persisted} >= {}", receipt.seq);
+        })
+        .await;
+        shutdown_hub_endpoint(owner.as_ref().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn reply_expected_question_answered_and_schema_violation_is_write_error() {
+        let (dir, hub) = start_test_hub().await;
+        let _guard = HubTestGuard::new().await;
+        let owner: std::sync::Arc<str> = "answer-owner".into();
+        let owner: Owner = Some(owner);
+        let ep = start_test_endpoint(&owner, "session:test-answer", &hub).await;
+        without_parent_bus(async {
+            let asker = connect_test_hub(&hub).await;
+            let schema = json!({
+                "type": "object",
+                "properties": {"answer": {"type": "integer"}},
+                "required": ["answer"],
+                "additionalProperties": false
+            });
+            let mut question = omp_hub::Envelope {
+                message_id: String::new(),
+                sender: "asker".to_string(),
+                recipient: "session:test-answer".to_string(),
+                kind: "agent.question".to_string(),
+                reply_schema: Some(schema.clone()),
+                expected: Some("ack".to_string()),
+                payload: Some("what is 6*7?".to_string()),
+                ..omp_hub::Envelope::default()
+            };
+            let receipt = asker.send(question.clone()).await.unwrap();
+            assert_eq!(receipt.state, omp_hub::State::DELIVERED);
+            wait_for("question injected", || has_pending_for(&owner)).await;
+            let drained = take_deliveries_for(&owner);
+            assert_eq!(drained.len(), 1);
+            // The injected text tells the model how to reply and carries the schema.
+            assert!(drained[0].text.contains("write agent://asker"), "{}", drained[0].text);
+            assert!(drained[0].text.contains("JSON Schema"), "{}", drained[0].text);
+            assert!(ep.question_from("asker").is_some());
+            // Valid reply: `write agent://asker` becomes an `answer{}` that
+            // closes the thread.
+            let answered = route_external_message_via(&ep, "asker", "{\"answer\":42}")
+                .await
+                .expect("valid answer");
+            assert!(answered.contains("answered"), "{answered}");
+            assert!(ep.question_from("asker").is_none(), "question consumed");
+            let status = asker.status_message(&receipt.message_id).await.unwrap();
+            assert_eq!(status["state"], Value::from(omp_hub::State::ANSWERED), "{status}");
+            // Second question, schema-violating reply: the write surfaces the
+            // hub's validation error.
+            question.message_id = String::new();
+            question.payload = Some("now?".to_string());
+            let receipt2 = asker.send(question).await.unwrap();
+            wait_for("second question injected", || {
+                has_pending_for(&owner)
+            })
+            .await;
+            let _ = take_deliveries_for(&owner);
+            let bad = route_external_message_via(&ep, "asker", "forty-two")
+                .await
+                .expect_err("schema violation must error");
+            assert!(bad.contains("reply_schema"), "{bad}");
+            let status2 = asker.status_message(&receipt2.message_id).await.unwrap();
+            assert_ne!(status2["state"], Value::from(omp_hub::State::ANSWERED), "{status2}");
+        })
+        .await;
+        shutdown_hub_endpoint(ep.owner.as_ref().unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn claims_warn_between_endpoints_auto_claim_released_at_end() {
+        let (dir, hub) = start_test_hub().await;
+        let _guard = HubTestGuard::new().await;
+        without_parent_bus(async {
+            // A git work tree on disk: both endpoints edit the same file.
+            let repo = tempfile::TempDir::new().unwrap();
+            std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+            let file = repo.path().join("src/lib.rs");
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "pub fn a() {}\n").unwrap();
+
+            let owner_a: std::sync::Arc<str> = "owner-a".into();
+            let owner_b: std::sync::Arc<str> = "owner-b".into();
+            let ep_a = start_test_endpoint(&Some(owner_a.clone()), "session:test-claims-a", &hub).await;
+            let ep_b = start_test_endpoint(&Some(owner_b.clone()), "session:test-claims-b", &hub).await;
+
+            // A writes: auto-claims the repo-relative path.
+            claims_note_writes_via(&ep_a, std::slice::from_ref(&file));
+            wait_for("auto-claim granted", || {
+                ep_a.held.lock().expect("hub claims lock").contains_key("src/lib.rs")
+            })
+            .await;
+            let client = connect_test_hub(&hub).await;
+            let check = client.check_claim("src/lib.rs").await.unwrap().expect("held");
+            assert_eq!(check.owner, "session:test-claims-a");
+
+            // A's own re-check is silent (negative-cacheable, no warning).
+            let own = claims_check_files_via(&ep_a, std::slice::from_ref(&file)).await;
+            assert!(own.is_empty(), "{own:?}");
+            // B (the other session) gets the warning line with holder+intent.
+            let warnings = claims_check_files_via(&ep_b, std::slice::from_ref(&file)).await;
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].contains("session:test-claims-a"), "{warnings:?}");
+            assert!(warnings[0].contains("src/lib.rs"), "{warnings:?}");
+            assert!(warnings[0].contains("intent"), "{warnings:?}");
+            // B still proceeds (warning, not block) and the check re-fires
+            // (positive results are not cached away).
+
+            // Session A ends: its claims are released (the release handshake
+            // completes on a dedicated thread right after shutdown returns).
+            shutdown_hub_endpoint(&owner_a);
+            for _ in 0..200 {
+                if client.check_claim("src/lib.rs").await.unwrap().is_none() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            let free = client.check_claim("src/lib.rs").await.unwrap();
+            assert!(free.is_none(), "{free:?}");
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn claims_silent_and_routes_clear_when_hub_down() {
+        let _guard = HubTestGuard::new().await;
+        without_parent_bus(async {
+            // No endpoint registered: the claims guard is silent.
+            let repo = tempfile::TempDir::new().unwrap();
+            std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+            let file = repo.path().join("lib.rs");
+            std::fs::write(&file, "x").unwrap();
+            assert!(claims_check_files(std::slice::from_ref(&file))
+                .await
+                .is_empty());
+            claims_note_writes(std::slice::from_ref(&file));
+        })
+        .await;
+        // A registered endpoint whose hub can never come up (the "dir" is a
+        // file): a write gets a clear hub-unreachable error, never silence.
+        let blocker = tempfile::NamedTempFile::new().unwrap();
+        let dead_hub = omp_hub::HubDir::explicit(blocker.path().to_path_buf(), None);
+        let owner: std::sync::Arc<str> = "down-owner".into();
+        let ep = start_hub_endpoint_with(
+            owner.clone(),
+            "session:test-down".to_string(),
+            dead_hub,
+        );
+        let err = route_external_message_via(&ep, "w4:pZZ", "nowhere")
+            .await
+            .expect_err("hub down");
+        assert!(err.contains("hub unreachable"), "{err}");
+        shutdown_hub_endpoint(&owner);
+    }
+
+    #[tokio::test]
+    async fn external_route_opted_out_returns_none() {
+        let _guard = HubTestGuard::new().await;
+        std::env::set_var("OMP_HUB", "0");
+        assert!(route_external_message("ghost", "hi").await.is_none());
+        assert!(start_hub_endpoint(crate::persist::uuid_v7().into()).is_none());
+        std::env::remove_var("OMP_HUB");
     }
 }

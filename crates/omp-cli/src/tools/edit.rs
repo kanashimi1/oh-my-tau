@@ -126,6 +126,16 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let mut session = Session::new(config, env.store.clone());
     session.set_args_json(&args.to_string());
     session.finish();
+    // Claims guard (OMP_CLAIMS=block): refuse before the first write when
+    // another live endpoint holds a claim on a target path. Warning mode
+    // checks after the apply instead (the engine knows the exact paths then)
+    // and never blocks.
+    if crate::tools::a2a::claims_block_mode_enabled() {
+        let targets = edit_target_paths(env, args, &mut session);
+        if let Some(reason) = crate::tools::a2a::claims_block_reason(&targets).await {
+            bail!("{reason}");
+        }
+    }
     let outcome = session
         .apply(ApplyRequest::default(), &FsWriter)
         .await
@@ -149,7 +159,53 @@ pub async fn edit(env: &Env, args: &Value) -> Result<AgentToolResult> {
         }
         result.details["diagnostics"] = Value::Array(gate.diagnostics);
     }
+    // Advisory post-write claims guard: a live claim held by another
+    // endpoint rides the result as a warning line (apply already proceeded);
+    // a successful write by this agent auto-claims the path (15 min lease).
+    if !changed.is_empty() {
+        for line in crate::tools::a2a::claims_check_files(&changed).await {
+            result
+                .content
+                .push(pa_agent::types::ToolResultContent::text(line));
+        }
+        crate::tools::a2a::claims_note_writes(&changed);
+    }
     Ok(result)
+}
+
+/// Best-effort target paths of an edit call, for the pre-apply claims block:
+/// the explicit `path` argument when the mode takes one, else the paths the
+/// payload names (patch markers), resolved against the cwd.
+fn edit_target_paths(env: &Env, args: &Value, session: &mut Session) -> Vec<PathBuf> {
+    if let Some(raw) = args.get("path").and_then(Value::as_str) {
+        return vec![resolve_to_cwd(raw, &env.cwd)];
+    }
+    let input = args
+        .get("input")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut out = Vec::new();
+    for line in input.lines() {
+        let path = line
+            .strip_prefix("*** Update File: ")
+            .or_else(|| line.strip_prefix("*** Add File: "))
+            .or_else(|| line.strip_prefix("*** Delete File: "))
+            .or_else(|| line.strip_prefix("*** Move to: "));
+        if let Some(path) = path {
+            out.push(resolve_to_cwd(path.trim(), &env.cwd));
+        }
+    }
+    if out.is_empty() {
+        // Last resort: ask the engine for the preview batch (reads inputs,
+        // no writes) so blocking never fails open on an unrecognized format.
+        for file in session.preview().files {
+            if file.error.is_none() {
+                out.push(resolve_to_cwd(&file.display, &env.cwd));
+            }
+        }
+    }
+    out
 }
 
 /// Run the async diagnostics gate from the synchronous `write` tool, which
@@ -249,6 +305,16 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         )));
     }
     let path = resolve_to_cwd(raw, &env.cwd);
+    // Claims guard (OMP_CLAIMS=block): refuse before the write when another
+    // live endpoint holds a claim on the path (the repo anchor is resolved
+    // by the guard itself; the file may not exist yet).
+    if super::a2a::claims_block_mode_enabled() {
+        if let Some(reason) =
+            super::a2a::claims_block_reason_blocking(std::slice::from_ref(&path))
+        {
+            bail!("{reason}");
+        }
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
@@ -271,6 +337,13 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         }
         result.details["diagnostics"] = Value::Array(gate.diagnostics);
     }
+    // Advisory post-write claims guard (warning line) + auto-claim.
+    for line in super::a2a::claims_check_files_blocking(std::slice::from_ref(&path)) {
+        result
+            .content
+            .push(pa_agent::types::ToolResultContent::text(line));
+    }
+    super::a2a::claims_note_writes(std::slice::from_ref(&path));
     Ok(result)
 }
 
