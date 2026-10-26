@@ -24,7 +24,7 @@ pub(crate) mod relevance;
 pub(crate) mod rlm;
 pub(crate) mod rlm_combinators;
 mod search;
-mod task;
+pub(crate) mod task;
 mod todo;
 #[cfg(test)]
 pub use todo::{Status, TodoItem};

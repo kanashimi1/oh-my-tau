@@ -524,7 +524,7 @@ async fn steer_handle(handle: Option<&Handle>, to: &str, content: &str) -> Resul
 
 /// Kill/steer surface of one launched subagent run ([`omp_task::RunControl`]
 /// in production, a mock in tests).
-trait RunCtl: Send + Sync {
+pub(crate) trait RunCtl: Send + Sync {
     /// Queue a steering message for the running child; the future is a
     /// delivery receipt (resolves once the drive loop wrote the frame, or
     /// fails explicitly when the run is finishing/already settled).
@@ -558,13 +558,24 @@ impl RunCtl for omp_task::RunControl {
 type RunFuture = Pin<Box<dyn Future<Output = omp_task::RunOutput> + Send>>;
 
 /// Starts subagent runs (the subprocess runner in production, a mock in tests).
-trait Launcher: Send + Sync {
+pub(crate) trait Launcher: Send + Sync {
     fn launch(&self, spec: omp_task::TaskSpec) -> (Arc<dyn RunCtl>, RunFuture);
 }
 
 /// `omp-rs --mode rpc` children under one shared concurrency ceiling.
-struct SubprocessLauncher {
+pub(crate) struct SubprocessLauncher {
     runner: omp_task::TaskRunner,
+}
+
+impl SubprocessLauncher {
+    /// Test hook: a launcher over an explicit fake binary, so integration
+    /// tests exercise the real subprocess env hand-off.
+    #[cfg(test)]
+    pub(crate) fn for_test(binary: &std::path::Path) -> Self {
+        Self {
+            runner: omp_task::TaskRunner::new(binary, 4),
+        }
+    }
 }
 
 impl Launcher for SubprocessLauncher {
@@ -675,7 +686,24 @@ fn cancel_handle(handle: &Handle) -> bool {
 // `__agent__` (TS `agent-bridge.ts` `runEvalAgent`)
 // ---------------------------------------------------------------------------
 
-async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, String> {
+async fn run_agent(env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, String> {
+    run_agent_with(
+        env,
+        args,
+        ctx,
+        &LAUNCHER,
+        &super::a2a::current_owner(),
+    )
+    .await
+}
+
+pub(crate) async fn run_agent_with(
+    _env: &Arc<Env>,
+    args: &Value,
+    ctx: &OpCtx,
+    launcher: &Arc<dyn Launcher>,
+    owner: &super::a2a::Owner,
+) -> Result<Value, String> {
     let prompt = args
         .get("prompt")
         .and_then(Value::as_str)
@@ -739,6 +767,18 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
     let mut spec = omp_task::runner::TaskSpec::from_item(&item, None, ctx.cwd.clone());
     apply_child_policy(&mut spec);
     super::task::apply_agent_model(&mut spec);
+    // One channel for every spawner: eval `agent()` children get the same a2a
+    // bus as `task` children, so inside the child `write agent://<sibling>` /
+    // `agent://parent` / `agent://all` work regardless of how it was spawned.
+    // The lease lives until the child settles.
+    let lease = super::a2a::BusLease::acquire_for(owner)
+        .map_err(|e| format!("agent() cannot start the agent message bus: {e}"))?;
+    spec.env.push((
+        super::a2a::SOCK_ENV.to_string(),
+        lease.sock().to_string_lossy().into_owned(),
+    ));
+    spec.env
+        .push((super::a2a::SELF_ENV.to_string(), id.clone()));
 
     let handle = Handle::new("agent", id.clone());
     AGENT_HANDLES
@@ -746,9 +786,10 @@ async fn run_agent(_env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, 
         .expect("eval handles lock")
         .insert(id.clone(), handle.clone());
 
-    let run = launch_agent(&handle, spec, &**LAUNCHER);
+    let run = launch_agent(&handle, spec, &**launcher);
     tokio::spawn(async move {
         let output = run.await;
+        drop(lease);
         settle_agent(&handle, &output, schema_mode, schema_wanted);
         handle.mark_run_finished();
     });
@@ -2348,6 +2389,17 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
         };
         apply_child_policy(&mut spec);
         super::task::apply_agent_model(&mut spec);
+        // Same channel as `task` children: a workpool worker can
+        // `write agent://<sibling>` / `agent://parent` / `agent://all`.
+        let lease = super::a2a::BusLease::acquire().ok();
+        if let Some(lease) = &lease {
+            spec.env.push((
+                super::a2a::SOCK_ENV.to_string(),
+                lease.sock().to_string_lossy().into_owned(),
+            ));
+            spec.env
+                .push((super::a2a::SELF_ENV.to_string(), start.worker_id.clone()));
+        }
         let handle = Handle::new("agent", start.worker_id.clone());
         // Reserve the worker id atomically: a concurrent registration of the
         // same id (another pool, an agent() call) must not have its handle
@@ -2384,6 +2436,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
         let batch = start.batch;
         tokio::spawn(async move {
             let output = run.await;
+            drop(lease);
             settle_agent(&handle, &output, omp_task::SchemaMode::Permissive, false);
             handle.mark_run_finished();
             let (status, text) = turn_outcome(&handle);
@@ -2933,6 +2986,14 @@ mod tests {
 
     #[tokio::test]
     async fn messages_steer_running_agents_only() {
+        // No parent bus: the unknown-id leg must stay local.
+        super::super::a2a::tests::without_parent_bus(async {
+            inner_messages_steer_running_agents_only().await;
+        })
+        .await;
+    }
+
+    async fn inner_messages_steer_running_agents_only() {
         let launcher = MockLauncher::default();
         let (handle, run) = mock_agent(&launcher, "test-msg-1");
         assert_eq!(
@@ -3381,6 +3442,14 @@ mod tests {
     /// the parent as inbox entries; settled/unknown/self targets fail.
     #[tokio::test]
     async fn bus_routes_child_messages_to_siblings_and_parent() {
+        // No inherited parent bus: the unknown-id leg must stay local.
+        super::super::a2a::tests::without_parent_bus(async {
+            inner_bus_routes_child_messages_to_siblings_and_parent().await;
+        })
+        .await;
+    }
+
+    async fn inner_bus_routes_child_messages_to_siblings_and_parent() {
         let _serial = super::super::a2a::tests::LOCK.lock().await;
         let (run_a, run_b) = (mock_run("bus-a"), mock_run("bus-b"));
         let (slot_a, slot_b) = (
@@ -3389,7 +3458,10 @@ mod tests {
         );
         slot_a.attach_ctl(run_a.clone());
         slot_b.attach_ctl(run_b.clone());
-        let lease = super::super::a2a::BusLease::acquire().unwrap();
+        // A private owner: this bus's deliveries cannot be consumed by a
+        // concurrent test runtime's park/wake legs.
+        let owner: super::super::a2a::Owner = Some(crate::persist::uuid_v7().into());
+        let lease = super::super::a2a::BusLease::acquire_for(&owner).unwrap();
         let from_a = super::super::a2a::Client::for_test(lease.sock(), "bus-a");
 
         let receipt = from_a.send("bus-b", "need the schema").await.unwrap();
@@ -3401,12 +3473,12 @@ mod tests {
         assert!(run_a.steered.lock().unwrap().is_empty(), "sender not steered");
 
         from_a.send("parent", "blocked on bus-b").await.unwrap();
-        let inbox: Vec<_> = super::super::a2a::take_parent_messages()
+        let inbox: Vec<_> = super::super::a2a::take_deliveries()
             .into_iter()
             .filter(|m| m.from == "bus-a")
             .collect();
         assert_eq!(inbox.len(), 1);
-        assert_eq!(inbox[0].message, "blocked on bus-b");
+        assert_eq!(inbox[0].text, "blocked on bus-b");
 
         assert!(from_a.send("bus-a", "me").await.unwrap_err().contains("itself"));
         assert!(

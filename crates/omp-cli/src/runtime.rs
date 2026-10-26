@@ -150,6 +150,10 @@ pub struct Runtime {
     switch_generation: Arc<std::sync::atomic::AtomicU64>,
     /// Injected summarizer (default: the live model).
     summarizer: Mutex<Option<crate::compact::SummarizeFn>>,
+    /// This session's owner token on the a2a delivery bus: children spawned
+    /// while this runtime is the registered owner belong to it, and only its
+    /// park/wake/wait legs consume their deliveries.
+    a2a_owner: Arc<str>,
     /// Set by `abort()` (TS `#advisors.autoResumeSuppressed`): a follow-up-only
     /// queued-message drain stays suppressed until the next explicit user prompt.
     user_interrupt: std::sync::atomic::AtomicBool,
@@ -415,6 +419,11 @@ impl Runtime {
         resolver: Resolver,
         recovery_cfg: Option<RecoveryConfig>,
     ) -> Arc<Self> {
+        // Tests: registering the a2a delivery owner is a process-global side
+        // effect; serialize with the bus tests so their owner stays stable
+        // for the whole test body (production runs one runtime per process).
+        #[cfg(test)]
+        let _a2a_serial = crate::tools::a2a::tests::LOCK.lock().await;
         let live = agent.model().await;
         let edit_mode = edit_mode_for(&live.id);
         let recovery_cfg = match recovery_cfg {
@@ -500,9 +509,22 @@ impl Runtime {
             compaction_done: tokio::sync::Notify::new(),
             switch_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             summarizer: Mutex::new(None),
+            a2a_owner: crate::persist::uuid_v7().into(),
         });
         rt.publish_session_file();
         rt.record_model_state().await;
+        // A2A: a child message/result arriving while the session is idle starts
+        // a delivery turn (best effort; weak ref so the bus never pins a
+        // finished Runtime). This runtime is the delivery owner: spawns stamp its
+        // token, and only its park/wake/wait legs consume the queue.
+        crate::tools::a2a::set_owner(rt.a2a_owner.clone());
+        {
+            let weak = std::sync::Arc::downgrade(&rt);
+            crate::tools::a2a::set_delivery_wake(std::sync::Arc::new(move || {
+                let Some(rt) = weak.upgrade() else { return };
+                tokio::spawn(async move { rt.on_delivery_wake().await; });
+            }));
+        }
         let listener = rt.clone();
         let sub = rt
             .agent
@@ -979,10 +1001,19 @@ impl Runtime {
             // Like `recover`: the listener runs under the agent's state lock.
             let handle = tokio::spawn(async move {
                 if rt.auto_compaction_due().await {
-                    rt.emit_event(frame);
+                    // With async `task` children the terminal frame waits for
+                    // the delivery park (awaitingAsyncWork), like
+                    // `settle_terminal`.
+                    let park =
+                        crate::tools::task::async_children_active_for(&Some(rt.a2a_owner.clone()));
+                    if !park {
+                        rt.emit_event(frame.clone());
+                    }
                     rt.run_auto_compaction().await;
-                    rt.report_prompts(&run_outcome(&messages));
-                    rt.drain_stranded_queue();
+                    if !rt.maybe_deliver_task_results(frame.clone(), &messages) {
+                        rt.report_prompts(&run_outcome(&messages));
+                        rt.drain_stranded_queue();
+                    }
                 } else {
                     rt.settle_terminal(frame, &messages, None);
                 }
@@ -1056,10 +1087,106 @@ impl Runtime {
         {
             return;
         }
+        // A2A: with `task` children running (or their results still queued),
+        // the session must not settle yet — park, then start a turn with the
+        // next settled batch (print/rpc sessions stay alive until every
+        // child settled). Never auto-resumes over a user interrupt; the next
+        // explicit prompt picks the queue up.
+        if !interrupted && self.maybe_deliver_task_results(frame.clone(), &messages) {
+            return;
+        }
         let outcome = run_outcome(&messages);
         self.emit_event(frame);
         self.report_prompts(&outcome);
         self.drain_stranded_queue();
+    }
+
+    /// A2A settle leg (async `task`): when `task` children are still running
+    /// or their results are waiting for a turn boundary, take over the settle
+    /// like the todo reminder does — the `agent_end` goes out non-terminal
+    /// with `awaitingAsyncWork` (the session parks instead of settling), and
+    /// the next settled batch starts a fresh turn carrying the delivery.
+    /// Returns `true` when the park took over the settle.
+    fn maybe_deliver_task_results(
+        self: &Arc<Self>,
+        mut frame: Value,
+        messages: &[AgentMessage],
+    ) -> bool {
+        let owner = Some(self.a2a_owner.clone());
+        if !crate::tools::task::async_children_active_for(&owner) {
+            return false;
+        }
+        let terminal_frame = frame.clone();
+        frame["isTerminal"] = json!(false);
+        frame["yielded"] = json!(false);
+        frame["awaitingAsyncWork"] = json!(true);
+        self.emit_event(frame);
+        let rt = self.clone();
+        let messages = messages.to_vec();
+        tokio::spawn(async move {
+            if !rt.start_delivery_turn().await {
+                // Race: the batch was consumed elsewhere and no child is
+                // left — close the settle out normally.
+                rt.settle_terminal(terminal_frame, &messages, None);
+            }
+        });
+        true
+    }
+
+    /// Append the current delivery batch as a hidden message and continue the
+    /// run (TS `scheduleAgentContinue`). Returns `false` only when the race
+    /// "queue drained elsewhere and no child is left" wins.
+    async fn start_delivery_turn(self: &Arc<Self>) -> bool {
+        let batch = crate::tools::task::next_delivery_batch(&Some(self.a2a_owner.clone())).await;
+        if batch.is_empty() {
+            return false;
+        }
+        let text = crate::tools::task::render_delivery_batch(&batch);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
+        let message = AgentMessage::Custom(pa_agent::types::CustomAgentMessage {
+            role: "developer".to_string(),
+            payload: json!({
+                "customType": "task-delivery",
+                "content": [{"type": "text", "text": text}],
+                "display": false,
+                "attribution": "agent",
+                "timestamp": timestamp,
+            }),
+        });
+        self.agent.append_messages(vec![message.clone()]).await;
+        // `json_round_trip` to pa_types returns None for custom roles like
+        // "developer"; `seed_resumed_message` persists the verbatim shape.
+        seed_resumed_message(&self.persist, &message, None);
+        let rt = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = rt.continue_after_retry().await {
+                eprintln!("omt: task-delivery continuation failed: {e:#}");
+            }
+        });
+        true
+    }
+
+    /// A2A idle wake (registered on the bus in `Runtime::start`): a child
+    /// message or result arrived after the session settled. With the session
+    /// idle — no streaming run, no user interrupt — start a turn with the
+    /// delivery; while a turn runs, its settle delivers; after an interrupt
+    /// the next explicit prompt picks the queue up.
+    async fn on_delivery_wake(self: Arc<Self>) {
+        if self
+            .user_interrupt
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        if self.agent.is_streaming().await {
+            return;
+        }
+        if !crate::tools::task::async_children_active_for(&Some(self.a2a_owner.clone())) {
+            return;
+        }
+        let _ = self.start_delivery_turn().await;
     }
 
     /// TS `TodoTracker.checkCompletion`: a successful terminal turn that stops
@@ -1840,6 +1967,9 @@ impl Runtime {
     pub async fn abort(&self) {
         self.user_interrupt
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // A2A: cancelling the parent kills its running `task` children
+        // (their runner drive loop SIGKILLs the child process groups).
+        crate::tools::task::kill_async_children_for(&Some(self.a2a_owner.clone()));
         self.abort_retry();
         self.abort_compaction();
         self.agent.abort();
@@ -5017,6 +5147,11 @@ mod resume_seed_tests {
 /// `HERDR_ENV=1`.
 impl Drop for Runtime {
     fn drop(&mut self) {
+        // A2A: session end kills this session's running `task` children (the
+        // runner's drop guard SIGKILLs the process groups even while the
+        // runtime unwinds) and releases the delivery owner token.
+        crate::tools::task::kill_async_children_for(&Some(self.a2a_owner.clone()));
+        crate::tools::a2a::clear_owner(&self.a2a_owner);
         if let Some(h) = &self.herdr {
             h.release_blocking();
         }
