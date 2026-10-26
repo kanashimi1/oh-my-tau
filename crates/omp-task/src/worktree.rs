@@ -383,17 +383,19 @@ fn merge_branch(
 
 /// Collect `Agent:`/`Envelope:`/`Verified-by:` trailers across the branch's
 /// commits (merge-base..branch), unique, order-preserving; keyed lowercase.
+///
+/// The scan reads full commit bodies (`%B`), not `%(trailers:only)`: git's
+/// trailer parser only recognizes the LAST contiguous trailer block, so a
+/// commit that separates trailers with blank lines (e.g. several `git commit
+/// -m` flags) would silently drop all but the final paragraph. Model-written
+/// commits routinely do that; the three known keys are unambiguous.
 fn branch_trailers(repo: &Path, branch: &str) -> Vec<(String, Vec<String>)> {
     let Ok(base) = git(repo, &["merge-base", "HEAD", branch]) else {
         return Vec::new();
     };
     let Ok(log) = git(
         repo,
-        &[
-            "log",
-            "--format=%(trailers:only,unfold)",
-            &format!("{}..{branch}", base.trim()),
-        ],
+        &["log", "--format=%B%x00", &format!("{}..{branch}", base.trim())],
     ) else {
         return Vec::new();
     };
