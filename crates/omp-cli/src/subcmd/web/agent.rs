@@ -82,6 +82,8 @@ pub struct Spawn {
     pub resume: Option<String>,
     /// `provider/id[:thinking]`.
     pub model: Option<String>,
+    /// `always-ask` | `write` | `yolo`, forwarded as `--approval-mode`.
+    pub approval_mode: Option<String>,
 }
 
 pub struct Agent {
@@ -95,6 +97,8 @@ pub struct Agent {
     pub pgid: u32,
     /// Rebuilt from the registry after a hub restart (not spawned by us).
     pub adopted: bool,
+    /// `--approval-mode` the child runs with (kept from spawn/adoption for `info_json`).
+    approval_mode: Option<String>,
     /// Client connection to the child's control socket (replaces the stdin pipe).
     control: tokio::sync::Mutex<Option<UnixStream>>,
     /// `Some` only for children we spawned ourselves; adopted children have no
@@ -139,6 +143,9 @@ impl Agent {
         if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
             cmd.arg("--model").arg(model);
         }
+        if let Some(mode) = spec.approval_mode.as_deref().filter(|m| !m.is_empty()) {
+            cmd.arg("--approval-mode").arg(mode);
+        }
         #[cfg(unix)]
         {
             // The child leads its own process group, so it survives hub restarts
@@ -173,6 +180,7 @@ impl Agent {
             pid,
             pgid,
             adopted: false,
+            approval_mode: spec.approval_mode.clone(),
             control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(Some(child)),
             tx,
@@ -216,6 +224,7 @@ impl Agent {
             pid: entry.pid,
             pgid: entry.pgid,
             adopted: true,
+            approval_mode: entry.approval_mode.clone(),
             control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(None),
             tx: broadcast::channel(8192).0,
@@ -388,6 +397,7 @@ impl Agent {
             "startedMs": self.started_ms,
             "adopted": self.adopted,
             "alive": self.is_alive(),
+            "approvalMode": self.approval_mode,
             "sessionFile": s.session_file,
             "sessionId": s.session_id,
             "sessionName": s.session_name,

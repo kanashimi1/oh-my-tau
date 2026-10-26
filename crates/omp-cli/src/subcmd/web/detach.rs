@@ -34,6 +34,10 @@ pub struct Entry {
     /// is re-probed after adoption).
     #[serde(default)]
     pub session: Option<String>,
+    /// `--approval-mode` the child was started with, so an adopted agent keeps
+    /// reporting it after a hub restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_mode: Option<String>,
     pub socket: PathBuf,
     pub started_ms: i64,
     /// Hub that currently owns this child (`None` once released on shutdown).
@@ -236,5 +240,31 @@ mod tests {
         assert!(!kill_group(0, 0));
         assert!(!kill_group(1, 1));
         assert!(!kill_group(12345, 1));
+    }
+
+    /// Registry records written before `approvalMode` existed must still load,
+    /// and the field must round-trip (as `approvalMode`) once set.
+    #[test]
+    fn entry_round_trips_with_and_without_approval_mode() {
+        let old: Entry = serde_json::from_str(
+            r#"{"id":"a","pid":1,"pgid":1,"socket":"/tmp/a.sock","startedMs":0}"#,
+        )
+        .expect("pre-approvalMode record loads");
+        assert_eq!(old.approval_mode, None);
+
+        let entry = Entry {
+            id: "b".into(),
+            pid: 2,
+            pgid: 2,
+            session: None,
+            approval_mode: Some("always-ask".into()),
+            socket: PathBuf::from("/tmp/b.sock"),
+            started_ms: 1,
+            hub_pid: None,
+        };
+        let text = serde_json::to_string(&entry).expect("serialize");
+        assert!(text.contains(r#""approvalMode":"always-ask""#));
+        let back: Entry = serde_json::from_str(&text).expect("round-trip");
+        assert_eq!(back.approval_mode.as_deref(), Some("always-ask"));
     }
 }

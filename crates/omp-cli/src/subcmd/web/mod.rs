@@ -150,6 +150,7 @@ impl Hub {
             pid: agent.pid,
             pgid: agent.pgid,
             session: spec.resume.clone(),
+            approval_mode: spec.approval_mode.clone(),
             socket: detach::socket_path(&id),
             started_ms: agent.started_ms,
             hub_pid: Some(std::process::id()),
@@ -507,7 +508,19 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
             return error(StatusCode::BAD_REQUEST, "not a session file");
         }
     }
-    let spec = Spawn { cwd, resume, model: text("model") };
+    let approval_mode = match text("approvalMode") {
+        Some(m) => match crate::approval::parse_mode(&m) {
+            Some(_) => Some(m),
+            None => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    &format!("invalid approvalMode {m:?}: expected always-ask, write or yolo"),
+                )
+            }
+        },
+        None => None,
+    };
+    let spec = Spawn { cwd, resume, model: text("model"), approval_mode };
     match hub.spawn(spec).await {
         Ok(agent) => json_response(StatusCode::OK, &agent.info_json()),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
