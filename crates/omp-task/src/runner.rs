@@ -111,6 +111,12 @@ pub struct TaskSpec {
     /// Extra environment variables set on the child process (e.g. the
     /// parent's a2a bus socket and the child's own agent id).
     pub env: Vec<(String, String)>,
+    /// `worktree: true` (resolved by the caller: item > agent definition >
+    /// batch): the child runs in a fresh `git worktree` on branch
+    /// `agent/<id>` (created by the caller's spawner, which remaps
+    /// [`TaskSpec::cwd`] and appends the commit/trailer footer to the
+    /// prompt). See [`crate::worktree`].
+    pub worktree: bool,
 }
 
 impl TaskSpec {
@@ -146,6 +152,7 @@ impl TaskSpec {
             depth: current_task_depth() + 1,
             extra_args: Vec::new(),
             env: Vec::new(),
+            worktree: item.worktree.unwrap_or(false),
         }
     }
 }
@@ -522,6 +529,7 @@ mod tests {
             depth: 0,
             extra_args: Vec::new(),
             env: Vec::new(),
+            worktree: false,
         }
     }
 

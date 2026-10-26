@@ -241,6 +241,7 @@ stdin.readline()
                     depth: 1,
                     extra_args: Vec::new(),
                     env: Vec::new(),
+                    worktree: false,
                 }],
                 vec![None],
                 vec!["go".to_string()],

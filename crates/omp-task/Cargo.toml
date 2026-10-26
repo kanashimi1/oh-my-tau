@@ -1,6 +1,12 @@
 [package]
 name = "omp-task"
-version.workspace = true
+# `+a2agitflow` build metadata: with three batch-2 workers sharing
+# CARGO_TARGET_DIR across worktrees, identical package ids produce identical
+# artifact filenames and clobber each other's fingerprints (a foreign build
+# of this crate leaves dep-info pointing at the foreign tree, so local edits
+# never invalidate the shared rlib). The unique version keeps this tree's
+# artifacts in their own fingerprint slot. Drop the suffix at merge.
+version = "0.10.0+a2agitflow"
 edition.workspace = true
 license.workspace = true
 description = "Subagent task tool for omp-rs: agent-definition discovery and task spawning"

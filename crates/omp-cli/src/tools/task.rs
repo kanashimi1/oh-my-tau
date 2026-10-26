@@ -77,7 +77,13 @@ Inside a child: `write agent://<sibling-name>` messages a sibling (delivered at 
 
 # Format
 `context`: shared (`# Goal`, `# Contract` interfaces); NEVER repeat per task.
-`task`: self-contained (`# Target` files/non-goals, `# Change` steps/APIs, `# Acceptance` observable result).";
+`task`: self-contained (`# Target` files/non-goals, `# Change` steps/APIs, `# Acceptance` observable result).
+
+# Git worktrees
+`worktree: true` on an item (batch-wide, or `worktree: true` in the agent definition's frontmatter — item wins over agent wins over batch) runs the child in a fresh `git worktree add` on branch `agent/<id>` from your HEAD. The checkout lives at `<repo>/../<repo-name>-wt/<id>` (override the parent dir with `OMP_TASK_WORKTREE_DIR`) and the child's cwd maps into it. Your cwd must be inside a git repo — otherwise the call fails with a clear error before anything spawns.
+The child's prompt carries a footer: commit its work on this branch; every commit ends with trailers `Agent: <id>`, `Envelope: agent://<id>`, `Verified-by: <test command or evidence path>`.
+When the child settles, its result shows the branch, its commits (sha + subject), the base..tip diffstat and whether the tree was clean; uncommitted leftovers are auto-committed as `wip(<id>)` so nothing is lost.
+Merge a finished branch yourself with `omt agent-merge <id>` (or `--all`; `--squash`, `--discard`, `--require-review`): a merge commit aggregates the branch's trailers, conflicts abort cleanly (files listed, nothing half-merged), and a successful merge removes the worktree + branch. Review verdicts are git notes: `omt review note <commit> --verdict pass|fail|needs-work --by <agent> [--evidence <path>] [--summary <text>]`, read them with `omt review show <commit|range>`. Worktrees are removed only by the merge or by `--discard` — never while the child runs.";
 
 /// Wire schema, byte-matching the TS `getTaskSchema` render under protocol
 /// defaults (batch enabled, isolation/effort/eval-tools off paths excluded):
@@ -218,6 +224,9 @@ fn push_agent_list(out: &mut String, agents: &[omp_task::agent::AgentDefinition]
         if agent.fields.blocking == Some(true) {
             out.push_str(" (blocking)");
         }
+        if agent.fields.worktree == Some(true) {
+            out.push_str(" (worktree)");
+        }
         out.push_str(": ");
         out.push_str(&agent_summary(&agent.fields.description));
         out.push('\n');
@@ -263,6 +272,16 @@ fn effective_model(item_model: Option<&str>, agent_model: Option<&str>) -> Optio
         .map(str::to_owned)
 }
 
+/// Effective `worktree` for one spawn: the item's explicit setting first
+/// (`Some(false)` disables even an agent-level `worktree: true`), then the
+/// agent definition's `worktree` frontmatter, then the batch default.
+fn effective_worktree(item: Option<bool>, agent: Option<bool>, batch: Option<bool>) -> bool {
+    match item {
+        Some(value) => value,
+        None => agent.or(batch).unwrap_or(false),
+    }
+}
+
 /// Stamp one spawn with its agent definition's model chain. [`TaskSpec`]
 /// carries only the caller's selector, so without this every child ran on the
 /// config default regardless of its agent's `model` frontmatter.
@@ -273,6 +292,23 @@ pub(crate) fn apply_agent_model(spec: &mut TaskSpec) {
         .and_then(|home| find_agent(&spec.cwd, home, &spec.agent))
         .and_then(|agent| agent_model_chain(&agent));
     spec.model = effective_model(spec.model.as_deref(), agent_model.as_deref());
+}
+
+/// Stamp one spawn with its effective `worktree` flag: item explicit >
+/// agent definition frontmatter > batch default ([`effective_worktree`]).
+/// `item` is the wire item's own `worktree` (`spec.worktree` already carries
+/// it via [`TaskSpec::from_item`], so `Some(false)` must win over the agent).
+pub(crate) fn apply_agent_worktree(spec: &mut TaskSpec, item: Option<bool>, batch: Option<bool>) {
+    if item.is_none() {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let agent_wt = home
+            .as_deref()
+            .and_then(|home| find_agent(&spec.cwd, home, &spec.agent))
+            .and_then(|agent| agent.fields.worktree);
+        spec.worktree = effective_worktree(None, agent_wt, batch);
+    } else {
+        spec.worktree = effective_worktree(item, None, batch);
+    }
 }
 
 /// One `tasks[]` item as the wire delivers it (`solutionSpace` required by
@@ -301,6 +337,11 @@ struct WireTaskItem {
     /// SERA rubric `[{criterion, weight}]`, frozen before the child spawns (opt-in).
     #[serde(default)]
     rubric: Option<Value>,
+    /// `worktree: true` (item wins over the agent definition's `worktree`
+    /// frontmatter, which wins over the batch default): the child runs in a
+    /// fresh `git worktree` on branch `agent/<id>` (see [`omp_task::worktree`]).
+    #[serde(default)]
+    worktree: Option<bool>,
 }
 
 fn default_agent() -> String {
@@ -340,6 +381,7 @@ impl WireTaskItem {
             output_schema: self.output_schema.clone(),
             schema_mode: self.schema_mode,
             tools: self.tools.clone(),
+            worktree: self.worktree,
         };
         item.validate().map_err(|e| anyhow::anyhow!(e))?;
         Ok(item)
@@ -405,6 +447,10 @@ struct WireParams {
     /// Flat-shape SERA rubric (see [`WireTaskItem::rubric`]).
     #[serde(default)]
     rubric: Option<Value>,
+    /// Batch-wide (or flat-shape) `worktree` default; an item's explicit
+    /// `worktree` and the agent definition's `worktree` frontmatter win.
+    #[serde(default)]
+    worktree: Option<bool>,
 }
 
 /// Execute a `task` call: validate, spawn every item, render envelopes.
@@ -414,6 +460,9 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
 
     let mut specs = Vec::new();
     let mut rubrics: Vec<Option<omp_task::rubric::FrozenRubric>> = Vec::new();
+    // Per-item `worktree` flags (item > agent frontmatter > batch default);
+    // aligned with `specs`. The flat shape has no per-item flag.
+    let mut item_worktrees: Vec<Option<bool>> = Vec::new();
     if params.tasks.is_empty() {
         let Some(task_text) = params
             .task
@@ -438,6 +487,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
             output_schema: None,
             schema_mode: SchemaMode::Permissive,
             tools: None,
+            worktree: params.worktree,
         };
         item.validate().map_err(|e| anyhow::anyhow!(e))?;
         specs.push(TaskSpec::from_item(
@@ -445,6 +495,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
             params.context.as_deref(),
             env.cwd.clone(),
         ));
+        item_worktrees.push(params.worktree);
         rubrics.push(
             super::rlm_combinators::freeze_wire(params.rubric.as_ref())
                 .map_err(|e| anyhow::anyhow!("task: rubric: {e}"))?,
@@ -461,6 +512,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
                 params.context.as_deref(),
                 env.cwd.clone(),
             ));
+            item_worktrees.push(item.worktree);
             rubrics.push(
                 super::rlm_combinators::freeze_wire(item.rubric.as_ref())
                     .map_err(|e| anyhow::anyhow!("task: rubric: {e}"))?,
@@ -474,13 +526,15 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
     if let Err(error) = omp_task::recursion_gate() {
         bail!("{error}");
     }
-    for spec in &mut specs {
+    for (spec, item_worktree) in specs.iter_mut().zip(&item_worktrees) {
         // Children inherit the parent's extension/no-extensions flags and
         // tool restriction (EVAL-CHILD-POLICY-NOT-PROPAGATED).
         super::eval_agents::apply_child_policy(spec);
         // The agent definition's `model` chain applies when the item gave no
         // selector (TS `resolveEffectiveAgentModelSelection`).
         apply_agent_model(spec);
+        // `worktree`: item > agent `worktree` frontmatter > batch default.
+        apply_agent_worktree(spec, *item_worktree, params.worktree);
     }
 
     let binary = crate::respawn_exe();
@@ -633,9 +687,15 @@ pub(crate) fn render_delivery_batch(deliveries: &[super::a2a::PendingDelivery]) 
 /// return immediately. Each live child is registered under its id in the
 /// shared agent registry (`write agent://<id>` steers it; unregistered once
 /// it settles) and gets the parent's a2a bus, so it can message siblings and
-/// `agent://parent`. When a child settles its result is scored against its
-/// frozen rubric (SERA) and auto-delivered to the parent at the next turn
-/// boundary. Cancelling the session kills the children ([`kill_async_children`]).
+/// `agent://parent`. A spec with `worktree: true` first gets a fresh
+/// `git worktree` on branch `agent/<id>` from the parent's HEAD: the child's
+/// cwd is remapped into the checkout and its prompt carries the commit/
+/// trailer footer; when the child settles its result includes the worktree
+/// summary (branch, commits, diffstat, clean/dirty, auto-committed
+/// `wip(<id>)` leftovers). When a child settles its result is scored against
+/// its frozen rubric (SERA) and auto-delivered to the parent at the next
+/// turn boundary. Cancelling the session kills the children
+/// ([`kill_async_children`]).
 pub(crate) async fn spawn_children(
     runner: &TaskRunner,
     mut specs: Vec<TaskSpec>,
@@ -663,6 +723,26 @@ pub(crate) async fn spawn_children(
         };
         slots.push(slot);
     }
+    // Worktree-per-writing-agent: create every branch + checkout BEFORE any
+    // spawn, so a failure (not a repo, branch taken) fails the whole call
+    // without half-spawned batches. The worktree (and branch) live until the
+    // parent's `omt agent-merge <id>` (or `--discard`) removes them.
+    let mut worktrees: Vec<Option<omp_task::worktree::Worktree>> = Vec::with_capacity(specs.len());
+    for spec in &mut specs {
+        if !spec.worktree {
+            worktrees.push(None);
+            continue;
+        }
+        let id = spec.id.clone().unwrap_or_default();
+        let parent_cwd = spec.cwd.clone();
+        let repo_root = omp_task::worktree::repo_root(&parent_cwd)
+            .map_err(|e| anyhow::anyhow!("task child `{id}`: {e}"))?;
+        let wt = omp_task::worktree::Worktree::create(&repo_root, &id)
+            .map_err(|e| anyhow::anyhow!("task child `{id}`: {e}"))?;
+        spec.prompt = format!("{}{}", spec.prompt, wt.prompt_footer());
+        spec.cwd = wt.map_cwd(&parent_cwd);
+        worktrees.push(Some(wt));
+    }
     // Children and their deliveries belong to the session that spawned them
     // (the registered runtime, when there is one).
     // The bus lease is shared by every concurrent call of the session and
@@ -680,11 +760,12 @@ pub(crate) async fn spawn_children(
         }
     };
     let mut spawned = Vec::with_capacity(specs.len());
-    for (((mut spec, slot), rubric), prompt) in specs
+    for ((((mut spec, slot), rubric), prompt), worktree) in specs
         .into_iter()
         .zip(slots)
         .zip(rubrics)
         .zip(prompts)
+        .zip(worktrees)
     {
         let id = spec.id.clone().unwrap_or_default();
         spec.env.push((
@@ -722,11 +803,24 @@ pub(crate) async fn spawn_children(
                 }
                 None => None,
             };
+            // Worktree child: summarize branch/commits/diffstat and
+            // auto-commit leftovers (git calls block; run off the executor).
+            let worktree_summary = match worktree {
+                Some(wt) => tokio::task::spawn_blocking(move || wt.settle_summary())
+                    .await
+                    .ok(),
+                None => None,
+            };
+            let mut text = result_delivery_text(&output, record.as_ref());
+            if let Some(summary) = worktree_summary {
+                use std::fmt::Write as _;
+                let _ = writeln!(text, "{}", worktree_delivery_line(&summary));
+            }
             super::a2a::queue_delivery(super::a2a::PendingDelivery {
                 owner: task_owner.clone(),
                 from: id,
                 kind: super::a2a::KIND_TASK_RESULT.to_string(),
-                text: result_delivery_text(&output, record.as_ref()),
+                text,
             });
             // Last settle of this session tears its bus down.
             let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
@@ -737,6 +831,26 @@ pub(crate) async fn spawn_children(
         });
     }
     Ok(spawned)
+}
+
+/// One `worktree` line for the settle delivery: compact JSON carrying the
+/// branch, base, commits (sha + subject), the base..tip diffstat, and
+/// whether the tree was clean when the child settled.
+#[must_use]
+pub(crate) fn worktree_delivery_line(summary: &omp_task::worktree::WorktreeSummary) -> String {
+    let line = serde_json::json!({
+        "branch": summary.branch,
+        "base": summary.base,
+        "path": summary.path,
+        "clean": summary.clean,
+        "leftovers_auto_committed": summary.leftovers_auto_committed,
+        "commits": summary.commits,
+        "diffstat": summary.diffstat,
+    });
+    match serde_json::to_string(&line) {
+        Ok(json) => format!("worktree {json}"),
+        Err(e) => format!("worktree {{\"error\":\"render failed: {e}\"}}"),
+    }
 }
 
 /// Render one settled child's `<task-results>` payload: the result envelope
@@ -1152,6 +1266,7 @@ stdin.readline()
                 depth: 1,
                 extra_args: Vec::new(),
                 env: vec![("FAKE_STEERS".to_string(), "1".to_string())],
+                worktree: false,
             };
             let _ = super::super::a2a::take_deliveries();
 
@@ -1214,16 +1329,16 @@ stdin.readline()
                 depth: 1,
                 extra_args: Vec::new(),
                 env: Vec::new(),
+                worktree: false,
             };
-            let dup =
-                spawn_children(
-                    &runner,
-                    vec![dup_spec(), dup_spec()],
-                    vec![None, None],
-                    vec!["go".to_string(), "go".to_string()],
-                    &None,
-                )
-                .await;
+            let dup = spawn_children(
+                &runner,
+                vec![dup_spec(), dup_spec()],
+                vec![None, None],
+                vec!["go".to_string(), "go".to_string()],
+                &None,
+            )
+            .await;
             assert!(dup.unwrap_err().to_string().contains("already in use"));
             assert_eq!(live_children(), 0, "failed claim spawns nothing");
         })
@@ -1233,14 +1348,14 @@ stdin.readline()
     #[tokio::test]
     async fn spawn_children_child_to_parent_message_auto_delivers() {
         let _serial = super::super::a2a::tests::LOCK.lock().await;
-            super::super::a2a::tests::without_parent_bus(async {
-                use std::os::unix::fs::PermissionsExt;
-                let dir = tempfile::tempdir().unwrap();
-                let bin = dir.path().join("fake-a2a-child");
-                std::fs::write(&bin, FAKE_A2A_CHILD).unwrap();
-                std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-                let runner = TaskRunner::new(&bin, 4);
-                let _ = super::super::a2a::take_deliveries();
+        super::super::a2a::tests::without_parent_bus(async {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("fake-a2a-child");
+            std::fs::write(&bin, FAKE_A2A_CHILD).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let runner = TaskRunner::new(&bin, 4);
+            let _ = super::super::a2a::take_deliveries();
             let spawned = spawn_children(
                 &runner,
                 vec![TaskSpec {
@@ -1255,6 +1370,7 @@ stdin.readline()
                     depth: 1,
                     extra_args: Vec::new(),
                     env: Vec::new(),
+                    worktree: false,
                 }],
                 vec![None],
                 vec!["go".to_string()],
@@ -1307,112 +1423,323 @@ stdin.readline()
             );
             assert!(combined.contains("<task-results>"), "{combined}");
             assert_eq!(live_children(), 0);
-                })
-                .await;
-}
+        })
+        .await;
+    }
 
     /// One channel for every spawner: an eval `agent()` child spawned through
     /// the real subprocess runner messages its `task` sibling and the parent
     /// over the same bus.
     #[tokio::test]
     async fn agent_child_talks_to_task_sibling_over_the_same_bus() {
-            let _serial = super::super::a2a::tests::LOCK.lock().await;
-            super::super::a2a::tests::without_parent_bus(async {
-                use std::os::unix::fs::PermissionsExt;
-                use std::sync::LazyLock;
-                let dir = tempfile::tempdir().unwrap();
-                let bin = dir.path().join("fake-a2a-child");
-                std::fs::write(&bin, FAKE_A2A_CHILD).unwrap();
-                std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-                let launcher: std::sync::Arc<dyn super::super::eval_agents::Launcher> =
-                    std::sync::Arc::new(
-                        super::super::eval_agents::SubprocessLauncher::for_test(&bin),
-                    );
-                let _ = super::super::a2a::take_deliveries();
+        let _serial = super::super::a2a::tests::LOCK.lock().await;
+        super::super::a2a::tests::without_parent_bus(async {
+            use std::os::unix::fs::PermissionsExt;
+            use std::sync::LazyLock;
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("fake-a2a-child");
+            std::fs::write(&bin, FAKE_A2A_CHILD).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let launcher: std::sync::Arc<dyn super::super::eval_agents::Launcher> =
+                std::sync::Arc::new(super::super::eval_agents::SubprocessLauncher::for_test(
+                    &bin,
+                ));
+            let _ = super::super::a2a::take_deliveries();
 
-                // The `task` sibling waits for exactly one steer (from the agent child).
-                let spawned = spawn_children(
-                    &TaskRunner::new(&bin, 4),
-                    vec![TaskSpec {
-                        id: Some("e2e-b".to_string()),
-                        agent: "task".into(),
-                        prompt: "go".into(),
-                        cwd: dir.path().to_path_buf(),
-                        output_schema: None,
-                        schema_mode: SchemaMode::Permissive,
-                        model: None,
-                        tools: None,
-                        depth: 1,
-                        extra_args: Vec::new(),
-                        env: vec![("FAKE_STEERS".to_string(), "1".to_string())],
-                    }],
-                    vec![None],
-                    vec!["go".to_string()],
-                    &None,
-                )
-                .await
-                .unwrap();
-                assert_eq!(spawned[0].id, "e2e-b");
-
-                // The eval `agent()` child (fake binary, real env hand-off).
-                let ctx = super::super::eval_bridge::OpCtx {
+            // The `task` sibling waits for exactly one steer (from the agent child).
+            let spawned = spawn_children(
+                &TaskRunner::new(&bin, 4),
+                vec![TaskSpec {
+                    id: Some("e2e-b".to_string()),
+                    agent: "task".into(),
+                    prompt: "go".into(),
                     cwd: dir.path().to_path_buf(),
-                    signal: pa_agent::abort::AbortSignal::never(),
-                    on_update: None,
-                    tool_call_id: "test-agent-child".to_string(),
-                };
-                static ENV: LazyLock<std::sync::Arc<Env>> = LazyLock::new(|| {
-                    std::sync::Arc::new(Env::new(std::path::Path::new("."), false))
-                });
-                let handle = super::super::eval_agents::run_agent_with(
-                    &ENV,
-                    &json!({"prompt": "ping the task sibling", "agent": "task"}),
-                    &ctx,
-                    &launcher,
-                    &None,
-                )
-                .await
-                .unwrap();
-                let agt_id = handle["id"].as_str().unwrap().to_string();
-                assert!(agt_id.starts_with("agt-"), "{handle}");
+                    output_schema: None,
+                    schema_mode: SchemaMode::Permissive,
+                    model: None,
+                    tools: None,
+                    depth: 1,
+                    extra_args: Vec::new(),
+                    env: vec![("FAKE_STEERS".to_string(), "1".to_string())],
+                    worktree: false,
+                }],
+                vec![None],
+                vec!["go".to_string()],
+                &None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(spawned[0].id, "e2e-b");
 
-                // Collect the deliveries until both children settled. The eval
-                // agent() child's *result* is a handle read (wait()/status()),
-                // not a bus delivery; what must deliver over the shared bus is
-                // its `agent://parent` message, and the task sibling's result
-                // must show the steer it received from the agent() child.
-                let mut saw_sibling_result = false;
-                let mut saw_parent_message = false;
-                for _ in 0..40 {
-                    for delivery in super::super::a2a::take_deliveries() {
-                        if delivery.kind == super::super::a2a::KIND_TASK_RESULT
-                            && delivery.from == "e2e-b"
-                        {
-                            assert!(
-                                delivery.text.contains("hello-from-"),
-                                "sibling got the agent child's message: {}",
-                                delivery.text
-                            );
-                            saw_sibling_result = true;
-                        }
-                        if delivery.kind == super::super::a2a::kind::MESSAGE
-                            && delivery.from == agt_id
-                            && delivery.text.contains("report-from-")
-                        {
-                            saw_parent_message = true;
-                        }
+            // The eval `agent()` child (fake binary, real env hand-off).
+            let ctx = super::super::eval_bridge::OpCtx {
+                cwd: dir.path().to_path_buf(),
+                signal: pa_agent::abort::AbortSignal::never(),
+                on_update: None,
+                tool_call_id: "test-agent-child".to_string(),
+            };
+            static ENV: LazyLock<std::sync::Arc<Env>> =
+                LazyLock::new(|| std::sync::Arc::new(Env::new(std::path::Path::new("."), false)));
+            let handle = super::super::eval_agents::run_agent_with(
+                &ENV,
+                &json!({"prompt": "ping the task sibling", "agent": "task"}),
+                &ctx,
+                &launcher,
+                &None,
+            )
+            .await
+            .unwrap();
+            let agt_id = handle["id"].as_str().unwrap().to_string();
+            assert!(agt_id.starts_with("agt-"), "{handle}");
+
+            // Collect the deliveries until both children settled. The eval
+            // agent() child's *result* is a handle read (wait()/status()),
+            // not a bus delivery; what must deliver over the shared bus is
+            // its `agent://parent` message, and the task sibling's result
+            // must show the steer it received from the agent() child.
+            let mut saw_sibling_result = false;
+            let mut saw_parent_message = false;
+            for _ in 0..40 {
+                for delivery in super::super::a2a::take_deliveries() {
+                    if delivery.kind == super::super::a2a::KIND_TASK_RESULT
+                        && delivery.from == "e2e-b"
+                    {
+                        assert!(
+                            delivery.text.contains("hello-from-"),
+                            "sibling got the agent child's message: {}",
+                            delivery.text
+                        );
+                        saw_sibling_result = true;
                     }
-                    if saw_sibling_result && saw_parent_message {
-                        break;
+                    if delivery.kind == super::super::a2a::kind::MESSAGE
+                        && delivery.from == agt_id
+                        && delivery.text.contains("report-from-")
+                    {
+                        saw_parent_message = true;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
-                assert!(saw_sibling_result, "task sibling result delivered");
-                assert!(
-                    saw_parent_message,
-                    "agent() child parent message delivered"
-                );
-            })
-            .await;
+                if saw_sibling_result && saw_parent_message {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            assert!(saw_sibling_result, "task sibling result delivered");
+            assert!(saw_parent_message, "agent() child parent message delivered");
+        })
+        .await;
+    }
+
+    /// Fake `--mode rpc` child for the worktree e2e: it works INSIDE its cwd
+    /// (which must be the git worktree it was spawned with): commits a file
+    /// with the `Agent:`/`Envelope:`/`Verified-by:` trailers, leaves another
+    /// file uncommitted, and settles.
+    const FAKE_WORKTREE_CHILD: &str = r#"#!/usr/bin/env python3
+import json, os, subprocess, sys
+
+def git(*args):
+    subprocess.run(["git", "-c", "user.name=fake-child", "-c",
+                    "user.email=fake@child"] + list(args),
+                   cwd=os.getcwd(), check=True, capture_output=True)
+
+stdin = sys.stdin
+stdin.readline()
+print(json.dumps({"type": "response", "command": "prompt", "success": True, "id": "omp-task-prompt"}), flush=True)
+me = os.environ["OMP_A2A_SELF"]
+with open("work.txt", "w") as f:
+    f.write("work by " + me + "\n")
+git("add", "-A")
+git("commit", "--no-verify", "-m",
+    "child: the work\n\nAgent: " + me + "\nEnvelope: agent://" + me +
+    "\nVerified-by: fake-worktree-child")
+with open("leftover.txt", "w") as f:
+    f.write("uncommitted\n")
+print(json.dumps({"type": "prompt_result", "status": "completed", "sessionSettled": True}), flush=True)
+for _ in range(2):
+    q = json.loads(stdin.readline())
+    if q["type"] == "get_last_assistant_text":
+        print(json.dumps({"type": "response", "command": "get_last_assistant_text", "success": True, "data": {"text": "worktree-child-answer"}}), flush=True)
+    else:
+        print(json.dumps({"type": "response", "command": "get_session_stats", "success": True, "data": {"tokens": {"output": 1}}}), flush=True)
+stdin.readline()
+"#;
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("spawn git: {e}"));
+        assert!(
+            out.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A `worktree: true` child gets a fresh git worktree on `agent/<id>`
+    /// from the parent's HEAD, its cwd mapped into it, and a prompt footer
+    /// with the commit/trailer contract; when it settles, the delivery shows
+    /// branch, commits (sha + subject), the diffstat and clean/dirty, with
+    /// leftovers auto-committed as `wip(<id>)`. The worktree survives until
+    /// the parent's `agent-merge`.
+    #[tokio::test]
+    async fn worktree_child_runs_in_its_branch_and_reports_a_settle_summary() {
+        let _serial = super::super::a2a::tests::LOCK.lock().await;
+        super::super::a2a::tests::without_parent_bus(async {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            // The parent's repo: one commit on main.
+            let repo = dir.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            git_in(&repo, &["init", "-b", "main"]);
+            git_in(&repo, &["config", "user.name", "omt-test"]);
+            git_in(&repo, &["config", "user.email", "omt-test@example.com"]);
+            std::fs::write(repo.join("file.txt"), "one\n").unwrap();
+            git_in(&repo, &["add", "-A"]);
+            git_in(&repo, &["commit", "-m", "initial"]);
+            let bin = dir.path().join("fake-worktree-child");
+            std::fs::write(&bin, FAKE_WORKTREE_CHILD).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = super::super::a2a::take_deliveries();
+
+            let spawned = spawn_children(
+                &TaskRunner::new(&bin, 4),
+                vec![TaskSpec {
+                    id: Some("wt-1".to_string()),
+                    agent: "task".into(),
+                    prompt: "go".into(),
+                    cwd: repo.clone(),
+                    output_schema: None,
+                    schema_mode: SchemaMode::Permissive,
+                    model: None,
+                    tools: None,
+                    depth: 1,
+                    extra_args: Vec::new(),
+                    env: Vec::new(),
+                    worktree: true,
+                }],
+                vec![None],
+                vec!["go".to_string()],
+                &None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(spawned[0].id, "wt-1");
+
+            // Wait for the settle delivery.
+            let mut delivery_text: Option<String> = None;
+            for _ in 0..50 {
+                for delivery in super::super::a2a::take_deliveries() {
+                    if delivery.kind == super::super::a2a::KIND_TASK_RESULT
+                        && delivery.from == "wt-1"
+                    {
+                        delivery_text = Some(delivery.text);
+                    }
+                }
+                if delivery_text.is_some() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let text = delivery_text.expect("worktree child result delivered");
+            assert!(text.contains("worktree-child-answer"), "{text}");
+            // The summary line: branch, base, commits, diffstat, dirty + wip.
+            assert!(text.contains("\"branch\":\"agent/wt-1\""), "{text}");
+            assert!(text.contains("\"clean\":false"), "{text}");
+            assert!(text.contains("\"leftovers_auto_committed\":true"), "{text}");
+            assert!(
+                text.contains("child: the work")
+                    && text.contains("wip(wt-1): uncommitted leftovers"),
+                "child + wip commits listed: {text}"
+            );
+            assert!(
+                text.contains("2 files changed"),
+                "diffstat covers work.txt + leftover.txt: {text}"
+            );
+
+            // The branch exists in the parent's repo with the trailer commit,
+            // and the worktree still exists (removed only by agent-merge).
+            let subjects = git_in(&repo, &["log", "--format=%s", "agent/wt-1"]);
+            assert!(subjects.contains("child: the work"), "{subjects}");
+            assert!(
+                subjects.contains("wip(wt-1): uncommitted leftovers"),
+                "{subjects}"
+            );
+            // The child's own commit carries the trailers (the tip is the
+            // trailer-less wip commit).
+            let trailers = git_in(&repo, &["log", "--format=%(trailers)", "agent/wt-1"]);
+            assert!(trailers.contains("Agent: wt-1"), "{trailers}");
+            assert!(trailers.contains("Envelope: agent://wt-1"), "{trailers}");
+            let wt_path = dir.path().join("repo-wt").join("wt-1");
+            assert!(
+                wt_path.is_dir(),
+                "worktree kept until the merge: {wt_path:?}"
+            );
+
+            // The parent's merge helper merges it and cleans up.
+            let outcome =
+                omp_task::worktree::merge_agent(&repo, "wt-1", &Default::default()).unwrap();
+            let commit = match outcome.status {
+                omp_task::worktree::MergeStatus::Merged { commit } => commit,
+                other => panic!("expected a clean merge, got {other:?}"),
+            };
+            assert_eq!(commit, git_in(&repo, &["rev-parse", "HEAD"]).trim());
+            let body = git_in(&repo, &["log", "-1", "--format=%B"]);
+            assert!(body.contains("Agent: wt-1"), "{body}");
+            assert!(!wt_path.exists(), "worktree removed after the merge");
+            assert!(
+                git_in(&repo, &["branch", "--list", "agent/wt-1"])
+                    .trim()
+                    .is_empty()
+            );
+            assert_eq!(
+                std::fs::read_to_string(repo.join("leftover.txt")).unwrap(),
+                "uncommitted\n",
+                "the wip commit carried the leftover into main"
+            );
+            assert_eq!(live_children(), 0);
+        })
+        .await;
+    }
+
+    /// `worktree: true` with the parent cwd outside any git repo fails the
+    /// whole call with a clear error before anything spawns.
+    #[tokio::test]
+    async fn worktree_true_outside_a_git_repo_fails_before_any_spawn() {
+        let _serial = super::super::a2a::tests::LOCK.lock().await;
+        super::super::a2a::tests::without_parent_bus(async {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("no-such-child");
+            let err = spawn_children(
+                &TaskRunner::new(&bin, 4),
+                vec![TaskSpec {
+                    id: Some("wt-x".to_string()),
+                    agent: "task".into(),
+                    prompt: "go".into(),
+                    cwd: dir.path().to_path_buf(),
+                    output_schema: None,
+                    schema_mode: SchemaMode::Permissive,
+                    model: None,
+                    tools: None,
+                    depth: 1,
+                    extra_args: Vec::new(),
+                    env: Vec::new(),
+                    worktree: true,
+                }],
+                vec![None],
+                vec!["go".to_string()],
+                &None,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("not inside a git repository"),
+                "clear error, got: {err}"
+            );
+            assert_eq!(live_children(), 0, "nothing spawned");
+        })
+        .await;
     }
 }
