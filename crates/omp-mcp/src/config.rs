@@ -143,6 +143,19 @@ fn read_config(path: &Path) -> McpConfigFile {
 /// entries with the same name.
 #[must_use]
 pub fn load_configs(cwd: &Path) -> BTreeMap<String, McpServerConfig> {
+    load_configs_for(cwd, &[])
+}
+
+/// [`load_configs`] for a run restricted to `requested_tools` (an agent's
+/// `tools:` list): a server marked `enabled: false` is still loaded when one
+/// of its `mcp__<server>_<tool>` names is requested, so a server can stay off
+/// the main session yet be available to the agents that name its tools.
+/// `disabledServers` still hides it unconditionally.
+#[must_use]
+pub fn load_configs_for(
+    cwd: &Path,
+    requested_tools: &[String],
+) -> BTreeMap<String, McpServerConfig> {
     let user = user_config_path()
         .map(|p| read_config(&p))
         .unwrap_or_default();
@@ -160,6 +173,17 @@ pub fn load_configs(cwd: &Path) -> BTreeMap<String, McpServerConfig> {
     merged
         .into_iter()
         .filter(|(name, _)| !disabled.contains(name.as_str()))
-        .filter(|(name, cfg)| cfg.enabled != Some(false) || forced.contains(name.as_str()))
+        .filter(|(name, cfg)| {
+            cfg.enabled != Some(false)
+                || forced.contains(name.as_str())
+                || requests_server_tool(name, requested_tools)
+        })
         .collect()
+}
+
+/// Whether `requested_tools` names any tool minted for `server`.
+fn requests_server_tool(server: &str, requested_tools: &[String]) -> bool {
+    let minted = crate::names::create_tool_name(server, "t");
+    let prefix = &minted[..minted.len() - 1];
+    requested_tools.iter().any(|tool| tool.starts_with(prefix))
 }

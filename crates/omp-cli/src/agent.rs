@@ -153,6 +153,9 @@ pub fn build_agent(
     let mut tools =
         crate::tools::session_builtin_tools(cwd, edit_mode_for(&selected.model.id), &settings);
     let session_jobs = crate::tools::take_last_jobs();
+    if let Some(csv) = sysprompt_opts.tools_csv.as_deref() {
+        crate::tools::mcp::set_requested_tools(csv);
+    }
     tools.extend(crate::tools::mcp::mcp_tools(cwd));
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too

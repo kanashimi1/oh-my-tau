@@ -23,7 +23,7 @@ pub mod timeout;
 pub mod transport;
 
 pub use client::{call_tool, connect_to_server, list_tools, Connection};
-pub use config::{load_configs, McpConfigFile, McpServerConfig, ServerKind};
+pub use config::{load_configs, load_configs_for, McpConfigFile, McpServerConfig, ServerKind};
 pub use errors::{JsonRpcError, McpConnectionTimeoutError, McpError, McpTransportError};
 pub use manager::{DiscoveredTool, McpManager, ServerStatus};
 pub use names::{create_legacy_tool_name, create_tool_name};

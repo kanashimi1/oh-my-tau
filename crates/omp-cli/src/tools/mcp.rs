@@ -30,6 +30,23 @@ pub fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
     block_on_discover(cwd).unwrap_or_default()
 }
 
+/// Tool names this run is restricted to (`--tools <csv>`, an agent's `tools:`).
+/// MCP servers marked `enabled: false` still load when one of their tools is
+/// named here; set once at startup, read by every later (re)discovery.
+static REQUESTED_TOOLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Record the run's `--tools <csv>` list for MCP discovery (see [`REQUESTED_TOOLS`]).
+pub fn set_requested_tools(csv: &str) {
+    *REQUESTED_TOOLS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = csv
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect();
+}
+
 /// Servers connected by the latest discovery, with their tool counts (TS
 /// `MCPManager.getConnectedServers` + `getConnection(name).tools.length`).
 static CONNECTED_SERVERS: std::sync::Mutex<Vec<(String, usize)>> =
@@ -48,7 +65,11 @@ pub fn connected_servers() -> Vec<(String, usize)> {
 fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
     let cwd = cwd.to_path_buf();
     let discover = move || async move {
-        let manager = Arc::new(McpManager::from_default_configs(&cwd));
+        let requested = REQUESTED_TOOLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let manager = Arc::new(McpManager::from_configs_for(&cwd, &requested));
         let discovered = manager.tools().await;
         let mut connected = Vec::new();
         for (name, status) in manager.statuses().await {

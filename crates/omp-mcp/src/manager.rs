@@ -97,6 +97,15 @@ impl McpManager {
         Self::new(Arc::new(cwd.to_path_buf()), load_configs(cwd))
     }
 
+    /// [`Self::from_default_configs`] for a run restricted to `requested_tools`
+    /// (see [`crate::config::load_configs_for`]).
+    pub fn from_configs_for(cwd: &std::path::Path, requested_tools: &[String]) -> Self {
+        Self::new(
+            Arc::new(cwd.to_path_buf()),
+            crate::config::load_configs_for(cwd, requested_tools),
+        )
+    }
+
     /// Configured server names.
     pub async fn server_names(&self) -> Vec<String> {
         self.servers.lock().await.keys().cloned().collect()
