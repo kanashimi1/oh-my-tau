@@ -174,7 +174,7 @@ impl AgentTool for McpTool {
         _tool_call_id: String,
         params: Value,
         signal: AbortSignal,
-        _on_update: AgentToolUpdateCallback,
+        on_update: AgentToolUpdateCallback,
     ) -> BoxFut<'static, Result<AgentToolResult>> {
         Box::pin(async move {
             if signal.is_aborted() {
@@ -185,7 +185,42 @@ impl AgentTool for McpTool {
                 Value::Object(_) => params,
                 _ => Value::Object(serde_json::Map::new()),
             };
-            match self.manager.call(&self.server, &self.tool_name, args).await {
+            // Server→client progress updates refresh the running tool card
+            // through the agent loop's `tool_execution_update` events.
+            let (server, tool_name) = (self.server.clone(), self.tool_name.clone());
+            let progress_update = {
+                let on_update = on_update.clone();
+                move |update: omp_mcp::McpProgress| {
+                    let text = match (&update.message, update.progress, update.total) {
+                        (Some(message), _, _) => format!("mcp progress: {message}"),
+                        (None, Some(done), Some(total)) => {
+                            format!("mcp progress: {done}/{total}")
+                        }
+                        (None, Some(done), None) => format!("mcp progress: {done}"),
+                        (None, None, _) => "mcp progress".to_string(),
+                    };
+                    on_update(AgentToolResult {
+                        content: vec![ToolResultContent::text(text)],
+                        details: serde_json::json!({
+                            "serverName": server,
+                            "toolName": tool_name,
+                            "isError": false,
+                            "mcpProgress": {
+                                "progress": update.progress,
+                                "total": update.total,
+                                "message": update.message,
+                            },
+                        }),
+                        terminate: None,
+                        is_error: None,
+                    });
+                }
+            };
+            match self
+                .manager
+                .call_with_progress(&self.server, &self.tool_name, args, progress_update)
+                .await
+            {
                 Ok(result) => {
                     let text = omp_mcp::format::format_tool_result(&result);
                     let content = vec![ToolResultContent::text(text)];

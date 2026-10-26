@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use crate::config::McpServerConfig;
-use crate::errors::{Failure, JsonRpcError, McpError, McpTransportError, TransportKind};
+use crate::errors::{may_have_run, Failure, JsonRpcError, McpError, McpTransportError, TransportKind};
 use crate::transport::{McpTransport, PendingRequests, TransportFut};
 
 /// One SSE event.
@@ -161,6 +161,18 @@ async fn send_request(
     timeout_ms: u64,
     state: Arc<Mutex<HttpState>>,
 ) -> Result<Value, McpError> {
+    // Long-running calls ask the server for `notifications/progress` keyed
+    // by the request id (MCP `_meta.progressToken`).
+    let mut params = params;
+    if method == "tools/call" {
+        if let Some(meta) = params
+            .as_object_mut()
+            .map(|m| m.entry("_meta").or_insert_with(|| json!({})))
+            .and_then(Value::as_object_mut)
+        {
+            meta.entry("progressToken").or_insert_with(|| id.clone());
+        }
+    }
     let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
     let request = client.post(&url).headers(headers).json(&body);
     let expected_key = PendingRequests::key(&id);
@@ -218,7 +230,7 @@ async fn send_request(
             }));
         }
         let text = response.text().await.map_err(|err| {
-            McpError::Transport(McpTransportError {
+            may_have_run(McpError::Transport(McpTransportError {
                 transport: TransportKind::Http,
                 stage: Failure::Receive,
                 failure: Failure::Receive,
@@ -226,7 +238,7 @@ async fn send_request(
                 message: format!("failed to read response body: {err}"),
                 code: None,
                 data: None,
-            })
+            }))
         })?;
         if !status.is_success() {
             return Err(HttpTransport::http_error(status, &text));

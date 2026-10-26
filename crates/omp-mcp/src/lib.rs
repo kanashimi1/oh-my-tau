@@ -28,7 +28,7 @@ pub use errors::{JsonRpcError, McpConnectionTimeoutError, McpError, McpTransport
 pub use manager::{DiscoveredTool, McpManager, ServerStatus};
 pub use names::{create_legacy_tool_name, create_tool_name};
 pub use timeout::{describe_timeout, is_timeout_enabled, resolve_timeout_ms, DEFAULT_TIMEOUT_MS};
-pub use transport::{McpTransport, PROTOCOL_VERSION};
+pub use transport::{McpProgress, McpTransport, PROTOCOL_VERSION};
 
 use serde_json::Value;
 

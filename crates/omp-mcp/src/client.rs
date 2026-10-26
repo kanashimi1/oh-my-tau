@@ -28,6 +28,8 @@ pub struct Connection {
     pub capabilities: Value,
     pub instructions: Option<String>,
     pub tools: Option<Vec<ToolDefinition>>,
+    /// Server→client `notifications/progress` updates for in-flight calls.
+    pub progress: tokio::sync::broadcast::Sender<crate::transport::McpProgress>,
 }
 
 /// Connect to an MCP server: create the transport, run `initialize`, send
@@ -48,6 +50,9 @@ pub async fn connect_to_server(
         Ok(Connection {
             name: name.to_string(),
             config: config.clone(),
+            progress: transport
+                .progress_sink()
+                .unwrap_or_else(|| tokio::sync::broadcast::channel(16).0),
             transport,
             server_info: init_result
                 .get("serverInfo")
