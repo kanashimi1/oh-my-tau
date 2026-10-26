@@ -282,16 +282,67 @@ fn effective_worktree(item: Option<bool>, agent: Option<bool>, batch: Option<boo
     }
 }
 
-/// Stamp one spawn with its agent definition's model chain. [`TaskSpec`]
-/// carries only the caller's selector, so without this every child ran on the
-/// config default regardless of its agent's `model` frontmatter.
-pub(crate) fn apply_agent_model(spec: &mut TaskSpec) {
+/// Stamp one spawn with its agent definition (TS `executor.ts`): the `model`
+/// chain, the `tools` allowlist, the body as the child's system-prompt
+/// addition and `thinkingLevel`. [`TaskSpec`] carries only the caller's
+/// selectors, so without this every child ran as a generic session. Call after
+/// [`super::eval_agents::apply_child_policy`], which resets `extra_args`.
+pub(crate) fn apply_agent_definition(spec: &mut TaskSpec) {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let agent_model = home
+    let agent = home
         .as_deref()
-        .and_then(|home| find_agent(&spec.cwd, home, &spec.agent))
-        .and_then(|agent| agent_model_chain(&agent));
+        .and_then(|home| find_agent(&spec.cwd, home, &spec.agent));
+    let agent_model = agent.as_ref().and_then(agent_model_chain);
     spec.model = effective_model(spec.model.as_deref(), agent_model.as_deref());
+    if let Some(agent) = agent {
+        stamp_agent_definition(spec, &agent);
+    }
+}
+
+/// The non-model part of [`apply_agent_definition`], pure for tests.
+fn stamp_agent_definition(spec: &mut TaskSpec, agent: &omp_task::agent::AgentDefinition) {
+    if let Some(agent_tools) = agent.fields.tools.clone() {
+        // The agent's list is the ceiling: the item's own request and the
+        // parent's `--tools` restriction (already in `spec.tools`) narrow it.
+        spec.tools = Some(match spec.tools.take() {
+            None => agent_tools,
+            Some(current) => {
+                // `yield` stays: the parser adds it to every explicit list.
+                let kept: Vec<String> = agent_tools
+                    .into_iter()
+                    .filter(|tool| tool == "yield" || current.contains(tool))
+                    .collect();
+                if kept.iter().all(|tool| tool == "yield")
+                    && !current.contains(&"yield".to_string())
+                {
+                    vec!["__none__".to_string()]
+                } else {
+                    kept
+                }
+            }
+        });
+    }
+    let body = agent.system_prompt.trim();
+    if !body.is_empty() {
+        spec.extra_args
+            .extend(["--append-system-prompt".to_string(), body.to_string()]);
+    }
+    let level = match agent.fields.thinking_level {
+        Some(omp_task::agent::ThinkingLevel::Low) => Some("low"),
+        Some(omp_task::agent::ThinkingLevel::Medium) => Some("medium"),
+        Some(omp_task::agent::ThinkingLevel::High) => Some("high"),
+        Some(omp_task::agent::ThinkingLevel::Max) => Some("max"),
+        Some(omp_task::agent::ThinkingLevel::Other(_)) | None => None,
+    };
+    // A `provider/model:level` selector already pins the level.
+    let pinned = spec
+        .model
+        .as_deref()
+        .is_some_and(|model| model.split(',').next().unwrap_or("").contains(':'));
+    if let (Some(level), false) = (level, pinned) {
+        spec.extra_args
+            .extend(["--thinking".to_string(), level.to_string()]);
+    }
 }
 
 /// Stamp one spawn with its effective `worktree` flag: item explicit >
@@ -532,7 +583,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         super::eval_agents::apply_child_policy(spec);
         // The agent definition's `model` chain applies when the item gave no
         // selector (TS `resolveEffectiveAgentModelSelection`).
-        apply_agent_model(spec);
+        apply_agent_definition(spec);
         // `worktree`: item > agent `worktree` frontmatter > batch default.
         apply_agent_worktree(spec, *item_worktree, params.worktree);
     }
@@ -1005,6 +1056,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(agent_model_chain(&bare), None);
+    }
+
+    /// The definition's `tools`, body and `thinkingLevel` reach the child's
+    /// argv; the agent list is a ceiling the item/parent restriction narrows.
+    #[test]
+    fn agent_definition_stamps_tools_prompt_and_thinking() {
+        use omp_task::agent::{parse_agent, AgentSource};
+        let agent = parse_agent(
+            "bb.md",
+            "---\nname: bb\ndescription: d\ntools: [read, bash, mcp__blockbench_bb_preview]\nthinkingLevel: high\n---\nCheck every edit with bb_preview.\n",
+            AgentSource::User,
+        )
+        .unwrap();
+        let spec = |model: Option<&str>, tools: Option<Vec<&str>>| TaskSpec {
+            id: None,
+            agent: "bb".into(),
+            prompt: "go".into(),
+            cwd: PathBuf::from("/tmp"),
+            output_schema: None,
+            schema_mode: SchemaMode::Permissive,
+            model: model.map(str::to_string),
+            tools: tools.map(|t| t.into_iter().map(str::to_string).collect()),
+            depth: 1,
+            extra_args: vec!["--no-extensions".into()],
+            env: Vec::new(),
+            worktree: false,
+        };
+
+        let mut plain = spec(Some("zai/glm-5.3-flash"), None);
+        stamp_agent_definition(&mut plain, &agent);
+        assert_eq!(
+            plain.tools.as_deref(),
+            Some(&["read", "bash", "mcp__blockbench_bb_preview", "yield"].map(String::from)[..])
+        );
+        assert_eq!(
+            plain.extra_args,
+            [
+                "--no-extensions",
+                "--append-system-prompt",
+                "Check every edit with bb_preview.",
+                "--thinking",
+                "high"
+            ]
+        );
+
+        let mut narrowed = spec(Some("zai/glm-5.3-flash:low"), Some(vec!["read", "edit"]));
+        stamp_agent_definition(&mut narrowed, &agent);
+        assert_eq!(
+            narrowed.tools,
+            Some(vec!["read".to_string(), "yield".to_string()])
+        );
+        assert!(!narrowed.extra_args.contains(&"--thinking".to_string()));
+
+        let mut disjoint = spec(None, Some(vec!["edit"]));
+        stamp_agent_definition(&mut disjoint, &agent);
+        assert_eq!(disjoint.tools, Some(vec!["__none__".to_string()]));
     }
 
     /// Precedence: the task item's selector > the agent's `model` chain >

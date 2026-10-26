@@ -776,7 +776,7 @@ pub(crate) async fn run_agent_with(
     let schema_wanted = item.output_schema.is_some();
     let mut spec = omp_task::runner::TaskSpec::from_item(&item, None, ctx.cwd.clone());
     apply_child_policy(&mut spec);
-    super::task::apply_agent_model(&mut spec);
+    super::task::apply_agent_definition(&mut spec);
     // One channel for every spawner: eval `agent()` children get the same a2a
     // bus as `task` children, so inside the child `write agent://<sibling>` /
     // `agent://parent` / `agent://all` work regardless of how it was spawned.
@@ -2399,7 +2399,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             worktree: false,
         };
         apply_child_policy(&mut spec);
-        super::task::apply_agent_model(&mut spec);
+        super::task::apply_agent_definition(&mut spec);
         // Same channel as `task` children: a workpool worker can
         // `write agent://<sibling>` / `agent://parent` / `agent://all`.
         let lease = super::a2a::BusLease::acquire().ok();
