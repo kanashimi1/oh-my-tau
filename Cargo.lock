@@ -1932,6 +1932,7 @@ dependencies = [
  "omp-compact",
  "omp-eval",
  "omp-ext",
+ "omp-hub",
  "omp-judge",
  "omp-lsp",
  "omp-mcp",
@@ -2016,6 +2017,20 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "omp-hub"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "jsonschema",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

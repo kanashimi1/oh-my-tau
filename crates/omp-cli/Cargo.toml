@@ -27,6 +27,7 @@ omp-session = { path = "../omp-session" }
 omp-ext = { path = "../omp-ext" }
 omp-compact = { path = "../omp-compact" }
 omp-task = { path = "../omp-task" }
+omp-hub = { path = "../omp-hub" }
 omp-eval = { path = "../omp-eval" }
 omp-mcp = { path = "../omp-mcp" }
 omp-lsp = { path = "../omp-lsp" }
