@@ -501,8 +501,13 @@ fn tree(entries: &[Value]) -> Vec<Value> {
                 }
             })
             .map(|e| {
-                let id = e.get("id").and_then(Value::as_str);
-                json!({"entry": e, "children": build(entries, id, known)})
+                // An id-less entry (e.g. the `title` header) has no children; recursing with
+                // `parent: None` would rebuild the roots forever and overflow the stack.
+                let children = e
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map_or_else(Vec::new, |id| build(entries, Some(id), known));
+                json!({"entry": e, "children": children})
             })
             .collect()
     }
@@ -1615,6 +1620,22 @@ async fn route_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_with_id_less_header_terminates() {
+        // A real session journal starts with an id-less `title` entry; get_tree used to recurse
+        // on it with `parent: None` until the agent died of a stack overflow.
+        let entries = vec![
+            json!({"type": "title"}),
+            json!({"type": "session", "id": "s"}),
+            json!({"type": "message", "id": "m1", "parentId": "s"}),
+            json!({"type": "message", "id": "m2", "parentId": "m1"}),
+        ];
+        let t = tree(&entries);
+        assert_eq!(t.len(), 2, "two roots: the title header and the session");
+        assert_eq!(t[0]["children"], json!([]));
+        assert_eq!(t[1]["children"][0]["children"][0]["entry"]["id"], json!("m2"));
+    }
 
     fn big_response(id: &str) -> Value {
         json!({"id": id, "type": "response", "command": "get_available_models", "success": true,
