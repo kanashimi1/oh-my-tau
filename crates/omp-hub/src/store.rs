@@ -21,7 +21,7 @@ pub struct EnvelopeRow {
 }
 
 /// A live claim.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ClaimRow {
     pub resource: String,
     pub owner: String,

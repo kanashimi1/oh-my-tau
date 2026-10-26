@@ -179,10 +179,22 @@ fn sweep_deadlines(server: &Arc<Server>) -> Result<()> {
     Ok(())
 }
 
+impl Registry {
+    /// Whether `agent` currently holds a live registered endpoint.
+    fn has_endpoint(&self, agent: &str) -> bool {
+        self.endpoints
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_key(agent)
+    }
+}
+
 /// Route one stored envelope to its recipient: live push when registered,
 /// pane delivery for `w4:pXX`, else it stays in the store until the
-/// recipient reconnects or pulls its inbox.
-fn dispatch(server: &Arc<Server>, env: Envelope) {
+/// recipient reconnects or pulls its inbox. Returns `true` when a live
+/// endpoint took it (the store marks it `delivered`); `false` when it stays
+/// queued (store-only or handed to the async pane delivery).
+fn dispatch(server: &Arc<Server>, env: Envelope) -> bool {
     let recipient = env.recipient.clone();
     if let Some(ep) = server
         .registry
@@ -196,18 +208,22 @@ fn dispatch(server: &Arc<Server>, env: Envelope) {
                 let _ = server
                     .store
                     .transition(&env.message_id, State::DELIVERED, crate::now_ms());
+                true
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 tracing::warn!(recipient, "endpoint channel full; leaving message in store");
+                false
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 drop_ep(&server.registry, &recipient, ep.gen);
+                false
             }
         }
-        return;
-    }
-    if looks_like_pane(&recipient) {
+    } else if looks_like_pane(&recipient) {
         pane::spawn_delivery(server.store.clone(), env);
+        false
+    } else {
+        false
     }
 }
 
@@ -401,15 +417,27 @@ async fn dispatch_request(
                 .insert(&mut env, now)
                 .map_err(|e| invalid(format!("send: {e}")))?;
             if outcome.dedup {
+                // Report the freshest stored state: a dedup resend may find
+                // the original already delivered/answered since.
+                let state = server
+                    .store
+                    .get(&env.message_id)
+                    .map_err(|e| invalid(format!("send: {e}")))?
+                    .and_then(|row| row.envelope.state)
+                    .unwrap_or(outcome.state);
                 return Ok(json!({
                     "message_id": env.message_id,
                     "seq": outcome.seq,
-                    "state": outcome.state,
+                    "state": state,
                     "dedup": true,
                 }));
             }
-            // Dead-pane guard: fail fast, state failed.
+            // Dead-pane guard: fail fast, state failed. A live registered
+            // endpoint wins over herdr typing: an omt pane serving this id
+            // takes hub mail through its endpoint, so skip the guard (and
+            // the pane delivery) for registered recipients.
             if looks_like_pane(&env.recipient)
+                && !server.registry.has_endpoint(&env.recipient)
                 && !pane::pane_exists(&env.recipient).await.unwrap_or(false)
             {
                 let _ = server
@@ -422,11 +450,16 @@ async fn dispatch_request(
                     "error": format!("dead pane: {} not in `herdr agent list`", env.recipient),
                 }));
             }
-            dispatch(server, env.clone());
+            let delivered = dispatch(server, env.clone());
+            let state = if delivered {
+                State::DELIVERED.to_string()
+            } else {
+                outcome.state
+            };
             Ok(json!({
                 "message_id": env.message_id,
                 "seq": outcome.seq,
-                "state": outcome.state,
+                "state": state,
             }))
         }
         "ack" => {
@@ -510,7 +543,23 @@ async fn dispatch_request(
                 .map_err(|e| invalid(format!("answer: {e}")))?;
             let answer_id = answer.message_id.clone();
             if !outcome.dedup {
-                dispatch(server, answer.clone());
+                let delivered = dispatch(server, answer.clone());
+                if delivered {
+                    if let Some(row) = server
+                        .store
+                        .get(&answer_id)
+                        .map_err(|e| invalid(format!("answer: {e}")))?
+                    {
+                        return Ok(json!({
+                            "question": {"message_id": causation_id, "state": State::ANSWERED},
+                            "answer": {
+                                "message_id": answer_id,
+                                "seq": outcome.seq,
+                                "state": row.envelope.state.as_deref().unwrap_or(State::DELIVERED),
+                            },
+                        }));
+                    }
+                }
             }
             Ok(json!({
                 "question": {"message_id": causation_id, "state": State::ANSWERED},

@@ -385,6 +385,66 @@ impl HubClient {
     pub async fn check(&self, resource: &str) -> Result<Value> {
         self.request("check", json!({"resource": resource})).await
     }
+
+    /// Typed variant of [`Self::check`]: the live claim row, `None` when the
+    /// resource is free or the lease expired (`expiry frees it`).
+    ///
+    /// # Errors
+    /// Hub-side errors (transport or handler failure).
+    pub async fn check_claim(&self, resource: &str) -> Result<Option<crate::store::ClaimRow>> {
+        let v = self.check(resource).await?;
+        Ok(v.get("holder")
+            .and_then(|h| serde_json::from_value::<crate::store::ClaimRow>(h.clone()).ok()))
+    }
+
+    /// Send one plain-text envelope (`payload` inline), minting the
+    /// `message_id` when empty — the convenience surface for notes/questions
+    /// a session routes externally.
+    ///
+    /// # Errors
+    /// Hub-side errors (transport or handler failure).
+    pub async fn send_note(
+        &self,
+        sender: &str,
+        recipient: &str,
+        kind: &str,
+        payload: &str,
+    ) -> Result<SendReceipt> {
+        self.send(Envelope {
+            sender: sender.to_string(),
+            recipient: recipient.to_string(),
+            kind: kind.to_string(),
+            payload: Some(payload.to_string()),
+            ..Envelope::default()
+        })
+        .await
+    }
+
+    /// Answer a question with a plain-text payload envelope (kind
+    /// `agent.answer`, urgent priority), validated against the original's
+    /// `reply_schema` by the hub; on violation the returned error carries
+    /// the schema failure so the caller can surface it verbatim.
+    ///
+    /// # Errors
+    /// Hub-side errors: unknown/expired question, schema validation failure.
+    pub async fn answer_text(
+        &self,
+        causation_id: &str,
+        sender: &str,
+        payload: &str,
+    ) -> Result<Value> {
+        self.answer(
+            causation_id,
+            Envelope {
+                sender: sender.to_string(),
+                kind: crate::envelope::KIND_ANSWER.to_string(),
+                priority: crate::envelope::Priority::URGENT,
+                payload: Some(payload.to_string()),
+                ..Envelope::default()
+            },
+        )
+        .await
+    }
 }
 
 /// Path override for tests and non-default installs.
