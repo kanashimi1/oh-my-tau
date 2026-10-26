@@ -327,6 +327,39 @@ fn merge_agent_commits_leftovers_before_merging() {
 }
 
 #[test]
+fn merge_agent_aggregates_blank_line_separated_trailers() {
+    let _g = lock();
+    let repo = Repo::new();
+    let wt = Worktree::create(&repo.root, "nu").unwrap();
+    // Several `-m` flags: git separates the paragraphs with BLANK LINES, so
+    // `%(trailers:only)` would see only the last one — the aggregation must
+    // still pick every known key up (model-written commits do this).
+    std::fs::write(wt.path.join("nu.md"), "nu\n").unwrap();
+    git_in(&wt.path, &["add", "-A"]);
+    git_in(
+        &wt.path,
+        &[
+            "commit",
+            "--no-verify",
+            "-m",
+            "nu: work",
+            "-m",
+            "Agent: nu",
+            "-m",
+            "Envelope: agent://nu",
+            "-m",
+            "Verified-by: cargo test",
+        ],
+    );
+    let outcome = merge_agent(&repo.root, "nu", &MergeOptions::default()).unwrap();
+    assert!(matches!(outcome.status, MergeStatus::Merged { .. }));
+    let body = git_in(&repo.root, &["log", "-1", "--format=%B"]);
+    assert!(body.contains("Agent: nu"), "{body}");
+    assert!(body.contains("Envelope: agent://nu"), "{body}");
+    assert!(body.contains("Verified-by: cargo test"), "{body}");
+}
+
+#[test]
 fn require_review_refuses_until_a_pass_note_lands() {
     let _g = lock();
     let repo = Repo::new();
