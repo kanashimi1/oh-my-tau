@@ -9,6 +9,7 @@ pub mod config;
 pub mod export;
 pub mod gc;
 pub mod hub;
+pub mod hub_mcp;
 pub mod judge_sessions;
 pub mod login;
 pub mod models;

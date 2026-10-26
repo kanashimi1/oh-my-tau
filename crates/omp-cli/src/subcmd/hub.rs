@@ -35,6 +35,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         "claims" => block_on(cmd_claims(flags)),
         "check" => block_on(cmd_check(flags)),
         "subscribe" => block_on(cmd_subscribe(flags)),
+        "mcp" => super::hub_mcp::run(args),
         _ => {
             eprintln!("unknown hub command: {cmd}\n");
             usage();
@@ -61,6 +62,8 @@ Commands:
   claims [--prefix P]
   check --resource R
   subscribe --agent A [--last-seq N]  stream deliver pushes
+  mcp [--agent NAME] [--dir DIR] [--sock PATH]
+                                      stdio MCP server (protocol 2025-06-18)
 
 Common flags: --json   machine-readable output
               --dir/--sock override OMP_HUB_DIR/OMP_HUB_SOCK for serve"
@@ -68,7 +71,7 @@ Common flags: --json   machine-readable output
 }
 
 /// Simple `--key value` / `--key=value` / boolean-flag parser.
-fn parse_flags(args: &[String]) -> (std::collections::HashMap<String, String>, Vec<String>) {
+pub(crate) fn parse_flags(args: &[String]) -> (std::collections::HashMap<String, String>, Vec<String>) {
     let mut flags = std::collections::HashMap::new();
     let mut rest = Vec::new();
     let mut it = args.iter().peekable();
@@ -89,7 +92,7 @@ fn parse_flags(args: &[String]) -> (std::collections::HashMap<String, String>, V
     (flags, rest)
 }
 
-fn flag<'m>(
+pub(crate) fn flag<'m>(
     flags: &'m std::sync::Arc<std::collections::HashMap<String, String>>,
     k: &str,
 ) -> Option<&'m str> {
