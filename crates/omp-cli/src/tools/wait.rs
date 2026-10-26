@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use super::Env;
 use super::jobs::{JobStatus, ServiceState};
 
-const DESCRIPTION: &str = "Wait only when blocked with nothing else to do.\nBlocks on background jobs/services you started; returns on the first result, a message sent to you, or a steering interrupt; a safety cap returns a still-running snapshot.\nNothing you started running? Errors; NEVER wait on other agents.\nResults and messages auto-deliver. NEVER poll while work remains.";
+const DESCRIPTION: &str = "Wait only when blocked with nothing else to do.\nBlocks on background jobs/services and running task children you started; returns on the first result or message; a safety cap returns a still-running snapshot.\nNothing you started running? Errors; NEVER wait on other agents.\nResults and messages auto-deliver. NEVER poll while work remains.";
 
 /// omp `WAIT_MAX_MS`.
 const WAIT_MAX: Duration = Duration::from_mins(30);
@@ -102,15 +102,38 @@ impl AgentTool for WaitTool {
 
 impl WaitTool {
     async fn run(&self, signal: AbortSignal) -> Result<AgentToolResult> {
-        // omp snapshot: jobs owned by the caller plus the service surface.
-        if self.env.jobs.sorted().is_empty() && !has_live_service(&self.env) {
+        // Deliveries belong to the running session ([`super::a2a::Owner`]);
+        // `None` (no registered runtime, e.g. bare unit tests) matches
+        // unowned deliveries.
+        let owner = super::a2a::current_owner();
+        // A delivery that already landed is the immediate answer (the first
+        // result/message wins).
+        if super::a2a::has_pending_for(&owner) {
+            let batch = super::a2a::take_deliveries_for(&owner);
+            return Ok(AgentToolResult::text(super::task::render_delivery_batch(
+                &batch,
+            )));
+        }
+        // omp snapshot: jobs owned by the caller, the service surface, and
+        // this session's running `task` children.
+        let watching_children = super::task::live_children_for(&owner) > 0;
+        if self.env.jobs.sorted().is_empty() && !has_live_service(&self.env) && !watching_children
+        {
             bail!(
-                "Nothing to wait for: no background job or service you started is running. \
+                "Nothing to wait for: no background job, service, or task child you started is running. \
 Other agents' results and messages arrive on their own."
             );
         }
         let deadline = tokio::time::Instant::now() + WAIT_MAX;
         loop {
+            // Task children: a settled child (or a child message to
+            // `agent://parent`) queues a combined delivery batch.
+            if super::a2a::has_pending_for(&owner) {
+                let batch = super::a2a::take_deliveries_for(&owner);
+                return Ok(AgentToolResult::text(super::task::render_delivery_batch(
+                    &batch,
+                )));
+            }
             let snapshot = watch_snapshot(&self.env);
             // omp `undeliveredJobs`: an accepted completion not yet in the
             // transcript is exactly what this wait is for — return it now.
@@ -127,7 +150,12 @@ Other agents' results and messages arrive on their own."
                 // normal (useless-flagged upstream) result, other aborts stop.
                 return Ok(AgentToolResult::text("Wait interrupted by message."));
             }
-            tokio::time::sleep(POLL_INTERVAL).await;
+            // Park on the a2a delivery queue with the job-poll cadence as the
+            // fallback tick (the job registry is a snapshot store).
+            tokio::select! {
+                () = super::a2a::wait_delivery_notify() => {}
+                () = tokio::time::sleep(POLL_INTERVAL) => {}
+            }
         }
     }
 
@@ -150,4 +178,96 @@ fn has_live_service(env: &Env) -> bool {
             ServiceState::Exited | ServiceState::Failed
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::task;
+
+    /// Fake `--mode rpc` child that answers immediately: the settle must
+    /// queue the result delivery the `wait` tool returns.
+    const FAKE_WAIT_CHILD: &str = r#"#!/usr/bin/env python3
+import json, sys
+stdin = sys.stdin
+stdin.readline()
+print(json.dumps({"type": "response", "command": "prompt", "success": True, "id": "omp-task-prompt"}), flush=True)
+print(json.dumps({"type": "prompt_result", "status": "completed", "sessionSettled": True}), flush=True)
+for _ in range(2):
+    q = json.loads(stdin.readline())
+    if q["type"] == "get_last_assistant_text":
+        print(json.dumps({"type": "response", "command": "get_last_assistant_text", "success": True, "data": {"text": "wait-child-answer"}}), flush=True)
+    else:
+        print(json.dumps({"type": "response", "command": "get_session_stats", "success": True, "data": {"tokens": {"output": 1}}}), flush=True)
+stdin.readline()
+"#;
+
+    #[tokio::test]
+    async fn wait_blocks_on_task_children_and_returns_the_first_delivery() {
+        let _serial = super::super::a2a::tests::LOCK.lock().await;
+        super::super::a2a::tests::without_parent_bus(async {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join("fake-wait-child");
+            std::fs::write(&bin, FAKE_WAIT_CHILD).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = super::super::a2a::take_deliveries();
+            let tool = WaitTool {
+                schema: schema(),
+                env: std::sync::Arc::new(Env::new(dir.path(), false)),
+            };
+            // Nothing owned running: errors, like jobs/services alone.
+            let err = tool
+                .run(pa_agent::abort::AbortSignal::never())
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("Nothing to wait for"),
+                "{err}"
+            );
+
+            // A `task` child: `wait` parks and returns its result delivery.
+            let spawned = task::spawn_children(
+                &omp_task::TaskRunner::new(&bin, 4),
+                vec![omp_task::runner::TaskSpec {
+                    id: Some("wait-kid".to_string()),
+                    agent: "task".into(),
+                    prompt: "go".into(),
+                    cwd: dir.path().to_path_buf(),
+                    output_schema: None,
+                    schema_mode: omp_task::SchemaMode::Permissive,
+                    model: None,
+                    tools: None,
+                    depth: 1,
+                    extra_args: Vec::new(),
+                    env: Vec::new(),
+                }],
+                vec![None],
+                vec!["go".to_string()],
+                &None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(spawned.len(), 1);
+            let result = tool
+                .run(pa_agent::abort::AbortSignal::never())
+                .await
+                .unwrap();
+            let text = result
+                .content
+                .iter()
+                .find_map(|part| match part {
+                    pa_agent::types::ToolResultContent::Text(t) => Some(t.text.clone()),
+                    pa_agent::types::ToolResultContent::Image(_) => None,
+                })
+                .expect("text content");
+            assert!(text.starts_with("<task-results>"), "{text}");
+            assert!(
+                text.contains("wait-child-answer"),
+                "the child's answer rides the delivery: {text}"
+            );
+            assert_eq!(task::live_children(), 0);
+        })
+        .await;
+    }
 }
