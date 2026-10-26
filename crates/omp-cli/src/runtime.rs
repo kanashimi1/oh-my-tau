@@ -525,6 +525,13 @@ impl Runtime {
                 tokio::spawn(async move { rt.on_delivery_wake().await; });
             }));
         }
+        // Hub link (SPEC batch 2): register this session as a live endpoint
+        // (`hello` + `deliver` pushes injected at turn boundaries) on a
+        // background task. Opted out with OMP_HUB=0; when the hub cannot be
+        // started the task logs once and the session continues without it.
+        // Unit tests drive the endpoint explicitly against a temp hub dir.
+        #[cfg(not(test))]
+        crate::tools::a2a::start_hub_endpoint(rt.a2a_owner.clone());
         let listener = rt.clone();
         let sub = rt
             .agent
@@ -5152,6 +5159,9 @@ impl Drop for Runtime {
         // runtime unwinds) and releases the delivery owner token.
         crate::tools::task::kill_async_children_for(&Some(self.a2a_owner.clone()));
         crate::tools::a2a::clear_owner(&self.a2a_owner);
+        // Hub link: release the session's auto-claims and stop its endpoint
+        // task (bounded; a dead hub never stalls teardown).
+        crate::tools::a2a::shutdown_hub_endpoint(&self.a2a_owner);
         if let Some(h) = &self.herdr {
             h.release_blocking();
         }

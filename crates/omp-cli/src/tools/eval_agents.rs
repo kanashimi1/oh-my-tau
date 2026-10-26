@@ -436,10 +436,11 @@ async fn deliver_local(to: &str, content: &str, exclude: Option<&str>) -> Result
         return broadcast_message(content, exclude).await;
     }
     let mut handle = lookup_agent(to);
-    if handle.is_none() && exclude.is_none() {
+    if handle.is_none() && exclude.is_none() && !super::a2a::looks_like_pane_id(to) {
         // A `write` issued in the same tool batch as the `task` call that
         // creates the recipient can run first: give registration a short,
-        // bounded grace before declaring the id unknown.
+        // bounded grace before declaring the id unknown. Pane ids are never
+        // local eval agents — route them straight to the hub.
         let deadline = tokio::time::Instant::now() + UNKNOWN_ID_GRACE;
         while handle.is_none() && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -448,7 +449,15 @@ async fn deliver_local(to: &str, content: &str, exclude: Option<&str>) -> Result
     }
     match steer_handle(handle.as_deref(), to, content).await {
         Ok(()) => Ok(format!("Delivered to {to}.")),
-        Err(error) => Err(format!("Failed: {to} is not running. {error}")),
+        Err(error) => {
+            // Not a local run: a pending hub question from `to` becomes an
+            // `answer{}`, a pane/unknown id becomes a hub `send{}` — the hub
+            // seam reports queued/delivered or a clear error, never silence.
+            if let Some(outcome) = super::a2a::route_external_message(to, content).await {
+                return outcome;
+            }
+            Err(format!("Failed: {to} is not running. {error}"))
+        }
     }
 }
 
