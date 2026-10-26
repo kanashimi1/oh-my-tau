@@ -154,6 +154,12 @@ pub struct Runtime {
     /// while this runtime is the registered owner belong to it, and only its
     /// park/wake/wait legs consume their deliveries.
     a2a_owner: Arc<str>,
+    /// Set once the first prompt has been admitted into a run
+    /// (`prompt_until_accepted` accepted it). Until then the session has no
+    /// turn boundary: the idle-wake delivery leg must not start a delivery
+    /// turn ahead of the first user prompt (a hub message replayed during
+    /// startup waits in the queue for that prompt's settle leg).
+    first_prompt_admitted: std::sync::atomic::AtomicBool,
     /// Set by `abort()` (TS `#advisors.autoResumeSuppressed`): a follow-up-only
     /// queued-message drain stays suppressed until the next explicit user prompt.
     user_interrupt: std::sync::atomic::AtomicBool,
@@ -510,6 +516,7 @@ impl Runtime {
             switch_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             summarizer: Mutex::new(None),
             a2a_owner: crate::persist::uuid_v7().into(),
+            first_prompt_admitted: std::sync::atomic::AtomicBool::new(false),
         });
         rt.publish_session_file();
         rt.record_model_state().await;
@@ -1183,6 +1190,17 @@ impl Runtime {
     async fn on_delivery_wake(self: Arc<Self>) {
         if self
             .user_interrupt
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        // Before the first prompt is admitted the session has no turn to
+        // continue: starting a delivery turn now would put the hub message
+        // ahead of the user's first prompt (and make that prompt fail with
+        // "Agent is already processing a prompt"). The delivery stays queued
+        // for the first settle's delivery leg instead.
+        if !self
+            .first_prompt_admitted
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             return;
@@ -1866,6 +1884,11 @@ impl Runtime {
                 .retain(|t| !(t.starts_at_begin == starts && t.id == id && !t.waiting));
             return Err(CmdError::new(format!("{e:#}")));
         }
+        // A run now exists: from here on the idle-wake delivery leg may start
+        // delivery turns (before the first admission it must stay queued so
+        // it can never precede the first user prompt's turn).
+        self.first_prompt_admitted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -6162,6 +6185,197 @@ mod compaction_guard_tests {
             fresh.last().unwrap().to_string().contains("answer 1"),
             "the turn landed in the new session: {:?}",
             fresh.last().unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod a2a_delivery_tests {
+    use super::*;
+    use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
+    use pa_agent::scripted::ScriptedProvider;
+    use tokio::sync::mpsc::UnboundedReceiver;
+
+    use crate::adapter::ProviderTarget;
+
+    struct Named(&'static str);
+
+    impl pa_agent::types::AgentTool for Named {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            "test tool"
+        }
+        fn parameters(&self) -> &Value {
+            static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+            SCHEMA.get_or_init(|| json!({"type": "object", "properties": {}}))
+        }
+        fn execute(
+            self: Arc<Self>,
+            _id: String,
+            _params: Value,
+            _signal: pa_agent::abort::AbortSignal,
+            _on_update: pa_agent::types::AgentToolUpdateCallback,
+        ) -> pa_agent::BoxFut<'static, anyhow::Result<pa_agent::types::AgentToolResult>> {
+            Box::pin(async { Ok(pa_agent::types::AgentToolResult::text("ok")) })
+        }
+    }
+
+    fn model() -> pa_types::ai::Model {
+        serde_json::from_value(json!({
+            "id": "a", "name": "a", "api": "openai-completions", "provider": "p",
+            "baseUrl": "http://127.0.0.1:9", "reasoning": true, "input": ["text"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 100_000, "maxTokens": 4096
+        }))
+        .expect("model json")
+    }
+
+    struct Harness {
+        rt: Arc<Runtime>,
+        rx: UnboundedReceiver<Value>,
+        provider: Arc<ScriptedProvider>,
+        _cwd: tempfile::TempDir,
+    }
+
+    async fn harness() -> Harness {
+        let model = model();
+        let provider = Arc::new(ScriptedProvider::new(
+            json_round_trip(&model).expect("agent model"),
+        ));
+        for i in 0..4 {
+            provider.push_text_turn(&format!("answer {i}"));
+        }
+        let agent = Agent::new(AgentOptions {
+            initial_state: AgentInitialState {
+                system_prompt: Some("test".into()),
+                model: json_round_trip(&model),
+                thinking_level: Some(ThinkingLevel::Medium),
+                tools: Some(vec![Arc::new(Named("task")) as Arc<dyn pa_agent::types::AgentTool>]),
+                messages: None,
+            },
+            convert_to_llm: Some(crate::agent::convert_to_llm()),
+            stream_fn: Some(provider.stream_fn()),
+            ..AgentOptions::default()
+        });
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(cwd.path().join(".omp")).unwrap();
+        let persist = crate::persist::attach_with(&agent, cwd.path(), true)
+            .await
+            .expect("session");
+        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+            api_key: Some("k".into()),
+            model,
+            service_tier: None,
+            headers: None,
+            credential_id: None,
+        })));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let rt = Runtime::start(
+            Arc::new(agent),
+            target,
+            cwd.path().to_path_buf(),
+            persist,
+            tx,
+        )
+        .await;
+        Harness {
+            rt,
+            rx,
+            provider,
+            _cwd: cwd,
+        }
+    }
+
+    /// Flatten one recorded wire request into searchable text.
+    fn wire_text(ctx: &pa_agent::stream::LlmContext) -> String {
+        ctx.messages
+            .iter()
+            .map(|m| {
+                let v = serde_json::to_value(m).unwrap();
+                match &v["content"] {
+                    Value::String(s) => s.clone(),
+                    Value::Array(parts) => parts
+                        .iter()
+                        .filter_map(|p| p["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join(""),
+                    _ => String::new(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Regression (merge 4c7f819): a hub `deliver` push replayed during
+    /// startup — before the session's first prompt is admitted — must stay
+    /// queued for the first turn boundary. Starting it as its own turn puts
+    /// the delivery ahead of the user's first prompt, whose admission then
+    /// fails with "Agent is already processing a prompt" (the smoke's
+    /// session-B exit-1).
+    #[tokio::test]
+    async fn hub_delivery_before_first_prompt_waits_for_turn_boundary() {
+        let mut h = harness().await;
+        // Cleanup guard: the delivery queue is process-global; never leak this
+        // test's envelope into other tests, even on panic.
+        struct Guard {
+            owner: crate::tools::a2a::Owner,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _ = crate::tools::a2a::take_deliveries_for(&self.owner);
+            }
+        }
+        let _guard = Guard {
+            owner: Some(h.rt.a2a_owner.clone()),
+        };
+        crate::tools::a2a::queue_delivery(crate::tools::a2a::PendingDelivery {
+            owner: Some(h.rt.a2a_owner.clone()),
+            from: "session:A".into(),
+            kind: crate::tools::a2a::kind::MESSAGE.to_string(),
+            text: "SMOKE-QUESTION: what is 6*7?".into(),
+        });
+        // Give the idle-wake hook a chance to run: it must not start a turn.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !h.rt.agent.is_streaming().await,
+            "delivery turn must not start before the first prompt is admitted"
+        );
+        // Admission succeeds only when the delivery did not steal the run.
+        h.rt.prompt(None, "first question", None, Vec::new())
+            .await
+            .expect("first prompt admitted");
+        loop {
+            let f = tokio::time::timeout(std::time::Duration::from_secs(30), h.rx.recv())
+                .await
+                .expect("frame in time")
+                .expect("open");
+            if f["type"] == "session_settled" {
+                break;
+            }
+        }
+        // Ordering proof from the wire: the user turn runs first; the hub
+        // message lands as the follow-up delivery turn.
+        let calls = h.provider.calls();
+        assert!(
+            calls.len() >= 2,
+            "expected the user turn plus the delivery turn, got {}",
+            calls.len()
+        );
+        let first = wire_text(&calls[0]);
+        let second = wire_text(&calls[1]);
+        assert!(
+            first.contains("first question"),
+            "first provider call is the user turn: {first:?}"
+        );
+        assert!(
+            !first.contains("SMOKE-QUESTION"),
+            "the hub delivery must not precede the user turn: {first:?}"
+        );
+        assert!(
+            second.contains("SMOKE-QUESTION"),
+            "the delivery lands at the first turn boundary: {second:?}"
         );
     }
 }
