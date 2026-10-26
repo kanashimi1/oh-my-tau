@@ -512,6 +512,9 @@ mod tests {
     #[tokio::test]
     async fn completed_child_is_scored_and_logged() {
         let dir = std::env::temp_dir().join(format!("omp-rubric-{}", std::process::id()));
+        // Pids are reused: clear a stale log from a previous process so the
+        // file holds exactly this run's record.
+        let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
         let log = dir.join("r.jsonl");
         std::env::set_var(LOG_ENV, &log);

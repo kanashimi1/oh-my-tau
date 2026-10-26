@@ -41,6 +41,7 @@ fn spec(prompt: &str, cwd: &Path) -> TaskSpec {
         depth: 0,
         extra_args: Vec::new(),
         env: Vec::new(),
+        worktree: false,
     }
 }
 

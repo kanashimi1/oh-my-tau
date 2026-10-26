@@ -760,6 +760,7 @@ pub(crate) async fn run_agent_with(
         output_schema: schema,
         schema_mode,
         tools: None,
+        worktree: None,
     };
     item.validate()
         .map_err(|error| format!("agent() received invalid arguments: {error}"))?;
@@ -2386,6 +2387,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             depth: 0,
             extra_args: Vec::new(),
             env: Vec::new(),
+            worktree: false,
         };
         apply_child_policy(&mut spec);
         super::task::apply_agent_model(&mut spec);
@@ -2812,6 +2814,7 @@ mod tests {
             depth: 0,
             extra_args: Vec::new(),
             env: Vec::new(),
+            worktree: false,
         }
     }
 

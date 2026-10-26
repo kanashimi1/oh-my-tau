@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "omp-task"
-version = "0.10.0"
+version = "0.10.0+a2agitflow"
 dependencies = [
  "jsonschema",
  "nix",

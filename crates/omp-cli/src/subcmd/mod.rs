@@ -4,6 +4,7 @@
 //! models|stats|config|gc` CLI surface and the `omp --export <file>` launch
 //! flag.
 
+pub mod agent_merge;
 pub mod collab;
 pub mod config;
 pub mod export;
@@ -12,6 +13,7 @@ pub mod hub;
 pub mod judge_sessions;
 pub mod login;
 pub mod models;
+pub mod review;
 pub mod serve_collab;
 pub mod stats;
 pub mod stats_judge;
@@ -35,6 +37,8 @@ pub fn known(name: &str) -> bool {
             | "serve-collab"
             | "web"
             | "hub"
+            | "agent-merge"
+            | "review"
     )
 }
 
@@ -57,6 +61,8 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "serve-collab" => serve_collab::run(args),
         "web" => web::run(args),
         "hub" => hub::run(args),
+        "agent-merge" => agent_merge::run(args),
+        "review" => review::run(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),
     }
 }

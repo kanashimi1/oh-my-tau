@@ -97,6 +97,9 @@ pub struct ParsedAgentFields {
     /// (it is only named in a compact `Also:` line); it stays spawnable.
     /// Defaults to `true`.
     pub listed: bool,
+    /// `worktree: true`: every `task` spawn of this agent runs in a fresh
+    /// git worktree on branch `agent/<id>` (see [`crate::worktree`]).
+    pub worktree: Option<bool>,
 }
 
 /// Spawn-permission field: unrestricted (`*`) or an explicit agent list.
@@ -305,6 +308,7 @@ fn parse_agent_fields(frontmatter: &Value) -> Option<ParsedAgentFields> {
         prewalk,
         listed: parse_bool(obj.get("listed")).unwrap_or(true),
         advisor,
+        worktree: parse_bool(obj.get("worktree")),
     })
 }
 
