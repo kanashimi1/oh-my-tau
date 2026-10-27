@@ -112,6 +112,12 @@ impl AgentTool for LspTool {
     fn label(&self) -> &'static str {
         "LSP"
     }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        self.env.set_a2a_owner(owner.clone());
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.env.a2a_owner()
+    }
     fn execute(
         self: Arc<Self>,
         _tool_call_id: String,

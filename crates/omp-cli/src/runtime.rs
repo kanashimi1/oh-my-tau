@@ -522,9 +522,13 @@ impl Runtime {
         rt.record_model_state().await;
         // A2A: a child message/result arriving while the session is idle starts
         // a delivery turn (best effort; weak ref so the bus never pins a
-        // finished Runtime). This runtime is the delivery owner: spawns stamp its
-        // token, and only its park/wake/wait legs consume the queue.
+        // finished Runtime). This runtime is the delivery owner: spawns stamp
+        // its token, and only its park/wake/wait legs consume the queue. The
+        // process-global registration stays for Env-less paths (hub
+        // endpoint, BusLease::acquire); the per-session token also goes on
+        // the tools' Envs so concurrent runtimes never share an owner.
         crate::tools::a2a::set_owner(rt.a2a_owner.clone());
+        crate::tools::stamp_a2a_owner(&rt.agent, &rt.a2a_owner).await;
         {
             let weak = std::sync::Arc::downgrade(&rt);
             crate::tools::a2a::set_delivery_wake(std::sync::Arc::new(move || {
@@ -3584,6 +3588,11 @@ impl Runtime {
             {
                 let settings = omp_settings::Settings::load(&self.cwd);
                 let mut tools = crate::tools::session_builtin_tools(&self.cwd, mode, &settings);
+                // Fresh Envs: restamp this session's owner token (the tools
+                // stamp/consume children and deliveries under it).
+                for tool in &tools {
+                    tool.set_a2a_owner(&self.a2a_owner);
+                }
                 tools.extend(crate::tools::mcp::mcp_tools(&self.cwd));
                 // TS `reconcileThinkTool`: model swaps re-evaluate the hidden
                 // think tool's eligibility.

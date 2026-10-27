@@ -599,7 +599,9 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         specs,
         rubrics,
         prompts,
-        &super::a2a::current_owner(),
+        // This Env's session token: the children and their deliveries belong
+        // to the session whose `task` call spawned them.
+        &env.a2a_owner(),
     )
     .await?;
     let mut text = format!(

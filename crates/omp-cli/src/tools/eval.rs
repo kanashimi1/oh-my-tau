@@ -96,6 +96,14 @@ impl AgentTool for EvalTool {
         static SCHEMA: LazyLock<Value> = LazyLock::new(schema);
         &SCHEMA
     }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        // eval cells (`agent()`, `workpool()`) spawn children through this
+        // Env's owner.
+        self.env.set_a2a_owner(owner.clone());
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.env.a2a_owner()
+    }
     fn execute(
         self: Arc<Self>,
         tool_call_id: String,

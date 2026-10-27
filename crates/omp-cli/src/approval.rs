@@ -862,6 +862,20 @@ impl Gate {
         GATE.get().cloned()
     }
 
+    /// Test-only gate (never installed): lets tests wrap tools exactly like
+    /// production `wrap_tools` without claiming the process-global install.
+    #[cfg(test)]
+    pub(crate) fn for_test(cwd: &std::path::Path) -> Arc<Self> {
+        Arc::new(Self {
+            mode_override: None,
+            auto_approve: true,
+            cwd: cwd.to_path_buf(),
+            ext: None,
+            binding: Mutex::new(Binding::default()),
+            refused: Mutex::new(std::collections::HashSet::new()),
+        })
+    }
+
     /// Whether the gate refused call `id` (consumed once).
     #[must_use]
     pub fn take_refused(&self, id: &str) -> bool {
@@ -1014,6 +1028,12 @@ struct GatedTool {
 impl AgentTool for GatedTool {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn set_a2a_owner(&self, owner: &std::sync::Arc<str>) {
+        self.inner.set_a2a_owner(owner);
+    }
+    fn a2a_owner(&self) -> Option<std::sync::Arc<str>> {
+        self.inner.a2a_owner()
     }
     fn description(&self) -> &str {
         self.inner.description()
