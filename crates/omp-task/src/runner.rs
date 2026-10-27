@@ -16,8 +16,8 @@ mod control;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -25,9 +25,9 @@ use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 
-use crate::envelope::{format_task_result, TaskResultEnvelope};
+use crate::envelope::{TaskResultEnvelope, format_task_result};
 use crate::params::{SchemaMode, TaskItem};
-use crate::schema::{validate_output, SchemaValidation};
+use crate::schema::{SchemaValidation, validate_output};
 
 pub use control::{ChildMode, RunControl, RunJoin, RunPhase, SteerError};
 
@@ -216,16 +216,19 @@ pub fn recursion_gate() -> Result<usize, String> {
 }
 
 /// Apply the child env/argv shared by every spawner: the no-title marker,
-/// the recursion-depth stamp and the caller's policy passthrough args.
+/// recursion-depth stamp, lightweight one-shot startup and policy passthrough.
 fn apply_child_policy(command: &mut Command, spec: &TaskSpec) {
     command
         .env_remove(A2A_SOCK_ENV)
         .env_remove(A2A_SELF_ENV)
         .env(SUBAGENT_NO_TITLE.0, SUBAGENT_NO_TITLE.1)
         .env(TASK_DEPTH_ENV, spec.depth.to_string());
-    // TS `executor.ts`: the parent task's approval is the authorization boundary, so subagents run
     // unattended in yolo mode (user `tools.approval` policies still apply).
     command.arg("--approval-mode").arg("yolo");
+    // Children are one-shot workers: avoid session persistence, title setup
+    // and repository prewalk. Keep tools, skills, rules and extensions intact
+    // so the selected agent's policy and output behavior do not change.
+    command.args(["--no-session", "--no-title", "--no-prewalk"]);
     command.args(&spec.extra_args);
     command.envs(spec.env.iter().map(|(k, v)| (k, v)));
 }
@@ -549,6 +552,31 @@ mod tests {
         assert!(!out.truncated);
         let envelope = out.envelope();
         assert_eq!(envelope.status, "completed");
+    }
+
+    #[tokio::test]
+    async fn lightweight_child_keeps_agent_policy_and_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = fake_binary(dir.path(), r#"printf '%s\n' "$@""#);
+        let runner = TaskRunner::new(&bin, 1);
+        let mut child = spec("scout-glm", "return this result", dir.path());
+        child.model = Some("provider/model".to_string());
+        child.tools = Some(vec!["read".to_string(), "grep".to_string()]);
+        child.extra_args = vec!["--no-extensions".to_string()];
+        let out = runner.spawn(child).await;
+        assert_eq!(out.status, RunStatus::Completed);
+        assert!(out.output.contains("return this result"));
+        for flag in ["--no-session", "--no-title", "--no-prewalk"] {
+            assert!(
+                out.output.lines().any(|line| line == flag),
+                "missing {flag}"
+            );
+        }
+        assert!(out.output.lines().any(|line| line == "--no-extensions"));
+        assert!(out.output.lines().any(|line| line == "--approval-mode"));
+        assert!(out.output.lines().any(|line| line == "provider/model"));
+        assert!(out.output.lines().any(|line| line == "read,grep"));
+        assert!(!out.output.lines().any(|line| line == "--no-tools"));
     }
 
     #[tokio::test]

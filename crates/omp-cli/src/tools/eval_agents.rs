@@ -696,14 +696,7 @@ fn cancel_handle(handle: &Handle) -> bool {
 // ---------------------------------------------------------------------------
 
 async fn run_agent(env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, String> {
-    run_agent_with(
-        env,
-        args,
-        ctx,
-        &LAUNCHER,
-        &super::a2a::current_owner(),
-    )
-    .await
+    run_agent_with(env, args, ctx, &LAUNCHER, &super::a2a::current_owner()).await
 }
 
 pub(crate) async fn run_agent_with(
@@ -2245,7 +2238,12 @@ impl TaskSlot {
 
     /// Mark the handle settled from the child's final output.
     pub(crate) fn settle(&self, output: &omp_task::RunOutput) {
-        settle_agent(&self.handle, output, omp_task::SchemaMode::Permissive, false);
+        settle_agent(
+            &self.handle,
+            output,
+            omp_task::SchemaMode::Permissive,
+            false,
+        );
         self.handle.mark_run_finished();
     }
 }
@@ -2365,10 +2363,24 @@ fn clamp_tools(
 }
 
 /// Apply the parent policy to a spec about to be launched: child depth stamp
-/// plus extension/no-extensions passthrough and tool clamping.
+/// plus extension/no-extensions passthrough and tool clamping. Built-in
+/// read-only scouts use the lightweight profile: their declared tool policy
+/// is unchanged, but they do not pay for the parent's interactive extension
+/// host (approval, TUI and session-recall hooks) on every cold start.
 pub(crate) fn apply_child_policy(spec: &mut omp_task::TaskSpec) {
     spec.depth = omp_task::current_task_depth() + 1;
     spec.extra_args = child_spawn_policy().extra_args.clone();
+    if matches!(
+        spec.agent.as_str(),
+        "scout-glm" | "scout-kimi" | "scout-codex" | "scout-grok"
+    ) && !spec.extra_args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--no-extensions" | "--extension" | "-e" | "--hook" | "--trusted-extension"
+        )
+    }) {
+        spec.extra_args.push("--no-extensions".to_string());
+    }
     spec.tools = clamp_child_tools(spec.tools.take());
 }
 
@@ -3344,6 +3356,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn scout_profile_skips_extensions_without_changing_tool_policy() {
+        let mut scout = spec("light-scout");
+        scout.agent = "scout-kimi".to_string();
+        scout.tools = Some(vec!["read".to_string(), "grep".to_string()]);
+        apply_child_policy(&mut scout);
+        assert!(scout.extra_args.iter().any(|arg| arg == "--no-extensions"));
+        assert_eq!(
+            scout.tools,
+            Some(vec!["read".to_string(), "grep".to_string()])
+        );
+
+        let mut regular = spec("full-worker");
+        apply_child_policy(&mut regular);
+        assert!(
+            !regular
+                .extra_args
+                .iter()
+                .any(|arg| arg == "--no-extensions")
+        );
+    }
+
     /// Serialize the tests that mutate the recursion-depth env: the env is
     /// process-global and `create_workpool` reads it through the gate.
     static DEPTH_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
@@ -3445,9 +3479,14 @@ mod tests {
 
         drop(slot);
         assert!(!agent_id_taken("slot-t1"));
-        let gone = deliver_from_peer("slot-t1", "late", "someone").await.unwrap_err();
+        let gone = deliver_from_peer("slot-t1", "late", "someone")
+            .await
+            .unwrap_err();
         assert!(gone.contains("Unknown agent"), "{gone}");
-        assert!(TaskSlot::claim("slot-t1").is_ok(), "id is reusable after the drop");
+        assert!(
+            TaskSlot::claim("slot-t1").is_ok(),
+            "id is reusable after the drop"
+        );
     }
 
     /// A child's bus messages reach siblings as steers (sender-prefixed) and
@@ -3482,7 +3521,10 @@ mod tests {
             *run_b.steered.lock().unwrap(),
             ["[message from agent://bus-a]\nneed the schema"]
         );
-        assert!(run_a.steered.lock().unwrap().is_empty(), "sender not steered");
+        assert!(
+            run_a.steered.lock().unwrap().is_empty(),
+            "sender not steered"
+        );
 
         from_a.send("parent", "blocked on bus-b").await.unwrap();
         let inbox: Vec<_> = super::super::a2a::take_deliveries()
@@ -3492,7 +3534,13 @@ mod tests {
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].text, "blocked on bus-b");
 
-        assert!(from_a.send("bus-a", "me").await.unwrap_err().contains("itself"));
+        assert!(
+            from_a
+                .send("bus-a", "me")
+                .await
+                .unwrap_err()
+                .contains("itself")
+        );
         assert!(
             from_a
                 .send("bus-nobody", "hi")
