@@ -580,7 +580,7 @@ mod tests {
 
     /// Reference: untyped `Value` parse of the catalog (the pre-fix implementation),
     /// reduced to the `CATALOG_EXTRA_KEYS` fields. Must cover every provider/id of the
-    /// real 5618-model `models.json`, and the typed [`Catalog`] must agree exactly.
+    /// installed `models.json` (its size changes with every catalog sync), and the typed [`Catalog`] must agree exactly.
     #[test]
     fn catalog_matches_value_reference_parse() {
         let Some(path) = catalog_path().filter(|p| p.is_file()) else {
@@ -619,7 +619,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(models, 5618, "expected the full 5618-model catalog");
+        assert!(models > 0, "the installed catalog lists no models");
         assert!(catalog().is_some(), "typed catalog must be installed");
     }
 }
