@@ -18,7 +18,7 @@
 #composer-wrap { border-top: none; background: transparent; padding: 6px 20px 10px; }
 #app.home #composer-wrap { padding: 0 24px 12vh; }
 #app.home .composer-card { box-shadow: 0 18px 50px rgba(0, 0, 0, .35); }
-#app.home #home-head .logo.big svg { width: 64px; height: 64px; }
+#app.home #home-head .logo.big svg { width: 88px; height: auto; }
 #app.home #home-head h1 { margin: 6px 0 2px; }
 #app.home #home-head { margin-bottom: 22px; }
 #app.home #statusbar { display: none; }

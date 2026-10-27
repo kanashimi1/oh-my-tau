@@ -21,6 +21,11 @@ const FILES: &[(&str, &str, &str)] = &[
         include_str!("assets/util.js"),
     ),
     (
+        "/assets/mascot.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/mascot.js"),
+    ),
+    (
         "/assets/markdown.js",
         "text/javascript; charset=utf-8",
         include_str!("assets/markdown.js"),

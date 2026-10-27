@@ -1786,7 +1786,7 @@ fn clean_welcome_shimmers_live_then_commits_static_rows() {
     );
     let s = screen(&mut app, 100, 14);
     assert!(
-        s.lines().nth(1).is_some_and(|l| l.contains("OMT")),
+        s.lines().nth(2).is_some_and(|l| l.contains("OMT")),
         "drawn at the top of the live region:\n{s}"
     );
     // Time is up: the static rows commit, the live region drops them.

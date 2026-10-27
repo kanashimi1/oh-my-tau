@@ -36,7 +36,7 @@
 
   const transcript = new OMP.Transcript($("#transcript"), $("#transcript-wrap"));
   const composer = new OMP.Composer({ onSubmit: submit, onAbort: abort });
-  OMP.dialogs.afterClose = () => composer.focus();
+  OMP.dialogs.afterClose = () => { composer.focus(); renderStatus(); };
 
   // ── rpc ──────────────────────────────────────────────────────────────────
   function send(frame) {
@@ -62,7 +62,7 @@
     S.pending.clear();
     OMP.dialogs.clear();
     transcript.reset();
-    Object.assign(S, { agentId, agentInfo: null, state: null, stats: null, streaming: false, dead: null, queue: { steering: [], followUp: [] } });
+    Object.assign(S, { agentId, agentInfo: null, state: null, stats: null, streaming: false, dead: null, toolsRunning: 0, errorUntil: 0, queue: { steering: [], followUp: [] } });
     S.status.clear();
     S.widgets.clear();
     renderWidgets();
@@ -134,6 +134,7 @@
 
   function setStreaming(on) {
     if (on && !S.streaming) S.runStart = Date.now();
+    if (!on) S.toolsRunning = 0;
     S.streaming = on;
     composer.setStreaming(on);
     renderStatus();
@@ -191,10 +192,22 @@
         return;
       case "prompt_result":
         if (f.status === "failed" && f.error) transcript.addSystem(f.error, "error");
+        if (f.status === "failed" || f.status === "error") flagError();
         return;
+      case "tool_execution_start": case "tool_execution_end":
+        S.toolsRunning = Math.max(0, (S.toolsRunning || 0) + (f.type === "tool_execution_start" ? 1 : -1));
+        renderStatus();
+        return transcript.onEvent(f);
       default:
         transcript.onEvent(f);
     }
+  }
+
+  // Tau shows the error face for a few seconds after a failed prompt.
+  function flagError() {
+    S.errorUntil = Date.now() + 5000;
+    renderStatus();
+    setTimeout(renderStatus, 5100);
   }
 
   function uiRequest(f) {
@@ -202,11 +215,13 @@
     if (DIALOG_METHODS.has(m)) {
       const pending = OMP.dialogs.request(f, answerDialog);
       refreshAgents(); // roster "needs input" chip now, not on the next 5s tick
+      renderStatus();
       return pending;
     }
     if (m === "cancelDialog") {
       OMP.dialogs.cancel((f.params && f.params.id) || f.targetId || f.id);
       refreshAgents();
+      renderStatus();
       return;
     }
     if (m === "notify" || m === "ui_notify") return OMP.toast(f.message || f.text || "", f.notifyType || f.level || "info");

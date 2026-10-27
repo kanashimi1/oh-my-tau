@@ -336,18 +336,26 @@ pub fn welcome_lines(version: &str, tip: &str, width: usize, theme: &Theme) -> V
     lines
 }
 
-/// The OMT τ glyph, 10 × 8 pixels (`#` lit), drawn as 4 half-block rows.
-const TAU: [&str; 8] = [
-    "##########",
-    "##########",
-    "   ###    ",
-    "   ###    ",
-    "   ###    ",
-    "   ###    ",
-    "    ###   ",
-    "     #####",
+/// Tau, the omt mascot (the web app's `mascot.js` sprite at terminal size):
+/// a τ-shaped spirit, 13 × 10 pixels drawn as 5 half-block rows.
+/// `#` body · `h` highlight · `d` shade · `D` visor · `E` eyes · `.` empty.
+const TAU: [&str; 10] = [
+    ".....hhh.....",
+    "...#######...",
+    "..##DDDDD##..",
+    "..#DEDDDED#..",
+    "h###########h",
+    "##d..###..d##",
+    ".....###.....",
+    ".....####....",
+    "......####.#.",
+    ".......####..",
 ];
-const TAU_WIDTH: usize = 10;
+const TAU_WIDTH: usize = 13;
+/// Mid stop of the mascot gradient ([`PINK`] → violet → [`CYAN`]).
+const VIOLET: (u8, u8, u8) = (170, 90, 255);
+const VISOR: (u8, u8, u8) = (30, 14, 48);
+const EYES: (u8, u8, u8) = (150, 252, 255);
 /// OMT gradient ends (also the idle τ of the clean status line).
 pub const PINK: (u8, u8, u8) = (255, 92, 168);
 /// See [`PINK`].
@@ -395,23 +403,29 @@ fn rgb((r, g, b): (u8, u8, u8)) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Sunset stripe colour of pixel row `row` (0..8). Phase 0 is the static
-/// palette (row `r` = stop `r`); the phase rotates the stops cyclically.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-fn stripe(row: usize, phase: f64) -> Color {
-    use crate::magic::SUNSET;
-    let n = SUNSET.len();
-    let x = (row as f64 + phase * n as f64).rem_euclid(n as f64);
-    let i = x.floor() as usize % n;
-    let f = x - x.floor();
-    rgb(crate::magic::gradient_at(
-        &[SUNSET[i], SUNSET[(i + 1) % n]],
-        f,
-    ))
+/// Colour of mascot pixel (`x`, `y`), `None` when unlit. The body runs the
+/// diagonal pink → violet → cyan gradient; `phase` sweeps it out and back
+/// (phase 0 and 1 are the static palette).
+#[allow(clippy::cast_precision_loss)]
+fn tau_pixel(col: usize, row: usize, phase: f64) -> Option<Color> {
+    use crate::magic::gradient_at;
+    let glyph = *TAU.get(row)?.as_bytes().get(col)?;
+    let pos =
+        col as f64 / (TAU_WIDTH - 1) as f64 * 0.55 + row as f64 / (TAU.len() - 1) as f64 * 0.45;
+    let swept = (pos + 2.0 * phase).rem_euclid(2.0);
+    let body = gradient_at(
+        &[PINK, VIOLET, CYAN],
+        if swept > 1.0 { 2.0 - swept } else { swept },
+    );
+    let c = match glyph {
+        b'#' => body,
+        b'h' => gradient_at(&[body, (255, 255, 255)], 0.5),
+        b'd' => gradient_at(&[body, (40, 10, 70)], 0.35),
+        b'D' => VISOR,
+        b'E' => EYES,
+        _ => return None,
+    };
+    Some(rgb(c))
 }
 
 /// Gradient position of `OMT` char `i`, ping-ponged by the phase so the
@@ -441,32 +455,30 @@ fn omt_spans(phase: f64) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// The τ glyph as 4 rows of [`TAU_WIDTH`] half-block cells (`▀` fg = top
+/// The mascot as half-block rows of [`TAU_WIDTH`] cells (`▀` fg = top
 /// pixel, bg = bottom pixel; unlit cells are plain spaces).
 fn tau_rows(phase: f64) -> Vec<Vec<Span<'static>>> {
-    let lit = |row: usize, x: usize| TAU[row].as_bytes().get(x) == Some(&b'#');
     (0..TAU.len() / 2)
         .map(|y| {
-            let (top, bottom) = (2 * y, 2 * y + 1);
             (0..TAU_WIDTH)
-                .map(|x| match (lit(top, x), lit(bottom, x)) {
-                    (false, false) => Span::raw(" "),
-                    (true, false) => Span::styled("▀", Style::default().fg(stripe(top, phase))),
-                    (false, true) => Span::styled("▄", Style::default().fg(stripe(bottom, phase))),
-                    (true, true) => Span::styled(
-                        "▀",
-                        Style::default()
-                            .fg(stripe(top, phase))
-                            .bg(stripe(bottom, phase)),
-                    ),
-                })
+                .map(
+                    |x| match (tau_pixel(x, 2 * y, phase), tau_pixel(x, 2 * y + 1, phase)) {
+                        (None, None) => Span::raw(" "),
+                        (Some(top), None) => Span::styled("▀", Style::default().fg(top)),
+                        (None, Some(bottom)) => Span::styled("▄", Style::default().fg(bottom)),
+                        (Some(top), Some(bottom)) => {
+                            Span::styled("▀", Style::default().fg(top).bg(bottom))
+                        }
+                    },
+                )
                 .collect()
         })
         .collect()
 }
 
-/// Clean style welcome: the OMT τ logo (sunset half-block stripes) with
-/// the `OMT` wordmark, version + katakana reading and the tip beside it;
+/// Clean style welcome: Tau the mascot with the `OMT` wordmark, version +
+/// katakana reading and the tip beside it (one row down, level with the
+/// visor);
 /// one line (`τ OMT v…`) on narrow terminals. `phase` 0 is the static
 /// palette, other values come from [`shimmer_phase`].
 #[must_use]
@@ -493,8 +505,8 @@ pub fn clean_welcome_lines(
         return vec![Line::from(spans)];
     }
     let mut beside: Vec<Vec<Span<'static>>> = vec![Vec::new(); TAU.len() / 2];
-    beside[0] = omt_spans(phase);
-    beside[1] = vec![Span::styled(
+    beside[1] = omt_spans(phase);
+    beside[2] = vec![Span::styled(
         fit(&format!("v{version} · {KATAKANA}"), side),
         muted,
     )];
@@ -512,7 +524,7 @@ pub fn clean_welcome_lines(
             .add_modifier(Modifier::ITALIC);
         let body_style = muted.add_modifier(Modifier::ITALIC);
         for (i, line) in wrapped.iter().enumerate() {
-            let row = &mut beside[2 + i];
+            let row = &mut beside[3 + i];
             match line.strip_prefix("Tip: ").filter(|_| i == 0) {
                 Some(rest) => {
                     row.push(Span::styled("Tip: ", label));
@@ -544,22 +556,27 @@ mod tests {
         let theme = Theme::default();
         let rows = clean_welcome_lines("0.10.0", "Type `/` for commands", 100, &theme, 0.0);
         let t: Vec<String> = rows.iter().map(text).collect();
-        assert_eq!(rows.len(), 5, "{t:#?}");
+        assert_eq!(rows.len(), 6, "{t:#?}");
         assert!(t[0].is_empty());
-        assert_eq!(t[1], "  ▀▀▀▀▀▀▀▀▀▀   OMT");
-        assert_eq!(t[2], "     ▀▀▀       v0.10.0 · オー・マイ・タウ");
-        assert_eq!(t[3], "     ▀▀▀       Tip: Type `/` for commands");
-        assert_eq!(t[4], "      ▀▀▀▄▄▄");
+        assert_eq!(t[1], "     ▄▄▀▀▀▄▄   ");
+        assert_eq!(t[2], "    ▀▀▀▀▀▀▀▀▀     OMT");
+        assert_eq!(t[3], "  ▀▀▀▀▀▀▀▀▀▀▀▀▀   v0.10.0 · オー・マイ・タウ");
+        assert_eq!(t[4], "       ▀▀▀▄       Tip: Type `/` for commands");
+        assert_eq!(t[5], "        ▀▀▀▀▄▀ ");
         assert!(t.iter().all(|r| !r.contains("Omi") && !r.contains("/w")));
-        // Pixel row r carries sunset stop r: row 0 = fg stop 0 / bg stop 1.
-        let first = &rows[1].spans[1];
-        assert_eq!(first.style.fg, Some(rgb(crate::magic::SUNSET[0])));
-        assert_eq!(first.style.bg, Some(rgb(crate::magic::SUNSET[1])));
+        // Half-blocks: fg = top pixel, bg = bottom pixel; the visor row
+        // carries the cyan eyes under the dark visor.
+        let arm = &rows[3].spans[1];
+        assert_eq!(arm.style.fg, tau_pixel(0, 4, 0.0));
+        assert_eq!(arm.style.bg, tau_pixel(0, 5, 0.0));
+        let eye = &rows[2].spans[1 + 4];
+        assert_eq!(eye.style.fg, Some(rgb(VISOR)));
+        assert_eq!(eye.style.bg, Some(rgb(EYES)));
         // OMT: bold pink → cyan.
-        let o = rows[1].spans.iter().find(|s| s.content == "O").unwrap();
+        let o = rows[2].spans.iter().find(|s| s.content == "O").unwrap();
         assert_eq!(o.style.fg, Some(rgb(PINK)));
         assert!(o.style.add_modifier.contains(Modifier::BOLD));
-        let t = rows[1].spans.iter().find(|s| s.content == "T").unwrap();
+        let t = rows[2].spans.iter().find(|s| s.content == "T").unwrap();
         assert_eq!(t.style.fg, Some(rgb(CYAN)));
     }
 
@@ -568,10 +585,10 @@ mod tests {
         let theme = Theme::default();
         let long = "word ".repeat(40);
         let rows = clean_welcome_lines("1.2.3", &long, 70, &theme, 0.0);
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         let t: Vec<String> = rows.iter().map(text).collect();
-        assert!(t[3].contains("Tip: word"), "{t:#?}");
-        assert!(t[4].trim_end().ends_with('…'), "{t:#?}");
+        assert!(t[4].contains("Tip: word"), "{t:#?}");
+        assert!(t[5].trim_end().ends_with('…'), "{t:#?}");
         assert!(t.iter().all(|r| UnicodeWidthStr::width(r.as_str()) <= 70));
         let narrow = clean_welcome_lines("1.2.3", "tip", 50, &theme, 0.0);
         assert_eq!(narrow.len(), 1);
@@ -605,8 +622,9 @@ mod tests {
         // Just before the end the cycle is nearly closed (no jump at freeze).
         let late = shimmer_phase(Duration::from_millis(SHIMMER_MS - 1)).unwrap();
         assert!(late > 0.99);
-        assert_eq!(stripe(3, 0.0), rgb(crate::magic::SUNSET[3]));
-        assert_eq!(stripe(3, 1.0), stripe(3, 0.0));
+        assert_eq!(tau_pixel(6, 4, 1.0), tau_pixel(6, 4, 0.0));
+        assert_ne!(tau_pixel(6, 4, 0.5), tau_pixel(6, 4, 0.0));
+        assert_eq!(tau_pixel(0, 0, 0.0), None);
         assert_eq!(omt_color(2, 1.0), omt_color(2, 0.0));
     }
 

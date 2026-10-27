@@ -41,15 +41,24 @@
     tBtn.hidden = !!(st.model && !st.model.reasoning && !st.ultra);
   }
 
+  // Tau in the status bar: one persistent sprite, re-framed only when the
+  // agent's state changes (re-inserting it would restart its animation).
+  const liveHost = el("span.tau-live");
+  let live = null;
+
   function renderStatus(s) {
     const bar = $("#statusbar");
     if (!s.agentId) { bar.replaceChildren(); return; }
+    if (!live) live = OMP.mascot.mount(liveHost, { size: 22 });
+    const mood = OMP.mascot.stateOf(s);
+    live.set(mood);
     const parts = [];
     const st = s.state || {};
     const stats = s.stats || {};
-    if (s.dead) parts.push(el("span.warn", { text: "● stopped" }));
-    else if (s.streaming) parts.push(el("span.busy", { text: `● working ${OMP.fmtDuration(Date.now() - s.runStart)}` }));
-    else parts.push(el("span", { text: "● ready" }));
+    if (s.dead) parts.push(el("span.warn", { text: "stopped" }));
+    else if (mood === "wave") parts.push(el("span.busy", { text: "waiting for you" }));
+    else if (s.streaming) parts.push(el("span.busy", { text: `${mood === "work" ? "working" : "thinking"} ${OMP.fmtDuration(Date.now() - s.runStart)}` }));
+    else parts.push(el("span", { text: "ready" }));
     const cu = stats.contextUsage;
     if (cu && cu.contextWindow) {
       const pct = Math.min(100, cu.percent != null ? cu.percent : (100 * cu.tokens) / cu.contextWindow);
@@ -65,7 +74,9 @@
     if (q) parts.push(el("span.warn", { text: `${q} queued` }));
     for (const [k, v] of s.status) parts.push(el("span", { text: v, title: k }));
     if (st.sessionId) parts.push(el("span.faint", { text: st.sessionId.slice(0, 8), title: st.sessionFile || st.sessionId }));
-    bar.replaceChildren(...parts.flatMap((p, i) => (i ? [el("span.sep", { text: "│" }), p] : [p])));
+    while (bar.lastChild && bar.lastChild !== liveHost) bar.lastChild.remove();
+    if (bar.firstChild !== liveHost) bar.prepend(liveHost);
+    bar.append(...parts.flatMap((p, i) => (i ? [el("span.sep", { text: "│" }), p] : [p])));
   }
 
   function renderQueue(s) {
