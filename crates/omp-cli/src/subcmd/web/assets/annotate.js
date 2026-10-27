@@ -67,16 +67,21 @@
         return { x: Math.min(1, Math.max(0, (cx - b.left) / b.w)), y: Math.min(1, Math.max(0, (cy - b.top) / b.h)) };
       };
 
-      function render(focus) {
+      const place = (dot, p) => {
         const b = box(), s = stage.getBoundingClientRect();
+        dot.style.left = `${b.left - s.left + p.x * b.w}px`;
+        dot.style.top = `${b.top - s.top + p.y * b.h}px`;
+      };
+
+      function render(focus) {
         layer.replaceChildren(...pins.map((p, i) => {
           const dot = el("div.pin-dot", { text: String(i + 1) });
-          dot.style.left = `${b.left - s.left + p.x * b.w}px`;
-          dot.style.top = `${b.top - s.top + p.y * b.h}px`;
+          place(dot, p);
           dot.addEventListener("pointerdown", (e) => {
+            e.preventDefault();
             e.stopPropagation();
             dot.setPointerCapture(e.pointerId);
-            const move = (m) => { Object.assign(p, toImage(m.clientX, m.clientY)); render(); };
+            const move = (m) => { Object.assign(p, toImage(m.clientX, m.clientY)); place(dot, p); };
             dot.addEventListener("pointermove", move);
             dot.addEventListener("pointerup", () => {
               dot.removeEventListener("pointermove", move);
@@ -88,7 +93,7 @@
         list.replaceChildren(...pins.map((p, i) => el("div.pin-row", null,
           el("span.pin-num", { text: String(i + 1) }),
           el("textarea", {
-            rows: 2, placeholder: "What to change here…", value: p.text || "",
+            rows: 2, placeholder: "What to change here…", text: p.text || "",
             oninput: (e) => { p.text = e.target.value; },
           }),
           el("button.pin-del", { text: "×", title: "Remove pin", onclick: () => { pins.splice(i, 1); render(); } }))));
@@ -99,6 +104,7 @@
         if (e.button !== 0) return;
         const b = box();
         if (e.clientX < b.left || e.clientX > b.left + b.w || e.clientY < b.top || e.clientY > b.top + b.h) return;
+        e.preventDefault(); // keep focus on the new pin's comment field
         pins.push({ ...toImage(e.clientX, e.clientY), text: "" });
         render(pins.length - 1);
       });
