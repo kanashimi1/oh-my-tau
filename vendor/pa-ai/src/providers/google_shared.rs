@@ -382,10 +382,9 @@ pub fn convert_messages(model: &Model, context: &Context) -> Vec<Value> {
                                 .any(|part| part.get("functionResponse").is_some())
                         });
                     if is_user && has_function_response {
-                        last.get_mut("parts")
-                            .and_then(|value| value.as_array_mut())
-                            .expect("parts is an array")
-                            .push(function_response_part);
+                        if let Some(parts) = last.get_mut("parts").and_then(Value::as_array_mut) {
+                            parts.push(function_response_part);
+                        }
                         // For Gemini < 3, images go in a separate user turn.
                         if has_images && !model_supports_multimodal_function_response {
                             contents.push(json!({
@@ -570,6 +569,9 @@ pub fn is_gemini3_flash_model(model_id: &str) -> bool {
     regex_is_match(model_id, r"gemini-3(?:\.\d+)?-flash")
 }
 
+// invariant: callers pass literal regexes only; a compile failure is a
+// programming error caught by tests.
+#[allow(clippy::expect_used)]
 fn regex_is_match(model_id: &str, pattern: &str) -> bool {
     let regex = regex::Regex::new(pattern).expect("static regex");
     regex.is_match(&model_id.to_lowercase())

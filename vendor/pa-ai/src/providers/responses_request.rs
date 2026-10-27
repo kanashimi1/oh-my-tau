@@ -224,6 +224,8 @@ fn convert_input_content(
     }
 }
 
+// invariant: a SHA-256 digest always has >= 8 bytes; the digits emitted are ASCII.
+#[allow(clippy::expect_used)]
 fn base36_hash(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(value.as_bytes());
@@ -677,6 +679,9 @@ const SCHEMA_VALUE_KEYS: [&str; 10] = [
     "else",
 ];
 
+// invariant: each `as_object`/`as_array` below is guarded by the matching
+// `is_object`/`is_array` test in the same condition.
+#[allow(clippy::expect_used)]
 fn sanitize_responses_node(value: &Value) -> Value {
     let Value::Object(obj) = value else {
         return value.clone();

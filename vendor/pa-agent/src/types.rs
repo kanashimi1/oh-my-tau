@@ -723,6 +723,8 @@ impl ContextMessages {
             let all = std::mem::take(self).into_vec();
             self.tail = all;
         } else if self.segments.len() == 1 {
+            // invariant: len == 1 was checked above, so pop always yields a segment.
+            #[allow(clippy::expect_used)]
             let only = self.segments.pop().expect("one segment");
             self.tail = Arc::try_unwrap(only).unwrap_or_else(|shared| (*shared).clone());
         }

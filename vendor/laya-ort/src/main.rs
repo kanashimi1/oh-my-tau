@@ -48,10 +48,12 @@ fn main() -> Result<()> {
         })
         .into();
     let max_len: usize = arg_value(&args, "--max-len")
-        .map(|s| s.parse().unwrap())
+        .map(|s| s.parse().context("--max-len must be a number"))
+        .transpose()?
         .unwrap_or(1024);
     let threads: usize = arg_value(&args, "--threads")
-        .map(|s| s.parse().unwrap())
+        .map(|s| s.parse().context("--threads must be a number"))
+        .transpose()?
         .unwrap_or(1);
     let dump_tokens = arg_value(&args, "--dump-tokens").map(PathBuf::from);
 

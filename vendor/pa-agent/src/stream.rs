@@ -261,15 +261,22 @@ impl AssistantMessageEventStreamHandle {
     /// Push an event. Ignored after the stream was ended or closed, and
     /// after a terminal event resolved the result.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `closed` or `result` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn push(&self, event: AssistantMessageEvent) {
-        if *self.shared.closed.lock().unwrap() {
+        if *self
+            .shared
+            .closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             return;
         }
         if let Some(message) = event.terminal_message() {
-            let mut result = self.shared.result.lock().unwrap();
+            let mut result = self
+                .shared
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if result.is_none() {
                 *result = Some(message.clone());
                 self.shared.notify.notify_waiters();
@@ -281,13 +288,19 @@ impl AssistantMessageEventStreamHandle {
     /// End the stream, optionally resolving `result()`. Already-queued
     /// events are still yielded by the consumer before iteration finishes.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `closed` or `result` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn end(&self, result: Option<AssistantMessage>) {
-        *self.shared.closed.lock().unwrap() = true;
+        *self
+            .shared
+            .closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         if let Some(message) = result {
-            let mut result_slot = self.shared.result.lock().unwrap();
+            let mut result_slot = self
+                .shared
+                .result
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if result_slot.is_none() {
                 *result_slot = Some(message);
             }
@@ -300,7 +313,12 @@ impl AssistantMessageEventStream {
     /// Drain any already-queued events, returning `None` once the queue is
     /// empty and the stream was ended/closed.
     fn try_next(&mut self) -> Option<AssistantMessageEvent> {
-        if *self.shared.closed.lock().unwrap() {
+        if *self
+            .shared
+            .closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
             return self.rx.try_recv().ok();
         }
         None
@@ -314,7 +332,12 @@ impl ModelStream for AssistantMessageEventStream {
                 return self.try_next();
             }
             loop {
-                if *self.shared.closed.lock().unwrap() {
+                if *self
+                    .shared
+                    .closed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                {
                     self.closed = true;
                     return self.try_next();
                 }
@@ -322,7 +345,7 @@ impl ModelStream for AssistantMessageEventStream {
                 tokio::select! {
                     event = self.rx.recv() => return event,
                     () = notified => {
-                        if *self.shared.closed.lock().unwrap() {
+                        if *self.shared.closed.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
                             self.closed = true;
                             return self.try_next();
                         }
@@ -337,10 +360,21 @@ impl ModelStream for AssistantMessageEventStream {
     fn result(&mut self) -> crate::BoxFut<'_, anyhow::Result<AssistantMessage>> {
         Box::pin(async {
             loop {
-                if let Some(message) = self.shared.result.lock().unwrap().clone() {
+                if let Some(message) = self
+                    .shared
+                    .result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
                     return Ok(message);
                 }
-                if *self.shared.closed.lock().unwrap() {
+                if *self
+                    .shared
+                    .closed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                {
                     // Stream ended without a terminal event; unlike TS (which
                     // hangs forever), surface an error.
                     return Err(anyhow::anyhow!(
@@ -348,7 +382,13 @@ impl ModelStream for AssistantMessageEventStream {
                     ));
                 }
                 let notified = self.shared.notify.notified();
-                if let Some(message) = self.shared.result.lock().unwrap().clone() {
+                if let Some(message) = self
+                    .shared
+                    .result
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+                {
                     return Ok(message);
                 }
                 notified.await;
@@ -359,7 +399,11 @@ impl ModelStream for AssistantMessageEventStream {
     fn close(&mut self) {
         self.closed = true;
         self.rx.close();
-        *self.shared.closed.lock().unwrap() = true;
+        *self
+            .shared
+            .closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.shared.notify.notify_waiters();
     }
 }

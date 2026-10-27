@@ -505,13 +505,14 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
                     flattened.push(branch);
                     continue;
                 }
-                let b = branch.as_object().expect("pure anyOf node is an object");
-                if let Some(Value::Array(inner)) = b.get("anyOf") {
-                    flattened.extend(inner.iter().cloned());
-                }
-                if let Some(d) = b.get("description").filter(|d| d.is_string()) {
-                    if !result.contains_key("description") {
-                        result.insert("description".into(), d.clone());
+                if let Some(b) = branch.as_object() {
+                    if let Some(Value::Array(inner)) = b.get("anyOf") {
+                        flattened.extend(inner.iter().cloned());
+                    }
+                    if let Some(d) = b.get("description").filter(|d| d.is_string()) {
+                        if !result.contains_key("description") {
+                            result.insert("description".into(), d.clone());
+                        }
                     }
                 }
             }
@@ -1276,6 +1277,8 @@ fn open_subschema_widening() -> Value {
     ] })
 }
 
+// invariant: the `as_object` below is guarded by `child.is_object()`.
+#[allow(clippy::expect_used)]
 fn grammar_node(value: &Value, is_subschema: bool) -> Value {
     match value {
         Value::Bool(true) if is_subschema => open_subschema_widening(),
@@ -1289,12 +1292,14 @@ fn grammar_node(value: &Value, is_subschema: bool) -> Value {
                     | "$defs" | "definitions"
                         if child.is_object() =>
                     {
-                        let m = child.as_object().expect("checked");
-                        Value::Object(
-                            m.iter()
-                                .map(|(k, v)| (k.clone(), grammar_node(v, true)))
-                                .collect(),
-                        )
+                        match child.as_object() {
+                            Some(m) => Value::Object(
+                                m.iter()
+                                    .map(|(k, v)| (k.clone(), grammar_node(v, true)))
+                                    .collect(),
+                            ),
+                            None => child.clone(),
+                        }
                     }
                     "anyOf" | "oneOf" | "allOf" | "prefixItems" if child.is_array() => {
                         grammar_node(child, true)

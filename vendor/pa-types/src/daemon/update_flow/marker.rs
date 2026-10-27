@@ -156,8 +156,8 @@ fn rfc3339_nanos(timestamp: &str) -> Option<i64> {
     };
 
     // `month` and `day` are validated 1..=12 / 1..=31 above.
-    let month = u64::try_from(month).expect("month validated 1..=12");
-    let day = u64::try_from(day).expect("day validated 1..=31");
+    let month = u64::try_from(month).ok()?;
+    let day = u64::try_from(day).ok()?;
     let days = days_from_civil(year, month, day);
     let secs = days * 86_400 + hour * 3600 + minute * 60 + second - offset_secs;
     Some(secs * 1_000_000_000 + nanos)
@@ -179,8 +179,9 @@ fn days_from_civil(year: i64, month: u64, day: u64) -> i64 {
     let yoe = year - era * 400;
     let mp = if month > 2 { month - 3 } else { month + 9 };
     let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe =
-        yoe * 365 + yoe / 4 - yoe / 100 + i64::try_from(doy).expect("day-of-year is at most 367");
+    // invariant: doy is at most ~367 for the validated 1..=12 / 1..=31 inputs.
+    #[allow(clippy::expect_used)]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + i64::try_from(doy).expect("doy fits in i64");
     era * 146_097 + doe - 719_468
 }
 

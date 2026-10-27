@@ -214,7 +214,12 @@ pub(crate) async fn run_loop(
                 race_with_abort(
                     async {
                         match config.should_stop_after_turn.as_ref() {
-                            Some(hook) => hook(last_turn.clone().unwrap()).await,
+                            Some(hook) => {
+                                // invariant: last_turn was set to Some immediately above.
+                                #[allow(clippy::expect_used)]
+                                let turn = last_turn.clone().expect("last_turn set above");
+                                hook(turn).await
+                            }
                             None => Ok(false),
                         }
                     },

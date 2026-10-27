@@ -1,4 +1,6 @@
 //! Top-level parser for hashline file sections.
+// invariant: literal regexes verified by tests.
+#![allow(clippy::expect_used)]
 
 use std::{
     cell::OnceCell,

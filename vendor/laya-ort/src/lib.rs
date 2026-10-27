@@ -373,7 +373,10 @@ impl Judge {
             let batch = &order[start..end];
             start = end;
             let bsz = batch.len();
+            // invariant: batch is non-empty, so max() over it always yields a value.
+            #[allow(clippy::unwrap_used)]
             let l = batch.iter().map(|&i| items[i].3.ids.len()).max().unwrap();
+            #[allow(clippy::unwrap_used)]
             let m = batch
                 .iter()
                 .map(|&i| items[i].3.markers.len())

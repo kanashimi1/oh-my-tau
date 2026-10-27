@@ -49,10 +49,6 @@ pub async fn run_agent_loop(
 /// # Errors
 ///
 /// Errors if the context has no messages, the last message has role `assistant`, or the run fails.
-///
-/// # Panics
-///
-/// The `unwrap` on the last context message is unreachable: an empty context errors earlier.
 pub async fn run_agent_loop_continue(
     context: AgentContext,
     config: &AgentLoopConfig,
@@ -63,7 +59,11 @@ pub async fn run_agent_loop_continue(
     if context.messages.is_empty() {
         anyhow::bail!("Cannot continue: no messages in context");
     }
-    if context.messages.last().unwrap().role() == "assistant" {
+    if context
+        .messages
+        .last()
+        .is_some_and(|last| last.role() == "assistant")
+    {
         anyhow::bail!("Cannot continue from message role: assistant");
     }
 

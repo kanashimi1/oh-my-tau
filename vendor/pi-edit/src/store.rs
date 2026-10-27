@@ -1,4 +1,6 @@
 //! Session-scoped snapshots, clipboard registers, and no-op loop state.
+// invariant: literal regex verified by tests.
+#![allow(clippy::expect_used)]
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -461,11 +463,9 @@ fn merge_seen(snapshot: &mut Snapshot, lines: Option<&[u32]>) {
 fn touch(state: &mut StoreState, path: &Path) {
     if state.histories.contains_key(path) {
         state.clock = state.clock.wrapping_add(1);
-        state
-            .histories
-            .get_mut(path)
-            .expect("checked above")
-            .touched = state.clock;
+        if let Some(history) = state.histories.get_mut(path) {
+            history.touched = state.clock;
+        }
     }
 }
 

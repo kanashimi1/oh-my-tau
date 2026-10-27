@@ -16,6 +16,8 @@ pub fn short_hash(input: &str) -> String {
     format_radix(h2, 36) + &format_radix(h1, 36)
 }
 
+// invariant: digit < radix and callers pass radix 36, inside from_digit's 2..=36.
+#[allow(clippy::unwrap_used)]
 fn format_radix(mut value: u32, radix: u32) -> String {
     let mut result = Vec::new();
     loop {

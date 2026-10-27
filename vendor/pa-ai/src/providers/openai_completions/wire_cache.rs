@@ -162,7 +162,9 @@ pub(crate) fn build_params_cached<'a>(
         tool_choice: tool_choice.clone(),
     };
     let hit = {
-        let cache = CACHE.lock().expect("wire frag cache");
+        let cache = CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.slots.iter().find_map(|cached| {
             let key = &cached.key;
             if key.model != *model
@@ -216,10 +218,12 @@ pub(crate) fn build_params_cached<'a>(
         )
     } else {
         let mut frags = BuiltFrags {
-            // Placeholders until the conversion below fills them; "[]" is always valid JSON.
-            messages: RawValue::from_string("[]".to_string())
-                .map(Arc::<serde_json::value::RawValue>::from)
-                .expect("valid JSON"),
+            // Placeholders until the conversion below fills them; "[]" is always
+            // valid JSON, so from_string cannot fail.
+            messages: RawValue::from_string("[]".to_string()).map_or_else(
+                |error| unreachable!("literal JSON: {error}"),
+                Arc::<serde_json::value::RawValue>::from,
+            ),
             msg_count: 0,
             last_role: None,
             tools: None,
@@ -255,7 +259,9 @@ pub(crate) fn build_params_cached<'a>(
                 last_role: frags.last_role,
             },
         };
-        let mut cache = CACHE.lock().expect("wire frag cache");
+        let mut cache = CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if cache.slots.len() < SLOTS {
             cache.slots.push(entry);
         } else {

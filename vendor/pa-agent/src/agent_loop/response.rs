@@ -160,13 +160,7 @@ async fn start_early_tool_call(
     // `tool_execution_start` stays unmatched — exactly like a batch that
     // aborts right after starting an execution — and the call falls back to
     // the normal dispatch.
-    if early
-        .tx
-        .as_ref()
-        .expect("pipeline just spawned")
-        .send(work)
-        .is_ok()
-    {
+    if early.tx.as_ref().is_some_and(|tx| tx.send(work).is_ok()) {
         early
             .calls
             .insert(tool_call.id.clone(), EarlyToolCall { prep, exec });
@@ -255,11 +249,7 @@ async fn prepare_dispatch(
     let for_hooks = for_turn_end(message.clone());
     let mut prepared = Vec::with_capacity(calls.len());
     for call in &calls {
-        let preparation = if early.calls.contains_key(&call.id) {
-            let entry = early
-                .calls
-                .remove(&call.id)
-                .expect("checked by contains_key");
+        let preparation = if let Some(entry) = early.calls.remove(&call.id) {
             let prep_result = race_with_abort(
                 async {
                     entry
@@ -531,6 +521,8 @@ async fn stream_assistant_response_inner(
                 }
             }
             ref event if event.terminal_message().is_some() => {
+                // invariant: the arm guard checked terminal_message() is Some.
+                #[allow(clippy::unwrap_used)]
                 let mut final_message = event.terminal_message().unwrap().clone();
                 match race_with_abort(response.result(), signal).await {
                     Ok(result_message) => final_message = result_message,
@@ -543,8 +535,9 @@ async fn stream_assistant_response_inner(
                 }
                 finalize_message(&mut final_message, config, context, timing);
                 if *added_partial {
-                    *context.messages.last_mut().unwrap() =
-                        AgentMessage::from(final_message.clone());
+                    if let Some(last) = context.messages.last_mut() {
+                        *last = AgentMessage::from(final_message.clone());
+                    }
                 } else {
                     context
                         .messages
@@ -573,7 +566,9 @@ async fn stream_assistant_response_inner(
     let mut final_message = race_with_abort(response.result(), signal).await?;
     finalize_message(&mut final_message, config, context, timing);
     if *added_partial {
-        *context.messages.last_mut().unwrap() = AgentMessage::from(final_message.clone());
+        if let Some(last) = context.messages.last_mut() {
+            *last = AgentMessage::from(final_message.clone());
+        }
     } else {
         context
             .messages

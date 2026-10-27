@@ -63,10 +63,9 @@ pub fn is_model_compat(api: &str, compat: Option<&serde_json::Map<String, Value>
         "anthropic-messages" => Some(ANTHROPIC_MESSAGES_KEYS),
         _ => None,
     };
-    if keys.is_none() {
+    let Some(keys) = keys else {
         return false;
-    }
-    let keys = keys.expect("checked");
+    };
     compat.keys().all(|key| keys.contains(&key.as_str()))
         && compat
             .iter()

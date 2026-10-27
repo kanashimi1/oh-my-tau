@@ -17,6 +17,9 @@ static H2_ALPN_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
 /// The HTTP/1.1 client every provider shares, pinned with `http1_only()` so that enabling the
 /// reqwest `http2` feature (bedrock) cannot change the transport of any other provider.
+// invariant: one-shot static client init; a TLS-backend failure is an
+// environment defect caught by tests.
+#[allow(clippy::expect_used)]
 fn client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -29,6 +32,9 @@ fn client() -> &'static reqwest::Client {
 
 /// The TLS-ALPN client for bedrock https endpoints: HTTP/2 preferred (ALPN-negotiated), like the TS
 /// default transport; cleartext bedrock endpoints go through `providers/bedrock/h2.rs` instead.
+// invariant: one-shot static client init; a TLS-backend failure is an
+// environment defect caught by tests.
+#[allow(clippy::expect_used)]
 fn h2_alpn_client() -> &'static reqwest::Client {
     H2_ALPN_CLIENT.get_or_init(|| {
         reqwest::Client::builder()

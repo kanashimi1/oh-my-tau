@@ -700,10 +700,14 @@ fn complete_partial_json(input: &str) -> String {
                     let top_expect = expects.last().copied();
                     match (top_kind, top_expect) {
                         (ContainerKind::Object, Some(Expect::KeyOrValue)) => {
-                            *expects.last_mut().unwrap() = Expect::Colon;
+                            if let Some(expect) = expects.last_mut() {
+                                *expect = Expect::Colon;
+                            }
                         }
                         _ => {
-                            *expects.last_mut().unwrap() = Expect::AfterValue;
+                            if let Some(expect) = expects.last_mut() {
+                                *expect = Expect::AfterValue;
+                            }
                         }
                     }
                 }
@@ -788,10 +792,14 @@ fn complete_partial_json(input: &str) -> String {
             let top_kind = *top;
             match (top_kind, expects.last().copied()) {
                 (ContainerKind::Object, Some(Expect::KeyOrValue)) => {
-                    *expects.last_mut().unwrap() = Expect::Colon;
+                    if let Some(expect) = expects.last_mut() {
+                        *expect = Expect::Colon;
+                    }
                 }
                 _ => {
-                    *expects.last_mut().unwrap() = Expect::AfterValue;
+                    if let Some(expect) = expects.last_mut() {
+                        *expect = Expect::AfterValue;
+                    }
                 }
             }
         }
