@@ -15,10 +15,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use omp_mcp::errors::McpError;
-use omp_mcp::transport::stdio::StdioTransport;
 use omp_mcp::transport::McpTransport;
+use omp_mcp::transport::stdio::StdioTransport;
 use omp_mcp::{McpManager, McpServerConfig, ServerKind};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Fake MCP stdio server:
 /// - logs every received message (method, id, params) as one JSON line to
@@ -50,10 +50,13 @@ for line in sys.stdin:
     log({"m": msg.get("method"), "id": msg.get("id"), "params": msg.get("params")})
     method = msg.get("method")
     if method == "initialize":
-        send({"jsonrpc": "2.0", "id": msg["id"], "result": {
-            "protocolVersion": "2025-11-25",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "fake", "version": "0.1"}}})
+        if os.environ.get("MCP_TEST_SLOW_INIT"):
+            time.sleep(30)
+        else:
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "fake", "version": "0.1"}}})
     elif method == "tools/list":
         tools = [{"name": n, "description": n, "inputSchema": {"type": "object", "properties": {}}}
                  for n in ("slow", "progressy", "die")]
@@ -193,6 +196,34 @@ async fn abort_sends_cancelled_once() {
     transport.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborted_initialize_never_sends_cancelled() {
+    if !python_available() {
+        eprintln!("python3 not available; skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = write_fake_server(dir.path());
+    let log_path = dir.path().join("wire.log");
+    let mut config = stdio_config(&script, &log_path, 0);
+    config
+        .env
+        .as_mut()
+        .unwrap()
+        .insert("MCP_TEST_SLOW_INIT".to_string(), "1".to_string());
+    let mut transport = StdioTransport::new("abort-init", config, Arc::new(PathBuf::from(".")));
+    transport.connect().await.expect("connect");
+    let call = transport.request("initialize", json!({}));
+    let handle = tokio::spawn(call);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    handle.abort();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let wire = read_log(&log_path);
+    assert_eq!(wire.iter().filter(|e| e["m"] == "initialize").count(), 1);
+    assert!(cancelled_notes(&wire).is_empty(), "wire: {wire:?}");
+    transport.close().await;
+}
+
 /// A timed-out stdio call whose frame reached the server must fail
 /// non-retryable with a "may have already run" diagnostic (the manager must
 /// not replay it) and still owe the server one `notifications/cancelled`.
@@ -252,10 +283,7 @@ async fn mid_request_drop_is_not_retried() {
     let script = write_fake_server(dir.path());
     let log_path = dir.path().join("wire.log");
     let mut configs = BTreeMap::new();
-    configs.insert(
-        "s".to_string(),
-        stdio_config(&script, &log_path, 15_000),
-    );
+    configs.insert("s".to_string(), stdio_config(&script, &log_path, 15_000));
     let manager = McpManager::new(Arc::new(dir.path().to_path_buf()), configs);
 
     let error = manager
@@ -291,10 +319,7 @@ async fn progress_updates_reach_caller() {
     let script = write_fake_server(dir.path());
     let log_path = dir.path().join("wire.log");
     let mut configs = BTreeMap::new();
-    configs.insert(
-        "s".to_string(),
-        stdio_config(&script, &log_path, 15_000),
-    );
+    configs.insert("s".to_string(), stdio_config(&script, &log_path, 15_000));
     let manager = McpManager::new(Arc::new(dir.path().to_path_buf()), configs);
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -320,8 +345,7 @@ async fn progress_updates_reach_caller() {
     let wire = read_log(&log_path);
     let call = calls(&wire)[0];
     assert_eq!(
-        call["params"]["_meta"]["progressToken"],
-        call["id"],
+        call["params"]["_meta"]["progressToken"], call["id"],
         "tools/call must carry _meta.progressToken = request id"
     );
     assert_eq!(first.token, call["id"]);
@@ -329,4 +353,259 @@ async fn progress_updates_reach_caller() {
 
     let text = omp_mcp::format::format_tool_result(&result);
     assert!(text.contains("done"), "formatted: {text}");
+}
+
+/// Streamable HTTP: an SSE EOF after the request was accepted is ambiguous,
+/// not a stale-connection error. It must carry the no-replay diagnostic and
+/// the manager must not reconnect and issue the tool call a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_sse_eof_is_not_retried_and_carries_progress_token() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn request(stream: &mut tokio::net::TcpStream) -> Value {
+        let mut bytes = Vec::new();
+        let (header_end, content_len) = loop {
+            let mut chunk = [0_u8; 4096];
+            let n = stream.read(&mut chunk).await.expect("read HTTP request");
+            assert!(n > 0, "request ended before headers");
+            bytes.extend_from_slice(&chunk[..n]);
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&bytes[..end]);
+                let len = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                    .unwrap_or(0);
+                break (end + 4, len);
+            }
+        };
+        while bytes.len() < header_end + content_len {
+            let mut chunk = [0_u8; 4096];
+            let n = stream.read(&mut chunk).await.expect("read HTTP body");
+            assert!(n > 0, "request ended before body");
+            bytes.extend_from_slice(&chunk[..n]);
+        }
+        serde_json::from_slice(&bytes[header_end..header_end + content_len]).expect("JSON body")
+    }
+
+    async fn respond(stream: &mut tokio::net::TcpStream, content_type: &str, body: String) {
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .await
+            .expect("write response");
+        stream.shutdown().await.expect("shutdown response");
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind fake HTTP MCP");
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let server =
+        tokio::spawn(async move {
+            let mut calls = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await.expect("accept HTTP MCP");
+                let body = request(&mut stream).await;
+                let method = body["method"].as_str().unwrap().to_string();
+                let id = body["id"].clone();
+                match method.as_str() {
+                "notifications/initialized" => {
+                    respond(&mut stream, "application/json", "{}".to_string()).await
+                }
+                "initialize" => respond(&mut stream, "application/json", json!({
+                    "jsonrpc":"2.0", "id":id, "result": {
+                        "protocolVersion":"2025-11-25", "capabilities":{"tools":{}},
+                        "serverInfo":{"name":"fake-http","version":"0.1"}}
+                }).to_string()).await,
+                "tools/list" => respond(&mut stream, "application/json", json!({
+                    "jsonrpc":"2.0", "id":id, "result":{"tools":[{
+                        "name":"eof", "description":"eof", "inputSchema":{"type":"object"}}]}
+                }).to_string()).await,
+                "tools/call" => {
+                    assert_eq!(body["params"]["_meta"]["progressToken"], id);
+                    calls.push(body);
+                    let progress = json!({"jsonrpc":"2.0", "method":"notifications/progress",
+                        "params":{"progressToken":id,"progress":1.0}});
+                    respond(&mut stream, "text/event-stream",
+                        format!("event: message\ndata: {progress}\n\n")).await;
+                }
+                other => panic!("unexpected HTTP MCP method {other}"),
+            }
+            }
+            calls
+        });
+
+    let mut configs = BTreeMap::new();
+    configs.insert(
+        "http".to_string(),
+        McpServerConfig {
+            enabled: Some(true),
+            timeout: Some(2_000),
+            kind: ServerKind::Http,
+            command: None,
+            args: None,
+            env: None,
+            cwd: None,
+            url: Some(url),
+            headers: None,
+            extra: BTreeMap::new(),
+        },
+    );
+    let manager = McpManager::new(Arc::new(PathBuf::from(".")), configs);
+    let error = manager
+        .call("http", "eof", json!({}))
+        .await
+        .expect_err("SSE EOF must fail");
+    assert!(
+        error.to_string().contains("may have already run"),
+        "{error}"
+    );
+    let calls = server.await.expect("fake HTTP server");
+    assert_eq!(calls.len(), 1, "written request must never be replayed");
+
+    // An HTTP error is also a server response: the request reached the
+    // server, so even a normally-stale 503 must not authorize a replay.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP 503 MCP");
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut calls = 0;
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().await.expect("accept HTTP 503 MCP");
+            let body = request(&mut stream).await;
+            let method = body["method"].as_str().unwrap();
+            let id = body["id"].clone();
+            match method {
+                "notifications/initialized" => {
+                    respond(&mut stream, "application/json", "{}".to_string()).await
+                }
+                "initialize" => respond(&mut stream, "application/json", json!({
+                    "jsonrpc":"2.0", "id":id, "result": {
+                        "protocolVersion":"2025-11-25", "capabilities":{"tools":{}},
+                        "serverInfo":{"name":"fake-http","version":"0.1"}}
+                }).to_string()).await,
+                "tools/list" => respond(&mut stream, "application/json", json!({
+                    "jsonrpc":"2.0", "id":id, "result":{"tools":[{
+                        "name":"status", "description":"status", "inputSchema":{"type":"object"}}]}
+                }).to_string()).await,
+                "tools/call" => {
+                    calls += 1;
+                    let body = "unavailable";
+                    let response = format!(
+                        "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    stream.write_all(response.as_bytes()).await.expect("write 503");
+                    stream.shutdown().await.expect("shutdown 503");
+                }
+                other => panic!("unexpected HTTP MCP method {other}"),
+            }
+        }
+        calls
+    });
+    let mut configs = BTreeMap::new();
+    configs.insert(
+        "http".to_string(),
+        McpServerConfig {
+            enabled: Some(true),
+            timeout: Some(2_000),
+            kind: ServerKind::Http,
+            command: None,
+            args: None,
+            env: None,
+            cwd: None,
+            url: Some(url),
+            headers: None,
+            extra: BTreeMap::new(),
+        },
+    );
+    let manager = McpManager::new(Arc::new(PathBuf::from(".")), configs);
+    let error = manager
+        .call("http", "status", json!({}))
+        .await
+        .expect_err("503 must fail");
+    assert!(
+        error.to_string().contains("may have already run"),
+        "{error}"
+    );
+    assert_eq!(server.await.expect("fake HTTP 503 server"), 1);
+
+    // Timeout drops the in-flight POST and emits exactly one cancellation
+    // with the original request id, not a replay of the tool call.
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP timeout MCP");
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let server =
+        tokio::spawn(async move {
+            let mut calls = 0;
+            let mut cancellations = 0;
+            let mut call_id = Value::Null;
+            let mut pending_stream = None;
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().await.expect("accept HTTP timeout MCP");
+                let body = request(&mut stream).await;
+                let method = body["method"].as_str().unwrap();
+                let id = body["id"].clone();
+                match method {
+                "notifications/initialized" => {
+                    respond(&mut stream, "application/json", "{}".to_string()).await
+                }
+                "initialize" => respond(&mut stream, "application/json", json!({
+                    "jsonrpc":"2.0", "id":id, "result": {
+                        "protocolVersion":"2025-11-25", "capabilities":{"tools":{}},
+                        "serverInfo":{"name":"fake-http","version":"0.1"}}
+                }).to_string()).await,
+                "tools/list" => respond(&mut stream, "application/json", json!({
+                    "jsonrpc":"2.0", "id":id, "result":{"tools":[{
+                        "name":"slow", "description":"slow", "inputSchema":{"type":"object"}}]}
+                }).to_string()).await,
+                "tools/call" => {
+                    calls += 1;
+                    call_id = id;
+                    pending_stream = Some(stream);
+                }
+                "notifications/cancelled" => {
+                    cancellations += 1;
+                    assert_eq!(body["params"]["requestId"], call_id);
+                    respond(&mut stream, "application/json", "{}".to_string()).await;
+                }
+                other => panic!("unexpected HTTP MCP method {other}"),
+            }
+            }
+            drop(pending_stream);
+            (calls, cancellations)
+        });
+    let mut configs = BTreeMap::new();
+    configs.insert(
+        "http".to_string(),
+        McpServerConfig {
+            enabled: Some(true),
+            timeout: Some(100),
+            kind: ServerKind::Http,
+            command: None,
+            args: None,
+            env: None,
+            cwd: None,
+            url: Some(url),
+            headers: None,
+            extra: BTreeMap::new(),
+        },
+    );
+    let manager = McpManager::new(Arc::new(PathBuf::from(".")), configs);
+    let error = manager
+        .call("http", "slow", json!({}))
+        .await
+        .expect_err("timeout must fail");
+    assert!(error.to_string().contains("timeout"), "{error}");
+    assert_eq!(server.await.expect("fake HTTP timeout server"), (1, 1));
 }

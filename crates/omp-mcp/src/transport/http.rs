@@ -11,12 +11,14 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
-use serde_json::{json, Value};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::config::McpServerConfig;
-use crate::errors::{may_have_run, Failure, JsonRpcError, McpError, McpTransportError, TransportKind};
+use crate::errors::{
+    Failure, JsonRpcError, McpError, McpTransportError, TransportKind, may_have_run,
+};
 use crate::transport::{McpTransport, PendingRequests, TransportFut};
 
 /// One SSE event.
@@ -147,7 +149,44 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-impl HttpTransport {}
+/// Best-effort MCP cancellation for an abandoned HTTP request. The POST may
+/// already have reached the server, so abort and timeout owe one notification
+/// with the original id; `initialize` is exempt and sending is capped.
+struct HttpCancelGuard {
+    client: reqwest::Client,
+    url: String,
+    headers: HeaderMap,
+    id: Value,
+    method: String,
+    settled: bool,
+}
+
+impl HttpCancelGuard {
+    fn settle(&mut self) {
+        self.settled = true;
+    }
+}
+
+impl Drop for HttpCancelGuard {
+    fn drop(&mut self) {
+        if self.settled || self.method == "initialize" {
+            return;
+        }
+        let body = json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": self.id.clone()},
+        });
+        let request = self
+            .client
+            .post(&self.url)
+            .headers(self.headers.clone())
+            .json(&body);
+        tokio::spawn(async move {
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_millis(500), request.send()).await;
+        });
+    }
+}
 
 /// Send one JSON-RPC request over HTTP and return the response `result`.
 #[allow(clippy::too_many_arguments)]
@@ -174,22 +213,47 @@ async fn send_request(
         }
     }
     let body = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+    let mut cancel = HttpCancelGuard {
+        client: client.clone(),
+        url: url.clone(),
+        headers: headers.clone(),
+        id: id.clone(),
+        method: method.clone(),
+        settled: false,
+    };
     let request = client.post(&url).headers(headers).json(&body);
     let expected_key = PendingRequests::key(&id);
     let session_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let session_cell_inner = session_cell.clone();
     let send = async move {
         let response = request.send().await.map_err(|err| {
-            let retryable = err.is_connect() || err.is_timeout();
-            McpError::Transport(McpTransportError {
+            // `send()` also waits for the response headers. A connect failure
+            // happened before this request reached a server and is safe to
+            // replay; later failures are not, even when reqwest labels them
+            // as timeouts.
+            let retryable = err.is_connect();
+            let error = McpError::Transport(McpTransportError {
                 transport: TransportKind::Http,
-                stage: Failure::Connect,
-                failure: Failure::Connect,
+                stage: if retryable {
+                    Failure::Connect
+                } else {
+                    Failure::Receive
+                },
+                failure: if retryable {
+                    Failure::Connect
+                } else {
+                    Failure::Receive
+                },
                 retryable,
                 message: format!("fetch failed: {err}"),
                 code: err.status().map(|s| s.to_string()),
                 data: None,
-            })
+            });
+            if retryable {
+                error
+            } else {
+                may_have_run(error)
+            }
         })?;
         let status = response.status();
         let session: Option<String> = response
@@ -219,7 +283,7 @@ async fn send_request(
                     Err(err) => tracing::debug!("ignoring malformed SSE event: {err}"),
                 }
             }
-            return Err(McpError::Transport(McpTransportError {
+            return Err(may_have_run(McpError::Transport(McpTransportError {
                 transport: TransportKind::Http,
                 stage: Failure::Receive,
                 failure: Failure::Eof,
@@ -227,7 +291,7 @@ async fn send_request(
                 message: "SSE stream closed before a response arrived".to_string(),
                 code: None,
                 data: None,
-            }));
+            })));
         }
         let text = response.text().await.map_err(|err| {
             may_have_run(McpError::Transport(McpTransportError {
@@ -241,28 +305,37 @@ async fn send_request(
             }))
         })?;
         if !status.is_success() {
-            return Err(HttpTransport::http_error(status, &text));
+            return Err(may_have_run(HttpTransport::http_error(status, &text)));
         }
         parse_json_rpc(&text)
     };
     let result = if crate::timeout::is_timeout_enabled(timeout_ms) {
         match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), send).await {
             Ok(outcome) => outcome,
-            Err(_elapsed) => {
-                return Err(McpError::Transport(McpTransportError {
-                    transport: TransportKind::Http,
-                    stage: Failure::Timeout,
-                    failure: Failure::Timeout,
-                    retryable: false,
-                    message: format!("Request timeout after {timeout_ms}ms"),
-                    code: None,
-                    data: None,
-                }));
-            }
+            Err(_elapsed) => Err(McpError::Transport(McpTransportError {
+                transport: TransportKind::Http,
+                stage: Failure::Timeout,
+                failure: Failure::Timeout,
+                retryable: false,
+                message: format!("Request timeout after {timeout_ms}ms"),
+                code: None,
+                data: None,
+            })),
         }
     } else {
         send.await
     };
+    match &result {
+        Ok(_) => cancel.settle(),
+        Err(McpError::Transport(error)) if error.retryable && error.failure == Failure::Connect => {
+            // The request never reached a server; no cancellation is owed.
+            cancel.settle();
+        }
+        Err(_) => {
+            // EOF, timeout, status and decode failures are ambiguous after
+            // the POST started. Tell the server not to continue the call.
+        }
+    }
     if result.is_ok() {
         if let Some(session) = session_cell.lock().await.take() {
             state.lock().await.session_id = Some(session);

@@ -278,6 +278,10 @@ for line in sys.stdin:
         result = {"tools": TOOLS}
     elif method == "tools/call":
         args = msg["params"].get("arguments", {})
+        if args.get("text") == "progress":
+            print(json.dumps({"jsonrpc": "2.0", "method": "notifications/progress",
+                "params": {"progressToken": msg["params"]["_meta"]["progressToken"],
+                           "progress": 1, "total": 2, "message": "halfway"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
             "result": {"content": [{"type": "text", "text": json.dumps(args)}]}}), flush=True)
         continue
@@ -357,5 +361,40 @@ for line in sys.stdin:
         assert_eq!(result.details["serverName"], serde_json::json!("fake"));
         assert_eq!(result.details["toolName"], serde_json::json!("echo"));
         assert_eq!(result.details["isError"], serde_json::json!(false));
+
+        let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let updates_in_callback = Arc::clone(&updates);
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                tool.clone()
+                    .execute(
+                        "call-progress".to_string(),
+                        serde_json::json!({"text": "progress"}),
+                        AbortSignal::never(),
+                        Arc::new(move |update| {
+                            updates_in_callback.lock().unwrap().push(update);
+                        }),
+                    )
+                    .await
+                    .expect("execute with progress")
+            });
+        let updates = updates.lock().unwrap();
+        assert_eq!(updates.len(), 1, "one ordered progress update");
+        assert_eq!(updates[0].details["mcpProgress"]["message"], "halfway");
+        let event = pa_agent::types::AgentEvent::ToolExecutionUpdate {
+            tool_call_id: "call-progress".to_string(),
+            tool_name: tool.name().to_string(),
+            args: serde_json::json!({"text": "progress"}),
+            partial_result: updates[0].clone(),
+        };
+        let frame = crate::events::frame(&event);
+        assert_eq!(frame["type"], "tool_execution_update");
+        assert_eq!(
+            frame["partialResult"]["details"]["mcpProgress"]["progress"],
+            1.0
+        );
     }
 }
