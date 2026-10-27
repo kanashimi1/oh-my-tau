@@ -5,6 +5,7 @@
 //! sessions, hashline mode included) and the file walks are `pi-walker`.
 //! Failures are returned as `Err` so the agent loop reports `isError: true`.
 
+pub(crate) mod a2a;
 pub mod ask;
 mod ast;
 pub mod bash;
@@ -12,7 +13,6 @@ pub mod checkpoint;
 mod edit;
 mod edit_diagnostics;
 mod eval;
-pub(crate) mod a2a;
 pub(crate) mod eval_agents;
 pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;
@@ -167,6 +167,7 @@ struct FnTool {
     schema: Value,
     env: Arc<Env>,
     run: Handler,
+    read_only: bool,
 }
 
 impl AgentTool for FnTool {
@@ -176,8 +177,11 @@ impl AgentTool for FnTool {
     fn description(&self) -> &str {
         &self.description
     }
-    fn parameters(&self) -> &Value {
+    fn parameters(&self) -> &serde_json::Value {
         &self.schema
+    }
+    fn is_read_only(&self) -> bool {
+        self.read_only
     }
     fn execute(
         self: Arc<Self>,
@@ -199,7 +203,6 @@ const GLOB_DESCRIPTION: &str = "Glob files/dirs: `;`-separated paths or internal
 const GREP_DESCRIPTION: &str = "Regex: Rust, then PCRE2. `path`: `;`-separated file/dir/glob/URL; default `.`. Default case-sensitive, gitignore respected; `skip` paginates files.\nFile-only selector: `src/foo.ts:50-100`. Literal `\\n`/`\\\\n` enables cross-line.\nBare glob `*.ts` matches any depth; `dir/*.ts` only `dir`'s direct children (`dir/**/*.ts` recurses).";
 const WRITE_DESCRIPTION: &str = "SHOULD `edit` existing files; `write` for required new files or whole-file replacement. NEVER create docs or emojis unless requested.";
 const FIND_DESCRIPTION: &str = "Describe behavior, get implementing files and line ranges. MUST use first for unknown locations; known strings/regex/symbols → `grep`, names → `glob`.\n`query`: plain language, not regex; quoted phrases match whole. `grep_keywords`: likely verbatim terms, `[]` if unsure.\n`path`: one directory or file, host path or internal URL (`omp://`, `omp://<file>.md`, `skill://<name>`, `local://…`); omitted = workspace root. Scope known subsystem; batch related questions. Searches live files, no index; no `:start-end` selector (judges whole files).\nHits strongest first: `path:start-end score snippet` (workspace-relative, or URL under URL scope); read returned ranges. Scores: absolute comparable 0–1 probability; below ~0.4 = weak evidence, so widen query or use `grep` before concluding absence.";
-
 
 /// `OMT_TOOLS_DEDUP=1`: pure-read tools (read/grep/glob/lsp) answer an identical
 /// immediately-consecutive call from cache. Measured on frontier models: repeated
@@ -229,6 +232,9 @@ impl AgentTool for DedupTool {
     }
     fn execution_mode(&self) -> Option<pa_agent::types::ToolExecutionMode> {
         self.inner.execution_mode()
+    }
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
     }
     fn execute(
         self: Arc<Self>,
@@ -282,6 +288,21 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             schema,
             env: env.clone(),
             run,
+            read_only: false,
+        })
+    };
+    let mk_read_only = |name: &'static str,
+                        description: String,
+                        schema: Value,
+                        run: Handler|
+     -> Arc<dyn AgentTool> {
+        Arc::new(FnTool {
+            name,
+            description,
+            schema,
+            env: env.clone(),
+            run,
+            read_only: true,
         })
     };
     let blocking = |f: fn(&Env, &Value) -> Result<AgentToolResult>| -> Handler {
@@ -294,7 +315,7 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
         })
     };
     let mut tools = vec![
-        mk(
+        mk_read_only(
             "read",
             READ_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"path":{"type":"string","description":"Local path, internal URI, or URL; selectors inline."}},"required":["path"],"additionalProperties":false}),
@@ -325,13 +346,13 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             edit::schema(edit_mode),
             Arc::new(|env, args, _| Box::pin(async move { edit::edit(&env, &args).await })),
         ),
-        mk(
+        mk_read_only(
             "glob",
             GLOB_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"path":{"type":"string"},"hidden":{"type":"boolean"},"gitignore":{"type":"boolean"},"limit":{"type":"number"}},"additionalProperties":false}),
             blocking(search::glob),
         ),
-        mk(
+        mk_read_only(
             "grep",
             GREP_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"case":{"type":"boolean"},"gitignore":{"type":"boolean"},"skip":{"anyOf":[{"type":"number"},{"type":"null"}]}},"required":["pattern"],"additionalProperties":false}),
@@ -385,8 +406,11 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
     // `OMT_TOOLS_OFF=a,b`: drop listed tools from the advertised set (headless
     // cost runs: a smaller schema is fewer tokens on every request).
     if let Ok(off) = std::env::var("OMT_TOOLS_OFF") {
-        let drop: std::collections::HashSet<&str> =
-            off.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        let drop: std::collections::HashSet<&str> = off
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
         if !drop.is_empty() {
             tools.retain(|t| {
                 let n = t.name();

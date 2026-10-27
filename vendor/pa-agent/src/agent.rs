@@ -572,6 +572,13 @@ impl AgentInner {
         config.tool_execution = self.tool_execution;
         config.before_tool_call.clone_from(&self.before_tool_call);
         config.after_tool_call.clone_from(&self.after_tool_call);
+        let tools = shared.state.tools.clone();
+        config.is_tool_read_only = Some(Arc::new(move |name| {
+            tools
+                .iter()
+                .find(|tool| tool.name() == name)
+                .is_some_and(|tool| tool.is_read_only())
+        }));
         config
     }
 

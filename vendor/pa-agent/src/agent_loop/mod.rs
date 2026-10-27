@@ -115,6 +115,12 @@ pub struct AgentLoopConfig {
     pub tool_execution: ToolExecutionMode,
     pub before_tool_call: Option<BeforeToolCallFn>,
     pub after_tool_call: Option<AfterToolCallFn>,
+    /// Host-declared read-only classification, keyed by tool name: whether a
+    /// tool is safe to prepare and execute as soon as its streamed arguments
+    /// complete, before the assistant stream ends. Only explicitly declared
+    /// read-only tools may run early; the default `None` disables early
+    /// execution entirely (every call is treated as potentially mutating).
+    pub is_tool_read_only: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
 }
 
 impl AgentLoopConfig {
@@ -143,6 +149,7 @@ impl AgentLoopConfig {
             tool_execution: ToolExecutionMode::Parallel,
             before_tool_call: None,
             after_tool_call: None,
+            is_tool_read_only: None,
         }
     }
 

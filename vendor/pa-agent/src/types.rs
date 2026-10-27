@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::abort::AbortSignal;
 use crate::BoxFut;
+use crate::abort::AbortSignal;
 
 /// Thinking/reasoning level for models that support it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -576,6 +576,11 @@ pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> &serde_json::Value;
+    /// Explicit host capability: execution cannot mutate state. Conservative
+    /// by default; used to overlap safe tools with the assistant stream tail.
+    fn is_read_only(&self) -> bool {
+        false
+    }
     fn label(&self) -> &str {
         self.name()
     }
@@ -631,6 +636,7 @@ impl ContextMessages {
     }
 
     /// Messages in order.
+    #[must_use]
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &AgentMessage> + '_ {
         self.segments
             .iter()

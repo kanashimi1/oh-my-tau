@@ -12,7 +12,7 @@ use omp_ext::lifecycle::ApprovalMode;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::AgentTool;
 use regex::Regex;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::runtime::Runtime;
 
@@ -1029,6 +1029,9 @@ impl AgentTool for GatedTool {
     }
     fn execution_mode(&self) -> Option<pa_agent::types::ToolExecutionMode> {
         self.inner.execution_mode()
+    }
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
     }
     fn execute(
         self: Arc<Self>,

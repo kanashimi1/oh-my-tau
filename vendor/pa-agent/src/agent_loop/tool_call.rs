@@ -127,8 +127,8 @@ async fn prepare_tool_call_inner(
 }
 
 pub(crate) struct ExecutedToolCallOutcome {
-    result: AgentToolResult,
-    is_error: bool,
+    pub(crate) result: AgentToolResult,
+    pub(crate) is_error: bool,
 }
 
 /// Race the tool against abort, stream `tool_execution_update` events
