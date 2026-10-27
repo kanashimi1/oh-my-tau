@@ -68,7 +68,10 @@ impl Runtime {
     }
 
     pub fn steer(&self, message: &str) {
-        self.agent.steer(user_message(message));
+        self.agent.steer(vec![
+            crate::notices::interjection(pa_agent::now_ms()),
+            user_message(message),
+        ]);
         self.emit_queue_update();
     }
 
@@ -114,7 +117,10 @@ impl Runtime {
         let Some(first) = self.take_queued_exact(message, "followUp") else {
             return false;
         };
-        self.agent.steer(first);
+        self.agent.steer(vec![
+            crate::notices::interjection(pa_agent::now_ms()),
+            first,
+        ]);
         self.emit_queue_update();
         true
     }

@@ -109,6 +109,9 @@ impl Runtime {
             };
             // Queued prompts carry their notices in the same batch, ahead of the message.
             let mut batch = self.prompt_notices(message, false).await;
+            if steer {
+                batch.push(crate::notices::interjection(pa_agent::now_ms()));
+            }
             let queued = if batch.is_empty() {
                 pa_agent::agent::AgentMessageBatch::Single(user_message(message))
             } else {
