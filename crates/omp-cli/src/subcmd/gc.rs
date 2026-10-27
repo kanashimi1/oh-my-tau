@@ -1,14 +1,16 @@
-//! `omp-rs gc` — session-file garbage collection, scoped strictly to session
-//! JSONL files under `<agentDir>/sessions`. Mirrors the archive phase of TS
-//! `cli/gc-cli.ts`: keep the newest sessions globally and per project, archive
-//! older cold ones as gzip into `<agentDir>/archive/sessions`. **Dry-run by
-//! default**; `--apply` performs the moves. Nothing is ever deleted outright —
-//! archiving only relocates (and compresses) session files; the TS blob, WAL
-//! and stale-marker phases are not ported (they do not touch session files).
+//! `omp-rs gc` — session-file garbage collection, scoped to session JSONL
+//! files under `<agentDir>/sessions` and their per-session artifact
+//! directories. Mirrors the archive phase of TS `cli/gc-cli.ts`: keep the
+//! newest sessions globally and per project, archive older cold ones as gzip
+//! into `<agentDir>/archive/sessions` (artifacts move with their session).
+//! **Dry-run by default**; `--apply` performs the moves. Nothing is ever
+//! deleted outright — archiving only relocates (and compresses) files; the TS
+//! blob, WAL and stale-marker phases are not ported (they do not touch session
+//! files).
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -19,7 +21,23 @@ const DAY: Duration = Duration::from_hours(24);
 /// TS `GC_WRITE_GRACE_MS`: a session written within the last 5 minutes is active.
 const WRITE_GRACE: Duration = Duration::from_mins(5);
 
+const USAGE: &str = r#"usage: omt gc [--apply] [--json] [--agent-dir <dir>] [--cold-archive-after-days <n>]
+                  [--retain-newest-global <n>] [--retain-newest-per-cwd <n>]
+
+Archives cold session JSONL files, with their artifact directories, as gzip
+under <agentDir>/archive/sessions. Dry-run unless --apply is given.
+
+  --apply                         perform the archive (default: dry-run, touches nothing)
+  --json                          print the result as JSON
+  --agent-dir <dir>               agent directory (default: $OMP_AGENT_DIR or ~/.omp/agent)
+  --cold-archive-after-days <n>   archive sessions idle for n days (default: 30)
+  --retain-newest-global <n>      always keep the n newest sessions (default: 20)
+  --retain-newest-per-cwd <n>     keep the n newest sessions per project (default: 10)
+  -h, --help                      show this help and exit
+"#;
+
 struct Options {
+    help: bool,
     apply: bool,
     json: bool,
     cold_after: Duration,
@@ -36,6 +54,18 @@ struct SessionFile {
     project: String,
 }
 
+/// Per-session artifact directory (`<ts>_<uuid>/` beside `<ts>_<uuid>.jsonl`,
+/// the layout `omp_urls::artifacts_directory_for` resolves), flattened.
+struct ArtifactTree {
+    dir: PathBuf,
+    /// Regular files with their sizes.
+    files: Vec<(PathBuf, u64)>,
+    /// Subdirectories, parents before children.
+    dirs: Vec<PathBuf>,
+    /// Total bytes of `files`.
+    bytes: u64,
+}
+
 /// Parse the gc flags (TS `parseArchiveGcArgs`).
 ///
 /// # Errors
@@ -43,6 +73,7 @@ struct SessionFile {
 fn parse_options(args: &[String]) -> Result<(Options, PathBuf)> {
     let mut opts = Options {
         apply: false,
+        help: false,
         json: false,
         cold_after: 30 * DAY,
         retain_global: 20,
@@ -60,6 +91,7 @@ fn parse_options(args: &[String]) -> Result<(Options, PathBuf)> {
         match arg.as_str() {
             "--apply" => opts.apply = true,
             "--json" => opts.json = true,
+            "--help" | "-h" => opts.help = true,
             "--agent-dir" => {
                 agent_dir = Some(PathBuf::from(
                     it.next().context("--agent-dir needs a value")?,
@@ -81,12 +113,16 @@ fn parse_options(args: &[String]) -> Result<(Options, PathBuf)> {
 
 /// Entry point: `omp-rs gc [--apply] [--json] [--agent-dir <dir>]
 /// [--cold-archive-after-days n] [--retain-newest-global n]
-/// [--retain-newest-per-cwd n]`.
+/// [--retain-newest-per-cwd n]`; `--help` prints the flags and defaults.
 ///
 /// # Errors
 /// I/O failure scanning or (with `--apply`) archiving session files.
 pub fn run(args: &[String]) -> Result<i32> {
     let (opts, agent_dir) = parse_options(args)?;
+    if opts.help {
+        print!("{USAGE}");
+        return Ok(0);
+    }
     let sessions_root = agent_dir.join("sessions");
     let archive_root = agent_dir.join("archive").join("sessions");
 
@@ -123,7 +159,9 @@ pub fn run(args: &[String]) -> Result<i32> {
 
     let mut would_archive = 0usize;
     let mut archived = 0usize;
+    // Session JSONL plus its artifacts (`bytes` includes `artifact_bytes`).
     let mut bytes: u64 = 0;
+    let mut artifact_bytes: u64 = 0;
     let mut errors: Vec<String> = Vec::new();
     for (file, kept) in candidates.iter().zip(kept.iter()) {
         if *kept {
@@ -136,10 +174,19 @@ pub fn run(args: &[String]) -> Result<i32> {
             skipped_active += 1; // a running process still owns the file
             continue;
         }
+        let artifacts = match scan_artifacts(&file.path) {
+            Ok(tree) => tree,
+            Err(e) => {
+                // Unreadable artifacts: keep the session rather than split it.
+                errors.push(format!("{}: {e:#}", file.path.display()));
+                continue;
+            }
+        };
         would_archive += 1;
-        bytes += file.size;
+        bytes += file.size + artifacts.bytes;
+        artifact_bytes += artifacts.bytes;
         if opts.apply {
-            match archive_session(&sessions_root, &archive_root, &file.path) {
+            match archive_session(&sessions_root, &archive_root, &file.path, &artifacts) {
                 Ok(()) => archived += 1,
                 Err(e) => errors.push(format!("{}: {e:#}", file.path.display())),
             }
@@ -157,6 +204,7 @@ pub fn run(args: &[String]) -> Result<i32> {
             "wouldArchive": would_archive,
             "archived": archived,
             "bytes": bytes,
+            "artifactBytes": artifact_bytes,
             "errors": errors,
         },
     });
@@ -170,6 +218,7 @@ pub fn run(args: &[String]) -> Result<i32> {
             "sessions: {archived}/{would_archive} archived ({})",
             format_bytes(bytes)
         );
+        println!("  artifacts: {}", format_bytes(artifact_bytes));
         if skipped_active > 0 {
             println!("sessions skipped active: {skipped_active}");
         }
@@ -264,28 +313,112 @@ fn held_open_elsewhere(_path: &Path) -> bool {
     false
 }
 
+/// Flatten a session's artifact directory. A missing directory is an empty
+/// tree. An entry that is neither a regular file nor a directory (a symlink,
+/// say) is an error: the caller keeps the session rather than archive half of it.
+fn scan_artifacts(session: &Path) -> Result<ArtifactTree> {
+    let dir = session.with_extension(""); // `<ts>_<uuid>.jsonl` → `<ts>_<uuid>`
+    let mut tree = ArtifactTree {
+        dir: dir.clone(),
+        files: Vec::new(),
+        dirs: Vec::new(),
+        bytes: 0,
+    };
+    if !dir.is_dir() {
+        return Ok(tree);
+    }
+    let mut stack = vec![dir];
+    while let Some(current) = stack.pop() {
+        for entry in
+            fs::read_dir(&current).with_context(|| format!("read {}", current.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                tree.dirs.push(path.clone());
+                stack.push(path);
+            } else if file_type.is_file() {
+                let len = entry.metadata()?.len();
+                tree.bytes += len;
+                tree.files.push((path, len));
+            } else {
+                anyhow::bail!("not a regular file or directory: {}", path.display());
+            }
+        }
+    }
+    Ok(tree)
+}
+
 /// TS `runArchiveGc` destination: `<archiveRoot>/<relative-path>.gz`; the
-/// source file is removed only after the archive lands intact.
-fn archive_session(sessions_root: &Path, archive_root: &Path, path: &Path) -> Result<()> {
+/// source file is removed only after the archive lands intact. The session's
+/// artifact directory moves too (same relative layout, each file gzipped), so
+/// an archived session leaves nothing behind in `sessions/`.
+fn archive_session(
+    sessions_root: &Path,
+    archive_root: &Path,
+    path: &Path,
+    artifacts: &ArtifactTree,
+) -> Result<()> {
     let relative = path.strip_prefix(sessions_root).unwrap_or(path);
     let dest = archive_root.join(relative).with_extension("jsonl.gz");
+    let artifact_dest = archive_root.join(
+        artifacts
+            .dir
+            .strip_prefix(sessions_root)
+            .unwrap_or(artifacts.dir.as_path()),
+    );
+    let has_dir = artifacts.dir.is_dir();
+    // Check every destination before the first move, so a clash leaves the
+    // session intact rather than half-archived.
+    if dest.exists() {
+        anyhow::bail!("archive destination exists: {}", dest.display());
+    }
+    if has_dir && artifact_dest.exists() {
+        anyhow::bail!("archive destination exists: {}", artifact_dest.display());
+    }
+    archive_file(path, &dest)?;
+    for (file, _) in &artifacts.files {
+        let rel = file.strip_prefix(&artifacts.dir).unwrap_or(file);
+        let mut name = rel.as_os_str().to_owned();
+        name.push(".gz");
+        archive_file(file, &artifact_dest.join(name))?;
+    }
+    if has_dir {
+        // `dirs` lists parents before children, so reversed removes children first.
+        for dir in artifacts
+            .dirs
+            .iter()
+            .rev()
+            .chain(std::iter::once(&artifacts.dir))
+        {
+            fs::remove_dir(dir).with_context(|| format!("remove {}", dir.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Gzip `src` into `dest` (parents created) and remove `src` only once the
+/// archive is fully written, flushed, and reads back to the source size.
+fn archive_file(src: &Path, dest: &Path) -> Result<()> {
     if dest.exists() {
         anyhow::bail!("archive destination exists: {}", dest.display());
     }
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
-    let mut input = fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut input = fs::File::open(src).with_context(|| format!("open {}", src.display()))?;
     let mut encoder = flate2::write::GzEncoder::new(
-        fs::File::create(&dest).with_context(|| format!("create {}", dest.display()))?,
+        fs::File::create(dest).with_context(|| format!("create {}", dest.display()))?,
         flate2::Compression::default(),
     );
     std::io::copy(&mut input, &mut encoder)?;
-    encoder.flush()?;
-    drop(encoder);
+    // `finish` writes the gzip trailer (`Drop` would swallow that error), then
+    // the file is synced before the source may be released.
+    encoder.finish()?.sync_all()?;
     // Verify the archive is readable before releasing the source. Streamed
     // size count (no read_to_end: sessions can be large).
-    let mut check = flate2::read::GzDecoder::new(fs::File::open(&dest)?);
+    let mut check = flate2::read::GzDecoder::new(fs::File::open(dest)?);
     let mut counted = 0u64;
     let mut chunk = vec![0u8; 64 * 1024];
     loop {
@@ -298,7 +431,7 @@ fn archive_session(sessions_root: &Path, archive_root: &Path, path: &Path) -> Re
     if counted != input.metadata()?.len() {
         anyhow::bail!("archive size mismatch: {}", dest.display());
     }
-    fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+    fs::remove_file(src).with_context(|| format!("remove {}", src.display()))?;
     Ok(())
 }
 
@@ -349,7 +482,13 @@ mod tests {
         std::fs::create_dir_all(&sessions).unwrap();
         let file = sessions.join("2026-01-01_test.jsonl");
         std::fs::write(&file, "{\"type\":\"session\"}\n").unwrap();
-        archive_session(&root.join("sessions"), &archive, &file).unwrap();
+        archive_session(
+            &root.join("sessions"),
+            &archive,
+            &file,
+            &scan_artifacts(&file).unwrap(),
+        )
+        .unwrap();
         assert!(!file.exists());
         let archived = archive.join("proj").join("2026-01-01_test.jsonl.gz");
         let mut decoded = String::new();
@@ -358,5 +497,105 @@ mod tests {
             .unwrap();
         assert_eq!(decoded, "{\"type\":\"session\"}\n");
         fs::remove_dir_all(&root).ok();
+    }
+
+    fn gunzip(path: &Path) -> String {
+        let mut decoded = String::new();
+        flate2::read::GzDecoder::new(fs::File::open(path).unwrap())
+            .read_to_string(&mut decoded)
+            .unwrap();
+        decoded
+    }
+
+    /// Every entry under `root`, sorted, for before/after comparisons.
+    fn tree_of(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path.clone());
+                }
+                out.push(path);
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Age `path` past the cold threshold so `run` treats it as a candidate.
+    fn make_cold(path: &Path) {
+        let old = SystemTime::now() - DAY * 40;
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+
+    #[test]
+    fn archive_moves_artifact_dir_gzipped_and_leaves_nothing_behind() {
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archive = root.path().join("archive").join("sessions");
+        let proj = sessions.join("proj");
+        let artifacts = proj.join("2026-01-01_s1");
+        fs::create_dir_all(artifacts.join("nested")).unwrap();
+        let file = proj.join("2026-01-01_s1.jsonl");
+        fs::write(&file, "{\"type\":\"session\"}\n").unwrap();
+        fs::write(artifacts.join("0.log"), "out\n").unwrap();
+        fs::write(artifacts.join("nested").join("1.bash.log"), "bash\n").unwrap();
+
+        let tree = scan_artifacts(&file).unwrap();
+        assert_eq!(tree.bytes, 4 + 5);
+        archive_session(&sessions, &archive, &file, &tree).unwrap();
+
+        assert!(!file.exists() && !artifacts.exists(), "session left behind");
+        assert_eq!(fs::read_dir(&proj).unwrap().count(), 0);
+        let archived_dir = archive.join("proj").join("2026-01-01_s1");
+        assert_eq!(gunzip(&archived_dir.join("0.log.gz")), "out\n");
+        assert_eq!(
+            gunzip(&archived_dir.join("nested").join("1.bash.log.gz")),
+            "bash\n"
+        );
+        assert_eq!(
+            gunzip(&archive.join("proj").join("2026-01-01_s1.jsonl.gz")),
+            "{\"type\":\"session\"}\n"
+        );
+    }
+
+    #[test]
+    fn dry_run_touches_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let proj = root.path().join("sessions").join("proj");
+        fs::create_dir_all(proj.join("s1")).unwrap();
+        let file = proj.join("2026-01-01_s1.jsonl");
+        fs::write(&file, "{\"type\":\"session\"}\n").unwrap();
+        fs::write(proj.join("s1").join("0.log"), "out\n").unwrap();
+        make_cold(&file);
+        let before = tree_of(root.path());
+        let args: Vec<String> = [
+            "--agent-dir",
+            root.path().to_str().unwrap(),
+            "--retain-newest-global",
+            "0",
+            "--retain-newest-per-cwd",
+            "0",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        assert_eq!(run(&args).unwrap(), 0);
+        assert_eq!(tree_of(root.path()), before);
+        assert!(!root.path().join("archive").exists());
+    }
+
+    #[test]
+    fn help_flag_exits_zero() {
+        for flag in ["--help", "-h"] {
+            assert_eq!(run(&[flag.to_string()]).unwrap(), 0);
+        }
     }
 }
