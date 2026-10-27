@@ -15,6 +15,9 @@
 
 use std::path::PathBuf;
 
+// Build script: every failure here is unrecoverable for the build itself, so
+// the expect messages name the missing input rather than papering over it.
+#[allow(clippy::expect_used)]
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let manifest =
@@ -68,11 +71,11 @@ fn base36(mut v: u64) -> String {
     if v == 0 {
         return "0".to_owned();
     }
-    let mut out = Vec::new();
+    let mut out = String::new();
     while v > 0 {
-        out.push(DIGITS[usize::try_from(v % 36).expect("fits")]);
+        // v % 36 is always < 36, so the index and the u8->char cast are exact.
+        out.push(char::from(DIGITS[(v % 36) as usize]));
         v /= 36;
     }
-    out.reverse();
-    String::from_utf8(out).expect("ascii")
+    out.chars().rev().collect()
 }

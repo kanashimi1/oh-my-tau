@@ -244,6 +244,8 @@ struct ClassRanks {
     revision: Option<String>,
 }
 
+// invariant: class_id came from the same taxonomy_rules().classes list being searched.
+#[allow(clippy::expect_used)]
 fn classify_ranks(model: &str, lenient: bool) -> Result<ClassRanks> {
     let lower = model.trim().to_lowercase();
     let bare = bare_of(&lower);
@@ -406,9 +408,9 @@ fn rank_pattern_overrides(
         if !glob_match(pattern.glob, bare_model) {
             continue;
         }
-        if let Some((specificity, _)) = winner {
+        if let Some((specificity, current)) = winner {
             if specificity == pattern.specificity {
-                tied = Some((winner.unwrap().1, pattern.override_ref));
+                tied = Some((current, pattern.override_ref));
             } else if specificity < pattern.specificity {
                 winner = Some((pattern.specificity, pattern.override_ref));
                 tied = None;

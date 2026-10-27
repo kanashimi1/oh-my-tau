@@ -12,11 +12,15 @@ use crate::pyfmt::{clen, take_chars};
 /// Char budget of the selected-steps block.
 pub const DEFAULT_BUDGET: usize = 2600;
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 fn step_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"(?m)^\d+\. ").expect("static regex"))
 }
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 fn test_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
@@ -26,6 +30,8 @@ fn test_re() -> &'static Regex {
 }
 
 /// Python's `\w` is letters, digits and `_` (no combining marks, unlike the regex crate's `\w`).
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 fn word_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"[A-Za-zА-Яа-я_][\p{L}\p{N}_./-]{3,}").expect("static regex"))

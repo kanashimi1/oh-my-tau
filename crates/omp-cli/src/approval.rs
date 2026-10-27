@@ -355,6 +355,8 @@ const LSP_READONLY_ACTIONS: &[&str] = &[
 ];
 
 /// Critical bash shapes (TS `CRITICAL_BASH_PATTERNS`).
+// invariant: CRITICAL_BASH holds fixed regex literals that always compile.
+#[allow(clippy::expect_used)]
 static CRITICAL_BASH: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"(?i)\brm\s+(?:-\S+\s+)*(?:-[a-z]*[rRfF][a-z]*|--recursive|--force)\s+(?:-\S+\s+)*/",
@@ -384,6 +386,8 @@ static CRITICAL_BASH: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 static REINTERPRETED_ARG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|[ \t])(?:-[^-]*[ce]|--(?:command|eval))(?:[= \t]|$)").expect("regex")
 });

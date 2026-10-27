@@ -68,13 +68,14 @@ fn radix(mut v: u64, base: u32) -> String {
     if v == 0 {
         return "0".to_owned();
     }
-    let mut out = Vec::new();
+    let mut out = String::new();
     while v > 0 {
-        out.push(DIGITS[usize::try_from(v % u64::from(base)).expect("fits")]);
+        // v % base is always < 36 <= DIGITS.len(), so the index and the
+        // u8->char cast are exact.
+        out.push(char::from(DIGITS[(v % u64::from(base)) as usize]));
         v /= u64::from(base);
     }
-    out.reverse();
-    String::from_utf8(out).expect("ascii")
+    out.chars().rev().collect()
 }
 
 /// Refresh every discoverable provider (or just `only`, when given) against
@@ -99,7 +100,7 @@ pub fn refresh(dir: &AgentDir, only: Option<&str>) -> Result<Vec<ProviderRefresh
                     .block_on(refresh_run(dir, only))
             })
             .join()
-            .expect("refresh thread panicked")
+            .map_err(|_| anyhow::Error::msg("refresh thread panicked"))?
     })
 }
 
@@ -302,6 +303,8 @@ pub fn append_models_path(base_url: &str) -> String {
 /// Model ids from a discovery payload: OpenAI `{"data": [{"id": …}]}`,
 /// Ollama `{"models": [{"name"/"model": …}]}`, or a bare id array.
 #[must_use]
+// invariant: as_array() is called right after is_array() on the same payload.
+#[allow(clippy::expect_used)]
 pub fn extract_model_ids(payload: &Value) -> Vec<String> {
     let items = if payload.is_array() {
         payload.as_array().expect("checked").clone()

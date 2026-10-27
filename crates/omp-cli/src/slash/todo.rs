@@ -207,6 +207,8 @@ fn title_case_sentence(text: &str) -> String {
 
 /// Minimal TS `markdownToPhases` round-trip (what `/todo export` + `/todo
 /// import` produce): `# phase` headings and `- [marker] task` lines.
+// invariant: phases are built in this loop with a tasks array on every phase.
+#[allow(clippy::expect_used)]
 fn markdown_to_phases(content: &str) -> Result<Vec<Value>, String> {
     let mut phases: Vec<Value> = Vec::new();
     for line in content.lines() {
@@ -520,11 +522,13 @@ pub(super) async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
                     .map_or_else(|| "Todos".to_string(), |p| phase_name(p).to_string()),
             };
             let final_content = title_case_sentence(&content);
-            match next.iter_mut().find(|p| phase_name(p) == target_name) {
-                Some(p) => p["tasks"]
-                    .as_array_mut()
-                    .expect("phase from transcript")
-                    .push(new_task(&final_content, "pending")),
+            let existing = next
+                .iter_mut()
+                .find(|p| phase_name(p) == target_name)
+                .and_then(|p| p.get_mut("tasks"))
+                .and_then(Value::as_array_mut);
+            match existing {
+                Some(tasks) => tasks.push(new_task(&final_content, "pending")),
                 None => next.push(json!({
                     "name": target_name,
                     "tasks": [new_task(&final_content, "pending")],

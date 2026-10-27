@@ -284,7 +284,10 @@ fn main() -> Result<()> {
             .enable_all()
             .build()
     }
-    .expect("tokio runtime");
+    .unwrap_or_else(|error| {
+        eprintln!("failed to start the tokio runtime: {error}");
+        std::process::exit(1);
+    });
     let result = rt.block_on(async_main());
     // Print/rpc runtimes are intentionally leaked (the process is about to
     // exit; Runtime::drop never runs), so hub auto-claims are released here

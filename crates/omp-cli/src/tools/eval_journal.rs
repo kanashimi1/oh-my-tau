@@ -410,6 +410,8 @@ fn split_assignment(stmt: &str) -> Option<(&str, &str)> {
 
 /// LHS of a setup assignment: plain names, optionally dotted targets or
 /// comma-separated names — nothing else (no subscripts, no calls).
+// invariant: chars().next() is Some because !seg.is_empty() was checked above.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn is_assignable_lhs(lhs: &str) -> bool {
     let lhs = lhs.trim();
     if lhs.is_empty() {
@@ -421,7 +423,11 @@ fn is_assignable_lhs(lhs: &str) -> bool {
             && part.split('.').all(|seg| {
                 !seg.is_empty()
                     && seg.chars().all(|c| c.is_alphanumeric() || c == '_')
-                    && !seg.chars().next().unwrap().is_ascii_digit()
+                    && !seg
+                        .chars()
+                        .next()
+                        .expect("!seg.is_empty() above")
+                        .is_ascii_digit()
             })
     })
 }

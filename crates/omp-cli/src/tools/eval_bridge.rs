@@ -313,7 +313,10 @@ impl EvalBridge {
     /// `output` host op: read recorded task/agent outputs (`<id>.md` files in
     /// the session artifacts dir) — TS `output()` in `py/prelude.py`, moved
     /// host-side so both preludes share one implementation.
-    #[allow(clippy::too_many_lines)] // one host op: id lookup, offset/limit slicing, reply shape
+    #[allow(clippy::too_many_lines)]
+    // one host op: id lookup, offset/limit slicing, reply shape
+    // invariant: results.len() == 1 was checked above, so pop yields Some.
+    #[allow(clippy::expect_used)]
     fn output_helper(args: &Value) -> Result<Value, String> {
         let ids: Vec<String> = match args.get("ids") {
             Some(Value::String(s)) => vec![s.clone()],

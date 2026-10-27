@@ -192,6 +192,8 @@ impl GoalRuntime {
     }
 
     /// omp `GoalRuntime.resumeGoal`.
+    // invariant: the goal is Some whenever this point is reachable (checked via as_mut above).
+    #[allow(clippy::expect_used)]
     pub fn resume_goal(&mut self) -> Result<Goal> {
         match self.goal.as_ref() {
             None => anyhow::bail!("No paused goal."),
@@ -284,6 +286,8 @@ pub fn runtime_tool(runtime: Option<Arc<parking_lot::Mutex<GoalRuntime>>>) -> Ar
 }
 
 /// omp `buildGoalToolResponse`.
+// invariant: goal is Some inside the is_some_and guard above.
+#[allow(clippy::expect_used)]
 fn build_response(
     goal: Option<&Goal>,
     include_completion_report: bool,

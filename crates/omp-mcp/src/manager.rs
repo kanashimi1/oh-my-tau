@@ -135,6 +135,8 @@ impl McpManager {
     /// Ensure `name` is resolved (connected with tools cached, or failed).
     /// Failures are recorded and returned, never panicking nor affecting
     /// other servers.
+    // invariant: the server entry is inserted (as NotConnected) before connecting begins, so it cannot vanish.
+    #[allow(clippy::expect_used)]
     async fn resolve(&self, name: &str) -> Result<(), McpError> {
         let config: Option<McpServerConfig> = {
             let mut guard = self.servers.lock().await;
@@ -244,6 +246,8 @@ impl McpManager {
             .await
     }
 
+    // invariant: resolve() above guarantees the entry exists and is Connected here.
+    #[allow(clippy::expect_used)]
     async fn call_inner(
         &self,
         server: &str,

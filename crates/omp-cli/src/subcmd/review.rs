@@ -127,6 +127,8 @@ fn cmd_note(args: &[String]) -> anyhow::Result<i32> {
     Ok(0)
 }
 
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 fn cmd_show(args: &[String]) -> anyhow::Result<i32> {
     use std::fmt::Write as _;
     let [rev] = args else {

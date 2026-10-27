@@ -412,6 +412,8 @@ pub fn get_trace_entry(file_param: &str, entry_id: &str) -> Result<Option<Sessio
  * [`trace_fingerprint_for_etag`] value the caller just computed for the same
  * file (its ETag pre-check), sparing a second walk.
  */
+// invariant: the track tree builder always emits a root track with id "main".
+#[allow(clippy::expect_used)]
 pub fn build_session_trace(
     file_param: &str,
     fingerprint: Option<&TraceFingerprint>,

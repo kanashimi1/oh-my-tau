@@ -574,6 +574,8 @@ impl Editor {
     /// Route one key through the Vim state machine. Returns `Some(outcome)`
     /// when Vim consumed the key; `None` means the caller's regular pipeline
     /// handles it (TS `#handleVimInput` :2234).
+    // invariant: self.vim is Some, verified by the `?` on as_ref() above.
+    #[allow(clippy::expect_used)]
     pub(crate) fn vim_handle_key(&mut self, key: KeyEvent) -> Option<EditorOutcome> {
         self.vim.as_ref()?;
         let snapshot = vim::VimBuffer::from_flat(&self.buffer.text(), self.buffer.flat_cursor());

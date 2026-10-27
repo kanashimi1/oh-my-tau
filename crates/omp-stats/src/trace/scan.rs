@@ -136,6 +136,8 @@ fn finite_number(value: Option<&Value>) -> Option<f64> {
  * Scan one transcript into a track: model/tool/turn/background spans plus
  * markers, and the cross-track facts (task results, request counts).
  */
+// invariant: start is Some after the is_none() fallback above; async_info/job_id were filtered to Some on the lines above.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 pub(crate) fn scan_transcript(
     entries: Vec<Value>,
     track_id: &str,
@@ -369,8 +371,9 @@ pub(crate) fn scan_transcript(
                         ),
                     );
                 }
-                let mut end = end.unwrap_or_else(|| envelope_ts.unwrap_or(start.unwrap()));
-                let start = start.unwrap();
+                let mut end =
+                    end.unwrap_or_else(|| envelope_ts.unwrap_or(start.expect("start set above")));
+                let start = start.expect("start set above");
                 end = end.max(start);
                 if first_assistant_model.is_none() {
                     first_assistant_model = msg
@@ -462,12 +465,14 @@ pub(crate) fn scan_transcript(
                     .and_then(Value::as_str)
                     .is_some()
                 {
+                    // invariant: the filter chain above checked state == "running"
+                    // and a string jobId on this same Option.
                     let job_id = async_info
-                        .unwrap()
+                        .expect("checked above")
                         .get("jobId")
-                        .unwrap()
+                        .expect("checked above")
                         .as_str()
-                        .unwrap()
+                        .expect("checked above")
                         .to_string();
                     let job = PendingBackgroundJob {
                         job_id: job_id.clone(),

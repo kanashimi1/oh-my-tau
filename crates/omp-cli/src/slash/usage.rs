@@ -106,6 +106,8 @@ fn unsupported_usage_note(provider: &str) -> String {
 
 /// Render the anthropic OAuth usage report + reset-credit inventory, one line per
 /// window; empty when the active provider has no usage endpoint or credential.
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 async fn provider_usage_lines(rt: &Runtime) -> Vec<String> {
     let (provider, report) = fetch_active_usage(rt).await;
     let mut lines = vec![String::new()];

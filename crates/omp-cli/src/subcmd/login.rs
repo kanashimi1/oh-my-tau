@@ -154,7 +154,10 @@ impl OAuthLoginUi for TermUi {
 
 /// Run an async block on a dedicated thread with its own runtime (this entry point runs inside
 /// the process-wide tokio runtime, where nesting `block_on` panics).
-#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
+#[allow(clippy::disallowed_methods)]
+// entry point: dedicated runtime on its own thread
+// invariant: the scratch runtime is built once per call and only fails on resource exhaustion; a panicked worker thread must propagate anyway.
+#[allow(clippy::expect_used)]
 fn run_async<T: Send>(future: impl Future<Output = T> + Send) -> T {
     std::thread::scope(|scope| {
         scope

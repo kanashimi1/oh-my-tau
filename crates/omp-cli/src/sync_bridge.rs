@@ -15,6 +15,8 @@
 /// deadlocks. The eval kernel invokes [`omp_eval::HostBridge::call`] from its
 /// `spawn_blocking` cell loop, which satisfies that contract. A process
 /// lifetime fallback runtime covers callers with no ambient runtime (tests).
+// invariant: the fallback runtime only fails to build on resource exhaustion.
+#[allow(clippy::expect_used)]
 pub(crate) fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
         // `Handle::block_on` on a `spawn_blocking` thread parks only that

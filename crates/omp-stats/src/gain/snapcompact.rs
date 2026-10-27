@@ -54,6 +54,8 @@ fn mtime_ms(meta: &fs::Metadata) -> i64 {
 }
 
 /// Read, cache and filter the snapcompact records.
+// invariant: is_some_and checked the same Option on the line above.
+#[allow(clippy::expect_used)]
 pub(crate) fn read_snapcompact_records(
     cutoff: Option<i64>,
     project: Option<&str>,

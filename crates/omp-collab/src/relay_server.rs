@@ -444,6 +444,8 @@ fn relay_binary(shared: &RelayShared, room_id: &str, is_host: bool, peer_id: u32
     }
 }
 
+// invariant: room_id was looked up in rooms above, so remove() on the same id succeeds.
+#[allow(clippy::expect_used)]
 fn relay_close(shared: &RelayShared, room_id: &str, is_host: bool, conn: u64, peer_id: u32) {
     let mut rooms = shared.rooms.lock();
     let Some(room) = rooms.get_mut(room_id) else {

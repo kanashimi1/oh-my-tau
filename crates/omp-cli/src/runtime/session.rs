@@ -479,6 +479,8 @@ pub(super) fn seed_resumed_message(
 ///
 /// # Errors
 /// The latest compaction entry cannot be read.
+// invariant: after_reset is only true when reset_pos is Some.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn reduced_branch_flags(
     index: &omp_session::index::SessionIndex,
     path: &Path,
@@ -498,7 +500,7 @@ fn reduced_branch_flags(
     };
     let mut full = vec![false; branch.len()];
     if after_reset {
-        for f in &mut full[reset_pos.unwrap() + 1..] {
+        for f in &mut full[reset_pos.expect("after_reset implies Some") + 1..] {
             *f = true;
         }
     } else if let Some(cp) = compaction_pos {

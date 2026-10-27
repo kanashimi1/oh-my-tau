@@ -355,6 +355,8 @@ fn foreign_history_files() -> Vec<PathBuf> {
 /// Prompts a fresh engine learns once from other coding agents' histories:
 /// slash commands are not prose, Claude's paste and image placeholders are not
 /// words the user typed.
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 fn read_foreign_prompts(files: &[PathBuf]) -> Vec<String> {
     let placeholder =
         regex::Regex::new(r"\[(?:Pasted text|Image) #\d+[^\]]*\]").expect("static regex");

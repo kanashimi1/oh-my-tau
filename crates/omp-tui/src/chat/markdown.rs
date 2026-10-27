@@ -99,7 +99,10 @@ fn inline_spans(text: &str, st: &Styles) -> Vec<Span<'static>> {
     parse_inline(text, st, st.text)
 }
 
-#[allow(clippy::too_many_lines)] // delimiter-heavy inline parser
+#[allow(clippy::too_many_lines)]
+// delimiter-heavy inline parser
+// invariant: every unwrap/expect is guarded by an is_some/contains check on the same string immediately above.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn parse_inline(text: &str, st: &Styles, base: Style) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
@@ -432,7 +435,10 @@ fn parse_blocks(src: &str) -> Vec<Block> {
 /// [`parse_blocks`] over pre-split lines, pairing every block with its end:
 /// the index of the first line it did not consume. Deciding where a block
 /// ends looks at most one line past that end (see [`block_is_final`]).
-#[allow(clippy::too_many_lines)] // block-kind dispatch table
+#[allow(clippy::too_many_lines)]
+// block-kind dispatch table
+// invariant: finds are guarded by contains/starts_with checks; n is bounded by 1..=6.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn parse_block_spans(lines: &[&str]) -> Vec<(Block, usize)> {
     let mut blocks = Vec::new();
     let mut ends = Vec::new();

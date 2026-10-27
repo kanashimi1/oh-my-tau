@@ -150,6 +150,8 @@ fn spill_payload(message_id: &str, body: &[u8]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
     use std::fmt::Write as _;
@@ -464,6 +466,8 @@ impl BusLease {
 
     /// Start (or join) the bus of `owner` (the current session when called
     /// via [`BusLease::acquire`]). Must run inside a tokio runtime.
+    // invariant: the bus entry for key was inserted in the match arm above.
+    #[allow(clippy::expect_used)]
     pub(crate) fn acquire_for(owner: &Owner) -> std::io::Result<Self> {
         let key = owner_key(owner);
         let mut buses = BUSES.lock();
@@ -513,6 +517,8 @@ impl BusLease {
 }
 
 impl Drop for BusLease {
+    // invariant: a live BusLease always has its entry in the buses map.
+    #[allow(clippy::expect_used)]
     fn drop(&mut self) {
         let mut buses = BUSES.lock();
         let Some(bus) = buses.get_mut(&self.key) else {
@@ -1287,6 +1293,8 @@ fn inject_hub_envelope(
 /// Render one `send{}` receipt for the model-facing write result: the hub
 /// state (`delivered`/`queued`/`failed`) and the `message_id`, so a queued
 /// envelope is never mistaken for a lost one.
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 fn receipt_text(receipt: omp_hub::SendReceipt) -> String {
     use std::fmt::Write as _;
     let state = match receipt.state.as_str() {

@@ -412,6 +412,8 @@ pub(crate) struct KernelProcess {
 
 impl KernelProcess {
     /// Spawn `program args…` speaking the NDJSON kernel protocol on stdio.
+    // invariant: stdout/stdin are piped on the command above, so take() always yields Some.
+    #[allow(clippy::expect_used)]
     pub(crate) fn spawn(
         program: &str,
         args: &[&str],
@@ -475,8 +477,12 @@ impl KernelProcess {
         // request, then escalate to killing the whole process group.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
-            if self.child.try_wait().expect("try_wait").is_some() {
-                return;
+            // An OS error polling the child is unrecoverable here; fall
+            // through to the kill escalation below rather than panic.
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(_) => break,
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -658,6 +664,8 @@ impl PythonKernel {
 
     // Mirrors the omp host cell-execution flow step by step; splitting would obscure that parity.
     #[allow(clippy::too_many_lines)]
+    // invariant: req is a serde_json! object literal, so as_object_mut is Some.
+    #[allow(clippy::expect_used)]
     fn execute_opts(
         &self,
         code: &str,
@@ -935,14 +943,12 @@ impl PythonKernel {
     }
 
     /// True while the runner subprocess is alive.
-    ///
-    /// # Panics
-    /// If the OS reports the child's exit status unrecoverably.
     #[must_use]
     pub fn is_alive(&self) -> bool {
         let mut guard = self.process.lock();
         match guard.as_mut() {
-            Some(p) => p.child.try_wait().expect("try_wait").is_none(),
+            // An unrecoverable OS status report is treated as "not alive".
+            Some(p) => matches!(p.child.try_wait(), Ok(None)),
             None => false,
         }
     }

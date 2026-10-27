@@ -34,6 +34,8 @@ const PSEUDO_PREFIX: [&str; 9] = [
 ];
 const DROP_KEYS: [&str; 5] = ["i", "_i", "intent", "timeout", "agent__intent"];
 
+// invariant: callers pass fixed regex literals that always compile.
+#[allow(clippy::expect_used)]
 fn re(cell: &'static OnceLock<Regex>, pat: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pat).expect("static regex"))
 }
@@ -118,6 +120,8 @@ fn text_of(content: Option<&Value>) -> String {
 
 /// `_TAGS.sub("", s)`: `<(system-reminder|...|s1-[a-z]+|environment_context)[^>]*>.*?</\1>` (DOTALL).
 /// The regex crate has no backreferences, so the closing tag is searched for explicitly.
+// invariant: captures from `open` always contain group 0 and group 1 (one capture in pattern).
+#[allow(clippy::expect_used)]
 fn strip_tags(s: &str) -> String {
     static OPEN: OnceLock<Regex> = OnceLock::new();
     let open = re(

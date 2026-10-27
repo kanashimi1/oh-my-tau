@@ -519,6 +519,8 @@ fn db_key(db: &Path) -> String {
     db.to_string_lossy().into_owned()
 }
 
+// invariant: http://x/ is a valid static URL.
+#[allow(clippy::expect_used)]
 fn form_encode(pairs: &[(&str, &str)]) -> String {
     let mut ser = reqwest::Url::parse("http://x/").expect("static url");
     ser.query_pairs_mut().extend_pairs(pairs);
@@ -1087,7 +1089,10 @@ async fn local_pool(
 
 /// Run `fut` to completion on a private runtime thread: callable from sync code and from inside
 /// a tokio worker alike.
-#[allow(clippy::disallowed_methods)] // dedicated thread with its own scratch runtime (pre-existing pattern)
+#[allow(clippy::disallowed_methods)]
+// dedicated thread with its own scratch runtime (pre-existing pattern)
+// invariant: the scratch runtime is built once per call and only fails on resource exhaustion; a panicked worker thread must propagate anyway.
+#[allow(clippy::expect_used)]
 fn block_on<M, F>(make: M) -> F::Output
 where
     M: FnOnce() -> F + Send,

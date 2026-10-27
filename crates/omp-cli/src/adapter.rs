@@ -194,6 +194,8 @@ impl ModelStream for AuthRetryStream {
 /// # Panics
 ///
 /// Panics at stream time if the target slot was never set before the first stream.
+// invariant: the target slot is set before the first stream (documented contract of this fn).
+#[allow(clippy::expect_used)]
 pub fn switchable_stream_fn(target: Arc<parking_lot::RwLock<Option<ProviderTarget>>>) -> StreamFn {
     Arc::new(
         move |_requested: AgentModel, context: LlmContext, options: StreamRequestOptions| {
@@ -435,6 +437,8 @@ pub fn real_stream_fn(api_key: Option<String>, model: Model) -> StreamFn {
 /// Panics when an assistant message cannot round-trip across the two
 /// crates' wire shapes (a structural shape-mismatch bug).
 #[must_use]
+// invariant: pa_types and pa_agent wire shapes are kept structurally identical (see json_round_trip docs).
+#[allow(clippy::expect_used)]
 pub fn convert_stream_event(
     event: &pa_types::ai::AssistantMessageEvent,
 ) -> Option<pa_agent::stream::AssistantMessageEvent> {

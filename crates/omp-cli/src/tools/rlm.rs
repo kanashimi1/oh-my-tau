@@ -841,7 +841,10 @@ struct Selection {
 /// holding the earliest candidate), then within it the earliest candidate
 /// (`consistency`) or the max joint score `VC·Len` (`uncertainty`; it also breaks
 /// plurality size ties).
-#[allow(clippy::cast_precision_loss)] // candidate counts are tiny; exact in f64
+#[allow(clippy::cast_precision_loss)]
+// candidate counts are tiny; exact in f64
+// invariant: fold over a non-empty candidate list always yields Some.
+#[allow(clippy::expect_used)]
 fn select_candidate(cands: &[Candidate], select: Select) -> Selection {
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, c) in cands.iter().enumerate() {

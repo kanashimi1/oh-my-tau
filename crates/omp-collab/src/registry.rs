@@ -486,6 +486,8 @@ async fn handle_connection(
 /// Build the single response frame for one request line. Wire error strings
 /// are the TS fixed vocabulary; every failure path returns before any URL or
 /// source error can leak into the envelope.
+// invariant: respond() only serializes in-memory serde_json::Value payloads, which cannot fail.
+#[allow(clippy::expect_used)]
 fn process_request(
     line: &str,
     token: &str,
@@ -819,6 +821,8 @@ impl Drop for CollabHostPublication {
 /// # Panics
 /// Only if `serde_json` cannot serialize the metadata record, which is
 /// statically impossible (all fields are strings and integers).
+// invariant: registry metadata is a plain data struct, serde_json cannot fail to serialize it.
+#[allow(clippy::expect_used)]
 pub fn publish_collab_host(
     source: Arc<dyn CollabHostRegistrySource>,
     options: Option<&CollabPublishOptions>,
@@ -964,6 +968,8 @@ async fn query(
     }
 }
 
+// invariant: frame is a serde_json object built in-memory, serialization cannot fail.
+#[allow(clippy::expect_used)]
 async fn query_once(meta: &CollabHostRecord, request: serde_json::Value) -> QueryResult {
     let mut stream = match tokio::net::UnixStream::connect(&meta.endpoint).await {
         Ok(stream) => stream,

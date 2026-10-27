@@ -300,9 +300,10 @@ impl JsKernel {
 
     fn ensure_running(&self) -> io::Result<()> {
         let mut guard = self.process.lock();
-        let alive = guard
-            .as_mut()
-            .is_some_and(|p| p.child.try_wait().expect("try_wait").is_none());
+        let alive = match guard.as_mut() {
+            Some(p) => p.child.try_wait()?.is_none(),
+            None => false,
+        };
         if !alive {
             // try_wait() already reaped the dead runner above, so no kill is
             // needed (and none is safe: the pid could have been recycled).
@@ -328,14 +329,12 @@ impl JsKernel {
     }
 
     /// True while the runner subprocess is alive.
-    ///
-    /// # Panics
-    /// If the OS reports the child's exit status unrecoverably.
     #[must_use]
     pub fn is_alive(&self) -> bool {
         let mut guard = self.process.lock();
         match guard.as_mut() {
-            Some(p) => p.child.try_wait().expect("try_wait").is_none(),
+            // An unrecoverable OS status report is treated as "not alive".
+            Some(p) => matches!(p.child.try_wait(), Ok(None)),
             None => false,
         }
     }

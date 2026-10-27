@@ -227,6 +227,8 @@ fn compare_blocks(a: &Value, b: &Value) -> std::cmp::Ordering {
 // ------------------------------------------------------------------ refresh
 
 /// TS `isDefinitiveOAuthFailure` (`error/flags.ts isOAuthExpiry`).
+// invariant: all three regexes are fixed literals that always compile.
+#[allow(clippy::expect_used)]
 fn is_definitive_oauth_failure(message: &str) -> bool {
     use std::sync::LazyLock;
     static DEFINITIVE: LazyLock<regex::Regex> = LazyLock::new(|| {
@@ -1020,11 +1022,20 @@ async fn main() -> Result<()> {
     }
 
     let shutdown = async {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => "SIGINT",
-            _ = term.recv() => "SIGTERM",
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => "SIGINT",
+                    _ = term.recv() => "SIGTERM",
+                }
+            }
+            // Signal registration failed (e.g. restricted sandbox): degrade to
+            // Ctrl-C only instead of crashing the broker.
+            Err(error) => {
+                eprintln!("SIGTERM handler unavailable ({error}); Ctrl-C only");
+                let _ = tokio::signal::ctrl_c().await;
+                "SIGINT"
+            }
         }
     };
     tokio::pin!(shutdown);

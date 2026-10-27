@@ -227,6 +227,8 @@ pub struct Executed {
 /// transcript (every byte is re-read as cache input on later turns). Strips
 /// ANSI escapes everywhere; for cargo/rustc-style output drops progress lines
 /// and elides `warning:` detail past the first few, keeping errors intact.
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 fn digest_output(raw: &str) -> String {
     use std::fmt::Write as _;
     let strip_ansi = |s: &str| {
@@ -588,7 +590,10 @@ const SUPERVISOR_TICK: Duration = Duration::from_millis(100);
 ///
 /// # Errors
 /// Spawn failure, or abort while waiting.
-#[allow(clippy::too_many_lines)] // one supervisor task: spawn + readiness poll + liveness loop; mirrors omp's service supervisor
+#[allow(clippy::too_many_lines)]
+// one supervisor task: spawn + readiness poll + liveness loop; mirrors omp's service supervisor
+// invariant: the readiness regex is validated before this fn runs; the service entry is registered above before the select.
+#[allow(clippy::expect_used)]
 async fn start_service(
     registry: &JobRegistry,
     name: &str,

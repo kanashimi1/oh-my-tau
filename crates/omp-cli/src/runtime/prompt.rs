@@ -218,15 +218,21 @@ impl Runtime {
 /// compaction cut the live turn.
 pub(super) const AUTO_CONTINUE_PROMPT: &str = include_str!("../../prompts/system/auto-continue.md");
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static MARKDOWN_PROMPT_PREFIX_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| {
         regex::Regex::new(r"^(?:>\s*)?(?:(?:[-*+]|\d+[.)])\s+)*").expect("valid regex")
     });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static PROMPT_LABEL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"^(?i)(?:q(?:uestion)?|ask)\s*\d*\s*[:.)-]\s*").expect("valid regex")
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static QUESTION_PROMPT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
         r"(?i)^(what|which|when|where|why|how|who|whom|whose|do|does|did|can|could|would|will|should|is|are|am|may|shall)\b",
@@ -234,14 +240,20 @@ static QUESTION_PROMPT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLo
     .expect("valid regex")
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static USER_DIRECTED_PROMPT_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?i)\b(?:you|your|we|our)\b").expect("valid regex")
     });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static NON_ASCII_TEXT_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"[^\x00-\x7F]").expect("valid regex"));
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static USER_RESPONSE_CUE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
         r"(?i)^(?:please\s+)?(?:confirm|reply|choose|pick|decide|advise)\b|^(?:please\s+)?answer\b|^(?:please\s+)?(?:let\s+me\s+know|tell\s+me)\b",
@@ -249,6 +261,8 @@ static USER_RESPONSE_CUE_RE: std::sync::LazyLock<regex::Regex> = std::sync::Lazy
     .expect("valid regex")
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static TRAILING_PUNCT_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"[.!?。！？]+$").expect("valid regex"));
 

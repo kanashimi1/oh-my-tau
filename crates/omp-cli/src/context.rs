@@ -218,6 +218,8 @@ impl SlotTable {
 
     /// Render the slots message body (`SLOTS_MARKER` first).
     #[must_use]
+    // invariant: write!/writeln! to a String is infallible.
+    #[allow(clippy::expect_used)]
     pub fn render(&self, host_evicted: &[String]) -> String {
         use std::fmt::Write as _;
         let mut out = String::from(SLOTS_MARKER);
