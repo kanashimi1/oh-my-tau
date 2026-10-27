@@ -585,7 +585,7 @@ fn save_artifact_in(dir: &Path, text: &str, max_bytes: usize) -> Option<String> 
                 .and_then(|p| p.parse().ok())
         })
         .collect();
-    let id = (0u64..).find(|i| !used.contains(i))?;
+    let id = (0u64..=u64::MAX).find(|i| !used.contains(i))?;
     let body = cap_artifact_body(text, max_bytes);
     std::fs::write(dir.join(format!("{id}.log")), body.as_bytes()).ok()?;
     Some(format!("artifact://{id}"))

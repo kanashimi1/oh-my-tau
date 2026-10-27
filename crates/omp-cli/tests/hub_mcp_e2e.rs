@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 /// One throwaway hub + HOME + spawned processes.
 struct World {
-    _home: tempfile::TempDir,
+    home: tempfile::TempDir,
     hub: PathBuf,
     serve: Child,
 }
@@ -46,11 +46,7 @@ impl World {
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        Self {
-            _home: home,
-            hub,
-            serve,
-        }
+        Self { home, hub, serve }
     }
 }
 
@@ -79,7 +75,7 @@ struct RawClient {
 }
 
 fn spawn_mcp(world: &World, extra_args: &[&str]) -> (Child, RawClient) {
-    let mut child = omt(world._home.path(), &world.hub)
+    let mut child = omt(world.home.path(), &world.hub)
         .args(["hub", "mcp"])
         .args(extra_args)
         .stdin(Stdio::piped())
@@ -100,9 +96,10 @@ fn spawn_mcp(world: &World, extra_args: &[&str]) -> (Child, RawClient) {
 }
 
 impl RawClient {
-    fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+    fn request(&mut self, method: &str, params: &serde_json::Value) -> serde_json::Value {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let req = serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        let req =
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let mut line = serde_json::to_string(&req).unwrap();
         line.push('\n');
         self.stdin.write_all(line.as_bytes()).unwrap();
@@ -126,7 +123,7 @@ impl RawClient {
         }
     }
 
-    fn notify(&mut self, method: &str, params: serde_json::Value) {
+    fn notify(&mut self, method: &str, params: &serde_json::Value) {
         let msg = serde_json::json!({"jsonrpc": "2.0", "method": method, "params": params});
         let mut line = serde_json::to_string(&msg).unwrap();
         line.push('\n');
@@ -134,17 +131,17 @@ impl RawClient {
         self.stdin.flush().unwrap();
     }
 
-    fn result(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+    fn result(&mut self, method: &str, params: &serde_json::Value) -> serde_json::Value {
         let msg = self.request(method, params);
         assert!(msg.get("error").is_none(), "{method} failed: {msg}");
         msg["result"].clone()
     }
 }
 
-fn call(client: &mut RawClient, name: &str, args: serde_json::Value) -> serde_json::Value {
+fn call(client: &mut RawClient, name: &str, args: &serde_json::Value) -> serde_json::Value {
     let result = client.result(
         "tools/call",
-        serde_json::json!({"name": name, "arguments": args}),
+        &serde_json::json!({"name": name, "arguments": args}),
     );
     assert!(
         result.get("isError").is_none(),
@@ -155,7 +152,7 @@ fn call(client: &mut RawClient, name: &str, args: serde_json::Value) -> serde_js
 }
 
 fn cli(world: &World, args: &[&str]) -> std::process::Output {
-    omt(world._home.path(), &world.hub)
+    omt(world.home.path(), &world.hub)
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn omt {args:?}: {e}"))
@@ -179,6 +176,7 @@ fn cli_json(world: &World, args: &[&str]) -> serde_json::Value {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one scripted MCP session; claims and messages build on each other
 fn mcp_round_trip_against_temp_hub() {
     let world = World::new();
     let (mut child, mut c) = spawn_mcp(&world, &["--agent", "itest"]);
@@ -186,7 +184,7 @@ fn mcp_round_trip_against_temp_hub() {
     // initialize: negotiate 2025-06-18, remember nothing yet.
     let init = c.result(
         "initialize",
-        serde_json::json!({
+        &serde_json::json!({
             "protocolVersion": "2025-11-25",
             "capabilities": {},
             "clientInfo": {"name": "raw-test", "version": "0"},
@@ -194,10 +192,10 @@ fn mcp_round_trip_against_temp_hub() {
     );
     assert_eq!(init["protocolVersion"], "2025-06-18");
     assert_eq!(init["serverInfo"]["name"], "omt-hub");
-    c.notify("notifications/initialized", serde_json::json!({}));
+    c.notify("notifications/initialized", &serde_json::json!({}));
 
     // tools/list: exactly the nine hub tools.
-    let tools = c.result("tools/list", serde_json::json!({}));
+    let tools = c.result("tools/list", &serde_json::json!({}));
     let names: Vec<&str> = tools["tools"]
         .as_array()
         .unwrap()
@@ -216,7 +214,7 @@ fn mcp_round_trip_against_temp_hub() {
     let receipt = call(
         &mut c,
         "send",
-        serde_json::json!({
+        &serde_json::json!({
             "to": "cli-bob",
             "payload": "what is 6*7?",
             "expected": "json answer",
@@ -248,7 +246,7 @@ fn mcp_round_trip_against_temp_hub() {
     );
     assert_eq!(ans["question"]["state"], "answered");
 
-    let mine = call(&mut c, "inbox", serde_json::json!({"mark_read": true}));
+    let mine = call(&mut c, "inbox", &serde_json::json!({"mark_read": true}));
     let mine_envs = mine["envelopes"].as_array().unwrap();
     assert_eq!(mine_envs.len(), 1);
     assert_eq!(mine_envs[0]["kind"], "agent.answer");
@@ -257,13 +255,13 @@ fn mcp_round_trip_against_temp_hub() {
     assert!(mine["mark_read_errors"].as_array().unwrap().is_empty());
 
     // Status: no more unread for itest; question answered with reply id.
-    let st = call(&mut c, "status", serde_json::json!({}));
+    let st = call(&mut c, "status", &serde_json::json!({}));
     assert!(st["unread"].as_array().unwrap().is_empty());
     assert!(st["pending_replies"].as_array().unwrap().is_empty());
     let q = call(
         &mut c,
         "status",
-        serde_json::json!({"message_id": question_id}),
+        &serde_json::json!({"message_id": question_id}),
     );
     assert_eq!(q["state"], "answered");
     assert_eq!(q["reply_message_id"], ans["answer"]["message_id"]);
@@ -276,7 +274,7 @@ fn mcp_round_trip_against_temp_hub() {
     let sent = call(
         &mut c,
         "send",
-        serde_json::json!({"to": "cli-bob", "payload_path": big.to_str().unwrap()}),
+        &serde_json::json!({"to": "cli-bob", "payload_path": big.to_str().unwrap()}),
     );
     assert!(sent["state"].is_string());
     let bob_inbox = cli_json(&world, &["hub", "inbox", "--recipient", "cli-bob"]);
@@ -287,7 +285,10 @@ fn mcp_round_trip_against_temp_hub() {
         .find(|e| e["message_id"] == sent["message_id"])
         .and_then(|e| e["payload_ref"].as_object())
         .expect("payload_ref present");
-    assert_eq!(refr["bytes"].as_u64().unwrap() as usize, body.len());
+    assert_eq!(
+        usize::try_from(refr["bytes"].as_u64().unwrap()).unwrap(),
+        body.len()
+    );
     assert_eq!(refr["sha256"].as_str().unwrap().len(), 64);
     assert!(refr["path"].as_str().unwrap().ends_with("big.txt"));
 
@@ -295,41 +296,67 @@ fn mcp_round_trip_against_temp_hub() {
     let claim = call(
         &mut c,
         "claim",
-        serde_json::json!({"resource": "itest/res", "ttl_s": 60, "intent": "testing"}),
+        &serde_json::json!({"resource": "itest/res", "ttl_s": 60, "intent": "testing"}),
     );
     assert_eq!(claim["granted"], true);
     let token = claim["fencing_token"].as_u64().unwrap();
     // A conflicting claim exits 1 by design; parse the JSON from stdout.
     let conflict_out = cli(
         &world,
-        &["hub", "claim", "--resource", "itest/res", "--owner", "other", "--ttl-s", "60", "--json"],
+        &[
+            "hub",
+            "claim",
+            "--resource",
+            "itest/res",
+            "--owner",
+            "other",
+            "--ttl-s",
+            "60",
+            "--json",
+        ],
     );
     assert!(!conflict_out.status.success());
-    let conflict: serde_json::Value =
-        serde_json::from_slice(&conflict_out.stdout).unwrap();
+    let conflict: serde_json::Value = serde_json::from_slice(&conflict_out.stdout).unwrap();
     assert_eq!(conflict["granted"], false);
     assert_eq!(conflict["holder"], "itest");
-    let held = call(&mut c, "check", serde_json::json!({"resource": "itest/res"}));
+    let held = call(
+        &mut c,
+        "check",
+        &serde_json::json!({"resource": "itest/res"}),
+    );
     assert_eq!(held["held"], true);
     assert_eq!(held["holder"]["owner"], "itest");
     let wrong = c.result(
         "tools/call",
-        serde_json::json!({"name": "release", "arguments": {"resource": "itest/res", "fencing_token": token + 1}}),
+        &serde_json::json!({"name": "release", "arguments": {"resource": "itest/res", "fencing_token": token + 1}}),
     );
     assert_eq!(wrong["isError"], true);
     let ok = call(
         &mut c,
         "release",
-        serde_json::json!({"resource": "itest/res", "fencing_token": token}),
+        &serde_json::json!({"resource": "itest/res", "fencing_token": token}),
     );
     assert_eq!(ok["released"], true);
-    let free = call(&mut c, "check", serde_json::json!({"resource": "itest/res"}));
+    let free = call(
+        &mut c,
+        "check",
+        &serde_json::json!({"resource": "itest/res"}),
+    );
     assert_eq!(free["held"], false);
     let _ = cli(
         &world,
-        &["hub", "claim", "--resource", "itest/keep", "--owner", "keeper", "--ttl-s", "120"],
+        &[
+            "hub",
+            "claim",
+            "--resource",
+            "itest/keep",
+            "--owner",
+            "keeper",
+            "--ttl-s",
+            "120",
+        ],
     );
-    let claims = call(&mut c, "claims", serde_json::json!({"prefix": "itest/"}));
+    let claims = call(&mut c, "claims", &serde_json::json!({"prefix": "itest/"}));
     let listed: Vec<&str> = claims["claims"]
         .as_array()
         .unwrap()
@@ -342,11 +369,11 @@ fn mcp_round_trip_against_temp_hub() {
     let q2 = call(
         &mut c,
         "send",
-        serde_json::json!({"to": "cli-bob", "reply_schema": schema, "payload": "again"}),
+        &serde_json::json!({"to": "cli-bob", "reply_schema": schema, "payload": "again"}),
     );
     let bad = c.result(
         "tools/call",
-        serde_json::json!({
+        &serde_json::json!({
             "name": "answer",
             "arguments": {"causation_id": q2["message_id"], "payload": "{\"answer\":\"nope\"}"},
         }),
@@ -358,10 +385,10 @@ fn mcp_round_trip_against_temp_hub() {
     // Unknown tool and unknown method.
     let no_tool = c.result(
         "tools/call",
-        serde_json::json!({"name": "nope", "arguments": {}}),
+        &serde_json::json!({"name": "nope", "arguments": {}}),
     );
     assert_eq!(no_tool["isError"], true);
-    let no_method = c.request("resources/list", serde_json::json!({}));
+    let no_method = c.request("resources/list", &serde_json::json!({}));
     assert_eq!(no_method["error"]["code"], -32601);
 
     // Clean shutdown: close stdin, server exits 0.
@@ -389,22 +416,16 @@ async fn omt_mcp_client_interop() {
                 .collect(),
         ),
         env: Some(std::collections::BTreeMap::from([
-            (
-                "HOME".to_string(),
-                world._home.path().display().to_string(),
-            ),
-            (
-                "OMP_HUB_DIR".to_string(),
-                world.hub.display().to_string(),
-            ),
+            ("HOME".to_string(), world.home.path().display().to_string()),
+            ("OMP_HUB_DIR".to_string(), world.hub.display().to_string()),
             ("OMP_HUB_NO_AUTOSTART".to_string(), "1".to_string()),
         ])),
         cwd: None,
         url: None,
         headers: None,
-        extra: Default::default(),
+        extra: std::collections::BTreeMap::default(),
     };
-    let cwd = Arc::new(world._home.path().to_path_buf());
+    let cwd = Arc::new(world.home.path().to_path_buf());
     let mut conn = omp_mcp::client::connect_to_server("omt-hub", &config, cwd)
         .await
         .unwrap_or_else(|e| panic!("connect_to_server: {e}"));

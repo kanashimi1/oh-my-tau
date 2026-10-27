@@ -102,12 +102,11 @@ pub fn dedup_tool_results(messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
 /// `OMP_RS_DEDUP_TOOL_RESULTS=0`/`=false`.
 #[must_use]
 pub fn dedup_active() -> bool {
-    match std::env::var("OMP_RS_DEDUP_TOOL_RESULTS") {
-        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
-        Err(_) => {
-            use std::io::IsTerminal;
-            !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
-        }
+    if let Ok(v) = std::env::var("OMP_RS_DEDUP_TOOL_RESULTS") {
+        v == "1" || v.eq_ignore_ascii_case("true")
+    } else {
+        use std::io::IsTerminal;
+        !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
     }
 }
 
@@ -220,7 +219,7 @@ mod tests {
         // Cache contract: appending a message may only append wire bytes —
         // never change what an earlier request already sent.
         let big = "z".repeat(600);
-        let history = vec![
+        let history = [
             tool_result("call_a", &big),
             tool_result("call_b", "small"),
             tool_result("call_c", &big),

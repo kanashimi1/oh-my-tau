@@ -38,6 +38,7 @@ fn output(rt: &Runtime, text: &str) {
 /// The conversation as plain text for `/rlm <question>` without a context
 /// source: one `[role]` header per message, text and tool output bodies.
 fn session_transcript(messages: &[Value]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::new();
     for m in messages {
         let role = m.get("role").and_then(Value::as_str).unwrap_or("?");
@@ -61,7 +62,7 @@ fn session_transcript(messages: &[Value]) -> String {
         if body.trim().is_empty() {
             continue;
         }
-        out.push_str(&format!("[{role}]\n{body}\n\n"));
+        write!(out, "[{role}]\n{body}\n\n").expect("writing to a String is infallible");
     }
     out
 }
@@ -115,7 +116,7 @@ async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         }
         rlm::ContextSource::File(path) => {
             let full = if Path::new(&path).is_absolute() {
-                path.clone().into()
+                path.into()
             } else {
                 rt.cwd.join(&path)
             };
@@ -241,6 +242,7 @@ pub fn is_extra_command(name: &str) -> bool {
 ///
 /// Shape: `{"name", "description", "aliases"?, "input": {"hint"}?, "source": "builtin"}`.
 #[must_use]
+#[allow(clippy::too_many_lines)] // one json! literal per command: a catalog table, not logic
 pub fn extra_catalog() -> Vec<Value> {
     vec![
         json!({
@@ -389,6 +391,7 @@ pub fn extra_catalog() -> Vec<Value> {
 ///
 /// Returns `None` when `name` is not recognized, allowing fallback to
 /// extension and file commands.
+#[allow(clippy::too_many_lines)] // flat name->handler dispatcher, one arm per slash command
 pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option<Outcome> {
     match name {
         "rlm" => Some(rlm_command(rt, args).await),
@@ -417,16 +420,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "quit" => {
-            output(
-                rt,
-                "/quit: to exit the interactive session use /exit, Ctrl+D, or double-tap Ctrl+C; RPC sessions terminate when the client disconnects.",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
-        "q" => {
+        "quit" | "q" => {
             output(
                 rt,
                 "/quit: to exit the interactive session use /exit, Ctrl+D, or double-tap Ctrl+C; RPC sessions terminate when the client disconnects.",
@@ -467,8 +461,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "branch" => Some(interactive::branch_command(rt).await),
-        "rewind" => Some(interactive::branch_command(rt).await),
+        "branch" | "rewind" => Some(interactive::branch_command(rt).await),
         "plan" => {
             output(
                 rt,
@@ -518,8 +511,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
             })
         }
         "agents" => Some(interactive::agents_command(rt).await),
-        "extensions" => Some(interactive::extensions_command(rt).await),
-        "status" => Some(interactive::extensions_command(rt).await),
+        "extensions" | "status" => Some(interactive::extensions_command(rt).await),
         "login" => {
             login::login_command(rt, args).await;
             Some(Outcome::Handled {
@@ -630,6 +622,7 @@ fn collab_controller(rt: &Arc<Runtime>) -> Arc<CollabController> {
 
 /// `/collab [start|view|list|stop|status] [relayUrl]` (TS
 /// `slash-commands/builtin-collaboration.ts` "collab", text-mode port).
+#[allow(clippy::too_many_lines)] // text-mode port of one TS command; its verbs share the controller
 async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     let controller = collab_controller(rt);
     let args = args.trim();

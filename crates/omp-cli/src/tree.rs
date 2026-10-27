@@ -327,29 +327,27 @@ pub async fn navigate_tree(
     if wants_summary && summary_result.is_none() && summarize.is_none() {
         return Err(err("No model available for summarization"));
     }
-    if wants_summary && summary_result.is_none() {
-        if !abandoned.is_empty() {
-            let request = omp_compact::SummaryRequest {
-                kind: omp_compact::SummaryKind::BranchSummary,
-                context: omp_compact::summary::build_context(
-                    &abandoned_text(&abandoned),
-                    pa_agent::now_ms().cast_unsigned(),
-                ),
-                max_tokens: 1024,
-            };
-            let assistant = (summarize.expect("checked above"))(request)
-                .await
-                .map_err(|e| err(format!("branch summary failed: {e:#}")))?;
-            let text = assistant
-                .content
-                .iter()
-                .filter_map(|c| match c {
-                    pa_types::ai::AssistantContentBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                })
-                .collect::<String>();
-            summary_result = Some((text, json!({"readFiles": [], "modifiedFiles": []})));
-        }
+    if wants_summary && summary_result.is_none() && !abandoned.is_empty() {
+        let request = omp_compact::SummaryRequest {
+            kind: omp_compact::SummaryKind::BranchSummary,
+            context: omp_compact::summary::build_context(
+                &abandoned_text(&abandoned),
+                pa_agent::now_ms().cast_unsigned(),
+            ),
+            max_tokens: 1024,
+        };
+        let assistant = (summarize.expect("checked above"))(request)
+            .await
+            .map_err(|e| err(format!("branch summary failed: {e:#}")))?;
+        let text = assistant
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                pa_types::ai::AssistantContentBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect::<String>();
+        summary_result = Some((text, json!({"readFiles": [], "modifiedFiles": []})));
     }
 
     // Commit: either a durable branch_summary entry at the target, or an in-memory leaf

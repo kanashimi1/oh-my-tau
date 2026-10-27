@@ -307,7 +307,7 @@ impl LspTool {
                         });
                     }
                     Err(e) => {
-                        sections.push(format!("{server_name}: failed to start ({})", e.message))
+                        sections.push(format!("{server_name}: failed to start ({})", e.message));
                     }
                 }
             }
@@ -760,6 +760,7 @@ impl LspTool {
     }
 
     /// `symbols` with `file:"*"` — workspace-wide symbol search.
+    #[allow(clippy::too_many_lines)] // one LSP request: query, fan-out over clients, merge, render
     async fn action_workspace_symbols(
         self: &Arc<Self>,
         params: &Params,
@@ -1003,6 +1004,7 @@ fn collect_workspace_files(cwd: &Path, file_types: &[String], max: usize) -> Vec
 
 impl LspTool {
     /// `request` — raw JSON-RPC method passthrough.
+    #[allow(clippy::too_many_lines)] // one passthrough: validate, dispatch to the client, shape the reply
     async fn action_request(
         self: &Arc<Self>,
         params: &Params,

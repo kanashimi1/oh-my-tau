@@ -88,7 +88,7 @@ pub fn list() -> Value {
             valid_name(&name).then_some((modified, name))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     json!({"custom": files.iter().map(|(_, n)| entry(n)).collect::<Vec<_>>()})
 }
 

@@ -304,7 +304,7 @@ pub async fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         format_path_relative_to_cwd(&path, &env.cwd, false)
     ));
     // Advisory post-write LSP gate (same rules as `edit`).
-    if let Some(gate) = edit_diagnostics::run(env, &[path.clone()]).await {
+    if let Some(gate) = edit_diagnostics::run(env, std::slice::from_ref(&path)).await {
         result
             .content
             .push(pa_agent::types::ToolResultContent::text(gate.section));

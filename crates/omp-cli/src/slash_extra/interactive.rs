@@ -156,7 +156,6 @@ fn code_blocks(text: &str) -> Vec<(String, String)> {
                         .all(|c| c == fence.chars().next().unwrap_or('`'))
                 {
                     let lang = trimmed[fence.len()..]
-                        .trim()
                         .split_whitespace()
                         .next()
                         .unwrap_or("")
@@ -229,8 +228,7 @@ fn last_command(messages: &[Value]) -> Option<(String, String)> {
             }?;
             let code = code
                 .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| code.to_string());
+                .map_or_else(|| code.to_string(), str::to_owned);
             Some((name.to_string(), code))
         })
     })

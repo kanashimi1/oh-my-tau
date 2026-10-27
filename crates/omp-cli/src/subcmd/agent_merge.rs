@@ -15,6 +15,7 @@
 
 use omp_task::worktree::{self, MergeOptions, MergeStatus};
 
+#[allow(clippy::struct_excessive_bools)] // one bool per CLI switch; they are independent flags
 struct Args {
     ids: Vec<String>,
     all: bool,
@@ -151,5 +152,5 @@ pub fn run(args: &[String]) -> anyhow::Result<i32> {
             }
         }
     }
-    Ok(if had_conflict { 1 } else { 0 })
+    Ok(i32::from(had_conflict))
 }

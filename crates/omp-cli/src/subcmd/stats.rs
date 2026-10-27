@@ -65,17 +65,17 @@ pub fn parse_args(args: &[String]) -> Result<StatsArgs> {
             "-j" | "--json" => parsed.json = true,
             "-s" | "--summary" | "--sync" => parsed.summary = true,
             "-p" | "--port" => {
-                parsed.port = parse_port(it.next().context("--port needs a value")?)?
+                parsed.port = parse_port(it.next().context("--port needs a value")?)?;
             }
             "--host" => it
                 .next()
                 .context("--host needs a value")?
                 .clone_into(&mut parsed.host),
             other if other.starts_with("--port=") => {
-                parsed.port = parse_port(&other["--port=".len()..])?
+                parsed.port = parse_port(&other["--port=".len()..])?;
             }
             other if other.starts_with("--host=") => {
-                parsed.host = other["--host=".len()..].to_string()
+                parsed.host = other["--host=".len()..].to_string();
             }
             // node `parseArgs` short clusters: `-js`, `-jp3000`, `-sp 4000`.
             other if other.len() > 2 && other.starts_with('-') && !other.starts_with("--") => {

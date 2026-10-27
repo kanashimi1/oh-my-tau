@@ -96,6 +96,7 @@ fn rows(db: &std::path::Path) -> Vec<(String, String, String, Option<String>)> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one scripted login/logout session; each step reads the last
 fn login_then_logout_roundtrip_in_a_temp_home() {
     let home = tempfile::tempdir().unwrap();
     let db = home.path().join(".omp/agent/agent.db");

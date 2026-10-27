@@ -122,6 +122,14 @@ impl State {
     }
 }
 
+/// Float setting to `usize` with `as` semantics made explicit: NaN and negatives become 0,
+/// overflow saturates. Settings are user-facing numbers, so this is the intended clamp.
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // saturating `as` is the contract
+pub fn saturating_usize(v: f64) -> usize {
+    v as usize
+}
+
 /// Last 300 chars of `text`, whitespace collapsed to single spaces.
 #[must_use]
 pub fn excerpt_of(text: &str) -> String {
@@ -206,7 +214,7 @@ impl Policy {
         let num = |envk: &str, id: &str, d: usize| {
             env(envk)
                 .and_then(|v| v.parse().ok())
-                .or_else(|| settings.get_number(id).map(|v| v as usize))
+                .or_else(|| settings.get_number(id).map(saturating_usize))
                 .unwrap_or(d)
         };
         p.rule_tokens = num(

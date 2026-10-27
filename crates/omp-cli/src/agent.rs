@@ -140,6 +140,7 @@ pub fn deferred_tools_note(deferred: &[String]) -> String {
 ///
 /// # Errors
 /// Fails when the model cannot cross the pa-ai/pa-agent boundary.
+#[allow(clippy::too_many_lines)] // linear assembly of the agent from its parts; each step reads the previous one
 pub async fn build_agent(
     cwd: &Path,
     selected: Selected,

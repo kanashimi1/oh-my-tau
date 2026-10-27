@@ -597,6 +597,7 @@ async fn input_gate(text: &str) -> Option<String> {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one arm per RPC command; a flat table keeps the protocol readable
 async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
     match kind {
         "negotiate_protocol" => match cmd.get("protocolVersion").and_then(Value::as_i64) {
@@ -999,6 +1000,8 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             none()
         }
         "abort_bash" => {
+            #[allow(clippy::redundant_closure_for_method_calls)]
+            // fn-item form breaks: `set` passes `&mut SettingsView`
             rt.set(|s| s.abort_bash());
             none()
         }

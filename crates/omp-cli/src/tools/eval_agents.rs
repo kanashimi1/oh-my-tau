@@ -114,18 +114,13 @@ fn provider_target() -> Result<crate::adapter::ProviderTarget, String> {
 // ---------------------------------------------------------------------------
 
 /// Terminal or current state of one handle (TS `EvalHandleState`).
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum HandleStatus {
+    #[default]
     Running,
     Completed,
     Failed,
     Cancelled,
-}
-
-impl Default for HandleStatus {
-    fn default() -> Self {
-        Self::Running
-    }
 }
 
 impl HandleStatus {
@@ -320,7 +315,7 @@ pub async fn handle(
     ctx: &OpCtx,
 ) -> Option<Result<Value, String>> {
     match op {
-        "__agent__" => Some(run_agent(env, &args, ctx).await),
+        "__agent__" => Some(run_agent(env, &args, ctx)),
         "__completion__" => Some(run_completion(&args, ctx).await),
         "__judge__" => Some(run_judgment_op(&args, ctx).await),
         "__judge_batch__" => Some(run_judge_batch_op(&args, ctx).await),
@@ -328,7 +323,7 @@ pub async fn handle(
         "__budget__" => Some(Ok(budget_snapshot())),
         "__llm_query__" => Some(super::rlm::llm_query_op(&args, ctx).await),
         "__rlm_stats__" => Some(Ok(super::rlm::stats_snapshot())),
-        "__rlm_context__" => Some(super::rlm::context_op()),
+        "__rlm_context__" => Some(Ok(super::rlm::context_op())),
         op if op.starts_with("__lam_") || op.starts_with("__rubric_") => {
             super::rlm_combinators::handle(op, &args, ctx).await
         }
@@ -454,6 +449,7 @@ async fn deliver_local(to: &str, content: &str, exclude: Option<&str>) -> Result
 
 /// TS broadcast receipt text over every running eval subagent.
 async fn broadcast_message(content: &str, exclude: Option<&str>) -> Result<String, String> {
+    use std::fmt::Write as _;
     let mut targets: Vec<(String, Arc<Handle>)> = AGENT_HANDLES
         .lock()
         .iter()
@@ -470,9 +466,10 @@ async fn broadcast_message(content: &str, exclude: Option<&str>) -> Result<Strin
         match steer_handle(Some(&**handle), id, content).await {
             Ok(()) => {
                 delivered += 1;
-                text.push_str(&format!("\n- {id}: injected"));
+                write!(text, "\n- {id}: injected").expect("writing to a String is infallible");
             }
-            Err(error) => text.push_str(&format!("\n- {id}: failed — {error}")),
+            Err(error) => write!(text, "\n- {id}: failed — {error}")
+                .expect("writing to a String is infallible"),
         }
     }
     text = format!(
@@ -686,13 +683,13 @@ fn cancel_handle(handle: &Handle) -> bool {
 // `__agent__` (TS `agent-bridge.ts` `runEvalAgent`)
 // ---------------------------------------------------------------------------
 
-async fn run_agent(env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, String> {
+fn run_agent(env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, String> {
     // This Env's session token: the child and its deliveries belong to the
     // session whose `agent()` call spawned it.
-    run_agent_with(env, args, ctx, &LAUNCHER, &env.a2a_owner()).await
+    run_agent_with(env, args, ctx, &LAUNCHER, &env.a2a_owner())
 }
 
-pub(crate) async fn run_agent_with(
+pub(crate) fn run_agent_with(
     _env: &Arc<Env>,
     args: &Value,
     ctx: &OpCtx,
@@ -889,6 +886,7 @@ async fn resolve_completion_candidates(tier: &str) -> Result<Vec<CompletionCandi
 /// TS `executeCompletion`: one stateless, toolless completion over the
 /// candidate chain (each fallback that issues a request consumes one retry
 /// attempt; keyless candidates are skipped without consuming budget).
+#[allow(clippy::too_many_lines)] // completion request: candidate chain, schema check, retries, usage
 async fn execute_completion(
     prompt: &str,
     system: Option<&str>,
@@ -979,18 +977,17 @@ async fn execute_completion(
                 }
                 _ => None,
             });
-            let value = match call {
-                Some(call) => Value::Object(call.arguments.clone()),
-                None => {
-                    let text = assistant_text(&response.content);
-                    if text.is_empty() {
-                        return Err("completion() returned no structured response.".to_string());
-                    }
-                    serde_json::from_str::<Value>(&text).map_err(|_| {
-                        "completion() did not return a structured response matching the schema."
-                            .to_string()
-                    })?
+            let value = if let Some(call) = call {
+                Value::Object(call.arguments.clone())
+            } else {
+                let text = assistant_text(&response.content);
+                if text.is_empty() {
+                    return Err("completion() returned no structured response.".to_string());
                 }
+                serde_json::from_str::<Value>(&text).map_err(|_| {
+                    "completion() did not return a structured response matching the schema."
+                        .to_string()
+                })?
             };
             return Ok((
                 serde_json::to_string(&value).unwrap_or_default(),
@@ -1098,7 +1095,7 @@ async fn run_completion(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
         .await
         {
             Ok((text, data, _usage)) => {
-                handle.settle(HandleStatus::Completed, Some(text), data, None)
+                handle.settle(HandleStatus::Completed, Some(text), data, None);
             }
             Err(error) => {
                 let status = if cancel.is_cancelled() {
@@ -1136,7 +1133,7 @@ async fn completion_job(
         return Err("completion() request aborted.".to_string());
     }
     tokio::select! {
-        _ = cell_signal.aborted() => {
+        () = cell_signal.aborted() => {
             cancel.cancel();
             Err("completion() request aborted.".to_string())
         }
@@ -1156,8 +1153,7 @@ fn parse_state(value: &Value) -> Result<Value, String> {
         Value::String(text) if text.is_empty() => {
             Err("judge() received invalid arguments: state must not be empty".to_string())
         }
-        Value::String(_) => Ok(value.clone()),
-        Value::Array(_) | Value::Object(_) => Ok(value.clone()),
+        Value::String(_) | Value::Array(_) | Value::Object(_) => Ok(value.clone()),
         _ => Err("judge() received invalid arguments: state must be a string, a JSON object, or a JSON array".to_string()),
     }
 }
@@ -1416,7 +1412,7 @@ impl JudgmentBatchRun {
                     }
                     remaining
                 }
-                None => Duration::from_secs(3600),
+                None => Duration::from_hours(1),
             };
             let notified = self.notify.notified();
             tokio::pin!(notified);
@@ -1520,6 +1516,7 @@ fn parse_batch_count(value: Option<&Value>, name: &str, fallback: u64) -> Result
     }
 }
 
+#[allow(clippy::too_many_lines)] // judge-batch op: parse, fan out workers, collect, shape the reply
 async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
     let Some(record) = args.as_object() else {
         return Err(batch_invalid("expected { op, … }"));
@@ -1544,18 +1541,19 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
             let concurrency = if concurrency == 0 {
                 EVAL_HANDLE_CONCURRENCY
             } else {
-                concurrency as usize
+                usize::try_from(concurrency).unwrap_or(usize::MAX)
             };
-            let retries = parse_batch_count(
+            let retries = u32::try_from(parse_batch_count(
                 record.get("retries"),
                 "retries",
                 u64::from(DEFAULT_BATCH_RETRIES),
-            )? as u32;
+            )?)
+            .unwrap_or(u32::MAX);
             let min_ok = record
                 .get("minOk")
                 .map(|_| parse_batch_count(record.get("minOk"), "minOk", 1))
                 .transpose()?
-                .map_or(1, |min_ok| min_ok as usize)
+                .map_or(1, |min_ok| usize::try_from(min_ok).unwrap_or(usize::MAX))
                 .min(total);
             let intent = match record.get("intent") {
                 None => DEFAULT_BATCH_INTENT.to_string(),
@@ -1576,14 +1574,7 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
                 started: Instant::now(),
             });
             JUDGE_BATCHES.lock().insert(batch.id.clone(), batch.clone());
-            start_batch(
-                batch.clone(),
-                items,
-                questions,
-                concurrency,
-                retries,
-                ctx.signal.clone(),
-            );
+            start_batch(&batch, items, questions, concurrency, retries, &ctx.signal);
             // `create` answers with the status snapshot (TS returns
             // `batch.status()`; the prelude only requires id/total/intent).
             Ok(batch.status())
@@ -1701,12 +1692,12 @@ fn require_batch(record: &Map<String, Value>) -> Result<Arc<JudgmentBatchRun>, S
 /// and judge each with up to `retries` retries; per-item failures land in
 /// `settled` with `error`, only a run that dies wholesale sets the batch error.
 fn start_batch(
-    batch: Arc<JudgmentBatchRun>,
+    batch: &Arc<JudgmentBatchRun>,
     items: Vec<BatchInput>,
     questions: Map<String, Value>,
     concurrency: usize,
     retries: u32,
-    cell_signal: AbortSignal,
+    cell_signal: &AbortSignal,
 ) {
     let items = Arc::new(items);
     let questions = Arc::new(questions);
@@ -1725,7 +1716,8 @@ fn start_batch(
                 if batch.cancel.is_cancelled() || cell_signal.is_aborted() {
                     break;
                 }
-                let index = next.fetch_add(1, Ordering::Relaxed) as usize;
+                let index =
+                    usize::try_from(next.fetch_add(1, Ordering::Relaxed)).unwrap_or(usize::MAX);
                 let Some(input) = items.get(index) else {
                     break;
                 };
@@ -1820,12 +1812,9 @@ async fn judge_one_batch_item(
                 model: None,
             };
         }
-        let _permit = match REQUEST_SLOTS.acquire().await {
-            Ok(permit) => permit,
-            Err(_) => {
-                last_error = Some("judge_batch: request aborted".to_string());
-                break;
-            }
+        let Ok(_permit) = REQUEST_SLOTS.acquire().await else {
+            last_error = Some("judge_batch: request aborted".to_string());
+            break;
         };
         match omp_providers::judge(&chain, &request, cache.as_ref()).await {
             Ok(result) => {
@@ -2041,13 +2030,15 @@ impl PoolState {
     /// TS `workpool-batch.md`, minus the keyed incremental `yield` contract
     /// (omp-rs children answer once, with their final text).
     fn batch_prompt(&self, batch: usize) -> String {
+        use std::fmt::Write as _;
         let batch = &self.batches[batch];
         let mut prompt = format!(
             "<workpool pool=\"{}\" batch=\"{}\">\nYou are a worker in pool `{}`. Complete every item below in order. Your final answer is the outcome: for each item, its number and a self-contained outcome/evidence value.\n",
             self.name, batch.id, self.name
         );
         for (n, &index) in batch.items.iter().enumerate() {
-            prompt.push_str(&format!("## Item {}\n{}\n", n + 1, self.items[index].text));
+            writeln!(prompt, "## Item {}\n{}", n + 1, self.items[index].text)
+                .expect("writing to a String is infallible");
         }
         prompt.push_str("</workpool>");
         prompt
@@ -2314,12 +2305,12 @@ pub(crate) fn child_spawn_policy() -> &'static ChildSpawnPolicy {
 /// the parent's enabled tools"): an unrestricted child of a restricted
 /// parent would bypass the restriction entirely.
 pub(crate) fn clamp_child_tools(requested: Option<Vec<String>>) -> Option<Vec<String>> {
-    clamp_tools(&child_spawn_policy().allowed_tools, requested)
+    clamp_tools(child_spawn_policy().allowed_tools.as_ref(), requested)
 }
 
 /// Pure clamp against an explicit parent restriction (testable without argv).
 fn clamp_tools(
-    allowed: &Option<Vec<String>>,
+    allowed: Option<&Vec<String>>,
     requested: Option<Vec<String>>,
 ) -> Option<Vec<String>> {
     match allowed {
@@ -2348,7 +2339,7 @@ fn clamp_tools(
 /// host (approval, TUI and session-recall hooks) on every cold start.
 pub(crate) fn apply_child_policy(spec: &mut omp_task::TaskSpec) {
     spec.depth = omp_task::current_task_depth() + 1;
-    spec.extra_args = child_spawn_policy().extra_args.clone();
+    spec.extra_args.clone_from(&child_spawn_policy().extra_args);
     if matches!(
         spec.agent.as_str(),
         "scout-glm" | "scout-kimi" | "scout-codex" | "scout-grok"
@@ -2428,7 +2419,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
                 .state
                 .lock()
                 .finish_turn(start.batch, status, text, &agent_id_taken);
-            start_turns(&pool, next);
+            start_turns(pool, next);
             continue;
         }
         let run = launch_agent(&handle, spec, &*pool.launcher);
@@ -2660,7 +2651,7 @@ fn run_status(args: &Value) -> Result<Value, String> {
         .get("item")
         .ok_or_else(|| "handle request requires an item".to_string())?;
     let (kind, id) = parse_handle_ref(item)?;
-    Ok(lookup_handle(&kind, &id)?.snapshot())
+    Ok(lookup_handle(kind, &id)?.snapshot())
 }
 
 fn run_cancel(args: &Value) -> Result<Value, String> {
@@ -3210,7 +3201,7 @@ mod tests {
     impl Launcher for SlowMockLauncher {
         fn launch(&self, spec: omp_task::TaskSpec) -> (Arc<dyn RunCtl>, RunFuture) {
             let (tx, rx) = tokio::sync::oneshot::channel();
-            let id = spec.id.clone().unwrap_or_default();
+            let id = spec.id.unwrap_or_default();
             let run = Arc::new(SlowMockRun {
                 inner: MockRun {
                     id: id.clone(),
@@ -3229,7 +3220,7 @@ mod tests {
         }
     }
 
-    /// Finding 6: an aborted wait() cancels every handle and waits for them
+    /// Finding 6: an aborted `wait()` cancels every handle and waits for them
     /// to settle before erroring (TS `handle-bridge.ts` `Promise.allSettled`).
     #[tokio::test]
     async fn aborted_wait_cancels_then_waits_for_settlement() {
@@ -3270,7 +3261,7 @@ mod tests {
         tokio::pin!(wait);
         tokio::select! {
             _ = &mut wait => panic!("wait() must not return before the cancelled runs finish"),
-            _ = tokio::time::sleep(Duration::from_millis(200)) => {}
+            () = tokio::time::sleep(Duration::from_millis(200)) => {}
         }
         // The runs were asked to cancel but are not finished yet; the handles
         // already report cancelled (TS `manager.cancel` flips job status at once).
@@ -3387,23 +3378,26 @@ mod tests {
         let parent = Some(vec!["read".to_string(), "bash".to_string()]);
         // Unrestricted request inherits the parent's restriction.
         assert_eq!(
-            clamp_tools(&parent, None),
+            clamp_tools(parent.as_ref(), None),
             Some(vec!["read".to_string(), "bash".to_string()])
         );
         // Requests keep only tools the parent has.
         assert_eq!(
-            clamp_tools(&parent, Some(vec!["read".to_string(), "eval".to_string()])),
+            clamp_tools(
+                parent.as_ref(),
+                Some(vec!["read".to_string(), "eval".to_string()])
+            ),
             Some(vec!["read".to_string()])
         );
         // Nothing in common: the child gets no tools (omp `__none__`), never
         // the full default toolset.
         assert_eq!(
-            clamp_tools(&parent, Some(vec!["eval".to_string()])),
+            clamp_tools(parent.as_ref(), Some(vec!["eval".to_string()])),
             Some(vec!["__none__".to_string()])
         );
         // Unrestricted parent: the request passes through untouched.
         assert_eq!(
-            clamp_tools(&None, Some(vec!["eval".to_string()])),
+            clamp_tools(None, Some(vec!["eval".to_string()])),
             Some(vec!["eval".to_string()])
         );
     }

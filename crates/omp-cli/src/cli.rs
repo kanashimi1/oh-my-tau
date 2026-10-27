@@ -321,6 +321,7 @@ fn set_string(a: &mut Args, flag: &str, value: String, invalid: &mut Vec<String>
 
 /// Parse argv exactly like the TS `parseArgs` dispatch (no extension flags —
 /// omp-rs has no extension-registered flag table at parse time).
+#[allow(clippy::too_many_lines)] // one flat flag table mirrors the TS parseArgs dispatch; splitting scatters it
 pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
     let mut args: Vec<String> = it.collect();
     let mut a = Args::default();
@@ -414,7 +415,7 @@ pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
                 "--no-extensions" => a.no_extensions = true,
                 "--dump-system-prompt" => a.dump_system_prompt = true,
                 other if other.starts_with('@') => {
-                    push_message(&mut messages, &mut images, other.to_string())?
+                    push_message(&mut messages, &mut images, other.to_string())?;
                 }
                 "-" => push_message(&mut messages, &mut images, "-".to_string())?,
                 other if !other.starts_with('-') => {

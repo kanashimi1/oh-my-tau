@@ -88,7 +88,7 @@ impl EvalTool {
 }
 
 impl AgentTool for EvalTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "eval"
     }
     fn description(&self) -> &str {
@@ -275,6 +275,7 @@ fn cell_is_error(result: &CellResult) -> bool {
 }
 
 /// Execute one `eval` cell (the tool entry point).
+#[allow(clippy::too_many_lines)] // cell loop: language select, kernel start/reuse, run, journal, reply
 pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolResult> {
     use std::fmt::Write as _;
     // omp's schema requires `language`; a missing one fails TS input
@@ -423,7 +424,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
                 break;
             }
         }
-    };
+    }
 
     let result = results.last().expect("at least one cell result");
     let mut text = String::new();
@@ -436,7 +437,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
     if replayed {
         let _ = write!(
             text,
-            "Replayed {} setup cell{}.\n",
+            "Replayed {} setup cell{}.",
             results.len(),
             if results.len() == 1 { "" } else { "s" }
         );

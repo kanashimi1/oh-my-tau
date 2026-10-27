@@ -17,7 +17,7 @@
 //!   6. `DELETE /api/agents/<id>` — the registry entry is removed and the
 //!      process group is gone (dead or reaped zombie).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -44,7 +44,6 @@ const FIXTURE_MODEL: &str = "custom/detach-fixture";
 struct WebServer {
     child: tokio::process::Child,
     port: u16,
-    err_path: PathBuf,
     #[allow(dead_code)]
     err_file: tempfile::NamedTempFile,
 }
@@ -110,7 +109,6 @@ async fn spawn_web_server(home: &Path, proj: &Path) -> WebServer {
     WebServer {
         child,
         port,
-        err_path,
         err_file,
     }
 }
@@ -224,7 +222,7 @@ async fn detached_rpc_child_survives_hub_restart_and_is_adopted() {
     })
     .await
     .expect("registry entry appears");
-    let child_pid = entry["pid"].as_u64().expect("child pid") as u32;
+    let child_pid = u32::try_from(entry["pid"].as_u64().expect("child pid")).expect("pid fits u32");
     assert!(
         alive(child_pid),
         "rpc child {child_pid} not alive right after spawn"

@@ -364,7 +364,7 @@ impl AccountRotation {
         }
         window
             .into_iter()
-            .find(|c| !burned.contains(&c.id) && !(cooldown_active && cooling.contains(&c.id)))
+            .find(|c| !burned.contains(&c.id) && (!cooldown_active || !cooling.contains(&c.id)))
     }
 
     /// `alternate` just took over `model` (switch applied): it becomes the serving account
@@ -849,7 +849,7 @@ mod tests {
         assert_eq!(first.id, 11);
         rot.promote("p", "m", first.id);
         rot.burn("p", "m", 10);
-        pool.current = first.clone();
+        pool.current = first;
         assert_eq!(rot.burned_of("p", "m"), vec![10]);
 
         // 11 serves now (serving): 12 is the only unburned alternate.
@@ -1946,7 +1946,7 @@ mod tests {
             else {
                 panic!("assistant message")
             };
-            a.stop_reason.clone()
+            a.stop_reason
         };
         let msgs = h.rt.agent.state().await.messages;
         assert_ne!(

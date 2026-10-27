@@ -853,7 +853,7 @@ async fn dispatch_ported(rt: &std::sync::Arc<Runtime>, name: &str, args: &str) -
         "trace" => Some(trace_command(rt).await),
         "mcp" => Some(mcp_command(rt, args).await),
         "modelpreset" => Some(modelpreset_command(rt, args).await),
-        "pin" => Some(pin_command(rt, args).await),
+        "pin" => Some(pin_command(rt, args)),
         "skillful" => Some(setting_status_toggle(
             rt,
             args,
@@ -954,7 +954,7 @@ fn fast_command(rt: &Runtime, args: &str) -> Outcome {
 
 /// `/slow [on|off|status]` — TS maps slow mode to the flex tier on
 /// OpenAI/Google (Anthropic subscription low-priority needs oauth lanes, which
-/// omp-rs lacks; see SLOW_UNSUPPORTED).
+/// omp-rs lacks; see `SLOW_UNSUPPORTED`).
 fn slow_command(rt: &Runtime, args: &str) -> Outcome {
     let provider = rt
         .model_info()
@@ -974,8 +974,6 @@ fn slow_command(rt: &Runtime, args: &str) -> Outcome {
                     } else {
                         "Slow mode is on (flex tier).".to_string()
                     }
-                } else if anthropic {
-                    "Slow mode is off.".to_string()
                 } else {
                     "Slow mode is off.".to_string()
                 },
@@ -993,7 +991,7 @@ fn slow_command(rt: &Runtime, args: &str) -> Outcome {
             rt.set_service_tier(enabled.then_some(pa_types::ai::ServiceTier::Flex));
             output(
                 rt,
-                &if enabled {
+                if enabled {
                     "Slow mode on: requests use the flex tier (lower cost, higher latency)."
                 } else {
                     "Slow mode off."
@@ -1038,8 +1036,7 @@ fn phases_to_markdown(phases: &[Value]) -> String {
         for task in phase
             .get("tasks")
             .and_then(Value::as_array)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[][..], Vec::as_slice)
         {
             let content = task.get("content").and_then(Value::as_str).unwrap_or("");
             let status = task
@@ -1091,8 +1088,7 @@ fn tasks_of(phase: &Value) -> &[Value] {
     phase
         .get("tasks")
         .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+        .map_or(&[][..], Vec::as_slice)
 }
 
 /// TS `findPhaseFuzzy`: exact, then unique prefix, then unique substring.
@@ -1167,7 +1163,7 @@ async fn commit_todos(rt: &Runtime, phases: &[Value]) {
 
 /// Current todo phases as raw JSON (TS `currentPhases` =
 /// `getLatestTodoPhasesFromEntries` over the branch).
-async fn current_todo_phases(rt: &Runtime) -> Vec<Value> {
+fn current_todo_phases(rt: &Runtime) -> Vec<Value> {
     let entries = rt.entries().unwrap_or_default();
     crate::tools::phases_from_entries(&entries)
         .iter()
@@ -1260,7 +1256,6 @@ fn markdown_to_phases(content: &str) -> Result<Vec<Value>, String> {
                 .and_then(Value::as_array_mut)
                 .expect("phase tasks just ensured")
                 .push(task);
-            continue;
         }
     }
     let task_count: usize = phases.iter().map(|p| tasks_of(p).len()).sum();
@@ -1305,6 +1300,7 @@ enum TodoVerb {
 }
 
 /// TS `handleTodoMutationCommand` for one verb.
+#[allow(clippy::too_many_lines)] // one todo verb per arm: parse the target, mutate, persist, report
 async fn todo_mutate(rt: &Runtime, verb: TodoVerb, arg: &str, current: &[Value]) -> Outcome {
     let target_status = match verb {
         TodoVerb::Done => "completed",
@@ -1415,10 +1411,11 @@ async fn todo_mutate(rt: &Runtime, verb: TodoVerb, arg: &str, current: &[Value])
 }
 
 /// TS `handleTodoAcp`.
+#[allow(clippy::too_many_lines)] // the /todo verb table: one arm per subcommand, shared phase state
 async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
     let trimmed = args.trim();
     if trimmed.is_empty() {
-        let phases = current_todo_phases(rt).await;
+        let phases = current_todo_phases(rt);
         output(
             rt,
             &if phases.is_empty() {
@@ -1434,7 +1431,7 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
     let (verb, rest) = subcommand(trimmed);
     match verb.as_str() {
         "copy" => {
-            let phases = current_todo_phases(rt).await;
+            let phases = current_todo_phases(rt);
             let markdown = if phases.is_empty() {
                 String::new()
             } else {
@@ -1467,7 +1464,7 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
             }
         }
         "export" => {
-            let phases = current_todo_phases(rt).await;
+            let phases = current_todo_phases(rt);
             if phases.is_empty() {
                 output(rt, "No todos to export.");
                 return Handled {
@@ -1513,7 +1510,7 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
             if tokens.is_empty() {
                 return usage(rt, "Usage: /todo append [<phase>] <task...>");
             }
-            let current = current_todo_phases(rt).await;
+            let current = current_todo_phases(rt);
             let mut next = current.clone();
             let (phase_query, content) = if tokens.len() == 1 {
                 (None, tokens[0].to_string())
@@ -1527,8 +1524,7 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
                 },
                 None => next
                     .last()
-                    .map(|p| phase_name(p).to_string())
-                    .unwrap_or_else(|| "Todos".to_string()),
+                    .map_or_else(|| "Todos".to_string(), |p| phase_name(p).to_string()),
             };
             let final_content = title_case_sentence(&content);
             match next.iter_mut().find(|p| phase_name(p) == target_name) {
@@ -1552,7 +1548,7 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
             if rest.is_empty() {
                 return usage(rt, "Usage: /todo start <task>");
             }
-            let current = current_todo_phases(rt).await;
+            let current = current_todo_phases(rt);
             let Some(task) = find_task_fuzzy(&current, &rest) else {
                 return usage(
                     rt,
@@ -1580,9 +1576,9 @@ async fn todo_command(rt: &Runtime, args: &str) -> Outcome {
                 agent_invoked: false,
             }
         }
-        "done" => todo_mutate(rt, TodoVerb::Done, &rest, &current_todo_phases(rt).await).await,
-        "drop" => todo_mutate(rt, TodoVerb::Drop, &rest, &current_todo_phases(rt).await).await,
-        "rm" => todo_mutate(rt, TodoVerb::Rm, &rest, &current_todo_phases(rt).await).await,
+        "done" => todo_mutate(rt, TodoVerb::Done, &rest, &current_todo_phases(rt)).await,
+        "drop" => todo_mutate(rt, TodoVerb::Drop, &rest, &current_todo_phases(rt)).await,
+        "rm" => todo_mutate(rt, TodoVerb::Rm, &rest, &current_todo_phases(rt)).await,
         "edit" => todo_edit(rt).await,
         "expand" | "collapse" => usage(
             rt,
@@ -1610,7 +1606,7 @@ async fn todo_edit(rt: &Runtime) -> Outcome {
             "/todo edit requires an interactive editor; use /todo export then /todo import for non-interactive edits.",
         );
     }
-    let phases = current_todo_phases(rt).await;
+    let phases = current_todo_phases(rt);
     let markdown = phases_to_markdown(&phases);
     let Some(edited) =
         crate::slash_extra::dialog::editor(rt, "Edit todos (Markdown)", &markdown).await
@@ -1761,16 +1757,16 @@ async fn provider_usage_lines(rt: &Runtime) -> Vec<String> {
             for line in &report.lines {
                 let mut s = line.label.clone();
                 if let Some(p) = line.used_percent {
-                    s.push_str(&format!(": {p:.0}%"));
+                    write!(s, ": {p:.0}%").expect("writing to a String is infallible");
                 }
                 if let Some(r) = line.remaining {
-                    s.push_str(&format!(", {r} left"));
+                    write!(s, ", {r} left").expect("writing to a String is infallible");
                 }
                 if let Some(ms) = line.resets_at {
                     s.push_str(&fmt_reset(ms));
                 }
                 if let Some(n) = &line.note {
-                    s.push_str(&format!(": {n}"));
+                    write!(s, ": {n}").expect("writing to a String is infallible");
                 }
                 lines.push(format!("  {s}"));
             }
@@ -1825,7 +1821,11 @@ pub(crate) async fn usage_panel_frame(rt: &Runtime) -> Value {
                 let mut spans = Vec::new();
                 if let Some(p) = line.used_percent {
                     const BAR: usize = 20;
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        clippy::cast_precision_loss
+                    )] // BAR is a 20-cell constant, exact in f64
                     let filled = ((p.clamp(0.0, 100.0) / 100.0) * BAR as f64).round() as usize;
                     let color = if p >= 90.0 {
                         "error"
@@ -1858,16 +1858,17 @@ pub(crate) async fn usage_panel_frame(rt: &Runtime) -> Value {
     lines.push(json!({"text": "/usage reset [provider/credential-id|provider/active] spends a saved reset", "dim": true}));
     json!({"type": "session_info", "title": "Usage", "lines": lines})
 }
+#[allow(clippy::many_single_char_names)] // Hinnant civil-from-days uses its canonical single-letter names
 fn fmt_reset(ms: i64) -> String {
     let secs = ms / 1000;
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (h, m, _s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
     // days-from-civil inverse, enough for display purposes.
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -1880,6 +1881,7 @@ fn fmt_reset(ms: i64) -> String {
 }
 
 /// `/usage reset [provider/...]` — spend the server-selected saved reset credit.
+#[allow(clippy::too_many_lines)] // reset flow: pick provider, confirm, spend the credit, report
 async fn usage_reset(rt: &Runtime, rest: &str) -> Outcome {
     let provider = rt
         .model_info()
@@ -2217,11 +2219,11 @@ fn mcp_servers_of(file: &Value) -> &serde_json::Map<String, Value> {
         std::sync::LazyLock::new(serde_json::Map::new);
     file.get("mcpServers")
         .and_then(Value::as_object)
-        .unwrap_or_else(|| std::ops::Deref::deref(&EMPTY))
+        .unwrap_or_else(|| &*EMPTY)
 }
 
 /// Write an mcp.json file back, creating the parent dir.
-fn write_mcp_file(path: &Path, file: Value) -> Result<(), String> {
+fn write_mcp_file(path: &Path, file: &Value) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -2438,7 +2440,7 @@ fn mcp_set_enabled(rt: &Runtime, name: &str, scope: &str, enabled: bool) -> Outc
     } else {
         obj.insert("enabled".into(), Value::Bool(false));
     }
-    match write_mcp_file(&path, file) {
+    match write_mcp_file(&path, &file) {
         Ok(()) => output(
             rt,
             &format!("{} {name}.", if enabled { "Enabled" } else { "Disabled" }),
@@ -2463,7 +2465,7 @@ fn mcp_remove(rt: &Runtime, name: &str, scope: &str) -> Outcome {
     if !removed {
         return usage(rt, &format!("No {scope} MCP server named \"{name}\"."));
     }
-    match write_mcp_file(&path, file) {
+    match write_mcp_file(&path, &file) {
         Ok(()) => {
             output(rt, &format!("Removed {name} from {}.", path.display()));
             Handled {
@@ -2557,7 +2559,7 @@ fn mcp_add(rt: &Runtime, rest: &str) -> Outcome {
         v
     };
     let existed = servers.insert(name.clone(), config).is_some();
-    match write_mcp_file(&path, file) {
+    match write_mcp_file(&path, &file) {
         Ok(()) => output(
             rt,
             &format!(
@@ -2685,6 +2687,7 @@ fn read_model_presets(settings: &omp_settings::Settings) -> serde_json::Map<Stri
         .unwrap_or_default()
 }
 
+#[allow(clippy::too_many_lines)] // preset verbs share one settings snapshot; splitting spreads the writes
 async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
     let settings = omp_settings::Settings::load(&rt.cwd);
     // TS `handleTui`: bare `/modelpreset` picks a preset to switch to.
@@ -2740,8 +2743,8 @@ async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
                     &format!("Invalid preset name \"{name}\": use a letter, then letters, digits, - or _"),
                 );
             }
-            let roles = settings.get("modelRoles").clone();
-            let level = settings.get("defaultThinkingLevel").clone();
+            let roles = settings.get("modelRoles");
+            let level = settings.get("defaultThinkingLevel");
             let mut presets = read_model_presets(&settings);
             presets.insert(
                 name.clone(),
@@ -2852,7 +2855,7 @@ fn store_pinned_sessions(pins: &HashSet<String>) -> Result<(), String> {
 /// `/pin [session id]` — toggle this session's pin (TS `handle` in
 /// builtin-lifecycle.ts). Only the live session is resolvable headlessly, so
 /// an explicit id pins that id without a resumable-session lookup.
-async fn pin_command(rt: &Runtime, args: &str) -> Outcome {
+fn pin_command(rt: &Runtime, args: &str) -> Outcome {
     let arg = args.trim();
     let session_id = if arg.is_empty() {
         rt.session_id()

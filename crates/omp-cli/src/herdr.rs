@@ -30,7 +30,7 @@ pub const AGENT: &str = "omt";
 
 /// Per-report wall-clock budget. Herdr's socket answers in milliseconds; if
 /// the binary hangs, the child is killed after this and the report is dropped.
-const REPORT_TIMEOUT: Duration = Duration::from_millis(2000);
+const REPORT_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum State {
@@ -81,7 +81,7 @@ pub struct Herdr {
     /// only the last queued one of the same kind (so a pending session
     /// identity is never clobbered by a state change, per the docs' "report
     /// it again whenever your agent switches sessions").
-    /// std, not parking_lot: paired with `cv`, whose `wait_timeout` needs std's guard.
+    /// std, not `parking_lot`: paired with `cv`, whose `wait_timeout` needs std's guard.
     pending: std::sync::Mutex<Vec<Pending>>,
     cv: Condvar,
 }
@@ -91,8 +91,7 @@ impl Herdr {
     pub fn new(bin: PathBuf, pane: String) -> Arc<Self> {
         let base = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let this = Arc::new(Self {
             bin,
             pane,
@@ -106,7 +105,7 @@ impl Herdr {
         let weak = Arc::downgrade(&this);
         std::thread::Builder::new()
             .name("herdr-report".into())
-            .spawn(move || worker(weak))
+            .spawn(move || worker(&weak))
             .expect("herdr report thread");
         this
     }
@@ -289,20 +288,19 @@ impl Herdr {
 
     /// Run one report with a hard wall-clock budget; every failure is dropped.
     fn run(&self, job: &Pending) {
-        let mut child = match Command::new(&self.bin)
+        let Ok(mut child) = Command::new(&self.bin)
             .args(self.argv(job))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => return,
+        else {
+            return;
         };
         let deadline = std::time::Instant::now() + REPORT_TIMEOUT;
         loop {
             match child.try_wait() {
-                Ok(Some(_)) => return,
+                Ok(Some(_)) | Err(_) => return,
                 Ok(None) => {
                     if std::time::Instant::now() >= deadline {
                         let _ = child.kill();
@@ -311,7 +309,6 @@ impl Herdr {
                     }
                     std::thread::sleep(Duration::from_millis(20));
                 }
-                Err(_) => return,
             }
         }
     }
@@ -324,12 +321,12 @@ fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Single delivery thread: drains the whole queue, then waits again. While a
 /// delivery is in flight, `enqueue` coalesces same-kind reports, so at most a
 /// few stale states wait — older duplicates are dropped per the docs.
-fn worker(weak: std::sync::Weak<Herdr>) {
+fn worker(weak: &std::sync::Weak<Herdr>) {
     loop {
         let jobs = {
-            let this = match weak.upgrade() {
-                Some(t) => t,
-                None => return, // reporter dropped: nothing left to send
+            // reporter dropped: nothing left to send
+            let Some(this) = weak.upgrade() else {
+                return;
             };
             let mut q = lock(&this.pending);
             loop {
@@ -359,15 +356,14 @@ static GLOBAL: std::sync::LazyLock<Option<Arc<Herdr>>> = std::sync::LazyLock::ne
 /// integration). Any failure (spawn, timeout, parse) returns false so the
 /// reporter keeps its previous behaviour outside that one known-conflict case.
 fn pane_foreground_is_ts_omp(bin: &Path, pane: &str) -> bool {
-    let mut child = match Command::new(bin)
+    let Ok(mut child) = Command::new(bin)
         .args(["pane", "process-info", "--pane", pane])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
+    else {
+        return false;
     };
     let deadline = std::time::Instant::now() + Duration::from_millis(1500);
     loop {

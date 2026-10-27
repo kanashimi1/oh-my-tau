@@ -183,7 +183,7 @@ fn plan_op(args: &Value) -> Result<Value, String> {
         remaining_calls: limits.max_calls.saturating_sub(used),
         max_chars,
     };
-    plan(&req).map(|p| p.to_json())
+    plan(&req).map(LamPlan::to_json)
 }
 
 // ---------------------------------------------------------------------------
@@ -508,7 +508,7 @@ mod tests {
                     "id": "mock-1", "name": "Mock", "api": "mock-api", "provider": "mock",
                     "baseUrl": "http://localhost", "reasoning": false, "input": ["text"],
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                    "contextWindow": 128000, "maxTokens": 4096,
+                    "contextWindow": 128_000, "maxTokens": 4096,
                 }))
                 .expect("mock model");
                 Ok((text, usage, model))

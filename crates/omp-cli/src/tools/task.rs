@@ -505,6 +505,8 @@ struct WireParams {
 }
 
 /// Execute a `task` call: validate, spawn every item, render envelopes.
+#[allow(clippy::too_many_lines)] // linear validate, spawn, render; each stage consumes the last
+#[allow(clippy::unused_async)] // tool entry: the registry boxes this as a future
 pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResult> {
     let params: WireParams =
         serde_json::from_value(args).map_err(|e| anyhow::anyhow!("invalid task params: {e}"))?;
@@ -602,8 +604,7 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
         // This Env's session token: the children and their deliveries belong
         // to the session whose `task` call spawned them.
         &env.a2a_owner(),
-    )
-    .await?;
+    )?;
     let mut text = format!(
         "Spawned {} task child agent{}; results auto-deliver as messages when they settle:",
         spawned.len(),
@@ -775,7 +776,7 @@ pub(crate) fn async_children_active_for(owner: &super::a2a::Owner) -> bool {
 }
 
 /// Kill every running `task` child of one session (Ctrl-C / abort / session
-/// end). The children's group is SIGKILLed by the runner's drive loop or its
+/// end). The children's group is `SIGKILL`ed by the runner's drive loop or its
 /// drop guard, so this is safe even while the runtime is tearing down.
 pub(crate) fn kill_async_children_for(owner: &super::a2a::Owner) {
     let (mine, others): (Vec<_>, Vec<_>) = {
@@ -845,7 +846,8 @@ pub(crate) fn render_delivery_batch(deliveries: &[super::a2a::PendingDelivery]) 
 /// its frozen rubric (SERA) and auto-delivered to the parent at the next
 /// turn boundary. Cancelling the session kills the children
 /// ([`kill_async_children`]).
-pub(crate) async fn spawn_children(
+#[allow(clippy::too_many_lines)] // linear spawn sequence: validate, prepare worktrees, launch, register
+pub(crate) fn spawn_children(
     runner: &TaskRunner,
     mut specs: Vec<TaskSpec>,
     rubrics: Vec<Option<omp_task::rubric::FrozenRubric>>,
@@ -984,7 +986,7 @@ pub(crate) async fn spawn_children(
             // Last settle of this session tears its bus down.
             let mut reg = ASYNC_CHILDREN.lock();
             reg.children.retain(|child| child.id != output.id);
-            if !reg.children.iter().any(|child| &child.owner == &task_owner) {
+            if !reg.children.iter().any(|child| child.owner == task_owner) {
                 reg.leases
                     .retain(|(lease_owner, _)| lease_owner != &task_owner);
             }
@@ -1463,7 +1465,7 @@ stdin.readline()
 "#;
 
     #[tokio::test]
-    async fn spawn_children_is_async_and_results_auto_deliver() {
+    async fn spawn_children_results_auto_deliver() {
         let _serial = super::super::a2a::tests::LOCK.lock().await;
         super::super::a2a::tests::without_parent_bus(async {
             use std::os::unix::fs::PermissionsExt;
@@ -1498,7 +1500,6 @@ stdin.readline()
                 vec!["go".to_string()],
                 &None,
             )
-            .await
             .unwrap();
             assert_eq!(spawned.len(), 1);
             assert_eq!(spawned[0].id, "e2e-b");
@@ -1563,8 +1564,7 @@ stdin.readline()
                 vec![None, None],
                 vec!["go".to_string(), "go".to_string()],
                 &None,
-            )
-            .await;
+            );
             assert!(dup.unwrap_err().to_string().contains("already in use"));
             assert_eq!(live_children(), 0, "failed claim spawns nothing");
         })
@@ -1602,7 +1602,6 @@ stdin.readline()
                 vec!["go".to_string()],
                 &None,
             )
-            .await
             .unwrap();
             assert_eq!(spawned[0].id, "e2e-a");
             // The child settles; its `agent://parent` message and its result both
@@ -1662,6 +1661,8 @@ stdin.readline()
         super::super::a2a::tests::without_parent_bus(async {
             use std::os::unix::fs::PermissionsExt;
             use std::sync::LazyLock;
+            static ENV: LazyLock<std::sync::Arc<Env>> =
+                LazyLock::new(|| std::sync::Arc::new(Env::new(std::path::Path::new("."), false)));
             let dir = tempfile::tempdir().unwrap();
             let bin = dir.path().join("fake-a2a-child");
             std::fs::write(&bin, FAKE_A2A_CHILD).unwrap();
@@ -1693,7 +1694,6 @@ stdin.readline()
                 vec!["go".to_string()],
                 &None,
             )
-            .await
             .unwrap();
             assert_eq!(spawned[0].id, "e2e-b");
 
@@ -1704,8 +1704,6 @@ stdin.readline()
                 on_update: None,
                 tool_call_id: "test-agent-child".to_string(),
             };
-            static ENV: LazyLock<std::sync::Arc<Env>> =
-                LazyLock::new(|| std::sync::Arc::new(Env::new(std::path::Path::new("."), false)));
             let handle = super::super::eval_agents::run_agent_with(
                 &ENV,
                 &json!({"prompt": "ping the task sibling", "agent": "task"}),
@@ -1713,7 +1711,6 @@ stdin.readline()
                 &launcher,
                 &None,
             )
-            .await
             .unwrap();
             let agt_id = handle["id"].as_str().unwrap().to_string();
             assert!(agt_id.starts_with("agt-"), "{handle}");
@@ -1811,6 +1808,7 @@ stdin.readline()
     /// leftovers auto-committed as `wip(<id>)`. The worktree survives until
     /// the parent's `agent-merge`.
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // one end-to-end scenario: worktree, child run, settle summary
     async fn worktree_child_runs_in_its_branch_and_reports_a_settle_summary() {
         let _serial = super::super::a2a::tests::LOCK.lock().await;
         super::super::a2a::tests::without_parent_bus(async {
@@ -1850,7 +1848,6 @@ stdin.readline()
                 vec!["go".to_string()],
                 &None,
             )
-            .await
             .unwrap();
             assert_eq!(spawned[0].id, "wt-1");
 
@@ -1905,8 +1902,12 @@ stdin.readline()
             );
 
             // The parent's merge helper merges it and cleans up.
-            let outcome =
-                omp_task::worktree::merge_agent(&repo, "wt-1", &Default::default()).unwrap();
+            let outcome = omp_task::worktree::merge_agent(
+                &repo,
+                "wt-1",
+                &omp_task::worktree::MergeOptions::default(),
+            )
+            .unwrap();
             let commit = match outcome.status {
                 omp_task::worktree::MergeStatus::Merged { commit } => commit,
                 other => panic!("expected a clean merge, got {other:?}"),
@@ -1958,7 +1959,6 @@ stdin.readline()
                 vec!["go".to_string()],
                 &None,
             )
-            .await
             .unwrap_err();
             assert!(
                 err.to_string().contains("not inside a git repository"),

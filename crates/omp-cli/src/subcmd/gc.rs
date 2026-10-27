@@ -21,7 +21,7 @@ const DAY: Duration = Duration::from_hours(24);
 /// TS `GC_WRITE_GRACE_MS`: a session written within the last 5 minutes is active.
 const WRITE_GRACE: Duration = Duration::from_mins(5);
 
-const USAGE: &str = r#"usage: omt gc [--apply] [--json] [--agent-dir <dir>] [--cold-archive-after-days <n>]
+const USAGE: &str = r"usage: omt gc [--apply] [--json] [--agent-dir <dir>] [--cold-archive-after-days <n>]
                   [--retain-newest-global <n>] [--retain-newest-per-cwd <n>]
 
 Archives cold session JSONL files, with their artifact directories, as gzip
@@ -34,7 +34,7 @@ under <agentDir>/archive/sessions. Dry-run unless --apply is given.
   --retain-newest-global <n>      always keep the n newest sessions (default: 20)
   --retain-newest-per-cwd <n>     keep the n newest sessions per project (default: 10)
   -h, --help                      show this help and exit
-"#;
+";
 
 struct Options {
     help: bool,
@@ -95,7 +95,7 @@ fn parse_options(args: &[String]) -> Result<(Options, PathBuf)> {
             "--agent-dir" => {
                 agent_dir = Some(PathBuf::from(
                     it.next().context("--agent-dir needs a value")?,
-                ))
+                ));
             }
             "--cold-archive-after-days" => {
                 opts.cold_after = Duration::from_secs(u64::try_from(number(arg)?)? * 86_400);
@@ -117,6 +117,7 @@ fn parse_options(args: &[String]) -> Result<(Options, PathBuf)> {
 ///
 /// # Errors
 /// I/O failure scanning or (with `--apply`) archiving session files.
+#[allow(clippy::too_many_lines)] // one archive pass: parse, scan, plan, apply, report; the stages share state
 pub fn run(args: &[String]) -> Result<i32> {
     let (opts, agent_dir) = parse_options(args)?;
     if opts.help {

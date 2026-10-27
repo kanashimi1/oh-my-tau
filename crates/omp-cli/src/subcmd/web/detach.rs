@@ -51,9 +51,7 @@ pub fn agents_dir() -> PathBuf {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
 /// Per-agent stdout/stderr log.
@@ -135,6 +133,7 @@ pub fn socket_connects(path: &Path) -> bool {
 /// broadcast to every process of the user. On 2026-10-24 one
 /// `DELETE /api/agents/<id>` took down the whole user session that way
 /// (systemd --user, herdr, every agent).
+#[allow(clippy::similar_names)] // pid and pgid are the two distinct ids a kill targets
 pub fn kill_group(pid: u32, pgid: u32) -> bool {
     // pgid 0 = caller's own group, 1 = init: never valid targets here.
     if pgid <= 1 || pid <= 1 {
