@@ -1306,6 +1306,7 @@ async fn search_anthropic(
     signal: &AbortSignal,
 ) -> Result<AnthropicApiResponse> {
     let url = format!("{base_url}/v1/messages?beta=true");
+    let is_oauth = api_key.contains("sk-ant-oat");
 
     let tool_obj = {
         let mut t = serde_json::Map::new();
@@ -1328,19 +1329,42 @@ async fn search_anthropic(
         json!([{"role": "user", "content": &plan.query}]),
     );
     body.insert("tools".to_string(), json!([tool_obj]));
-    body.insert("system".to_string(), json!(SYSTEM_PROMPT));
-
+    body.insert(
+        "system".to_string(),
+        if is_oauth {
+            json!([
+                {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
+                {"type": "text", "text": SYSTEM_PROMPT},
+                {"type": "text", "text": "You are a helpful AI assistant with web search capabilities."}
+            ])
+        } else {
+            json!(SYSTEM_PROMPT)
+        },
+    );
     let body_val = serde_json::Value::Object(body);
 
-    let response = tokio::select! {
-        result = client
-            .post(&url)
-            .header("Content-Type", "application/json")
+    let request = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .header("anthropic-version", ANTHROPIC_API_VERSION);
+    let request = if is_oauth {
+        request
+            .header("Authorization", format!("Bearer {api_key}"))
+            .header(
+                "anthropic-beta",
+                format!("claude-code-20250219,oauth-2025-04-20,{ANTHROPIC_BETA}"),
+            )
+            .header("user-agent", "claude-cli/2.1.281")
+            .header("x-app", "cli")
+    } else {
+        request
             .header("x-api-key", api_key)
-            .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("anthropic-beta", ANTHROPIC_BETA)
-            .json(&body_val)
-            .send() => result.map_err(|e| anyhow!("HTTP request failed: {e}"))?,
+    };
+
+    let response = tokio::select! {
+        result = request.json(&body_val).send() => result.map_err(|e| anyhow!("HTTP request failed: {e}"))?,
         () = signal.aborted() => {
             bail!("Web search was aborted");
         }
@@ -1703,11 +1727,20 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
         });
     }
 
-    let api_key = std::env::var("ANTHROPIC_SEARCH_API_KEY")
+    let api_key = match std::env::var("ANTHROPIC_SEARCH_API_KEY")
         .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-        .map_err(|_| {
-            anyhow!("Anthropic credentials not found. Set ANTHROPIC_SEARCH_API_KEY or ANTHROPIC_API_KEY.")
-        })?;
+    {
+        Ok(key) => key,
+        Err(_) => omp_providers::auth::credential_async(
+            omp_providers::AgentDir::default(),
+            "anthropic".to_string(),
+        )
+        .await
+        .map(|credential| credential.key)
+        .ok_or_else(|| {
+            anyhow!("Anthropic credentials not found. Log in with `omt login anthropic`, or set ANTHROPIC_SEARCH_API_KEY or ANTHROPIC_API_KEY.")
+        })?,
+    };
 
     let base_url =
         std::env::var("ANTHROPIC_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
@@ -2009,6 +2042,57 @@ mod tests {
             vec!["rust programming language".to_string()]
         );
         assert_eq!(resp.citations.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn oauth_search_uses_bearer_and_oauth_betas_not_api_key() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 8192];
+            loop {
+                let read = socket.read(&mut chunk).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if std::str::from_utf8(&request).is_ok_and(|text| text.contains("\r\n\r\n")) {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.contains("authorization: Bearer sk-ant-oat-test"));
+            assert!(
+                request.contains("claude-code-20250219,oauth-2025-04-20,web-search-2025-03-05")
+            );
+            assert!(!request.to_lowercase().contains("x-api-key:"));
+            let body = r#"{"id":"msg","model":"claude-opus-5-5","content":[],"usage":{}}"#;
+            socket
+                .write_all(
+                    format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let plan = AnthropicQueryPlan {
+            query: "test".to_string(),
+            allowed_domains: None,
+            blocked_domains: None,
+        };
+        let signal = pa_agent::abort::AbortController::new().signal();
+        search_anthropic(
+            &reqwest::Client::new(),
+            &format!("http://{addr}"),
+            "sk-ant-oat-test",
+            "claude-opus-5-5",
+            &plan,
+            &signal,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]
