@@ -153,11 +153,15 @@ fn prompt_cache_key(
 }
 
 /// TS `normalizeOpenAIStableId`: identities past the wire limit hash down to `{prefix}{base36}`.
+// invariant: a SHA-256 digest always has >= 8 bytes.
+#[allow(clippy::expect_used)]
 pub(crate) fn normalize_stable_id(
     value: &str,
     max_len: usize,
     hash_prefix: &str,
 ) -> Option<String> {
+    // invariant: a SHA-256 digest always has >= 8 bytes.
+    #[allow(clippy::expect_used)]
     if value.is_empty() {
         return None;
     }
@@ -172,6 +176,8 @@ pub(crate) fn normalize_stable_id(
     Some(format!("{hash_prefix}{}", to_base36(n)))
 }
 
+// invariant: only base-36 ASCII digits are pushed, so from_utf8 cannot fail.
+#[allow(clippy::expect_used)]
 fn to_base36(mut n: u64) -> String {
     if n == 0 {
         return "0".into();
@@ -233,7 +239,10 @@ pub(crate) fn build_params<'a>(
 /// given, receives the serialized fragments a conversion produced (the cache stores them). Every
 /// policy decision is made here exactly once, so cached and uncached requests emit identical
 /// bytes.
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // single policy decision point for cached/uncached parity, ported TS parameter surface
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+// single policy decision point for cached/uncached parity, ported TS parameter surface
+// invariant: serializing the in-memory wire trees cannot fail.
+#[allow(clippy::expect_used)]
 pub(crate) fn build_params_streaming<'a>(
     model: &Model,
     context: &'a Context,
@@ -587,6 +596,8 @@ pub(crate) fn build_params_streaming<'a>(
 /// `prefix` (a serialized JSON array) with `tail` appended as elements: `"[" + inner(prefix) +
 /// "," + inner(tail) + "]"`. The pieces come from `serde_json`, so the join is valid JSON; the
 /// one re-validation pass (`RawValue::from_string`) is far cheaper than re-serializing the prefix.
+// invariant: the spliced buffer is a prefix-joined valid JSON array.
+#[allow(clippy::expect_used)]
 fn splice_messages_prefix(
     prefix: &serde_json::value::RawValue,
     tail: &[Wire<'_>],
@@ -644,9 +655,9 @@ fn maybe_add_anthropic_cache_control(compat: &ResolvedCompat, messages: &mut [Wi
                     .and_then(Wire::as_str)
                     .is_some_and(|t| !t.trim().is_empty());
                 if non_blank {
-                    part.as_object_mut()
-                        .expect("text parts are objects")
-                        .insert("cache_control", Wire::Owned(ephemeral()));
+                    if let Some(part) = part.as_object_mut() {
+                        part.insert("cache_control", Wire::Owned(ephemeral()));
+                    }
                     return;
                 }
             }

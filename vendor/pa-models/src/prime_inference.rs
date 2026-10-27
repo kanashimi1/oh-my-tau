@@ -162,6 +162,8 @@ pub fn is_private_prime_inference_model_id(model_id: &str) -> bool {
 ///
 /// Never for any input: `Hmac::<Sha256>::new_from_slice` accepts api keys of every length.
 #[must_use]
+// invariant: HMAC accepts any key length.
+#[allow(clippy::expect_used)]
 pub fn scope_key(api_key: &str, team_id: &str) -> String {
     let mut mac =
         Hmac::<Sha256>::new_from_slice(api_key.as_bytes()).expect("HMAC accepts any key length");
@@ -446,6 +448,8 @@ pub fn build_prime_inference_models(
             );
             match controls.thinking_format {
                 Some(format) => {
+                    // invariant: serializing an in-memory enum cannot fail.
+                    #[allow(clippy::expect_used)]
                     compat.raw.insert(
                         "thinkingFormat".into(),
                         serde_json::to_value(format).expect("thinking format serializes"),

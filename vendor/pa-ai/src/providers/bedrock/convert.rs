@@ -300,17 +300,18 @@ pub fn convert_messages(
         && supports_prompt_caching(model)
         && !result.is_empty()
     {
-        let last = result.last_mut().expect("checked non-empty");
+        let Some(last) = result.last_mut() else {
+            return result;
+        };
         if last.get("role").and_then(Value::as_str) == Some("user") {
             let mut cache_point = Map::new();
             cache_point.insert("type".into(), json!("default"));
             if cache_retention == CacheRetention::Long {
                 cache_point.insert("ttl".into(), json!("1h"));
             }
-            last.get_mut("content")
-                .and_then(Value::as_array_mut)
-                .expect("user messages always carry content")
-                .push(json!({ "cachePoint": Value::Object(cache_point) }));
+            if let Some(content) = last.get_mut("content").and_then(Value::as_array_mut) {
+                content.push(json!({ "cachePoint": Value::Object(cache_point) }));
+            }
         }
     }
 

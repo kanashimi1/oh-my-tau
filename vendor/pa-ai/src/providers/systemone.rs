@@ -87,6 +87,8 @@ async fn serve_systemone(
         .and_then(|options| options.timeout_ms)
         .unwrap_or(DEFAULT_TIMEOUT_MS);
     let mut headers = reqwest::header::HeaderMap::new();
+    // invariant: "application/json" is a valid HeaderValue.
+    #[allow(clippy::unwrap_used)]
     headers.insert(
         reqwest::header::CONTENT_TYPE,
         "application/json".parse().unwrap(),
@@ -109,11 +111,14 @@ async fn serve_systemone(
         }
     }
     let url = format!("{}/systemone", model.base_url.trim_end_matches('/'));
+    // invariant: one-shot static client init; a TLS-backend failure is an
+    // environment defect caught by tests, matching the shared clients.
+    #[allow(clippy::expect_used)]
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(timeout_ms))
         .default_headers(headers)
         .build()
-        .expect("systemone client builds");
+        .expect("reqwest client");
     let response = client.post(&url).json(&request).send().await;
     let message = match response {
         Ok(response) => {

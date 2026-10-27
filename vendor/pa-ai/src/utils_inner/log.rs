@@ -48,7 +48,9 @@ static SINK: RwLock<Option<LogSink>> = RwLock::new(None);
 /// Install the process-wide log sink. Pass None to restore the default.
 #[allow(dead_code)] // logging surface for consumers once exposed
 pub fn set_log_sink(next: Option<LogSink>) {
-    *SINK.write().unwrap() = next;
+    *SINK
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
 }
 
 fn emit(level: LogLevel, component: &str, msg: &str, fields: serde_json::Value) {
@@ -59,12 +61,18 @@ fn emit(level: LogLevel, component: &str, msg: &str, fields: serde_json::Value) 
         msg: msg.to_string(),
         fields,
     };
-    let sink = SINK.read().unwrap().clone();
+    let sink = SINK
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     if let Some(sink) = sink {
         sink(&entry);
     }
 }
 
+// invariant: u64::MAX / 86_400 always fits i64; civil_from_days ranges are
+// guaranteed by Hinnant's algorithm.
+#[allow(clippy::expect_used)]
 fn iso_timestamp() -> String {
     // RFC3339 UTC timestamp without external date deps.
     let now = std::time::SystemTime::now()
@@ -86,6 +94,9 @@ fn iso_timestamp() -> String {
 }
 
 /// Days-to-civil conversion (Howard Hinnant's algorithm).
+// invariant: Hinnant's algorithm yields day-of-era 0..=146_096, year-of-era
+// 0..=399, day 1..=31, month 1..=12 for any input.
+#[allow(clippy::expect_used)]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -145,10 +156,18 @@ mod tests {
         let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink_handle = received.clone();
         set_log_sink(Some(std::sync::Arc::new(move |entry: &LogEntry| {
-            sink_handle.lock().unwrap().push(entry.level);
+            sink_handle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(entry.level);
         })));
         get_logger("test").error("boom", serde_json::json!({}));
         set_log_sink(None);
-        assert_eq!(*received.lock().unwrap(), vec![LogLevel::Error]);
+        assert_eq!(
+            *received
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![LogLevel::Error]
+        );
     }
 }

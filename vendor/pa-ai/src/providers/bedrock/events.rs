@@ -212,29 +212,23 @@ fn handle_content_block_delta(
 
     if let Some(text) = text {
         // If no text block exists yet, create one: contentBlockStart is not sent for text blocks.
-        let slot = if let Some(slot) = state.slots.get(&content_block_index) {
-            slot
-        } else {
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            state.slots.entry(content_block_index)
+        {
             output.content.push(AssistantContent::Text(TextContent {
                 text: String::new(),
                 text_signature: None,
                 rest: Map::default(),
             }));
             let index = output.content.len() - 1;
-            state
-                .slots
-                .insert(content_block_index, BlockSlot::Text { index });
+            entry.insert(BlockSlot::Text { index });
             writer.push(AssistantMessageEvent::TextStart {
                 content_index: index as u64,
                 partial: output.clone(),
             });
-            state
-                .slots
-                .get(&content_block_index)
-                .expect("just inserted")
-        };
-        let index = match slot {
-            BlockSlot::Text { index } => *index,
+        }
+        let index = match state.slots.get(&content_block_index) {
+            Some(BlockSlot::Text { index }) => *index,
             _ => return,
         };
         if let AssistantContent::Text(block) = &mut output.content[index] {
@@ -272,9 +266,9 @@ fn handle_content_block_delta(
     }
 
     if let Some(reasoning) = reasoning {
-        let slot = if let Some(slot) = state.slots.get(&content_block_index) {
-            slot
-        } else {
+        if let std::collections::hash_map::Entry::Vacant(entry) =
+            state.slots.entry(content_block_index)
+        {
             output
                 .content
                 .push(AssistantContent::Thinking(ThinkingContent {
@@ -284,20 +278,14 @@ fn handle_content_block_delta(
                     rest: Map::default(),
                 }));
             let index = output.content.len() - 1;
-            state
-                .slots
-                .insert(content_block_index, BlockSlot::Thinking { index });
+            entry.insert(BlockSlot::Thinking { index });
             writer.push(AssistantMessageEvent::ThinkingStart {
                 content_index: index as u64,
                 partial: output.clone(),
             });
-            state
-                .slots
-                .get(&content_block_index)
-                .expect("just inserted")
-        };
-        let index = match slot {
-            BlockSlot::Thinking { index } => *index,
+        }
+        let index = match state.slots.get(&content_block_index) {
+            Some(BlockSlot::Thinking { index }) => *index,
             _ => return,
         };
         let mut signature_delta = None;

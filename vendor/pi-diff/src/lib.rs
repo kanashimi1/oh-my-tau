@@ -90,6 +90,9 @@ fn add_to_path(path: &PathState, added: bool, removed: bool, old_pos_inc: isize)
 }
 
 /// Convert the winning component chain into forward-ordered runs.
+// invariant: call sites guard with can_add/can_remove, which imply the
+// corresponding path is present.
+#[allow(clippy::expect_used)]
 fn build_runs(last: Option<Rc<Component>>) -> Vec<Run> {
     let mut runs = Vec::new();
     let mut cursor = last.as_deref();
@@ -108,6 +111,9 @@ fn build_runs(last: Option<Rc<Component>>) -> Vec<Run> {
 /// Myers O(ND) diff over interned token ids, replicating jsdiff's default
 /// (non-`oneChangePerToken`, no timeout / `maxEditLength`) execution path so
 /// the resulting run structure is identical.
+// invariant: the can_add/can_remove guards above imply the corresponding
+// best-path entry is present.
+#[allow(clippy::expect_used)]
 pub fn myers_diff(old: &[u32], new: &[u32]) -> Vec<Run> {
     let old_len = old.len() as isize;
     let new_len = new.len() as isize;
@@ -674,6 +680,8 @@ fn word_parts(text: &[u16]) -> Vec<&[u16]> {
 
 /// jsdiff `WordDiff.tokenize`: stitch whitespace runs onto adjacent word or
 /// punctuation parts, duplicating interior whitespace into both neighbors.
+// invariant: tokens is non-empty once the first part has been pushed.
+#[allow(clippy::expect_used)]
 fn word_tokens(text: &[u16]) -> Vec<Vec<u16>> {
     let parts = word_parts(text);
     let mut tokens: Vec<Vec<u16>> = Vec::with_capacity(parts.len());
@@ -739,18 +747,24 @@ fn longest_common_suffix<'a>(a: &'a [u16], b: &[u16]) -> &'a [u16] {
 }
 
 fn remove_prefix(s: &[u16], prefix: &[u16]) -> Vec<u16> {
+    // invariant: callers strip prefixes/suffixes they themselves recorded.
+    #[allow(clippy::expect_used)]
     s.strip_prefix(prefix)
         .expect("value must start with recorded prefix")
         .to_vec()
 }
 
 fn remove_suffix(s: &[u16], suffix: &[u16]) -> Vec<u16> {
+    // invariant: callers strip prefixes/suffixes they themselves recorded.
+    #[allow(clippy::expect_used)]
     s.strip_suffix(suffix)
         .expect("value must end with recorded suffix")
         .to_vec()
 }
 
 fn replace_prefix(s: &[u16], old_prefix: &[u16], new_prefix: &[u16]) -> Vec<u16> {
+    // invariant: callers strip prefixes/suffixes they themselves recorded.
+    #[allow(clippy::expect_used)]
     let rest = s
         .strip_prefix(old_prefix)
         .expect("value must start with recorded prefix");
@@ -761,6 +775,8 @@ fn replace_prefix(s: &[u16], old_prefix: &[u16], new_prefix: &[u16]) -> Vec<u16>
 }
 
 fn replace_suffix(s: &[u16], old_suffix: &[u16], new_suffix: &[u16]) -> Vec<u16> {
+    // invariant: callers strip prefixes/suffixes they themselves recorded.
+    #[allow(clippy::expect_used)]
     let rest = s
         .strip_suffix(old_suffix)
         .expect("value must end with recorded suffix");

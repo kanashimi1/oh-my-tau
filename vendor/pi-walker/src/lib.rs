@@ -4876,6 +4876,8 @@ mod platform {
         if bytes.len() < size_of::<u16>() {
             return Err(invalid_data("truncated u16"));
         }
+        // invariant: slice length checked above.
+        #[allow(clippy::expect_used)]
         Ok(u16::from_ne_bytes(
             bytes[..size_of::<u16>()]
                 .try_into()

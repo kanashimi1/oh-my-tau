@@ -127,11 +127,12 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
     /// disk snapshot on first access. A scope change discards the previous
     /// account's view entirely.
     ///
-    /// # Panics
-    ///
-    /// Panics if the cache mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn get(&self, scope: &str) -> Option<T> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.scope.as_deref() == Some(scope) {
             return state
                 .snapshot
@@ -169,11 +170,12 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
     /// Drop the snapshot for `scope` (401/403 revocation); other scopes keep
     /// their own snapshots.
     ///
-    /// # Panics
-    ///
-    /// Panics if the cache mutex is poisoned (a panicking thread held it).
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn clear(&self, scope: &str) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.scope.as_deref() != Some(scope) {
             return;
         }
@@ -190,9 +192,7 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
     /// skips fetches attempted less than an hour ago unless forced, and
     /// returns the last-good value on every failure path.
     ///
-    /// # Panics
-    ///
-    /// Panics if the cache mutex is poisoned; in debug builds, also if a refresh
+    /// Locks recover from poisoning by reusing the guarded data.
     /// settles its shared result twice (the current code never does).
     pub async fn refresh(&self, scope: &str, opts: RefreshOptions) -> Option<T> {
         enum Gate<T> {
@@ -207,7 +207,10 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
         // The mutex guard must never live across an await: decide under the
         // lock, then act outside it.
         let gate = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let coalesced = state
                 .pending
                 .clone()
@@ -248,7 +251,10 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
         };
         let result = self.drive_refresh(scope, &opts, previous, generation).await;
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state
                 .pending
                 .as_ref()
@@ -267,7 +273,10 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
     }
 
     fn is_current(&self, scope: &str, generation: u64, opts: &RefreshOptions) -> bool {
-        let state = self.state.lock().unwrap();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.scope.as_deref() == Some(scope)
             && state.generation == generation
             && opts.is_current.as_ref().is_none_or(|check| check())
@@ -334,7 +343,10 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
         if !self.is_current(scope, generation, opts) {
             return None;
         }
-        let state = self.state.lock().unwrap();
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state
             .snapshot
             .as_ref()
@@ -343,7 +355,10 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
 
     fn store_snapshot(&self, scope: &str, snapshot: &Snapshot<T>) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.scope.as_deref() != Some(scope) {
                 return;
             }
@@ -410,7 +425,11 @@ impl<T: Clone + Send + Sync + 'static> Drop for SettleOnDrop<'_, T> {
             return;
         }
         {
-            let mut state = self.cache.state.lock().unwrap();
+            let mut state = self
+                .cache
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state
                 .pending
                 .as_ref()

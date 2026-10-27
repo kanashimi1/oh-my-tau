@@ -73,8 +73,10 @@ impl CatalogFetcher {
     ///
     /// # Panics
     ///
-    /// Panics if the reqwest client fails to build.
     #[must_use]
+    // invariant: one-shot client init; a TLS-backend failure is an environment
+    // defect caught by tests.
+    #[allow(clippy::expect_used)]
     pub fn with_limits(timeout: Duration, max_bytes: usize) -> Self {
         let client = reqwest::Client::builder()
             // A moved catalog must be a client change, never a silent hop.

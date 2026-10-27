@@ -168,20 +168,28 @@ impl FauxSharedState {
     /// once the queue ran dry, or `None` (the caller's exhaustion error). The dequeue and the
     /// last-served publish share one hold of the pending `Mutex`.
     ///
-    /// # Panics
-    ///
-    /// Panics if the pending or last-served `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     fn next_step(&self) -> Option<FauxResponseStep> {
         let repeat = self
             .repeat_last_response
             .load(std::sync::atomic::Ordering::Relaxed);
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match pending.pop_front_step() {
             Some(step) => {
-                *self.last_served.lock().unwrap() = Some(step.clone());
+                *self
+                    .last_served
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(step.clone());
                 Some(step)
             }
-            None if repeat => self.last_served.lock().unwrap().clone(),
+            None if repeat => self
+                .last_served
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
             None => None,
         }
     }
@@ -205,51 +213,61 @@ impl FauxProviderRegistration {
 
     /// Call count across all requests against this registration.
     ///
-    /// # Panics
-    ///
-    /// Panics if the counter `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn call_count(&self) -> u64 {
-        *self.state.call_count.lock().unwrap()
+        *self
+            .state
+            .call_count
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// The API key each recorded request carried (per call, in order): summarizer arms that must
     /// follow the session's live key pin on it.
     ///
-    /// # Panics
-    ///
-    /// Panics if the recorded-keys `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn received_api_keys(&self) -> Vec<Option<String>> {
-        self.state.received_api_keys.lock().unwrap().clone()
+        self.state
+            .received_api_keys
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Replace the queued responses.
     ///
-    /// # Panics
-    ///
-    /// Panics if the pending `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn set_responses(&self, responses: Vec<FauxResponseStep>) {
-        *self.state.pending.lock().unwrap() = responses;
+        *self
+            .state
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = responses;
     }
 
     /// Append to the queued responses.
     ///
-    /// # Panics
-    ///
-    /// Panics if the pending `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn append_responses(&self, responses: Vec<FauxResponseStep>) {
-        self.state.pending.lock().unwrap().extend(responses);
+        self.state
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(responses);
     }
 
     /// Number of queued responses.
     ///
-    /// # Panics
-    ///
-    /// Panics if the pending `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn get_pending_response_count(&self) -> usize {
-        self.state.pending.lock().unwrap().len()
+        self.state
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Switch the registration into repeat-last mode: once the queued responses run out, the
@@ -396,7 +414,9 @@ fn with_usage_estimate(
 
     if let Some(session_id) = session_id {
         if !cache_retention_none.unwrap_or(false) {
-            let mut cache = prompt_cache.lock().unwrap();
+            let mut cache = prompt_cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(previous_prompt) = cache.get(&session_id).cloned() {
                 let cached_chars = common_prefix_length(&previous_prompt, &prompt_text);
                 let cached_prefix: String = previous_prompt.chars().take(cached_chars).collect();
@@ -730,11 +750,15 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
         ) -> AssistantMessageEventStream {
             let (writer, reader) = create_assistant_message_event_stream();
             let step = self.state.next_step();
-            *self.state.call_count.lock().unwrap() += 1;
+            *self
+                .state
+                .call_count
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) += 1;
             self.state
                 .received_api_keys
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(options.and_then(|options| options.api_key.clone()));
 
             let state = self.state.clone();
@@ -817,7 +841,10 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
                         Ok(message)
                     }
                     FauxResponseStep::Factory(factory) => {
-                        let call_count = *state.call_count.lock().unwrap();
+                        let call_count = *state
+                            .call_count
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                         factory(&context, options.as_ref(), call_count, &model)
                     }
                 };

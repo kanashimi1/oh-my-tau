@@ -95,6 +95,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+// invariant: HMAC accepts any key length.
+#[allow(clippy::expect_used)]
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Vec<u8> {
     let mut mac = HmacSha256::new_from_slice(key).expect("hmac accepts any key length");
     mac.update(data);
@@ -115,6 +117,9 @@ fn now_utc_parts() -> (String, String) {
 }
 
 /// Convert a Unix timestamp to civil UTC date-time (Howard Hinnant's algorithm).
+// invariant: u64::MAX / 86_400 always fits i64; Hinnant's algorithm yields
+// day 1..=31 and month 1..=12 for any input day count.
+#[allow(clippy::expect_used)]
 fn civil_from_unix(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     // u64::MAX / 86_400 is ~2.1e14; the day count always fits i64.
     let days = i64::try_from(secs / 86_400).expect("days since the epoch fit i64");

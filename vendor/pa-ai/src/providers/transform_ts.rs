@@ -148,6 +148,8 @@ fn normalize_anthropic_target_tool_call_id(
     format!("toolu_{}", base36_hash(id))
 }
 
+// invariant: a SHA-256 digest always has >= 8 bytes; the digits emitted are ASCII.
+#[allow(clippy::expect_used)]
 fn base36_hash(value: &str) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(value.as_bytes());

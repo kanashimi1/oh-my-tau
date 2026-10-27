@@ -1,4 +1,6 @@
 //! Normalization of line prefixes copied from read/search output.
+// invariant: all regexes in this module are literals verified by tests.
+#![allow(clippy::expect_used)]
 
 use std::sync::LazyLock;
 

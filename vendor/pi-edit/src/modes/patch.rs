@@ -200,8 +200,7 @@ fn adjust_lines_indentation(
             }
             ratio = Some(next);
         }
-        if consistent && ratio.is_some_and(|value| value > 0) {
-            let ratio = ratio.unwrap();
+        if consistent && let Some(ratio) = ratio.filter(|value| *value > 0) {
             let valid = pattern.iter().zip(actual).all(|(old, found)| {
                 is_blank_line(old)
                     || is_blank_line(found)
@@ -238,16 +237,20 @@ fn adjust_lines_indentation(
             }
         }
         if consistent && !samples.is_empty() {
-            let (width, offset) = if samples.len() == 1 {
-                let (&tabs, &spaces) = samples.first_key_value().unwrap();
+            let (width, offset) = if let Some((&tabs, &spaces)) = samples.first_key_value()
+                && samples.len() == 1
+            {
                 (
                     spaces.checked_div(tabs).filter(|_| spaces % tabs == 0),
                     0_isize,
                 )
             } else {
                 let mut values = samples.iter();
-                let (&tabs_a, &spaces_a) = values.next().unwrap();
-                let (&tabs_b, &spaces_b) = values.next().unwrap();
+                let (Some((&tabs_a, &spaces_a)), Some((&tabs_b, &spaces_b))) =
+                    (values.next(), values.next())
+                else {
+                    unreachable!("samples.len() >= 2 checked above");
+                };
                 let tabs_delta = tabs_b as isize - tabs_a as isize;
                 let spaces_delta = spaces_b as isize - spaces_a as isize;
                 if tabs_delta != 0 && spaces_delta > 0 && spaces_delta % tabs_delta == 0 {
@@ -598,9 +601,9 @@ fn find_sequence_with_hint(
 ) -> SequenceSearchResult {
     let primary = seek_sequence(lines, pattern, current, eof, allow_fuzzy);
     if primary.match_count.is_some_and(|count| count > 1)
-        && hint.is_some_and(|value| value != current)
+        && let Some(hint) = hint.filter(|value| *value != current)
     {
-        let hinted = seek_sequence(lines, pattern, hint.unwrap(), eof, allow_fuzzy);
+        let hinted = seek_sequence(lines, pattern, hint, eof, allow_fuzzy);
         if hinted.index.is_some() || hinted.match_count.is_some_and(|count| count > 1) {
             return hinted;
         }
@@ -884,7 +887,7 @@ fn character_match(
         if first_match {
             return Ok(None);
         }
-        let count = outcome.occurrences.unwrap();
+        let count = outcome.occurrences.unwrap_or_default();
         let previews = outcome
             .occurrence_previews
             .as_deref()
@@ -907,7 +910,7 @@ fn character_match(
         return Err(EditError::apply(format!(
             "Found {} high-confidence matches in {path}. The text must be unique. Please provide \
 			 more context to make it unique.",
-            outcome.fuzzy_matches.unwrap()
+            outcome.fuzzy_matches.unwrap_or_default()
         )));
     }
     let Some(found) = outcome.matched else {
@@ -1220,7 +1223,7 @@ fn compute_replacements(
         }
         let Some(found) = result.index else {
             if result.match_count.is_some_and(|count| count > 1) {
-                let count = result.match_count.unwrap();
+                let count = result.match_count.unwrap_or_default();
                 let strategy = result
                     .strategy
                     .map(sequence_strategy_label)
@@ -1485,7 +1488,10 @@ fn stage_from_parts(
     let op = engine_op(input.op);
     let persisted = match after.as_deref() {
         Some(text) if use_new_encoding || read.is_none() => Some(persist_new(&resolved, text)?),
-        Some(text) => Some(read.as_ref().unwrap().persist(text)?),
+        Some(text) => match read.as_ref() {
+            Some(read) => Some(read.persist(text)?),
+            None => None,
+        },
         None => None,
     };
     let mut staged = StagedFile::new(resolved.display.clone(), resolved.absolute, op);

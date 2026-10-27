@@ -1,4 +1,6 @@
 //! Token-driven parser for hashline section bodies.
+// invariant: the static regex below is a literal verified by tests.
+#![allow(clippy::expect_used)]
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -300,7 +302,7 @@ impl Executor {
     }
 
     fn handle_literal(&mut self, text: &str, line_num: u32) -> Result<(), ParseFailure> {
-        let Some(pending) = self.pending.as_ref() else {
+        let Some(pending) = self.pending.as_mut() else {
             if self.file_op.is_some() {
                 return fail_at(line_num, MOVE_TAKES_NO_BODY);
             }
@@ -315,18 +317,19 @@ impl Executor {
         if let Some(message) = bodyless_message(&pending.target, pending.had_colon) {
             return fail_at(line_num, message);
         }
-        let pending = self.pending.as_mut().expect("checked");
-        pending.payloads.append(&mut pending.deferred_blanks);
-        if is_hunk_header_text(text) {
-            self.warnings
-                .push(messages::literal_op_row_warning(line_num, text));
+        if let Some(pending) = self.pending.as_mut() {
+            pending.payloads.append(&mut pending.deferred_blanks);
+            if is_hunk_header_text(text) {
+                self.warnings
+                    .push(messages::literal_op_row_warning(line_num, text));
+            }
+            pending.payloads.push(PayloadRow {
+                text: text.to_string(),
+                line_num,
+                bare: false,
+                minus: false,
+            });
         }
-        pending.payloads.push(PayloadRow {
-            text: text.to_string(),
-            line_num,
-            bare: false,
-            minus: false,
-        });
         Ok(())
     }
 
@@ -341,19 +344,24 @@ impl Executor {
         if self.file_op.is_some() {
             return fail_at(line_num, MOVE_TAKES_NO_BODY);
         }
-        if let Some(pending) = self.pending.as_ref() {
-            if text.trim().is_empty() {
-                self.handle_blank(text, line_num);
-                return Ok(());
-            }
-            if let Some(message) = bodyless_message(&pending.target, pending.had_colon) {
-                return fail_at(line_num, message);
-            }
-            let minus = text.trim_start().starts_with('-');
-            if !minus {
-                self.warn_once(BARE_BODY_AUTO_PIPED_WARNING);
-            }
-            let pending = self.pending.as_mut().expect("checked");
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|_| text.trim().is_empty())
+        {
+            self.handle_blank(text, line_num);
+            return Ok(());
+        }
+        if let Some(pending) = self.pending.as_ref()
+            && let Some(message) = bodyless_message(&pending.target, pending.had_colon)
+        {
+            return fail_at(line_num, message);
+        }
+        let minus = text.trim_start().starts_with('-');
+        if !minus {
+            self.warn_once(BARE_BODY_AUTO_PIPED_WARNING);
+        }
+        if let Some(pending) = self.pending.as_mut() {
             pending.payloads.append(&mut pending.deferred_blanks);
             pending.payloads.push(PayloadRow {
                 text: text.to_string(),
@@ -660,7 +668,7 @@ impl Executor {
                 }
                 continue;
             }
-            let previous = (overlaps.len() == 1).then(|| *overlaps.first().expect("one"));
+            let previous = overlaps.first().copied().filter(|_| overlaps.len() == 1);
             let exact = previous
                 .and_then(|prev| {
                     hunks
@@ -669,7 +677,9 @@ impl Executor {
                 })
                 .unwrap_or(false);
             if exact {
-                let prev = previous.expect("exact");
+                let Some(prev) = previous else {
+                    continue;
+                };
                 dropped.insert(prev);
                 owner.retain(|_, value| *value != prev);
                 for line in &hunk.lines {

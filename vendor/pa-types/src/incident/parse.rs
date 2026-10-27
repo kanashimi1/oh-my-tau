@@ -6,6 +6,8 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 /// `[<ISO>] supervisor: <msg>` or `[<ISO>] <msg>` (TS `parseIncidentDaemonLogLine`).
+// invariant: literal regex; a compile failure is a programming error caught by tests.
+#[allow(clippy::expect_used)]
 static DAEMON_LINE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\[([^\]]+)\]\s*(.*)$").expect("valid daemon line pattern"));
 
@@ -129,6 +131,8 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
 }
 
 /// `(year, month, day)` for days since 1970-01-01 (Howard Hinnant's `civil_from_days`).
+// invariant: Hinnant's algorithm yields month 1..=12 and day 1..=31, fitting in u32.
+#[allow(clippy::expect_used)]
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

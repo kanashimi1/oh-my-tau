@@ -1,4 +1,7 @@
 //! Model-facing diff rendering and unified-diff hunk parsing.
+// invariant: every regex in this module is a literal; a compile failure is a
+// programming error caught by tests.
+#![allow(clippy::expect_used)]
 
 use std::{collections::BTreeSet, sync::LazyLock};
 

@@ -521,10 +521,9 @@ async fn run_stream(
         bearer_token.is_some() && std::env::var("AWS_BEDROCK_SKIP_AUTH").as_deref() != Ok("1");
 
     if use_bearer {
-        headers.push((
-            "authorization".into(),
-            format!("Bearer {}", bearer_token.expect("checked above")),
-        ));
+        if let Some(token) = &bearer_token {
+            headers.push(("authorization".into(), format!("Bearer {token}")));
+        }
         for (name, value) in &extra_signed_headers {
             headers.push((name.clone(), value.clone()));
         }
@@ -705,6 +704,8 @@ async fn run_stream(
 
 use crate::providers::bedrock::convert::build_system_prompt as build_system_prompt_blocks;
 
+// invariant: the early return above guarantees `reasoning` is Some on this path.
+#[allow(clippy::expect_used)]
 pub fn stream_simple_bedrock(
     model: &Model,
     context: &Context,

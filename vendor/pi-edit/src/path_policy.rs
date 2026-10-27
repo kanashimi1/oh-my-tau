@@ -576,6 +576,8 @@ fn generated_filename(display: &str) -> Option<String> {
         r"\.mock\.(go|ts)$",
         r"\.mocks?\.(go|ts|js)$",
     ];
+    // invariant: the patterns above are literal regexes verified by tests.
+    #[allow(clippy::expect_used)]
     patterns
         .iter()
         .any(|p| Regex::new(p).expect("static regex").is_match(&name))
@@ -596,6 +598,8 @@ fn detect_generated_marker(content: &str, display: &str) -> Option<String> {
         r"(?i)\bthis\s+file\s+was\s+automatically\s+generated\b".to_owned(),
         format!(r"(?i)\bgenerated\s+by\s+{known}\b"),
     ] {
+        // invariant: the patterns above are literal regexes verified by tests.
+        #[allow(clippy::expect_used)]
         if let Some(found) = Regex::new(&pattern).expect("static regex").find(&header) {
             return Some(found.as_str().to_owned());
         }

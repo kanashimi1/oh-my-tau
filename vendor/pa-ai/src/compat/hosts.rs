@@ -2,6 +2,10 @@
 //! predicates (TS `compat/anthropic.ts`). Markers are case-insensitive substrings matched against
 //! the base URL, never parsed hostnames, except where noted.
 
+// invariant: every pattern below is a literal regex; a compile failure is a
+// programming error caught by tests.
+#![allow(clippy::expect_used)]
+
 use regex::Regex;
 use std::sync::OnceLock;
 

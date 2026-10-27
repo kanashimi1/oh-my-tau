@@ -4,6 +4,9 @@
 //! for 400/413 rejections a sanitized dump of the raw request under
 //! `<logs>/http-400-requests/` referenced by a `raw-http-request=<path>` line.
 
+// invariant: literal regexes; a compile failure is a programming error caught by tests.
+#![allow(clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
