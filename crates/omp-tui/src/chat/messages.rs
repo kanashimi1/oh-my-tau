@@ -1136,6 +1136,11 @@ impl Messages {
     // ---- tools ------------------------------------------------------------
 
     fn tool_start(&mut self, frame: &Value) {
+        // A call already on screen is never announced twice: a repeated
+        // start would add a second card that no end ever settles.
+        if str_field(frame, "toolCallId").is_some_and(|id| self.pending.contains_key(id)) {
+            return;
+        }
         // A tool call finishes the assistant's leading segment immediately
         // (TS snap on `hasToolCalls`): freeze it; text arriving after the
         // tool card lands in a fresh assistant entry after the card.
@@ -1950,6 +1955,37 @@ mod tests {
             "type": "message_end",
             "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}
         }))
+    }
+
+    #[test]
+    fn duplicate_tool_start_does_not_hold_back_scrollback() {
+        // A runtime that re-announces an already started call (early
+        // read-only dispatch whose hook blocked it) must not leave a phantom
+        // pending read: it would hold every later entry out of scrollback.
+        let mut m = Messages::new();
+        m.apply(&AppEvent::AgentStart);
+        let start = json!({"type": "tool_execution_start", "toolCallId": "r1",
+            "toolName": "read", "args": {"path": "a.rs"}});
+        m.apply(&AppEvent::ToolExecutionStart(start.clone()));
+        m.apply(&AppEvent::ToolExecutionStart(start));
+        m.apply(&AppEvent::ToolExecutionEnd(json!({
+            "type": "tool_execution_end", "toolCallId": "r1", "toolName": "read",
+            "result": {"content": [{"type": "text", "text": "denied"}]}, "isError": true
+        })));
+        m.apply(&AppEvent::TurnEnd(json!({})));
+        m.apply(&msg_update("after"));
+        m.apply(&msg_end("after"));
+        m.apply(&AppEvent::AgentEnd(json!({})));
+        assert_eq!(m.finished_len(), m.entries().len());
+        let reads: usize = m
+            .entries()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ChatKind::ReadGroup(g) => Some(g.reads.len()),
+                _ => None,
+            })
+            .sum();
+        assert_eq!(reads, 1);
     }
 
     #[test]

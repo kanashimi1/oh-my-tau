@@ -17,8 +17,8 @@ use pa_agent::scripted::{ScriptStep, ScriptedProvider, ScriptedTurn};
 use pa_agent::stream::AssistantMessageEvent;
 use pa_agent::types::{
     AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult, AgentToolUpdateCallback,
-    BeforeToolCallContext, Message, Model, StopReason, TextContent, ToolResultContent,
-    ToolResultMessage,
+    BeforeToolCallContext, BeforeToolCallResult, Message, Model, StopReason, TextContent,
+    ToolResultContent, ToolResultMessage,
 };
 
 fn test_model() -> Model {
@@ -557,4 +557,60 @@ async fn failed_tail_discards_early_tool_results() {
         1,
         "the early read-only execution happens at most once and is never retried inline"
     );
+}
+
+/// An early-started read-only call that its `beforeToolCall` hook blocks
+/// still gets exactly one `tool_execution_start` and one end: the batch must
+/// not re-announce it (a second start left consumers with a phantom,
+/// forever-pending card).
+#[tokio::test]
+async fn blocked_early_call_is_announced_once() {
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    let run_start = Instant::now();
+    let reader = Recorder::new("reader", 0, run_start);
+    tool_turn_with_tail_delay(
+        &provider,
+        vec![
+            ("call-a", "reader", serde_json::json!({ "text": "a" })),
+            ("call-b", "reader", serde_json::json!({ "text": "b" })),
+        ],
+        100,
+    );
+    provider.push_text_turn("done");
+
+    let mut config = AgentLoopConfig::new(test_model(), AgentLoopConfig::default_convert_to_llm());
+    config.is_tool_read_only = Some(Arc::new(|name| name == "reader"));
+    config.before_tool_call = Some(Arc::new(|ctx: BeforeToolCallContext, _signal| {
+        Box::pin(async move {
+            Ok(
+                (ctx.tool_call.id == "call-a").then(|| BeforeToolCallResult {
+                    block: true,
+                    reason: Some("denied".into()),
+                    args: None,
+                    additional_context: None,
+                }),
+            )
+        })
+    }));
+
+    let (sink, log) = event_log();
+    let messages = run_agent_loop(
+        vec![AgentMessage::user("go")],
+        test_context(vec![reader.clone()]),
+        &config,
+        sink,
+        None,
+        Some(&provider.stream_fn()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(reader.calls.load(Ordering::SeqCst), 1, "only call-b runs");
+    let results = tool_result_messages(&messages);
+    assert_eq!(results.len(), 2);
+    assert!(results[0].is_error, "blocked call reports an error result");
+    let log = log.lock().unwrap().clone();
+    let count = |name: &str| log.iter().filter(|e| **e == name).count();
+    assert_eq!(count("tool_execution_start"), 2, "{log:?}");
+    assert_eq!(count("tool_execution_end"), 2, "{log:?}");
 }

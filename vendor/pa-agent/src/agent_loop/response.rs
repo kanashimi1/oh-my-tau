@@ -2,7 +2,7 @@
 //! conversion, the model stream event loop, and the aborted-message
 //! finalize path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use crate::types::{
 use super::abort::{create_aborted_assistant_message, race_with_abort};
 use super::run::clone_context;
 use super::tool_call::{execute_prepared_tool_call, ExecutedToolCallOutcome};
-use super::tools::{Preparation, PreparedToolCall};
+use super::tools::{Preparation, PreparedDispatch, PreparedToolCall};
 use super::{AgentEventSink, AgentLoopConfig};
 
 /// Provider-bound messages for one request (TS `prepareProviderCall`): `transformContext`
@@ -72,6 +72,9 @@ struct EarlyState {
     tx: Option<mpsc::UnboundedSender<EarlyWork>>,
     /// Read-only calls handed to the pipeline, keyed by tool-call id.
     calls: HashMap<String, EarlyToolCall>,
+    /// Calls whose `tool_execution_start` the stream loop already emitted
+    /// (including any the pipeline then failed to accept).
+    started: HashSet<String>,
 }
 
 impl EarlyState {
@@ -132,6 +135,7 @@ async fn start_early_tool_call(
         args: tool_call.arguments.clone(),
     })
     .await?;
+    early.started.insert(tool_call.id.clone());
 
     if early.tx.is_none() {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -156,10 +160,9 @@ async fn start_early_tool_call(
         prep_tx,
         exec_tx,
     };
-    // If the pipeline is gone (turn cancelled concurrently) the early
-    // `tool_execution_start` stays unmatched — exactly like a batch that
-    // aborts right after starting an execution — and the call falls back to
-    // the normal dispatch.
+    // If the pipeline is gone (turn cancelled concurrently) the call falls
+    // back to the normal dispatch, which skips the already-emitted
+    // `tool_execution_start` (`early.started`).
     if early.tx.as_ref().is_some_and(|tx| tx.send(work).is_ok()) {
         early
             .calls
@@ -234,7 +237,7 @@ async fn prepare_dispatch(
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
     early: &mut EarlyState,
-) -> Vec<Preparation> {
+) -> Vec<PreparedDispatch> {
     if matches!(message.stop_reason, StopReason::Error | StopReason::Aborted) {
         early.cancel();
         return Vec::new();
@@ -287,13 +290,16 @@ async fn prepare_dispatch(
         } else {
             prepare_tool_call_ref(context, &for_hooks, call, config, signal).await
         };
-        prepared.push(preparation);
+        prepared.push(PreparedDispatch {
+            preparation,
+            start_emitted: early.started.contains(&call.id),
+        });
     }
     early.shutdown();
     let finalized: Vec<crate::types::ToolCall> = calls
         .iter()
         .zip(&prepared)
-        .map(|(call, p)| match p {
+        .map(|(call, p)| match &p.preparation {
             Preparation::Prepared(p) => p.tool_call.clone(),
             Preparation::Early { prepared, .. } => prepared.tool_call.clone(),
             Preparation::Immediate { .. } => call.clone(),
@@ -314,7 +320,7 @@ pub(crate) async fn stream_assistant_response(
     emit: &AgentEventSink,
     stream_fn: Option<&StreamFn>,
     llm_messages: anyhow::Result<Vec<crate::types::Message>>,
-    prepared_calls: &mut Vec<Preparation>,
+    prepared_calls: &mut Vec<PreparedDispatch>,
 ) -> anyhow::Result<AssistantMessage> {
     let mut partial_event: Option<Arc<crate::stream::AssistantMessageEvent>> = None;
     let mut added_partial = false;
@@ -395,7 +401,7 @@ async fn stream_assistant_response_inner(
     emit: &AgentEventSink,
     stream_fn: Option<&StreamFn>,
     llm_messages: anyhow::Result<Vec<crate::types::Message>>,
-    prepared_calls: &mut Vec<Preparation>,
+    prepared_calls: &mut Vec<PreparedDispatch>,
     partial_event: &mut Option<Arc<crate::stream::AssistantMessageEvent>>,
     added_partial: &mut bool,
     timing: &mut Timing,

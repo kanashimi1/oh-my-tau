@@ -45,12 +45,22 @@ fn join_additional_context<'a>(values: impl Iterator<Item = &'a String>) -> Opti
     (!kept.is_empty()).then(|| kept.join("\n\n"))
 }
 
+/// One call's preparation, and whether the stream loop already emitted its
+/// `tool_execution_start` (the call was started early). An early-started call
+/// whose preparation fell back (hook block, pipeline gone) must not get a
+/// second start: consumers would show the same call twice, one copy forever
+/// pending.
+pub(crate) struct PreparedDispatch {
+    pub(crate) preparation: Preparation,
+    pub(crate) start_emitted: bool,
+}
+
 /// Per-call preparations in source order: those computed before the assistant `message_end`
 /// (TS `prepareToolCallDispatch`), else prepared on demand.
-struct PreparedCalls(std::vec::IntoIter<Preparation>);
+struct PreparedCalls(std::vec::IntoIter<PreparedDispatch>);
 
 impl PreparedCalls {
-    fn new(prepared: Vec<Preparation>, calls: usize) -> Option<Self> {
+    fn new(prepared: Vec<PreparedDispatch>, calls: usize) -> Option<Self> {
         (prepared.len() == calls).then(|| Self(prepared.into_iter()))
     }
 }
@@ -62,19 +72,20 @@ async fn preparation_for(
     tool_call: &ToolCall,
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
-) -> Preparation {
+) -> PreparedDispatch {
     match pre.as_mut().and_then(|p| p.0.next()) {
         Some(p) => p,
-        None => {
-            prepare_tool_call(
+        None => PreparedDispatch {
+            preparation: prepare_tool_call(
                 current_context,
                 assistant_message,
                 tool_call,
                 config,
                 signal,
             )
-            .await
-        }
+            .await,
+            start_emitted: false,
+        },
     }
 }
 
@@ -84,7 +95,7 @@ pub(crate) async fn execute_tool_calls(
     config: &AgentLoopConfig,
     signal: Option<&AbortSignal>,
     emit: &AgentEventSink,
-    prepared: Vec<Preparation>,
+    prepared: Vec<PreparedDispatch>,
 ) -> anyhow::Result<ExecutedToolCallBatch> {
     let tool_calls = assistant_message
         .tool_calls()
@@ -142,7 +153,10 @@ async fn execute_tool_calls_sequential(
             break;
         }
 
-        let preparation = preparation_for(
+        let PreparedDispatch {
+            preparation,
+            start_emitted,
+        } = preparation_for(
             &mut pre,
             current_context,
             assistant_message,
@@ -154,7 +168,7 @@ async fn execute_tool_calls_sequential(
 
         // Early read-only executions began when their arguments completed, so
         // their `tool_execution_start` was already emitted by the stream loop.
-        if !matches!(preparation, Preparation::Early { .. }) {
+        if !start_emitted {
             emit(AgentEvent::ToolExecutionStart {
                 tool_call_id: tool_call.id.clone(),
                 tool_name: tool_call.name.clone(),
@@ -246,7 +260,10 @@ async fn execute_tool_calls_parallel(
     let mut entries: Vec<TaskOrOutcome> = Vec::new();
 
     for tool_call in tool_calls {
-        let preparation = preparation_for(
+        let PreparedDispatch {
+            preparation,
+            start_emitted,
+        } = preparation_for(
             &mut pre,
             current_context,
             assistant_message,
@@ -284,12 +301,14 @@ async fn execute_tool_calls_parallel(
                 entries.push(TaskOrOutcome::Task(handle));
             }
             preparation => {
-                emit(AgentEvent::ToolExecutionStart {
-                    tool_call_id: tool_call.id.clone(),
-                    tool_name: tool_call.name.clone(),
-                    args: tool_call.arguments.clone(),
-                })
-                .await?;
+                if !start_emitted {
+                    emit(AgentEvent::ToolExecutionStart {
+                        tool_call_id: tool_call.id.clone(),
+                        tool_name: tool_call.name.clone(),
+                        args: tool_call.arguments.clone(),
+                    })
+                    .await?;
+                }
 
                 match preparation {
                     Preparation::Immediate { result, is_error } => {
