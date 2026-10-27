@@ -444,7 +444,7 @@ mod tests {
 /// One prewarm attempt per (cwd, server name) per process, with the last
 /// attempt time for the [`PREWARM_RETRY_COOLDOWN`] backoff.
 static PREWARM_ATTEMPTS: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<(PathBuf, String), Instant>>,
+    parking_lot::Mutex<HashMap<(PathBuf, String), Instant>>,
 > = std::sync::OnceLock::new();
 
 /// Wall-clock cancel for the bounded project-load wait.
@@ -538,8 +538,9 @@ pub async fn prewarm_server(
         return Some(existing); // already warm
     }
     let key = (cwd.to_path_buf(), name.to_string());
-    let attempts = PREWARM_ATTEMPTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    if let Ok(mut guard) = attempts.lock() {
+    let attempts = PREWARM_ATTEMPTS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+    {
+        let mut guard = attempts.lock();
         if let Some(last) = guard.get(&key) {
             if last.elapsed() < PREWARM_RETRY_COOLDOWN {
                 return None;

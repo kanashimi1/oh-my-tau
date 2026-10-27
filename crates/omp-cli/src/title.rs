@@ -3,10 +3,10 @@
 //! prefilter, `normalizeGeneratedTitle` caps and casing reconciliation) plus the
 //! terminal title write (`\x1b]0;…\x07`, `π: <label>` shape).
 
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::Path;
-use std::sync::Mutex;
 
 use pa_types::ai::{
     AssistantContentBlock, Context, Message, Model, StopReason, UserContent, UserMessage,
@@ -575,9 +575,7 @@ pub fn set_terminal_title(title: &str) {
     }
     let next = sanitize_terminal_title_part(Some(title))
         .unwrap_or_else(|| DEFAULT_TERMINAL_TITLE.to_string());
-    let mut last = LAST_TERMINAL_TITLE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut last = LAST_TERMINAL_TITLE.lock();
     if last.as_deref() == Some(next.as_str()) {
         return;
     }

@@ -607,7 +607,7 @@ fn cap_artifact_body(text: &str, max_bytes: usize) -> Cow<'_, str> {
 
 /// Serializes tests that install the process-global session file.
 #[cfg(test)]
-pub(crate) static SESSION_FILE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static SESSION_FILE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Cut `s` to at most `max` bytes at a char boundary (display-only column cap).
 #[must_use]

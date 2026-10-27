@@ -193,20 +193,20 @@ async fn compact_runs_summary_flow_through_injected_completer() {
     assert!(!prep.is_split_turn);
     assert_eq!(prep.tokens_before, 110);
 
-    let seen = std::sync::Mutex::new(Vec::<SummaryRequest>::new());
+    let seen = parking_lot::Mutex::new(Vec::<SummaryRequest>::new());
     let completer = |req: SummaryRequest| {
         let text = if req.kind == SummaryKind::CompactionShortSummary {
             "I did things."
         } else {
             "## Goal\nthe goal"
         };
-        seen.lock().unwrap().push(req);
+        seen.lock().push(req);
         async move { Ok(reply(text)) }
     };
     let params = SummaryParams::new(42);
     let result = compact(&completer, &prep, &params).await.unwrap();
 
-    let seen = seen.into_inner().unwrap();
+    let seen = seen.into_inner();
     assert_eq!(
         seen.iter().map(|r| r.kind).collect::<Vec<_>>(),
         [

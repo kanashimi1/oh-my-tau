@@ -3,11 +3,12 @@
 //! channels (a slow endpoint never blocks the others), urgent priority
 //! first on replay, at-least-once with client-side dedup on `message_id`.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -182,10 +183,7 @@ fn sweep_deadlines(server: &Arc<Server>) -> Result<()> {
 impl Registry {
     /// Whether `agent` currently holds a live registered endpoint.
     fn has_endpoint(&self, agent: &str) -> bool {
-        self.endpoints
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(agent)
+        self.endpoints.lock().contains_key(agent)
     }
 }
 
@@ -196,13 +194,7 @@ impl Registry {
 /// queued (store-only or handed to the async pane delivery).
 fn dispatch(server: &Arc<Server>, env: Envelope) -> bool {
     let recipient = env.recipient.clone();
-    if let Some(ep) = server
-        .registry
-        .endpoints
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&recipient)
-    {
+    if let Some(ep) = server.registry.endpoints.lock().get(&recipient) {
         match ep.deliver_tx.try_send(Arc::new(env.clone())) {
             Ok(()) => {
                 let _ = server
@@ -228,10 +220,7 @@ fn dispatch(server: &Arc<Server>, env: Envelope) -> bool {
 }
 
 fn drop_ep(registry: &Registry, agent: &str, gen: u64) {
-    let mut eps = registry
-        .endpoints
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut eps = registry.endpoints.lock();
     if eps.get(agent).is_some_and(|e| e.gen == gen) {
         eps.remove(agent);
     }
@@ -368,18 +357,13 @@ async fn dispatch_request(
                 .hello(&agent, last_seq, crate::now_ms())
                 .map_err(|e| invalid(format!("hello: {e}")))?;
             let gen = server.registry.gens.fetch_add(1, Ordering::Relaxed);
-            server
-                .registry
-                .endpoints
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(
-                    agent.clone(),
-                    Endpoint {
-                        deliver_tx: deliver_tx.clone(),
-                        gen,
-                    },
-                );
+            server.registry.endpoints.lock().insert(
+                agent.clone(),
+                Endpoint {
+                    deliver_tx: deliver_tx.clone(),
+                    gen,
+                },
+            );
             *registered = Some((agent.clone(), gen));
             // Replay undelivered/unacked from last_seq, urgent first.
             let backlog = server
@@ -708,10 +692,7 @@ pub fn spawn_detached(hub: &HubDir, exe: &Path) -> Result<()> {
         .spawn()
         .with_context(|| format!("spawn {} hub serve", exe.display()))?;
     // Keep the child handle alive so the client does not reap it.
-    SPAWNED_CHILDREN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(child);
+    SPAWNED_CHILDREN.lock().push(child);
     Ok(())
 }
 

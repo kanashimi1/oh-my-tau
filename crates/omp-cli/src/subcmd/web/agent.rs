@@ -9,11 +9,12 @@
 //! dialogs (replayed on attach) and a session summary refreshed through the
 //! child's own `get_state`.
 
+use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context as _, Result};
@@ -35,8 +36,8 @@ const RESUME_ID: &str = "__web_resume";
 const DIALOG_METHODS: &[&str] = &["select", "confirm", "input", "editor", "ask"];
 const STDERR_TAIL: usize = 40;
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
+    m.lock()
 }
 
 /// Push (`frame`) or resolve (`None`) a pending dialog and keep

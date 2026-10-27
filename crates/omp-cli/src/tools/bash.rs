@@ -11,8 +11,9 @@
 //! `read proc://<name>`, and the child is killed when the session's job
 //! registry is dropped (omp stops owned services at session end).
 
+use parking_lot::Mutex;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -171,7 +172,7 @@ async fn run(
                 let n = n.context("reading command output")?;
                 if n == 0 { break; }
                 if let Some(tap) = &tap {
-                    let mut t = tap.lock().expect("job output tap poisoned");
+                    let mut t = tap.lock();
                     t.push_str(&String::from_utf8_lossy(&chunk[..n]));
                     // Bound the tap: proc reads only need the recent window.
                     if t.len() > RETAIN_BYTES {
@@ -628,7 +629,7 @@ async fn start_service(
     };
     let service = registry.insert_service(service);
     let inner = registry.inner.clone();
-    let registry_liveness: std::sync::Weak<std::sync::Mutex<super::jobs::JobsInner>> =
+    let registry_liveness: std::sync::Weak<parking_lot::Mutex<super::jobs::JobsInner>> =
         Arc::downgrade(&inner);
 
     // Supervisor: drains output (log capture + readiness buffer), polls the
@@ -651,8 +652,8 @@ async fn start_service(
                         Ok(n) => {
                             let text = String::from_utf8_lossy(&chunk[..n]).into_owned();
                             {
-                                let svc = service.lock().expect("service poisoned");
-                                let mut out = svc.output.lock().expect("service output poisoned");
+                                let svc = service.lock();
+                                let mut out = svc.output.lock();
                                 out.push_str(&text);
                                 if out.len() > RETAIN_BYTES {
                                     let cut = out.len() - RETAIN_BYTES / 2;
@@ -673,7 +674,7 @@ async fn start_service(
                 }
                 _ = tick.tick() => {
                     {
-                        let svc = service.lock().expect("service poisoned");
+                        let svc = service.lock();
                         if svc.kill_requested || registry_liveness.upgrade().is_none() {
                             let _ = child.start_kill();
                         }
@@ -689,7 +690,7 @@ async fn start_service(
             }
             let ready_now = log_ready && port_ready;
             if ready_now {
-                let mut svc = service.lock().expect("service poisoned");
+                let mut svc = service.lock();
                 if svc.state == ServiceState::Starting {
                     svc.state = ServiceState::Ready;
                     svc.ready_at = Some(Instant::now());
@@ -701,7 +702,7 @@ async fn start_service(
         }
         // EOF or a fatal read error: settle from the child's exit status.
         let status = child.wait().await;
-        let mut svc = service.lock().expect("service poisoned");
+        let mut svc = service.lock();
         svc.exited_at = Some(Instant::now());
         svc.pid = None;
         match status {
@@ -736,13 +737,13 @@ async fn start_service(
         () = tokio::time::sleep(Duration::from_secs_f64(timeout_secs)) => true,
         () = signal.aborted() => {
             if let Some(svc) = registry.service(name) {
-                svc.lock().expect("service poisoned").kill_requested = true;
+                svc.lock().kill_requested = true;
             }
             bail!("Command aborted");
         }
     };
     let svc_arc = registry.service(name).expect("service registered");
-    let svc = svc_arc.lock().expect("service poisoned");
+    let svc = svc_arc.lock();
     Ok(ServiceOutcome {
         state: svc.state,
         pid: svc.pid,
@@ -1058,11 +1059,8 @@ mod tests {
         );
         // The service keeps running after the timeout (omp returns readyTimedOut).
         let svc = env.jobs.service("svc-slow").unwrap();
-        assert_eq!(
-            svc.lock().unwrap().state,
-            super::super::jobs::ServiceState::Starting
-        );
-        assert!(svc.lock().unwrap().pid.is_some());
+        assert_eq!(svc.lock().state, super::super::jobs::ServiceState::Starting);
+        assert!(svc.lock().pid.is_some());
     }
 
     #[tokio::test]
@@ -1196,14 +1194,7 @@ mod tests {
             )
             .await
             .unwrap();
-            pid = env
-                .jobs
-                .service("svc-drop")
-                .unwrap()
-                .lock()
-                .unwrap()
-                .pid
-                .unwrap();
+            pid = env.jobs.service("svc-drop").unwrap().lock().pid.unwrap();
             assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
         } // registry dropped: the supervisor must kill the child.
         let mut gone = false;

@@ -2,8 +2,8 @@
 //! timestamped state log, dedup on `message_id`, claims with monotonic
 //! fencing tokens, and endpoint bookkeeping. Survives hub restarts.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -153,8 +153,8 @@ impl Store {
         &self.db_path
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Connection> {
+        self.conn.lock()
     }
 
     /// Store an envelope: dedup on `message_id`, assign the per-recipient

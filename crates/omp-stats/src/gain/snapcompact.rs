@@ -2,10 +2,10 @@
 //! project filtering in `gain-aggregator.ts`). The JSONL lives next to
 //! `stats.db`; a missing file is zero records.
 
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
@@ -80,7 +80,7 @@ pub(crate) fn read_snapcompact_records(
 
     let cache_key = format!("{}:{}:{}", file_path.display(), mtime_ms(&meta), meta.len());
     let parsed: Vec<SnapcompactRecord> = {
-        let mut cache = SNAPCOMPACT_CACHE.lock().expect("snapcompact cache lock");
+        let mut cache = SNAPCOMPACT_CACHE.lock();
         if cache.as_ref().is_some_and(|c| c.key == cache_key) {
             cache.as_ref().expect("checked").records.clone()
         } else {

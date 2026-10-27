@@ -65,7 +65,7 @@ fn watch_snapshot(env: &Env) -> Vec<Watched> {
         out.push(Watched { id, finished });
     }
     for (name, service) in env.jobs.services_sorted() {
-        let service = service.lock().expect("service poisoned");
+        let service = service.lock();
         let finished = match service.state {
             ServiceState::Exited => Some("exited".to_string()),
             ServiceState::Failed => Some("failed".to_string()),
@@ -199,7 +199,7 @@ Other agents' results and messages arrive on their own."
 fn has_live_service(env: &Env) -> bool {
     env.jobs.services_sorted().iter().any(|(_, service)| {
         !matches!(
-            service.lock().expect("service poisoned").state,
+            service.lock().state,
             ServiceState::Exited | ServiceState::Failed
         )
     })

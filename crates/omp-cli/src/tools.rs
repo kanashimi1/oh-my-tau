@@ -50,34 +50,26 @@ use pi_edit::{EditMode, EditStore};
 use serde_json::{Value, json};
 
 /// Job registry of the most recently built tool set (see [`take_last_jobs`]).
-static LAST_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mutex::new(None);
+static LAST_JOBS: parking_lot::Mutex<Option<jobs::JobRegistry>> = parking_lot::Mutex::new(None);
 /// The agent session's job registry (see [`set_session_jobs`]).
-static SESSION_JOBS: std::sync::Mutex<Option<jobs::JobRegistry>> = std::sync::Mutex::new(None);
+static SESSION_JOBS: parking_lot::Mutex<Option<jobs::JobRegistry>> = parking_lot::Mutex::new(None);
 
 /// The registry of the tool set built last, for the caller that builds the session's tools to
 /// capture right after (before anything else builds a throwaway set).
 #[must_use]
 pub fn take_last_jobs() -> Option<jobs::JobRegistry> {
-    LAST_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    LAST_JOBS.lock().clone()
 }
 
 /// Publish the agent session's job registry (`ctx.getAsyncJobSnapshot()`).
 pub fn set_session_jobs(jobs: Option<jobs::JobRegistry>) {
-    *SESSION_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = jobs;
+    *SESSION_JOBS.lock() = jobs;
 }
 
 /// The agent session's job registry, once published.
 #[must_use]
 pub fn session_jobs() -> Option<jobs::JobRegistry> {
-    SESSION_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    SESSION_JOBS.lock().clone()
 }
 
 /// Per-session state shared by the tools: working directory, the hashline
@@ -307,9 +299,7 @@ impl AgentTool for DedupTool {
 #[allow(clippy::too_many_lines)] // the tool registry table; order mirrors omp's builtinTools
 pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>> {
     let env = Arc::new(Env::with_mode(cwd, edit_mode));
-    *LAST_JOBS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(env.jobs.clone());
+    *LAST_JOBS.lock() = Some(env.jobs.clone());
     let mk = |name: &'static str,
               description: String,
               schema: Value,

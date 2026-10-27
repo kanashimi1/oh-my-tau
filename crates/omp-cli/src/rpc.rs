@@ -19,11 +19,12 @@
 //! - `{"type":"clipboard_copy","text":…}` — `/copy` picked `text`; the client puts it on its
 //!   clipboard (omp-rs extension; the TUI host copies itself).
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 use anyhow::{Context as _, Result};
 use pa_agent::abort::AbortController;
@@ -50,8 +51,8 @@ pub mod slash;
 
 const MAX_FRAME_BYTES: u64 = 1_048_576;
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
+    m.lock()
 }
 
 /// Resolve a pending ask-UI dialog (`RpcAskUi` waiter) by frame id; no-op

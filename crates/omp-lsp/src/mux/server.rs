@@ -11,11 +11,12 @@
 //! environment for tests (`OMP_LSP_MUX_SERVER_LINGER_MS`,
 //! `OMP_LSP_MUX_IDLE_MS`).
 
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -125,8 +126,8 @@ fn parse_progress(params: Option<&Value>) -> Option<Value> {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
+    m.lock()
 }
 
 /// A server request/notification destined for one specific link, tracked so a
@@ -1068,19 +1069,15 @@ async fn stop_server(server: &Arc<ServerInstance>) {
     server
         .write(&json!({ "jsonrpc": "2.0", "method": "exit" }))
         .await;
-    if let Ok(mut guard) = server.child.lock() {
-        if let Some(child) = guard.as_mut() {
-            let _ = child.start_kill();
-        }
+    if let Some(child) = server.child.lock().as_mut() {
+        let _ = child.start_kill();
     }
 }
 
 fn kill_server(state: &Arc<MuxState>, server: &Arc<ServerInstance>) {
     server.stopping.store(true, Ordering::SeqCst);
-    if let Ok(mut guard) = server.child.lock() {
-        if let Some(child) = guard.as_mut() {
-            let _ = child.start_kill();
-        }
+    if let Some(child) = server.child.lock().as_mut() {
+        let _ = child.start_kill();
     }
     server_exited(state, server);
 }

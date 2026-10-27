@@ -1,8 +1,9 @@
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -36,7 +37,7 @@ impl PendingTable {
 type Pending = Arc<Mutex<PendingTable>>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    m.lock()
 }
 
 /// One transport generation: the writer queue plus the waiters of requests
@@ -382,10 +383,7 @@ impl ExtHost {
     /// extension's load-time requests are not lost to the "not supported"
     /// race (`ReviewWave3`). Without a taker, messages keep buffering.
     pub fn take_incoming(&self) -> Option<mpsc::UnboundedReceiver<HostMessage>> {
-        let mut inc = self
-            .incoming
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut inc = self.incoming.lock();
         let rx = inc.rx.take()?;
         if let Delivery::Pending(buf) = &mut inc.delivery {
             let buffered: Vec<_> = buf.drain(..).collect();
@@ -500,10 +498,7 @@ impl ExtHost {
             .filter(|(_, n)| **n > 0)
             .map(|(ty, _)| ty.clone())
             .collect();
-        *self
-            .subscribed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(subscribed);
+        *self.subscribed.lock() = Some(subscribed);
         Ok(result)
     }
 
@@ -511,21 +506,14 @@ impl ExtHost {
     /// `ctx`, so handlers see the TS-live `ctx` (branch, context usage, idle state, ...). It never
     /// forces an emit that `has_handlers` would skip.
     pub fn set_ctx_provider(&self, f: Option<CtxProvider>) {
-        *self
-            .ctx_provider
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = f;
+        *self.ctx_provider.lock() = f;
     }
 
     fn provided_ctx(&self, ctx: Option<Value>, event_type: &str) -> Option<Value> {
         if ctx.is_some() {
             return ctx;
         }
-        let f = self
-            .ctx_provider
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let f = self.ctx_provider.lock().clone();
         f.and_then(|f| f(event_type))
     }
 
@@ -566,10 +554,7 @@ impl ExtHost {
     /// expensive payloads that `emit` would discard anyway.
     #[must_use]
     pub fn has_handlers(&self, event_type: &str) -> bool {
-        let subscribed = self
-            .subscribed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let subscribed = self.subscribed.lock();
         match subscribed.as_ref() {
             Some(s) => event_type == "session_shutdown" || s.contains(event_type),
             None => true,
@@ -1042,10 +1027,7 @@ fn route(msg: &Value, pending: &Pending, host: Option<Arc<ExtHost>>) {
                 params,
             };
             let Some(host) = host else { return };
-            let mut inc = host
-                .incoming
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut inc = host.incoming.lock();
             match &mut inc.delivery {
                 Delivery::Pending(buf) => buf.push_back(note),
                 Delivery::Live => {
@@ -1063,10 +1045,7 @@ fn route(msg: &Value, pending: &Pending, host: Option<Arc<ExtHost>>) {
             // One lock covers check-and-deliver: a request can no longer slip
             // between "no consumer yet" and the channel send.
             let delivered = {
-                let mut inc = host
-                    .incoming
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut inc = host.incoming.lock();
                 match &mut inc.delivery {
                     Delivery::Pending(buf) => {
                         buf.push_back(req);

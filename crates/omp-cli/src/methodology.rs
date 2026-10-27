@@ -3,10 +3,11 @@
 //! `LlmContext` is filtered, so deferred tools remain executable without changing
 //! the registered tool set or schemas between requests.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pa_agent::stream::{LlmContext, StreamFn, ToolDefinition};
 use pa_agent::types::Model;
@@ -54,9 +55,7 @@ fn audit(context: &LlmContext) {
     let Ok(path) = std::env::var("METHOD_AUDIT_LOG") else {
         return;
     };
-    let mut guard = AUDIT
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = AUDIT.lock();
     let state = guard.get_or_insert_with(AuditState::default);
     let messages: Vec<String> = context
         .messages

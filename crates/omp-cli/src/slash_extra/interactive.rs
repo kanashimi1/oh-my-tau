@@ -814,7 +814,7 @@ pub async fn jobs_command(rt: &Arc<Runtime>, full: bool) -> Outcome {
                 .result
                 .clone()
                 .or_else(|| job.error.clone())
-                .unwrap_or_else(|| job.output.lock().map(|o| o.clone()).unwrap_or_default());
+                .unwrap_or_else(|| job.output.lock().clone());
             let report = format!("Job {id}: {}\n{state}\n\n{}", job.command, out.trim_end());
             rows.push((
                 Choice::with(format!("{id}  {}", headline(&job.command, 70)), state),
@@ -822,7 +822,7 @@ pub async fn jobs_command(rt: &Arc<Runtime>, full: bool) -> Outcome {
             ));
         }
         for (name, service) in reg.services_sorted() {
-            let Ok(s) = service.lock() else { continue };
+            let s = service.lock();
             let state = format!(
                 "service · {}{}",
                 s.state.as_str(),

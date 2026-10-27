@@ -7,9 +7,9 @@
 
 #![allow(clippy::cast_precision_loss)]
 
+use parking_lot::Mutex;
 use std::fmt::Write as _;
 use std::io::{IsTerminal, Write as _};
-use std::sync::Mutex;
 
 use anyhow::{bail, Context as _, Result};
 use omp_stats::server::{
@@ -470,9 +470,7 @@ pub fn launch_dashboard(port: u16, host: &str) -> Result<(String, String)> {
     // and the broker usage source.
     super::stats_judge::register();
     super::usage_broker::register();
-    let mut active = ACTIVE_SERVER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut active = ACTIVE_SERVER.lock();
     let mut ignored = false;
     let handle = if let Some(handle) = active.as_ref() {
         ignored = port != handle.port || host != handle.hostname;

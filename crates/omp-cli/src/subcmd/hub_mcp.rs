@@ -14,9 +14,10 @@
 //! as `payload_ref {path, sha256, bytes}` (hash computed here), small bodies
 //! inline. Inline `payload` over 8 KiB is refused (use `payload_path`).
 
+use parking_lot::Mutex;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use omp_hub::{Envelope, HubClient, HubDir, PayloadRef};
@@ -95,7 +96,6 @@ impl McpState {
         let name = self
             .client_name
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
         format!("mcp:{name}")
@@ -197,10 +197,7 @@ fn remember_client_name(state: &Arc<McpState>, params: &Value) {
         .and_then(Value::as_str)
         .map(ToOwned::to_owned);
     if let Some(name) = name {
-        *state
-            .client_name
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(name);
+        *state.client_name.lock() = Some(name);
     }
 }
 
@@ -210,7 +207,6 @@ fn initialize_result(state: &Arc<McpState>) -> Value {
     let client_name = state
         .client_name
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
     json!({
@@ -668,11 +664,11 @@ mod tests {
     fn identity_precedence_flag_env_initialize() {
         // --agent wins over remembered client name.
         let st = state(Some("flag-agent"));
-        *st.client_name.lock().unwrap() = Some("claude".to_string());
+        *st.client_name.lock() = Some("claude".to_string());
         assert_eq!(st.identity(), "flag-agent");
         // No flag: initialize name is used.
         let st = state(None);
-        *st.client_name.lock().unwrap() = Some("claude".to_string());
+        *st.client_name.lock() = Some("claude".to_string());
         assert_eq!(st.identity(), "mcp:claude");
         // Pre-initialize fallback.
         let st = state(None);

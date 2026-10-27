@@ -93,13 +93,13 @@ struct Slot {
     judge: Option<Arc<dyn StatsJudge>>,
 }
 
-static SLOT: Mutex<Slot> = Mutex::new(Slot {
+static SLOT: parking_lot::Mutex<Slot> = parking_lot::Mutex::new(Slot {
     provider: None,
     judge: None,
 });
 
-fn lock_slot() -> MutexGuard<'static, Slot> {
-    SLOT.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock_slot() -> parking_lot::MutexGuard<'static, Slot> {
+    SLOT.lock()
 }
 
 /// Register (or replace) the host judge; `None` removes it.

@@ -2,8 +2,8 @@
 //! `CredentialPool.snapshot`). Every call opens its own short-lived connection: SQLite in WAL
 //! mode with a busy timeout, shared with omp-rs clients refreshing locally and other processes.
 
+use parking_lot::{Mutex, MutexGuard};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -108,10 +108,7 @@ pub struct Block {
 
 impl Store {
     fn conn(&self) -> Result<MutexGuard<'_, Connection>> {
-        Ok(self
-            .conn
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner))
+        Ok(self.conn.lock())
     }
 
     /// Open the store, creating what TS `SqliteAuthCredentialStore` would on a fresh database

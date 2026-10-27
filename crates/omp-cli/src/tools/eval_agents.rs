@@ -19,12 +19,13 @@
 //! ([`crate::agent::Target`], installed by [`set_runtime_hooks`]) or a resolved
 //! `@smol`/`@slow` role.
 
+use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::time::{Duration, Instant};
 
 use omp_providers::{AgentDir, ResolvedModel};
@@ -88,14 +89,14 @@ static HOOKS: OnceLock<RwLock<Option<EvalRuntimeHooks>>> = OnceLock::new();
 /// startup, right after [`crate::agent::build_agent`] returns its target.
 pub fn set_runtime_hooks(target: crate::agent::Target) {
     let slot = HOOKS.get_or_init(|| RwLock::new(None));
-    *slot.write().expect("eval runtime hooks lock") = Some(EvalRuntimeHooks { target });
+    *slot.write() = Some(EvalRuntimeHooks { target });
 }
 
-fn hooks() -> Result<std::sync::RwLockReadGuard<'static, Option<EvalRuntimeHooks>>, String> {
+fn hooks() -> Result<parking_lot::RwLockReadGuard<'static, Option<EvalRuntimeHooks>>, String> {
     HOOKS
         .get()
         .ok_or_else(|| "eval runtime is not initialized (set_runtime_hooks not called)".to_string())
-        .map(|slot| slot.read().expect("eval runtime hooks lock"))
+        .map(|slot| slot.read())
 }
 
 /// The live provider target (TS `session.getActiveModel`-backed `default` tier).
@@ -104,7 +105,7 @@ fn provider_target() -> Result<crate::adapter::ProviderTarget, String> {
     let hooks = guard.as_ref().ok_or_else(|| {
         "eval runtime is not initialized (set_runtime_hooks not called)".to_string()
     })?;
-    let target = hooks.target.read().expect("provider target lock").clone();
+    let target = hooks.target.read().clone();
     target.ok_or_else(|| "completion() has no provider target set.".to_string())
 }
 
@@ -208,11 +209,11 @@ impl Handle {
     }
 
     fn is_settled(&self) -> bool {
-        self.inner.lock().expect("eval handle lock").settled
+        self.inner.lock().settled
     }
 
     fn run_ctl(&self) -> Option<Arc<dyn RunCtl>> {
-        self.run.lock().expect("eval handle lock").clone()
+        self.run.lock().clone()
     }
 
     /// Settle once: the first terminal state wins (a `cancel()` settles the
@@ -225,7 +226,7 @@ impl Handle {
         error: Option<String>,
     ) {
         {
-            let mut inner = self.inner.lock().expect("eval handle lock");
+            let mut inner = self.inner.lock();
             if inner.settled {
                 return;
             }
@@ -241,7 +242,7 @@ impl Handle {
     /// TS `EvalHandleSnapshot` (`handle-bridge.ts`): `{kind, id, status}` plus
     /// `text`/`data` on completion and `error` on failure/cancellation.
     fn snapshot(&self) -> Value {
-        let inner = self.inner.lock().expect("eval handle lock");
+        let inner = self.inner.lock();
         let mut snap = json!({"kind": self.kind, "id": self.id, "status": inner.status.as_str()});
         if let Some(text) = &inner.text {
             snap["text"] = Value::String(text.clone());
@@ -296,18 +297,13 @@ fn lookup_handle(kind: &str, id: &str) -> Result<Arc<Handle>, String> {
     } else {
         &COMPLETION_HANDLES
     };
-    registry
-        .lock()
-        .expect("eval handles lock")
-        .get(id)
-        .cloned()
-        .ok_or_else(|| {
-            if kind == "agent" {
-                format!("unknown agent handle {id}; result expired — read agent://{id}")
-            } else {
-                format!("unknown completion handle {id}; result expired")
-            }
-        })
+    registry.lock().get(id).cloned().ok_or_else(|| {
+        if kind == "agent" {
+            format!("unknown agent handle {id}; result expired — read agent://{id}")
+        } else {
+            format!("unknown completion handle {id}; result expired")
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -413,11 +409,7 @@ pub(crate) async fn deliver_from_peer(
 }
 
 fn lookup_agent(id: &str) -> Option<Arc<Handle>> {
-    AGENT_HANDLES
-        .lock()
-        .expect("eval handles lock")
-        .get(id)
-        .cloned()
+    AGENT_HANDLES.lock().get(id).cloned()
 }
 
 /// How long a local `write agent://<id>` waits for an unknown id to appear.
@@ -426,7 +418,6 @@ const UNKNOWN_ID_GRACE: Duration = Duration::from_secs(2);
 fn has_live_agents() -> bool {
     AGENT_HANDLES
         .lock()
-        .expect("eval handles lock")
         .values()
         .any(|handle| !handle.is_settled())
 }
@@ -465,7 +456,6 @@ async fn deliver_local(to: &str, content: &str, exclude: Option<&str>) -> Result
 async fn broadcast_message(content: &str, exclude: Option<&str>) -> Result<String, String> {
     let mut targets: Vec<(String, Arc<Handle>)> = AGENT_HANDLES
         .lock()
-        .expect("eval handles lock")
         .iter()
         .filter(|(id, handle)| !handle.is_settled() && Some(id.as_str()) != exclude)
         .map(|(id, handle)| (id.clone(), handle.clone()))
@@ -613,7 +603,7 @@ static EVAL_SUBAGENT_OUTPUT: AtomicU64 = AtomicU64::new(0);
 /// resolves to the run output once the child settled (usage recorded).
 fn launch_agent(handle: &Handle, spec: omp_task::TaskSpec, launcher: &dyn Launcher) -> RunFuture {
     let (run, done) = launcher.launch(spec);
-    *handle.run.lock().expect("eval handle lock") = Some(run.clone());
+    *handle.run.lock() = Some(run.clone());
     Box::pin(async move {
         let output = done.await;
         EVAL_SUBAGENT_OUTPUT.fetch_add(run.output_tokens(), Ordering::Relaxed);
@@ -786,10 +776,7 @@ pub(crate) async fn run_agent_with(
         .push((super::a2a::SELF_ENV.to_string(), id.clone()));
 
     let handle = Handle::new("agent", id.clone());
-    AGENT_HANDLES
-        .lock()
-        .expect("eval handles lock")
-        .insert(id.clone(), handle.clone());
+    AGENT_HANDLES.lock().insert(id.clone(), handle.clone());
 
     let run = launch_agent(&handle, spec, &**launcher);
     tokio::spawn(async move {
@@ -1093,10 +1080,7 @@ async fn run_completion(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
 
     let id = mint_id("cmp");
     let handle = Handle::new("completion", id.clone());
-    COMPLETION_HANDLES
-        .lock()
-        .expect("eval handles lock")
-        .insert(id.clone(), handle.clone());
+    COMPLETION_HANDLES.lock().insert(id.clone(), handle.clone());
 
     let cell_signal = ctx.signal.clone();
     let cancel = handle.cancel.clone();
@@ -1392,7 +1376,7 @@ struct JudgmentBatchRun {
 impl JudgmentBatchRun {
     /// TS `JudgmentBatchStatus`.
     fn status(&self) -> Value {
-        let inner = self.inner.lock().expect("judge batch lock");
+        let inner = self.inner.lock();
         let mut status = json!({
             "id": self.id,
             "intent": self.intent,
@@ -1418,7 +1402,7 @@ impl JudgmentBatchRun {
         let deadline = timeout.map(|timeout| Instant::now() + timeout);
         loop {
             {
-                let inner = self.inner.lock().expect("judge batch lock");
+                let inner = self.inner.lock();
                 if inner.cursor < inner.settled.len() || !inner.running {
                     break;
                 }
@@ -1438,7 +1422,7 @@ impl JudgmentBatchRun {
             notified.as_mut().enable();
             // Re-check after arming so a settle that raced the arm is seen.
             {
-                let inner = self.inner.lock().expect("judge batch lock");
+                let inner = self.inner.lock();
                 if inner.cursor < inner.settled.len() || !inner.running {
                     break;
                 }
@@ -1448,7 +1432,7 @@ impl JudgmentBatchRun {
         // First item is in: hold the settle window once for near-simultaneous
         // settles, then hand out everything past the cursor.
         let have = {
-            let inner = self.inner.lock().expect("judge batch lock");
+            let inner = self.inner.lock();
             inner.cursor < inner.settled.len()
         };
         if have {
@@ -1457,7 +1441,7 @@ impl JudgmentBatchRun {
             notified.as_mut().enable();
             let _ = tokio::time::timeout(DRAIN_SETTLE_WINDOW, notified).await;
         }
-        let mut inner = self.inner.lock().expect("judge batch lock");
+        let mut inner = self.inner.lock();
         let items: Vec<BatchItem> = inner.settled[inner.cursor..].to_vec();
         inner.cursor = inner.settled.len();
         items
@@ -1466,7 +1450,7 @@ impl JudgmentBatchRun {
     /// Raise the wholesale run error once the cursor is exhausted (TS
     /// `drain()` rejects with `#error` after delivering every item).
     fn drain_error(&self) -> Option<String> {
-        let inner = self.inner.lock().expect("judge batch lock");
+        let inner = self.inner.lock();
         if inner.cursor >= inner.settled.len() && !inner.running {
             inner.error.clone()
         } else {
@@ -1590,10 +1574,7 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
                 cancel: CancellationToken::new(),
                 started: Instant::now(),
             });
-            JUDGE_BATCHES
-                .lock()
-                .expect("judge batches lock")
-                .insert(batch.id.clone(), batch.clone());
+            JUDGE_BATCHES.lock().insert(batch.id.clone(), batch.clone());
             start_batch(
                 batch.clone(),
                 items,
@@ -1650,7 +1631,7 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
         }
         "results" => {
             let batch = require_batch(record)?;
-            let inner = batch.inner.lock().expect("judge batch lock");
+            let inner = batch.inner.lock();
             let mut results = Map::new();
             for item in &inner.settled {
                 if let Some(answers) = &item.answers {
@@ -1665,7 +1646,7 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
         }
         "failed" => {
             let batch = require_batch(record)?;
-            let inner = batch.inner.lock().expect("judge batch lock");
+            let inner = batch.inner.lock();
             let mut failed = Map::new();
             for item in &inner.settled {
                 if let Some(error) = &item.error {
@@ -1680,7 +1661,7 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
         }
         "cancel" => {
             let batch = require_batch(record)?;
-            let was_running = batch.inner.lock().expect("judge batch lock").running;
+            let was_running = batch.inner.lock().running;
             batch.cancel.cancel();
             Ok(json!({"cancelled": was_running}))
         }
@@ -1691,12 +1672,11 @@ async fn run_judge_batch_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> 
                 .ok_or_else(|| batch_invalid("op requires a batch id"))?;
             let batch = JUDGE_BATCHES
                 .lock()
-                .expect("judge batches lock")
                 .get(id)
                 .cloned()
                 .ok_or_else(|| format!("unknown judge_batch \"{id}\""))?;
             batch.cancel.cancel();
-            JUDGE_BATCHES.lock().expect("judge batches lock").remove(id);
+            JUDGE_BATCHES.lock().remove(id);
             Ok(json!({"closed": true}))
         }
         other => Err(batch_invalid(&format!("unknown op \"{other}\""))),
@@ -1711,7 +1691,6 @@ fn require_batch(record: &Map<String, Value>) -> Result<Arc<JudgmentBatchRun>, S
         .ok_or_else(|| batch_invalid("op requires a batch id"))?;
     JUDGE_BATCHES
         .lock()
-        .expect("judge batches lock")
         .get(id)
         .cloned()
         .ok_or_else(|| format!("unknown judge_batch \"{id}\""))
@@ -1759,7 +1738,7 @@ fn start_batch(
                 )
                 .await;
                 {
-                    let mut inner = batch.inner.lock().expect("judge batch lock");
+                    let mut inner = batch.inner.lock();
                     if let Some(model) = &settled.model {
                         inner.last_model = Some(model.clone());
                     }
@@ -1773,7 +1752,7 @@ fn start_batch(
             // Last worker out closes the run and applies the minOk gate (TS
             // `#finish`): enough items judged ok, else the run dies wholesale.
             if finished.fetch_add(1, Ordering::Relaxed) + 1 == worker_count as u64 {
-                let mut inner = batch.inner.lock().expect("judge batch lock");
+                let mut inner = batch.inner.lock();
                 inner.running = false;
                 let ok = inner.settled.len() - inner.failed;
                 if ok < batch.min_ok {
@@ -1855,7 +1834,7 @@ async fn judge_one_batch_item(
                     .and_then(Value::as_object)
                     .cloned()
                     .unwrap_or_default();
-                batch.inner.lock().expect("judge batch lock").cost += result.usage.cost;
+                batch.inner.lock().cost += result.usage.cost;
                 return BatchItem {
                     key: input.key.clone(),
                     answers: Some(answers),
@@ -2197,10 +2176,7 @@ static WORKPOOLS: LazyLock<Mutex<HashMap<String, Arc<WorkPool>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn agent_id_taken(id: &str) -> bool {
-    AGENT_HANDLES
-        .lock()
-        .expect("eval handles lock")
-        .contains_key(id)
+    AGENT_HANDLES.lock().contains_key(id)
 }
 
 /// A `task` child's entry in the shared agent registry (the one
@@ -2215,7 +2191,7 @@ impl TaskSlot {
     /// Reserve `id` in the registry; fails when another live or finished
     /// agent already owns it.
     pub(crate) fn claim(id: &str) -> Result<Self, String> {
-        let mut registry = AGENT_HANDLES.lock().expect("eval handles lock");
+        let mut registry = AGENT_HANDLES.lock();
         if registry.contains_key(id) {
             return Err(format!(
                 "agent id `{id}` is already in use; pick a different `name`."
@@ -2235,7 +2211,7 @@ impl TaskSlot {
     }
 
     fn attach_ctl(&self, run: Arc<dyn RunCtl>) {
-        *self.handle.run.lock().expect("eval handle lock") = Some(run);
+        *self.handle.run.lock() = Some(run);
     }
 
     /// Mark the handle settled from the child's final output.
@@ -2259,7 +2235,7 @@ impl Drop for TaskSlot {
             Some(AGENT_CANCELLED_TEXT.to_string()),
         );
         self.handle.mark_run_finished();
-        let mut registry = AGENT_HANDLES.lock().expect("eval handles lock");
+        let mut registry = AGENT_HANDLES.lock();
         if registry
             .get(&self.id)
             .is_some_and(|current| Arc::ptr_eq(current, &self.handle))
@@ -2392,7 +2368,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
     if starts.is_empty() {
         return;
     }
-    let agent = pool.state.lock().expect("workpool lock").agent.clone();
+    let agent = pool.state.lock().agent.clone();
     for start in starts {
         let prompt = match &pool.context {
             Some(context) => format!("{context}\n\n{}", start.prompt),
@@ -2431,7 +2407,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
         // overwritten and orphaned from status/cancel.
         let worker_id = start.worker_id.clone();
         let inserted = {
-            let mut registry = AGENT_HANDLES.lock().expect("eval handles lock");
+            let mut registry = AGENT_HANDLES.lock();
             if registry.contains_key(&worker_id) {
                 false
             } else {
@@ -2447,12 +2423,10 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
                 Some(format!("worker id {worker_id} is already registered; refusing to overwrite its agent handle")),
             );
             let (status, text) = turn_outcome(&handle);
-            let next = pool.state.lock().expect("workpool lock").finish_turn(
-                start.batch,
-                status,
-                text,
-                &agent_id_taken,
-            );
+            let next = pool
+                .state
+                .lock()
+                .finish_turn(start.batch, status, text, &agent_id_taken);
             start_turns(&pool, next);
             continue;
         }
@@ -2465,12 +2439,10 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
             settle_agent(&handle, &output, omp_task::SchemaMode::Permissive, false);
             handle.mark_run_finished();
             let (status, text) = turn_outcome(&handle);
-            let next = pool.state.lock().expect("workpool lock").finish_turn(
-                batch,
-                status,
-                text,
-                &agent_id_taken,
-            );
+            let next = pool
+                .state
+                .lock()
+                .finish_turn(batch, status, text, &agent_id_taken);
             start_turns(&pool, next);
         });
     }
@@ -2479,7 +2451,7 @@ fn start_turns(pool: &Arc<WorkPool>, starts: Vec<TurnStart>) {
 /// Batch status + output from a settled worker handle (TS `#finishTurn`
 /// status rule; output falls back to the error text).
 fn turn_outcome(handle: &Handle) -> (ItemStatus, String) {
-    let inner = handle.inner.lock().expect("eval handle lock");
+    let inner = handle.inner.lock();
     let status = match inner.status {
         HandleStatus::Completed => ItemStatus::Completed,
         HandleStatus::Cancelled => ItemStatus::Cancelled,
@@ -2536,7 +2508,6 @@ fn run_workpool_with(
         .ok_or_else(|| "workpool operation requires a non-empty name".to_string())?;
     let pool = WORKPOOLS
         .lock()
-        .expect("workpools lock")
         .get(name)
         .cloned()
         .ok_or_else(|| format!("unknown workpool \"{name}\""))?;
@@ -2552,17 +2523,13 @@ fn run_workpool_with(
                         .collect::<Option<Vec<_>>>()
                 })
                 .ok_or_else(|| "workpool push requires an items string array".to_string())?;
-            let (ids, starts) = pool
-                .state
-                .lock()
-                .expect("workpool lock")
-                .push(&texts, &agent_id_taken)?;
+            let (ids, starts) = pool.state.lock().push(&texts, &agent_id_taken)?;
             start_turns(&pool, starts);
             Ok(json!({"ids": ids}))
         }
-        "status" => Ok(pool.state.lock().expect("workpool lock").status()),
-        "peek" => Ok(pool.state.lock().expect("workpool lock").peek()),
-        "close" => Ok(pool.state.lock().expect("workpool lock").close()),
+        "status" => Ok(pool.state.lock().status()),
+        "peek" => Ok(pool.state.lock().peek()),
+        "close" => Ok(pool.state.lock().close()),
         _ => Err(format!("unknown workpool operation \"{op}\"")),
     }
 }
@@ -2599,7 +2566,7 @@ fn create_workpool(
     // as agent() (TS `canSpawnAtDepth`).
     omp_task::recursion_gate()
         .map_err(|error| format!("workpool() cannot spawn workers: {error}"))?;
-    let mut pools = WORKPOOLS.lock().expect("workpools lock");
+    let mut pools = WORKPOOLS.lock();
     let name = if let Some(name) = requested {
         if pools.contains_key(&name) {
             return Err(format!("workpool \"{name}\" already exists"));
@@ -2752,13 +2719,13 @@ mod tests {
 
     impl MockRun {
         fn finish(&self, status: omp_task::RunStatus, output: &str) {
-            if let Some(tx) = self.done.lock().unwrap().take() {
+            if let Some(tx) = self.done.lock().take() {
                 let _ = tx.send(run_output(&self.id, status, output));
             }
         }
 
         fn live(&self) -> bool {
-            self.done.lock().unwrap().is_some()
+            self.done.lock().is_some()
         }
     }
 
@@ -2771,7 +2738,7 @@ mod tests {
                 if !self.live() || self.cancelled.load(Ordering::SeqCst) {
                     return Err(omp_task::SteerError::NotRunning);
                 }
-                self.steered.lock().unwrap().push(message.to_string());
+                self.steered.lock().push(message.to_string());
                 Ok(())
             })
         }
@@ -2796,11 +2763,11 @@ mod tests {
 
     impl MockLauncher {
         fn run(&self, index: usize) -> Arc<MockRun> {
-            self.runs.lock().unwrap()[index].1.clone()
+            self.runs.lock()[index].1.clone()
         }
 
         fn launched(&self) -> usize {
-            self.runs.lock().unwrap().len()
+            self.runs.lock().len()
         }
     }
 
@@ -2814,7 +2781,7 @@ mod tests {
                 cancelled: AtomicBool::new(false),
                 done: Mutex::new(Some(tx)),
             });
-            self.runs.lock().unwrap().push((spec, run.clone()));
+            self.runs.lock().push((spec, run.clone()));
             let future: RunFuture = Box::pin(async move {
                 rx.await
                     .unwrap_or_else(|_| run_output(&id, omp_task::RunStatus::Cancelled, ""))
@@ -2845,10 +2812,7 @@ mod tests {
     /// background task exactly like `run_agent` does.
     fn mock_agent(launcher: &MockLauncher, id: &str) -> (Arc<Handle>, Arc<MockRun>) {
         let handle = Handle::new("agent", id.to_string());
-        AGENT_HANDLES
-            .lock()
-            .unwrap()
-            .insert(id.to_string(), handle.clone());
+        AGENT_HANDLES.lock().insert(id.to_string(), handle.clone());
         let run = launch_agent(&handle, spec(id), launcher);
         let settle = handle.clone();
         tokio::spawn(async move {
@@ -3028,7 +2992,7 @@ mod tests {
                 .unwrap(),
             "Delivered to test-msg-1."
         );
-        assert_eq!(*run.steered.lock().unwrap(), ["look at foo.rs"]);
+        assert_eq!(*run.steered.lock(), ["look at foo.rs"]);
         assert!(deliver_message("test-msg-1", "  ").await.is_err());
         assert!(
             deliver_message("test-msg-1/data", "x")
@@ -3051,7 +3015,7 @@ mod tests {
     async fn workpool_ops_drive_worker_runs() {
         // Reads the recursion-depth env through `create_workpool`: serialize
         // with the depth-env tests.
-        let _depth_env = DEPTH_ENV_LOCK.lock();
+        let _depth_env = DEPTH_ENV_LOCK.lock().await;
         let launcher = Arc::new(MockLauncher::default());
         let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
         let cwd = PathBuf::from(".");
@@ -3087,7 +3051,7 @@ mod tests {
         );
         assert_eq!(launcher.launched(), 2);
         {
-            let runs = launcher.runs.lock().unwrap();
+            let runs = launcher.runs.lock();
             assert!(runs[0].0.prompt.starts_with("Shared ctx\n\n<workpool"));
             assert!(runs[0].0.prompt.contains("one"));
             assert_eq!(runs[1].0.id.as_deref(), Some("test-pool-e2e-2"));
@@ -3167,7 +3131,7 @@ mod tests {
     /// turn fails explicitly and the original handle keeps owning its run.
     #[tokio::test]
     async fn pool_worker_id_collision_fails_without_overwriting() {
-        let _depth_env = DEPTH_ENV_LOCK.lock();
+        let _depth_env = DEPTH_ENV_LOCK.lock().await;
         let launcher = Arc::new(MockLauncher::default());
         let dyn_launcher: Arc<dyn Launcher> = launcher.clone();
         let cwd = PathBuf::from(".");
@@ -3179,7 +3143,6 @@ mod tests {
         .unwrap();
         let pool = WORKPOOLS
             .lock()
-            .unwrap()
             .get("test-pool-collision")
             .cloned()
             .unwrap();
@@ -3188,7 +3151,6 @@ mod tests {
         let existing = Handle::new("agent", "occupied-worker".to_string());
         AGENT_HANDLES
             .lock()
-            .unwrap()
             .insert("occupied-worker".to_string(), existing.clone());
 
         start_turns(
@@ -3202,15 +3164,11 @@ mod tests {
         assert_eq!(launcher.launched(), 0, "no run launches on a collision");
 
         // The existing handle still owns the id, untouched by the failed turn.
-        let registered = AGENT_HANDLES
-            .lock()
-            .unwrap()
-            .get("occupied-worker")
-            .cloned();
+        let registered = AGENT_HANDLES.lock().get("occupied-worker").cloned();
         assert!(Arc::ptr_eq(&registered.unwrap(), &existing));
         assert_eq!(existing.snapshot()["status"], "running");
-        AGENT_HANDLES.lock().unwrap().remove("occupied-worker");
-        WORKPOOLS.lock().unwrap().remove("test-pool-collision");
+        AGENT_HANDLES.lock().remove("occupied-worker");
+        WORKPOOLS.lock().remove("test-pool-collision");
     }
 
     /// A mock run whose cancel does *not* settle the run: the run resolves
@@ -3260,7 +3218,7 @@ mod tests {
                 },
                 release: Mutex::new(Some(tx)),
             });
-            self.runs.lock().unwrap().push(run.clone());
+            self.runs.lock().push(run.clone());
             let future: RunFuture = Box::pin(async move {
                 rx.await
                     .unwrap_or_else(|_| run_output(&id, omp_task::RunStatus::Cancelled, ""))
@@ -3273,7 +3231,7 @@ mod tests {
     /// to settle before erroring (TS `handle-bridge.ts` `Promise.allSettled`).
     #[tokio::test]
     async fn aborted_wait_cancels_then_waits_for_settlement() {
-        let _depth_env = DEPTH_ENV_LOCK.lock();
+        let _depth_env = DEPTH_ENV_LOCK.lock().await;
         let launcher = Arc::new(SlowMockLauncher {
             runs: Mutex::new(Vec::new()),
         });
@@ -3291,7 +3249,7 @@ mod tests {
             &dyn_launcher,
         )
         .unwrap();
-        assert_eq!(launcher.runs.lock().unwrap().len(), 2);
+        assert_eq!(launcher.runs.lock().len(), 2);
 
         let controller = pa_agent::abort::AbortController::new();
         let signal = controller.signal();
@@ -3314,14 +3272,11 @@ mod tests {
         }
         // The runs were asked to cancel but are not finished yet; the handles
         // already report cancelled (TS `manager.cancel` flips job status at once).
-        assert!(
-            launcher
-                .runs
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|run| run.inner.cancelled.load(Ordering::SeqCst))
-        );
+        assert!(launcher
+            .runs
+            .lock()
+            .iter()
+            .all(|run| run.inner.cancelled.load(Ordering::SeqCst)));
         let handle = lookup_handle("agent", "test-pool-abort-1").unwrap();
         assert_eq!(handle.snapshot()["status"], "cancelled");
         assert!(
@@ -3330,8 +3285,8 @@ mod tests {
                 .load(std::sync::atomic::Ordering::SeqCst)
         );
 
-        for run in launcher.runs.lock().unwrap().iter() {
-            let tx = run.release.lock().unwrap().take().unwrap();
+        for run in launcher.runs.lock().iter() {
+            let tx = run.release.lock().take().unwrap();
             let _ = tx.send(run_output(
                 &run.inner.id,
                 omp_task::RunStatus::Cancelled,
@@ -3352,9 +3307,9 @@ mod tests {
                 "{id} run finished before the abort error"
             );
         }
-        WORKPOOLS.lock().unwrap().remove("test-pool-abort");
+        WORKPOOLS.lock().remove("test-pool-abort");
         for id in ["test-pool-abort-1", "test-pool-abort-2"] {
-            AGENT_HANDLES.lock().unwrap().remove(id);
+            AGENT_HANDLES.lock().remove(id);
         }
     }
 
@@ -3382,13 +3337,13 @@ mod tests {
 
     /// Serialize the tests that mutate the recursion-depth env: the env is
     /// process-global and `create_workpool` reads it through the gate.
-    static DEPTH_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    static DEPTH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// Finding 8: at `OMP_TASK_MAX_RECURSION_DEPTH` (TS `task.maxRecursionDepth`,
     /// default 2) agent/workpool/task spawns are refused with the TS message.
     #[test]
     fn recursion_gate_matches_ts_depth_rule() {
-        let _env = DEPTH_ENV_LOCK.lock();
+        let _env = DEPTH_ENV_LOCK.blocking_lock();
         std::env::set_var(omp_task::MAX_RECURSION_ENV, "2");
         assert!(omp_task::recursion_gate_at(0).is_ok());
         assert!(omp_task::recursion_gate_at(1).is_ok());
@@ -3402,7 +3357,7 @@ mod tests {
 
     #[tokio::test]
     async fn workpool_refuses_to_spawn_at_max_depth() {
-        let _env = DEPTH_ENV_LOCK.lock();
+        let _env = DEPTH_ENV_LOCK.lock().await;
         // Simulate a depth-2 session (the TS default ceiling): spawns from
         // here are refused with the TS message.
         std::env::set_var(omp_task::TASK_DEPTH_ENV, "2");
@@ -3421,7 +3376,7 @@ mod tests {
         );
         assert_eq!(launcher.launched(), 0);
         std::env::remove_var(omp_task::TASK_DEPTH_ENV);
-        WORKPOOLS.lock().unwrap().remove("test-pool-depth");
+        WORKPOOLS.lock().remove("test-pool-depth");
     }
 
     /// Finding 9: child tool allow-lists clamp to the parent's enabled set.
@@ -3477,7 +3432,7 @@ mod tests {
 
         let receipt = deliver_message("slot-t1", "change course").await.unwrap();
         assert_eq!(receipt, "Delivered to slot-t1.");
-        assert_eq!(*run.steered.lock().unwrap(), ["change course"]);
+        assert_eq!(*run.steered.lock(), ["change course"]);
 
         drop(slot);
         assert!(!agent_id_taken("slot-t1"));
@@ -3520,13 +3475,10 @@ mod tests {
         let receipt = from_a.send("bus-b", "need the schema").await.unwrap();
         assert_eq!(receipt, "Delivered to bus-b.");
         assert_eq!(
-            *run_b.steered.lock().unwrap(),
+            *run_b.steered.lock(),
             ["[message from agent://bus-a]\nneed the schema"]
         );
-        assert!(
-            run_a.steered.lock().unwrap().is_empty(),
-            "sender not steered"
-        );
+        assert!(run_a.steered.lock().is_empty(), "sender not steered");
 
         from_a.send("parent", "blocked on bus-b").await.unwrap();
         let inbox: Vec<_> = super::super::a2a::take_deliveries()
@@ -3555,6 +3507,6 @@ mod tests {
         slot_b.settle(&run_output("bus-b", omp_task::RunStatus::Completed, "done"));
         let late = from_a.send("bus-b", "too late").await.unwrap_err();
         assert!(late.contains("already finished"), "{late}");
-        assert_eq!(run_b.steered.lock().unwrap().len(), 1);
+        assert_eq!(run_b.steered.lock().len(), 1);
     }
 }

@@ -1900,6 +1900,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "omp-providers",
+ "parking_lot",
  "regex",
  "reqwest",
  "rusqlite",
@@ -1972,6 +1973,7 @@ dependencies = [
  "anyhow",
  "futures",
  "nix",
+ "parking_lot",
  "rand 0.8.8",
  "ring",
  "serde",
@@ -1990,6 +1992,7 @@ dependencies = [
  "anyhow",
  "omp-session",
  "pa-types",
+ "parking_lot",
  "regex",
  "serde_json",
  "tokio",
@@ -2001,6 +2004,7 @@ version = "0.10.0"
 dependencies = [
  "libc",
  "nix",
+ "parking_lot",
  "serde",
  "serde_json",
  "tempfile",
@@ -2013,6 +2017,7 @@ version = "0.10.0"
 dependencies = [
  "anyhow",
  "pa-agent",
+ "parking_lot",
  "serde",
  "serde_json",
  "tempfile",
@@ -2025,6 +2030,7 @@ version = "0.10.0"
 dependencies = [
  "anyhow",
  "jsonschema",
+ "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2051,6 +2057,7 @@ name = "omp-lsp"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "parking_lot",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2140,6 +2147,7 @@ dependencies = [
  "notify",
  "pa-models",
  "pa-types",
+ "parking_lot",
  "regex",
  "rusqlite",
  "serde",
@@ -2157,6 +2165,7 @@ version = "0.10.0+a2agitflow"
 dependencies = [
  "jsonschema",
  "nix",
+ "parking_lot",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -2202,6 +2211,7 @@ dependencies = [
  "flate2",
  "omp-providers",
  "omp-settings",
+ "parking_lot",
  "serde_json",
  "serde_yaml_ng",
  "tempfile",

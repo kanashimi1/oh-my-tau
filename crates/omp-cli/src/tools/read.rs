@@ -1181,9 +1181,7 @@ mod tests {
     }
     #[test]
     fn reads_artifact_url_with_selector() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1200,9 +1198,7 @@ mod tests {
 
     #[test]
     fn reads_agent_url_markdown() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1214,9 +1210,7 @@ mod tests {
 
     #[test]
     fn reads_history_index_and_local_file() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");
@@ -1239,9 +1233,7 @@ mod tests {
 
     #[test]
     fn invalid_url_selector_names_the_url() {
-        let _lock = URL_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _lock = URL_TEST_LOCK.lock();
         let store = session_store();
         let dir = tempfile::tempdir().unwrap();
         let artifacts = store.path().join("sess");

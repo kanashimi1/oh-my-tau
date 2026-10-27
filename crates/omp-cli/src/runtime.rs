@@ -2,9 +2,10 @@
 //! `AgentSession` adds around it (model switching, queues, session files,
 //! stats, prompt-result bookkeeping, event forwarding).
 
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use pa_agent::abort::AbortController;
@@ -301,7 +302,7 @@ enum Recovered {
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    m.lock()
 }
 
 /// RSS of this process (`VmRSS` kB) — used by the `OMP_RS_TURN_TRACE` diagnostic.
@@ -1404,10 +1405,7 @@ impl Runtime {
     }
 
     fn live_provider_id(&self) -> Option<(String, String)> {
-        let t = self
-            .target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let t = self.target.read();
         t.as_ref()
             .map(|t| (String::from(&*t.model.provider), t.model.id.clone()))
     }
@@ -1464,12 +1462,7 @@ impl Runtime {
         };
         resolved.api_key = Some(next.key.clone());
         resolved.credential_id = Some(next.id);
-        let from_id = self
-            .target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(|t| t.credential_id);
+        let from_id = self.target.read().as_ref().and_then(|t| t.credential_id);
         // Guard against swap_model's silent no-op (unconvertible model): only mutate the
         // rotation state when the swap actually applied.
         let convertible: Option<pa_agent::types::Model> = json_round_trip(&resolved.model);
@@ -2099,18 +2092,13 @@ impl Runtime {
     pub fn model_base_url(&self) -> Option<String> {
         self.target
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map(|t| t.model.base_url.clone())
             .filter(|u| !u.is_empty())
     }
 
     pub fn model_info(&self) -> Value {
-        let target = self
-            .target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let target = self.target.read().clone();
         target.map_or(Value::Null, |t| model_info(&t.model))
     }
 
@@ -2709,12 +2697,7 @@ impl Runtime {
         let Some(requested) = parse_level(level) else {
             return;
         };
-        let model = self
-            .target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|t| t.model.clone());
+        let model = self.target.read().as_ref().map(|t| t.model.clone());
         let effective = model.map_or(requested, |m| crate::model::clamp_level(&m, requested));
         self.auto_thinking
             .store(auto, std::sync::atomic::Ordering::Relaxed);
@@ -3195,8 +3178,8 @@ impl Runtime {
     fn live_window(&self) -> u64 {
         self.target
             .read()
-            .ok()
-            .and_then(|t| t.as_ref().map(|t| t.model.context_window))
+            .as_ref()
+            .map(|t| t.model.context_window)
             .unwrap_or(0)
     }
 
@@ -3564,10 +3547,7 @@ impl Runtime {
         let changing = self
             .live_provider_id()
             .is_none_or(|(p, i)| p != resolved.provider || i != resolved.id);
-        *self
-            .target
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ProviderTarget {
+        *self.target.write() = Some(ProviderTarget {
             api_key: resolved.api_key.clone(),
             model: resolved.model.clone(),
             service_tier: None,
@@ -3632,12 +3612,7 @@ impl Runtime {
     /// `ModelControls.setThinkingLevel`: clamp to the live model; journal and announce only a change.
     /// Returns the effective level.
     async fn apply_thinking(&self, requested: ThinkingLevel) -> ThinkingLevel {
-        let model = self
-            .target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|t| t.model.clone());
+        let model = self.target.read().as_ref().map(|t| t.model.clone());
         let effective = model.map_or(requested, |m| crate::model::clamp_level(&m, requested));
         let current = self.agent.thinking_level().await;
         if current != effective {
@@ -3727,11 +3702,7 @@ impl Runtime {
     }
 
     fn live_model(&self) -> Option<pa_types::ai::Model> {
-        self.target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(|t| t.model.clone())
+        self.target.read().as_ref().map(|t| t.model.clone())
     }
 
     /// Switch the `clm-host` strategy (and its `context_edit` tool) on or off
@@ -3775,7 +3746,6 @@ impl Runtime {
         let provisional = self
             .target
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_ref()
             .map_or(ThinkingLevel::Medium, |t| {
                 crate::model::clamp_level(&t.model, ThinkingLevel::Medium)
@@ -3796,11 +3766,7 @@ impl Runtime {
     /// model cannot think.
     #[must_use]
     pub fn supported_efforts(&self) -> Vec<&'static str> {
-        let target = self
-            .target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let target = self.target.read().clone();
         let Some(t) = target.filter(|t| t.model.reasoning) else {
             return Vec::new();
         };
@@ -3825,22 +3791,13 @@ impl Runtime {
     /// (TS `session.serviceTier`, driven by `/fast` and `/slow`).
     #[must_use]
     pub fn service_tier(&self) -> Option<pa_types::ai::ServiceTier> {
-        self.target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .and_then(|t| t.service_tier)
+        self.target.read().as_ref().and_then(|t| t.service_tier)
     }
 
     /// Set the service-tier override for subsequent requests (TS
     /// `session.setFastMode`/`setSlowMode`: `None` restores the default tier).
     pub fn set_service_tier(&self, tier: Option<pa_types::ai::ServiceTier>) {
-        if let Some(t) = self
-            .target
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_mut()
-        {
+        if let Some(t) = self.target.write().as_mut() {
             t.service_tier = tier;
         }
     }
@@ -3903,11 +3860,7 @@ impl Runtime {
 
     /// Selectable levels for the live model, `off` first.
     pub fn available_thinking_levels(&self) -> Vec<&'static str> {
-        let target = self
-            .target
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let target = self.target.read().clone();
         let mut levels = vec!["off"];
         if let Some(t) = target {
             if t.model.reasoning {
@@ -5399,7 +5352,7 @@ mod ultra_tests {
             None => crate::persist::attach_with(&agent, cwd.path(), true).await,
         }
         .expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("k".into()),
             model,
             service_tier: None,
@@ -5765,7 +5718,7 @@ mod compaction_guard_tests {
     struct Gate {
         entered: tokio::sync::watch::Sender<bool>,
         /// Dropped (or set `true`) by the test to release the summarizer.
-        proceed: std::sync::Mutex<tokio::sync::watch::Receiver<bool>>,
+        proceed: parking_lot::Mutex<tokio::sync::watch::Receiver<bool>>,
     }
 
     impl Gate {
@@ -5779,7 +5732,7 @@ mod compaction_guard_tests {
             (
                 Arc::new(Self {
                     entered: entered_tx,
-                    proceed: std::sync::Mutex::new(proceed_rx),
+                    proceed: parking_lot::Mutex::new(proceed_rx),
                 }),
                 entered_rx,
                 proceed_tx,
@@ -5794,7 +5747,7 @@ mod compaction_guard_tests {
             Box::pin(async move {
                 gate.entered.send_replace(true);
                 loop {
-                    let mut rx = gate.proceed.lock().unwrap().clone();
+                    let mut rx = gate.proceed.lock().clone();
                     if *rx.borrow_and_update() {
                         break;
                     }
@@ -5851,7 +5804,7 @@ mod compaction_guard_tests {
         )
         .await
         .expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("k".into()),
             model,
             service_tier: None,
@@ -6273,7 +6226,7 @@ mod a2a_delivery_tests {
         let persist = crate::persist::attach_with(&agent, cwd.path(), true)
             .await
             .expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("k".into()),
             model,
             service_tier: None,

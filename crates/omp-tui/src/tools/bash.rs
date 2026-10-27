@@ -37,10 +37,10 @@
 //! hard line tail (TS also wraps visually at the box width via
 //! `formatOutputPaneLines(visual: true)`).
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -590,9 +590,7 @@ static LAST_PARTIAL_ENV: PartialEnvCache = Mutex::new(None);
 pub fn extract_partial_bash_env(partial_json: Option<&str>) -> Option<BTreeMap<String, String>> {
     let partial_json = partial_json?;
     {
-        let guard = LAST_PARTIAL_ENV
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = LAST_PARTIAL_ENV.lock();
         if let Some((last, env)) = guard.as_ref() {
             if last == partial_json {
                 return env.clone();
@@ -600,9 +598,7 @@ pub fn extract_partial_bash_env(partial_json: Option<&str>) -> Option<BTreeMap<S
         }
     }
     let env = extract_partial_bash_env_uncached(partial_json);
-    let mut guard = LAST_PARTIAL_ENV
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = LAST_PARTIAL_ENV.lock();
     *guard = Some((partial_json.to_owned(), env.clone()));
     env
 }

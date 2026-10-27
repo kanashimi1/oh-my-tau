@@ -190,15 +190,15 @@ fn sum_fleet_tokens_empty_is_none_not_zero() {
 
 /// Scripted broker: `history`/`summary` are Results consumed per call.
 struct FakeBroker {
-    history: std::sync::Mutex<Vec<anyhow::Result<Vec<UsageSnapshotRow>>>>,
-    summary: std::sync::Mutex<Vec<anyhow::Result<Vec<ClientUsageClientSummary>>>>,
+    history: parking_lot::Mutex<Vec<anyhow::Result<Vec<UsageSnapshotRow>>>>,
+    summary: parking_lot::Mutex<Vec<anyhow::Result<Vec<ClientUsageClientSummary>>>>,
 }
 
 impl FakeBroker {
     fn ok(rows: Vec<UsageSnapshotRow>, clients: Vec<ClientUsageClientSummary>) -> Self {
         Self {
-            history: std::sync::Mutex::new(vec![Ok(rows)]),
-            summary: std::sync::Mutex::new(vec![Ok(clients)]),
+            history: parking_lot::Mutex::new(vec![Ok(rows)]),
+            summary: parking_lot::Mutex::new(vec![Ok(clients)]),
         }
     }
 }
@@ -207,7 +207,6 @@ impl UsageBroker for FakeBroker {
     fn usage_history(&self, _since_ms: i64) -> anyhow::Result<Vec<UsageSnapshotRow>> {
         self.history
             .lock()
-            .unwrap()
             .pop()
             .unwrap_or_else(|| Err(anyhow::anyhow!("no scripted history")))
     }
@@ -218,7 +217,6 @@ impl UsageBroker for FakeBroker {
     ) -> anyhow::Result<Vec<ClientUsageClientSummary>> {
         self.summary
             .lock()
-            .unwrap()
             .pop()
             .unwrap_or_else(|| Err(anyhow::anyhow!("no scripted summary")))
     }
@@ -282,8 +280,8 @@ fn fetch_usage_data_uses_broker_rows_and_fleet_tokens() {
 fn fetch_usage_data_history_error_falls_back_to_local() {
     let _local = LocalHome::with_local_row("local-provider");
     let broker = FakeBroker {
-        history: std::sync::Mutex::new(vec![Err(anyhow::anyhow!("broker down"))]),
-        summary: std::sync::Mutex::new(vec![]),
+        history: parking_lot::Mutex::new(vec![Err(anyhow::anyhow!("broker down"))]),
+        summary: parking_lot::Mutex::new(vec![]),
     };
     set_usage_broker(Some(std::sync::Arc::new(broker)));
     let data = fetch_usage_data(0);
@@ -297,8 +295,8 @@ fn fetch_usage_data_history_error_falls_back_to_local() {
 fn fetch_usage_data_summary_error_leaves_fleet_none_but_keeps_broker_rows() {
     let _local = LocalHome::with_local_row("local-provider");
     let broker = FakeBroker {
-        history: std::sync::Mutex::new(vec![Ok(vec![broker_row("google-antigravity", 0.5)])]),
-        summary: std::sync::Mutex::new(vec![Err(anyhow::anyhow!("summary unavailable"))]),
+        history: parking_lot::Mutex::new(vec![Ok(vec![broker_row("google-antigravity", 0.5)])]),
+        summary: parking_lot::Mutex::new(vec![Err(anyhow::anyhow!("summary unavailable"))]),
     };
     set_usage_broker(Some(std::sync::Arc::new(broker)));
     let data = fetch_usage_data(0);

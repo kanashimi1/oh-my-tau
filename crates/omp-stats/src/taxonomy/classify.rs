@@ -552,9 +552,9 @@ pub fn classify_model(
     let opts = opts.unwrap_or_default();
     if opts.observed_at_ms.is_none() {
         let key = classify_memo_key(provider, model_id, opts.lenient);
-        static MEMO: std::sync::Mutex<Option<HashMap<String, ModelIdentity>>> =
-            std::sync::Mutex::new(None);
-        let mut memo = MEMO.lock().expect("memo lock poisoned");
+        static MEMO: parking_lot::Mutex<Option<HashMap<String, ModelIdentity>>> =
+            parking_lot::Mutex::new(None);
+        let mut memo = MEMO.lock();
         let memo = memo.get_or_insert_with(HashMap::new);
         if let Some(cached) = memo.get(&key) {
             return Ok(cached.clone());

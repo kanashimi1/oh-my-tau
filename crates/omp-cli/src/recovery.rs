@@ -1020,7 +1020,7 @@ mod tests {
 
     // ------------------------------------------------------- saga through the runtime
 
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
     use std::time::Duration;
 
     use omp_providers::ThinkingSource;
@@ -1099,7 +1099,7 @@ mod tests {
         let models_seen = std::sync::Arc::new(Mutex::new(Vec::new()));
         let seen = models_seen.clone();
         let stream_fn: StreamFn = std::sync::Arc::new(move |m, c, o| {
-            seen.lock().unwrap().push(m.id.clone());
+            seen.lock().push(m.id.clone());
             inner(m, c, o)
         });
         let agent = Agent::new(AgentOptions {
@@ -1118,7 +1118,7 @@ mod tests {
             .await
             .expect("session");
         let session_file = persist.path();
-        let target = std::sync::Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = std::sync::Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("test-key".into()),
             model: primary,
             service_tier: None,
@@ -1257,7 +1257,7 @@ mod tests {
         assert_eq!(ends[1]["isTerminal"], true);
         assert_eq!(get("prompt_result")["status"], "completed");
         assert_eq!(
-            *h.models_seen.lock().unwrap(),
+            *h.models_seen.lock(),
             ["a", "b"],
             "second attempt ran on the fallback model"
         );
@@ -1324,7 +1324,7 @@ mod tests {
                 .unwrap()["attempt"],
             2
         );
-        assert_eq!(*h.models_seen.lock().unwrap(), ["a", "a", "a"]);
+        assert_eq!(*h.models_seen.lock(), ["a", "a", "a"]);
         assert!(!frames.iter().any(|f| f["type"] == "model_changed"));
         let users: Vec<_> = frames
             .iter()

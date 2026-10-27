@@ -10,11 +10,12 @@
 
 mod store;
 
+use parking_lot::Mutex;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -85,10 +86,7 @@ impl State {
         let Ok(revision) = self.store.revision() else {
             return;
         };
-        let mut last = self
-            .last_revision
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = self.last_revision.lock();
         if *last != revision {
             *last = revision;
             self.generation.send_modify(|g| *g += 1);

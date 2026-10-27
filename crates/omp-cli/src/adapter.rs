@@ -193,9 +193,8 @@ impl ModelStream for AuthRetryStream {
 ///
 /// # Panics
 ///
-/// Panics at stream time if the provider target lock is poisoned, or if the
-/// target slot was never set before the first stream.
-pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>>>) -> StreamFn {
+/// Panics at stream time if the target slot was never set before the first stream.
+pub fn switchable_stream_fn(target: Arc<parking_lot::RwLock<Option<ProviderTarget>>>) -> StreamFn {
     Arc::new(
         move |_requested: AgentModel, context: LlmContext, options: StreamRequestOptions| {
             let ProviderTarget {
@@ -206,7 +205,6 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
                 credential_id,
             } = target
                 .read()
-                .expect("provider target lock")
                 .clone()
                 .expect("provider target set before the first stream");
             Box::pin(async move {
@@ -420,7 +418,7 @@ pub fn stream_once(
 /// their model once, so the slot never changes).
 #[must_use]
 pub fn real_stream_fn(api_key: Option<String>, model: Model) -> StreamFn {
-    switchable_stream_fn(Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+    switchable_stream_fn(Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
         api_key,
         model,
         service_tier: None,

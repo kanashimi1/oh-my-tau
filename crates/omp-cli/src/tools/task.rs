@@ -658,7 +658,7 @@ struct AsyncChildren {
     leases: Vec<(super::a2a::Owner, super::a2a::BusLease)>,
 }
 
-static ASYNC_CHILDREN: std::sync::Mutex<AsyncChildren> = std::sync::Mutex::new(AsyncChildren {
+static ASYNC_CHILDREN: parking_lot::Mutex<AsyncChildren> = parking_lot::Mutex::new(AsyncChildren {
     children: Vec::new(),
     leases: Vec::new(),
 });
@@ -678,8 +678,8 @@ struct BatchRegistry {
     remaining: std::collections::HashMap<u64, usize>,
 }
 
-static BATCHES: std::sync::LazyLock<std::sync::Mutex<BatchRegistry>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(BatchRegistry::default()));
+static BATCHES: std::sync::LazyLock<parking_lot::Mutex<BatchRegistry>> =
+    std::sync::LazyLock::new(|| parking_lot::Mutex::new(BatchRegistry::default()));
 
 /// Claim a fresh batch id for one `spawn_children` call and remember its
 /// children: `wait` holds each settled child's result until the child's whole
@@ -687,7 +687,7 @@ static BATCHES: std::sync::LazyLock<std::sync::Mutex<BatchRegistry>> =
 /// instead of one extra wait/turn per child.
 fn register_batch(child_ids: &[String]) -> u64 {
     let batch = BATCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-    let mut reg = BATCHES.lock().expect("task batch lock");
+    let mut reg = BATCHES.lock();
     for id in child_ids {
         reg.child_batch.insert(id.clone(), batch);
     }
@@ -698,7 +698,7 @@ fn register_batch(child_ids: &[String]) -> u64 {
 /// One child settled: drop it from its batch; the last settle dissolves the
 /// batch so nothing about it is held anymore.
 fn note_batch_child_settled(child_id: &str) {
-    let mut reg = BATCHES.lock().expect("task batch lock");
+    let mut reg = BATCHES.lock();
     let Some(batch) = reg.child_batch.get(child_id).copied() else {
         return;
     };
@@ -718,7 +718,7 @@ fn note_batch_child_settled(child_id: &str) {
 /// still has running children (its result is held for one combined delivery).
 #[must_use]
 pub(crate) fn batch_still_running(from: &str) -> bool {
-    let reg = BATCHES.lock().expect("task batch lock");
+    let reg = BATCHES.lock();
     reg.child_batch
         .get(from)
         .and_then(|batch| reg.remaining.get(batch))
@@ -752,11 +752,7 @@ pub(crate) fn requeue_deliveries(deliveries: Vec<super::a2a::PendingDelivery>) {
 #[cfg(test)]
 #[must_use]
 pub(crate) fn live_children() -> usize {
-    ASYNC_CHILDREN
-        .lock()
-        .expect("async children lock")
-        .children
-        .len()
+    ASYNC_CHILDREN.lock().children.len()
 }
 
 /// How many `task` children of one session are still running.
@@ -764,7 +760,6 @@ pub(crate) fn live_children() -> usize {
 pub(crate) fn live_children_for(owner: &super::a2a::Owner) -> usize {
     ASYNC_CHILDREN
         .lock()
-        .expect("async children lock")
         .children
         .iter()
         .filter(|child| &child.owner == owner)
@@ -783,14 +778,14 @@ pub(crate) fn async_children_active_for(owner: &super::a2a::Owner) -> bool {
 /// drop guard, so this is safe even while the runtime is tearing down.
 pub(crate) fn kill_async_children_for(owner: &super::a2a::Owner) {
     let (mine, others): (Vec<_>, Vec<_>) = {
-        let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
+        let mut reg = ASYNC_CHILDREN.lock();
         let children = std::mem::take(&mut reg.children);
         children
             .into_iter()
             .partition(|child| &child.owner == owner)
     };
     {
-        let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
+        let mut reg = ASYNC_CHILDREN.lock();
         reg.children = others;
         let mine_left = reg.children.iter().any(|child| &child.owner == owner);
         if !mine_left {
@@ -911,7 +906,7 @@ pub(crate) async fn spawn_children(
             .collect::<Vec<_>>(),
     );
     let sock = {
-        let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
+        let mut reg = ASYNC_CHILDREN.lock();
         if let Some((_, lease)) = reg.leases.iter().find(|(l_owner, _)| l_owner == owner) {
             lease.sock().to_path_buf()
         } else {
@@ -938,15 +933,11 @@ pub(crate) async fn spawn_children(
         let agent = spec.agent.clone();
         let (control, join) = runner.start(spec, ChildMode::Rpc);
         slot.attach(control.clone());
-        ASYNC_CHILDREN
-            .lock()
-            .expect("async children lock")
-            .children
-            .push(ChildRecord {
-                owner: owner.clone(),
-                id: id.clone(),
-                control,
-            });
+        ASYNC_CHILDREN.lock().children.push(ChildRecord {
+            owner: owner.clone(),
+            id: id.clone(),
+            control,
+        });
         spawned.push(SpawnedChild {
             id: id.clone(),
             agent,
@@ -990,7 +981,7 @@ pub(crate) async fn spawn_children(
                 text,
             });
             // Last settle of this session tears its bus down.
-            let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
+            let mut reg = ASYNC_CHILDREN.lock();
             reg.children.retain(|child| child.id != output.id);
             if !reg.children.iter().any(|child| &child.owner == &task_owner) {
                 reg.leases

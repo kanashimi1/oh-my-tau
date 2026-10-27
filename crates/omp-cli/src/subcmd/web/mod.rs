@@ -28,11 +28,12 @@ mod detach;
 mod sessions;
 mod wallpapers;
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{bail, Context as _, Result};
 use futures::{SinkExt as _, StreamExt as _};
@@ -160,8 +161,8 @@ impl Hub {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
+    m.lock()
 }
 
 /// Entry point: `omp-rs web [options]`.

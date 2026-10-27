@@ -23,7 +23,7 @@ use crate::transport::{
 
 /// Stdio transport state shared with the read loop.
 struct Shared {
-    pending: Arc<Mutex<PendingRequests>>,
+    pending: Arc<parking_lot::Mutex<PendingRequests>>,
     handler: RequestHandler,
     respond: RespondCallback,
     on_notification: NotificationCallback,
@@ -193,7 +193,6 @@ impl McpTransport for StdioTransport {
             shared
                 .pending
                 .lock()
-                .await
                 .map
                 .insert(PendingRequests::key(&id), tx);
             let line = serde_json::to_string(&frame).unwrap_or_else(|_| "{}".to_string());
@@ -226,12 +225,7 @@ impl McpTransport for StdioTransport {
             };
             if let Some(err) = write_err {
                 guard.settle();
-                shared
-                    .pending
-                    .lock()
-                    .await
-                    .map
-                    .remove(&PendingRequests::key(&id));
+                shared.pending.lock().map.remove(&PendingRequests::key(&id));
                 return Err(err);
             }
             guard.written = true;
@@ -245,12 +239,7 @@ impl McpTransport for StdioTransport {
             match result {
                 Ok(_) => guard.settle(),
                 Err(_) => {
-                    shared
-                        .pending
-                        .lock()
-                        .await
-                        .map
-                        .remove(&PendingRequests::key(&id));
+                    shared.pending.lock().map.remove(&PendingRequests::key(&id));
                     if guard.written {
                         // The frame reached the server and then the call
                         // failed (timeout or the read loop's EOF): replaying
@@ -363,7 +352,7 @@ impl StdioTransport {
         let stdin = child.stdin.take().ok_or_else(Self::not_connected)?;
         let stdin = Arc::new(Mutex::new(stdin));
 
-        let pending = Arc::new(Mutex::new(PendingRequests {
+        let pending = Arc::new(parking_lot::Mutex::new(PendingRequests {
             map: HashMap::new(),
         }));
         let respond: RespondCallback = {
@@ -409,7 +398,7 @@ impl StdioTransport {
                         let Ok(Some(line)) = line else {
                             // EOF: reject all pending requests, like
                             // `#handleClose` with an eof failure.
-                            let mut guard = pending.lock().await;
+                            let mut guard = pending.lock();
                             for (_, tx) in guard.map.drain() {
                                 let _ = tx.send(Err(McpError::Transport(McpTransportError {
                                     transport: TransportKind::Stdio,
