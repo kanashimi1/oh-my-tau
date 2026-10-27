@@ -328,7 +328,18 @@ async fn call_with_updates(
             }
         };
         tokio::select! {
-            result = &mut call => return result,
+            result = &mut call => {
+                // The read loop publishes a server's progress before it
+                // resolves the response that follows it, but `select!` may
+                // still pick the finished call first: deliver what is
+                // already buffered so no update is lost.
+                if let (Some(rx), Some(f)) = (rx.as_mut(), on_progress) {
+                    while let Ok(update) = rx.try_recv() {
+                        f(update);
+                    }
+                }
+                return result;
+            }
             event = progress => match event {
                 Ok(update) => {
                     if let Some(f) = on_progress {
