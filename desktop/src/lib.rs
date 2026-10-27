@@ -62,6 +62,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![open_window, notify, capture_done])
+        // Composer dictation: windows only ever show the local omt service,
+        // so the microphone is granted without a WebView2 prompt per launch.
+        .on_permission_request(|_webview, kind| match kind {
+            tauri::webview::PermissionKind::Microphone => tauri::webview::PermissionResponse::Allow,
+            _ => tauri::webview::PermissionResponse::Default,
+        })
         .setup(|app| {
             app.manage(AppState {
                 quitting: AtomicBool::new(false),

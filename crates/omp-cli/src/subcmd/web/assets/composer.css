@@ -147,3 +147,18 @@
 .pin-row textarea { flex: 1; resize: vertical; min-height: 44px; font: 13.5px/1.4 var(--sans); }
 .pin-del { flex: none; padding: 2px 8px; }
 .pin-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* file attachments + dictation */
+.attachment.file-chip { display: flex; align-items: center; gap: 6px; height: 56px; padding: 0 12px 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-hover); max-width: 260px; font-size: 12.5px; }
+.file-chip .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-chip .file-size { color: var(--fg-faint); white-space: nowrap; font-size: 11px; }
+.file-chip.uploading { opacity: .65; }
+.file-chip.failed { border-color: var(--err); }
+.mic-btn { position: relative; display: inline-flex; align-items: center; gap: 5px; }
+.mic-btn.recording { color: #fff; background: var(--err); border-radius: 999px; padding: 6px 10px; animation: mic-pulse 1.4s ease-in-out infinite; }
+.mic-btn.recording:hover { background: var(--err); color: #fff; filter: brightness(1.1); }
+.mic-btn .mic-time { font: 11.5px var(--mono); }
+.mic-btn.busy { opacity: .7; cursor: progress; }
+.mic-btn.busy svg { animation: mic-busy 1s linear infinite; }
+@keyframes mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 84, 104, .55) } 50% { box-shadow: 0 0 0 6px rgba(255, 84, 104, 0) } }
+@keyframes mic-busy { 50% { opacity: .25 } }

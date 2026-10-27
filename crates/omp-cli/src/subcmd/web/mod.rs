@@ -15,6 +15,8 @@
 //! - `GET /api/agents`, `POST /api/agents {cwd, resume?, model?}`,
 //!   `DELETE /api/agents/<id>`.
 //! - `GET /api/export?session=<file>`: HTML export of a stored session.
+//! - `POST /api/transcribe?ext=&lang=` (raw audio): local dictation, see `stt.rs`.
+//! - `POST /api/uploads?name=` (raw file): composer attachments, see `uploads.rs`.
 //! - `GET /api/wallpapers`, `POST /api/wallpapers?name=` (raw image body),
 //!   `DELETE /api/wallpapers/<name>`, `GET /wallpapers/custom/<name>`.
 //! - `GET /ws/<agentId>` (WebSocket): rpc frames both ways.
@@ -27,6 +29,8 @@ mod assets;
 mod desktop;
 pub(crate) mod detach;
 mod sessions;
+mod stt;
+mod uploads;
 mod wallpapers;
 
 use parking_lot::Mutex;
@@ -503,6 +507,8 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             }
         }
         (&Method::GET, "/api/export") => export(query_param(&req, "session")),
+        (&Method::POST, "/api/transcribe") => transcribe(req).await,
+        (&Method::POST, "/api/uploads") => upload_file(req).await,
         (&Method::GET, "/api/wallpapers") => json_response(StatusCode::OK, &wallpapers::list()),
         (&Method::POST, "/api/wallpapers") => upload_wallpaper(req).await,
         (&Method::DELETE, p) if p.starts_with("/api/wallpapers/") => {
@@ -592,6 +598,42 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
     };
     match hub.spawn(spec).await {
         Ok(agent) => json_response(StatusCode::OK, &agent.info_json()),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
+    }
+}
+
+/// Dictation: raw audio body (`?ext=webm&lang=ru`) → `{text, language}`.
+async fn transcribe(req: Request<Incoming>) -> Response<Body> {
+    let ext = query_param(&req, "ext").unwrap_or_else(|| "webm".to_owned());
+    let lang = query_param(&req, "lang").filter(|l| !l.is_empty() && l != "auto");
+    let body = match http_body_util::Limited::new(req.into_body(), stt::MAX_AUDIO)
+        .collect()
+        .await
+    {
+        Ok(b) => b.to_bytes(),
+        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, &format!("recording: {e}")),
+    };
+    if body.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "empty recording");
+    }
+    match stt::transcribe(&body, &ext, lang.as_deref()).await {
+        Ok(v) => json_response(StatusCode::OK, &v),
+        Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
+    }
+}
+
+/// Composer attachment: raw file body (`?name=`) → `{path, name, size}`.
+async fn upload_file(req: Request<Incoming>) -> Response<Body> {
+    let name = query_param(&req, "name").unwrap_or_default();
+    let body = match http_body_util::Limited::new(req.into_body(), uploads::MAX_UPLOAD)
+        .collect()
+        .await
+    {
+        Ok(b) => b.to_bytes(),
+        Err(e) => return error(StatusCode::PAYLOAD_TOO_LARGE, &format!("upload: {e}")),
+    };
+    match uploads::save(&name, &body) {
+        Ok(v) => json_response(StatusCode::OK, &v),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
     }
 }

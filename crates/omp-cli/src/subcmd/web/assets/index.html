@@ -66,7 +66,7 @@
         <div class="composer-card">
           <div class="ta-wrap"><div id="composer-hl" class="ta-hl" aria-hidden="true"></div><textarea id="composer" rows="1" placeholder="Ask anything…  (/ commands · ! shell · Enter send · Shift+Enter newline)" disabled></textarea></div>
           <div class="composer-bar">
-            <button id="attach-btn" class="icon-btn attach-btn" title="Attach"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></button>
+            <button id="attach-btn" class="icon-btn attach-btn" title="Attach files (images go to the model, other files are saved for the agent to read)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button><button id="mic-btn" class="icon-btn attach-btn mic-btn" title="Dictate (click to start, click again to insert the text · Esc cancels)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="18" x2="12" y2="22"/></svg><span class="mic-time" hidden></span></button>
             <button class="chip chip-inline" id="composer-model" title="Model (/model)" disabled>model</button>
             <button class="chip chip-inline" id="composer-thinking" title="Thinking level (/effort)" disabled>thinking</button>
             <button id="send-btn" class="send-btn" disabled title="Send (Enter)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg></button>
@@ -74,7 +74,7 @@
           </div>
         </div>
       </div>
-      <input type="file" id="file-input" accept="image/*" multiple hidden>
+      <input type="file" id="file-input" multiple hidden>
       <div id="widgets-below" class="widgets"></div>
       <div id="statusbar" class="statusbar"></div>
     </footer>
