@@ -32,17 +32,17 @@ use std::collections::VecDeque;
 use std::io;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use futures::Stream;
-use omp_tui::RuntimePort;
 use omp_tui::action::QueueKind;
 use omp_tui::controller::run_headless;
 use omp_tui::render::{RawOut, Shell};
+use omp_tui::RuntimePort;
 use omp_tui::{RunConfig, SubmitBehavior};
 use parking_lot::Mutex;
 use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
@@ -368,6 +368,8 @@ impl RuntimePort for TestPort {
     }
 
     fn resume_session(&self, path: PathBuf, fork: bool) {
+        // `Path`'s `Debug` (quoted) is the established message form.
+        #[allow(clippy::unnecessary_debug_formatting)]
         self.record(format!("resume_session({path:?}, fork={fork})"));
     }
 
@@ -632,7 +634,9 @@ impl TuiHarness {
     /// Whether the spawned loop task has ended (normally or by panic) while
     /// a wait is still outstanding.
     fn aborted(&self) -> bool {
-        self.run.as_ref().is_some_and(tokio::task::JoinHandle::is_finished)
+        self.run
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
     }
 
     /// Text of the newest frame: one line per terminal row, trailing blanks

@@ -131,6 +131,9 @@ impl Editor {
 }
 
 impl Component for Editor {
+    // One render pass over prompt bands, gutter, rows and bottom chrome,
+    // all sharing the shape geometry.
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
     fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         if area.height < 1 || area.width < 4 {
             return;

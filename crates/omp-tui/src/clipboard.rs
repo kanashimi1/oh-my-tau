@@ -353,10 +353,7 @@ fn read_image_via_powershell() -> Option<ClipboardImage> {
 }
 
 fn read_image_via_wl_paste() -> Option<ClipboardImage> {
-    let listing = capture(
-        Command::new("wl-paste").arg("--list-types"),
-        TEXT_TIMEOUT,
-    )?;
+    let listing = capture(Command::new("wl-paste").arg("--list-types"), TEXT_TIMEOUT)?;
     let offered: Vec<String> = stdout_lossy(listing).lines().map(str::to_owned).collect();
     for mime in IMAGE_MIME_TYPES {
         if !offered.iter().any(|m| m == mime) {
@@ -432,6 +429,8 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
         if chunk.len() < 4 {
             return None;
         }
+        // Chunks are 4 bytes; a bytecount dep would outweigh the loop.
+        #[allow(clippy::naive_bytecount)]
         let pad = chunk.iter().filter(|b| **b == b'=').count();
         if pad > 2 {
             return None;

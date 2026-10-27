@@ -111,7 +111,7 @@ pub struct DiffView {
 impl DiffView {
     /// Load a diff and reset scroll.
     pub fn set_diff(&mut self, title: &str, raw: &str) {
-        self.title = title.to_owned();
+        title.clone_into(&mut self.title);
         self.rows = parse_unified_diff(raw);
         self.scroll = 0;
     }
@@ -125,6 +125,8 @@ impl DiffView {
     /// Clamp the scroll so the last page is reachable but no further.
     #[cfg(test)]
     fn clamp_scroll(&mut self, body: u16) {
+        // Row counts are bounded by the u16 scroll field.
+        #[allow(clippy::cast_possible_truncation)]
         let max = self.rows.len().saturating_sub(body as usize) as u16;
         self.scroll = self.scroll.min(max);
     }

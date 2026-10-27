@@ -1521,6 +1521,8 @@ pub fn create_operation(
     }
 }
 
+// One slot per pipeline stage.
+#[allow(clippy::too_many_arguments)]
 fn finish_operation(
     lines: &[String],
     end_index: usize,
@@ -1614,6 +1616,7 @@ fn finish_operation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_pattern(
     lines: &[String],
     end_index: usize,

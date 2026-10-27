@@ -18,8 +18,10 @@ pub struct Oklch {
     pub h: f64,
 }
 
-/// Parse `#rgb` / `#rrggbb` into RGB; `None` when malformed.
+/// Parse `#rgb` / `#rrggbb` into RGB; `None` when malformed. The
+/// single-character names are the color channels of the formulas.
 #[must_use]
+#[allow(clippy::many_single_char_names)]
 pub fn parse_hex(hex: &str) -> Option<Rgb> {
     let h = hex.strip_prefix('#')?;
     let (r, g, b) = match h.len() {
@@ -87,11 +89,13 @@ pub fn palette_to_rgb(index: u8) -> Option<Rgb> {
             })
         }
         _ => {
-            let gray = 8 + (u16::from(index) - 232) * 10;
+            // 256-palette grays: 8 + (index-232)*10 ≤ 238, fits u8.
+            #[allow(clippy::cast_possible_truncation)]
+            let gray = (8 + (u16::from(index) - 232) * 10) as u8;
             Some(Rgb {
-                r: gray as u8,
-                g: gray as u8,
-                b: gray as u8,
+                r: gray,
+                g: gray,
+                b: gray,
             })
         }
     }
@@ -112,12 +116,18 @@ fn delinearize(linear: f64) -> u8 {
     } else {
         1.055 * linear.powf(1.0 / 2.4) - 0.055
     };
-    (c.clamp(0.0, 1.0) * 255.0).round() as u8
+    // Clamped to the u8 range just above.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        (c.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
 }
 
 /// Convert a hex color to OKLCH (TS `hexToOklch`). Unparseable input yields
-/// L=0, C=0 (near-gray; hue callers must check chroma).
+/// L=0, C=0 (near-gray; hue callers must check chroma). The names follow
+/// the OKLCH l/m/s cone response.
 #[must_use]
+#[allow(clippy::many_single_char_names)]
 pub fn hex_to_oklch(hex: &str) -> Oklch {
     let Some(rgb) = parse_hex(hex) else {
         return Oklch {

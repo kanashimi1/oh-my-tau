@@ -126,9 +126,11 @@ enum Maintenance {
 /// delivery goes through [`send_notification`] unless the host installs a
 /// hook (tests capture instead of writing escape sequences / spawning
 /// `notify-send`).
+type NotifyHook = Arc<dyn Fn(&TerminalNotification) + Send + Sync>;
+
 #[derive(Clone, Default)]
 pub struct NotifySink {
-    hook: Option<Arc<dyn Fn(&TerminalNotification) + Send + Sync>>,
+    hook: Option<NotifyHook>,
     record: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
@@ -253,6 +255,9 @@ impl EventPump {
     }
 }
 /// Root state; single owner, lives on the controller loop.
+// The mode flags mirror the TS client's flat session state; grouping them
+// would only add indirection over the same five booleans.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug)]
 pub struct App {
     /// Startup welcome banner state (first transcript block); `None` once
@@ -349,7 +354,9 @@ pub struct App {
     /// settings edits, never per keystroke); layered onto every theme.
     magic_off: u32,
     /// Pinned global settings file (see [`App::set_settings_global`]); `None`
-    /// means the user's own config resolved through `HOME`.
+    /// means the user's own config resolved through `HOME`. The inner
+    /// `Option` distinguishes "pinned to the global file" from "unpinned".
+    #[allow(clippy::option_option)]
     settings_global: Option<Option<PathBuf>>,
 }
 
@@ -551,7 +558,7 @@ impl App {
     fn cycle_thinking_level(&mut self, port: &impl RuntimePort) {
         let levels = self.effort_selectors();
         if levels.is_empty() {
-            self.push_system("Current model does not support thinking".into());
+            self.push_system("Current model does not support thinking");
             return;
         }
         let current = self.current_effort_selector();
@@ -567,7 +574,7 @@ impl App {
     fn open_thinking_selector(&mut self) {
         let mut levels = self.effort_selectors();
         if levels.is_empty() {
-            self.push_system("Current model does not support thinking".into());
+            self.push_system("Current model does not support thinking");
             return;
         }
         // TS lists `off, auto, …`; the selector shows the same order.
@@ -581,7 +588,7 @@ impl App {
     fn apply_context_usage(&mut self, frame: &Value) {
         if let Some(m) = frame.get("model").and_then(Value::as_str) {
             if self.status.model != m {
-                self.status.model = m.to_owned();
+                m.clone_into(&mut self.status.model);
                 self.overlays.models_mut().current = Some(m.to_owned());
             }
         }
@@ -750,7 +757,11 @@ impl App {
                 };
                 self.keys = KeybindingsManager::new(user);
                 (conflicts > 0).then(|| {
-                    format!("keybindings: {conflicts} conflicting override(s) in {path:?}; first binding wins on the input path")
+                    // `Path`'s `Debug` (quoted) is the established message form.
+                    #[allow(clippy::unnecessary_debug_formatting)]
+                    {
+                        format!("keybindings: {conflicts} conflicting override(s) in {path:?}; first binding wins on the input path")
+                    }
                 })
             }
             Err(e) => Some(format!("keybindings: {e}; defaults in effect")),
@@ -924,6 +935,8 @@ impl App {
     }
 
     /// Apply one classified runtime event directly (tests + compat path).
+    // One arm per runtime event keeps the event taxonomy in one place.
+    #[allow(clippy::too_many_lines)]
     pub fn apply_event(&mut self, event: &AppEvent) {
         match &event {
             AppEvent::AgentStart => {
@@ -972,7 +985,7 @@ impl App {
                 }
             }
             AppEvent::SessionNameChanged(name) => {
-                self.title_label = name.clone();
+                self.title_label.clone_from(name);
                 self.session_name = Some(name.clone()).filter(|n| !n.is_empty());
                 // Re-emit the current state with the new label.
                 let state = if self.status.streaming {
@@ -994,14 +1007,14 @@ impl App {
                         Some(format!("{p}/{id}"))
                     })
                 {
-                    self.status.model = m.clone();
+                    self.status.model.clone_from(&m);
                     self.overlays.models_mut().current = Some(m);
                 }
             }
             AppEvent::ContextUsage(frame) => self.apply_context_usage(frame),
             AppEvent::ModelsChanged { models } => {
                 let picker = self.overlays.models_mut();
-                picker.models = models.clone();
+                picker.models.clone_from(models);
             }
             AppEvent::ThinkingLevelChanged(frame) => {
                 let configured_auto =
@@ -1016,8 +1029,8 @@ impl App {
                 steering,
                 follow_up,
             } => {
-                self.steering = steering.clone();
-                self.follow_up = follow_up.clone();
+                self.steering.clone_from(steering);
+                self.follow_up.clone_from(follow_up);
                 self.status.queued = steering.len() + follow_up.len();
             }
             AppEvent::AutoCompaction(frame) => {
@@ -1085,14 +1098,14 @@ impl App {
                 }
                 self.autocomplete.set_commands(commands);
             }
-            AppEvent::CommandOutput(text) => self.push_system(text.clone()),
+            AppEvent::CommandOutput(text) => self.push_system(text),
             AppEvent::Notice { level, message } => {
                 let glyph = match level.as_str() {
                     "warning" => self.theme.symbol("status.warning"),
                     "error" => self.theme.symbol("status.error"),
                     _ => self.theme.symbol("status.info"),
                 };
-                self.push_system(format!("{glyph} {message}"));
+                self.push_system(&format!("{glyph} {message}"));
             }
             AppEvent::SessionLoaded { messages, name } => {
                 // The resumed history replaces the transcript; rows already
@@ -1157,8 +1170,9 @@ impl App {
         // The user started a prompt: let the runtime open the provider
         // connection now, so DNS + TLS are done by the time Enter is pressed.
         let was_empty = self.editor.is_empty();
-        let keep_running = match event {
-            Event::Key(key) => self.handle_key(*key, port, Instant::now()).unwrap_or(false),
+        let keep_running = if let Event::Key(key) = event {
+            self.handle_key(*key, port, Instant::now()).unwrap_or(false)
+        } else {
             // Bracketed paste: unwrap the payload (crossterm turns the
             // `\x1b[200~…\x1b[201~` bytes into `Event::Paste`) and run the
             // paste pipeline. Everything between the markers is paste
@@ -1166,12 +1180,10 @@ impl App {
             // separate `Event::Key` after the end marker (TS `stdin-buffer.ts`
             // `leadingEnter` splits bytes *after* `\x1b[201~`), so there is
             // nothing submit-shaped inside the payload.
-            _ => {
-                if let Some(payload) = crate::bracketed_paste::paste_of(event) {
-                    self.route_paste(payload, false);
-                }
-                true // resize: redraw-only
+            if let Some(payload) = crate::bracketed_paste::paste_of(event) {
+                self.route_paste(payload, false);
             }
+            true // resize: redraw-only
         };
         if was_empty && !self.editor.is_empty() {
             port.prewarm_connection();
@@ -1227,7 +1239,7 @@ impl App {
             Action::Slash { name, args } => port.run_slash(name, args),
             Action::SettingChanged { id, value } => {
                 if let Err(e) = port.settings_set(id.clone(), value.clone()) {
-                    self.push_system(format!("settings: failed to save {id}: {e}"));
+                    self.push_system(&format!("settings: failed to save {id}: {e}"));
                 } else {
                     self.apply_setting_live(&id, &value, port);
                     // Re-seed the overlay so layered values (env/project)
@@ -1268,6 +1280,9 @@ impl App {
     }
 
     /// Handle a key event; `None` means quit.
+    // One dispatcher over overlays, editor and chords, mirroring the TS key
+    // router; splitting it would scatter the ordering rules.
+    #[allow(clippy::too_many_lines)]
     fn handle_key(&mut self, key: KeyEvent, port: &impl RuntimePort, now: Instant) -> Option<bool> {
         // Global keys, active even under overlays. `?` toggles help (TS
         // hard-codes this chord outside the keybindings table); everything
@@ -1367,7 +1382,7 @@ impl App {
                         &prefix,
                     );
                     self.editor.apply_completion(
-                        applied.lines,
+                        &applied.lines,
                         applied.cursor_line,
                         applied.cursor_col,
                     );
@@ -1426,7 +1441,7 @@ impl App {
         self.autocomplete.close();
         let text = self.editor.take();
         self.editor.observe_prompt(&text);
-        if !self.submit_pipeline(text, port) || self.quit_requested {
+        if !self.submit_pipeline(&text, port) || self.quit_requested {
             self.quit_requested = false;
             return None;
         }
@@ -1438,7 +1453,17 @@ impl App {
     fn large_paste_menu_threshold(&self) -> usize {
         self.load_settings()
             .get_number("paste.largeMenuThreshold")
-            .map_or(100, |v| if v <= 0.0 { 0 } else { v as usize })
+            // Settings numbers are small positive counts here.
+            .map_or(100, |v| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    if v <= 0.0 {
+                        0
+                    } else {
+                        v as usize
+                    }
+                }
+            })
     }
 
     /// Route an incoming paste payload through the TS paste pipeline
@@ -1487,19 +1512,19 @@ impl App {
     fn apply_clipboard_outcome(&mut self, outcome: crate::clipboard::ClipboardOutcome) {
         use crate::clipboard::ClipboardOutcome;
         match outcome {
-            ClipboardOutcome::Image(png) => self.attach_clipboard_image(png),
+            ClipboardOutcome::Image(png) => self.attach_clipboard_image(&png),
             ClipboardOutcome::TextRaw(text) => {
                 self.editor.insert_str_at_cursor(&text);
             }
             ClipboardOutcome::Text(text) if text.is_empty() => {
-                self.push_system("Clipboard is empty".to_owned());
+                self.push_system("Clipboard is empty");
             }
             ClipboardOutcome::Text(text) => self.route_paste(&text, false),
             ClipboardOutcome::Empty => {
-                self.push_system("Clipboard is empty".to_owned());
+                self.push_system("Clipboard is empty");
             }
             ClipboardOutcome::Failed => {
-                self.push_system("Failed to read clipboard".to_owned());
+                self.push_system("Failed to read clipboard");
             }
         }
     }
@@ -1507,15 +1532,15 @@ impl App {
     /// Save a clipboard PNG to a temp file and queue it as an image
     /// attachment (TS `sink.attach({type:"image", …})`; omp-rs attachments
     /// reference a file path, so the payload is materialized first).
-    fn attach_clipboard_image(&mut self, png: Vec<u8>) {
+    fn attach_clipboard_image(&mut self, png: &[u8]) {
         let path = std::env::temp_dir().join(format!(
             "omp-clipboard-{}.png",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_millis())
         ));
-        if std::fs::write(&path, &png).is_err() {
-            self.push_system("Failed to save clipboard image".to_owned());
+        if std::fs::write(&path, png).is_err() {
+            self.push_system("Failed to save clipboard image");
             return;
         }
         self.editor
@@ -1551,15 +1576,14 @@ impl App {
                 if std::fs::write(&path, &text).is_ok() {
                     self.editor
                         .insert_str_at_cursor(&format!("{} ", path.display()));
-                    self.push_system(format!(
+                    self.push_system(&format!(
                         "Saved {line_count} pasted lines to {}",
                         path.display()
                     ));
                 } else {
                     self.editor.attach_text("paste.md", &text);
                     self.push_system(
-                        "Failed to save paste to a file — attached as a text chip instead"
-                            .to_owned(),
+                        "Failed to save paste to a file — attached as a text chip instead",
                     );
                 }
             }
@@ -1593,7 +1617,7 @@ impl App {
                 Maintenance::Retry => "retry",
                 Maintenance::Compaction => "compaction",
             };
-            self.push_system(format!("[{label} aborted]"));
+            self.push_system(&format!("[{label} aborted]"));
             return true;
         }
 
@@ -1638,7 +1662,7 @@ impl App {
         {
             self.last_esc = None;
             if self.journal.is_empty() {
-                self.push_system("nothing to rewind yet".into());
+                self.push_system("nothing to rewind yet");
             } else {
                 self.overlays
                     .open_tree(&self.journal.clone(), TreeMode::Rewind);
@@ -1701,8 +1725,8 @@ impl App {
         }
     }
 
-    fn push_system(&mut self, text: String) {
-        self.messages.push_system(&text);
+    fn push_system(&mut self, text: &str) {
+        self.messages.push_system(text);
     }
 
     /// Forward queued overlay intents (model picks, palette commands,
@@ -1720,7 +1744,7 @@ impl App {
 
     /// The submit pipeline (§4.1, P0 steps 1, 3, 4, 6, 7, 8, 11, 13).
     /// Returns `true` (always consumed).
-    fn submit_pipeline(&mut self, text: String, port: &impl RuntimePort) -> bool {
+    fn submit_pipeline(&mut self, text: &str, port: &impl RuntimePort) -> bool {
         // Step 1: trim. (Emoticon expansion is P1.)
         let text = text.trim().to_owned();
 
@@ -1762,7 +1786,7 @@ impl App {
         // shortcuts stay hidden behind a notice rather than misfiring as
         // free-text prompts.
         if text.starts_with('!') || text.starts_with(">>>") {
-            self.push_system("local commands (! / >>>) are not available yet".into());
+            self.push_system("local commands (! / >>>) are not available yet");
             return true;
         }
 
@@ -1835,7 +1859,7 @@ impl App {
             .iter()
             .any(|c| c.name == name || c.aliases.iter().any(|a| a == name));
         if !P0_BUILTINS.contains(&name) && !in_catalog {
-            self.push_system(format!("unknown command: /{name}"));
+            self.push_system(&format!("unknown command: /{name}"));
             return true;
         }
 
@@ -1845,7 +1869,7 @@ impl App {
                 self.armed_bare_command = None;
             } else {
                 self.armed_bare_command = Some(name.to_owned());
-                self.push_system(format!(
+                self.push_system(&format!(
                     "Press Enter again to run /{name}; add a leading space to send \"/{name}\" as a message"
                 ));
                 return true;
@@ -1870,7 +1894,7 @@ impl App {
             "resume" => self.slash_resume(),
             "tree" => {
                 if self.journal.is_empty() {
-                    self.push_system("no session tree yet".into());
+                    self.push_system("no session tree yet");
                 } else {
                     self.overlays
                         .open_tree(&self.journal.clone(), TreeMode::Tree);
@@ -1924,7 +1948,7 @@ impl App {
         self.overlays.toggle(OpenOverlay::Models);
         if !args.is_empty() {
             let picker = self.overlays.models_mut();
-            picker.query = args.to_owned();
+            args.clone_into(&mut picker.query);
             picker.selected = 0;
         }
     }
@@ -1952,7 +1976,7 @@ impl App {
     /// pick resolves to `Action::ResumeSession` via the overlay drain.
     fn slash_resume(&mut self) {
         if self.session_sources.is_empty() {
-            self.push_system("session storage is not available in this session".into());
+            self.push_system("session storage is not available in this session");
             return;
         }
         self.overlays.open_sessions(&self.session_sources);
@@ -1968,8 +1992,10 @@ impl App {
                 // Re-read the layered settings and hot-swap the theme for
                 // the terminal's current appearance.
                 match self.load_settings_theme() {
-                    Ok(()) => self.push_system(format!("{id} applied")),
-                    Err(e) => self.push_system(format!("{id} saved, but theme reload failed: {e}")),
+                    Ok(()) => self.push_system(&format!("{id} applied")),
+                    Err(e) => {
+                        self.push_system(&format!("{id} saved, but theme reload failed: {e}"));
+                    }
                 }
             }
             "defaultThinkingLevel" => {
@@ -1984,8 +2010,7 @@ impl App {
                 self.reload_display_prefs();
             }
             id if id.starts_with("magicKeywords.") => {
-                self.magic_off =
-                    crate::magic::disabled_mask(&self.load_settings());
+                self.magic_off = crate::magic::disabled_mask(&self.load_settings());
                 let theme = self.theme.clone();
                 self.set_theme(theme);
             }
@@ -2018,15 +2043,15 @@ impl App {
                 .into_iter()
                 .map(|t| t.name)
                 .collect();
-            self.push_system(format!("available themes: {}", names.join(", ")));
+            self.push_system(&format!("available themes: {}", names.join(", ")));
             return;
         }
         match crate::theme::load(args) {
             Ok(theme) => {
                 self.set_theme(theme);
-                self.push_system(format!("theme set to {args}"));
+                self.push_system(&format!("theme set to {args}"));
             }
-            Err(e) => self.push_system(format!("theme error: {e}")),
+            Err(e) => self.push_system(&format!("theme error: {e}")),
         }
     }
 
@@ -2042,7 +2067,11 @@ impl App {
         if groups == 0 {
             0
         } else {
-            (1 + groups + self.steering.len() + self.follow_up.len() + 1) as u16
+            // The queue holds a handful of entries, far below u16 range.
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                (1 + groups + self.steering.len() + self.follow_up.len() + 1) as u16
+            }
         }
     }
 
@@ -2277,10 +2306,10 @@ impl App {
     /// headings `Steering·n` / `After yield·n`, dim numbered rows, and a
     /// trailing `└ alt+up to edit` hint.
     fn render_band(&self, frame: &mut Frame<'_>, area: Rect) {
+        use ratatui::widgets::Paragraph;
         if area.height == 0 {
             return;
         }
-        use ratatui::widgets::Paragraph;
         let muted = Style::default().fg(self.theme.color("text_muted"));
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::default());
@@ -2320,12 +2349,14 @@ impl App {
 
     /// The "Working…" loader row (spinner + optional maintenance label).
     fn render_loader(&self, frame: &mut Frame<'_>, area: Rect) {
+        use ratatui::widgets::Paragraph;
         if area.height == 0 {
             return;
         }
-        use ratatui::widgets::Paragraph;
-        let frame_idx = (self.spinner_start.elapsed().as_millis() / u128::from(SPINNER_ADVANCE_MS))
-            as usize
+        let frame_idx = usize::try_from(
+            self.spinner_start.elapsed().as_millis() / u128::from(SPINNER_ADVANCE_MS),
+        )
+        .unwrap_or(usize::MAX)
             % SPINNER.len();
         let label = match self.maintenance {
             Some(Maintenance::Compaction) => " compacting… (esc to cancel)",
@@ -2360,7 +2391,7 @@ impl App {
             (Mood::Thinking, "Thinking…")
         };
         let elapsed = self.spinner_start.elapsed();
-        let tick = (elapsed.as_millis() / 700) as u64;
+        let tick = u64::try_from(elapsed.as_millis() / 700).unwrap_or(u64::MAX);
         let accent = Style::default().fg(self.theme.color("accent"));
         let dim = Style::default().fg(self.theme.color("dim"));
         let pink = Style::default().fg(ratatui::style::Color::Rgb(236, 112, 214));
@@ -3580,8 +3611,15 @@ mod tests {
                 shown.push(e.text.clone());
             }
         }
-        assert_eq!(shown.first().map(String::as_str), Some("t3"), "first snapshot after one window");
-        assert!(shown.contains(&"t7".to_string()), "a second snapshot mid-stream: {shown:?}");
+        assert_eq!(
+            shown.first().map(String::as_str),
+            Some("t3"),
+            "first snapshot after one window"
+        );
+        assert!(
+            shown.contains(&"t7".to_string()),
+            "a second snapshot mid-stream: {shown:?}"
+        );
     }
 
     #[test]
@@ -3782,7 +3820,7 @@ mod tests {
     #[test]
     fn session_loaded_rebuilds_transcript_from_history() {
         let mut app = app();
-        app.push_system("stale notice".into());
+        app.push_system("stale notice");
         app.apply_event(&parse_frame(&json!({
             "type": "session_loaded",
             "messages": [
@@ -4247,9 +4285,10 @@ mod tests {
         );
         // Time is up: the static rows commit, the live region drops them.
         let w = app.welcome.as_mut().unwrap();
-        w.started = w
-            .started
-            .map(|s| s.checked_sub(Duration::from_millis(welcome::SHIMMER_MS)).unwrap());
+        w.started = w.started.map(|s| {
+            s.checked_sub(Duration::from_millis(welcome::SHIMMER_MS))
+                .unwrap()
+        });
         assert!(w.started.is_some(), "the clock starts at the first paint");
         assert_eq!(app.animation_interval(), None);
         let rows = app.take_scrollback_lines(100, false);

@@ -353,7 +353,9 @@ impl Backend for ShellBackend {
 
 /// The inline rendering shell. Concrete on a real terminal via
 /// [`Shell::enter`]; testable with ratatui's `TestBackend` through
-/// [`Shell::new_for_backend`].
+/// [`Shell::new_for_backend`]. The booleans are independent shell modes,
+/// not one state machine.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Shell<B: Backend, R: RawOut> {
     term: Terminal<B>,
     raw: R,
@@ -452,7 +454,6 @@ impl Shell<ShellBackend, io::Stdout> {
             screen,
         })
     }
-
 
     /// Restore the terminal: leave any fullscreen borrow, pop kitty /
     /// modifyOtherKeys, bracketed paste off, DECCKM normal, show cursor,

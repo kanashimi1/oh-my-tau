@@ -373,7 +373,8 @@ static FENCE_EXTRA: &[(&str, &str)] = &[
     ("terminal", "text"),
 ];
 
-/// Highlight language for a markdown fence info string ("```rust").
+/// Highlight language for a markdown fence info string (the tag after a
+/// triple-backtick fence).
 #[must_use]
 pub fn lang_from_fence(info: &str) -> Option<&'static str> {
     let tok = info.split_whitespace().next()?.to_ascii_lowercase();

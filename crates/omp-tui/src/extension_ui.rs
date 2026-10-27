@@ -771,6 +771,10 @@ impl ExtensionUi {
             && !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        // While the search query is typing, printable chars (including the
+        // vim `j`/`k` below) must reach the query, so the duplicate
+        // navigation bodies cannot be merged across the guard.
+        #[allow(clippy::match_same_arms)]
         match key.code {
             KeyCode::Esc => return KeyResult::Cancel,
             KeyCode::Enter => {

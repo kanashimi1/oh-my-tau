@@ -94,6 +94,9 @@ pub trait RuntimePort: Send + Sync + 'static {
 
     /// Persist `value` for `id` to the global config.yml (TS `cfg://` set →
     /// `saveConfigFile`). An error string is surfaced as a system notice.
+    ///
+    /// # Errors
+    /// Returns the host's write failure message when persistence fails.
     fn settings_set(&self, id: String, value: Value) -> Result<(), String>;
 
     /// Efforts the live model supports, least to most intensive and without
@@ -160,6 +163,8 @@ impl RuntimePort for FakePort {
         self.record(format!("extension_ui_response({id}, {value})"));
     }
     fn resume_session(&self, path: std::path::PathBuf, fork: bool) {
+        // `Path`'s `Debug` (quoted) is the established message form.
+        #[allow(clippy::unnecessary_debug_formatting)]
         self.record(format!("resume_session({path:?}, fork={fork})"));
     }
     fn continue_run(&self) {

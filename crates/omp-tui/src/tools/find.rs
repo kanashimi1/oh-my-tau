@@ -168,7 +168,9 @@ fn hit_item(hit: &Value, range_limit: usize, theme: &Theme) -> Vec<Line<'static>
 }
 
 /// Find transcript rows (TS `findToolRenderer.renderCall/renderResult`).
+/// One pass over call + result shapes, mirroring the TS renderer.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'static>> {
     let args = args_of(call);
     let details = details_of(call);
@@ -310,7 +312,7 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
             "{} ",
             theme.symbol(if last { "tree.last" } else { "tree.branch" })
         );
-        let cont = if last {
+        let continuation = if last {
             "   ".to_owned()
         } else {
             format!("{}  ", theme.symbol("tree.vertical"))
@@ -318,7 +320,14 @@ pub fn find_lines(call: &Value, expanded: bool, theme: &Theme) -> Vec<Line<'stat
         for (j, mut row) in hit_item(hit, range_limit, theme).into_iter().enumerate() {
             row.spans.insert(
                 0,
-                dim(theme, if j == 0 { branch.clone() } else { cont.clone() }),
+                dim(
+                    theme,
+                    if j == 0 {
+                        branch.clone()
+                    } else {
+                        continuation.clone()
+                    },
+                ),
             );
             rows.push(row);
         }

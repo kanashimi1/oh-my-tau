@@ -132,8 +132,10 @@ pub enum AppEvent {
     Unknown(Value),
 }
 
-/// Classify one raw runtime frame.
+/// Classify one raw runtime frame. One arm per frame type keeps the wire
+/// taxonomy in a single match.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn parse_frame(frame: &Value) -> AppEvent {
     let kind = frame.get("type").and_then(Value::as_str).unwrap_or("");
     match kind {
@@ -272,11 +274,11 @@ fn parse_model_entry(entry: &Value) -> Option<crate::overlays::models::ModelEntr
         entry.get("id").and_then(Value::as_str)?,
         entry.get("contextWindow").and_then(Value::as_u64),
     );
-    model.name = entry
+    entry
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_owned();
+        .clone_into(&mut model.name);
     model.max_tokens = entry.get("maxTokens").and_then(Value::as_u64);
     model.cost_input = entry
         .get("costInput")
@@ -302,11 +304,11 @@ fn parse_model_entry(entry: &Value) -> Option<crate::overlays::models::ModelEntr
         .get("available")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    model.kind = entry
+    entry
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or_default()
-        .to_owned();
+        .clone_into(&mut model.kind);
     model.priority = entry.get("priority").and_then(Value::as_i64);
     Some(model)
 }

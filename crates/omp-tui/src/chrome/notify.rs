@@ -155,7 +155,7 @@ pub fn format_notification(
 
 fn protocol_code(protocol: NotifyProtocol) -> &'static str {
     match protocol {
-        NotifyProtocol::Osc9 => "9",
+        // OSC 9 is the fallback for unknown protocols.
         NotifyProtocol::Osc99 => "99",
         _ => "9",
     }
@@ -372,9 +372,8 @@ fn spawn_desktop_notify(n: &TerminalNotification) {
             .spawn();
         return;
     }
-    let path = match which("gdbus") {
-        Ok(p) => p,
-        Err(()) => return,
+    let Ok(path) = which("gdbus") else {
+        return;
     };
     // org.freedesktop.Notifications.Notify(app_name, replaces_id, app_icon,
     // summary, body, actions, hints, expire_timeout)

@@ -107,12 +107,15 @@ pub fn theme_name_for<'a>(dark: &'a str, light: &'a str, appearance: Appearance)
 /// The user's custom theme directory (TS `getCustomThemesDir`).
 #[must_use]
 pub fn custom_themes_dir() -> PathBuf {
-    let mut p = std::env::var_os("OMP_AGENT_DIR").map_or_else(|| {
+    let mut p = std::env::var_os("OMP_AGENT_DIR").map_or_else(
+        || {
             let mut home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
             home.push(".omp");
             home.push("agent");
             home
-        }, PathBuf::from);
+        },
+        PathBuf::from,
+    );
     p.push("themes");
     p
 }
@@ -315,7 +318,7 @@ fn parse_theme_json(name: &str, content: &str) -> Result<ParsedTheme, ThemeError
         .iter()
         .chain(schema::OPTIONAL_COLORS.iter())
     {
-        let raw = if let Some(v) = colors_obj.get(*token) { v } else {
+        let Some(raw) = colors_obj.get(*token) else {
             if !schema::OPTIONAL_COLORS.contains(token) {
                 missing.push(token);
             }
@@ -441,8 +444,10 @@ fn resolve_var_refs(
 
 /// Materialize a parsed theme onto a [`Theme`] (TS `createTheme`).
 fn build_theme(name: &str, parsed: &ParsedTheme) -> Result<LoadedTheme, ThemeError> {
-    let mut theme = Theme::default();
-    theme.glyph_set = parsed.symbol_preset.to_owned();
+    let mut theme = Theme {
+        glyph_set: parsed.symbol_preset.to_owned(),
+        ..Theme::default()
+    };
     for (token, resolved) in &parsed.colors {
         let color = match resolved {
             None => Color::Reset,

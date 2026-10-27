@@ -37,7 +37,7 @@ use tokio::time::{sleep, Sleep};
 
 use crate::app::App;
 use crate::port::RuntimePort;
-use crate::render::{ResizeAction, RawOut, Shell};
+use crate::render::{RawOut, ResizeAction, Shell};
 use crate::RunConfig;
 
 /// Height of the live region (chat viewport + editor + status line) in rows.
@@ -93,6 +93,9 @@ pub async fn run(cfg: RunConfig, port: impl RuntimePort) -> Result<()> {
 /// Headless entry point for integration tests: drives the same event pump
 /// over a caller-supplied [`Shell`] (e.g. ratatui's `TestBackend`) and a
 /// synthetic event stream, skipping tty/terminal ownership entirely.
+///
+/// # Errors
+/// Forwards [`drive`]'s errors (event pump, port or render failures).
 pub async fn run_headless<B: Backend, R: RawOut, E: Stream<Item = io::Result<Event>> + Unpin>(
     cfg: RunConfig,
     port: impl RuntimePort,

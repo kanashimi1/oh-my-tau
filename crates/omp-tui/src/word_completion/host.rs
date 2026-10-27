@@ -108,10 +108,10 @@ impl WordHost {
         let spawned = std::thread::Builder::new()
             .name("word-completion-load".into())
             .spawn(move || {
-                let loaded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     loader.load(&agent_dir, method, &foreign)
                 }));
-                if loaded.is_err() || loaded.is_ok_and(|ok| !ok) {
+                if outcome.is_err() || outcome.is_ok_and(|ok| !ok) {
                     *loader.slot.lock() = Slot::Failed;
                 }
             });
@@ -220,7 +220,9 @@ impl WordHost {
         } else {
             None
         };
-        let mut engine = if let Ok(engine) = pi_predict::open(method, &config) { engine } else {
+        let mut engine = if let Ok(engine) = pi_predict::open(method, &config) {
+            engine
+        } else {
             // Unloadable state (corrupt, or an incompatible engine
             // version): rebuild it like a fresh install (TS `#open`).
             let _ = std::fs::remove_file(dir.join(SNAPSHOT_FILE));
@@ -243,10 +245,9 @@ impl WordHost {
         let (after, ingested) = ingest_history(&mut *engine, &history, cursor.unwrap_or(0));
         changed |= ingested > 0 || cursor.is_none();
         self.cursor.store(after, Ordering::Relaxed);
-        if changed
-            && (engine.persist().is_err() || write_cursor(&dir, after).is_err()) {
-                self.dirty.store(true, Ordering::Relaxed);
-            }
+        if changed && (engine.persist().is_err() || write_cursor(&dir, after).is_err()) {
+            self.dirty.store(true, Ordering::Relaxed);
+        }
         let mut slot = self.slot.lock();
         if let Slot::Loading { pending } = &mut *slot {
             for prompt in pending.drain(..) {
