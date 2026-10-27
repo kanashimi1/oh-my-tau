@@ -29,9 +29,13 @@ use serde_json::Value;
 /// awaited on the process's main runtime — never on a throwaway runtime.
 #[must_use]
 pub async fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
-    let cwd = cwd.to_path_buf();
     let requested = REQUESTED_TOOLS.lock().clone();
-    let manager = Arc::new(McpManager::from_configs_for(&cwd, &requested));
+    register_tools(Arc::new(McpManager::from_configs_for(cwd, &requested))).await
+}
+
+/// Connect `manager`'s servers and wrap their tools (records the connected
+/// servers for the status line).
+async fn register_tools(manager: Arc<McpManager>) -> Vec<Arc<dyn AgentTool>> {
     let discovered = manager.tools().await;
     let mut connected = Vec::new();
     for (name, status) in manager.statuses().await {
@@ -254,8 +258,6 @@ for line in sys.stdin:
             return;
         }
         let root = tempfile::tempdir().expect("tempdir");
-        let empty_user = root.path().join("usercfg");
-        std::fs::create_dir_all(&empty_user).unwrap();
         let project = root.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
         let script = project.join("fake.py");
@@ -263,18 +265,15 @@ for line in sys.stdin:
             .unwrap()
             .write_all(FAKE_SERVER_PY.as_bytes())
             .unwrap();
-        std::fs::write(
-            project.join("mcp.json"),
-            serde_json::json!({"mcpServers": {"fake": {
-                "command": "python3", "args": [script.to_string_lossy()], "timeout": 15000
-            }}})
-            .to_string(),
-        )
-        .unwrap();
-
-        std::env::set_var("OMP_CONFIG_DIR", &empty_user);
-        let tools = mcp_tools(&project).await;
-        std::env::remove_var("OMP_CONFIG_DIR");
+        // Explicit server config: no process env (OMP_CONFIG_DIR) or
+        // `--tools` global, which parallel tests would race on.
+        let config: omp_mcp::McpServerConfig = serde_json::from_value(serde_json::json!({
+            "command": "python3", "args": [script.to_string_lossy()], "timeout": 15000
+        }))
+        .expect("server config");
+        let configs = std::iter::once(("fake".to_string(), config)).collect();
+        let manager = McpManager::new(Arc::new(project.clone()), configs);
+        let tools = register_tools(Arc::new(manager)).await;
 
         assert_eq!(tools.len(), 1);
         let tool = &tools[0];
