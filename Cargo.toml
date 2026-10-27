@@ -137,6 +137,13 @@ lto = "thin"
 codegen-units = 4
 debug = "line-tables-only"
 
+# Distribution build (`cargo build --profile dist -p omp-cli`): release minus
+# the DWARF line tables (~200 MB of the ~310 MB release binary; ~107 MB
+# stripped). `release` keeps them for symbolized local backtraces.
+[profile.dist]
+inherits = "release"
+strip = "debuginfo"
+
 # Vendored crossterm: adds xterm modifyOtherKeys (`CSI 27 ; mods ; code ~`) decoding
 # that upstream lacks — needed so ctrl+shift+v works when only the modifyOtherKeys
 # fallback (no kitty keyboard protocol) is engaged (TS keys.ts parity).

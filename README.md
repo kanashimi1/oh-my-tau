@@ -64,6 +64,9 @@ cargo build --release -p omp-cli
 ```
 
 The binary lands at `target/release/omt`.
+For a distributable binary without debug line tables (~107 MB instead of
+~310 MB) build the `dist` profile: `cargo build --profile dist -p omp-cli`
+(lands at `target/dist/omt`).
 
 ## Quick start
 
