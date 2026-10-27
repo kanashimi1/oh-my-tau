@@ -570,6 +570,7 @@ impl SubprocessLauncher {
     /// Test hook: a launcher over an explicit fake binary, so integration
     /// tests exercise the real subprocess env hand-off.
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     pub(crate) fn for_test(binary: &std::path::Path) -> Self {
         Self {
             runner: omp_task::TaskRunner::new(binary, 4),
@@ -2691,6 +2692,7 @@ pub fn budget_snapshot() -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;

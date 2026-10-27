@@ -140,7 +140,7 @@ pub fn deferred_tools_note(deferred: &[String]) -> String {
 ///
 /// # Errors
 /// Fails when the model cannot cross the pa-ai/pa-agent boundary.
-pub fn build_agent(
+pub async fn build_agent(
     cwd: &Path,
     selected: Selected,
     extra_tools: Vec<Arc<dyn AgentTool>>,
@@ -157,7 +157,7 @@ pub fn build_agent(
     if let Some(csv) = sysprompt_opts.tools_csv.as_deref() {
         crate::tools::mcp::set_requested_tools(csv);
     }
-    tools.extend(crate::tools::mcp::mcp_tools(cwd));
+    tools.extend(crate::tools::mcp::mcp_tools(cwd).await);
     // Hidden tools (TS `HIDDEN_TOOLS`): the active legs (think) are appended
     // after the built-ins; a `--tools <csv>` list admits hidden names too
     // (subagent runs carry `yield` in their csv), like TS's requestedTools

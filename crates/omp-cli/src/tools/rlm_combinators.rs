@@ -308,6 +308,7 @@ impl Backend for HostBackend {
     ) -> BoxFut<'a, Result<(String, Usage, Model), String>> {
         Box::pin(async move {
             #[cfg(test)]
+            #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
             {
                 let test_backend = super::rlm::TEST_BACKEND.lock().clone();
                 if let Some(b) = test_backend {
@@ -397,6 +398,7 @@ fn rank_op(args: &Value) -> Result<Value, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};

@@ -85,6 +85,7 @@ fn radix(mut v: u64, base: u32) -> String {
 /// # Errors
 /// Only when `only` names an unknown provider; per-provider HTTP failures are
 /// reported in [`ProviderRefresh::note`] (TS treats discovery as best-effort).
+#[allow(clippy::disallowed_methods)] // dedicated thread with its own scratch runtime (pre-existing pattern)
 pub fn refresh(dir: &AgentDir, only: Option<&str>) -> Result<Vec<ProviderRefresh>> {
     // Run on a dedicated plain thread with a scratch current-thread runtime:
     // the sync CLI path is often itself inside a tokio context, where both
@@ -107,6 +108,7 @@ pub fn refresh(dir: &AgentDir, only: Option<&str>) -> Result<Vec<ProviderRefresh
 ///
 /// # Errors
 /// See [`refresh`].
+#[allow(clippy::disallowed_methods)] // dedicated thread with its own scratch runtime (pre-existing pattern)
 pub async fn refresh_async(dir: &AgentDir, only: Option<&str>) -> Result<Vec<ProviderRefresh>> {
     let dir = dir.clone();
     let only = only.map(str::to_owned);
@@ -520,6 +522,7 @@ fn now_ms() -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

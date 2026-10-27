@@ -246,6 +246,7 @@ fn is_definitive_oauth_failure(message: &str) -> bool {
 
 /// TS `oauth.refresh(id)` → the refreshed snapshot entry. A definitive provider failure
 /// disables the row (TS `refreshStored` `disabledCause`).
+#[allow(clippy::disallowed_methods)] // bin: block_on runs on a spawn_blocking thread
 async fn refresh_entry(state: &State, id: i64, auth_recovery: bool) -> Result<Map<String, Value>> {
     // The omp-providers refresh holds a (!Sync) rusqlite connection across awaits, so its future
     // is !Send: drive it on a blocking-pool thread instead of a runtime worker.
@@ -964,6 +965,7 @@ fn parse_args() -> Result<String> {
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::disallowed_methods)] // entry point
 async fn main() -> Result<()> {
     let bind = parse_args()?;
     let addr: SocketAddr = bind

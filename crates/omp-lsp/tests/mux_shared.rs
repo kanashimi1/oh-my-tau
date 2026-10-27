@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration test for the broker-shared LSP mux (omp `src/lsp/mux`):
 //! two sessions attach to one shared `fake_lsp` process behind the
 //! `omp-lsp-mux` daemon, the full client path works over the socket, and the

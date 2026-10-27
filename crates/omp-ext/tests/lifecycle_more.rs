@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Payload shapes for the retry/compaction/goal/approval/user-shell events and the
 //! `assistant_message` / `user_bash` / `user_python` result aggregation (same fixture as `lifecycle.rs`).
 

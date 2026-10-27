@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! `mux_session`: single-session driver used by the LSP-sharing measurement
 //! (report `LspShare.md`). Opens one LSP client against the `fake_lsp`
 //! fixture in `--root`, runs a didOpen → diagnostics → definition turn, holds

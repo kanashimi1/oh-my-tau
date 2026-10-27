@@ -206,6 +206,7 @@ fn has_live_service(env: &Env) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::tools::task;

@@ -12,6 +12,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("/assets/tools.js", "text/javascript; charset=utf-8", include_str!("assets/tools.js")),
     ("/assets/transcript.js", "text/javascript; charset=utf-8", include_str!("assets/transcript.js")),
     ("/assets/dialogs.js", "text/javascript; charset=utf-8", include_str!("assets/dialogs.js")),
+    ("/assets/annotate.js", "text/javascript; charset=utf-8", include_str!("assets/annotate.js")),
     ("/assets/composer.js", "text/javascript; charset=utf-8", include_str!("assets/composer.js")),
     ("/assets/appearance.js", "text/javascript; charset=utf-8", include_str!("assets/appearance.js")),
     ("/assets/models.js", "text/javascript; charset=utf-8", include_str!("assets/models.js")),

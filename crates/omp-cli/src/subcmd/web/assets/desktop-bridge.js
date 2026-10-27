@@ -118,7 +118,7 @@
         c.width = Math.round(sw); c.height = Math.round(sh);
         c.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
         const data = c.toDataURL("image/png").split(",")[1];
-        OMP.app?.composer?.addImageData({ data, mimeType: "image/png" });
+        OMP.app?.composer?.addImageData({ data, mimeType: "image/png", annotate: true });
         OMP.app?.composer?.focus?.();
       };
       const onKey = (e) => {

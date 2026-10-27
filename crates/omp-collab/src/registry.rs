@@ -1285,6 +1285,7 @@ pub async fn resolve_collab_host_link(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use std::collections::{HashMap, HashSet};
 

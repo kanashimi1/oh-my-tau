@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration tests for the controllable-runner review findings
 //! (ReviewEvalAgents 1-4 + the process-group security finding) with fake
 //! `--mode rpc` / `-p` shell children.

@@ -454,6 +454,7 @@ impl CommitGuard {
 
     /// Whether [`Self::cancel`] arrived.
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
@@ -870,6 +871,7 @@ fn seed_entry_dom(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};

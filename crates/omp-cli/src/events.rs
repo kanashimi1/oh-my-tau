@@ -824,6 +824,7 @@ pub fn todo_auto_clear_frame() -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

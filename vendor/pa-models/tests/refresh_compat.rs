@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! Compat regressions (spec §5.2) over the generic `CatalogCache` and a
 //! scripted local HTTP server: fake future versions keep last-good
 //! silently, malformed entries skip, failures keep state unchanged,

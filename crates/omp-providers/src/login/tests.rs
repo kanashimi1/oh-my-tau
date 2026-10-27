@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::pin::Pin;

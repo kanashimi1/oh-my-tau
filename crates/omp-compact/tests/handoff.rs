@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Handoff lane smoke tests: the document oneshot, the `<files>` upsert, the
 //! committed `method: "handoff"` entry, and its context replay. Real sessions
 //! contain 62 handoff compactions (the most common non-soft method), so this

@@ -21,6 +21,7 @@ mod rpc;
 mod runtime;
 mod slash_extra;
 pub mod subcmd;
+mod sync_bridge;
 mod sysprompt;
 mod title;
 mod tools;
@@ -262,6 +263,7 @@ fn strip_deleted_suffix(exe: &std::path::Path) -> Option<std::path::PathBuf> {
     live.is_file().then_some(live)
 }
 
+#[allow(clippy::disallowed_methods)] // entry point: sync main drives the process runtime
 fn main() -> Result<()> {
     // The rpc/print loop is strictly sequential; a multi-thread runtime costs
     // ~20-30 ms CPU/turn in scheduler overhead (measured, RPC12 team run).
@@ -493,7 +495,8 @@ async fn async_main() -> Result<()> {
         extensions.as_ref(),
         &sp_opts,
         context_strategy,
-    )?;
+    )
+    .await?;
     // eval's in-cell bridge: `tool.<name>` dispatches to the session's tools, and
     // completion()/judge() need the live provider target.
     crate::tools::eval_bridge::set_session_tools(agent.tools().await);
@@ -710,6 +713,7 @@ fn last_thinking(messages: &[pa_agent::types::AgentMessage]) -> Option<String> {
 /// TS `postmortem.register("lsp-shutdown", …)`: the LSP client registry is a
 /// process static (it never drops), so `shutdown_all` must run explicitly on
 /// every exit path instead of relying on `kill_on_drop`.
+#[allow(clippy::disallowed_methods)] // exit path: block_on runs via block_in_place or a fresh runtime off the executor
 fn shutdown_lsp() {
     // Exit paths run inside the main tokio runtime: parking the worker via
     // `block_in_place` and driving the shutdown on the entered runtime (a

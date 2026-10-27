@@ -126,6 +126,7 @@ fn hub_dir(flags: &std::sync::Arc<std::collections::HashMap<String, String>>) ->
 
 /// Dedicated-thread current-thread runtime (the `subcmd/stats.rs` pattern;
 /// the CLI's own runtime must not be `block_on`ed).
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 fn block_on<T>(fut: impl Future<Output = Result<T>> + Send + 'static) -> Result<T>
 where
     T: Send + 'static,
@@ -141,6 +142,7 @@ where
     .unwrap_or_else(|e| anyhow::bail!("hub worker thread panicked: {e:?}"))
 }
 
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 fn connect(
     flags: &std::sync::Arc<std::collections::HashMap<String, String>>,
 ) -> impl Future<Output = Result<HubClient>> + Send + 'static {
@@ -149,6 +151,7 @@ fn connect(
     async move { HubClient::connect_with(hub, auto_start).await }
 }
 
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 fn cmd_serve(flags: &std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
     let hub = hub_dir(flags);
     eprintln!(

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 //! Protocol-level guard for web-UI view-switch latency: a real `omp-rs web`
 //! hub runs against a temp HOME with a seeded 400-message session, and
 //! `ATTACH_CYCLES` times a view switch is replayed at the protocol level —

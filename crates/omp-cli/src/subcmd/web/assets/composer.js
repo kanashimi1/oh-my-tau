@@ -136,26 +136,40 @@
       };
       reader.readAsDataURL(file);
     }
-    /** External API (contract): attach an image from raw base64 data. */
-    addImageData({ data, mimeType }) {
+    /** External API (contract): attach an image from raw base64 data;
+     *  `annotate` opens the pin editor on it right away. */
+    addImageData({ data, mimeType, annotate }) {
       if (!data) return;
-      this.images.push({ type: "image", data, mimeType: mimeType || "image/png" });
+      const att = { type: "image", data, mimeType: mimeType || "image/png" };
+      this.images.push(att);
       this.renderAttachments();
+      if (annotate) this.annotate(att);
+    }
+    async annotate(att) {
+      if (await OMP.annotate(att)) this.renderAttachments();
+      this.focus();
     }
     renderAttachments() {
       this.attBox.replaceChildren(...this.images.map((img, i) => el("div.attachment", null,
-        el("img", { src: `data:${img.mimeType};base64,${img.data}` }),
+        el("img", {
+          src: `data:${img.mimeType};base64,${img.data}`,
+          title: "Click to add pins with comments",
+          onclick: () => this.annotate(img),
+        }),
+        img.pins?.length ? el("span.pin-badge", { text: String(img.pins.length), title: "Pins" }) : null,
         el("button", { text: "×", title: "Remove", onclick: () => { this.images.splice(i, 1); this.renderAttachments(); } }))));
     }
 
     submit(mode) {
-      const text = this.ta.value;
-      if (!text.trim() && !this.images.length) return;
-      const images = this.images;
+      const raw = this.ta.value;
+      if (!raw.trim() && !this.images.length) return;
+      const notes = OMP.pinNotes(this.images);
+      const text = notes ? (raw.trim() ? `${raw}\n\n${notes}` : notes) : raw;
+      const images = this.images.map(({ type, data, mimeType }) => ({ type, data, mimeType }));
       if (this.onSubmit(text, images, mode) === false) return;
-      if (text.trim()) {
-        this.history = this.history.filter((h) => h !== text);
-        this.history.push(text);
+      if (raw.trim()) {
+        this.history = this.history.filter((h) => h !== raw);
+        this.history.push(raw);
         if (this.history.length > HISTORY_MAX) this.history.splice(0, this.history.length - HISTORY_MAX);
         try { localStorage.setItem(HISTORY_KEY, JSON.stringify(this.history)); } catch { /* quota */ }
       }

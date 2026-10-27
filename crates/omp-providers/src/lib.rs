@@ -946,6 +946,7 @@ pub fn auth_details(dir: &AgentDir, provider: &str) -> AuthDetails {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     /// Async resolution never parks the executor: two concurrent `!command`
     /// values (0.4 s each) finish well under 0.8 s even on a single-threaded

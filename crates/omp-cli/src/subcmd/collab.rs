@@ -18,6 +18,7 @@ const USAGE: &str =
 /// Registry IPC is async; this subcommand surface is sync — and `run` is
 /// called from inside the CLI's runtime, so `block_on` must happen off that
 /// runtime (dedicated thread, `subcmd/stats.rs` pattern).
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 fn block_on_registry<T>(fut: impl Future<Output = anyhow::Result<T>> + Send + 'static) -> Result<T>
 where
     T: Send + 'static,

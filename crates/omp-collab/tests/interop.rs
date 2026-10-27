@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Cross-language interop: the RUST collab stack against the REAL TS
 //! collab-web guest (`vendor-src/oh-my-pi/packages/collab-web/src/lib/client.ts`)
 //! driven by bun.

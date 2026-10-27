@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Call-lifecycle tests for the three upstream 18.12.4 MCP fixes:
 //! `mcp-cancel-notification` (aborted/timed-out stdio calls send exactly one
 //! `notifications/cancelled`), `mcp-retry-double-run` (a request already

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration tests for the `omp-auth-broker serve` Rust daemon.
 //!
 //! Each test spins up the compiled binary against an isolated `agent/` dir on a

@@ -769,6 +769,7 @@ pub async fn broker_disable(cfg: &BrokerConfig, id: i64, cause: &str) -> Result<
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod usage_tests {
     use parking_lot::Mutex;
     use std::io::{Read, Write};

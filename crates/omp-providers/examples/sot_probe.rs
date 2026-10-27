@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! SoT (State-of-Thought) streaming early-exit probe.
 //!
 //! `cargo run --release -p omp-providers --example sot_probe -- \

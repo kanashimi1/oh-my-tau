@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Regression tests for the confirmed MCP hang bugs (vega report F1): a
 //! request whose frame exceeds the OS pipe buffer must fail bounded by the
 //! request timeout even when the server never drains stdin — the old code

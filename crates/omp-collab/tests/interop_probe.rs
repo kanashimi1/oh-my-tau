@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Throwaway probe: does `RelayHandle::send_binary` followed immediately by
 //! `close()` deliver the queued frame? Documented: "queued frames still flush
 //! to the live socket ahead of the close frame".

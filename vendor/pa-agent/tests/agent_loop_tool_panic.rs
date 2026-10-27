@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! A panicking tool becomes an error tool result for that call; the turn and
 //! the agent loop keep running (parallel, sequential and early read-only paths).
 

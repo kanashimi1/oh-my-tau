@@ -35,12 +35,11 @@ pub struct OpCtx {
 
 /// The host half of the cell↔host wire protocol: one instance per running
 /// cell, passed to [`omp_eval::HostBridge`]. `call` runs on the kernel's
-/// spawn-blocking thread and drives async tool work through the stored tokio
-/// Handle (`rt.block_on`), so tools observe a normal multi-thread runtime.
+/// spawn-blocking thread and drives async tool work through
+/// [`crate::sync_bridge`], so tools observe a normal multi-thread runtime.
 pub struct EvalBridge {
     env: Arc<Env>,
     ctx: OpCtx,
-    rt: tokio::runtime::Handle,
     policy: BridgePolicy,
 }
 
@@ -171,17 +170,13 @@ const AGENT_OPS: [&str; 9] = [
 
 impl EvalBridge {
     #[must_use]
-    pub fn new(env: Arc<Env>, ctx: OpCtx, rt: tokio::runtime::Handle) -> Self {
+    pub fn new(env: Arc<Env>, ctx: OpCtx) -> Self {
         let policy = BridgePolicy::session(&env);
-        Self {
-            env,
-            ctx,
-            rt,
-            policy,
-        }
+        Self { env, ctx, policy }
     }
 
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     pub(crate) fn with_policy(mut self, policy: BridgePolicy) -> Self {
         self.policy = policy;
         self
@@ -573,9 +568,10 @@ impl EvalBridge {
 
 impl omp_eval::HostBridge for EvalBridge {
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
-        // The kernel invokes this from its spawn-blocking cell loop; drive
-        // the async tool graph on the stored runtime handle.
-        self.rt.block_on(self.dispatch(op, args))
+        // The kernel invokes this from its spawn-blocking cell loop, so it
+        // may park this thread while the runtime drives the async tool
+        // graph (see `crate::sync_bridge`).
+        crate::sync_bridge::block_on(self.dispatch(op, args))
     }
 
     fn notify(&self, op: &str, args: Value) {
@@ -796,6 +792,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use pa_agent::types::{AfterToolCallResult, BeforeToolCallResult};
@@ -814,7 +811,7 @@ mod tests {
             on_update: None,
             tool_call_id: "cell".into(),
         };
-        EvalBridge::new(Arc::clone(env), ctx, tokio::runtime::Handle::current()).with_policy(policy)
+        EvalBridge::new(Arc::clone(env), ctx).with_policy(policy)
     }
 
     fn all_tools(env: &Env) -> Vec<Arc<dyn AgentTool>> {

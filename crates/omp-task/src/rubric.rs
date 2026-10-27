@@ -387,6 +387,7 @@ pub async fn score_outputs(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

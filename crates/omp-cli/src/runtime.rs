@@ -430,6 +430,7 @@ impl Runtime {
         // effect; serialize with the bus tests so their owner stays stable
         // for the whole test body (production runs one runtime per process).
         #[cfg(test)]
+        #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
         let _a2a_serial = crate::tools::a2a::tests::LOCK.lock().await;
         let live = agent.model().await;
         let edit_mode = edit_mode_for(&live.id);
@@ -604,6 +605,7 @@ impl Runtime {
 
     /// `(steering, followUp)` previews of the queued messages.
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     pub fn queued_previews(&self) -> (Vec<String>, Vec<String>) {
         self.queued()
     }
@@ -3573,7 +3575,7 @@ impl Runtime {
                 for tool in &tools {
                     tool.set_a2a_owner(&self.a2a_owner);
                 }
-                tools.extend(crate::tools::mcp::mcp_tools(&self.cwd));
+                tools.extend(crate::tools::mcp::mcp_tools(&self.cwd).await);
                 // TS `reconcileThinkTool`: model swaps re-evaluate the hidden
                 // think tool's eligibility.
                 let hidden =
@@ -4637,6 +4639,7 @@ pub fn unsupported(what: &str) -> CmdError {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod todo_reminder_tests {
     use super::*;
     use serde_json::json;
@@ -4727,6 +4730,7 @@ mod todo_reminder_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod context_usage_tests {
     use super::*;
     use serde_json::json;
@@ -4805,6 +4809,7 @@ mod context_usage_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod resume_seed_tests {
     use super::*;
     use serde_json::json;
@@ -5154,6 +5159,7 @@ impl Drop for Runtime {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod turn_outcome_tests {
     use super::*;
     use serde_json::json;
@@ -5206,6 +5212,7 @@ mod turn_outcome_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod session_model_state_tests {
     use super::*;
 
@@ -5259,6 +5266,7 @@ mod session_model_state_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod ultra_tests {
     use std::time::Duration;
 
@@ -5679,6 +5687,7 @@ mod ultra_tests {
 /// in-flight compaction must cancel/serialize the pass — the concurrent turn
 /// is never silently replaced and the summary never lands in the wrong file.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod compaction_guard_tests {
     use std::sync::Arc;
     use std::time::Duration;
@@ -6152,6 +6161,7 @@ mod compaction_guard_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod a2a_delivery_tests {
     use super::*;
     use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};

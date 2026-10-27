@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration test against a fake stdio MCP server: exercises config
 //! loading, connect/init handshake, `tools/list` pagination-free listing,
 //! `tools/call`, result formatting, and per-server failure isolation.

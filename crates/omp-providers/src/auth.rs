@@ -1087,6 +1087,7 @@ async fn local_pool(
 
 /// Run `fut` to completion on a private runtime thread: callable from sync code and from inside
 /// a tokio worker alike.
+#[allow(clippy::disallowed_methods)] // dedicated thread with its own scratch runtime (pre-existing pattern)
 fn block_on<M, F>(make: M) -> F::Output
 where
     M: FnOnce() -> F + Send,
@@ -1237,6 +1238,7 @@ pub fn credential_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<Crede
 
 /// Local-store lookup only (no broker): the seam tests use so the process env cannot redirect them.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 pub(crate) fn local_credential(db: &Path, provider: &str) -> Option<Credential> {
     let hosts = Hosts::default();
     block_on(|| local_resolve(db, provider, None, &hosts))
@@ -1387,4 +1389,5 @@ pub async fn recover_async(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests;

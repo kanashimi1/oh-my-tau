@@ -34,6 +34,7 @@ use super::eval_journal::{self, Lang};
 use super::util::{SpillConfig, notice_with_artifact, save_artifact, sink_window, spill_window};
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 #[path = "eval_tests.rs"]
 mod eval_tests;
 
@@ -347,9 +348,9 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         });
     }
 
-    // The bridge drives async tool work through the ambient runtime from the
-    // kernel's blocking thread; fresh per cell, like omp's per-request ctx.
-    let rt = tokio::runtime::Handle::current();
+    // The bridge drives async tool work through the ambient runtime (via
+    // `crate::sync_bridge`) from the kernel's blocking thread; fresh per
+    // cell, like omp's per-request ctx.
     let make_bridge = || {
         EvalBridge::new(
             Arc::clone(&env),
@@ -359,7 +360,6 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
                 on_update: ctx.on_update.clone(),
                 tool_call_id: ctx.tool_call_id.clone(),
             },
-            rt.clone(),
         )
     };
 

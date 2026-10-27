@@ -568,6 +568,7 @@ async fn write_http_response(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::protocol::pack_envelope;

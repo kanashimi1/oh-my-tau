@@ -208,19 +208,6 @@ fn edit_target_paths(env: &Env, args: &Value, session: &mut Session) -> Vec<Path
     out
 }
 
-/// Run the async diagnostics gate from the synchronous `write` tool, which
-/// executes on a `spawn_blocking` thread (see `tools.rs`).
-fn run_gate_blocking(env: &Env, files: &[PathBuf]) -> Option<edit_diagnostics::GateResult> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.block_on(edit_diagnostics::run(env, files)),
-        Err(_) => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("edit diagnostics gate runtime")
-            .block_on(edit_diagnostics::run(env, files)),
-    }
-}
-
 /// omp `EditToolDetails`: the numbered `diff` (+ `firstChangedLine`, `op`,
 /// `path`) the transcript card renders; several files add `perFileResults`.
 fn edit_details(outcome: &pi_edit::session::ApplyOutcome) -> Value {
@@ -259,7 +246,7 @@ fn edit_details(outcome: &pi_edit::session::ApplyOutcome) -> Value {
 ///
 /// # Errors
 /// Missing arguments or filesystem failures.
-pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
+pub async fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     let raw = str_arg(args, "path")?;
     let Some(content) = args.get("content").and_then(Value::as_str) else {
         bail!("`content` is required to write {raw}");
@@ -273,18 +260,9 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         // `AgentProtocolHandler.write` → `executeSend`): steer a running eval
         // subagent instead of hitting the read-only output store.
         if let Some(to) = normalized.strip_prefix("agent://") {
-            // Delivery receipts are async; `write` itself is a sync tool on a
-            // `spawn_blocking` thread (see `tools.rs`), so drive the future to
-            // completion on the current runtime (or a throwaway one, e.g. in
-            // unit tests without a reactor).
-            let delivered = match tokio::runtime::Handle::try_current() {
-                Ok(handle) => handle.block_on(super::eval_agents::deliver_message(to, content)),
-                Err(_) => tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("write agent:// delivery runtime")
-                    .block_on(super::eval_agents::deliver_message(to, content)),
-            };
+            // Delivery receipts are async; `write` is async like `edit`, so
+            // just await the delivery.
+            let delivered = super::eval_agents::deliver_message(to, content).await;
             return delivered
                 .map(AgentToolResult::text)
                 .map_err(|error| anyhow!(error));
@@ -309,9 +287,7 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
     // live endpoint holds a claim on the path (the repo anchor is resolved
     // by the guard itself; the file may not exist yet).
     if super::a2a::claims_block_mode_enabled() {
-        if let Some(reason) =
-            super::a2a::claims_block_reason_blocking(std::slice::from_ref(&path))
-        {
+        if let Some(reason) = super::a2a::claims_block_reason(std::slice::from_ref(&path)).await {
             bail!("{reason}");
         }
     }
@@ -328,7 +304,7 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         format_path_relative_to_cwd(&path, &env.cwd, false)
     ));
     // Advisory post-write LSP gate (same rules as `edit`).
-    if let Some(gate) = run_gate_blocking(env, &[path.clone()]) {
+    if let Some(gate) = edit_diagnostics::run(env, &[path.clone()]).await {
         result
             .content
             .push(pa_agent::types::ToolResultContent::text(gate.section));
@@ -338,7 +314,7 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
         result.details["diagnostics"] = Value::Array(gate.diagnostics);
     }
     // Advisory post-write claims guard (warning line) + auto-claim.
-    for line in super::a2a::claims_check_files_blocking(std::slice::from_ref(&path)) {
+    for line in super::a2a::claims_check_files(std::slice::from_ref(&path)).await {
         result
             .content
             .push(pa_agent::types::ToolResultContent::text(line));
@@ -348,6 +324,7 @@ pub fn write(env: &Env, args: &Value) -> Result<AgentToolResult> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::tools::read::read;
@@ -493,11 +470,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_creates_parents_and_reports_bytes() {
+    #[tokio::test]
+    async fn write_creates_parents_and_reports_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(dir.path(), true);
-        let r = write(&env, &json!({"path": "a/b/c.txt", "content": "héllo"})).unwrap();
+        let r = write(&env, &json!({"path": "a/b/c.txt", "content": "héllo"}))
+            .await
+            .unwrap();
         assert_eq!(text_of(&r), "Successfully wrote 6 bytes to a/b/c.txt");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("a/b/c.txt")).unwrap(),
@@ -505,14 +484,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn write_agent_url_is_a_message_not_a_read_only_store() {
+    #[tokio::test]
+    async fn write_agent_url_is_a_message_not_a_read_only_store() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(dir.path(), true);
         let err = write(
             &env,
             &json!({"path": "agent://nobody-here", "content": "hi"}),
         )
+        .await
         .unwrap_err()
         .to_string();
         assert!(

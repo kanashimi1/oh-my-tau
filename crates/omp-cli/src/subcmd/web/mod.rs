@@ -169,6 +169,7 @@ fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
 ///
 /// # Errors
 /// Bad flags or a failed bind.
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 pub fn run(args: &[String]) -> Result<i32> {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");

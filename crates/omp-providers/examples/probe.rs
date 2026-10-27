@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! `cargo run -p omp-providers --example probe -- <model_ref> "<prompt>"`
 use std::io::Write;
 

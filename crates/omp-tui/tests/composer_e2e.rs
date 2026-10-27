@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! First headless e2e over the [`omp_tui::controller::run_headless`] seam:
 //! startup renders welcome + composer, typed keys land in the composer
 //! draft, the frame settles, and the `app.exit` chord ends `run()` with

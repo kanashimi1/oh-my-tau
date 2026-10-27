@@ -756,6 +756,7 @@ impl omp_tui::RuntimePort for Port {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use omp_tui::RuntimePort as _;
