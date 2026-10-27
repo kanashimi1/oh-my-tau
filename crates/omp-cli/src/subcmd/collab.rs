@@ -178,13 +178,11 @@ fn print_link(selector: &str, view: bool, json_out: bool) -> Result<i32> {
 /// # Errors
 /// Unknown action, bad flags, or registry I/O failure.
 pub fn run(args: &[String]) -> Result<i32> {
-    let (action, rest) = match args.split_first() {
-        Some((a, r)) => (a.as_str(), r),
-        None => {
-            println!("{USAGE}");
-            return Ok(0);
-        }
+    let Some((action, rest)) = args.split_first() else {
+        println!("{USAGE}");
+        return Ok(0);
     };
+    let action = action.as_str();
     match action {
         "list" => {
             let json_out = parse_list(rest)?;

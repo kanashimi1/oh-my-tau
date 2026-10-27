@@ -182,7 +182,7 @@ impl Limits {
         let num = |id: &str, dv: usize| {
             s.get_number(id)
                 .filter(|v| *v >= 1.0)
-                .map_or(dv, |v| v as usize)
+                .map_or(dv, crate::context_policy::saturating_usize)
         };
         Self {
             max_slots: num("context.clm.maxSlots", d.max_slots),
@@ -219,6 +219,7 @@ impl SlotTable {
     /// Render the slots message body (`SLOTS_MARKER` first).
     #[must_use]
     pub fn render(&self, host_evicted: &[String]) -> String {
+        use std::fmt::Write as _;
         let mut out = String::from(SLOTS_MARKER);
         out.push_str(
             "\nYour working memory, maintained with the context_edit tool. Raw conversation \
@@ -229,13 +230,16 @@ impl SlotTable {
             out.push_str("(no slots)\n");
         }
         for (name, text) in &self.slots {
-            out.push_str(&format!("<slot id=\"{name}\">\n{text}\n</slot>\n"));
+            writeln!(out, "<slot id=\"{name}\">\n{text}\n</slot>")
+                .expect("writing to a String is infallible");
         }
         if !host_evicted.is_empty() {
-            out.push_str(&format!(
-                "(host evicted over-budget slots: {})\n",
+            writeln!(
+                out,
+                "(host evicted over-budget slots: {})",
                 host_evicted.join(", ")
-            ));
+            )
+            .expect("writing to a String is infallible");
         }
         out.push_str("</context-slots>");
         out
@@ -303,7 +307,7 @@ pub fn apply_ops(table: &mut SlotTable, ops: &[Op], lim: &Limits) -> Result<(), 
                         names(&t)
                     )
                 })?;
-                t.slots[p].1 = text.clone();
+                t.slots[p].1.clone_from(text);
             }
             Op::Append { slot, text } => {
                 if let Some(p) = t.pos(slot) {
@@ -435,7 +439,7 @@ pub fn plan(messages: &[AgentMessage], kind: Kind, lim: &Limits) -> Plan {
         }
         if p.tail_start.is_some() && i < last_user {
             p.shown = p.table.clone();
-            p.host_evicted = evicted_all.clone();
+            p.host_evicted.clone_from(&evicted_all);
         }
     }
     if ask_pending {
@@ -829,7 +833,7 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         .unwrap_or_default();
     crate::context_policy::State {
         step,
-        history_tokens: last_usage as usize + new_chars / 4,
+        history_tokens: usize::try_from(last_usage).unwrap_or(usize::MAX) + new_chars / 4,
         slots_chars: table.chars(),
         slots_count: table.slots.len(),
         steps_since_edit,
@@ -840,11 +844,9 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         block_since_ref_turns: 0,
         offloads_total: 0,
         offload_reads: 0,
-        cache_hit_pct: if input == 0 {
-            0
-        } else {
-            (100 * cached / input) as usize
-        },
+        cache_hit_pct: (100 * cached)
+            .checked_div(input)
+            .map_or(0, |pct| usize::try_from(pct).unwrap_or(usize::MAX)),
         excerpt,
     }
 }
@@ -966,7 +968,7 @@ mod tests {
         user_msg(t.to_owned())
     }
 
-    fn asst(content: Value, stop: &str) -> AgentMessage {
+    fn asst(content: &Value, stop: &str) -> AgentMessage {
         let v = json!({"role":"assistant","content":content,"api":"x","provider":"x","model":"x",
             "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
                      "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
@@ -974,15 +976,15 @@ mod tests {
         AgentMessage::Standard(serde_json::from_value::<Message>(v).expect("assistant"))
     }
 
-    fn assistant_edit(id: &str, ops: Value) -> AgentMessage {
+    fn assistant_edit(id: &str, ops: &Value) -> AgentMessage {
         asst(
-            json!([{"type":"toolCall","id":id,"name":TOOL_NAME,"arguments":{"ops":ops}}]),
+            &json!([{"type":"toolCall","id":id,"name":TOOL_NAME,"arguments":{"ops":ops}}]),
             "toolUse",
         )
     }
 
     fn assistant_text(t: &str) -> AgentMessage {
-        asst(json!([{"type":"text","text":t}]), "stop")
+        asst(&json!([{"type":"text","text":t}]), "stop")
     }
 
     fn result(id: &str, err: bool) -> AgentMessage {
@@ -1017,7 +1019,7 @@ mod tests {
     fn append_is_identity() {
         let h = vec![
             user("task"),
-            assistant_edit("c1", json!([{"op":"append","slot":"a","text":"x"}])),
+            assistant_edit("c1", &json!([{"op":"append","slot":"a","text":"x"}])),
             result("c1", false),
         ];
         let before = wire_json(&h);
@@ -1039,7 +1041,7 @@ mod tests {
             user("task"),
             assistant_text("old work"),
             user("steer"),
-            assistant_edit("c1", json!([{"op":"append","slot":"facts","text":"A=1"}])),
+            assistant_edit("c1", &json!([{"op":"append","slot":"facts","text":"A=1"}])),
             result("c1", false),
             assistant_text("noted"),
             user("next"),
@@ -1063,7 +1065,7 @@ mod tests {
             user("task"),
             assistant_edit(
                 "c1",
-                json!([{"op":"append","slot":"a","text":"alpha"},{"op":"append","slot":"b","text":"beta"}]),
+                &json!([{"op":"append","slot":"a","text":"alpha"},{"op":"append","slot":"b","text":"beta"}]),
             ),
             result("c1", false),
             assistant_text("ok"),
@@ -1078,7 +1080,7 @@ mod tests {
         // edit of slot b: pinned prefix and slot a bytes unchanged
         h.push(assistant_edit(
             "c2",
-            json!([{"op":"replace","slot":"b","text":"BETA2"}]),
+            &json!([{"op":"replace","slot":"b","text":"BETA2"}]),
         ));
         h.push(result("c2", false));
         h.push(assistant_text("ok2"));
@@ -1106,7 +1108,7 @@ mod tests {
         let (w0, _) = build_wire(h.clone(), Kind::Clm, &l);
         h.push(assistant_edit(
             "c1",
-            json!([{"op":"append","slot":"a","text":"x"}]),
+            &json!([{"op":"append","slot":"a","text":"x"}]),
         ));
         h.push(result("c1", false));
         // same run (no user message after the edit): wire is the unchanged raw history + the edit
@@ -1170,7 +1172,7 @@ mod tests {
         let h = vec![
             user("task"),
             assistant_text("work"),
-            assistant_edit("c1", json!([{"op":"replace","slot":"nope","text":"x"}])),
+            assistant_edit("c1", &json!([{"op":"replace","slot":"nope","text":"x"}])),
             result("c1", true),
         ];
         let before = wire_json(&h);
@@ -1187,7 +1189,7 @@ mod tests {
             user("task"),
             assistant_edit(
                 "c1",
-                json!([{"op":"append","slot":"old","text":big},{"op":"append","slot":"new","text":big}]),
+                &json!([{"op":"append","slot":"old","text":big},{"op":"append","slot":"new","text":big}]),
             ),
             result("c1", false),
             user("u"),
@@ -1285,7 +1287,7 @@ mod tests {
         let mut h2 = h1;
         h2.push(assistant_edit(
             "c9",
-            json!([{"op":"append","slot":"a","text":"x"}]),
+            &json!([{"op":"append","slot":"a","text":"x"}]),
         ));
         h2.push(result("c9", false));
         let w2 = sh.wire(h2.clone());
@@ -1305,7 +1307,7 @@ mod tests {
             user("brief"),
             usage(100, 0, 5),
             user("step 1"),
-            assistant_edit("c1", json!([{"op":"append","slot":"a","text":"abc"}])),
+            assistant_edit("c1", &json!([{"op":"append","slot":"a","text":"abc"}])),
             result("c1", false),
             usage(20, 180, 10),
             user(&format!("{} END", "w ".repeat(400))),
@@ -1381,8 +1383,8 @@ mod tests {
             since, 2,
             "last restatement was in the turn right after the block"
         );
-        let mut h2 = h.clone();
-        h2.insert(5, asst(json!([{"type":"toolCall","id":"e1","name":"eval","arguments":{"code":"open('/x/block-2.txt').read()"}}]), "toolUse"));
+        let mut h2 = h;
+        h2.insert(5, asst(&json!([{"type":"toolCall","id":"e1","name":"eval","arguments":{"code":"open('/x/block-2.txt').read()"}}]), "toolUse"));
         assert_eq!(offload_reads(&h2, &[(2, "ref".into())]), 1);
         assert_eq!(offload_reads(&h2, &[]), 0);
     }

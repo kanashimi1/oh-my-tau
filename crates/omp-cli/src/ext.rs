@@ -1210,6 +1210,7 @@ fn handle_notification(rt: &Arc<Runtime>, msg: HostMessage) {
 impl Extensions {
     /// Forward agent events to host lifecycle handlers. Handler errors are
     /// logged, never fatal to the run.
+    #[allow(clippy::too_many_lines)] // lifecycle fan-out: one forwarding arm per host event
     async fn subscribe_lifecycle(self: &Arc<Self>, rt: Arc<Runtime>) -> Subscription {
         // `session_stop` runs from the loop's continuation hook: it fires when
         // the agent would otherwise stop, so `decision: "block"` /

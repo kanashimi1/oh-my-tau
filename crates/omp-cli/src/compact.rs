@@ -408,6 +408,7 @@ pub struct CompactionSnapshot {
     /// Runtime switch generation (bumped by `new_session` / `load_session*`).
     pub generation: u64,
     /// Pending `/tree` leaf move (`Persistence::leaf_divergence`).
+    #[allow(clippy::option_option)] // tri-state `/tree` move: none / jump to root / leaf id
     pub nav_leaf: Option<Option<String>>,
     /// Last journaled entry id (the append point while no move is pending).
     pub file_leaf: Option<String>,
@@ -475,7 +476,7 @@ impl CommitGuard {
 
     /// Resolves when [`Self::cancel`] fires (the select arm around the pass).
     pub async fn cancelled(&self) {
-        self.cancel.cancelled().await
+        self.cancel.cancelled().await;
     }
 
     /// Re-derive the live session state and refuse to commit when anything the
@@ -523,6 +524,7 @@ impl CompactionSnapshot {
 /// move and the next append the two differ, and cutting the file-order branch
 /// would summarize the abandoned branch while the `compaction` entry lands on
 /// the navigated one (bug-hunt #4).
+#[allow(clippy::option_option)] // tri-state navigation target: no move / jump to root / leaf id
 fn compact_branch(
     index: &omp_session::index::SessionIndex,
     nav_leaf: Option<Option<&str>>,
@@ -538,6 +540,7 @@ fn compact_branch(
 /// from `leaf_id` back to the root; indices into `index.refs`. `None` when the
 /// id is not an entry of this file (the caller falls back to the file-order
 /// branch, the pre-#4 behaviour).
+#[allow(clippy::cast_possible_truncation)] // refs positions are u32 by SessionIndex design (see SessionIndex::branch)
 fn branch_from_leaf(index: &omp_session::index::SessionIndex, leaf_id: &str) -> Option<Vec<u32>> {
     let is_structural = |i: usize| {
         let r = &index.refs[i];
@@ -583,6 +586,7 @@ fn branch_from_leaf(index: &omp_session::index::SessionIndex, leaf_id: &str) -> 
 /// # Errors
 /// Nothing to compact / already compacted (TS messages), summarization failure, unsupported
 /// previous compaction payload, or a write failure.
+#[allow(clippy::too_many_lines)] // one compaction pipeline (plan, summarize, commit) in order; the steps share locals
 pub async fn compact_now(
     persist: &Persistence,
     path: &Path,
@@ -1624,7 +1628,7 @@ mod tests {
         assert!(guard.session_alive());
 
         // A pending `/tree` move moves the append point: stale.
-        persist.branch_to(Some(e1.clone())).expect("branch_to");
+        persist.branch_to(Some(e1)).expect("branch_to");
         assert!(guard.check_commit(&persist).is_err(), "navigation discards");
 
         // Any append ends the pending move AND advances the tip: stale either way.

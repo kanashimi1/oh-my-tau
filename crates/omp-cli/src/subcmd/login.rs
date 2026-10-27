@@ -232,16 +232,14 @@ async fn login_command(provider: Option<&str>) -> Result<(), String> {
     let dir = AgentDir::default();
     let target = Target::resolve(&dir).map_err(|e| format!("{e:#}"))?;
     let roster: Vec<(&str, &str)> = providers::PROVIDERS.to_vec();
-    let provider_id = match provider {
-        Some(id) => id.to_string(),
-        None => {
-            let labels: Vec<String> = roster.iter().map(|(_, name)| (*name).to_string()).collect();
-            let index =
-                tokio::task::spawn_blocking(move || pick_index("Select a provider:", &labels))
-                    .await
-                    .map_err(|e| e.to_string())??;
-            roster[index].0.to_string()
-        }
+    let provider_id = if let Some(id) = provider {
+        id.to_string()
+    } else {
+        let labels: Vec<String> = roster.iter().map(|(_, name)| (*name).to_string()).collect();
+        let index = tokio::task::spawn_blocking(move || pick_index("Select a provider:", &labels))
+            .await
+            .map_err(|e| e.to_string())??;
+        roster[index].0.to_string()
     };
     let Some(&(id, name)) = roster.iter().find(|(id, _)| *id == provider_id) else {
         return Err(format!(
@@ -323,22 +321,21 @@ pub fn run_logout(args: &[String]) -> anyhow::Result<i32> {
 async fn logout_command(provider: Option<&str>) -> Result<(), String> {
     let dir = AgentDir::default();
     let target = Target::resolve(&dir).map_err(|e| format!("{e:#}"))?;
-    let provider_id = match provider {
-        Some(id) => id.to_string(),
-        None => {
-            let stored = target.providers().await.map_err(|e| format!("{e:#}"))?;
-            if stored.is_empty() {
-                println!("No credentials stored.");
-                return Ok(());
-            }
-            let labels = stored.clone();
-            let index = tokio::task::spawn_blocking(move || {
-                pick_index("Select a provider to logout:", &labels)
-            })
-            .await
-            .map_err(|e| e.to_string())??;
-            stored[index].clone()
+    let provider_id = if let Some(id) = provider {
+        id.to_string()
+    } else {
+        let stored = target.providers().await.map_err(|e| format!("{e:#}"))?;
+        if stored.is_empty() {
+            println!("No credentials stored.");
+            return Ok(());
         }
+        let labels = stored.clone();
+        let index = tokio::task::spawn_blocking(move || {
+            pick_index("Select a provider to logout:", &labels)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        stored[index].clone()
     };
     target
         .logout_provider(&provider_id, "logged out by user")

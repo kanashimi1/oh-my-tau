@@ -120,19 +120,18 @@ fn tail_title(path: &Path) -> Option<String> {
     let text = String::from_utf8_lossy(&buf);
     let mut title = None;
     for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        match v.get("type").and_then(Value::as_str) {
-            Some("title" | "session_info") => {
-                if let Some(t) = v
-                    .get("title")
-                    .or_else(|| v.get("name"))
-                    .and_then(Value::as_str)
-                    .filter(|t| !t.is_empty())
-                {
-                    title = Some(t.to_owned());
-                }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some("title" | "session_info") = v.get("type").and_then(Value::as_str) {
+            if let Some(t) = v
+                .get("title")
+                .or_else(|| v.get("name"))
+                .and_then(Value::as_str)
+                .filter(|t| !t.is_empty())
+            {
+                title = Some(t.to_owned());
             }
-            _ => {}
         }
     }
     title
@@ -146,7 +145,7 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
         .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "jsonl"))
         .map(|p| (mtime_ms(&p), p))
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.into_iter().map(|(_, p)| p).collect()
 }
 

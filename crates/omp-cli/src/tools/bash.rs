@@ -228,6 +228,7 @@ pub struct Executed {
 /// ANSI escapes everywhere; for cargo/rustc-style output drops progress lines
 /// and elides `warning:` detail past the first few, keeping errors intact.
 fn digest_output(raw: &str) -> String {
+    use std::fmt::Write as _;
     let strip_ansi = |s: &str| {
         let mut out = String::with_capacity(s.len());
         let mut chars = s.chars();
@@ -273,7 +274,8 @@ fn digest_output(raw: &str) -> String {
         out.push('\n');
     }
     if elided > 0 {
-        out.push_str(&format!("… {elided} more warning(s) elided\n"));
+        writeln!(out, "… {elided} more warning(s) elided")
+            .expect("writing to a String is infallible");
     }
     out
 }

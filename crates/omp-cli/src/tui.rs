@@ -100,7 +100,7 @@ pub async fn run(
     }
     let (model, model_name) = {
         let m = rt.agent.model().await;
-        (format!("{}/{}", m.provider, m.id), m.name.clone())
+        (format!("{}/{}", m.provider, m.id), m.name)
     };
     rt.enable_context_usage_frames();
     crate::slash_extra::mark_interactive_ui();
@@ -243,7 +243,7 @@ fn group_thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
@@ -265,6 +265,7 @@ fn format_endpoint(base_url: &str) -> String {
 }
 
 /// TS `hasLocalLoopbackBaseUrl` (append-only-context-mode.ts).
+#[allow(clippy::case_sensitive_file_extension_comparisons)] // host is ASCII-lowercased by the parse below
 fn has_local_loopback_base_url(base_url: &str) -> bool {
     let Some(host) = reqwest::Url::parse(base_url)
         .ok()
@@ -312,6 +313,7 @@ fn append_only_context_enabled(setting: &str, model: &Value) -> bool {
 /// as a `session_info` frame: one entry per report line — `{"k","v"}`
 /// (dim key + value; `vs` = styled value spans), `{"head"}` (bold heading),
 /// `{"text","dim"?}` (free line; `""` = blank).
+#[allow(clippy::too_many_lines)] // one frame: each report section appends its rows in order
 async fn session_info_frame(rt: &Runtime) -> Value {
     use serde_json::json;
     let kv = |k: &str, v: String| json!({"k": k, "v": v});
@@ -405,17 +407,17 @@ async fn session_info_frame(rt: &Runtime) -> Value {
         lines.push(blank());
         lines.push(head("LSP Servers"));
         for server in lsp {
-            let (status, color) = match server.status {
+            let (label, color) = match server.status {
                 omp_lsp::client::ClientStatus::Ready => ("ready", "success"),
                 omp_lsp::client::ClientStatus::Connecting => ("connecting", "warning"),
                 omp_lsp::client::ClientStatus::Error => ("error", "error"),
             };
-            let status = match &server.error {
-                Some(e) if status == "error" => format!("{status}: {e}"),
-                _ => status.to_string(),
+            let label = match &server.error {
+                Some(e) if label == "error" => format!("{label}: {e}"),
+                _ => label.to_string(),
             };
             lines.push(json!({"k": server.name, "vs": [
-                {"t": status, "c": color},
+                {"t": label, "c": color},
                 {"t": " "},
                 {"t": format!("({})", server.file_types.join(", ")), "c": "dim"},
             ]}));

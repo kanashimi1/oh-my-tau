@@ -128,6 +128,7 @@ fn cmd_note(args: &[String]) -> anyhow::Result<i32> {
 }
 
 fn cmd_show(args: &[String]) -> anyhow::Result<i32> {
+    use std::fmt::Write as _;
     let [rev] = args else {
         eprintln!("omt review show: give exactly one <commit|range>\n");
         usage();
@@ -157,10 +158,10 @@ fn cmd_show(args: &[String]) -> anyhow::Result<i32> {
         for note in reviews {
             let mut line = format!("  verdict={} by={}", note.verdict.as_str(), note.by);
             if let Some(evidence) = note.evidence {
-                line.push_str(&format!(" evidence={evidence}"));
+                write!(line, " evidence={evidence}").expect("writing to a String is infallible");
             }
             if let Some(summary) = note.summary {
-                line.push_str(&format!(" summary={summary}"));
+                write!(line, " summary={summary}").expect("writing to a String is infallible");
             }
             println!("{line}");
         }

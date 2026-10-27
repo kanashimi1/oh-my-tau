@@ -276,7 +276,6 @@ stdin.readline()
                 vec!["go".to_string()],
                 &owner,
             )
-            .await
             .unwrap();
             assert_eq!(spawned.len(), 1);
             let result = tool
@@ -339,10 +338,10 @@ stdin.readline()
         }
     }
 
-    async fn spawn_batch(
+    fn spawn_batch(
         bin: &std::path::Path,
         dir: &std::path::Path,
-        items: Vec<(&str, &str)>,
+        items: &[(&str, &str)],
         owner: &super::super::a2a::Owner,
     ) -> Vec<task::SpawnedChild> {
         let specs: Vec<_> = items
@@ -357,7 +356,6 @@ stdin.readline()
             prompts,
             owner,
         )
-        .await
         .unwrap()
     }
 
@@ -402,10 +400,9 @@ stdin.readline()
             let spawned = spawn_batch(
                 &bin,
                 dir.path(),
-                vec![("batch-fast", "fast work"), ("batch-slow", "slow work")],
+                &[("batch-fast", "fast work"), ("batch-slow", "slow work")],
                 &owner,
-            )
-            .await;
+            );
             assert_eq!(spawned.len(), 2);
 
             // One wait, no matter when the fast child settled first.
@@ -447,10 +444,9 @@ stdin.readline()
             spawn_batch(
                 &bin,
                 dir.path(),
-                vec![("auto-fast", "fast work"), ("auto-slow", "slow work")],
+                &[("auto-fast", "fast work"), ("auto-slow", "slow work")],
                 &owner,
-            )
-            .await;
+            );
 
             let deliveries = tokio::time::timeout(
                 std::time::Duration::from_secs(4),
@@ -493,10 +489,9 @@ stdin.readline()
             spawn_batch(
                 &bin,
                 dir.path(),
-                vec![("batch-fast", "fast work"), ("batch-slow", "slow work")],
+                &[("batch-fast", "fast work"), ("batch-slow", "slow work")],
                 &owner,
-            )
-            .await;
+            );
             let first = wait_once(env.clone()).await;
             assert!(
                 first.contains("batch-fast") && first.contains("batch-slow"),
@@ -505,7 +500,12 @@ stdin.readline()
 
             // Independent later child: one wait, one delivery, only its own
             // result (the earlier batch must not be re-held or re-delivered).
-            spawn_batch(&bin, dir.path(), vec![("later-child", "slow later work")], &owner).await;
+            spawn_batch(
+                &bin,
+                dir.path(),
+                &[("later-child", "slow later work")],
+                &owner,
+            );
             let second = wait_once(env).await;
             assert!(second.starts_with("<task-results>"), "{second}");
             assert!(

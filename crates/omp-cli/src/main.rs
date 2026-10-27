@@ -131,6 +131,7 @@ fn resolve_session(dir: &Path, value: &str) -> Option<PathBuf> {
 /// `--session-dir`): ids/the picker also search it; `--continue` stays on the
 /// omp-rs store.
 /// `--session` value naming a session file rather than an id prefix.
+#[allow(clippy::case_sensitive_file_extension_comparisons)] // exact `.jsonl` suffix; dot-only names count too
 fn is_session_path(value: &str) -> bool {
     value.contains(std::path::MAIN_SEPARATOR) || value.ends_with(".jsonl")
 }
@@ -290,10 +291,11 @@ fn main() -> Result<()> {
     // for every normal return — driven by a final block_on so the endpoint
     // task makes progress even on the current-thread rpc/print runtime;
     // exit() carries the sync hook for error paths.
-    let _ = rt.block_on(tools::a2a::shutdown_all_hub_endpoints_async());
+    rt.block_on(tools::a2a::shutdown_all_hub_endpoints_async());
     result
 }
 
+#[allow(clippy::too_many_lines)] // sequential startup and mode dispatch; mirrors omp's main flow
 async fn async_main() -> Result<()> {
     ensure_mimalloc_env();
     let mut args = parse_args()?;
@@ -753,14 +755,14 @@ fn exit(code: i32) -> ! {
     std::process::exit(code);
 }
 
-/// Print-mode run: extension lifecycle hook points, optional session resume
-/// (`--resume`/`--continue`/`--fork`), then the single prompt.
-#[allow(clippy::too_many_arguments)] // print-mode run context; mirrors omp's runPrint signature
 /// Set when print mode answered a handled slash command with its output
 /// (no model turn ran, so "no assistant response" is not an error).
 static PRINTED_COMMAND_OUTPUT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Print-mode run: extension lifecycle hook points, optional session resume
+/// (`--resume`/`--continue`/`--fork`), then the single prompt.
+#[allow(clippy::too_many_arguments)] // print-mode run context; mirrors omp's runPrint signature
 async fn run_print(
     agent: pa_agent::agent::Agent,
     target: agent::Target,

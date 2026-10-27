@@ -245,6 +245,7 @@ async fn http_json(port: u16, method: &str, path: &str, body: Option<&str>) -> (
 /// (same-origin header, the hub rejects foreign origins), then `get_state` +
 /// `get_messages` + `get_available_commands` in parallel, resolved when the
 /// last of the three responses lands.
+#[allow(clippy::too_many_lines)] // one attach: three parallel RPC requests, then the frame checks
 async fn attach_once(port: u16, agent_id: &str, seq: &mut usize) -> Result<Attach, String> {
     let request = Request::builder()
         .method("GET")
@@ -481,8 +482,8 @@ async fn web_view_switch_protocol_attach_of_400_messages_stays_under_ceiling() {
                 histogram(&runs),
                 stderr()
             ),
-            Err(_) => panic!(
-                "attach {cycle} did not complete within {ATTACH_TIMEOUT:?}\n{}\nweb stderr:\n{}",
+            Err(elapsed) => panic!(
+                "attach {cycle} did not complete within {ATTACH_TIMEOUT:?} ({elapsed})\n{}\nweb stderr:\n{}",
                 histogram(&runs),
                 stderr(),
             ),

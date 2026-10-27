@@ -54,10 +54,10 @@ const IO_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_LINE: usize = 1 << 20;
 /// Bodies larger than this go by `payload_ref`, never inline (SPEC).
 pub(crate) const PAYLOAD_INLINE_MAX: usize = 8 * 1024;
-/// Largest payload_ref body the server will read back.
+/// Largest `payload_ref` body the server will read back.
 const PAYLOAD_REF_MAX: usize = 64 * 1024 * 1024;
 /// Recently-seen `message_id`s kept for dedup (SPEC: at-least-once, receivers
-/// dedup by message_id); the oldest entries fall off the bound.
+/// dedup by `message_id`); the oldest entries fall off the bound.
 const SEEN_CAP: usize = 4096;
 
 /// SPEC envelope kinds the bus speaks today (`agent.question` rides the wire
@@ -152,13 +152,14 @@ fn spill_payload(message_id: &str, body: &[u8]) -> std::io::Result<PathBuf> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
+    use std::fmt::Write as _;
     let mut hasher = sha2::Sha256::new();
     hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    let mut hex = String::new();
+    for b in hasher.finalize() {
+        write!(hex, "{b:02x}").expect("writing to a String is infallible");
+    }
+    hex
 }
 
 /// Read back a spilled body: verify size + hash, remove the file (a ref is
@@ -226,7 +227,7 @@ pub(crate) fn set_owner(owner: std::sync::Arc<str>) {
     *OWNER.lock() = Some(owner);
 }
 
-/// Drop the owner token if it is still `owner` (a newer Runtime::start wins).
+/// Drop the owner token if it is still `owner` (a newer `Runtime::start` wins).
 pub(crate) fn clear_owner(owner: &std::sync::Arc<str>) {
     let mut slot = OWNER.lock();
     if slot
@@ -267,11 +268,13 @@ pub(crate) const KIND_TASK_RESULT: &str = "task.result";
 static DELIVERIES: LazyLock<Mutex<VecDeque<PendingDelivery>>> =
     LazyLock::new(|| Mutex::new(VecDeque::new()));
 static DELIVERIES_NOTIFY: Notify = Notify::const_new();
+/// Shareable form of the delivery wake hook.
+type WakeHook = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// Best-effort wake hook the runtime registers ([`set_delivery_wake`]): lets
 /// an idle session start a delivery turn for a message that arrived after the
 /// last settle.
-static DELIVERY_WAKE: LazyLock<Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>> =
-    LazyLock::new(|| Mutex::new(None));
+static DELIVERY_WAKE: LazyLock<Mutex<Option<WakeHook>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Queue one delivery for the parent's next turn boundary and wake waiters.
 pub(crate) fn queue_delivery(delivery: PendingDelivery) {
@@ -422,7 +425,7 @@ static BUSES: LazyLock<Mutex<std::collections::HashMap<String, BusInstance>>> =
 
 /// Map key for a session owner.
 fn owner_key(owner: &Owner) -> String {
-    owner.as_ref().map_or_else(String::new, |token| token.to_string())
+    owner.as_ref().map_or_else(String::new, ToString::to_string)
 }
 
 /// Remember a delivered `message_id` on the owner's bus; `false` when it was
@@ -487,7 +490,7 @@ impl BusLease {
                 key.clone(),
                 BusInstance {
                     leases: 0,
-                    sock: sock.clone(),
+                    sock,
                     dir,
                     server: tokio::spawn(serve(listener, owner.clone())),
                     seen: HashSet::new(),
@@ -653,9 +656,7 @@ async fn try_route_external(
     if hub_opted_out() {
         return None;
     }
-    let Some(ep) = hub_endpoint_for_owner(&current_owner()) else {
-        return None;
-    };
+    let ep = hub_endpoint_for_owner(&current_owner())?;
     if !ep.connected.load(AtomicOrdering::SeqCst) {
         return Some(Err(format!(
             "hub unreachable for {}: endpoint {} is not connected (the hub link retries in the background; OMP_HUB=0 opts out)",
@@ -754,7 +755,7 @@ const CLAIMS_MODE_ENV: &str = "OMP_CLAIMS";
 /// Auto-claim ttl after an agent writes a repo file (SPEC: 15 min).
 const CLAIM_TTL_S: u64 = 15 * 60;
 /// Renew an existing auto-claim at most this often (writes are frequent).
-const CLAIM_RENEW_EVERY: Duration = Duration::from_secs(60);
+const CLAIM_RENEW_EVERY: Duration = Duration::from_mins(1);
 /// Negative claim checks are trusted this long (SPEC: cache briefly).
 const CLAIM_NEG_CACHE: Duration = Duration::from_secs(2);
 /// Bound for one hub RPC issued through the endpoint command channel.
@@ -797,6 +798,7 @@ fn hub_sender_name(envelope: &A2aEnvelope) -> (String, bool) {
 }
 
 /// One command for the endpoint's hub task.
+#[allow(clippy::large_enum_variant)] // commands are sent one at a time; boxing each payload adds noise for no gain
 enum HubCmd {
     /// `delivered` on injection; `read` when the turn containing the message
     /// starts (also advances the persisted `last_seq`).
@@ -831,7 +833,7 @@ enum HubCmd {
     ReleaseAll { done: ReleaseDone },
 }
 
-/// How the ReleaseAll handler signals completion back to the shutdown caller.
+/// How the `ReleaseAll` handler signals completion back to the shutdown caller.
 enum ReleaseDone {
     /// Sync path (`Runtime::drop` / `exit()`): a parking std thread.
     Std(std::sync::mpsc::Sender<()>),
@@ -922,25 +924,25 @@ impl HubEndpoint {
 /// last acked seq on a background task). `OMP_HUB=0` opts out; a hub that
 /// cannot start or be reached logs once and the session continues without
 /// it. Returns the endpoint (also stored for [`hub_endpoint_for_owner`]).
-pub(crate) fn start_hub_endpoint(owner: std::sync::Arc<str>) -> Option<Arc<HubEndpoint>> {
+pub(crate) fn start_hub_endpoint(owner: &std::sync::Arc<str>) -> Option<Arc<HubEndpoint>> {
     if hub_opted_out() {
         return None;
     }
     Some(start_hub_endpoint_with(
         owner,
-        hub_process_name(),
-        omp_hub::HubDir::resolve(),
+        &hub_process_name(),
+        &omp_hub::HubDir::resolve(),
     ))
 }
 
 fn start_hub_endpoint_with(
-    owner: std::sync::Arc<str>,
-    name: String,
-    hub: omp_hub::HubDir,
+    owner: &std::sync::Arc<str>,
+    name: &str,
+    hub: &omp_hub::HubDir,
 ) -> Arc<HubEndpoint> {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<HubCmd>();
     let ep = Arc::new(HubEndpoint {
-        name: name.clone(),
+        name: name.to_string(),
         owner: Some(owner.clone()),
         hub: hub.clone(),
         cmd_tx,
@@ -1053,6 +1055,7 @@ fn shutdown_hub_endpoint_key(owner_key: &str) {
 /// seq, inject `deliver` pushes at the session's next turn boundary, ack
 /// `delivered` on injection / `read` on drain, answer and claim commands;
 /// reconnects from the last acked seq after a drop.
+#[allow(clippy::too_many_lines)] // one hub loop: commands, reconnect with seq resume, delivery acks
 async fn hub_endpoint_task(ep: Arc<HubEndpoint>, mut cmd_rx: mpsc::UnboundedReceiver<HubCmd>) {
     let mut last_seq = read_last_seq(&ep.hub.dir, &ep.name);
     let mut seen: HashSet<String> = HashSet::new();
@@ -1287,6 +1290,7 @@ fn inject_hub_envelope(
 /// state (`delivered`/`queued`/`failed`) and the `message_id`, so a queued
 /// envelope is never mistaken for a lost one.
 fn receipt_text(receipt: omp_hub::SendReceipt) -> String {
+    use std::fmt::Write as _;
     let state = match receipt.state.as_str() {
         s if s == omp_hub::State::SENT => "queued",
         s if s == omp_hub::State::DELIVERED => "delivered",
@@ -1298,7 +1302,7 @@ fn receipt_text(receipt: omp_hub::SendReceipt) -> String {
         receipt.message_id, receipt.seq
     );
     if let Some(error) = receipt.error {
-        text.push_str(&format!(" — {error}"));
+        write!(text, " — {error}").expect("writing to a String is infallible");
     }
     if receipt.dedup {
         text.push_str(" (dedup)");
@@ -1632,7 +1636,7 @@ impl Client {
     }
 
     /// Forward an envelope from a descendant (grandchild routing): the
-    /// original sender/recipient/kind/message_id are preserved; only the
+    /// original sender/recipient/kind/`message_id` are preserved; only the
     /// body is re-spilled when oversized.
     async fn forward(&self, envelope: &A2aEnvelope, body: &str) -> Result<String, String> {
         let forward = A2aEnvelope {
@@ -1745,7 +1749,7 @@ pub(crate) mod tests {
     }
 
     /// Deliver one envelope straight to the leased bus (raw wire access for
-    /// dedup/payload_ref tests).
+    /// `dedup`/`payload_ref` tests).
     pub(crate) async fn raw_send(sock: &Path, envelope: &A2aEnvelope) -> Value {
         let stream = UnixStream::connect(sock).await.unwrap();
         let (read, mut write) = stream.into_split();
@@ -1924,14 +1928,6 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn grandchild_unknown_id_forwards_up_and_receipt_flows_back() {
-        let _serial = LOCK.lock().await;
-        // The "grandparent": a raw stand-in socket whose reply the forwarding
-        // parent must return to the grandchild.
-        let dir = std::env::temp_dir().join(format!("omt-a2a-gp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let gp_sock = dir.join("gp.sock");
-        let listener = UnixListener::bind(&gp_sock).unwrap();
         // Panic-safe env restore: a leaked OMP_A2A_SOCK would point every
         // later test's `write agent://<unknown>` at this dead socket.
         struct EnvGuard {
@@ -1950,6 +1946,14 @@ pub(crate) mod tests {
                 }
             }
         }
+        let _serial = LOCK.lock().await;
+        // The "grandparent": a raw stand-in socket whose reply the forwarding
+        // parent must return to the grandchild.
+        let dir = std::env::temp_dir().join(format!("omt-a2a-gp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let gp_sock = dir.join("gp.sock");
+        let listener = UnixListener::bind(&gp_sock).unwrap();
         let _guard = EnvGuard {
             sock: std::env::var_os(SOCK_ENV),
             self_env: std::env::var_os(SELF_ENV),
@@ -2076,7 +2080,7 @@ pub(crate) mod tests {
     async fn wait_for_state(client: &omp_hub::HubClient, message_id: &str, state: &str) {
         for _ in 0..200 {
             if let Ok(v) = client.status_message(message_id).await {
-                if v["state"] == Value::from(state) {
+                if v["state"] == state {
                     return;
                 }
             }
@@ -2092,11 +2096,7 @@ pub(crate) mod tests {
         name: &str,
         hub: &omp_hub::HubDir,
     ) -> Arc<HubEndpoint> {
-        let ep = start_hub_endpoint_with(
-            owner.as_ref().expect("test owner").clone(),
-            name.to_string(),
-            hub.clone(),
-        );
+        let ep = start_hub_endpoint_with(&owner.as_ref().expect("test owner").clone(), name, hub);
         wait_for("endpoint connected", || {
             ep.connected.load(AtomicOrdering::SeqCst)
         })
@@ -2324,11 +2324,7 @@ pub(crate) mod tests {
         let blocker = tempfile::NamedTempFile::new().unwrap();
         let dead_hub = omp_hub::HubDir::explicit(blocker.path().to_path_buf(), None);
         let owner: std::sync::Arc<str> = "down-owner".into();
-        let ep = start_hub_endpoint_with(
-            owner.clone(),
-            "session:test-down".to_string(),
-            dead_hub,
-        );
+        let ep = start_hub_endpoint_with(&owner, "session:test-down", &dead_hub);
         let err = route_external_message_via(&ep, "w4:pZZ", "nowhere")
             .await
             .expect_err("hub down");
@@ -2341,7 +2337,7 @@ pub(crate) mod tests {
         let _guard = HubTestGuard::new().await;
         std::env::set_var("OMP_HUB", "0");
         assert!(route_external_message("ghost", "hi").await.is_none());
-        assert!(start_hub_endpoint(crate::persist::uuid_v7().into()).is_none());
+        assert!(start_hub_endpoint(&crate::persist::uuid_v7().into()).is_none());
         std::env::remove_var("OMP_HUB");
     }
 }

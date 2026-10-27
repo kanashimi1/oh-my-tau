@@ -246,7 +246,7 @@ async fn serve(opts: Options) -> Result<i32> {
                 });
             }
             _ = tokio::signal::ctrl_c() => break,
-            _ = terminated(&mut terminate) => break,
+            () = terminated(&mut terminate) => break,
         }
     }
     println!("\nShutting down.");
@@ -416,17 +416,23 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
     let path = req.uri().path().to_string();
     let method = req.method().clone();
     if let Some(id) = path.strip_prefix("/ws/") {
-        return websocket(hub, req, id.to_string());
+        return websocket(&hub, req, id);
     }
     match (&method, path.as_str()) {
-        (&Method::GET, "/api/info") => json_response(StatusCode::OK, &json!({
-            "version": env!("CARGO_PKG_VERSION"),
-            "defaultCwd": hub.default_cwd.display().to_string(),
-            "home": std::env::var("HOME").unwrap_or_default(),
-        })),
-        (&Method::GET, "/api/projects") => json_response(StatusCode::OK, &sessions::list_projects()),
+        (&Method::GET, "/api/info") => json_response(
+            StatusCode::OK,
+            &json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "defaultCwd": hub.default_cwd.display().to_string(),
+                "home": std::env::var("HOME").unwrap_or_default(),
+            }),
+        ),
+        (&Method::GET, "/api/projects") => {
+            json_response(StatusCode::OK, &sessions::list_projects())
+        }
         (&Method::GET, "/api/sessions") => {
-            let cwd = query_param(&req, "cwd").map_or_else(|| hub.default_cwd.clone(), PathBuf::from);
+            let cwd =
+                query_param(&req, "cwd").map_or_else(|| hub.default_cwd.clone(), PathBuf::from);
             json_response(StatusCode::OK, &sessions::list_sessions(&cwd))
         }
         (&Method::POST, "/api/sessions/rename") => rename_session_route(req).await,
@@ -490,7 +496,7 @@ async fn rename_session_route(req: Request<Incoming>) -> Response<Body> {
     };
     match sessions::rename_session(&path, name) {
         Ok(()) => json_response(StatusCode::OK, &json!({"ok": true})),
-        Err(e) => error(StatusCode::BAD_REQUEST, &format!("{e}")),
+        Err(e) => error(StatusCode::BAD_REQUEST, &e),
     }
 }
 
@@ -555,8 +561,8 @@ fn export(session: Option<String>) -> Response<Body> {
     }
 }
 
-fn websocket(hub: Arc<Hub>, req: Request<Incoming>, id: String) -> Response<Body> {
-    let Some(agent) = hub.agent(&id) else {
+fn websocket(hub: &Hub, req: Request<Incoming>, id: &str) -> Response<Body> {
+    let Some(agent) = hub.agent(id) else {
         return error(StatusCode::NOT_FOUND, "no such agent");
     };
     let upgrade = req

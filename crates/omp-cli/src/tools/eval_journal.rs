@@ -214,7 +214,7 @@ fn with_event<T>(
     let cwd = cwd.to_path_buf();
     let session = omp_urls::global_session_file();
     let key = Key {
-        session: session.clone(),
+        session,
         cwd: cwd.clone(),
         lang,
     };

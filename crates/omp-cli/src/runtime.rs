@@ -417,6 +417,7 @@ impl Runtime {
 
     /// [`Self::start`] with an explicit model resolver (fallback candidates, `set_model`) and,
     /// optionally, the retry/fallback configuration (default: derived from the live model).
+    #[allow(clippy::too_many_lines)] // one constructor: resolver, retry config, persistence, event wiring, in order
     pub async fn start_with(
         agent: Arc<Agent>,
         target: Target,
@@ -544,7 +545,7 @@ impl Runtime {
         // started the task logs once and the session continues without it.
         // Unit tests drive the endpoint explicitly against a temp hub dir.
         #[cfg(not(test))]
-        crate::tools::a2a::start_hub_endpoint(rt.a2a_owner.clone());
+        crate::tools::a2a::start_hub_endpoint(&rt.a2a_owner);
         let listener = rt.clone();
         let sub = rt
             .agent
@@ -654,6 +655,7 @@ impl Runtime {
         self.send(frame);
     }
 
+    #[allow(clippy::too_many_lines)] // one match over every agent event; each arm updates one piece of state
     fn on_event(self: &Arc<Self>, event: &AgentEvent) {
         let ev_kind = match event {
             AgentEvent::MessageUpdate { .. } => "message_update",
@@ -979,7 +981,8 @@ impl Runtime {
         let turn_index = self
             .judge_turns
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        worker.submit(omp_judge::shadow::Job {
+        // Best-effort shadow judging: a full queue drops this job by design.
+        let _ = worker.submit(omp_judge::shadow::Job {
             session_id: self.persist.session_id(),
             turn_index,
             ts: crate::persist::now_iso(),
@@ -1458,9 +1461,8 @@ impl Runtime {
             return false;
         };
         // Same model, other account: swap the live provider target's key and pin the new row.
-        let mut resolved = match (self.resolver)(selector.clone()).await {
-            Ok(r) => r,
-            Err(_) => return false,
+        let Ok(mut resolved) = (self.resolver)(selector.clone()).await else {
+            return false;
         };
         resolved.api_key = Some(next.key.clone());
         resolved.credential_id = Some(next.id);
@@ -1484,9 +1486,7 @@ impl Runtime {
                 rec.accounts_mut().burn(&provider, &model_id, from);
             }
         }
-        let from_label = from_id
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "?".into());
+        let from_label = from_id.map_or_else(|| "?".into(), |id| id.to_string());
         self.emit_event(recovery::account_rotated_frame(
             &selector,
             &selector,
@@ -2289,7 +2289,6 @@ impl Runtime {
                     for m in messages.iter() {
                         match m {
                             AgentMessage::Standard(Message::User(_)) => user += 1,
-                            AgentMessage::Standard(Message::Developer(_)) => {}
                             AgentMessage::Standard(Message::Assistant(a)) => {
                                 assistant += 1;
                                 calls += a.tool_calls().len() as u64;
@@ -2300,7 +2299,8 @@ impl Runtime {
                                 cost += a.usage.cost.total;
                             }
                             AgentMessage::Standard(Message::ToolResult(_)) => results += 1,
-                            AgentMessage::Custom(_) => {}
+                            AgentMessage::Standard(Message::Developer(_))
+                            | AgentMessage::Custom(_) => {}
                         }
                     }
                     let usage = context_usage(messages.iter(), window, base);
@@ -2429,6 +2429,7 @@ impl Runtime {
     /// `SessionEntryIndex.pathTo(leaf)`, root → leaf — is materialized, parsed
     /// on demand from the raw lines. Non-compacted sessions never build the
     /// entry DOM at all: messages deserialize straight from the line text.
+    #[allow(clippy::too_many_lines)] // resume loader: read lines, rebuild the branch, seed messages; steps share the parse
     async fn load_session_as(
         &self,
         path: &Path,
@@ -2796,7 +2797,7 @@ impl Runtime {
 
 /// Re-persist one resumed context message into the fresh session file (TS
 /// `SessionManager` keeps the same file; the port resumes into a new file, so
-/// every message in the context is seeded). Messages pa_types cannot model
+/// every message in the context is seeded). Messages `pa_types` cannot model
 /// (custom roles like `"developer"`) are written with their original JSON
 /// shape verbatim — the raw journal map when captured, otherwise the
 /// re-serialized message — so nothing in the context is silently dropped.
@@ -2805,8 +2806,8 @@ fn seed_resumed_message(
     m: &AgentMessage,
     raw: Option<&Map<String, Value>>,
 ) {
-    let converted = serde_json::to_value(m)
-        .and_then(|v| serde_json::from_value::<pa_types::session::AgentMessage>(v));
+    let converted =
+        serde_json::to_value(m).and_then(serde_json::from_value::<pa_types::session::AgentMessage>);
     if let Ok(c) = converted {
         let _ = persist.append_message(&c, m.timestamp());
         return;
@@ -3181,8 +3182,7 @@ impl Runtime {
         self.target
             .read()
             .as_ref()
-            .map(|t| t.model.context_window)
-            .unwrap_or(0)
+            .map_or(0, |t| t.model.context_window)
     }
 
     /// rpc `compact`: summarize the older history into a `compaction` entry and swap the agent's
@@ -3371,7 +3371,7 @@ impl Runtime {
                 &summarizer,
                 &params,
             ) => out?,
-            _ = guard.cancelled() => {
+            () = guard.cancelled() => {
                 return Err(CmdError::new("Compaction cancelled"));
             }
         };
@@ -4815,7 +4815,7 @@ mod resume_seed_tests {
     use serde_json::json;
 
     /// Shape of a real `developer` custom message (see ~/.omp journals): keys
-    /// beyond `role` are an arbitrary payload pa_types cannot model.
+    /// beyond `role` are an arbitrary payload `pa_types` cannot model.
     fn developer_map() -> Map<String, Value> {
         serde_json::from_value(json!({
             "role": "developer",
@@ -4823,7 +4823,7 @@ mod resume_seed_tests {
             "content": [{"type": "text", "text": "<system-reminder>keep going</system-reminder>"}],
             "display": false,
             "attribution": "agent",
-            "timestamp": 1757890000000i64,
+            "timestamp": 1_757_890_000_000_i64,
             "synthetic": true,
         }))
         .expect("developer map")
@@ -4991,6 +4991,7 @@ mod resume_seed_tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one resume scenario across two compactions; the steps build on each other
     fn developer_custom_message_survives_compacted_double_resume_verbatim() {
         let base = std::env::temp_dir().join(format!(
             "omp-rs-compacted-resume-seed-{}-{}",
@@ -5016,7 +5017,7 @@ mod resume_seed_tests {
                     serde_json::from_value(json!({
                         "role": "user",
                         "content": [{"type": "text", "text": "before compaction"}],
-                        "timestamp": 1757890000000i64,
+                        "timestamp": 1_757_890_000_000_i64,
                     }))
                     .expect("user map"),
                 ),
@@ -5048,7 +5049,7 @@ mod resume_seed_tests {
                 serde_json::from_value(json!({
                     "role": "user",
                     "content": [{"type": "text", "text": "after compaction"}],
-                    "timestamp": 1757890001000i64,
+                    "timestamp": 1_757_890_001_000_i64,
                 }))
                 .expect("user map"),
             ),
@@ -5246,7 +5247,7 @@ mod session_model_state_tests {
         assert_eq!(st.thinking, Some(("medium".into(), Some("max".into()))));
     }
 
-    /// No model_change at all (old journals): the default is inferred from the
+    /// No `model_change` at all (old journals): the default is inferred from the
     /// last assistant message, as TS `buildSessionContext` does.
     #[test]
     fn default_inferred_from_last_assistant() {
@@ -6051,7 +6052,7 @@ mod compaction_guard_tests {
         assert!(resumed.is_ok(), "the interrupted run resumes");
     }
 
-    /// Esc (abort_compaction) cancels the in-flight auto-compaction: the end
+    /// Esc (`abort_compaction`) cancels the in-flight auto-compaction: the end
     /// event reports `aborted` and nothing is committed.
     #[tokio::test]
     async fn esc_cancels_in_flight_auto_compaction() {
@@ -6288,7 +6289,6 @@ mod a2a_delivery_tests {
     /// session-B exit-1).
     #[tokio::test]
     async fn hub_delivery_before_first_prompt_waits_for_turn_boundary() {
-        let mut h = harness().await;
         // Cleanup guard: the delivery queue is process-global; never leak this
         // test's envelope into other tests, even on panic.
         struct Guard {
@@ -6299,6 +6299,7 @@ mod a2a_delivery_tests {
                 let _ = crate::tools::a2a::take_deliveries_for(&self.owner);
             }
         }
+        let mut h = harness().await;
         let _guard = Guard {
             owner: Some(h.rt.a2a_owner.clone()),
         };

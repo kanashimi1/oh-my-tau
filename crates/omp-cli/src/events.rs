@@ -856,19 +856,18 @@ mod tests {
         let Some(path) = std::env::var_os("PATH") else {
             return false;
         };
-        std::env::split_paths(&path).any(|dir| is_executable(dir.join("bun")))
+        std::env::split_paths(&path).any(|dir| is_executable(&dir.join("bun")))
     }
 
     #[cfg(unix)]
-    fn is_executable(path: std::path::PathBuf) -> bool {
+    fn is_executable(path: &std::path::Path) -> bool {
         use std::os::unix::fs::PermissionsExt as _;
-        std::fs::metadata(&path)
-            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     }
 
     #[cfg(not(unix))]
-    fn is_executable(path: std::path::PathBuf) -> bool {
-        std::fs::metadata(&path).is_ok_and(|m| m.is_file())
+    fn is_executable(path: &std::path::Path) -> bool {
+        std::fs::metadata(path).is_ok_and(|m| m.is_file())
     }
 
     /// Host chains of the Rust mirror, keyed by encoder (`delta.s`).
@@ -1046,6 +1045,7 @@ mod tests {
         frame.get("message").is_some()
     }
 
+    #[allow(clippy::too_many_lines)] // one scenario: each step builds on the previous message state
     #[test]
     fn deltas_rebuild_the_full_message() {
         let mut h = Harness::new();
@@ -1270,7 +1270,7 @@ mod tests {
         });
         let old = ExtUpdateEncoder::chain_id(&old).unwrap();
         h.enc.resync_flag().fetch_max(old, Ordering::SeqCst);
-        h.text(0).push_str("a");
+        h.text(0).push('a');
         let f = h.send(|partial| Ev::TextDelta {
             content_index: 0,
             delta: "a".into(),
@@ -1279,7 +1279,7 @@ mod tests {
         assert!(is_full(&f), "rejected chain restarts full");
         // A second rejection of the old chain arrives late.
         h.enc.resync_flag().fetch_max(old, Ordering::SeqCst);
-        h.text(0).push_str("b");
+        h.text(0).push('b');
         let f = h.send(|partial| Ev::TextDelta {
             content_index: 0,
             delta: "b".into(),
@@ -1338,6 +1338,17 @@ mod tests {
     /// encoder's delta apply to the other's message).
     #[tokio::test]
     async fn interleaved_encoders_stay_exact_on_the_real_host() {
+        // JSON.stringify writes `0.0` as `0`: compare numbers by value.
+        fn norm(v: &Value) -> Value {
+            match v {
+                Value::Number(n) => json!(n.as_f64()),
+                Value::Array(a) => Value::Array(a.iter().map(norm).collect()),
+                Value::Object(o) => {
+                    Value::Object(o.iter().map(|(k, v)| (k.clone(), norm(v))).collect())
+                }
+                v => v.clone(),
+            }
+        }
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         if let Some(what) = missing_ext_host_prereq(&root) {
             eprintln!("skipping interleaved_encoders_stay_exact_on_the_real_host: {what}");
@@ -1352,17 +1363,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.loaded.len(), 1, "{r:?}");
-        // JSON.stringify writes `0.0` as `0`: compare numbers by value.
-        fn norm(v: &Value) -> Value {
-            match v {
-                Value::Number(n) => json!(n.as_f64()),
-                Value::Array(a) => Value::Array(a.iter().map(norm).collect()),
-                Value::Object(o) => {
-                    Value::Object(o.iter().map(|(k, v)| (k.clone(), norm(v))).collect())
-                }
-                v => v.clone(),
-            }
-        }
         let check = |r: omp_ext::EmitResult, want: &Value, frame: &Value| {
             assert_ne!(r.result, json!({"resync": true}), "frame rejected: {frame}");
             let seen: Value = serde_json::from_str(r.errors[0]["error"].as_str().unwrap()).unwrap();

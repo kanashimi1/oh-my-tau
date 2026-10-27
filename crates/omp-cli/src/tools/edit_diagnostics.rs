@@ -38,7 +38,7 @@ const PREWARM_LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 /// Re-attempt prewarm at most this often per (cwd, server) — a healthy
 /// client stays in the registry, so retries only matter after the idle
 /// reaper killed it or the first start failed.
-const PREWARM_RETRY_COOLDOWN: Duration = Duration::from_secs(300);
+const PREWARM_RETRY_COOLDOWN: Duration = Duration::from_mins(5);
 /// LSP `Severity` = Error|Warning; higher severities are informational/hint.
 const MAX_GATED_SEVERITY: u32 = 2;
 
@@ -201,17 +201,18 @@ async fn notify_refresh(client: &LspClient, path: &Path, uri: &str) {
 
 /// Run the advisory gate over `files`, returning `None` when there is nothing
 /// to report (including when no LSP server is running at all).
+#[allow(clippy::too_many_lines)] // gate pipeline: prewarm, cold budget, collect, filter, render
 pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
-    let clients = omp_lsp::client::active_clients();
-    if files.is_empty() || clients.is_empty() {
-        return None;
-    }
-    // Per-file budget: the normal fast path, or the cold path below.
     /// Budget while a cold-started server (file opened by `prewarm` but never
     /// published yet) produces its first diagnostics. rust-analyzer needs
     /// 15-30s on a cold project; without this the gate would always lose the
     /// race against the model's first edit.
     const COLD_GATE_BUDGET_MS: u64 = 25_000;
+    let clients = omp_lsp::client::active_clients();
+    if files.is_empty() || clients.is_empty() {
+        return None;
+    }
+    // Per-file budget: the normal fast path, or the cold path below.
 
     let mut sections = Vec::new();
     let mut all_diagnostics = Vec::new();
@@ -357,86 +358,6 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use omp_lsp::types::{Position, Range};
-
-    fn diag(line: u32, col: u32, severity: u32, message: &str) -> Diagnostic {
-        Diagnostic {
-            range: Range {
-                start: Position {
-                    line,
-                    character: col,
-                },
-                end: Position {
-                    line,
-                    character: col + 1,
-                },
-            },
-            severity: Some(severity),
-            code: None,
-            code_description: None,
-            source: None,
-            message: message.to_string(),
-            tags: None,
-            related_information: None,
-            data: None,
-        }
-    }
-
-    #[test]
-    fn delta_counts_only_new_diagnostics() {
-        let before = vec![
-            diag(12, 4, 1, "unresolved import Foo"),
-            diag(30, 0, 2, "mismatched types"),
-        ];
-        let after = vec![
-            diag(12, 4, 1, "unresolved import Foo"), // same -> excluded
-            diag(30, 0, 2, "mismatched types"),      // gone -> excluded
-            diag(40, 2, 1, "expected type `u8`"),    // new
-            diag(55, 1, 3, "some info"),             // severity > warning -> excluded
-        ];
-        let delta = compute_new_diagnostics(&before, &after);
-        assert_eq!(delta.len(), 1);
-        assert_eq!(delta[0].line, 40);
-        assert_eq!(delta[0].col, 2);
-        assert_eq!(delta[0].message, "expected type `u8`");
-    }
-
-    #[test]
-    fn message_normalization_collapses_whitespace() {
-        let before = vec![diag(1, 0, 1, "a  b\nc")];
-        let after = vec![diag(1, 0, 1, "a b c"), diag(2, 0, 1, "x")];
-        let delta = compute_new_diagnostics(&before, &after);
-        assert_eq!(delta.len(), 1);
-        assert_eq!(delta[0].line, 2);
-        assert_eq!(delta[0].col, 0);
-    }
-
-    #[test]
-    fn recurrence_ledger_escalates_only_on_repeat() {
-        let mut ledger: HashMap<(PathBuf, u64), usize> = HashMap::new();
-        let path = PathBuf::from("/repo/src/x.rs");
-        let delta = vec![NewDiag {
-            line: 1,
-            col: 0,
-            message: "boom".into(),
-        }];
-        assert!(!record_recurrence(&mut ledger, &path, &delta));
-        assert!(record_recurrence(&mut ledger, &path, &delta));
-        assert!(!record_recurrence(
-            &mut ledger,
-            &path,
-            &vec![NewDiag {
-                line: 9,
-                col: 0,
-                message: "other".into(),
-            }]
-        ));
-    }
-}
-
 // ============================================================================
 // Autostart (prewarm)
 // ============================================================================
@@ -557,4 +478,84 @@ pub async fn prewarm_server(
         client.wait_for_project_loaded(Some(&cancel)).await;
     }
     Some(client)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use omp_lsp::types::{Position, Range};
+
+    fn diag(line: u32, col: u32, severity: u32, message: &str) -> Diagnostic {
+        Diagnostic {
+            range: Range {
+                start: Position {
+                    line,
+                    character: col,
+                },
+                end: Position {
+                    line,
+                    character: col + 1,
+                },
+            },
+            severity: Some(severity),
+            code: None,
+            code_description: None,
+            source: None,
+            message: message.to_string(),
+            tags: None,
+            related_information: None,
+            data: None,
+        }
+    }
+
+    #[test]
+    fn delta_counts_only_new_diagnostics() {
+        let before = vec![
+            diag(12, 4, 1, "unresolved import Foo"),
+            diag(30, 0, 2, "mismatched types"),
+        ];
+        let after = vec![
+            diag(12, 4, 1, "unresolved import Foo"), // same -> excluded
+            diag(30, 0, 2, "mismatched types"),      // gone -> excluded
+            diag(40, 2, 1, "expected type `u8`"),    // new
+            diag(55, 1, 3, "some info"),             // severity > warning -> excluded
+        ];
+        let delta = compute_new_diagnostics(&before, &after);
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].line, 40);
+        assert_eq!(delta[0].col, 2);
+        assert_eq!(delta[0].message, "expected type `u8`");
+    }
+
+    #[test]
+    fn message_normalization_collapses_whitespace() {
+        let before = vec![diag(1, 0, 1, "a  b\nc")];
+        let after = vec![diag(1, 0, 1, "a b c"), diag(2, 0, 1, "x")];
+        let delta = compute_new_diagnostics(&before, &after);
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].line, 2);
+        assert_eq!(delta[0].col, 0);
+    }
+
+    #[test]
+    fn recurrence_ledger_escalates_only_on_repeat() {
+        let mut ledger: HashMap<(PathBuf, u64), usize> = HashMap::new();
+        let path = PathBuf::from("/repo/src/x.rs");
+        let delta = vec![NewDiag {
+            line: 1,
+            col: 0,
+            message: "boom".into(),
+        }];
+        assert!(!record_recurrence(&mut ledger, &path, &delta));
+        assert!(record_recurrence(&mut ledger, &path, &delta));
+        assert!(!record_recurrence(
+            &mut ledger,
+            &path,
+            &[NewDiag {
+                line: 9,
+                col: 0,
+                message: "other".into(),
+            }]
+        ));
+    }
 }

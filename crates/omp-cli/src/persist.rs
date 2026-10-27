@@ -84,6 +84,9 @@ pub fn ts_sessions_dir(cwd: &Path) -> Option<PathBuf> {
 /// An *ephemeral* session (`--no-session`) writes to a scratch directory that
 /// is removed on drop and reports no `sessionFile`, like omp's in-memory
 /// `SessionManager`.
+/// Shareable sink for non-message entries; see [`Persistence::entry_sink`].
+pub type EntrySink = std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 pub struct Persistence {
     writer: Arc<Mutex<SessionWriter>>,
     session_id: Mutex<String>,
@@ -93,6 +96,7 @@ pub struct Persistence {
     /// the same information in its private `leaf` and exposes no getter, so the
     /// compaction guard reads this mirror instead; every append (which advances
     /// the writer onto the new entry) clears it.
+    #[allow(clippy::option_option)] // tri-state `/tree` move, documented on `leaf_divergence`
     nav_leaf: Arc<Mutex<Option<Option<String>>>>,
     ephemeral: bool,
     scratch: Option<PathBuf>,
@@ -142,14 +146,14 @@ impl Persistence {
             .lock()
             .append_entry(kind, payload, &now_iso())
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// A shareable sink appending non-message entries (`model_usage`, …) to
     /// this session, for subsystems that only see a process-global hook (RLM
     /// sub-call accounting). Writes are best-effort.
     #[must_use]
-    pub fn entry_sink(&self) -> std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync> {
+    pub fn entry_sink(&self) -> EntrySink {
         let writer = std::sync::Arc::clone(&self.writer);
         let nav_leaf = Arc::clone(&self.nav_leaf);
         std::sync::Arc::new(move |kind, payload| {
@@ -174,7 +178,7 @@ impl Persistence {
             .lock()
             .append_model_change(model, role, resolved_model_is_fallback, &now_iso())
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// `thinking_level_change {thinkingLevel, configured}` (`appendThinkingLevelChange`),
@@ -200,7 +204,7 @@ impl Persistence {
             ),
         }
         .map(|_| ())
-        .inspect(|_| self.clear_nav())
+        .inspect(|()| self.clear_nav())
     }
 
     /// `title_change` audit entry.
@@ -217,7 +221,7 @@ impl Persistence {
             .lock()
             .append_title_change(title, source, previous, None, &now_iso())
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// Append a finished conversation message.
@@ -233,7 +237,7 @@ impl Persistence {
             .lock()
             .append_message(message, &iso_from_ms(timestamp_ms))
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// Append a `message` entry whose shape `pa_types` cannot model (e.g. a
@@ -247,7 +251,7 @@ impl Persistence {
             .lock()
             .append_omp_message(OmpMessage::Agent(message), &iso_from_ms(timestamp_ms))
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// Run `f` on the live session writer (compaction entries need the writer's id chain).
@@ -275,6 +279,7 @@ impl Persistence {
     /// The pending [`Self::branch_to`] move: `Some(target)` / `Some(None)` /
     /// `None` (no move pending — the append point is the last journaled entry).
     #[must_use]
+    #[allow(clippy::option_option)] // tri-state: no move / jump to root / leaf id
     pub fn leaf_divergence(&self) -> Option<Option<String>> {
         self.nav_leaf.lock().clone()
     }
@@ -433,7 +438,7 @@ impl Persistence {
         let opened = SessionWriter::open(path, leaf)?;
         *self.writer.lock() = opened;
         if let Some(id) = session_id {
-            *self.session_id.lock() = id.to_owned();
+            id.clone_into(&mut self.session_id.lock());
         }
         self.nav_leaf.lock().take();
         self.deferred.lock().take();

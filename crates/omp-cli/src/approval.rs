@@ -260,7 +260,6 @@ fn write_tier(input: &str) -> Decision {
         return Decision::tier(Tier::Write);
     };
     match scheme.as_str() {
-        "vault" | "cfg" | "conflict" => Decision::tier(Tier::Write),
         "agent" | "local" => Decision::tier(Tier::Read),
         "proc" | "ssh" | "xd" => Decision::tier(Tier::Exec),
         "artifact" | "mcp" | "issue" | "pr" | "omp" | "history" | "rule" | "security" | "skill"
@@ -270,6 +269,7 @@ fn write_tier(input: &str) -> Decision {
             false,
             Some(format!("{scheme}:// URLs are read-only")),
         ),
+        // `vault`/`cfg`/`conflict` and unregistered schemes all share the write tier.
         _ => Decision::tier(Tier::Write),
     }
 }
@@ -293,7 +293,7 @@ fn path_list(args: &Value) -> Vec<String> {
         match args.get(key) {
             Some(Value::String(s)) => out.push(s.clone()),
             Some(Value::Array(a)) => {
-                out.extend(a.iter().filter_map(Value::as_str).map(str::to_owned))
+                out.extend(a.iter().filter_map(Value::as_str).map(str::to_owned));
             }
             _ => {}
         }
@@ -302,7 +302,7 @@ fn path_list(args: &Value) -> Vec<String> {
 }
 
 /// Paths an `edit` payload writes: the `path` argument, per-edit paths, and hashline /
-/// apply_patch section headers of the `input` payload (plus move destinations).
+/// `apply_patch` section headers of the `input` payload (plus move destinations).
 fn edit_targets(args: &Value) -> Vec<String> {
     let mut targets = Vec::new();
     if let Some(p) = str_arg(args, "path") {
@@ -449,11 +449,6 @@ fn has_shell_control(command: &str) -> bool {
 
 /// TS `tokenizeShellSegments`, each segment's words joined by a space.
 fn bash_segments(command: &str) -> Vec<String> {
-    let chars: Vec<char> = command.chars().collect();
-    let mut segments: Vec<Vec<String>> = Vec::new();
-    let mut current: Vec<String> = Vec::new();
-    let mut buffer = String::new();
-    let (mut in_single, mut in_double) = (false, false);
     fn push_buffer(buffer: &mut String, current: &mut Vec<String>) {
         if !buffer.is_empty() {
             current.push(std::mem::take(buffer));
@@ -469,6 +464,11 @@ fn bash_segments(command: &str) -> Vec<String> {
             segments.push(std::mem::take(current));
         }
     }
+    let chars: Vec<char> = command.chars().collect();
+    let mut segments: Vec<Vec<String>> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut buffer = String::new();
+    let (mut in_single, mut in_double) = (false, false);
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
@@ -507,7 +507,7 @@ fn bash_segments(command: &str) -> Vec<String> {
             }
             ' ' | '\t' => push_buffer(&mut buffer, &mut current),
             '\n' | ';' | '&' | '|' | '(' | ')' => {
-                push_segment(&mut buffer, &mut current, &mut segments)
+                push_segment(&mut buffer, &mut current, &mut segments);
             }
             _ => buffer.push(ch),
         }

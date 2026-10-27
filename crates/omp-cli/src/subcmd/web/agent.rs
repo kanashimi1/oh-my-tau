@@ -162,12 +162,13 @@ impl Agent {
             .spawn()
             .with_context(|| format!("spawn {} --mode rpc", exe.display()))?;
         let pid = child.id().unwrap_or(0);
-        let pgid = pid; // process_group(0): pgid == the child's own pid
+        // process_group(0): the group id is the child's own pid
+        let group_id = pid;
 
         let control = match Self::connect_control(&sock_path).await {
             Ok(stream) => stream,
             Err(e) => {
-                detach::kill_group(pid, pgid);
+                detach::kill_group(pid, group_id);
                 let _ = std::fs::remove_file(&sock_path); // the child may have bound it before dying
                 return Err(e);
             }
@@ -179,7 +180,7 @@ impl Agent {
             cwd: spec.cwd.clone(),
             started_ms: pa_agent::now_ms(),
             pid,
-            pgid,
+            pgid: group_id,
             adopted: false,
             approval_mode: spec.approval_mode.clone(),
             control: tokio::sync::Mutex::new(Some(control)),

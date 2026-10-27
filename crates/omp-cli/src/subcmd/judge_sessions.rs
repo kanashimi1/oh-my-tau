@@ -54,7 +54,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         None => Box::new(BufWriter::new(std::io::stdout().lock())),
     };
     let sum = offline::judge_files(&files, &mut sink, &paths, &mut |f, n| {
-        eprintln!("{}: {n} episode(s)", f.display())
+        eprintln!("{}: {n} episode(s)", f.display());
     })?;
     sink.flush()?;
     eprintln!(
