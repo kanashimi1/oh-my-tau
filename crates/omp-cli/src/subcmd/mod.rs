@@ -40,6 +40,7 @@ pub fn known(name: &str) -> bool {
             | "hub"
             | "agent-merge"
             | "review"
+            | "attach"
     )
 }
 
@@ -64,6 +65,7 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "hub" => hub::run(args),
         "agent-merge" => agent_merge::run(args),
         "review" => review::run(args),
+        "attach" => crate::attach::run(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),
     }
 }

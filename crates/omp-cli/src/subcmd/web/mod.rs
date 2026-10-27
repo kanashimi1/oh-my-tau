@@ -24,7 +24,8 @@
 
 mod agent;
 mod assets;
-mod detach;
+mod desktop;
+pub(crate) mod detach;
 mod sessions;
 mod wallpapers;
 
@@ -110,6 +111,9 @@ struct Hub {
     default_cwd: PathBuf,
     port: u16,
     agents: Mutex<HashMap<String, Arc<Agent>>>,
+    /// Last "show this agent" request (`POST /api/agents/<id>/focus`, from
+    /// `omt` `/desktop`): `{id, ms}`; open pages navigate to newer ones.
+    focus: Mutex<Option<Value>>,
 }
 
 impl Hub {
@@ -212,6 +216,7 @@ async fn serve(opts: Options) -> Result<i32> {
         default_cwd: opts.cwd.clone(),
         port,
         agents: Mutex::new(HashMap::new()),
+        focus: Mutex::new(None),
     });
     let adopted = adopt_detached(&hub).await;
     let shown_host = if addr.ip().is_unspecified() {
@@ -456,9 +461,34 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
         ),
         (&Method::GET, "/api/agents") => {
             let list: Vec<Value> = hub.agents().iter().map(|a| a.info_json()).collect();
-            json_response(StatusCode::OK, &json!({"agents": list}))
+            let focus = lock(&hub.focus).clone();
+            json_response(StatusCode::OK, &json!({"agents": list, "focus": focus}))
         }
         (&Method::POST, "/api/agents") => create_agent(&hub, req).await,
+        (&Method::POST, p) if p.starts_with("/api/agents/") => {
+            let rest = &p["/api/agents/".len()..];
+            let Some((id, action)) = rest.split_once('/') else {
+                return error(StatusCode::NOT_FOUND, "not found");
+            };
+            let Some(agent) = hub.agent(id) else {
+                return error(StatusCode::NOT_FOUND, "no such agent");
+            };
+            let result = match action {
+                // Show the agent in the desktop app: open pages pick the
+                // request up from `GET /api/agents`, the window is raised.
+                "focus" => {
+                    *lock(&hub.focus) = Some(json!({"id": agent.id, "ms": pa_agent::now_ms()}));
+                    desktop::raise()
+                }
+                // Continue the agent in a terminal (`omt attach <id>`).
+                "terminal" => desktop::open_terminal(&hub.exe, &agent.cwd, &agent.id),
+                _ => return error(StatusCode::NOT_FOUND, "not found"),
+            };
+            match result {
+                Ok(()) => json_response(StatusCode::OK, &json!({"ok": true})),
+                Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
+            }
+        }
         (&Method::DELETE, p) if p.starts_with("/api/agents/") => {
             match hub.agent(&p["/api/agents/".len()..]) {
                 Some(agent) => {

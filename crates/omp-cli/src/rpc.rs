@@ -925,6 +925,10 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "set_thinking_level" => {
             let level = str_field(cmd, "level")?;
+            if level == "auto" {
+                rt.set_auto_thinking().await;
+                return none();
+            }
             if let Some(mode) = crate::runtime::parse_ultra_name(level) {
                 rt.set_ultra(Some(mode)).await;
                 return none();
@@ -997,6 +1001,20 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "abort_retry" => {
             rt.abort_retry();
+            none()
+        }
+        // Attached-TUI parity (`omt attach`): the panels and actions the local
+        // TUI port computes in-process, answered as response data so only the
+        // asking client renders them.
+        "get_session_info_panel" => ok(crate::tui::session_info_frame(rt).await),
+        "get_usage_panel" => ok(slash::usage_panel_frame(rt).await),
+        "navigate_tree" => {
+            let entry = str_field(cmd, "entryId")?;
+            crate::tree::navigate_tree(rt, entry, &json!({}), None).await
+        }
+        "enable_context_usage" => {
+            rt.enable_context_usage_frames();
+            rt.publish_context_usage();
             none()
         }
         "abort_bash" => {
@@ -1106,6 +1124,54 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
 }
 
 const RPC_CHUNK_PAYLOAD_BYTES: usize = 256 * 1024;
+
+/// Client-side reassembly of protocol-v2 `rpc_chunk` sequences (the web hub
+/// and `omt attach` both read the same agent log).
+#[derive(Default)]
+pub struct ChunkAssembler {
+    parts: HashMap<String, Vec<Option<Vec<u8>>>>,
+}
+
+impl ChunkAssembler {
+    /// Store one `rpc_chunk`; returns the reassembled frame text once every
+    /// part arrived. A malformed chunk drops its whole sequence.
+    pub fn push(&mut self, chunk: &Value) -> Option<String> {
+        use base64::Engine as _;
+        let id = chunk.get("chunkId")?.as_str()?.to_owned();
+        let parsed = (|| {
+            let index = usize::try_from(chunk.get("index")?.as_u64()?).ok()?;
+            let count = usize::try_from(chunk.get("count")?.as_u64()?).ok()?;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(chunk.get("data")?.as_str()?)
+                .ok()?;
+            (index < count).then_some((index, count, data))
+        })();
+        let Some((index, count, data)) = parsed else {
+            self.parts.remove(&id);
+            return None;
+        };
+        let parts = self
+            .parts
+            .entry(id.clone())
+            .or_insert_with(|| vec![None; count]);
+        if parts.len() != count {
+            self.parts.remove(&id);
+            return None;
+        }
+        parts[index] = Some(data);
+        if parts.iter().any(Option::is_none) {
+            return None;
+        }
+        let bytes: Vec<u8> = self
+            .parts
+            .remove(&id)?
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect();
+        String::from_utf8(bytes).ok()
+    }
+}
 const METADATA_STRING_CAP: usize = 1024;
 const STRING_ELISION_RESERVE: usize = 80;
 /// `(stringCap, arrayLimit, objectLimit)` per shrink pass, as omp's `SHRINK_PASSES`.

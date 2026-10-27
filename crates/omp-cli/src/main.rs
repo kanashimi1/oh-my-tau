@@ -3,6 +3,7 @@
 mod adapter;
 mod agent;
 mod approval;
+mod attach;
 mod cli;
 mod compact;
 mod context;
@@ -587,6 +588,18 @@ async fn async_main() -> Result<()> {
         && std::io::IsTerminal::is_terminal(&std::io::stdout())
     {
         let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
+        // A session the web/desktop hub already runs is joined, not opened a
+        // second time (one writer per session file).
+        if let Some(path) = &resume_target {
+            if let Some(id) = attach::agent_for_session(path).await {
+                persistence.discard_pristine();
+                if let Some(e) = &extensions {
+                    e.shutdown().await;
+                }
+                return attach::attach(&id).await;
+            }
+        }
+        let tui_cwd = cwd.clone();
         let result = tui::run(
             agent,
             target,
@@ -598,6 +611,12 @@ async fn async_main() -> Result<()> {
         .await;
         if let Some(e) = &extensions {
             e.shutdown().await;
+        }
+        // `/desktop`: the TUI released the session; move it to the hub and
+        // continue as `omt attach` in this terminal.
+        if let Some(path) = tui::take_handoff() {
+            result?;
+            return attach::handoff(&path, &tui_cwd).await;
         }
         return result;
     }

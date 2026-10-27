@@ -244,12 +244,24 @@
     spawnQuiet({ cwd: row.cwd || s.project, resume: row.path }).then((a) => { if (a) ow(a.id); });
   }
 
+  // Continue a session in a terminal (`omt attach <id>` in a new Windows
+  // Terminal tab); stored sessions are opened as an agent first.
+  async function openInTerminal(s, row) {
+    const id = row.kind === "agent" ? row.id : (await spawnQuiet({ cwd: row.cwd || s.project, resume: row.path }) || {}).id;
+    if (!id) return;
+    try {
+      await api("/api/agents/" + encodeURIComponent(id) + "/terminal", { method: "POST", body: {} });
+      OMP.toast("Opened in a terminal (omt attach)", "success");
+    } catch (e) { OMP.toast("Terminal: " + e.message, "error", 8000); }
+  }
+
   function rowMenu(anchor, s, row) {
     const items = [
       { label: "Rename…", run: () => renameRow(s, row) },
       { label: row.pinned ? "Unpin" : "Pin", run: () => togglePin(s, row) },
       "-",
       { label: "Open in new window", run: () => openInNewWindow(s, row) },
+      { label: "Open in terminal", run: () => openInTerminal(s, row) },
     ];
     if (row.kind === "agent" && row.id === S().agentId) {
       items.push("-", { label: "Stop agent", run: () => stopAgent(S(), row.id) });
@@ -259,9 +271,21 @@
 
   // ── data ─────────────────────────────────────────────────────────────────
   async function refreshAgents(s) {
+    let res;
     try {
-      s.agents = (await api("/api/agents")).agents || [];
+      res = await api("/api/agents");
+      s.agents = res.agents || [];
     } catch { return; }
+    // `/desktop` from a terminal asks open pages to show its agent. On the
+    // first poll only a fresh request counts (omrs was just started for it).
+    const f = res.focus;
+    if (f && f.ms > (s.focusSeen || 0)) {
+      const fresh = s.focusSeen !== undefined || Date.now() - f.ms < 60000;
+      s.focusSeen = f.ms;
+      if (fresh && f.id !== s.agentId && s.agents.some((a) => a.id === f.id)) navigate(f.id);
+    } else if (s.focusSeen === undefined) {
+      s.focusSeen = 0;
+    }
     renderSidebar(s);
     renderHeader(s);
   }
@@ -271,7 +295,7 @@
     try {
       s.sessions = (await api("/api/sessions?cwd=" + encodeURIComponent(s.project))).sessions || [];
     } catch (e) {
-      s.sessions = [];
+      s.sessions = s.sessions || [];
       OMP.toast("Sessions: " + e.message, "error");
     }
     renderSidebar(s);
@@ -453,6 +477,7 @@
     ];
     if (has) {
       items.push("-",
+        { label: "Open in terminal", run: () => openInTerminal(s, { kind: "agent", id: s.agentId }) },
         { label: "Rename…", run: () => rename(s) },
         { label: "Fork session", run: async () => {
           try { await app.rpc("fork"); OMP.toast("Forked into a new session file", "success"); } catch (e) { return OMP.toast(e.message, "error"); }
@@ -495,6 +520,9 @@
     $("#new-session").onclick = () => newSession(s, s.project);
     $("#project-pick").onclick = (e) => projectMenu(e.currentTarget, s);
     $("#session-filter").oninput = () => renderSidebar(s);
+    // The stored list is a snapshot: re-scan when the user goes looking.
+    $("#session-filter").onfocus = () => loadSessions(s);
+    window.addEventListener("focus", () => { loadSessions(s); refreshAgents(s); });
     $("#composer-model").onclick = () => modelPicker(s);
     $("#composer-thinking").onclick = () => thinkingPicker(s);
     $("#menu-btn").onclick = (e) => sessionMenu(e.currentTarget, s);

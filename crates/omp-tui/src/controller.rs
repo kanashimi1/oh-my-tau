@@ -192,6 +192,11 @@ async fn drive<B: Backend, R: RawOut, E: Stream<Item = io::Result<Event>> + Unpi
             }
             maybe_frame = frames.recv() => {
                 let Some(frame) = maybe_frame else { continue };
+                // Host-requested exit (`/desktop` handoff): leave through the
+                // normal teardown, like Action::Quit.
+                if frame.get("type").and_then(serde_json::Value::as_str) == Some("ui_exit") {
+                    break;
+                }
                 app.push_frame_owned(frame, Instant::now());
                 if app.pump_events(Instant::now()) {
                     commit_retired(&mut app, shell).context("commit scrollback")?;

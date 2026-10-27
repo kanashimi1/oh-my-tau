@@ -32,6 +32,10 @@ const STATE_PROBE_ID: &str = "__web_state";
 /// (`--resume` is ignored in rpc mode: the rpc runtime owns the session
 /// lifecycle, so the bridge resumes through the protocol).
 const RESUME_ID: &str = "__web_resume";
+/// Response id of the bridge's `negotiate_protocol` (never forwarded). Protocol
+/// v2 splits frames over the 1 MiB line limit into `rpc_chunk` sequences, so
+/// large replies (`get_messages` of an image-heavy session) arrive whole.
+const PROTOCOL_ID: &str = "__web_protocol";
 /// Dialog methods a browser must answer; replayed to late attachers.
 const DIALOG_METHODS: &[&str] = &["select", "confirm", "input", "editor", "ask"];
 const STDERR_TAIL: usize = 40;
@@ -112,6 +116,8 @@ pub struct Agent {
     stderr: Mutex<VecDeque<String>>,
     /// Bridge notices (e.g. a failed startup resume) replayed to new sockets.
     notices: Mutex<Vec<Arc<str>>>,
+    /// Partially received protocol-v2 `rpc_chunk` sequences by chunk id.
+    chunks: Mutex<crate::rpc::ChunkAssembler>,
     alive: AtomicBool,
 }
 
@@ -127,8 +133,7 @@ impl Agent {
         on_exit: impl FnOnce(&str) + Send + 'static,
     ) -> Result<Arc<Self>> {
         let dir = detach::agents_dir().join(&id);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("create {}", dir.display()))?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let log_path = dir.join("log");
         let sock_path = detach::socket_path(&id);
         let _ = std::fs::remove_file(&sock_path); // stale socket from an earlier incarnation
@@ -193,12 +198,14 @@ impl Agent {
             }),
             stderr: Mutex::new(VecDeque::new()),
             notices: Mutex::new(Vec::new()),
+            chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
             alive: AtomicBool::new(true),
         });
 
         Self::start_tail(Arc::clone(&agent), log_path, false);
         Self::start_exit_watcher(Arc::clone(&agent), on_exit);
 
+        agent.negotiate_protocol().await?;
         if let Some(resume) = &spec.resume {
             let frame = json!({"id": RESUME_ID, "type": "switch_session", "sessionPath": resume});
             agent.send_line(&frame.to_string()).await?;
@@ -237,11 +244,13 @@ impl Agent {
             }),
             stderr: Mutex::new(VecDeque::new()),
             notices: Mutex::new(Vec::new()),
+            chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
             alive: AtomicBool::new(true),
         });
         // Replay from the start to rebuild state, then tail live.
         Self::start_tail(Arc::clone(&agent), detach::log_path(&entry.id), true);
         Self::start_adopted_watcher(Arc::clone(&agent), entry.pid, on_exit);
+        agent.negotiate_protocol().await?;
         agent.probe_state().await;
         Ok(agent)
     }
@@ -316,6 +325,12 @@ impl Agent {
     /// is stderr diagnostics kept for the exit frame.
     async fn feed_log_line(&self, line: &str) {
         match serde_json::from_str::<Value>(line) {
+            Ok(v) if v.get("type").and_then(Value::as_str) == Some("rpc_chunk") => {
+                let frame = lock(&self.chunks).push(&v);
+                if let Some(frame) = frame {
+                    self.on_child_line(&frame).await;
+                }
+            }
             Ok(v) if v.is_object() => self.on_child_line(line).await,
             _ => {
                 let mut tail = lock(&self.stderr);
@@ -328,10 +343,7 @@ impl Agent {
     }
 
     /// Watch a *spawned* child (we hold the handle and can `wait` on it).
-    fn start_exit_watcher(
-        agent: Arc<Self>,
-        on_exit: impl FnOnce(&str) + Send + 'static,
-    ) {
+    fn start_exit_watcher(agent: Arc<Self>, on_exit: impl FnOnce(&str) + Send + 'static) {
         tokio::spawn(async move {
             let code = match agent.child.lock().await.as_mut() {
                 Some(child) => child.wait().await.ok().and_then(|s| s.code()),
@@ -440,6 +452,11 @@ impl Agent {
         }
     }
 
+    async fn negotiate_protocol(&self) -> Result<()> {
+        let frame = json!({"id": PROTOCOL_ID, "type": "negotiate_protocol", "protocolVersion": 2});
+        self.send_line(&frame.to_string()).await
+    }
+
     async fn probe_state(&self) {
         let probe = json!({"id": STATE_PROBE_ID, "type": "get_state"}).to_string();
         let _ = self.send_line(&probe).await;
@@ -459,9 +476,15 @@ impl Agent {
                 }
                 return; // the bridge's own probe
             }
+            "response" if frame.get("id").and_then(Value::as_str) == Some(PROTOCOL_ID) => {
+                return; // the bridge's own protocol negotiation
+            }
             "response" if frame.get("id").and_then(Value::as_str) == Some(RESUME_ID) => {
                 if frame.get("success").and_then(Value::as_bool) != Some(true) {
-                    let error = frame.get("error").and_then(Value::as_str).unwrap_or("unknown error");
+                    let error = frame
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown error");
                     let note: Arc<str> = Arc::from(
                         json!({"type": "web_error", "message": format!("Could not resume the session: {error}")})
                             .to_string(),
@@ -476,15 +499,26 @@ impl Agent {
                 let command = frame.get("command").and_then(Value::as_str).unwrap_or("");
                 refresh = matches!(
                     command,
-                    "new_session" | "switch_session" | "open_session" | "fork" | "branch"
-                        | "set_session_name" | "set_model" | "cycle_model"
+                    "new_session"
+                        | "switch_session"
+                        | "open_session"
+                        | "fork"
+                        | "branch"
+                        | "set_session_name"
+                        | "set_model"
+                        | "cycle_model"
                 );
             }
             "extension_ui_request" => {
                 let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
                 if DIALOG_METHODS.contains(&method) {
                     if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                        set_dialog_pending(&self.pending_ui, &self.summary, id, Some(Arc::from(text)));
+                        set_dialog_pending(
+                            &self.pending_ui,
+                            &self.summary,
+                            id,
+                            Some(Arc::from(text)),
+                        );
                     }
                 } else if method == "cancelDialog" {
                     if let Some(id) = frame.pointer("/params/id").and_then(Value::as_str) {
