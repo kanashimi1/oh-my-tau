@@ -11,9 +11,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
-use std::sync::Mutex;
 
 use crate::runtime::Runtime;
 
@@ -239,9 +239,7 @@ fn split_frontmatter(content: &str) -> (&str, &str) {
 /// Reload the cached file commands from disk (cheap; safe to call from async context).
 pub fn refresh_file_commands(cwd: &Path) {
     let cmds = load_file_commands(cwd);
-    *FILE_COMMANDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = cmds;
+    *FILE_COMMANDS.lock() = cmds;
 }
 
 /// Expand `/name args` through a file template (`expandSlashCommand`): the
@@ -3061,11 +3059,7 @@ use self::Outcome::{Handled, Prompt};
 pub async fn dynamic_commands(rt: &std::sync::Arc<Runtime>) -> Vec<Value> {
     refresh_file_commands(&rt.cwd);
     let mut out = extension_commands().await;
-    for cmd in FILE_COMMANDS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-    {
+    for cmd in FILE_COMMANDS.lock().iter() {
         out.push(json!({
             "name": cmd.name,
             "description": cmd.description,

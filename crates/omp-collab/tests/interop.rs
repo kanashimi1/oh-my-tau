@@ -24,9 +24,10 @@
 //! overrides the guest script. When any prerequisite is missing the tests
 //! print a `skipping: ...` line to stderr and pass without running.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -129,10 +130,7 @@ impl CollabHostBackend for InteropBackend {
         snapshot_entries()
     }
     fn inject_guest_prompt(&self, text: &str, images: Vec<Value>) -> anyhow::Result<()> {
-        self.prompts
-            .lock()
-            .unwrap()
-            .push((text.to_string(), images));
+        self.prompts.lock().push((text.to_string(), images));
         Ok(())
     }
     fn abort_turn(&self) -> anyhow::Result<()> {
@@ -440,7 +438,7 @@ async fn ts_guest_interops_with_rust_host() {
     );
 
     // The rust host received exactly the guest's prompt as a user-turn injection.
-    let prompts = backend.prompts.lock().unwrap().clone();
+    let prompts = backend.prompts.lock().clone();
     assert_eq!(
         prompts,
         vec![(PROMPT_TEXT.to_string(), Vec::<Value>::new())],
@@ -538,7 +536,7 @@ async fn run_wire_host(
                                 "TS guest must echo the link's write token verbatim"
                             ) }
                             let can_write = write_token.is_some();
-                            log.hellos.lock().unwrap().push((
+                            log.hellos.lock().push((
                                 peer,
                                 name,
                                 can_write,
@@ -570,7 +568,7 @@ async fn run_wire_host(
                         }
                         CollabFrame::Prompt { text, images } => match peers.get(&peer) {
                             Some(true) => {
-                                log.prompts.lock().unwrap().push((peer, text.clone()));
+                                log.prompts.lock().push((peer, text.clone()));
                                 backend.inject_guest_prompt(&text, images)
                                     .expect("prompt recorded");
                             }
@@ -580,7 +578,7 @@ async fn run_wire_host(
                             None => {} // unknown peer, like the TS gate
                         },
                         CollabFrame::FetchTranscript { req_id, from_byte, .. } => {
-                            log.transcript_requests.lock().unwrap().push(peer);
+                            log.transcript_requests.lock().push(peer);
                             send_frame(&relay, &cipher, peer, &CollabFrame::Transcript {
                                 req_id,
                                 text: String::new(),
@@ -684,7 +682,7 @@ async fn ts_guest_interops_with_wire_host() {
     .await;
 
     // ── rust-side protocol assertions ─────────────────────────────────────
-    let hellos = log.hellos.lock().unwrap().clone();
+    let hellos = log.hellos.lock().clone();
     assert_eq!(
         hellos.len(),
         2,
@@ -703,7 +701,7 @@ async fn ts_guest_interops_with_wire_host() {
     assert_eq!(view_hello.1, "bun-viewer", "view guest display name");
     assert_eq!(view_hello.3, None, "view link carries no write token");
 
-    let prompts = log.prompts.lock().unwrap().clone();
+    let prompts = log.prompts.lock().clone();
     assert_eq!(
         prompts.len(),
         1,
@@ -711,12 +709,12 @@ async fn ts_guest_interops_with_wire_host() {
     );
     assert_eq!(prompts[0].1, PROMPT_TEXT, "prompt text byte-exact");
     assert_eq!(
-        backend.prompts.lock().unwrap().clone(),
+        backend.prompts.lock().clone(),
         vec![(PROMPT_TEXT.to_string(), Vec::<Value>::new())],
         "backend injection records the guest prompt"
     );
     assert_eq!(
-        log.transcript_requests.lock().unwrap().len(),
+        log.transcript_requests.lock().len(),
         1,
         "one fetch-transcript request"
     );

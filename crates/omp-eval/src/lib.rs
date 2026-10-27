@@ -36,12 +36,13 @@
 
 #![allow(clippy::missing_errors_doc)] // single io::Error failure mode; per-call docs add noise
 
+use parking_lot::Mutex;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -601,13 +602,9 @@ impl PythonKernel {
     ///
     /// # Errors
     /// See [`PythonKernel::start`].
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned (another thread panicked while
-    /// holding it).
     pub fn restart(&self) -> io::Result<()> {
         {
-            let mut guard = self.process.lock().expect("kernel lock");
+            let mut guard = self.process.lock();
             if let Some(p) = guard.as_mut() {
                 p.settle_exit();
             }
@@ -668,7 +665,7 @@ impl PythonKernel {
         let seq = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id;
         {
-            let mut guard = self.process.lock().expect("kernel lock");
+            let mut guard = self.process.lock();
             let p = guard
                 .as_mut()
                 .ok_or_else(|| io::Error::other("Python kernel is not running"))?;
@@ -750,7 +747,7 @@ impl PythonKernel {
                                     "error": "host bridge unavailable",
                                 }),
                             };
-                            let mut guard = self.process.lock().expect("kernel lock");
+                            let mut guard = self.process.lock();
                             if let Some(p) = guard.as_mut() {
                                 let _ = p.stdin.write_all(format!("{reply}\n").as_bytes());
                                 let _ = p.stdin.flush();
@@ -829,7 +826,7 @@ impl PythonKernel {
                     // cell. The interrupt (like the timeout's) lands as
                     // KeyboardInterrupt("Execution interrupted"); reuse the
                     // escalation window to let the runner settle.
-                    if let Some(p) = self.process.lock().expect("kernel lock").as_mut() {
+                    if let Some(p) = self.process.lock().as_mut() {
                         if let Ok(pid) = i32::try_from(p.child.id()) {
                             let _ = nix::sys::signal::kill(
                                 nix::unistd::Pid::from_raw(-pid),
@@ -882,7 +879,7 @@ impl PythonKernel {
         };
         loop {
             let outcome = {
-                let mut guard = self.process.lock().expect("kernel lock");
+                let mut guard = self.process.lock();
                 let Some(p) = guard.as_mut() else {
                     return Err(RecvOutcome::Disconnected);
                 };
@@ -928,23 +925,17 @@ impl PythonKernel {
     }
 
     /// Graceful shutdown: protocol `exit`, wait, escalate on refusal.
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned.
     pub fn shutdown(&self) {
-        let mut guard = self.process.lock().expect("kernel lock");
+        let mut guard = self.process.lock();
         if let Some(mut p) = guard.take() {
             p.settle_exit();
         }
     }
 
     /// True while the runner subprocess is alive.
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned.
     #[must_use]
     pub fn is_alive(&self) -> bool {
-        let mut guard = self.process.lock().expect("kernel lock");
+        let mut guard = self.process.lock();
         match guard.as_mut() {
             Some(p) => p.child.try_wait().expect("try_wait").is_none(),
             None => false,
@@ -953,12 +944,9 @@ impl PythonKernel {
 
     /// Runner process id while the kernel is running, else `None`
     /// (introspection/test aid).
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned.
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
-        let guard = self.process.lock().expect("kernel lock");
+        let guard = self.process.lock();
         guard.as_ref().map(|p| p.child.id())
     }
 
@@ -1006,16 +994,13 @@ impl KernelRegistry {
     ///
     /// # Errors
     /// See [`PythonKernel::start`].
-    ///
-    /// # Panics
-    /// Panics if the registry mutex is poisoned.
     pub fn get_or_start(
         &self,
         cwd: &std::path::Path,
         interpreter: Option<&str>,
     ) -> io::Result<Arc<PythonKernel>> {
         let key = cwd.to_string_lossy().into_owned();
-        let mut kernels = self.kernels.lock().expect("registry lock");
+        let mut kernels = self.kernels.lock();
         if let Some(k) = kernels.get(&key) {
             if k.is_alive() {
                 return Ok(Arc::clone(k));

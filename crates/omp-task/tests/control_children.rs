@@ -11,7 +11,7 @@ use omp_task::{ChildMode, RunPhase, RunStatus, TaskRunner, TaskSpec};
 
 /// The Finishing-deadline knob is process-global env; every RPC test in this
 /// file takes the lock and sets an explicit value so they cannot interfere.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn set_finishing_deadline(ms: &str) {
     std::env::set_var("OMP_TASK_TEST_FINISHING_DEADLINE_MS", ms);
@@ -61,9 +61,7 @@ async fn wait_phase(control: &omp_task::RunControl, phase: RunPhase) {
 /// run that settles first makes a late `cancel()` return `false`.
 #[tokio::test]
 async fn cancel_in_the_post_loop_window_is_consistent() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     // Answers everything and exits, but a detached grandchild holds stderr
@@ -120,9 +118,7 @@ exit 0"#,
 /// Completed even though a detached grandchild holds stderr (bounded join).
 #[tokio::test]
 async fn completed_run_with_detached_stderr_holder_settles() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -158,9 +154,7 @@ exit 0"#,
 /// run must settle failed — no hang, permit released.
 #[tokio::test]
 async fn finishing_phase_deadline_kills_hanging_child() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("400");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -192,9 +186,7 @@ sleep 30"#,
 /// receipt reports failure instead of a silently dropped message.
 #[tokio::test]
 async fn steer_receipt_reports_finishing_failure() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -286,7 +278,7 @@ async fn child_gets_depth_env_and_extra_args() {
 /// (a grandparent's bus) never leaks into a child that was not given its own.
 #[tokio::test]
 async fn child_gets_spec_env_and_never_inherits_a_stale_bus() {
-    let _guard = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = ENV_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
         dir.path(),

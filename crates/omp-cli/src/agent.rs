@@ -8,7 +8,8 @@ use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
 use pa_agent::agent_loop::ConvertToLlmFn;
 use pa_agent::types::{AgentMessage, AgentTool, DeveloperMessage, Message, UserContent, UserPart};
 
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use crate::adapter::{json_round_trip, switchable_stream_fn, ProviderTarget};
 use crate::model::Selected;

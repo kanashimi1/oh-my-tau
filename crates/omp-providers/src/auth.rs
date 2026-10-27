@@ -12,10 +12,11 @@
 //! * After a provider 401 [`recover`] force-refreshes the failing credential once
 //!   (`?reason=auth-recovery` through the broker) and hands back the new bearer, if it differs.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context as _, Result};
@@ -207,10 +208,7 @@ fn cache_key(cfg: &BrokerConfig) -> String {
 }
 
 fn invalidate_snapshot(cfg: &BrokerConfig) {
-    SNAPSHOTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .remove(&cache_key(cfg));
+    SNAPSHOTS.lock().remove(&cache_key(cfg));
 }
 
 async fn broker_request(cfg: &BrokerConfig, post: bool, path: &str) -> Result<Value> {
@@ -252,9 +250,7 @@ async fn broker_request(cfg: &BrokerConfig, post: bool, path: &str) -> Result<Va
 async fn broker_snapshot(cfg: &BrokerConfig) -> Result<Vec<SnapshotEntry>> {
     let key = cache_key(cfg);
     {
-        let cache = SNAPSHOTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let cache = SNAPSHOTS.lock();
         if let Some((at, rows)) = cache.get(&key) {
             if at.elapsed() < SNAPSHOT_TTL {
                 return Ok(rows
@@ -277,19 +273,16 @@ async fn broker_snapshot(cfg: &BrokerConfig) -> Result<Vec<SnapshotEntry>> {
         .filter_map(parse_entry)
         .collect();
     entries.sort_by_key(|e| e.id);
-    SNAPSHOTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(
-            key,
-            (
-                Instant::now(),
-                entries
-                    .iter()
-                    .map(|e| (e.id, e.provider.clone(), e.credential.clone()))
-                    .collect(),
-            ),
-        );
+    SNAPSHOTS.lock().insert(
+        key,
+        (
+            Instant::now(),
+            entries
+                .iter()
+                .map(|e| (e.id, e.provider.clone(), e.credential.clone()))
+                .collect(),
+        ),
+    );
     Ok(entries)
 }
 
@@ -510,9 +503,7 @@ static MINTS: LazyLock<Mutex<HashMap<MintKey, (String, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn remember_mint(db: &str, id: i64, access: &str) {
-    let mut mints = MINTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut mints = MINTS.lock();
     mints.retain(|_, (_, at)| at.elapsed() < REMINT_COOLDOWN);
     mints.insert((db.to_string(), id), (access.to_string(), Instant::now()));
 }
@@ -520,7 +511,6 @@ fn remember_mint(db: &str, id: i64, access: &str) {
 fn recent_mint(db: &str, id: i64, access: &str) -> bool {
     MINTS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(&(db.to_string(), id))
         .is_some_and(|(a, at)| a == access && at.elapsed() < REMINT_COOLDOWN)
 }

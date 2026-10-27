@@ -1,6 +1,7 @@
+use parking_lot::Mutex;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::*;
 
@@ -47,7 +48,7 @@ fn serve(
                 parts.next().unwrap_or_default(),
                 parts.next().unwrap_or_default()
             );
-            log.lock().unwrap().push(text.clone());
+            log.lock().push(text.clone());
             let (status, body) = reply(&key);
             let _ = write!(
                 stream,
@@ -61,7 +62,6 @@ fn serve(
 
 fn requests(seen: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
     seen.lock()
-        .unwrap()
         .iter()
         .map(|r| r.lines().next().unwrap_or_default().to_string())
         .collect()
@@ -208,7 +208,7 @@ fn broker_refreshes_a_near_expiry_oauth_row_and_recovers_after_401() {
             "POST /v1/credential/25/refresh HTTP/1.1"
         ]
     );
-    let first = seen.lock().unwrap()[0].to_ascii_lowercase();
+    let first = seen.lock()[0].to_ascii_lowercase();
     assert!(first.contains("authorization: bearer secret"), "{first}");
 
     // A 401 recovery refreshes the failing row with the auth-recovery reason.
@@ -270,7 +270,7 @@ fn local_store_refreshes_an_expired_kimi_token_and_writes_it_back() {
     );
 
     // The grant is a form refresh with the client id and the stored refresh token.
-    let req = seen.lock().unwrap()[0].clone();
+    let req = seen.lock()[0].clone();
     assert!(
         req.to_ascii_lowercase()
             .contains("content-type: application/x-www-form-urlencoded"),

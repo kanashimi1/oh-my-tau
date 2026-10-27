@@ -4,9 +4,10 @@
 //! registers extension tools, serves host->core requests (`append_entry`,
 //! `send_message`, ui frames), and emits omp lifecycle events.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -565,17 +566,8 @@ impl crate::runtime::CompactionHooks for CompactBridge {
 impl Live {
     /// ctx merged into the host on each emit: the cheap snapshot, plus the branch once per change.
     fn provide(&self) -> Option<Value> {
-        let mut out = self
-            .snap
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(b) = self
-            .branch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
+        let mut out = self.snap.lock().clone();
+        if let Some(b) = self.branch.lock().take() {
             out.insert(
                 "leafId".into(),
                 b.as_array()
@@ -701,10 +693,7 @@ impl Extensions {
             Box::pin(async move {
                 let result = fut.await?;
                 if result.as_ref().is_some_and(|r| r.block) {
-                    blocked
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .insert(id);
+                    blocked.lock().insert(id);
                 }
                 Ok(result)
             })
@@ -768,10 +757,7 @@ impl Extensions {
         model: &str,
     ) -> Result<()> {
         {
-            let mut ctx = self
-                .ctx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ctx = self.ctx.lock();
             ctx.session_id = session_id.to_string();
             ctx.session_file = session_file.map(Path::to_path_buf);
             ctx.model = model.to_string();
@@ -790,10 +776,7 @@ impl Extensions {
     /// Transport failure.
     pub async fn set_session_name(&self, name: Option<String>) -> Result<()> {
         let ready = {
-            let mut ctx = self
-                .ctx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut ctx = self.ctx.lock();
             ctx.session_name = name;
             !ctx.session_id.is_empty()
         };
@@ -809,10 +792,7 @@ impl Extensions {
     /// Transport failure.
     async fn send_ctx(&self) -> Result<()> {
         let body = {
-            let ctx = self
-                .ctx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ctx = self.ctx.lock();
             json!({
                 "sessionId": ctx.session_id,
                 "sessionFile": ctx.session_file.as_ref().map(|p| p.to_string_lossy().into_owned()),
@@ -844,10 +824,7 @@ impl Extensions {
         // prompt): start every prompt from the base prompt, never from the last override.
         let mut base = agent.system_prompt().await;
         let restore = {
-            let mut applied = self
-                .prompt_override
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut applied = self.prompt_override.lock();
             applied
                 .take()
                 .filter(|(_, set)| base == *set)
@@ -863,10 +840,7 @@ impl Extensions {
             .await?;
         if let Some(list) = outcome.system_prompt {
             let joined = list.join("\n\n");
-            *self
-                .prompt_override
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((base, joined.clone()));
+            *self.prompt_override.lock() = Some((base, joined.clone()));
             agent.set_system_prompt(joined).await;
         }
         // Injected messages ride the prompt (TS `#promptAgent`: `[user, ...injected]`), so they get
@@ -902,10 +876,7 @@ impl Extensions {
     /// lifecycle forwarding (`agent_*`, `turn_*`, `message_*`,
     /// `tool_execution_*`, `session_stop`).
     pub fn attach(self: &Arc<Self>, rt: Arc<Runtime>) {
-        *self
-            .rt
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rt.clone());
+        *self.rt.lock() = Some(rt.clone());
         self.serve_incoming(&rt);
         rt.set_compaction_hooks(Some(Arc::new(CompactBridge {
             host: self.host.clone(),
@@ -933,9 +904,7 @@ impl Extensions {
         tokio::spawn(async move {
             ext.refresh_live(&rt, true).await;
             let sub = ext.subscribe_lifecycle(rt).await;
-            *ext.sub
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sub);
+            *ext.sub.lock() = Some(sub);
             // Hold the subscription for the session's lifetime.
             std::future::pending::<()>().await;
         });
@@ -946,10 +915,7 @@ impl Extensions {
     /// host has a fresh channel; the previous consumer's task ends when its
     /// sender drops).
     fn responder(&self, rt: &Arc<Runtime>) -> Arc<dyn omp_ext::lifecycle::HostResponder> {
-        let mode = *self
-            .mode
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mode = *self.mode.lock();
         Arc::new(RuntimeResponder {
             rt: Arc::downgrade(rt),
             mode,
@@ -959,21 +925,12 @@ impl Extensions {
     /// Declare the serving mode before [`Self::attach`]: sets `ctx.mode` / `hasUI` like TS
     /// (`print`/`json`: no UI; `rpc` and `tui`: a UI context exists).
     fn mode(&self) -> ExtMode {
-        *self
-            .mode
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        *self.mode.lock()
     }
 
     pub fn set_mode(&self, mode: ExtMode) {
-        *self
-            .mode
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = mode;
-        let mut ctx = self
-            .ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *self.mode.lock() = mode;
+        let mut ctx = self.ctx.lock();
         ctx.has_ui = mode.has_ui();
         ctx.mode = mode.name();
     }
@@ -1034,18 +991,9 @@ impl Extensions {
             );
         }
         self.send_ctx().await?;
-        *self
-            .live
-            .branch_len
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.live.branch_len.lock() = None;
         emit_silent(self.host.emit_session_start(None).await);
-        if let Some(rt) = self
-            .rt
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        {
+        if let Some(rt) = self.rt.lock().clone() {
             self.serve_incoming(&rt);
         }
         Ok(())
@@ -1114,11 +1062,7 @@ impl Extensions {
         let usage = rt.context_usage_value().await;
         let streaming = rt.agent.is_streaming().await;
         {
-            let mut snap = self
-                .live
-                .snap
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut snap = self.live.snap.lock();
             snap.insert("idle".into(), json!(!streaming));
             snap.insert("pending".into(), json!(rt.has_pending_messages()));
             snap.insert("contextUsage".into(), usage.unwrap_or(Value::Null));
@@ -1137,11 +1081,7 @@ impl Extensions {
         let path = rt.session_file();
         let len = std::fs::metadata(&path).map_or(0, |m| m.len());
         {
-            let mut seen = self
-                .live
-                .branch_len
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut seen = self.live.branch_len.lock();
             if seen.as_ref().is_some_and(|(p, l)| *p == path && *l == len) {
                 return;
             }
@@ -1156,21 +1096,13 @@ impl Extensions {
                     .collect::<Vec<Value>>()
             })
             .unwrap_or_default();
-        *self
-            .live
-            .branch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Value::Array(branch));
+        *self.live.branch.lock() = Some(Value::Array(branch));
     }
 
     /// Send the runtime's current session id/file/model/name to the host.
     async fn push_session_ctx(&self, rt: &Runtime) {
         // A new session invalidates the cached branch.
-        *self
-            .live
-            .branch_len
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *self.live.branch_len.lock() = None;
         self.refresh_live(rt, true).await;
         let model = rt.agent.model().await;
         let model_ref = format!("{}/{}", model.provider, model.id);
@@ -1213,11 +1145,7 @@ impl Extensions {
     /// Emit `session_shutdown` and stop the host.
     pub async fn shutdown(&self) {
         emit_silent(self.host.emit_session_shutdown(None).await);
-        let deferred = self
-            .deferred_agent_end
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        let deferred = self.deferred_agent_end.lock().take();
         if let Some(messages) = deferred {
             emit_silent(self.host.emit_agent_end(messages, None, None).await);
         }
@@ -1358,12 +1286,12 @@ impl Extensions {
                         }
                     }
                     let mut pending: Vec<AgentEvent> = std::mem::take(
-                        &mut *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+                        &mut *held.lock(),
                     );
                     if let AgentEvent::ToolExecutionEnd { tool_call_id: end_id, .. } = &event {
                         if pending.iter().any(|e| matches!(e, AgentEvent::ToolExecutionStart { tool_call_id, .. } if tool_call_id == end_id)) {
                             pending.push(event);
-                            *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = pending;
+                            *held.lock() = pending;
                             return Ok(());
                         }
                     }
@@ -1375,7 +1303,7 @@ impl Extensions {
                         && matches!(&event, AgentEvent::MessageStart { message } if input_role(message))
                     {
                         forward_event(&host, &turn, &stop, &updates, &event);
-                        *held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = pending;
+                        *held.lock() = pending;
                         return Ok(());
                     }
                     if !pending.is_empty() {
@@ -1402,7 +1330,7 @@ impl Extensions {
                     }
                     if let AgentEvent::AgentEnd { messages } = &event {
                         if matches!(ext.mode(), ExtMode::Print | ExtMode::Json) {
-                            *deferred_end.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            *deferred_end.lock() =
                                 Some(messages.iter().map(message_value).collect());
                             return Ok(());
                         }
@@ -1412,12 +1340,11 @@ impl Extensions {
                         AgentEvent::MessageEnd { message } => input_role(message),
                         AgentEvent::ToolExecutionStart { tool_call_id, .. } => blocked_calls
                             .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .contains(tool_call_id),
                         _ => false,
                     };
                     if delay {
-                        held.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(event);
+                        held.lock().push(event);
                         return Ok(());
                     }
                     forward_event(&host, &turn, &stop, &updates, &event);
@@ -1443,15 +1370,11 @@ async fn session_stop_continuation(
 ) -> Vec<AgentMessage> {
     if !host.has_handlers("session_stop") {
         // Same end state as an empty outcome below, without serializing the run's messages.
-        *stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
+        *stop.lock() = StopState::default();
         return Vec::new();
     }
     let (hook_active, continuations) = {
-        let s = stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let s = stop.lock();
         (s.hook_active, s.continuations)
     };
     let event = LifecycleEvent::SessionStop {
@@ -1474,15 +1397,11 @@ async fn session_stop_continuation(
         }
     };
     let Some(text) = stop_continuation_text(&outcome) else {
-        *stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
+        *stop.lock() = StopState::default();
         return Vec::new();
     };
     {
-        let mut s = stop
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut s = stop.lock();
         if !outcome.block {
             if continuations >= SESSION_STOP_CONTINUATION_CAP {
                 eprintln!("omt: session_stop continuation cap reached");
@@ -1535,9 +1454,7 @@ fn notify_update(
     message: &AgentMessage,
     ame: &pa_agent::stream::AssistantMessageEvent,
 ) {
-    let mut enc = updates
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut enc = updates.lock();
     if !host.has_handlers("message_update") {
         // Nothing reaches the host: its chain (if any) is stale from here on.
         enc.invalidate();
@@ -1582,9 +1499,7 @@ fn forward_event(
         AgentEvent::AgentStart => {
             // A new run resets the session_stop continuation bookkeeping
             // (TS `#resetSessionStopContinuationState` on generation change).
-            *stop
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = StopState::default();
+            *stop.lock() = StopState::default();
             notify(host, "agent_start", || LifecycleEvent::AgentStart);
         }
         AgentEvent::AgentEnd { messages } => {
@@ -1626,10 +1541,7 @@ fn forward_event(
         }
         AgentEvent::MessageStart { message } => {
             // Sync point: a new message always starts a fresh delta chain.
-            updates
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .message_boundary();
+            updates.lock().message_boundary();
             notify(host, "message_start", || LifecycleEvent::MessageStart {
                 message: message_value(message),
             });
@@ -1639,10 +1551,7 @@ fn forward_event(
             assistant_message_event,
         } => notify_update(host, updates, message, assistant_message_event),
         AgentEvent::MessageEnd { message } => {
-            updates
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .message_boundary();
+            updates.lock().message_boundary();
             notify(host, "message_end", || LifecycleEvent::MessageEnd {
                 message: message_value(message),
             });
@@ -1867,7 +1776,7 @@ mod tests {
         );
         assert!(custom.payload["display"].as_bool() == Some(false));
         {
-            let st = stop.lock().unwrap();
+            let st = stop.lock();
             assert!(st.hook_active && st.continuations == 1);
         }
         host.shutdown().await.unwrap();
@@ -1888,7 +1797,7 @@ mod tests {
         let messages = session_stop_continuation(&host, &stop, "s1", "/s.jsonl", &turn, &[]).await;
         assert!(messages.is_empty(), "cap reached: no further continuation");
         assert_eq!(
-            *stop.lock().unwrap(),
+            *stop.lock(),
             StopState::default(),
             "cap resets the bookkeeping"
         );

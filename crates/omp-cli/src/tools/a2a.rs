@@ -33,9 +33,10 @@
 //! `payload` inline or `payload_ref {path, sha256, bytes}` when the body is
 //! larger than [`PAYLOAD_INLINE_MAX`].
 
+use parking_lot::Mutex;
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -222,13 +223,16 @@ static OWNER: LazyLock<Mutex<Owner>> = LazyLock::new(|| Mutex::new(None));
 /// wins; the previous one is a finished session in tests. Production runs
 /// one runtime per process.
 pub(crate) fn set_owner(owner: std::sync::Arc<str>) {
-    *OWNER.lock().expect("a2a owner lock") = Some(owner);
+    *OWNER.lock() = Some(owner);
 }
 
 /// Drop the owner token if it is still `owner` (a newer Runtime::start wins).
 pub(crate) fn clear_owner(owner: &std::sync::Arc<str>) {
-    let mut slot = OWNER.lock().expect("a2a owner lock");
-    if slot.as_ref().is_some_and(|current| current.as_ptr() == owner.as_ptr()) {
+    let mut slot = OWNER.lock();
+    if slot
+        .as_ref()
+        .is_some_and(|current| current.as_ptr() == owner.as_ptr())
+    {
         *slot = None;
     }
 }
@@ -238,7 +242,7 @@ pub(crate) fn clear_owner(owner: &std::sync::Arc<str>) {
 /// instead.
 #[must_use]
 pub(crate) fn current_owner() -> Owner {
-    OWNER.lock().expect("a2a owner lock").clone()
+    OWNER.lock().clone()
 }
 
 /// One item for the parent's next turn boundary: a child result
@@ -272,11 +276,11 @@ static DELIVERY_WAKE: LazyLock<Mutex<Option<std::sync::Arc<dyn Fn() + Send + Syn
 /// Queue one delivery for the parent's next turn boundary and wake waiters.
 pub(crate) fn queue_delivery(delivery: PendingDelivery) {
     let wake = {
-        let mut queue = DELIVERIES.lock().expect("a2a deliveries lock");
+        let mut queue = DELIVERIES.lock();
         let was_empty = queue.is_empty();
         queue.push_back(delivery);
         if was_empty {
-            DELIVERY_WAKE.lock().expect("a2a wake lock").clone()
+            DELIVERY_WAKE.lock().clone()
         } else {
             None
         }
@@ -290,19 +294,19 @@ pub(crate) fn queue_delivery(delivery: PendingDelivery) {
 /// Drain every pending delivery (tests and unscoped readers).
 #[cfg(test)]
 pub(crate) fn take_deliveries() -> Vec<PendingDelivery> {
-    DELIVERIES.lock().expect("a2a deliveries lock").drain(..).collect()
+    DELIVERIES.lock().drain(..).collect()
 }
 
 /// Drain the deliveries belonging to one session ([`Owner`]: `None` matches
 /// unowned deliveries). Hub deliveries drained here start their turn (or a
 /// `wait` result): ack `read` and advance the endpoint's last acked seq.
 pub(crate) fn take_deliveries_for(owner: &Owner) -> Vec<PendingDelivery> {
-    let mut queue = DELIVERIES.lock().expect("a2a deliveries lock");
+    let mut queue = DELIVERIES.lock();
     let (mine, rest): (Vec<_>, Vec<_>) = queue.drain(..).partition(|d| &d.owner == owner);
     *queue = rest.into();
     drop(queue);
     let read_acks: Vec<(String, u64)> = {
-        let mut inflight = HUB_INFLIGHT.lock().expect("hub inflight lock");
+        let mut inflight = HUB_INFLIGHT.lock();
         let (mine, rest): (Vec<_>, Vec<_>) = inflight.drain(..).partition(|(o, _, _)| o == owner);
         *inflight = rest;
         mine.into_iter()
@@ -327,17 +331,13 @@ pub(crate) fn take_deliveries_for(owner: &Owner) -> Vec<PendingDelivery> {
 #[cfg(test)]
 #[must_use]
 pub(crate) fn has_pending() -> bool {
-    !DELIVERIES.lock().expect("a2a deliveries lock").is_empty()
+    !DELIVERIES.lock().is_empty()
 }
 
 /// Whether a delivery is waiting for one session.
 #[must_use]
 pub(crate) fn has_pending_for(owner: &Owner) -> bool {
-    DELIVERIES
-        .lock()
-        .expect("a2a deliveries lock")
-        .iter()
-        .any(|d| &d.owner == owner)
+    DELIVERIES.lock().iter().any(|d| &d.owner == owner)
 }
 
 /// Park until the queue may have changed (single notification, no stored
@@ -349,7 +349,7 @@ pub(crate) async fn wait_delivery_notify() {
 /// Register the runtime's idle-wake hook (best effort; replacing any
 /// previous one). Called once from `Runtime::start`.
 pub(crate) fn set_delivery_wake(wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
-    *DELIVERY_WAKE.lock().expect("a2a wake lock") = Some(wake);
+    *DELIVERY_WAKE.lock() = Some(wake);
 }
 
 /// Render drained deliveries as the block a turn starts with.
@@ -427,7 +427,7 @@ fn owner_key(owner: &Owner) -> String {
 /// seen before. No bus instance (a direct `route` call in tests) accepts
 /// everything.
 fn seen_or_insert(owner: &Owner, message_id: &str) -> bool {
-    let mut buses = BUSES.lock().expect("a2a bus lock");
+    let mut buses = BUSES.lock();
     let Some(bus) = buses.get_mut(&owner_key(owner)) else {
         return true;
     };
@@ -461,7 +461,7 @@ impl BusLease {
     /// via [`BusLease::acquire`]). Must run inside a tokio runtime.
     pub(crate) fn acquire_for(owner: &Owner) -> std::io::Result<Self> {
         let key = owner_key(owner);
-        let mut buses = BUSES.lock().expect("a2a bus lock");
+        let mut buses = BUSES.lock();
         if !buses.contains_key(&key) {
             static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let dir = std::env::temp_dir().join(format!(
@@ -509,7 +509,7 @@ impl BusLease {
 
 impl Drop for BusLease {
     fn drop(&mut self) {
-        let mut buses = BUSES.lock().expect("a2a bus lock");
+        let mut buses = BUSES.lock();
         let Some(bus) = buses.get_mut(&self.key) else {
             return;
         };
@@ -878,7 +878,7 @@ static HUB_INFLIGHT: LazyLock<Mutex<Vec<(Owner, String, u64)>>> =
 /// This session's hub endpoint (the latest registered wins, mirroring
 /// [`OWNER`]; production runs one runtime per process).
 fn hub_endpoint_for_owner(owner: &Owner) -> Option<Arc<HubEndpoint>> {
-    let endpoints = HUB_ENDPOINTS.lock().expect("hub endpoints lock");
+    let endpoints = HUB_ENDPOINTS.lock();
     if let Some(owner) = owner {
         if let Some(ep) = endpoints.get(owner.as_ref()) {
             return Some(ep.clone());
@@ -910,7 +910,6 @@ impl HubEndpoint {
     fn question_from(&self, sender: &str) -> Option<PendingQuestion> {
         self.questions
             .lock()
-            .expect("hub questions lock")
             .iter()
             .find(|q| q.sender == sender)
             .cloned()
@@ -951,11 +950,8 @@ fn start_hub_endpoint_with(
         task: Mutex::new(None),
     });
     let task = tokio::spawn(hub_endpoint_task(ep.clone(), cmd_rx));
-    *ep.task.lock().expect("hub task lock") = Some(task);
-    HUB_ENDPOINTS
-        .lock()
-        .expect("hub endpoints lock")
-        .insert(owner.to_string(), ep.clone());
+    *ep.task.lock() = Some(task);
+    HUB_ENDPOINTS.lock().insert(owner.to_string(), ep.clone());
     tracing::info!(endpoint = %name, dir = %hub.dir.display(), "hub endpoint registered");
     ep
 }
@@ -964,12 +960,7 @@ fn start_hub_endpoint_with(
 /// `exit()` bypasses `Runtime::drop`, so claims must be released here —
 /// same pattern as the herdr pane release). Best-effort and bounded.
 pub(crate) fn shutdown_all_hub_endpoints() {
-    let keys: Vec<String> = HUB_ENDPOINTS
-        .lock()
-        .expect("hub endpoints lock")
-        .keys()
-        .cloned()
-        .collect();
+    let keys: Vec<String> = HUB_ENDPOINTS.lock().keys().cloned().collect();
     for key in keys {
         shutdown_hub_endpoint_key(&key);
     }
@@ -980,22 +971,13 @@ pub(crate) fn shutdown_all_hub_endpoints() {
 /// current-thread runtime keeps driving the endpoint task and the release
 /// round-trip actually completes before the process exits.
 pub(crate) async fn shutdown_all_hub_endpoints_async() {
-    let keys: Vec<String> = HUB_ENDPOINTS
-        .lock()
-        .expect("hub endpoints lock")
-        .keys()
-        .cloned()
-        .collect();
+    let keys: Vec<String> = HUB_ENDPOINTS.lock().keys().cloned().collect();
     for key in keys {
-        let Some(ep) = HUB_ENDPOINTS
-            .lock()
-            .expect("hub endpoints lock")
-            .remove(&key)
-        else {
+        let Some(ep) = HUB_ENDPOINTS.lock().remove(&key) else {
             continue;
         };
         ep.stop.store(true, AtomicOrdering::SeqCst);
-        let task = ep.task.lock().expect("hub task lock").take();
+        let task = ep.task.lock().take();
         if task.is_some() && ep.connected.load(AtomicOrdering::SeqCst) {
             let (done_tx, done_rx) = oneshot::channel::<()>();
             if ep
@@ -1021,15 +1003,11 @@ pub(crate) fn shutdown_hub_endpoint(owner: &std::sync::Arc<str>) {
 }
 
 fn shutdown_hub_endpoint_key(owner_key: &str) {
-    let Some(ep) = HUB_ENDPOINTS
-        .lock()
-        .expect("hub endpoints lock")
-        .remove(owner_key)
-    else {
+    let Some(ep) = HUB_ENDPOINTS.lock().remove(owner_key) else {
         return;
     };
     ep.stop.store(true, AtomicOrdering::SeqCst);
-    let task = ep.task.lock().expect("hub task lock").take();
+    let task = ep.task.lock().take();
     // Release whatever this endpoint holds: a claim granted microseconds
     // before shutdown (the pre-check below raced the grant) must not leak —
     // the command queue is FIFO, so ReleaseAll drains every Claim that
@@ -1178,7 +1156,7 @@ async fn hub_endpoint_task(ep: Arc<HubEndpoint>, mut cmd_rx: mpsc::UnboundedRece
                                 .map(|_| format!("Answered (question {causation_id} is now answered)."))
                                 .map_err(|e| format!("answer failed: {e:#}"));
                             if out.is_ok() {
-                                ep.questions.lock().expect("hub questions lock")
+                                ep.questions.lock()
                                     .retain(|q| q.message_id != causation_id);
                             }
                             let _ = reply.send(out);
@@ -1192,7 +1170,7 @@ async fn hub_endpoint_task(ep: Arc<HubEndpoint>, mut cmd_rx: mpsc::UnboundedRece
                         HubCmd::Claim { resource, reply } => {
                             let granted = match client.claim(&resource, &ep.name, CLAIM_TTL_S, Some("editing")).await {
                                 Ok(outcome) if outcome.granted => {
-                                    ep.held.lock().expect("hub claims lock").insert(resource.clone(), HeldClaim {
+                                    ep.held.lock().insert(resource.clone(), HeldClaim {
                                         fencing_token: outcome.fencing_token.unwrap_or(0),
                                         acquired: std::time::Instant::now(),
                                     });
@@ -1208,7 +1186,7 @@ async fn hub_endpoint_task(ep: Arc<HubEndpoint>, mut cmd_rx: mpsc::UnboundedRece
                         }
                         HubCmd::ReleaseAll { done } => {
                             let claims: Vec<(String, u64)> = {
-                                let mut held = ep.held.lock().expect("hub claims lock");
+                                let mut held = ep.held.lock();
                                 let drained: Vec<_> = held.drain().collect();
                                 drained.into_iter()
                                     .map(|(r, c)| (r, c.fencing_token))
@@ -1268,7 +1246,7 @@ fn inject_hub_envelope(
     let mut text = body;
     let reply_expected = envelope.is_reply_expected();
     if reply_expected {
-        ep.questions.lock().expect("hub questions lock").push(PendingQuestion {
+        ep.questions.lock().push(PendingQuestion {
             message_id: envelope.message_id.clone(),
             sender: envelope.sender.clone(),
         });
@@ -1296,10 +1274,11 @@ fn inject_hub_envelope(
         },
         text,
     });
-    HUB_INFLIGHT
-        .lock()
-        .expect("hub inflight lock")
-        .push((ep.owner.clone(), envelope.message_id.clone(), envelope.seq.unwrap_or(0)));
+    HUB_INFLIGHT.lock().push((
+        ep.owner.clone(),
+        envelope.message_id.clone(),
+        envelope.seq.unwrap_or(0),
+    ));
 }
 
 /// Render one `send{}` receipt for the model-facing write result: the hub
@@ -1503,7 +1482,7 @@ async fn claims_check_files_via(ep: &Arc<HubEndpoint>, paths: &[PathBuf]) -> Vec
         checked.push(resource.clone());
         let now = std::time::Instant::now();
         {
-            let neg = ep.claim_neg.lock().expect("hub claim cache lock");
+            let neg = ep.claim_neg.lock();
             if neg
                 .get(&resource)
                 .is_some_and(|at| now.duration_since(*at) < CLAIM_NEG_CACHE)
@@ -1537,7 +1516,6 @@ async fn claims_check_files_via(ep: &Arc<HubEndpoint>, paths: &[PathBuf]) -> Vec
             _ => {
                 ep.claim_neg
                     .lock()
-                    .expect("hub claim cache lock")
                     .insert(resource, std::time::Instant::now());
             }
         }
@@ -1597,7 +1575,6 @@ fn claims_note_writes_via(ep: &Arc<HubEndpoint>, paths: &[PathBuf]) {
         let fresh = ep
             .held
             .lock()
-            .expect("hub claims lock")
             .get(&resource)
             .is_some_and(|c| c.acquired.elapsed() < CLAIM_RENEW_EVERY);
         if fresh {
@@ -2214,11 +2191,7 @@ pub(crate) mod tests {
             // The drain starts the turn: the endpoint acks `read` and the hub
             // state follows (poll — the ack command is processed async).
             wait_for("read ack", || {
-                !HUB_INFLIGHT
-                    .lock()
-                    .expect("hub inflight lock")
-                    .iter()
-                    .any(|(o, _, _)| o == &owner)
+                !HUB_INFLIGHT.lock().iter().any(|(o, _, _)| o == &owner)
             })
             .await;
             wait_for_state(&sender, &receipt.message_id, omp_hub::State::READ).await;
@@ -2318,7 +2291,7 @@ pub(crate) mod tests {
             // A writes: auto-claims the repo-relative path.
             claims_note_writes_via(&ep_a, std::slice::from_ref(&file));
             wait_for("auto-claim granted", || {
-                ep_a.held.lock().expect("hub claims lock").contains_key("src/lib.rs")
+                ep_a.held.lock().contains_key("src/lib.rs")
             })
             .await;
             let client = connect_test_hub(&hub).await;

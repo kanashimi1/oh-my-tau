@@ -749,7 +749,7 @@ pub struct CollabHostPublication {
     endpoint: String,
     meta_path: PathBuf,
     accept_task: JoinHandle<()>,
-    conns: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>>,
+    conns: Arc<parking_lot::Mutex<Vec<JoinHandle<()>>>>,
     closed: AtomicBool,
 }
 
@@ -777,7 +777,7 @@ impl CollabHostPublication {
             return;
         }
         self.accept_task.abort();
-        if let Ok(mut live) = self.conns.try_lock() {
+        if let Some(mut live) = self.conns.try_lock() {
             for handle in live.drain(..) {
                 handle.abort();
             }
@@ -896,7 +896,7 @@ pub fn publish_collab_host(
     }
 
     let token = Arc::new(token);
-    let conns: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>> = Arc::default();
+    let conns: Arc<parking_lot::Mutex<Vec<JoinHandle<()>>>> = Arc::default();
     let accept_task = tokio::spawn(accept_loop(listener, token, source, Arc::clone(&conns)));
 
     Ok(CollabHostPublication {
@@ -915,7 +915,7 @@ async fn accept_loop(
     listener: UnixListener,
     token: Arc<String>,
     source: Arc<dyn CollabHostRegistrySource>,
-    conns: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>>,
+    conns: Arc<parking_lot::Mutex<Vec<JoinHandle<()>>>>,
 ) {
     loop {
         match listener.accept().await {
@@ -925,7 +925,7 @@ async fn accept_loop(
                     Arc::clone(&token),
                     Arc::clone(&source),
                 ));
-                let mut live = conns.lock().await;
+                let mut live = conns.lock();
                 live.retain(|handle| !handle.is_finished());
                 live.push(handle);
             }
@@ -1299,7 +1299,7 @@ mod tests {
     /// In-memory [`CollabHostRegistrySource`] standing in for a live host
     /// (host.ts is T3's; the registry only sees this trait).
     struct StubSource {
-        state: std::sync::Mutex<StubState>,
+        state: parking_lot::Mutex<StubState>,
     }
 
     struct StubState {
@@ -1313,7 +1313,7 @@ mod tests {
     impl StubSource {
         fn new(snapshot: CollabHostSnapshot) -> Self {
             Self {
-                state: std::sync::Mutex::new(StubState {
+                state: parking_lot::Mutex::new(StubState {
                     snapshot,
                     fail_snapshot: false,
                     fail_link: false,
@@ -1324,38 +1324,30 @@ mod tests {
         }
 
         fn with_link(self, access: CollabAccess, url: &str) -> Self {
-            self.state
-                .lock()
-                .expect("stub lock")
-                .links
-                .insert(access, url.to_owned());
+            self.state.lock().links.insert(access, url.to_owned());
             self
         }
 
         fn set_access(&self, access: CollabAccess) {
-            self.state.lock().expect("stub lock").snapshot.access = access;
+            self.state.lock().snapshot.access = access;
         }
 
         fn unpublish(&self, access: CollabAccess) {
-            self.state
-                .lock()
-                .expect("stub lock")
-                .unpublished
-                .insert(access);
+            self.state.lock().unpublished.insert(access);
         }
 
         fn fail_snapshot(&self, on: bool) {
-            self.state.lock().expect("stub lock").fail_snapshot = on;
+            self.state.lock().fail_snapshot = on;
         }
 
         fn fail_link(&self, on: bool) {
-            self.state.lock().expect("stub lock").fail_link = on;
+            self.state.lock().fail_link = on;
         }
     }
 
     impl CollabHostRegistrySource for StubSource {
         fn snapshot(&self) -> anyhow::Result<CollabHostSnapshot> {
-            let state = self.state.lock().expect("stub lock");
+            let state = self.state.lock();
             if state.fail_snapshot {
                 anyhow::bail!("host cannot vouch for its session");
             }
@@ -1363,7 +1355,7 @@ mod tests {
         }
 
         fn link(&self, access: CollabAccess) -> anyhow::Result<Option<String>> {
-            let state = self.state.lock().expect("stub lock");
+            let state = self.state.lock();
             if state.fail_link {
                 anyhow::bail!("url builder unavailable");
             }
@@ -2552,8 +2544,8 @@ mod tests {
     #[test]
     fn collab_hosts_runtime_dir_honours_env() {
         // Guarded by a process-wide lock: only this test mutates env.
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        let _guard = ENV_LOCK.lock();
         let tmp = tempfile::tempdir().expect("tempdir");
         let saved_home = std::env::var_os("HOME");
         let saved_config = std::env::var_os("PI_CONFIG_DIR");

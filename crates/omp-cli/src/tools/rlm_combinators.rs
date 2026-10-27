@@ -309,10 +309,7 @@ impl Backend for HostBackend {
         Box::pin(async move {
             #[cfg(test)]
             {
-                let test_backend = super::rlm::TEST_BACKEND
-                    .lock()
-                    .expect("test backend")
-                    .clone();
+                let test_backend = super::rlm::TEST_BACKEND.lock().clone();
                 if let Some(b) = test_backend {
                     return b.complete(model, prompt, signal).await;
                 }

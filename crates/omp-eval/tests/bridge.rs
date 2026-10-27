@@ -2,7 +2,8 @@
 //! through [`HostBridge`], idle-timeout pauses while the host works, cancel
 //! interrupts a running cell, and the preludes install their helpers.
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use omp_eval::js::{default_runtime, JsKernel};
@@ -21,10 +22,7 @@ struct Recorder {
 
 impl HostBridge for Recorder {
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((op.to_string(), args.clone()));
+        self.calls.lock().push((op.to_string(), args.clone()));
         match op {
             "echo" => Ok(json!({ "echo": args })),
             "fail" => Err("nope from host".to_string()),
@@ -40,7 +38,7 @@ impl HostBridge for Recorder {
         }
     }
     fn notify(&self, op: &str, args: Value) {
-        self.notes.lock().unwrap().push((op.to_string(), args));
+        self.notes.lock().push((op.to_string(), args));
     }
 }
 
@@ -72,7 +70,7 @@ fn py_host_call_round_trip_and_error() {
         .expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
     assert!(r.output.contains("'echo': {'x': 1}"), "{}", r.output);
-    assert_eq!(b.calls.lock().unwrap()[0].0, "echo");
+    assert_eq!(b.calls.lock()[0].0, "echo");
 
     let r = k
         .execute_with(
@@ -103,7 +101,7 @@ fn py_notify_is_delivered() {
         .expect("cell");
     assert_eq!(r.status, CellStatus::Ok, "{}", r.output);
     assert_eq!(
-        b.notes.lock().unwrap().as_slice(),
+        b.notes.lock().as_slice(),
         &[("phase".to_string(), json!({"title": "x"}))]
     );
 }
@@ -198,13 +196,7 @@ print(budget.spent(), budget.hard)";
         r.output
     );
     assert!(r.output.contains("5 False"), "{}", r.output);
-    let ops: Vec<String> = b
-        .calls
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(op, _)| op.clone())
-        .collect();
+    let ops: Vec<String> = b.calls.lock().iter().map(|(op, _)| op.clone()).collect();
     assert_eq!(
         ops.iter().filter(|op| *op == "__workpool__").count(),
         4,

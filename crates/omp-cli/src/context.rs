@@ -55,33 +55,24 @@ struct Live {
     by_ultra: bool,
 }
 
-static LIVE: std::sync::RwLock<Option<Live>> = std::sync::RwLock::new(None);
+static LIVE: parking_lot::RwLock<Option<Live>> = parking_lot::RwLock::new(None);
 
 /// Install (or clear) the live strategy `convert_to_llm` reads per request.
 pub fn set_live(shared: Option<Arc<Shared>>, by_ultra: bool) {
-    *LIVE
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        shared.map(|shared| Live { shared, by_ultra });
+    *LIVE.write() = shared.map(|shared| Live { shared, by_ultra });
 }
 
 /// The live strategy, `None` for `append`.
 #[must_use]
 pub fn live() -> Option<Arc<Shared>> {
-    LIVE.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .map(|l| l.shared.clone())
+    LIVE.read().as_ref().map(|l| l.shared.clone())
 }
 
 /// CLM is on because an ultra mode switched it on: extensions that slim the
 /// context themselves (`context-slim`) must stand aside.
 #[must_use]
 pub fn ultra_owned() -> bool {
-    LIVE.read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .is_some_and(|l| l.by_ultra)
+    LIVE.read().as_ref().is_some_and(|l| l.by_ultra)
 }
 
 /// Extensions skipped on the core's `context` event while [`ultra_owned`].

@@ -21,8 +21,10 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
+
+use parking_lot::Mutex;
 
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
@@ -142,13 +144,10 @@ pub struct LocalRelay {
 
 impl LocalRelay {
     /// Close every room and stop the server. Idempotent (local-relay.ts:42-43).
-    ///
-    /// # Panics
-    /// When the shared room table's mutex is poisoned by a panicking connection task.
     pub fn stop(&self) {
         let closure = control_frame("room-closed", None);
         {
-            let mut rooms = self.shared.rooms.lock().expect("rooms mutex poisoned");
+            let mut rooms = self.shared.rooms.lock();
             for room in rooms.values() {
                 for guest in room.guests.values() {
                     let _ = guest.send(closure.clone());
@@ -159,7 +158,7 @@ impl LocalRelay {
             rooms.clear();
         }
         let _ = self.shared.shutdown_tx.send(true);
-        if let Some(handle) = self.shared.accept_task.lock().expect("accept mutex").take() {
+        if let Some(handle) = self.shared.accept_task.lock().take() {
             handle.abort();
         }
     }
@@ -205,7 +204,7 @@ fn start_relay(port: u16, static_dir: Option<PathBuf>) -> Result<LocalRelay> {
         accept_task: Mutex::new(None),
     });
     let handle = tokio::spawn(accept_loop(listener, Arc::clone(&shared), shutdown_rx));
-    *shared.accept_task.lock().expect("accept mutex") = Some(handle.abort_handle());
+    *shared.accept_task.lock() = Some(handle.abort_handle());
     Ok(LocalRelay {
         url: format!("ws://localhost:{}", addr.port()),
         shared,
@@ -308,7 +307,7 @@ async fn handle_relay_socket(
 
     // ── open handler (local-relay.ts:63-82) ─────────────────────────────────────────
     let join = {
-        let mut rooms = shared.rooms.lock().expect("rooms mutex poisoned");
+        let mut rooms = shared.rooms.lock();
         if is_host {
             if rooms.contains_key(&room_id) {
                 Join::Rejected(4009, "a host is already connected for this room")
@@ -412,7 +411,7 @@ fn relay_binary(shared: &RelayShared, room_id: &str, is_host: bool, peer_id: u32
             return;
         };
         let targets: Vec<PeerSender> = {
-            let rooms = shared.rooms.lock().expect("rooms mutex poisoned");
+            let rooms = shared.rooms.lock();
             let Some(room) = rooms.get(room_id) else {
                 return;
             };
@@ -436,7 +435,7 @@ fn relay_binary(shared: &RelayShared, room_id: &str, is_host: bool, peer_id: u32
         let mut forwarded = data.to_vec();
         rewrite_envelope_peer(&mut forwarded, peer_id);
         let host = {
-            let rooms = shared.rooms.lock().expect("rooms mutex poisoned");
+            let rooms = shared.rooms.lock();
             rooms.get(room_id).map(|room| room.host.clone())
         };
         if let Some(host) = host {
@@ -446,7 +445,7 @@ fn relay_binary(shared: &RelayShared, room_id: &str, is_host: bool, peer_id: u32
 }
 
 fn relay_close(shared: &RelayShared, room_id: &str, is_host: bool, conn: u64, peer_id: u32) {
-    let mut rooms = shared.rooms.lock().expect("rooms mutex poisoned");
+    let mut rooms = shared.rooms.lock();
     let Some(room) = rooms.get_mut(room_id) else {
         return;
     };

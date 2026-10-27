@@ -6,9 +6,10 @@
 //! `eval/js/tool-bridge.ts`; agent-family ops (`__agent__`, `__wait__`, …)
 //! are delegated to [`super::eval_agents`] unchanged.
 
+use parking_lot::{Mutex, RwLock};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 
 use pa_agent::abort::{AbortSignal, race_with_abort};
 use pa_agent::agent_loop::{AfterToolCallFn, BeforeToolCallFn};
@@ -54,12 +55,12 @@ static SESSION_TOOLS: OnceLock<RwLock<Vec<Arc<dyn AgentTool>>>> = OnceLock::new(
 /// bridge's `entry.toolSession` resolves against).
 pub fn set_session_tools(tools: Vec<Arc<dyn AgentTool>>) {
     let slot = SESSION_TOOLS.get_or_init(|| RwLock::new(Vec::new()));
-    *slot.write().expect("session tools lock") = tools;
+    *slot.write() = tools;
 }
 
 fn session_tools(env: &Env) -> Vec<Arc<dyn AgentTool>> {
     if let Some(slot) = SESSION_TOOLS.get() {
-        let tools = slot.read().expect("session tools lock").clone();
+        let tools = slot.read().clone();
         if !tools.is_empty() {
             return tools;
         }
@@ -76,7 +77,7 @@ static SESSION_HOOKS: RwLock<SessionHooks> = RwLock::new((None, None));
 
 /// Install the process-global tool-call hooks the bridge applies.
 pub fn set_session_hooks(before: Option<BeforeToolCallFn>, after: Option<AfterToolCallFn>) {
-    *SESSION_HOOKS.write().expect("session hooks lock") = (before, after);
+    *SESSION_HOOKS.write() = (before, after);
 }
 
 /// Tools a cell may never call through the bridge. `checkpoint`/`rewind`
@@ -109,7 +110,7 @@ impl BridgePolicy {
     /// The process session's policy (see [`set_session_tools`] /
     /// [`set_session_hooks`]).
     fn session(env: &Env) -> Self {
-        let (before, after) = SESSION_HOOKS.read().expect("session hooks lock").clone();
+        let (before, after) = SESSION_HOOKS.read().clone();
         Self {
             tools: session_tools(env),
             before,
@@ -674,7 +675,6 @@ static ENV_OVERLAY: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new()
 pub(crate) fn env_overlay() -> Vec<(String, String)> {
     ENV_OVERLAY
         .lock()
-        .expect("env overlay lock")
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
@@ -686,7 +686,7 @@ pub(crate) fn env_overlay() -> Vec<(String, String)> {
 fn env_helper(args: &Value) -> Result<Value, String> {
     let key = args.get("key").and_then(Value::as_str);
     let value = args.get("value").and_then(Value::as_str);
-    let mut overlay = ENV_OVERLAY.lock().expect("env overlay lock");
+    let mut overlay = ENV_OVERLAY.lock();
     Ok(match (key, value) {
         (None, _) => {
             let mut merged: BTreeMap<String, String> = std::env::vars().collect();

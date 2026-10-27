@@ -1,9 +1,9 @@
 //! Unit tests for the worktree lifecycle and the parent merge helpers.
 //! Every test builds a throwaway git repo under a temp dir.
 
+use parking_lot::{Mutex, MutexGuard};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, MutexGuard};
 
 use super::*;
 
@@ -12,7 +12,7 @@ use super::*;
 static LOCK: Mutex<()> = Mutex::new(());
 
 fn lock() -> MutexGuard<'static, ()> {
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    LOCK.lock()
 }
 
 fn git_in(dir: &Path, args: &[&str]) -> String {

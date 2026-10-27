@@ -243,7 +243,6 @@ impl LiveCompleter {
     pub fn from_target(target: &crate::agent::Target) -> Result<Self> {
         let t = target
             .read()
-            .map_err(|_| anyhow!("provider target lock poisoned"))?
             .clone()
             .ok_or_else(|| anyhow!("no provider target"))?;
         Ok(Self {
@@ -953,7 +952,7 @@ mod tests {
             None => crate::persist::attach_with(&agent, &cwd, true).await,
         }
         .expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("k".into()),
             model,
             service_tier: None,
@@ -1485,14 +1484,13 @@ mod tests {
     /// text included) and answers with `text`.
     fn capturing_summarizer(
         text: &'static str,
-    ) -> (SummarizeFn, Arc<std::sync::Mutex<Vec<String>>>) {
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    ) -> (SummarizeFn, Arc<parking_lot::Mutex<Vec<String>>>) {
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let sink = seen.clone();
         let f: SummarizeFn = Arc::new(move |req: SummaryRequest| {
             let sink = sink.clone();
             Box::pin(async move {
                 sink.lock()
-                    .unwrap()
                     .push(serde_json::to_string(&req.context).unwrap_or_default());
                 Ok(reply(text))
             })
@@ -1553,7 +1551,7 @@ mod tests {
             "entry chains to the navigated leaf: {comp}"
         );
 
-        let requests = seen.lock().unwrap().join("\n");
+        let requests = seen.lock().join("\n");
         assert!(
             requests.contains("first request"),
             "the selected branch is summarized: {requests:.600}"

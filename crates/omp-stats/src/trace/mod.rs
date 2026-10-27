@@ -11,9 +11,9 @@ mod scan;
 mod tests;
 mod tree;
 
+use parking_lot::Mutex;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -310,7 +310,7 @@ static TRACE_MEMO: Mutex<Option<(String, TraceMemoEntry)>> = Mutex::new(None);
 
 #[cfg(test)]
 pub fn trace_memo_for_tests() -> Option<(String, f64)> {
-    let memo = TRACE_MEMO.lock().ok()?;
+    let memo = TRACE_MEMO.lock();
     let (file, entry) = memo.as_ref()?;
     Some((file.clone(), entry.mtime_ms))
 }
@@ -429,9 +429,7 @@ pub fn build_session_trace(
     // the post-build race guard compares against this. Memo equality, not <=:
     // a LOWER mark (delete/older-mtime replace) is also stale.
     {
-        let memo = TRACE_MEMO
-            .lock()
-            .map_err(|_| anyhow::anyhow!("trace memo poisoned"))?;
+        let memo = TRACE_MEMO.lock();
         if let Some((file, entry)) = memo.as_ref() {
             if file == &resolved_str
                 && entry.mtime_ms == root_mtime_ms
@@ -586,9 +584,7 @@ pub fn build_session_trace(
         summary,
     };
     if !raced && !root_changed {
-        let mut memo = TRACE_MEMO
-            .lock()
-            .map_err(|_| anyhow::anyhow!("trace memo poisoned"))?;
+        let mut memo = TRACE_MEMO.lock();
         *memo = Some((
             resolved_str,
             TraceMemoEntry {

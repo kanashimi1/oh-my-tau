@@ -826,7 +826,7 @@ mod tests {
         let persist = crate::persist::attach_with(&agent, &cwd, true)
             .await
             .expect("session");
-        let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("test-key".into()),
             model: primary,
             service_tier: None,

@@ -8,11 +8,12 @@
 //! a session file (tests, `--no-session`) it falls back to an in-memory map;
 //! nothing persists, which matches the TS host-retained-only registry.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -227,7 +228,7 @@ fn with_event<T>(
             }
         }
     } else {
-        let mem = MEM.lock().expect("eval journal lock");
+        let mem = MEM.lock();
         if let Some(saved) = mem.get(&key) {
             journal = Journal {
                 kernels: saved.kernels,
@@ -249,7 +250,7 @@ fn with_event<T>(
                 },
             );
         } else if path.is_none() {
-            MEM.lock().expect("eval journal lock").insert(key, journal);
+            MEM.lock().insert(key, journal);
         }
     }
     out

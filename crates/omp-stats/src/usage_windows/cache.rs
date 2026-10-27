@@ -1,6 +1,6 @@
 //! TS `usage-windows.ts` memoization (`cachedUsageData`, 60s TTL).
 
-use std::sync::{Mutex, PoisonError};
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use super::{fetch_usage_data, UsageDataSnapshot, HOUR_MS};
@@ -23,7 +23,7 @@ static USAGE_CACHE: Mutex<Option<CachedUsage>> = Mutex::new(None);
 pub fn cached_usage_data(since_ms: i64) -> UsageDataSnapshot {
     let since_hour = since_ms.div_euclid(HOUR_MS) * HOUR_MS;
     let key = format!("{}:{since_hour}", agent_db_path().display());
-    let mut cache = USAGE_CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut cache = USAGE_CACHE.lock();
     if let Some(cached) = cache.as_ref() {
         if cached.key == key && cached.at.elapsed() < USAGE_CACHE_TTL {
             return cached.data.clone();

@@ -12,8 +12,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 
 use crate::errors::{Failure, JsonRpcError, McpError, McpTransportError, TransportKind};
 use crate::timeout::is_timeout_enabled;
@@ -195,7 +196,7 @@ pub async fn dispatch_message(
         )),
         None => Ok(obj.get("result").cloned().unwrap_or(Value::Null)),
     };
-    let mut guard = pending.lock().await;
+    let mut guard = pending.lock();
     if let Some(tx) = guard.map.remove(&key) {
         let _ = tx.send(result);
     }

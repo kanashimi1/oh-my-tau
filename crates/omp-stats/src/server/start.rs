@@ -1,10 +1,11 @@
 //! `startServer`: bind (or reuse / reclaim) the dashboard port.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::TcpListener as StdListener;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 
 use super::conn::{serve_connection, Timeouts};
 use super::http::Ctx;
@@ -78,10 +79,8 @@ impl StatsServerHandle {
     /// Stop the server. Idempotent; a reused (foreign) dashboard is left alone.
     pub fn stop(&self) {
         let Some(inner) = &self.inner else { return };
-        if let Ok(mut active) = ACTIVE_SERVERS.lock() {
-            active.remove(&inner.key);
-        }
-        let runtime = inner.runtime.lock().ok().and_then(|mut slot| slot.take());
+        ACTIVE_SERVERS.lock().remove(&inner.key);
+        let runtime = inner.runtime.lock().take();
         let Some(runtime) = runtime else { return };
         runtime.shutdown_background();
         // The last dashboard in this process takes background ingest down with it.
@@ -148,11 +147,7 @@ pub fn start_server(
         idle: options.idle_timeout.unwrap_or(defaults.idle),
     };
     if port != 0 {
-        if let Some(active) = ACTIVE_SERVERS
-            .lock()
-            .ok()
-            .and_then(|m| m.get(&key).cloned())
-        {
+        if let Some(active) = ACTIVE_SERVERS.lock().get(&key).cloned() {
             return Ok(active);
         }
     }
@@ -170,9 +165,7 @@ pub fn start_server(
             })),
         };
         if port != 0 {
-            if let Ok(mut active) = ACTIVE_SERVERS.lock() {
-                active.insert(key.clone(), handle.clone());
-            }
+            ACTIVE_SERVERS.lock().insert(key.clone(), handle.clone());
         }
         handle
     };

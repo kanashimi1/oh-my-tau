@@ -6,7 +6,8 @@
 //! UI (`select(prompt, ["Approve", "Deny"])`: a TUI dialog or an rpc `extension_ui_request`
 //! frame) and emits `tool_approval_resolved`. Without a UI the call fails closed.
 
-use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
+use parking_lot::Mutex;
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 
 use omp_ext::lifecycle::ApprovalMode;
 use pa_agent::abort::AbortSignal;
@@ -879,18 +880,12 @@ impl Gate {
     /// Whether the gate refused call `id` (consumed once).
     #[must_use]
     pub fn take_refused(&self, id: &str) -> bool {
-        self.refused
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id)
+        self.refused.lock().remove(id)
     }
 
     /// Bind the live runtime and whether the session has a UI (TS `hasUI()`).
     pub fn bind(&self, rt: &Arc<Runtime>, has_ui: bool) {
-        let mut b = self
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut b = self.binding.lock();
         b.rt = Some(Arc::downgrade(rt));
         b.has_ui = has_ui;
     }
@@ -935,10 +930,7 @@ impl Gate {
             return Ok(());
         }
         let (rt, has_ui) = {
-            let b = self
-                .binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let b = self.binding.lock();
             (b.rt.as_ref().and_then(Weak::upgrade), b.has_ui)
         };
         let session_id = rt.as_ref().map(|r| r.session_id()).unwrap_or_default();
@@ -1066,11 +1058,7 @@ impl AgentTool for GatedTool {
                 .check(self.inner.name(), &tool_call_id, &params, &signal)
                 .await
             {
-                self.gate
-                    .refused
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(tool_call_id);
+                self.gate.refused.lock().insert(tool_call_id);
                 return Err(anyhow::Error::msg(message));
             }
             self.inner

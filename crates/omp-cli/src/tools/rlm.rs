@@ -26,9 +26,10 @@
 //! `OMP_RLM_MAX_CALLS` (default 64), `OMP_RLM_MAX_TOKENS` (default 2 000 000,
 //! input + output summed over all sub-calls). `/rlm` resets the ledger.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use pa_agent::BoxFut;
@@ -64,7 +65,7 @@ static OVERRIDE: Mutex<[Option<u64>; 3]> = Mutex::new([None; 3]);
 
 /// Install (or clear) the `/rlm` flag overrides.
 pub fn set_override(depth: Option<u64>, calls: Option<u64>, tokens: Option<u64>) {
-    *OVERRIDE.lock().expect("rlm override") = [depth, calls, tokens];
+    *OVERRIDE.lock() = [depth, calls, tokens];
 }
 
 impl Limits {
@@ -79,7 +80,7 @@ impl Limits {
                 .unwrap_or(default)
         };
         let d = Self::default();
-        let o = *OVERRIDE.lock().expect("rlm override");
+        let o = *OVERRIDE.lock();
         Self {
             max_depth: o[0].unwrap_or_else(|| get("OMP_RLM_MAX_DEPTH", d.max_depth)),
             max_calls: o[1].unwrap_or_else(|| get("OMP_RLM_MAX_CALLS", d.max_calls)),
@@ -205,7 +206,7 @@ impl Session {
     /// Forget memo, counters and log (a fresh `/rlm` run); the stored
     /// `context` is kept for the caller to replace.
     pub fn reset(&self) {
-        let mut ledger = self.ledger.lock().expect("rlm ledger");
+        let mut ledger = self.ledger.lock();
         let context = ledger.context.take();
         *ledger = Ledger {
             context,
@@ -214,18 +215,18 @@ impl Session {
     }
 
     pub fn set_context(&self, context: Option<String>) {
-        self.ledger.lock().expect("rlm ledger").context = context;
+        self.ledger.lock().context = context;
     }
 
     #[must_use]
     pub fn context(&self) -> Option<String> {
-        self.ledger.lock().expect("rlm ledger").context.clone()
+        self.ledger.lock().context.clone()
     }
 
     /// Ledger snapshot: totals, limits and the per-call log.
     #[must_use]
     pub fn stats(&self, limits: Limits) -> Value {
-        let ledger = self.ledger.lock().expect("rlm ledger");
+        let ledger = self.ledger.lock();
         json!({
             "calls": ledger.calls,
             "memo_hits": ledger.memo_hits,
@@ -352,7 +353,7 @@ impl Session {
                     signal,
                 )
                 .await?;
-            let ledger = self.ledger.lock().expect("rlm ledger");
+            let ledger = self.ledger.lock();
             return Ok(reply(&call.text, &call.record, &ledger));
         }
         let select = select.unwrap_or(Select::Consistency);
@@ -505,7 +506,7 @@ impl Session {
             .map(|c| c.output_tokens)
             .sum();
         let all_cached = cands.iter().chain(escalated.iter()).all(|c| c.cached);
-        let mut ledger = self.ledger.lock().expect("rlm ledger");
+        let mut ledger = self.ledger.lock();
         ledger.selections += 1;
         ledger.agreement_sum += sel.agreement;
         ledger.low_agreement += u64::from(low_flag);
@@ -580,7 +581,7 @@ impl Session {
         let estimate = estimate_tokens(full.len());
         let started = Instant::now();
         {
-            let mut ledger = self.ledger.lock().expect("rlm ledger");
+            let mut ledger = self.ledger.lock();
             if let Some(text) = ledger.memo.get(&key).cloned() {
                 ledger.memo_hits += 1;
                 let record = CallRecord {
@@ -623,7 +624,7 @@ impl Session {
         }
 
         let result = backend.complete(model, &full, signal).await;
-        let mut ledger = self.ledger.lock().expect("rlm ledger");
+        let mut ledger = self.ledger.lock();
         ledger.reserved = ledger.reserved.saturating_sub(estimate);
         let (text, mut usage, model_info) = result.map_err(|e| format!("llm_query: {e}"))?;
         if usage.input == 0 && usage.output == 0 && usage.cache_read == 0 && usage.cache_write == 0
@@ -953,8 +954,11 @@ pub(crate) static TEST_BACKEND: Mutex<Option<std::sync::Arc<dyn Backend>>> = Mut
 
 /// `__llm_query__` host op.
 pub async fn llm_query_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
+    // Clone out first: a guard in the `if let` scrutinee would live across the await.
     #[cfg(test)]
-    if let Some(backend) = TEST_BACKEND.lock().expect("test backend").clone() {
+    let test_backend = TEST_BACKEND.lock().clone();
+    #[cfg(test)]
+    if let Some(backend) = test_backend {
         return SESSION
             .query(backend.as_ref(), Limits::effective(), args, &ctx.signal)
             .await;
@@ -1401,7 +1405,7 @@ mod tests {
         ) -> BoxFut<'a, Result<(String, Usage, Model), String>> {
             Box::pin(async move {
                 let n = self.calls.fetch_add(1, Ordering::SeqCst);
-                self.prompts.lock().unwrap().push(prompt.to_string());
+                self.prompts.lock().push(prompt.to_string());
                 let text = (self.script)(model, n);
                 let usage = Usage {
                     input: 10,
@@ -1438,7 +1442,7 @@ mod tests {
         args["frame"] = json!("only");
         args["pointers"] = json!(["/tmp/a.txt", "memo#3"]);
         session.query(&backend, lim, &args, &sig).await.unwrap();
-        let prompts = backend.prompts.lock().unwrap().clone();
+        let prompts = backend.prompts.lock().clone();
         assert_eq!(prompts[0], "<context>\nchunk\n</context>\n\nQ?");
         assert_eq!(
             prompts[1],
@@ -1516,7 +1520,7 @@ mod tests {
             r["candidates"][1]["score"].as_f64().unwrap()
                 > r["candidates"][0]["score"].as_f64().unwrap()
         );
-        assert!(backend.prompts.lock().unwrap()[0].contains("\"confidence\""));
+        assert!(backend.prompts.lock()[0].contains("\"confidence\""));
     }
 
     #[test]

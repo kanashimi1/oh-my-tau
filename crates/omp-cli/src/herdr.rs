@@ -16,10 +16,11 @@
 //! never overwrite newer state. Only the latest queued state is sent: while a
 //! report is in flight, older pending states are dropped.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Stable, unique integration id (never `herdr:*` — that prefix is Herdr's own).
@@ -80,7 +81,8 @@ pub struct Herdr {
     /// only the last queued one of the same kind (so a pending session
     /// identity is never clobbered by a state change, per the docs' "report
     /// it again whenever your agent switches sessions").
-    pending: Mutex<Vec<Pending>>,
+    /// std, not parking_lot: paired with `cv`, whose `wait_timeout` needs std's guard.
+    pending: std::sync::Mutex<Vec<Pending>>,
     cv: Condvar,
 }
 
@@ -98,7 +100,7 @@ impl Herdr {
             resume: Mutex::new(Vec::new()),
             session_path: Mutex::new(None),
             last: Mutex::new((None, None)),
-            pending: Mutex::new(Vec::new()),
+            pending: std::sync::Mutex::new(Vec::new()),
             cv: Condvar::new(),
         });
         let weak = Arc::downgrade(&this);
@@ -140,7 +142,7 @@ impl Herdr {
         model_ref: Option<&str>,
         start_source: &str,
     ) {
-        let mut resume = lock(&self.resume);
+        let mut resume = self.resume.lock();
         *resume = Vec::new();
         if let Some(f) = session_file {
             resume.push("omt".to_string());
@@ -152,7 +154,7 @@ impl Herdr {
             }
         }
         drop(resume);
-        *lock(&self.session_path) = session_file.map(|f| f.display().to_string());
+        *self.session_path.lock() = session_file.map(|f| f.display().to_string());
         self.enqueue(Pending::Session {
             start_source: start_source.to_string(),
             seq: self.next_seq(),
@@ -168,7 +170,7 @@ impl Herdr {
             (!t.is_empty()).then(|| t.chars().take(240).collect())
         });
         {
-            let mut last = lock(&self.last);
+            let mut last = self.last.lock();
             if *last == (Some(state), message.clone()) {
                 return;
             }
@@ -191,7 +193,7 @@ impl Herdr {
     }
 
     fn clear_last(&self) {
-        *lock(&self.last) = (None, None);
+        *self.last.lock() = (None, None);
     }
 
     fn next_seq(&self) -> u64 {
@@ -215,11 +217,11 @@ impl Herdr {
     }
 
     fn session_path(&self) -> Option<String> {
-        lock(&self.session_path).clone()
+        self.session_path.lock().clone()
     }
 
     fn resume_argv(&self) -> Vec<String> {
-        lock(&self.resume).clone()
+        self.resume.lock().clone()
     }
 
     /// Assemble the full argv for one report (unit tests assert on this).
@@ -315,7 +317,7 @@ impl Herdr {
     }
 }
 
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+fn lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
@@ -470,7 +472,7 @@ mod tests {
 
     #[test]
     fn disabled_outside_herdr_env() {
-        let _g = lock(&ENV_LOCK);
+        let _g = ENV_LOCK.lock();
         let dir = tmp("disabled");
         for (k, v) in [
             ("HERDR_ENV", None),
@@ -493,7 +495,7 @@ mod tests {
 
     #[test]
     fn enabled_inside_herdr_env() {
-        let _g = lock(&ENV_LOCK);
+        let _g = ENV_LOCK.lock();
         let dir = tmp("enabled");
         let bin = stub_bin(&dir);
         std::env::set_var("HERDR_ENV", "1");

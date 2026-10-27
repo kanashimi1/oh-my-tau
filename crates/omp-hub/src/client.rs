@@ -3,10 +3,11 @@
 //! socket does not answer — same pattern as the ext-host shared daemon);
 //! `hello` + the `deliver` stream is the subscribe surface.
 
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -55,7 +56,7 @@ impl PendingTable {
 type Pending = Arc<Mutex<PendingTable>>;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    m.lock()
 }
 
 /// One hub connection. Cheap to drop; the reader/writer tasks end with it.

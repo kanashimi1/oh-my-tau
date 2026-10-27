@@ -2,9 +2,9 @@
 //! fold every synced child transcript (subagents, advisors) into its root row
 //! and merge in on-disk roots the sync pass hasn't indexed yet.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -74,9 +74,7 @@ fn read_session_metadata(file: &str) -> SessionMetadata {
     };
     let mtime = mtime_ms(&meta);
     {
-        let cache = METADATA_CACHE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cache = METADATA_CACHE.lock();
         if let Some((cached_mtime, metadata)) = cache.get(file) {
             if *cached_mtime == mtime {
                 return metadata.clone();
@@ -115,9 +113,7 @@ fn read_session_metadata(file: &str) -> SessionMetadata {
         }
     }
     let metadata = SessionMetadata { title, cwd };
-    let mut cache = METADATA_CACHE
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = METADATA_CACHE.lock();
     cache.insert(file.to_string(), (mtime, metadata.clone()));
     metadata
 }
@@ -196,9 +192,7 @@ fn scan_disk_roots(limit: i64) -> Result<Vec<DiskRoot>> {
         .collect::<Vec<_>>()
         .join("\n");
     {
-        let memo = DISK_ROOTS_MEMO
-            .lock()
-            .map_err(|_| anyhow::anyhow!("disk roots memo poisoned"))?;
+        let memo = DISK_ROOTS_MEMO.lock();
         if let Some(memo) = memo.as_ref() {
             if memo.sessions_dir == sessions_dir_str
                 && memo.limit >= limit
@@ -255,9 +249,7 @@ fn scan_disk_roots(limit: i64) -> Result<Vec<DiskRoot>> {
         limit,
         roots: roots.clone(),
     };
-    let mut slot = DISK_ROOTS_MEMO
-        .lock()
-        .map_err(|_| anyhow::anyhow!("disk roots memo poisoned"))?;
+    let mut slot = DISK_ROOTS_MEMO.lock();
     *slot = Some(memo);
     Ok(roots)
 }

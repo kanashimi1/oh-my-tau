@@ -33,13 +33,11 @@ pub fn mcp_tools(cwd: &Path) -> Vec<Arc<dyn AgentTool>> {
 /// Tool names this run is restricted to (`--tools <csv>`, an agent's `tools:`).
 /// MCP servers marked `enabled: false` still load when one of their tools is
 /// named here; set once at startup, read by every later (re)discovery.
-static REQUESTED_TOOLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static REQUESTED_TOOLS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
 
 /// Record the run's `--tools <csv>` list for MCP discovery (see [`REQUESTED_TOOLS`]).
 pub fn set_requested_tools(csv: &str) {
-    *REQUESTED_TOOLS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = csv
+    *REQUESTED_TOOLS.lock() = csv
         .split(',')
         .map(str::trim)
         .filter(|name| !name.is_empty())
@@ -49,26 +47,20 @@ pub fn set_requested_tools(csv: &str) {
 
 /// Servers connected by the latest discovery, with their tool counts (TS
 /// `MCPManager.getConnectedServers` + `getConnection(name).tools.length`).
-static CONNECTED_SERVERS: std::sync::Mutex<Vec<(String, usize)>> =
-    std::sync::Mutex::new(Vec::new());
+static CONNECTED_SERVERS: parking_lot::Mutex<Vec<(String, usize)>> =
+    parking_lot::Mutex::new(Vec::new());
 
 /// `(server, tool count)` for every MCP server connected by the latest discovery.
 #[must_use]
 pub fn connected_servers() -> Vec<(String, usize)> {
-    CONNECTED_SERVERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+    CONNECTED_SERVERS.lock().clone()
 }
 
 #[allow(clippy::unnecessary_wraps)]
 fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
     let cwd = cwd.to_path_buf();
     let discover = move || async move {
-        let requested = REQUESTED_TOOLS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+        let requested = REQUESTED_TOOLS.lock().clone();
         let manager = Arc::new(McpManager::from_configs_for(&cwd, &requested));
         let discovered = manager.tools().await;
         let mut connected = Vec::new();
@@ -84,9 +76,7 @@ fn block_on_discover(cwd: &Path) -> Option<Vec<Arc<dyn AgentTool>>> {
                 omp_mcp::ServerStatus::Pending => {}
             }
         }
-        *CONNECTED_SERVERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = connected;
+        *CONNECTED_SERVERS.lock() = connected;
         discovered
             .into_iter()
             .map(|tool| {
@@ -362,7 +352,7 @@ for line in sys.stdin:
         assert_eq!(result.details["toolName"], serde_json::json!("echo"));
         assert_eq!(result.details["isError"], serde_json::json!(false));
 
-        let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let updates = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let updates_in_callback = Arc::clone(&updates);
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -375,13 +365,13 @@ for line in sys.stdin:
                         serde_json::json!({"text": "progress"}),
                         AbortSignal::never(),
                         Arc::new(move |update| {
-                            updates_in_callback.lock().unwrap().push(update);
+                            updates_in_callback.lock().push(update);
                         }),
                     )
                     .await
                     .expect("execute with progress")
             });
-        let updates = updates.lock().unwrap();
+        let updates = updates.lock();
         assert_eq!(updates.len(), 1, "one ordered progress update");
         assert_eq!(updates[0].details["mcpProgress"]["message"], "halfway");
         let event = pa_agent::types::AgentEvent::ToolExecutionUpdate {

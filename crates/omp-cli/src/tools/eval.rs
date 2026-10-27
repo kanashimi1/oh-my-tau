@@ -13,9 +13,10 @@
 //! `artifact://<id>` (TS `OutputSink` recovery pointer). Kernel loss is
 //! journaled per session (`eval_journal`) so `%replay` can restore setup.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -148,7 +149,7 @@ static SLOTS: LazyLock<Mutex<HashMap<PathBuf, Arc<AsyncMutex<KernelState>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn slot(cwd: &std::path::Path) -> Arc<AsyncMutex<KernelState>> {
-    let mut slots = SLOTS.lock().expect("kernel registry");
+    let mut slots = SLOTS.lock();
     Arc::clone(
         slots
             .entry(cwd.to_path_buf())
@@ -475,7 +476,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
 pub(crate) fn shutdown_slot(cwd: &std::path::Path) {
     // Dropping the slot drops KernelState, whose kernel Arcs run Drop and
     // settle the runner children.
-    SLOTS.lock().expect("kernel registry").remove(cwd);
+    SLOTS.lock().remove(cwd);
 }
 
 /// `details` payload: execution counter plus timeout annotations, omp-style.
