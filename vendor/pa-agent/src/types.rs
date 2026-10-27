@@ -870,30 +870,26 @@ mod context_messages_tests {
         // Shared, not copied: both point at the same frozen segment.
         assert!(Arc::ptr_eq(&state.segments[0], &snap.segments[0]));
         state.push(AgentMessage::user("state-only"));
-        snap.push(AgentMessage::user("loop-only"));
+        let loop_only = AgentMessage::user("loop-only");
+        snap.push(loop_only.clone());
         assert_eq!(state.len(), 3);
         assert_eq!(snap.len(), 3);
         assert_ne!(texts(&state), texts(&snap));
-        assert_eq!(
-            format!("{:?}", snap.last().unwrap()),
-            format!("{:?}", AgentMessage::user("loop-only"))
-        );
+        assert_eq!(format!("{:?}", snap.last().unwrap()), format!("{loop_only:?}"));
     }
 
     #[test]
     fn last_mut_on_shared_segment_copies_on_write() {
-        let mut a: ContextMessages = vec![AgentMessage::user("x")].into();
+        // Build each message once: `user()` stamps the current time, so a
+        // second construction differs whenever the clock ticks in between.
+        let x = AgentMessage::user("x");
+        let y = AgentMessage::user("y");
+        let mut a: ContextMessages = vec![x.clone()].into();
         a.freeze();
         let b = a.clone();
-        *a.last_mut().unwrap() = AgentMessage::user("y");
-        assert_eq!(
-            format!("{:?}", b.last().unwrap()),
-            format!("{:?}", AgentMessage::user("x"))
-        );
-        assert_eq!(
-            format!("{:?}", a.last().unwrap()),
-            format!("{:?}", AgentMessage::user("y"))
-        );
+        *a.last_mut().unwrap() = y.clone();
+        assert_eq!(format!("{:?}", b.last().unwrap()), format!("{x:?}"));
+        assert_eq!(format!("{:?}", a.last().unwrap()), format!("{y:?}"));
     }
 
     #[test]
