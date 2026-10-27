@@ -192,6 +192,7 @@ fn wire_header_values(head: &str, name: &str) -> Vec<String> {
 /// request head it put on the wire.
 async fn stream_capture_head(
     options_headers: Option<std::collections::HashMap<String, String>>,
+    base_path: &str,
 ) -> String {
     // The known-green SSE script from the snapshot pin above: a thinking
     // block, a tool call, the delta and stop events.
@@ -223,7 +224,7 @@ data: {"type":"message_stop"}"#,
     let (addr, head_rx) = serve_sse_capturing_head(sse).await;
     let model: Model = serde_json::from_value(json!({
         "id": "claude-test", "name": "Claude Test", "api": "anthropic-messages",
-        "provider": "anthropic", "baseUrl": format!("http://{addr}"), "reasoning": false,
+        "provider": "anthropic", "baseUrl": format!("http://{addr}{base_path}"), "reasoning": false,
         "input": ["text"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
         "contextWindow": 128_000, "maxTokens": 8192
@@ -257,7 +258,7 @@ data: {"type":"message_stop"}"#,
 /// label; a strict anthropic-compatible frontend 400s without it.
 #[tokio::test]
 async fn wire_carries_one_content_type_application_json() {
-    let head = stream_capture_head(None).await;
+    let head = stream_capture_head(None, "").await;
     assert_eq!(
         wire_header_values(&head, "content-type"),
         vec!["application/json"],
@@ -274,10 +275,22 @@ async fn wire_caller_content_type_override_wins() {
         "Content-Type".to_string(),
         "application/vnd.anthropic+json".to_string(),
     )]);
-    let head = stream_capture_head(Some(headers)).await;
+    let head = stream_capture_head(Some(headers), "").await;
     assert_eq!(
         wire_header_values(&head, "content-type"),
         vec!["application/vnd.anthropic+json"],
+        "the wire head: {head}"
+    );
+}
+
+/// Discovered catalog rows carry `https://api.anthropic.com/v1`; like TS
+/// `normalizeAnthropicBaseUrl` the trailing `/v1` is dropped instead of
+/// posting to `/v1/v1/messages` (a 404 `not_found_error`).
+#[tokio::test]
+async fn wire_base_url_with_v1_suffix_posts_to_v1_messages() {
+    let head = stream_capture_head(None, "/v1/").await;
+    assert!(
+        head.starts_with("POST /v1/messages HTTP/1.1"),
         "the wire head: {head}"
     );
 }

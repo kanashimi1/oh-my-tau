@@ -255,7 +255,11 @@ async fn run_stream(
         base_options.session_id.as_deref(),
     );
 
-    let url = format!("{}/v1/messages", model.base_url.trim_end_matches('/'));
+    // TS `normalizeAnthropicBaseUrl`: catalog rows (models.db discovery) carry
+    // `https://api.anthropic.com/v1`; appending `/v1/messages` to that 404s.
+    let base_url = model.base_url.trim().trim_end_matches('/');
+    let base_url = base_url.strip_suffix("/v1").unwrap_or(base_url);
+    let url = format!("{base_url}/v1/messages");
     // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
     let request_dump = RawHttpRequestDump {
         provider: model.provider.to_string(),
