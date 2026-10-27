@@ -361,7 +361,7 @@ fn trail(frames: &[String]) -> String {
 /// Nearest-rank percentile of a slice sorted ascending (`num`/`den`, e.g.
 /// 95/100 for p95): rank = ceil(num * n / den).
 fn nearest_rank(sorted: &[f64], num: usize, den: usize) -> Option<f64> {
-    let rank = (num * sorted.len() + den - 1) / den;
+    let rank = (num * sorted.len()).div_ceil(den);
     sorted.get(rank.max(1) - 1).copied()
 }
 

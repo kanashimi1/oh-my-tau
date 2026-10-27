@@ -109,9 +109,7 @@ impl RawClient {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let mut buf = String::new();
-            if Instant::now() > deadline {
-                panic!("timeout waiting for response to {method}");
-            }
+            assert!(Instant::now() <= deadline, "timeout waiting for response to {method}");
             match self.out.read_line(&mut buf) {
                 Ok(0) => panic!("MCP server closed stdout waiting for {method}"),
                 Ok(_) => {}
@@ -426,7 +424,7 @@ async fn omt_mcp_client_interop() {
     .unwrap_or_else(|e| panic!("call_tool send: {e}"));
     assert!(!sent.is_error, "{sent:?}");
     let receipt = sent.structured_content.expect("structuredContent");
-    assert_eq!(receipt["message_id"].is_string(), true);
+    assert!(receipt["message_id"].is_string());
     assert_eq!(receipt["state"], "sent");
 
     // The CLI endpoint sees exactly this envelope.

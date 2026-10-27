@@ -38,7 +38,7 @@ const FIXTURE_BASE_URL: &str = "http://127.0.0.1:9/";
 /// Any `provider/id` resolves against [`FIXTURE_BASE_URL`]; the value is inert.
 const FIXTURE_MODEL: &str = "custom/detach-fixture";
 
-/// The running `omt web` child: SIGTERMmed (not killed) by the test body —
+/// The running `omt web` child: `SIGTERMmed` (not killed) by the test body —
 /// the shutdown path is part of what is being verified.
 struct WebServer {
     child: tokio::process::Child,
