@@ -10,10 +10,10 @@
 //! the exact prefix snapshot stored at the previous request (deep equality). A miss (different
 //! key, shorter/compacted history, or a mutated prefix) falls back to the full conversion and
 //! replaces the slot, so the cache can never emit stale bytes.
-//!
-//! Disabled (`OMP_RS_WIRE_FRAG_CACHE=0`), or bypassed per request for formats the cache cannot
-//! serve: Anthropic `cache_control` (mutates the last message), named `ToolChoice::Function`
-//! (narrows the tools array), and requests carrying a payload hook (handled by the caller).
+// Disabled (`OMP_RS_WIRE_FRAG_CACHE=0`), or bypassed per request for formats the cache cannot
+// serve: Anthropic `cache_control` (mutates the last message) and named `ToolChoice::Function`
+// (narrows the tools array). Payload hooks run after this pre-hook body is built, so they do not
+// disable prefix reuse.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -21,7 +21,7 @@ use serde_json::value::RawValue;
 
 use crate::providers::openai_completions::compat::ResolvedCompat;
 use crate::providers::openai_completions::params::{
-    build_params, build_params_streaming, BuiltFrags, MsgsInput, ToolsInput,
+    BuiltFrags, MsgsInput, ToolsInput, build_params, build_params_streaming,
 };
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
 use crate::types::{CacheRetention, Context, Message, Model, Tool};

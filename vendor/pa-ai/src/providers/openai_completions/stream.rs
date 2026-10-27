@@ -3,37 +3,37 @@
 
 use std::collections::HashMap;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::cache_pricing::{get_anthropic_cache_write_cost, has_standard_anthropic_cache_pricing};
 use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::{
-    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
-    AssistantMessageEventWriter,
+    AssistantMessageEvent, AssistantMessageEventStream, AssistantMessageEventWriter,
+    create_assistant_message_event_stream,
 };
 use crate::providers::openai_completions::convert::{
     map_stop_reason, parse_chunk_usage, transform_for_request,
 };
 use crate::providers::openai_completions::errors::{openai_http_error, openrouter_raw_metadata};
-use crate::providers::openai_completions::params::{build_headers, build_params};
+use crate::providers::openai_completions::params::build_headers;
 use crate::providers::openai_completions::wire_cache;
 use crate::providers::openai_completions::{
-    encode_reasoning_details, resolve_cache_retention, resolve_compat, OpenAICompletionsOptions,
-    REASONING_FIELDS,
+    OpenAICompletionsOptions, REASONING_FIELDS, encode_reasoning_details, resolve_cache_retention,
+    resolve_compat,
 };
 use crate::providers::openai_responses_hooks::apply_service_tier_pricing;
 use crate::types::{
-    done_reason, error_reason, AssistantContent, AssistantMessage, CacheRetention, Context, Model,
-    StopReason, TextContent, ThinkingContent, ToolCall, Usage,
+    AssistantContent, AssistantMessage, CacheRetention, Context, Model, StopReason, TextContent,
+    ThinkingContent, ToolCall, Usage, done_reason, error_reason,
 };
-use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
-use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
+use crate::utils_inner::http::{HttpResponse, RequestOptions, send};
+use crate::utils_inner::http_inspector::{RawHttpRequestDump, finalize_http_error};
 use crate::utils_inner::json_parse::{
-    parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
+    StreamingJsonAccumulator, parse_json_with_repair, parse_streaming_json,
 };
 use crate::utils_inner::sse::{ServerSentEvent, SseDecoder};
 use crate::utils_inner::stream_failure::{
-    record_stream_failure, stream_drop_failure, OpenStreamBlock, ProviderError,
+    OpenStreamBlock, ProviderError, record_stream_failure, stream_drop_failure,
 };
 use crate::utils_inner::wire_json::request_body;
 
@@ -593,31 +593,18 @@ async fn run_stream(
         base_options.session_id.clone()
     };
 
-    // The body is serialized straight from the transformed history; neither the history copy nor
-    // the params tree outlives this block (the response stream never needs them). The
-    // wire-fragment cache serves the tools/messages prefix from the previous turn of this
-    // session; a payload hook needs the materialized Value tree, so it takes the plain path.
+    // Cache the stable pre-hook wire prefix. Payload hooks run afterwards on
+    // the completed body, so they cannot make a verified prefix hit stale.
     let body = {
         let transformed = transform_for_request(model, context, &compat);
-        let params = if base_options.on_payload.is_none() {
-            wire_cache::build_params_cached(
-                model,
-                context,
-                &transformed,
-                options,
-                &compat,
-                cache_retention,
-            )
-        } else {
-            build_params(
-                model,
-                context,
-                &transformed,
-                options,
-                &compat,
-                cache_retention,
-            )
-        };
+        let params = wire_cache::build_params_cached(
+            model,
+            context,
+            &transformed,
+            options,
+            &compat,
+            cache_retention,
+        );
         request_body(&params, base_options.on_payload.as_ref(), model)
     };
 
@@ -897,7 +884,9 @@ mod tests {
 
     fn tier_on_usage_sse(tier: &str) -> String {
         let content = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"}}]}\n\n";
-        let usage = format!("data: {{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"{tier}\",\"choices\":[],\"usage\":{{\"prompt_tokens\":1000000,\"completion_tokens\":1000000,\"total_tokens\":2000000,\"prompt_tokens_details\":{{\"cached_tokens\":0}}}}}}\n\n");
+        let usage = format!(
+            "data: {{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"service_tier\":\"{tier}\",\"choices\":[],\"usage\":{{\"prompt_tokens\":1000000,\"completion_tokens\":1000000,\"total_tokens\":2000000,\"prompt_tokens_details\":{{\"cached_tokens\":0}}}}}}\n\n"
+        );
         format!("{content}{usage}{DONE}")
     }
 
@@ -905,7 +894,9 @@ mod tests {
     // billing in the final usage chunk.
     fn openrouter_sse(usage_fields: &str) -> String {
         let content = "data: {\"id\":\"gen-01\",\"object\":\"chat.completion.chunk\",\"model\":\"anthropic/claude-fable-5\",\"service_tier\":\"priority\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"Hi\"}}]}\n\n";
-        let usage = format!("data: {{\"id\":\"gen-01\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{{\"prompt_tokens\":50000,\"completion_tokens\":50000,\"total_tokens\":100000,\"prompt_tokens_details\":{{\"cached_tokens\":0}}{usage_fields}}}}}\n\n");
+        let usage = format!(
+            "data: {{\"id\":\"gen-01\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{{\"prompt_tokens\":50000,\"completion_tokens\":50000,\"total_tokens\":100000,\"prompt_tokens_details\":{{\"cached_tokens\":0}}{usage_fields}}}}}\n\n"
+        );
         format!("{content}{usage}{DONE}")
     }
 
