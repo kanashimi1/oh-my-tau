@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::compat::resolve_for_model;
 use crate::models::get_supported_thinking_levels;
@@ -137,6 +137,8 @@ pub enum DisableReason {
 }
 
 /// TS `OpenAICompatPolicy.reasoning`.
+// Mirrors the TS compat-policy boolean fields.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 pub struct ReasoningPolicy {
     pub model_supported: bool,
@@ -465,14 +467,15 @@ pub fn apply_compat_policy(params: &mut Map<String, Value>, policy: &CompatPolic
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::openai_completions::OpenAICompletionsOptions;
     use crate::providers::openai_completions::convert::transform_for_request;
     use crate::providers::openai_completions::params::build_params;
-    use crate::providers::openai_completions::OpenAICompletionsOptions;
     use crate::types::{
         CacheRetention, Context, Message, StreamOptions, UserMessage, UserMessageContent,
     };
     use serde_json::json;
 
+    #[allow(clippy::needless_pass_by_value)] // test helper mirroring the Model constructor shape
     fn model(
         provider: &str,
         id: &str,
@@ -492,6 +495,7 @@ mod tests {
         m
     }
 
+    #[allow(clippy::needless_pass_by_value)] // test helper mirroring the request-entry shape
     fn body(model: &Model, options: OpenAICompletionsOptions, system: Option<&str>) -> Value {
         let context = Context {
             system_prompt: system.map(str::to_string),

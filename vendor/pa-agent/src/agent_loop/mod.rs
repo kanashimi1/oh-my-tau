@@ -120,8 +120,11 @@ pub struct AgentLoopConfig {
     /// complete, before the assistant stream ends. Only explicitly declared
     /// read-only tools may run early; the default `None` disables early
     /// execution entirely (every call is treated as potentially mutating).
-    pub is_tool_read_only: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
+    pub is_tool_read_only: Option<ReadOnlyPredicate>,
 }
+
+/// Read-only classifier installed by the host (`fn(&str) -> bool`).
+type ReadOnlyPredicate = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 impl AgentLoopConfig {
     /// Config with a pass-through `convert_to_llm` (keeps user/assistant/

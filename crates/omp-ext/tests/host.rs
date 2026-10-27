@@ -430,10 +430,10 @@ async fn tools_and_commands() {
 /// emit; the others still run, and the next emit without it runs everything.
 #[tokio::test]
 async fn context_emit_skips_listed_extensions() {
+    use pa_agent::types::AgentMessage;
     if common::bun_missing("context_emit_skips_listed_extensions") {
         return;
     }
-    use pa_agent::types::AgentMessage;
     let host = ExtHost::spawn(&config()).await.unwrap();
     let r = host
         .load(
@@ -475,10 +475,10 @@ async fn context_emit_skips_listed_extensions() {
 
 #[tokio::test]
 async fn hook_points_map_to_pa_agent() {
+    use pa_agent::abort::AbortSignal;
     if common::bun_missing("hook_points_map_to_pa_agent") {
         return;
     }
-    use pa_agent::abort::AbortSignal;
     let (host, _rx) = loaded().await;
     let hooks = ExtHooks::new(host.clone());
     let msgs = vec![]; // empty list round-trips through the typed hook
@@ -523,13 +523,14 @@ impl pa_agent::types::AgentTool for BashTool {
 
 #[tokio::test]
 async fn ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop() {
-    if common::bun_missing("ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop") {
-        return;
-    }
     use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
     use pa_agent::scripted::ScriptedProvider;
     use pa_agent::types::{AgentMessage, Message, ToolResultContent, UsageCost};
-
+    if common::bun_missing(
+        "ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop",
+    ) {
+        return;
+    }
     let (host, _rx) = loaded().await;
     let hooks = ExtHooks::new(host.clone());
     let model = pa_agent::types::Model {

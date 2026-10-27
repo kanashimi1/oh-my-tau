@@ -660,8 +660,7 @@ impl LspClient {
             .lock()
             .as_mut()
             .and_then(|ch| ch.try_wait().ok().flatten())
-            .map(|s| s.code())
-            .flatten();
+            .and_then(|s| s.code());
         let message = if stderr.is_empty() {
             format!(
                 "LSP server exited unexpectedly (code {})",

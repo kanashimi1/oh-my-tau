@@ -817,6 +817,9 @@ impl Agent {
     }
 
     /// Stored credential row id stamped onto assistant messages as `credentialId`.
+    ///
+    /// # Panics
+    /// If the shared agent state mutex is poisoned by a panicked writer.
     pub fn set_credential_id(&self, id: Option<i64>) {
         *self.inner.credential_id.lock().unwrap() = id;
     }

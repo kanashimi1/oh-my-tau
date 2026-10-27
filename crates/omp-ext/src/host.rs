@@ -399,6 +399,8 @@ impl ExtHost {
     ///
     /// # Errors
     /// Fails when the host's stdin is closed.
+    // Kept `async` so in-crate callers can `.await` uniformly with the other host calls.
+    #[allow(clippy::unused_async)]
     pub async fn respond(&self, id: Value, result: Result<Value, String>) -> Result<()> {
         let msg = match result {
             Ok(v) => json!({"jsonrpc":"2.0","id":id,"result":v}),
@@ -422,7 +424,7 @@ impl ExtHost {
     fn send_request(
         &self,
         method: &str,
-        params: Value,
+        params: &Value,
     ) -> Result<oneshot::Receiver<Result<Value, String>>> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut line =
@@ -451,7 +453,7 @@ impl ExtHost {
     ///
     /// # Errors
     /// Transport failure, host exit, or a JSON-RPC error response.
-    pub async fn request(&self, method: &str, params: Value) -> Result<Value> {
+    pub async fn request(&self, method: &str, params: &Value) -> Result<Value> {
         let rx = self.send_request(method, params)?;
         match rx.await {
             Ok(Ok(v)) => Ok(v),
@@ -490,7 +492,7 @@ impl ExtHost {
         if let Some(trace) = &self.trace {
             p["trace"] = json!(trace);
         }
-        let result: LoadResult = serde_json::from_value(self.request("load", p).await?)?;
+        let result: LoadResult = serde_json::from_value(self.request("load", &p).await?)?;
         let subscribed: HashSet<String> = result
             .loaded
             .iter()
@@ -546,7 +548,7 @@ impl ExtHost {
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
-        Ok(serde_json::from_value(self.request("emit", p).await?)?)
+        Ok(serde_json::from_value(self.request("emit", &p).await?)?)
     }
 
     /// `true` unless the host is loaded and no extension subscribes to `event_type`
@@ -593,7 +595,7 @@ impl ExtHost {
         if let Some(ctx) = ctx {
             p["ctx"] = ctx;
         }
-        let rx = self.send_request("emit", p)?;
+        let rx = self.send_request("emit", &p)?;
         tokio::spawn(async move {
             let r = match rx.await {
                 Ok(Ok(v)) => serde_json::from_value(v).map_err(Into::into),
@@ -609,7 +611,7 @@ impl ExtHost {
     /// Transport failure.
     pub async fn list_tools(&self) -> Result<Vec<ToolInfo>> {
         Ok(serde_json::from_value(
-            self.request("list_tools", json!({})).await?,
+            self.request("list_tools", &json!({})).await?,
         )?)
     }
 
@@ -627,7 +629,7 @@ impl ExtHost {
         let ctx = self.provided_ctx(ctx, "call_tool");
         self.request(
             "call_tool",
-            json!({"name": name, "toolCallId": tool_call_id, "params": params, "ctx": ctx}),
+            &json!({"name": name, "toolCallId": tool_call_id, "params": params, "ctx": ctx}),
         )
         .await
     }
@@ -638,7 +640,7 @@ impl ExtHost {
     /// # Errors
     /// Transport failure.
     pub async fn cancel_tool(&self, tool_call_id: &str) -> Result<()> {
-        self.request("cancel_tool", json!({"toolCallId": tool_call_id}))
+        self.request("cancel_tool", &json!({"toolCallId": tool_call_id}))
             .await?;
         Ok(())
     }
@@ -647,14 +649,14 @@ impl ExtHost {
     /// Transport failure.
     pub async fn list_commands(&self) -> Result<Vec<CommandInfo>> {
         Ok(serde_json::from_value(
-            self.request("list_commands", json!({})).await?,
+            self.request("list_commands", &json!({})).await?,
         )?)
     }
 
     /// # Errors
     /// Unknown command, command failure, or transport failure.
     pub async fn call_command(&self, name: &str, args: &str) -> Result<Value> {
-        self.request("call_command", json!({"name": name, "args": args}))
+        self.request("call_command", &json!({"name": name, "args": args}))
             .await
     }
 
@@ -663,7 +665,7 @@ impl ExtHost {
     /// # Errors
     /// Transport failure.
     pub async fn set_ctx(&self, ctx: Value) -> Result<()> {
-        self.request("set_ctx", json!({ "ctx": ctx })).await?;
+        self.request("set_ctx", &json!({ "ctx": ctx })).await?;
         Ok(())
     }
 
@@ -673,8 +675,8 @@ impl ExtHost {
     /// Only on kill failure.
     pub async fn shutdown(&self) -> Result<()> {
         self.closing.store(true, Ordering::SeqCst);
-        let _ =
-            tokio::time::timeout(Duration::from_secs(2), self.request("shutdown", json!({}))).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.request("shutdown", &json!({})))
+            .await;
         let mut child = self.child.lock().await;
         if let Some(child) = child.as_mut() {
             if tokio::time::timeout(Duration::from_secs(2), child.wait())
@@ -1204,7 +1206,7 @@ mod tests {
                 tasks.spawn(async move {
                     tokio::time::timeout(
                         Duration::from_secs(5),
-                        host.request("emit", json!({ "i": i })),
+                        host.request("emit", &json!({ "i": i })),
                     )
                     .await
                 });
@@ -1249,12 +1251,12 @@ mod tests {
         let (old_r, _old_r_peer) = tokio::io::duplex(16);
         host.install(Box::new(old_w), old_r, None).await;
         let old = host
-            .send_request("emit", json!({"queued": "on the old connection"}))
+            .send_request("emit", &json!({"queued": "on the old connection"}))
             .unwrap();
 
         let ((new_w, new_r), (mut sent, mut answer)) = pipe_conn();
         host.install(new_w, new_r, None).await;
-        let new = host.send_request("emit", json!({})).unwrap();
+        let new = host.send_request("emit", &json!({})).unwrap();
         let line = tokio::time::timeout(Duration::from_secs(5), sent.next_line())
             .await
             .unwrap()
@@ -1300,7 +1302,7 @@ mod tests {
         let (r, _r_peer) = tokio::io::duplex(16);
         host.install(Box::new(w), r, None).await;
         let queued: Vec<_> = (0..8)
-            .map(|i| host.send_request("emit", json!({ "i": i })).unwrap())
+            .map(|i| host.send_request("emit", &json!({ "i": i })).unwrap())
             .collect();
         drop(peer);
         for rx in queued {
@@ -1313,6 +1315,6 @@ mod tests {
         // The table is closed with the failure: no window where a new waiter
         // can be registered on the dead connection.
         assert!(lock(&lock(&host.conn).pending).closed.is_some());
-        assert!(host.send_request("emit", json!({})).is_err());
+        assert!(host.send_request("emit", &json!({})).is_err());
     }
 }

@@ -2,7 +2,7 @@
 //! replay, thinking budgets and levels, finish-reason and tool-choice mapping. The shared
 //! stream-chunk processor lives in [`crate::providers::google_stream`].
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::providers::transform_messages::transform_messages_with_normalizer;
 use crate::types::{AssistantContent, Context, Model, ModelExt, StopReason, ThinkingBudgets, Tool};
@@ -443,8 +443,7 @@ fn normalize_schema_for_cca(schema: &Value, root: bool) -> Value {
             continue;
         }
         match key.as_str() {
-            "nullable" | "not" => continue,
-            "anyOf" | "oneOf" | "allOf" => continue,
+            "nullable" | "not" | "anyOf" | "oneOf" | "allOf" => continue,
             "type" => {
                 if let Value::Array(types) = value {
                     // Scalarize: null members drop, the first remaining type represents the
@@ -484,7 +483,12 @@ fn normalize_schema_member(key: &str, value: &Value) -> Value {
             ),
             other => other.clone(),
         },
-        "items" | "contains" | "additionalProperties" | "if" | "then" | "else"
+        "items"
+        | "contains"
+        | "additionalProperties"
+        | "if"
+        | "then"
+        | "else"
         | "propertyNames" => slot(value),
         "prefixItems" => match value {
             Value::Array(items) => Value::Array(items.iter().map(slot).collect()),
@@ -699,11 +703,19 @@ mod tests {
             "$defs": { "x": { "type": "string" } }
         });
         let projected = normalize_schema_for_cca(&schema, true);
-        let props = projected.get("properties").and_then(Value::as_object).unwrap();
-        assert_eq!(props["path"].get("type").and_then(Value::as_str), Some("string"));
+        let props = projected
+            .get("properties")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(
+            props["path"].get("type").and_then(Value::as_str),
+            Some("string")
+        );
         assert!(props["path"].get("nullable").is_none());
         assert_eq!(
-            props["nested"].pointer("/properties/list/items/type").and_then(Value::as_str),
+            props["nested"]
+                .pointer("/properties/list/items/type")
+                .and_then(Value::as_str),
             Some("string")
         );
         // Enum values and `required` pass through untouched.

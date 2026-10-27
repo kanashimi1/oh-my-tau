@@ -714,18 +714,18 @@ mod tests {
 
         // ── second host → upgrade completes, then 4009, terminal (the TS onopen fires on the
         // upgrade response, before the close frame is read — relay-client.ts:513) ──
-        let (host2, mut host2_events) =
+        let (second_host, mut second_host_events) =
             connect(&relay.url, TEST_ROOM, CollabRole::Host, &fast_opts()).await;
-        expect_opened(&mut host2_events).await;
+        expect_opened(&mut second_host_events).await;
         assert_eq!(
-            next_event(&mut host2_events).await,
+            next_event(&mut second_host_events).await,
             RelayEvent::Closed {
                 code: 4009,
                 reason: "a host is already connected for this room".to_string(),
                 will_reconnect: false,
             }
         );
-        drop(host2);
+        drop(second_host);
 
         // ── guests join; host sees peer-joined TEXT ──
         let (guest1, mut guest1_events) =
@@ -860,22 +860,22 @@ mod tests {
         drop(host);
 
         // A new host recreates the room; the guest's retry lands in it.
-        let (host2, mut host2_events) =
+        let (reborn_host, mut reborn_host_events) =
             connect(&relay.url, TEST_ROOM, CollabRole::Host, &fast_opts()).await;
-        expect_opened(&mut host2_events).await;
+        expect_opened(&mut reborn_host_events).await;
         let reopened = drain_until(&mut guest_events, FIVE_SECONDS, |event| {
             matches!(event, RelayEvent::Opened)
         })
         .await;
         assert_eq!(reopened, RelayEvent::Opened);
         assert_eq!(
-            next_event(&mut host2_events).await,
+            next_event(&mut reborn_host_events).await,
             RelayEvent::Text(r#"{"t":"peer-joined","peer":1}"#.to_string()),
             "the relay reissued peer ids from 1 for the recreated room"
         );
 
         guest.close();
-        host2.close();
+        reborn_host.close();
         relay.stop();
     }
 

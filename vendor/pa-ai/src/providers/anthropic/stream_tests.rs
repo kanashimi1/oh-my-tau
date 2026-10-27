@@ -1,10 +1,10 @@
 //! Characterization tests for the Anthropic SSE stream, replayed through a
 //! local in-process SSE server.
 
-use serde_json::{json, Map};
+use serde_json::{Map, json};
 
 use crate::event_stream::AssistantMessageEventExt;
-use crate::providers::anthropic::{stream_anthropic, AnthropicOptions};
+use crate::providers::anthropic::{AnthropicOptions, stream_anthropic};
 use crate::types::{
     AssistantContent, Context, Model, StopReason, StreamOptions, ThinkingContent, ToolCall,
 };

@@ -124,6 +124,8 @@ impl JsKernel {
     ///
     /// # Errors
     /// Fails on broken kernel I/O.
+    // By value to match `PythonKernel::execute_with`; the options are only read.
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
     pub fn execute_with(&self, code: &str, opts: ExecOptions<'_>) -> io::Result<CellResult> {
         // JS workers are routinely killed on timeout; recreate transparently
         // (omp's session registry does the same on worker death).
@@ -143,7 +145,8 @@ impl JsKernel {
                 "idleTimeout": opts.idle_timeout,
             });
             if let Some(t) = opts.timeout {
-                req["timeoutMs"] = serde_json::json!(t.as_millis() as u64);
+                req["timeoutMs"] =
+                    serde_json::json!(u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
             }
             p.stdin.write_all(format!("{req}\n").as_bytes())?;
             p.stdin.flush()?;
@@ -325,6 +328,9 @@ impl JsKernel {
     }
 
     /// True while the runner subprocess is alive.
+    ///
+    /// # Panics
+    /// If the OS reports the child's exit status unrecoverably.
     #[must_use]
     pub fn is_alive(&self) -> bool {
         let mut guard = self.process.lock();

@@ -52,6 +52,7 @@ struct Reply {
 ///
 /// Returns an error when the login is cancelled ([`LOGIN_CANCELLED`]), the device
 /// authorization fails, the grant is denied/expires, or the token response is unusable.
+#[allow(clippy::too_many_lines)] // ported TS OAuth device flow: authorize, poll, exchange, cancel handling
 pub async fn login_kimi(
     http: &dyn ProviderHttp,
     ui: &dyn OAuthLoginUi,
@@ -429,18 +430,21 @@ mod tests {
         assert_eq!(auth[0].1.as_deref(), Some("Enter code: ABCD-1234"));
         let seen = http.seen.lock();
         assert_eq!(seen.len(), 3);
-        assert!(seen[0]
-            .body
-            .as_deref()
-            .unwrap()
-            .contains(&format!("client_id={KIMI_CLIENT_ID}")));
+        assert!(
+            seen[0]
+                .body
+                .as_deref()
+                .unwrap()
+                .contains(&format!("client_id={KIMI_CLIENT_ID}"))
+        );
         let poll = seen[2].body.as_deref().unwrap();
         assert!(poll.contains("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"));
         assert!(poll.contains("device_code=dev1"));
-        assert!(seen.iter().all(|r| r
-            .headers
-            .iter()
-            .any(|(k, v)| k == "X-Msh-Platform" && v == "kimi_cli")));
+        assert!(seen.iter().all(|r| {
+            r.headers
+                .iter()
+                .any(|(k, v)| k == "X-Msh-Platform" && v == "kimi_cli")
+        }));
     }
 
     #[tokio::test]

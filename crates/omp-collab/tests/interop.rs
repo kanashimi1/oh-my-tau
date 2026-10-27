@@ -182,6 +182,7 @@ fn guest_script_path() -> Option<std::path::PathBuf> {
 }
 
 /// Markers the TS guest printed, one bool per protocol phase.
+#[allow(clippy::struct_excessive_bools)] // one flag per protocol phase by design
 #[derive(Default, Debug)]
 struct GuestMarkers {
     full_live_snapshot: bool,
@@ -227,7 +228,8 @@ async fn drive_ts_guest(
     let interaction = async {
         while let Some(line) = lines.next_line().await.expect("read child stdout") {
             println!("[ts-guest] {line}");
-            assert!(!line.starts_with("FATAL"), 
+            assert!(
+                !line.starts_with("FATAL"),
                 "TS guest failed: {line}\n\
                  hint: `timeout waiting for full reaches live` with no prior frames means the \
                  rust host never answered the hello — see the interop report, mismatch #1 \
@@ -293,7 +295,8 @@ async fn drive_ts_guest(
         }
     };
 
-    if let Ok(()) = tokio::time::timeout(GUEST_BUDGET, interaction).await {} else {
+    if let Ok(()) = tokio::time::timeout(GUEST_BUDGET, interaction).await {
+    } else {
         let _ = child.kill().await;
         panic!("TS guest interaction exceeded {GUEST_BUDGET:?}");
     }
@@ -312,6 +315,7 @@ async fn drive_ts_guest(
 ///
 /// Regression test for the join path. FAILS until host.rs:417 exempts
 /// `hello` from the unknown-peer gate (mismatch #1 in the interop report).
+#[allow(clippy::too_many_lines)] // end-to-end interop scenario; splitting would obscure the protocol sequence
 #[tokio::test(flavor = "multi_thread")]
 async fn ts_guest_interops_with_rust_host() {
     let Some(script) = guest_script_path() else {
@@ -398,10 +402,9 @@ async fn ts_guest_interops_with_rust_host() {
                     "rust host registered the TS guest"
                 );
                 // Mirror a live entry: host→guest broadcast through the relay.
-                broadcast_host.broadcast_entry(
-                    serde_json::to_string(&sample_entry(3, "live broadcast entry"))
-                        .expect("entry json"),
-                );
+                let entry_json = serde_json::to_string(&sample_entry(3, "live broadcast entry"))
+                    .expect("entry json");
+                broadcast_host.broadcast_entry(&entry_json);
             }),
             on_view_notice: Box::new(move || {
                 let _ = stop_for_hooks.send(BYE_REASON.to_string());
@@ -461,11 +464,13 @@ async fn ts_guest_interops_with_rust_host() {
 
 // ═══════════════ Test B: wire-level rust host vs the same TS guest ═══════════════
 
+/// One observed `hello`: `(peer, name, writeToken present, writeToken value)`.
+type HelloRecord = (u32, String, bool, Option<String>);
+
 /// What the wire host saw, for protocol-level assertions.
 #[derive(Default)]
 struct WireHostLog {
-    /// `(peer, name, writeToken present, writeToken value)` per hello.
-    hellos: Mutex<Vec<(u32, String, bool, Option<String>)>>,
+    hellos: Mutex<Vec<HelloRecord>>,
     prompts: Mutex<Vec<(u32, String)>>,
     transcript_requests: Mutex<Vec<u32>>,
 }
@@ -476,6 +481,11 @@ struct WireHostLog {
 /// exactly like TS `host.ts:707` (transport-liveness gate, not a peer-list
 /// gate). Every outbound frame is the typed [`CollabFrame`] serde encoding;
 /// every inbound frame must parse as [`CollabFrame`].
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation
+)] // ported TS host loop needs the full frame context; peer ids are u32 on the wire
 async fn run_wire_host(
     relay_url: String,
     room_id: String,
@@ -534,7 +544,7 @@ async fn run_wire_host(
                             if let Some(token) = &write_token { assert_eq!(
                                 token, &write_token_b64,
                                 "TS guest must echo the link's write token verbatim"
-                            ) }
+                            ); }
                             let can_write = write_token.is_some();
                             log.hellos.lock().push((
                                 peer,
@@ -597,7 +607,7 @@ async fn run_wire_host(
                     if let Ok(msg) = serde_json::from_str::<Value>(&text) {
                         if msg.get("t").and_then(Value::as_str) == Some("peer-left") {
                             if let Some(peer) = msg.get("peer").and_then(Value::as_u64) {
-                                peers.remove(&(peer as u32));
+                                peers.remove(&(u32::try_from(peer).unwrap_or(u32::MAX)));
                             }
                         }
                     }

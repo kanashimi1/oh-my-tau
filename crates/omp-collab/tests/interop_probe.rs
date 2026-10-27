@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use omp_collab::crypto::CollabCipher;
-use omp_collab::relay_client::{connect_relay, CollabRole, RelayEvent};
+use omp_collab::relay_client::{connect_relay, CollabRole, RelayEvent, RelayOptions};
 use omp_collab::relay_server::start_local_relay;
 
 #[tokio::test(flavor = "multi_thread")]
@@ -17,7 +17,7 @@ async fn queued_send_flushes_before_close() {
         &relay.url,
         "probe-room-1",
         CollabRole::Host,
-        &Default::default(),
+        &RelayOptions::default(),
     )
     .await
     .unwrap();
@@ -31,7 +31,7 @@ async fn queued_send_flushes_before_close() {
         &relay.url,
         "probe-room-1",
         CollabRole::Guest,
-        &Default::default(),
+        &RelayOptions::default(),
     )
     .await
     .unwrap();

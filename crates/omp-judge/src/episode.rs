@@ -65,6 +65,7 @@ pub struct Episode {
 }
 
 /// Objective counters computed from the steps only (never the next user message).
+#[allow(clippy::struct_excessive_bools)] // mirrors the boolean flags of the training-data objective
 #[derive(Debug, Clone, PartialEq)]
 pub struct Objective {
     pub tests_run: bool,
@@ -208,6 +209,7 @@ fn as_pyint(v: &Value) -> Option<i64> {
 
 /// Port of `parse_file` over already-decoded session entries (`{"type":"message",...}` lines).
 /// `is_sub`: the entries belong to a subagent session (the first user message is the task).
+#[allow(clippy::too_many_lines)] // single pass over the entry stream mirrors parse_file's state machine
 pub fn parse_entries<'a>(
     entries: impl IntoIterator<Item = &'a Value>,
     is_sub: bool,
@@ -271,7 +273,7 @@ pub fn parse_entries<'a>(
                 .get("stopReason")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            cur.final_text = text_of(content).trim().to_owned();
+            text_of(content).trim().clone_into(&mut cur.final_text);
             cur.yield_args = None;
             if let Some(Value::Array(blocks)) = content {
                 for b in blocks {
@@ -323,7 +325,7 @@ pub fn parse_entries<'a>(
                 .and_then(as_pyint);
             st.err = m.get("isError").is_some_and(truthy) || ec.is_some_and(|c| c != 0);
             st.exit = ec.unwrap_or_else(|| i64::from(st.err));
-            st.text = take_chars(text_of(m.get("content")).trim(), 600).to_owned();
+            take_chars(text_of(m.get("content")).trim(), 600).clone_into(&mut st.text);
             st.done = true;
             if st.intent.is_empty() {
                 if let Some(i) = intents.get(&st.id) {

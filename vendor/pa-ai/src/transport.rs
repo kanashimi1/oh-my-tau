@@ -279,7 +279,7 @@ pub fn plan_simple_request(
             flavor,
         } => Ok(PlannedRequest {
             api: model.api.clone(),
-            body: responses_request::build_body(&model, &view, context, &options, &flavor)?,
+            body: responses_request::build_body(&model, &view, context, &options, &flavor),
         }),
         Resolved::Completions { model, options } => Ok(PlannedRequest {
             api: model.api.clone(),

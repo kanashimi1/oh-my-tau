@@ -6,11 +6,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::providers::openai_completions::compat::{
-    apply_compat_policy, is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning,
-    DisableReason, ResolvedCompat,
+    DisableReason, ResolvedCompat, apply_compat_policy, is_forced, resolve_policy,
+    should_drop_auto_tool_choice_for_reasoning,
 };
 use crate::providers::openai_completions::convert::{
     convert_message_range, convert_tools, push_system_messages,
@@ -18,7 +18,7 @@ use crate::providers::openai_completions::convert::{
 use crate::providers::openai_completions::has_tool_history;
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
 use crate::types::{CacheRetention, Context, Message, Model};
-use crate::utils_inner::wire_json::{obj, to_json_string, Wire, WireObject};
+use crate::utils_inner::wire_json::{Wire, WireObject, obj, to_json_string};
 
 /// How the `messages` array reaches the params tree in [`build_params_streaming`].
 pub(crate) enum MsgsInput {
@@ -164,8 +164,10 @@ pub(crate) fn normalize_stable_id(
     if value.chars().count() <= max_len {
         return Some(value.to_string());
     }
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(value.as_bytes());
+    let digest = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(value.as_bytes())
+    };
     let n = u64::from_be_bytes(digest[..8].try_into().expect("8 bytes"));
     Some(format!("{hash_prefix}{}", to_base36(n)))
 }
@@ -221,7 +223,7 @@ pub(crate) fn build_params<'a>(
         compat,
         cache_retention,
         MsgsInput::Convert,
-        ToolsInput::Convert,
+        &ToolsInput::Convert,
         None,
     )
 }
@@ -231,6 +233,7 @@ pub(crate) fn build_params<'a>(
 /// given, receives the serialized fragments a conversion produced (the cache stores them). Every
 /// policy decision is made here exactly once, so cached and uncached requests emit identical
 /// bytes.
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)] // single policy decision point for cached/uncached parity, ported TS parameter surface
 pub(crate) fn build_params_streaming<'a>(
     model: &Model,
     context: &'a Context,
@@ -239,11 +242,13 @@ pub(crate) fn build_params_streaming<'a>(
     compat: &ResolvedCompat,
     cache_retention: CacheRetention,
     msgs_in: MsgsInput,
-    tools_in: ToolsInput,
+    tools_in: &ToolsInput,
     mut frags: Option<&mut BuiltFrags>,
 ) -> Wire<'a> {
     let options = options.cloned().unwrap_or_default();
-    let reasoning = options.reasoning_effort.map(pa_types::ai::ModelThinkingLevel::wire_name);
+    let reasoning = options
+        .reasoning_effort
+        .map(pa_types::ai::ModelThinkingLevel::wire_name);
     // `reasoning_enabled == Some(false)` is the TS `disableReasoning` (an explicit off).
     let disable_reasoning = options.reasoning_enabled == Some(false);
     let context_tools = context.tools.as_deref().filter(|t| !t.is_empty());

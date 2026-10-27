@@ -180,6 +180,8 @@ impl CollabController {
     /// # Errors
     /// When the controller is shut down, the relay is unconfigured, or the
     /// host fails to start.
+    // Kept `async` so callers can `.await` uniformly as the controller gains async steps.
+    #[allow(clippy::too_many_lines, clippy::unused_async)] // start/reuse/replace room dispatch; splitting hurts readability
     pub async fn start_host(&self, options: CollabStartOptions) -> Result<Arc<CollabHost>> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(anyhow!("collab controller shut down"));
@@ -194,7 +196,7 @@ impl CollabController {
         // Stop any non-current or lower-access room before starting the new
         // one; strict sequencing also keeps the process-wide cipher and the
         // registry publication consistent (TS stops the old room first too).
-        self.teardown_task("session switched").await;
+        self.teardown_task("session switched");
 
         let relay_url = self.resolve_relay_url(options.relay.as_deref())?;
         let web_url = self.resolve_web_url();
@@ -350,12 +352,14 @@ impl CollabController {
     /// relaunch launches to cancel). Runs on the host thread and is reaped
     /// bounded — a wedged teardown gives up waiting and lets the thread finish
     /// in the background.
+    // Kept `async` so callers can `.await` uniformly as teardown gains async steps.
+    #[allow(clippy::unused_async)]
     pub async fn stop_host(&self, reason: &str) {
-        self.teardown_task(reason).await;
+        self.teardown_task(reason);
     }
 
     /// Signal the host thread to stop and wait (bounded) for it to finish.
-    async fn teardown_task(&self, reason: &str) {
+    fn teardown_task(&self, reason: &str) {
         // Take out of the lock first: a MutexGuard must not live across
         // the waits (the dispatch chain runs inside `tokio::spawn`).
         let task = self.host_task.lock().take();

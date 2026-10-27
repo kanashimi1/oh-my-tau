@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use futures::FutureExt as _;
 
-use crate::abort::{is_abort_error, AbortSignal};
+use crate::abort::{AbortSignal, is_abort_error};
 use crate::types::{
     AfterToolCallContext, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult,
     AgentToolUpdateCallback, AssistantMessage, BeforeToolCallContext, ToolCall, ToolResultMessage,
@@ -136,6 +136,7 @@ pub(crate) struct ExecutedToolCallOutcome {
 /// Race the tool against abort, stream `tool_execution_update` events
 /// through a background emitter task, and return an error tool result when
 /// the tool fails (or aborts, with the TS message "Tool execution aborted").
+#[allow(clippy::too_many_lines)] // ported TS orchestration: race, stream events, abort handling
 pub(crate) async fn execute_prepared_tool_call(
     prepared: &PreparedToolCall,
     signal: Option<&AbortSignal>,

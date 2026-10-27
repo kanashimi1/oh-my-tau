@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::compat::ModelView;
 use crate::types::{
@@ -458,7 +458,7 @@ pub(crate) fn transform_messages(
      -> Option<ToolResultMessage> {
         let entries = real.get_mut(id)?;
         for entry in entries.iter_mut() {
-            if entry.2 || (entry.0 as i64) <= after {
+            if entry.2 || i64::try_from(entry.0).unwrap_or(i64::MAX) <= after {
                 continue;
             }
             entry.2 = true;
@@ -557,12 +557,12 @@ pub(crate) fn transform_messages(
                     result.push(msg.clone());
                     pending_aborted = calls;
                     pending_aborted_ts = Some(a.timestamp);
-                    pending_aborted_start = i as i64;
+                    pending_aborted_start = i64::try_from(i).unwrap_or(i64::MAX);
                     continue;
                 }
                 if !calls.is_empty() {
                     pending_calls = calls;
-                    pending_start = i as i64;
+                    pending_start = i64::try_from(i).unwrap_or(i64::MAX);
                 }
                 result.push(msg.clone());
             }

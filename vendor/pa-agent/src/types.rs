@@ -386,6 +386,8 @@ impl ToolResultContent {
     }
 }
 
+// Variants mirror the session-log wire schema; boxing would change serde output.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum Message {
@@ -709,6 +711,9 @@ impl ContextMessages {
 
     /// The whole transcript as one mutable vector. Collapses into a single owned run:
     /// free when nothing else shares the segments, a copy of the shared ones otherwise.
+    ///
+    /// # Panics
+    /// If the single-segment `Arc` is poisoned between the length check and the pop.
     pub fn make_contiguous(&mut self) -> &mut Vec<AgentMessage> {
         if !(self.segments.is_empty()
             || (self.segments.len() == 1
@@ -884,7 +889,10 @@ mod context_messages_tests {
         assert_eq!(state.len(), 3);
         assert_eq!(snap.len(), 3);
         assert_ne!(texts(&state), texts(&snap));
-        assert_eq!(format!("{:?}", snap.last().unwrap()), format!("{loop_only:?}"));
+        assert_eq!(
+            format!("{:?}", snap.last().unwrap()),
+            format!("{loop_only:?}")
+        );
     }
 
     #[test]

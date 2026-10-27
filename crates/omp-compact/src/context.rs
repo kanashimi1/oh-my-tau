@@ -813,6 +813,22 @@ fn strip_dangling_tool_calls(messages: &mut Vec<Value>) {
 /// still alive after it), with a path-compressed "next alive index" and a toolCallId → result
 /// index map instead of `Vec::remove` per dropped turn/result.
 fn drop_failed_assistant_turns(messages: &mut Vec<Value>) {
+    fn find(next: &mut [usize], mut x: usize) -> usize {
+        let mut root = x;
+        while next[root] != root {
+            root = next[root];
+        }
+        while next[x] != root {
+            let up = next[x];
+            next[x] = root;
+            x = up;
+        }
+        root
+    }
+    fn kill(alive: &mut [bool], next: &mut [usize], j: usize) {
+        alive[j] = false;
+        next[j] = j + 1;
+    }
     let n = messages.len();
     let is_failed = |m: &Value| {
         message_role(m) == "assistant"
@@ -832,22 +848,6 @@ fn drop_failed_assistant_turns(messages: &mut Vec<Value>) {
     let mut alive = vec![true; n];
     // next[x] -> smallest alive index >= x (n = none); path-compressed on lookup.
     let mut next: Vec<usize> = (0..=n).collect();
-    fn find(next: &mut [usize], mut x: usize) -> usize {
-        let mut root = x;
-        while next[root] != root {
-            root = next[root];
-        }
-        while next[x] != root {
-            let up = next[x];
-            next[x] = root;
-            x = up;
-        }
-        root
-    }
-    fn kill(alive: &mut [bool], next: &mut [usize], j: usize) {
-        alive[j] = false;
-        next[j] = j + 1;
-    }
     for i in (0..n).rev() {
         if !alive[i] || !is_failed(&messages[i]) {
             continue;

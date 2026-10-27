@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 pub use model::{compat_overrides, materialize, model_from_catalog_row, resolve_for_model};
-pub use resolve::{resolve_model_policy, ModelSpec, ResolveError, ResolvedModelPolicy};
+pub use resolve::{ModelSpec, ResolveError, ResolvedModelPolicy, resolve_model_policy};
 pub use view::ModelView;
 
 /// The compiled rule tree (the parts the resolver reads).
@@ -40,6 +40,8 @@ pub struct Axes {
     pub api_records: std::collections::HashMap<String, Vec<String>>,
 }
 
+/// # Panics
+/// If the embedded `rules.json` fails to parse (checked by parity tests).
 pub fn rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -48,6 +50,8 @@ pub fn rules() -> &'static Rules {
     })
 }
 
+/// # Panics
+/// If the embedded `axes.json` fails to parse (checked by parity tests).
 pub fn axes() -> &'static Axes {
     static AXES: OnceLock<Axes> = OnceLock::new();
     AXES.get_or_init(|| {

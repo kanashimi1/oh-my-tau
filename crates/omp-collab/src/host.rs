@@ -26,7 +26,7 @@ use crate::registry::{
 };
 use crate::relay_client::{connect_relay, CollabRole, RelayEvent, RelayHandle, RelayOptions};
 use crate::replication::{
-    oversized_entry_notice, serialize_replicated_event, snapshot_chunks,
+    oversized_entry_notice, serialize_replicated_event, snapshot_chunks, SnapshotChunk,
     COLLAB_ENTRY_OMITTED_CUSTOM_TYPE,
 };
 
@@ -81,9 +81,13 @@ pub trait CollabHostBackend: Send + Sync {
     fn snapshot_entries(&self) -> Vec<String> {
         Vec::new()
     }
+    /// # Errors
+    /// Always: the default backend has no session to inject into.
     fn inject_guest_prompt(&self, _text: &str, _images: Vec<Value>) -> Result<()> {
         Err(anyhow!("guest prompts not supported"))
     }
+    /// # Errors
+    /// Always: the default backend has no turn to abort.
     fn abort_turn(&self) -> Result<()> {
         Err(anyhow!("guest abort not supported"))
     }
@@ -145,6 +149,8 @@ pub struct CollabHost {
 }
 
 impl CollabHost {
+    /// # Panics
+    /// When `options.instance_id` is empty.
     pub fn new(backend: Arc<dyn CollabHostBackend>, options: CollabHostOptions) -> Self {
         assert!(
             !options.instance_id.is_empty(),
@@ -233,6 +239,10 @@ impl CollabHost {
     }
 
     /// Open the room on `relay_url` and publish to the local registry.
+    ///
+    /// # Errors
+    /// When the host already ended, the relay is unreachable, or the room
+    /// cannot be published.
     pub async fn start(&self, relay_url: &str, web_url: &str) -> Result<()> {
         if self.ending() {
             return Err(anyhow!("collab host already stopped"));
@@ -406,11 +416,11 @@ impl CollabHost {
     }
 
     /// Mirror one session entry to all guests (host.ts:477-489).
-    pub fn broadcast_entry(&self, entry_json: String) {
+    pub fn broadcast_entry(&self, entry_json: &str) {
         if !self.broadcast_allowed() {
             return;
         }
-        if let Ok(entry) = serde_json::from_str::<Value>(&entry_json) {
+        if let Ok(entry) = serde_json::from_str::<Value>(entry_json) {
             if entry.get("type").and_then(Value::as_str) == Some("custom_message")
                 && entry.get("customType").and_then(Value::as_str)
                     == Some(COLLAB_ENTRY_OMITTED_CUSTOM_TYPE)
@@ -420,16 +430,16 @@ impl CollabHost {
                 self.send_frame(&json!({ "t": "event", "event": event_json }), 0);
             }
         }
-        self.send_raw(format!(r#"{{"t":"entry","entry":{entry_json}}}"#), 0);
+        self.send_raw(&format!(r#"{{"t":"entry","entry":{entry_json}}}"#), 0);
     }
 
     /// Mirror one session event to all guests (host.ts:696-700).
-    pub fn broadcast_event(&self, event_json: String) {
+    pub fn broadcast_event(&self, event_json: &str) {
         if !self.broadcast_allowed() {
             return;
         }
-        self.send_raw(format!(r#"{{"t":"event","event":{event_json}}}"#), 0);
-        if let Ok(event) = serde_json::from_str::<Value>(&event_json) {
+        self.send_raw(&format!(r#"{{"t":"event","event":{event_json}}}"#), 0);
+        if let Ok(event) = serde_json::from_str::<Value>(event_json) {
             let kind = event.get("type").and_then(Value::as_str);
             if kind.is_some_and(|k| STATE_TRIGGER_EVENTS.contains(&k)) {
                 self.schedule_state_broadcast();
@@ -461,6 +471,7 @@ impl CollabHost {
         self.inner.backend.session_id() == self.inner.session_id
     }
 
+    #[allow(clippy::cast_precision_loss)] // token counters are far below f64's 2^53 exact range
     fn build_state(&self) -> Value {
         let backend = &self.inner.backend;
         let (tokens, window) = backend.context_usage();
@@ -497,11 +508,11 @@ impl CollabHost {
         })
     }
 
-    fn snapshot_chunks(&self, entries: Vec<String>) -> Vec<String> {
+    fn snapshot_chunk_jsons(entries: &[String]) -> Vec<String> {
         let bytes: Vec<usize> = entries.iter().map(std::string::String::len).collect();
-        snapshot_chunks(&entries, &bytes)
+        snapshot_chunks(entries, &bytes)
             .into_iter()
-            .map(|chunk| {
+            .map(|chunk: SnapshotChunk| {
                 let json = chunk.entries.join(",");
                 format!(
                     r#"{{"t":"snapshot-chunk","entries":[{json}],"final":{}}}"#,
@@ -511,7 +522,7 @@ impl CollabHost {
             .collect()
     }
 
-    fn handle_frame(&self, frame: Value, from_peer: u32) {
+    fn handle_frame(&self, frame: &Value, from_peer: u32) {
         let t = frame.get("t").and_then(Value::as_str).unwrap_or("");
         {
             let peers = self.inner.peers.lock();
@@ -532,10 +543,10 @@ impl CollabHost {
             return;
         }
         match t {
-            "hello" => self.handle_hello(&frame, from_peer),
-            "prompt" => self.handle_prompt(&frame, from_peer),
+            "hello" => self.handle_hello(frame, from_peer),
+            "prompt" => self.handle_prompt(frame, from_peer),
             "abort" => self.handle_abort(from_peer),
-            "fetch-transcript" => self.handle_fetch_transcript(&frame, from_peer),
+            "fetch-transcript" => self.handle_fetch_transcript(frame, from_peer),
             _ => {}
         }
     }
@@ -590,8 +601,8 @@ impl CollabHost {
             welcome["readOnly"] = Value::Bool(true);
         }
         self.send_frame(&welcome, from_peer);
-        for chunk in self.snapshot_chunks(entries) {
-            self.send_raw(chunk, from_peer);
+        for chunk in Self::snapshot_chunk_jsons(&entries) {
+            self.send_raw(&chunk, from_peer);
         }
         self.schedule_state_broadcast();
     }
@@ -663,11 +674,7 @@ impl CollabHost {
     }
 
     fn reject_while_starting(&self, action: &str, from_peer: u32) -> bool {
-        let ready = self
-            .inner
-            .guest_actions_ready
-            .as_ref()
-            .is_none_or(|f| f());
+        let ready = self.inner.guest_actions_ready.as_ref().is_none_or(|f| f());
         if ready {
             return false;
         }
@@ -684,10 +691,10 @@ impl CollabHost {
 
     fn send_frame(&self, frame: &Value, to_peer: u32) {
         let json = serde_json::to_string(frame).unwrap_or_default();
-        self.send_raw(json, to_peer);
+        self.send_raw(&json, to_peer);
     }
 
-    fn send_raw(&self, json: String, to_peer: u32) {
+    fn send_raw(&self, json: &str, to_peer: u32) {
         let handle = self.inner.handle.lock().clone();
         let Some(handle) = handle else { return };
         let cell = CIPHER_CELL.lock();
@@ -721,7 +728,7 @@ impl CollabHost {
                     if let Ok(frame) =
                         serde_json::from_str::<Value>(&String::from_utf8_lossy(&plain))
                     {
-                        self.handle_frame(frame, envelope.peer_id);
+                        self.handle_frame(&frame, envelope.peer_id);
                     }
                 }
                 RelayEvent::Text(text) => {
@@ -729,7 +736,10 @@ impl CollabHost {
                         if msg.get("t").and_then(Value::as_str) == Some("peer-left") {
                             if let Some(peer) = msg.get("peer").and_then(Value::as_u64) {
                                 if self.guest_traffic_allowed() {
-                                    self.inner.peers.lock().remove(&(peer as u32));
+                                    self.inner
+                                        .peers
+                                        .lock()
+                                        .remove(&(u32::try_from(peer).unwrap_or(u32::MAX)));
                                     self.schedule_state_broadcast();
                                 }
                             }
@@ -769,6 +779,11 @@ struct HostRegistrySource {
 }
 
 impl CollabHostRegistrySource for HostRegistrySource {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )] // peer count and unix millis fit i64 by construction
     fn snapshot(&self) -> Result<CollabHostSnapshot> {
         let host = &self.host;
         let model = host.backend.model();

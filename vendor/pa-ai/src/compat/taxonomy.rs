@@ -4,8 +4,8 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use super::revision::{format_revision, parse_revision_prefix};
 use super::Rules;
+use super::revision::{format_revision, parse_revision_prefix};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AmbiguousIdentity {
@@ -536,12 +536,12 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
         let Some(effort_rule) = effort_rule else {
             continue;
         };
-        let base = &model[..trimmed.len() - effort_rule.suffix.len()];
-        if base.is_empty() || base.ends_with('/') {
+        let stem = &model[..trimmed.len() - effort_rule.suffix.len()];
+        if stem.is_empty() || stem.ends_with('/') {
             continue;
         }
         return Collapsed {
-            logical_id: format!("{base}{}", &model[trimmed.len()..]),
+            logical_id: format!("{stem}{}", &model[trimmed.len()..]),
             effort: effort_rule.effort.clone(),
             thinking_variant: false,
         };
@@ -590,6 +590,9 @@ pub fn strip_thinking_variant_suffix(rules: &Rules, model: &str) -> Option<Strin
 }
 
 /// Reviewed override first, then suffix collapse, then class/family/revision ranks.
+///
+/// # Errors
+/// When ranks or override rules conflict ambiguously ([`AmbiguousIdentity`]).
 pub fn classify_model(
     rules: &Rules,
     provider: &str,

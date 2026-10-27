@@ -216,7 +216,11 @@ pub fn has_local_loopback_base_url(base_url: &str) -> bool {
     ) {
         return true;
     }
-    if host.starts_with("10.") || host.starts_with("192.168.") || host.ends_with(".local") {
+    // `.local` here is an mDNS hostname suffix, not a file extension.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    let is_local =
+        host.starts_with("10.") || host.starts_with("192.168.") || host.ends_with(".local");
+    if is_local {
         return true;
     }
     if let Some(rest) = host.strip_prefix("172.") {

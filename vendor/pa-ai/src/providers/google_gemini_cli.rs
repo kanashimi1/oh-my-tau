@@ -15,28 +15,28 @@
 //! - the credential is the structured OAuth key `{token, projectId, ...}` (TS `getOAuthApiKey`),
 //!   parsed for both the bearer and the `project` the envelope reports.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::Digest as _;
 
 use crate::event_stream::{
-    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
-    AssistantMessageEventWriter,
+    AssistantMessageEvent, AssistantMessageEventStream, AssistantMessageEventWriter,
+    create_assistant_message_event_stream,
 };
 use crate::providers::google::GoogleOptions;
 use crate::providers::google_shared::{
-    antigravity_claude_tool_mode, convert_messages, convert_tools, map_tool_choice,
-    API_GOOGLE_GEMINI_CLI,
+    API_GOOGLE_GEMINI_CLI, antigravity_claude_tool_mode, convert_messages, convert_tools,
+    map_tool_choice,
 };
 use crate::providers::google_stream::GoogleStreamState;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
-    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason,
-    StreamOptions, Usage,
+    AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
+    done_reason, error_reason,
 };
 use crate::utils_inner::diagnostics::now_ms;
-use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
-use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
+use crate::utils_inner::http::{HttpResponse, RequestOptions, send};
+use crate::utils_inner::http_inspector::{RawHttpRequestDump, finalize_http_error};
 use crate::utils_inner::json_parse::parse_json_with_repair;
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 use crate::utils_inner::sse::SseDecoder;
@@ -125,9 +125,7 @@ fn endpoints_for(model: &Model) -> Vec<String> {
             configured
         }];
     }
-    if !configured.is_empty()
-        && configured != BASE_URL_PRODUCTION
-        && configured != BASE_URL_SANDBOX
+    if !configured.is_empty() && configured != BASE_URL_PRODUCTION && configured != BASE_URL_SANDBOX
     {
         return vec![configured];
     }
@@ -170,7 +168,11 @@ fn uuid_v4() -> String {
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for b in &bytes {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+    }
     format!(
         "{}-{}-{}-{}-{}",
         &hex[..8],
@@ -216,14 +218,12 @@ fn first_user_text(context: &Context) -> Option<String> {
             crate::types::Message::User(user) | crate::types::Message::Developer(user) => {
                 match &user.content {
                     crate::types::UserMessageContent::Text(text) => Some(text.clone()),
-                    crate::types::UserMessageContent::Blocks(blocks) => blocks.iter().find_map(
-                        |block| match block {
-                            crate::types::UserOrToolContent::Text(text) => {
-                                Some(text.text.clone())
-                            }
+                    crate::types::UserMessageContent::Blocks(blocks) => {
+                        blocks.iter().find_map(|block| match block {
+                            crate::types::UserOrToolContent::Text(text) => Some(text.text.clone()),
                             _ => None,
-                        },
-                    ),
+                        })
+                    }
                 }
             }
             _ => None,
@@ -306,10 +306,7 @@ fn antigravity_metadata(
     wire_model_id: &str,
 ) -> AntigravityMetadata {
     let agent_id = state.agent_id.get_or_insert_with(uuid_v4).clone();
-    let trajectory_id = state
-        .trajectory_id
-        .get_or_insert_with(uuid_v4)
-        .clone();
+    let trajectory_id = state.trajectory_id.get_or_insert_with(uuid_v4).clone();
     let session_id = state
         .session_id
         .get_or_insert_with(|| derive_session_id(context))
@@ -341,6 +338,8 @@ fn antigravity_metadata(
 /// TS `parseGeminiCliCredentials` (`_Kn`): the structured OAuth key carries the bearer (`token`)
 /// and the Cloud project the envelope reports. Returns the token, the project id and the
 /// normalized expiry.
+// Expiry values are positive finite epoch seconds; `as i64` saturates out-of-range.
+#[allow(clippy::cast_possible_truncation)]
 fn parse_credentials(credential: &str) -> Result<(String, String, Option<i64>), ProviderError> {
     const INVALID: &str =
         "Invalid Google Cloud Code Assist credentials. Use /login to re-authenticate.";
@@ -684,7 +683,7 @@ async fn run_stream(
         ));
     };
     let (access_token, project_id, expires_at) = parse_credentials(&api_key)?;
-    if expires_at.is_some_and(|expires_at| expires_at <= (now_ms() as i64) + REFRESH_SKEW_MS) {
+    if expires_at.is_some_and(|expires_at| expires_at <= now_ms().cast_signed() + REFRESH_SKEW_MS) {
         return Err(ProviderError::Message(
             "OAuth token expired before request — please retry; the stored credential will be \
              refreshed on the next attempt."
@@ -724,8 +723,13 @@ async fn run_stream(
                 &wire_model_id(model),
             )
         });
-        let body_value =
-            Value::Object(build_body(model, context, &options, &project_id, metadata.as_ref()));
+        let body_value = Value::Object(build_body(
+            model,
+            context,
+            &options,
+            &project_id,
+            metadata.as_ref(),
+        ));
         let mut body_value = body_value;
         if let Some(on_payload) = &options.base.on_payload {
             if let Some(next) = on_payload(body_value.clone(), model) {
@@ -853,7 +857,7 @@ async fn run_stream(
             || output.content.iter().any(|block| match block {
                 crate::types::AssistantContent::Text(text) => !text.text.trim().is_empty(),
                 crate::types::AssistantContent::ToolCall(_) => true,
-                _ => false,
+                crate::types::AssistantContent::Thinking(_) => false,
             });
 
         if matches!(output.stop_reason, StopReason::Aborted | StopReason::Error) {
@@ -922,7 +926,9 @@ async fn read_sse(
             let remaining =
                 first_event_deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                return Err(ProviderError::Message(FIRST_EVENT_TIMEOUT_ERROR.to_string()));
+                return Err(ProviderError::Message(
+                    FIRST_EVENT_TIMEOUT_ERROR.to_string(),
+                ));
             }
             match tokio::time::timeout(remaining, response.next_text()).await {
                 Ok(chunk) => {
@@ -941,7 +947,9 @@ async fn read_sse(
                     saw_event = true;
                 }
                 Err(_) => {
-                    return Err(ProviderError::Message(FIRST_EVENT_TIMEOUT_ERROR.to_string()));
+                    return Err(ProviderError::Message(
+                        FIRST_EVENT_TIMEOUT_ERROR.to_string(),
+                    ));
                 }
             }
             continue;
@@ -976,7 +984,7 @@ async fn read_sse(
     let had_output = output.content.iter().any(|block| match block {
         crate::types::AssistantContent::Text(text) => !text.text.trim().is_empty(),
         crate::types::AssistantContent::ToolCall(_) => true,
-        _ => false,
+        crate::types::AssistantContent::Thinking(_) => false,
     });
     Ok((had_output, finished))
 }
@@ -1011,10 +1019,12 @@ fn handle_chunk_text(
             return Err(match error.get("code").and_then(Value::as_u64) {
                 // TS `GeminiCliApiError`: the in-band code is the failure's status; the
                 // message stays verbatim (the body is not a provider error envelope).
-                Some(code) if code >= 400 => ProviderError::Http(
-                    crate::utils_inner::stream_failure::ProviderHttpError {
+                Some(code) if code >= 400 => {
+                    ProviderError::Http(crate::utils_inner::stream_failure::ProviderHttpError {
                         message,
-                        status: Some(code.min(u64::from(u16::MAX)) as u16),
+                        status: Some(
+                            u16::try_from(code.min(u64::from(u16::MAX))).unwrap_or(u16::MAX),
+                        ),
                         body: None,
                         headers: std::collections::HashMap::new(),
                         request_id: None,
@@ -1024,8 +1034,8 @@ fn handle_chunk_text(
                             .get("status")
                             .and_then(Value::as_str)
                             .map(std::string::ToString::to_string),
-                    },
-                ),
+                    })
+                }
                 _ => ProviderError::Message(message),
             });
         }
@@ -1202,8 +1212,14 @@ mod tests {
         // The antigravity catalog marks Claude ids with the claude tool-mode compat flags.
         model.compat = Some(pa_types::ai::ModelCompat {
             raw: serde_json::Map::from_iter([
-                ("antigravityClaudeToolMode".to_string(), serde_json::json!(true)),
-                ("antigravityUsageLabel".to_string(), serde_json::json!("true")),
+                (
+                    "antigravityClaudeToolMode".to_string(),
+                    serde_json::json!(true),
+                ),
+                (
+                    "antigravityUsageLabel".to_string(),
+                    serde_json::json!("true"),
+                ),
                 (
                     "ccaLegacyParametersSchema".to_string(),
                     serde_json::json!(true),
@@ -1340,7 +1356,6 @@ mod tests {
             system_prompt: Some("You are helpful.".into()),
             tools: None,
             messages: vec![],
-            ..Default::default()
         };
         let options = GoogleOptions {
             base: StreamOptions {
@@ -1399,7 +1414,6 @@ mod tests {
                 parameters: json!({"type": "object"}),
             }]),
             messages: vec![],
-            ..Default::default()
         };
         let options = GoogleOptions {
             base: StreamOptions {
@@ -1497,7 +1511,6 @@ mod tests {
                 parameters: json!({"type": "object"}),
             }]),
             messages: vec![],
-            ..Default::default()
         };
         let options = GoogleOptions::default();
         let mut state = GeminiCliSessionState::default();
@@ -1599,7 +1612,11 @@ mod tests {
     #[test]
     fn credentials_reject_bare_token() {
         let error = parse_credentials("ya29.a0").unwrap_err();
-        assert!(error.to_string().contains("Invalid Google Cloud Code Assist"));
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid Google Cloud Code Assist")
+        );
         let error = parse_credentials(r#"{"token":"ya29.a0"}"#).unwrap_err();
         assert!(error.to_string().contains("Missing token or projectId"));
     }
@@ -1689,10 +1706,10 @@ mod tests {
 
     #[test]
     fn sse_in_band_error_maps_to_status_error() {
-        let error =
-            feed_chunks(&["data: {\"error\":{\"code\":429,\"message\":\"Quota exceeded\"}}\n\n"
-                .to_string()])
-            .unwrap_err();
+        let error = feed_chunks(&[
+            "data: {\"error\":{\"code\":429,\"message\":\"Quota exceeded\"}}\n\n".to_string(),
+        ])
+        .unwrap_err();
         // The shared classifier keeps the status (429 → rate limit) and the in-band detail.
         assert_eq!(error.status(), Some(429));
         assert!(error.to_string().contains("Quota exceeded"));

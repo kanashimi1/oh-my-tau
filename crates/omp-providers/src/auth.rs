@@ -1,5 +1,5 @@
 //! Stored-credential access for every request path (TS `AuthStorage.getApiKey`
-//! + `auth-retry`): credentials are resolved per request, never once per
+//! plus `auth-retry`): credentials are resolved per request, never once per
 //! process.
 //!
 //! * A configured auth broker (`OMP_AUTH_BROKER_URL`/`_TOKEN`, `auth.broker.url`/`.token` in

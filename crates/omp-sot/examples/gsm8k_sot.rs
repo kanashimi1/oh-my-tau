@@ -333,6 +333,8 @@ fn parse_args() -> Result<Args, String> {
 
 // ------------------------------------------------------------------ main ----
 
+// One linear pipeline (parse → run methods → report); splitting it would scatter the flow.
+#[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 fn main() -> Result<(), String> {
     let args = parse_args()?;
     let test = load_jsonl(&args.test)?;
@@ -394,10 +396,7 @@ fn main() -> Result<(), String> {
                 args.max_steps,
             );
             raws.extend(outcome.trajectory.raw_states().iter().copied());
-            eprintln!(
-                "calibrate problem: steps={} correct=n/a",
-                outcome.steps
-            );
+            eprintln!("calibrate problem: steps={} correct=n/a", outcome.steps);
         }
         let norm = Normalizer::fit(&raws);
         let payload = json!({
@@ -446,8 +445,8 @@ fn main() -> Result<(), String> {
         std::fs::File::create(&args.out).map_err(|e| format!("create {}: {e}", args.out))?;
     let mut records: Vec<Value> = Vec::new();
 
-    for (k, &pi) in picked.iter().enumerate() {
-        let problem = &test[pi];
+    for (k, &prob_idx) in picked.iter().enumerate() {
+        let problem = &test[prob_idx];
         for method in &args.methods {
             let started = Instant::now();
             let record = match method.as_str() {
@@ -457,11 +456,11 @@ fn main() -> Result<(), String> {
                          form \"The answer is <number>\".",
                         problem.question
                     );
-                    let (text, p, c) = chat(&prompt, 24)?;
+                    let (reply_text, tok_p, tok_c) = chat(&prompt, 24)?;
                     json!({
-                        "method": "vanilla", "problem": pi,
-                        "correct": extract_number(&text) == Some(problem.reference),
-                        "completion_tokens": c, "prompt_tokens": p,
+                        "method": "vanilla", "problem": prob_idx,
+                        "correct": extract_number(&reply_text) == Some(problem.reference),
+                        "completion_tokens": tok_c, "prompt_tokens": tok_p,
                         "steps": 0, "wall_ms": started.elapsed().as_millis(),
                     })
                 }
@@ -472,12 +471,12 @@ fn main() -> Result<(), String> {
                          \"The answer is <number>\".",
                         problem.question, args.cot_sentences
                     );
-                    let (text, p, c) = chat(&prompt, 640)?;
+                    let (reply_text, tok_p, tok_c) = chat(&prompt, 640)?;
                     json!({
-                        "method": "cot", "problem": pi,
-                        "correct": extract_number(&text) == Some(problem.reference),
-                        "completion_tokens": c, "prompt_tokens": p,
-                        "answer_text": text,
+                        "method": "cot", "problem": prob_idx,
+                        "correct": extract_number(&reply_text) == Some(problem.reference),
+                        "completion_tokens": tok_c, "prompt_tokens": tok_p,
+                        "answer_text": reply_text,
                         "steps": 1, "wall_ms": started.elapsed().as_millis(),
                     })
                 }
@@ -513,7 +512,7 @@ fn main() -> Result<(), String> {
                         .map(String::as_str)
                         .collect();
                     json!({
-                        "method": "sot", "problem": pi,
+                        "method": "sot", "problem": prob_idx,
                         "correct": extract_number(&outcome.answer) == Some(problem.reference),
                         "completion_tokens": backend.completion_tokens,
                         "prompt_tokens": backend.prompt_tokens,
@@ -529,7 +528,7 @@ fn main() -> Result<(), String> {
             };
             let correct = record["correct"].as_bool().unwrap_or(false);
             eprintln!(
-                "[{}/{}] {method} problem={pi} correct={correct} steps={} completion_tok={}",
+                "[{}/{}] {method} problem={prob_idx} correct={correct} steps={} completion_tok={}",
                 k + 1,
                 args.n,
                 record["steps"],
