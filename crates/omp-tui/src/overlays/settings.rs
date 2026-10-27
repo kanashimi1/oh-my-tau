@@ -1056,21 +1056,17 @@ impl SettingsOverlay {
                 }
             }
         } else if r.is_number() {
-            match buf
+            if let Some(n) = buf
                 .trim()
                 .parse::<f64>()
                 .ok()
-                .and_then(serde_json::Number::from_f64)
-            {
-                Some(n) => Value::Number(n),
-                None => {
-                    self.menu = Some(Menu::Text {
-                        row,
-                        buf,
-                        error: Some("Not a number".into()),
-                    });
-                    return;
-                }
+                .and_then(serde_json::Number::from_f64) { Value::Number(n) } else {
+                self.menu = Some(Menu::Text {
+                    row,
+                    buf,
+                    error: Some("Not a number".into()),
+                });
+                return;
             }
         } else {
             Value::String(buf)
@@ -2435,7 +2431,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     for source in text.split('\n') {
         let mut line = String::new();
         for word in source.split_whitespace() {
-            let need = word.len() + if line.is_empty() { 0 } else { 1 };
+            let need = word.len() + usize::from(!line.is_empty());
             if !line.is_empty() && line.len() + need > width {
                 out.push(std::mem::take(&mut line));
             }

@@ -182,8 +182,8 @@ fn kitty_probe_opt_out() -> bool {
     std::env::var_os("OMP_TUI_KITTY_KEYS").is_some_and(|v| v == "0")
 }
 
-/// ConPTY hosting (TS `terminal.ts` `isConPTYHosted`): win32 always hosts
-/// through ConPTY, and under WSL stdout crosses into ConPTY at the `wslhost`
+/// `ConPTY` hosting (TS `terminal.ts` `isConPTYHosted`): win32 always hosts
+/// through `ConPTY`, and under WSL stdout crosses into `ConPTY` at the `wslhost`
 /// boundary. Deliberate superset of TS `isWsl` (which checks only
 /// `WSL_DISTRO_NAME`/`WSL_INTEROP`): herdr runs as a systemd user service
 /// where those are absent, so the `/proc/sys/kernel/osrelease` "microsoft"
@@ -193,8 +193,8 @@ fn is_conpty_hosted() -> bool {
 }
 
 /// Kitty push level for a confirmed-kitty terminal (TS reply handler):
-/// ConPTY drops Shift+letter when flag 4 (report alternate keys) is on, so
-/// ConPTY hosts push disambiguate-only (preserving event-type reporting, flag
+/// `ConPTY` drops Shift+letter when flag 4 (report alternate keys) is on, so
+/// `ConPTY` hosts push disambiguate-only (preserving event-type reporting, flag
 /// 2, if a parent enabled it); otherwise disambiguate + alternate keys
 /// (event-type reporting only when inherited, TS `>5u`/`>7u`).
 fn kitty_push_flags(

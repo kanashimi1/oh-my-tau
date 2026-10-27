@@ -219,21 +219,18 @@ fn split_header(cells: &[(char, Style)]) -> (Vec<(char, Style)>, Vec<(char, Styl
         .take(32)
         .position(|(c, _)| *c == ':')
         .filter(|&i| i > 0 && cells.get(i + 1).is_none_or(|(c, _)| *c == ' '));
-    match colon {
-        Some(i) => {
-            let title = cells[..i].to_vec();
-            let desc = trim_cells(cells[i + 1..].to_vec());
-            (title, desc)
-        }
-        None => {
-            let end = cells
-                .iter()
-                .position(|(c, _)| *c == ' ')
-                .unwrap_or(cells.len());
-            let title = cells[..end].to_vec();
-            let desc = trim_cells(cells[end..].to_vec());
-            (title, desc)
-        }
+    if let Some(i) = colon {
+        let title = cells[..i].to_vec();
+        let desc = trim_cells(cells[i + 1..].to_vec());
+        (title, desc)
+    } else {
+        let end = cells
+            .iter()
+            .position(|(c, _)| *c == ' ')
+            .unwrap_or(cells.len());
+        let title = cells[..end].to_vec();
+        let desc = trim_cells(cells[end..].to_vec());
+        (title, desc)
     }
 }
 
@@ -400,7 +397,7 @@ pub fn restyle(
         {
             if let Some(rest) = s.split("Wall: ").nth(1) {
                 wall = rest
-                    .split(|c| c == ' ' || c == '|' || c == '⟧')
+                    .split([' ', '|', '⟧'])
                     .next()
                     .map(str::to_owned);
             }

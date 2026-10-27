@@ -139,7 +139,7 @@ fn parse_iso_ms(s: &str) -> Option<i64> {
         date.get(8..10)?.parse().ok()?,
     );
     let time_end = s[11..]
-        .find(|c: char| c == '+' || c == 'Z' || c == '-')
+        .find(['+', 'Z', '-'])
         .map(|i| 11 + i)
         .unwrap_or(s.len());
     let time = s.get(11..time_end)?;

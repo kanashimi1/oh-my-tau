@@ -71,18 +71,15 @@ fn install_id() -> Option<String> {
 /// TS `deriveClaudeDeviceId`.
 fn derive_device_id(install_id: &str, account_id: Option<&str>) -> String {
     let mut h = Sha256::new();
-    match account_id.filter(|a| !a.is_empty()) {
-        Some(account) => {
-            h.update(b"omp-claude-device-id-v2");
-            h.update([0u8]);
-            h.update(install_id.as_bytes());
-            h.update([0u8]);
-            h.update(account.as_bytes());
-        }
-        None => {
-            h.update(b"omp-claude-device-id-v1:");
-            h.update(install_id.as_bytes());
-        }
+    if let Some(account) = account_id.filter(|a| !a.is_empty()) {
+        h.update(b"omp-claude-device-id-v2");
+        h.update([0u8]);
+        h.update(install_id.as_bytes());
+        h.update([0u8]);
+        h.update(account.as_bytes());
+    } else {
+        h.update(b"omp-claude-device-id-v1:");
+        h.update(install_id.as_bytes());
     }
     hex::encode(h.finalize())
 }
@@ -150,7 +147,7 @@ fn resolve_metadata_user_id(
     );
     map.insert(
         "session_id".into(),
-        json!(session_id.map_or_else(|| uuid_v4(), str::to_string)),
+        json!(session_id.map_or_else(uuid_v4, str::to_string)),
     );
     if let Some(account) = account_id.filter(|a| !a.is_empty()) {
         map.insert("account_uuid".into(), json!(account));
@@ -651,11 +648,10 @@ const MAX_STRICT_UNION: i64 = 16;
 fn is_array_node(schema: &Map<String, Value>) -> bool {
     match schema.get("type") {
         Some(Value::String(t)) if t == "array" => return true,
-        Some(Value::Array(t)) => {
-            if t.iter().any(|x| x == "array") && !t.iter().any(|x| x == "object") {
+        Some(Value::Array(t))
+            if t.iter().any(|x| x == "array") && !t.iter().any(|x| x == "object") => {
                 return true;
             }
-        }
         _ => {}
     }
     schema.contains_key("items") || schema.get("prefixItems").is_some_and(Value::is_array)
@@ -940,11 +936,8 @@ fn normalize_strict_node(schema: &Value, budget: &mut StrictBudget) -> Option<Va
                 result.insert("properties".into(), Value::Object(properties));
                 result.insert("required".into(), Value::Array(required));
             }
-            match result.get("items").cloned() {
-                Some(items @ (Value::Array(_) | Value::Object(_))) => {
-                    result.insert("items".into(), normalize_strict_node(&items, budget)?);
-                }
-                _ => {}
+            if let Some(items @ (Value::Array(_) | Value::Object(_))) = result.get("items").cloned() {
+                result.insert("items".into(), normalize_strict_node(&items, budget)?);
             }
             if let Some(Value::Array(p)) = result.get("prefixItems").cloned() {
                 result.insert(
@@ -1361,7 +1354,7 @@ fn apply_head_caching(
         };
         if system[anchor]
             .get("cache_control")
-            .map_or(true, Value::is_null)
+            .is_none_or(Value::is_null)
         {
             for block in system.iter_mut() {
                 if let Some(o) = block.as_object_mut() {
@@ -1482,18 +1475,7 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
         } else if options.thinking_enabled == Some(true) || view.is("requiresThinkingEnabled") {
             let mode = view.thinking_str("mode");
             let effort = resolve_adaptive_effort(model, view, options)?;
-            if !uses_budget_thinking(view) {
-                let mut t = json!({ "type": "adaptive" });
-                if view.thinking_flag("supportsDisplay") == Some(true) {
-                    t["display"] = json!(options
-                        .thinking_display
-                        .map_or("summarized", |d| d.as_str()));
-                }
-                thinking = Some(t);
-                if let Some(e) = effort.filter(|e| e != "adaptive") {
-                    output_effort = Some(e);
-                }
-            } else {
+            if uses_budget_thinking(view) {
                 let mut t = json!({
                     "type": "enabled",
                     "budget_tokens": options.thinking_budget_tokens.filter(|b| *b > 0).unwrap_or(1024),
@@ -1508,6 +1490,17 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
                     if let Some(e) = effort.filter(|e| e != "adaptive") {
                         output_effort = Some(e);
                     }
+                }
+            } else {
+                let mut t = json!({ "type": "adaptive" });
+                if view.thinking_flag("supportsDisplay") == Some(true) {
+                    t["display"] = json!(options
+                        .thinking_display
+                        .map_or("summarized", |d| d.as_str()));
+                }
+                thinking = Some(t);
+                if let Some(e) = effort.filter(|e| e != "adaptive") {
+                    output_effort = Some(e);
                 }
             }
         } else if options.thinking_enabled == Some(false) {

@@ -178,9 +178,9 @@ pub(crate) fn base64_utf8(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let b0 = u32::from(chunk[0]);
+        let b1 = u32::from(chunk.get(1).copied().unwrap_or(0));
+        let b2 = u32::from(chunk.get(2).copied().unwrap_or(0));
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[(n >> 18) as usize & 63] as char);
         out.push(TABLE[(n >> 12) as usize & 63] as char);
@@ -402,7 +402,7 @@ fn spawn_desktop_notify(n: &TerminalNotification) {
         .spawn();
 }
 
-/// GVariant string literal (single-quoted, internal quotes escaped).
+/// `GVariant` string literal (single-quoted, internal quotes escaped).
 fn gdbus_string(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
@@ -420,7 +420,7 @@ fn which(bin: &str) -> Result<std::path::PathBuf, ()> {
     }
     let resolved = std::env::var_os("PATH")
         .map(std::path::PathBuf::from)
-        .map(|paths| {
+        .and_then(|paths| {
             for dir in std::env::split_paths(&paths) {
                 let candidate = dir.join(bin);
                 if candidate.is_file() {
@@ -428,8 +428,7 @@ fn which(bin: &str) -> Result<std::path::PathBuf, ()> {
                 }
             }
             None
-        })
-        .unwrap_or(None);
+        });
     cache.lock().insert(bin.to_string(), resolved.clone());
     resolved.ok_or(())
 }

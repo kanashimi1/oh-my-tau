@@ -66,6 +66,7 @@ pub struct ResolvedModelPolicy {
 }
 
 impl ResolvedModelPolicy {
+    #[must_use]
     pub fn to_json(&self) -> Value {
         let mut m = Map::new();
         m.insert("identity".into(), self.identity.to_json());

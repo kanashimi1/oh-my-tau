@@ -129,9 +129,9 @@ pub(crate) fn build_params_cached<'a>(
     cache_retention: CacheRetention,
 ) -> Wire<'a> {
     let opts = options.cloned().unwrap_or_default();
-    let reasoning = opts.reasoning_effort.map(|level| level.wire_name());
+    let reasoning = opts.reasoning_effort.map(pa_types::ai::ModelThinkingLevel::wire_name);
     let disable_reasoning = opts.reasoning_enabled == Some(false);
-    let tool_choice = opts.tool_choice.clone();
+    let tool_choice = opts.tool_choice;
 
     let cacheable = enabled()
         && compat.cache_control_format.as_deref() != Some("anthropic")
@@ -189,76 +189,73 @@ pub(crate) fn build_params_cached<'a>(
         })
     };
 
-    match hit {
-        Some((tools_frag, prefix, count, last_role)) => build_params_streaming(
+    if let Some((tools_frag, prefix, count, last_role)) = hit { build_params_streaming(
+        model,
+        context,
+        transformed,
+        options,
+        compat,
+        cache_retention,
+        MsgsInput::Raw {
+            prefix,
+            count,
+            last_role,
+        },
+        match tools_frag {
+            Some(raw) => ToolsInput::Raw(raw),
+            None => ToolsInput::Convert,
+        },
+        None,
+    ) } else {
+        let mut frags = BuiltFrags {
+            // Placeholders until the conversion below fills them; "[]" is always valid JSON.
+            messages: RawValue::from_string("[]".to_string())
+                .map(Arc::<serde_json::value::RawValue>::from)
+                .expect("valid JSON"),
+            msg_count: 0,
+            last_role: None,
+            tools: None,
+        };
+        let wire = build_params_streaming(
             model,
             context,
             transformed,
             options,
             compat,
             cache_retention,
-            MsgsInput::Raw {
-                prefix,
-                count,
-                last_role,
-            },
-            match tools_frag {
-                Some(raw) => ToolsInput::Raw(raw),
-                None => ToolsInput::Convert,
-            },
-            None,
-        ),
-        None => {
-            let mut frags = BuiltFrags {
-                // Placeholders until the conversion below fills them; "[]" is always valid JSON.
-                messages: RawValue::from_string("[]".to_string())
-                    .map(Arc::<serde_json::value::RawValue>::from)
-                    .expect("valid JSON"),
-                msg_count: 0,
-                last_role: None,
-                tools: None,
-            };
-            let wire = build_params_streaming(
-                model,
-                context,
-                transformed,
-                options,
-                compat,
-                cache_retention,
-                MsgsInput::Convert,
-                ToolsInput::Convert,
-                Some(&mut frags),
-            );
-            let entry = WireFragCache {
-                key,
-                // The tools fragment is only valid while the tools option set is the cached one;
-                // a `None` tools context converts cheaply, so it is never cached.
-                tools: if context
-                    .tools
-                    .as_deref()
-                    .is_some_and(|tools| !tools.is_empty())
-                {
-                    Some(frags.tools)
-                } else {
-                    None
-                },
-                messages: MsgsFrag {
-                    prefix: frags.messages,
-                    transformed_prefix: transformed[..frags.msg_count].to_vec(),
-                    count: frags.msg_count,
-                    last_role: frags.last_role,
-                },
-            };
-            let mut cache = CACHE.lock().expect("wire frag cache");
-            if cache.slots.len() < SLOTS {
-                cache.slots.push(entry);
+            MsgsInput::Convert,
+            ToolsInput::Convert,
+            Some(&mut frags),
+        );
+        let entry = WireFragCache {
+            key,
+            // The tools fragment is only valid while the tools option set is the cached one;
+            // a `None` tools context converts cheaply, so it is never cached.
+            tools: if context
+                .tools
+                .as_deref()
+                .is_some_and(|tools| !tools.is_empty())
+            {
+                Some(frags.tools)
             } else {
-                let next = cache.next;
-                cache.slots[next] = entry;
-                cache.next = (next + 1) % SLOTS;
-            }
-            wire
+                None
+            },
+            messages: MsgsFrag {
+                prefix: frags.messages,
+                transformed_prefix: transformed[..frags.msg_count].to_vec(),
+                count: frags.msg_count,
+                last_role: frags.last_role,
+            },
+        };
+        let mut cache = CACHE.lock().expect("wire frag cache");
+        if cache.slots.len() < SLOTS {
+            cache.slots.push(entry);
+        } else {
+            let next = cache.next;
+            cache.slots[next] = entry;
+            cache.next = (next + 1) % SLOTS;
         }
+        wire
     }
 }
 
@@ -453,7 +450,7 @@ mod tests {
             uncached_body(&model, &base, Some(&options))
         );
 
-        let mut changed = base.clone();
+        let mut changed = base;
         changed.system_prompt = Some("a different system prompt".to_string());
         assert_eq!(
             cached_body(&model, &changed, Some(&options)),

@@ -720,7 +720,7 @@ enum FileKind {
     Directory,
 }
 
-const DIR_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(2000);
+const DIR_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl DirCache {
     fn read_dir(&mut self, dir: &Path) -> Option<&Vec<(String, FileKind)>> {
@@ -755,9 +755,7 @@ impl DirCache {
             let mut keys: Vec<PathBuf> = self.entries.keys().cloned().collect();
             keys.sort_by_key(|k| {
                 self.entries
-                    .get(k)
-                    .map(|(at, _)| *at)
-                    .unwrap_or_else(Instant::now)
+                    .get(k).map_or_else(Instant::now, |(at, _)| *at)
             });
             for key in keys.into_iter().take(50) {
                 self.entries.remove(&key);
@@ -837,13 +835,13 @@ fn is_outside_cwd(base_path: &Path, raw_prefix: &str) -> bool {
 }
 
 /// Scoped fuzzy query: `@src/uti` searches `src/` for `uti` (TS
-/// `#resolveScopedFuzzyQuery`). Returns (base_dir, query, display_base).
+/// `#resolveScopedFuzzyQuery`). Returns (`base_dir`, query, `display_base`).
 fn resolve_scoped_fuzzy_query(
     base_path: &Path,
     raw_query: &str,
 ) -> Option<(PathBuf, String, String)> {
     let slash_index = raw_query.rfind('/')?;
-    let display_base = &raw_query[..slash_index + 1];
+    let display_base = &raw_query[..=slash_index];
     let query = &raw_query[slash_index + 1..];
     let base_dir = if let Some(rest) = display_base.strip_prefix("~/") {
         let _ = rest;
@@ -1011,7 +1009,7 @@ fn get_file_suggestions(
 
 /// Recursive fuzzy file walk inside the project (TS
 /// `#getFuzzyFileSuggestions`, replacing the native `fuzzyFind` with a
-/// bounded std::fs walk). Honors the TS contract: hidden + `.git` skipped
+/// bounded `std::fs` walk). Honors the TS contract: hidden + `.git` skipped
 /// (unless the query's last segment starts with `.`), results filtered by
 /// `subsequenceMatch`, capped at `FUZZY_MAX_RESULTS`.
 fn get_fuzzy_file_suggestions(
@@ -1034,7 +1032,7 @@ fn get_fuzzy_file_suggestions(
 
     let mut matches: Vec<(String, bool)> = Vec::new();
     let mut visited = 0usize;
-    let mut stack: Vec<(PathBuf, String)> = vec![(search_path.clone(), String::new())];
+    let mut stack: Vec<(PathBuf, String)> = vec![(search_path, String::new())];
     while let Some((dir, rel)) = stack.pop() {
         if visited >= FUZZY_WALK_ENTRY_CAP || matches.len() >= FUZZY_WALK_ENTRY_CAP {
             break;
@@ -1615,7 +1613,7 @@ impl Autocomplete {
         self.open.then(|| self.items.get(self.selected)).flatten()
     }
 
-    /// Move the selection by `delta` rows (wrapping like the TS SelectList).
+    /// Move the selection by `delta` rows (wrapping like the TS `SelectList`).
     fn move_selection(&mut self, delta: isize) {
         if self.items.is_empty() {
             return;
@@ -1676,7 +1674,7 @@ impl Component for Autocomplete {
                 let budget = width.saturating_sub(used + 8);
                 if budget > 4 {
                     spans.push(Span::styled(
-                        format!("  {}", truncate_to(&detail.to_string(), budget)),
+                        format!("  {}", truncate_to(detail, budget)),
                         Style::default().fg(muted),
                     ));
                 }

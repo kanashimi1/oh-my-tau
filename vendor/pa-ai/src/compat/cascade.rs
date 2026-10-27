@@ -180,7 +180,7 @@ fn selector_matches(s: &Selector, p: &Prepared<'_>) -> bool {
     match s.kind.as_str() {
         "exact" => s.value == p.target.model,
         "glob" => glob_match(&s.value, &p.model_lower),
-        "token" => p.model_tokens.iter().any(|t| *t == s.value),
+        "token" => p.model_tokens.contains(&s.value),
         _ => false,
     }
 }

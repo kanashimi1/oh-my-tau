@@ -201,7 +201,7 @@ pub fn session_accent_hex(name: &str, theme: &SessionAccentTheme) -> String {
             }
             let (mut lo, mut hi) = (0.0_f64, lightness);
             for _ in 0..20 {
-                let mid = (lo + hi) / 2.0;
+                let mid = f64::midpoint(lo, hi);
                 let lum = relative_luminance(&oklch_to_hex(Oklch {
                     l: mid,
                     c: chroma,

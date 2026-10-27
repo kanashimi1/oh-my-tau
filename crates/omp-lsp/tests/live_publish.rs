@@ -1,5 +1,5 @@
 //! Live check: does a locally spawned rust-analyzer publish diagnostics to an
-//! omp-lsp client after refresh_file (didOpen)? Run with --nocapture:
+//! omp-lsp client after `refresh_file` (didOpen)? Run with --nocapture:
 //! `cargo test -p omp-lsp --test live_publish -- --nocapture --ignored`
 
 use std::time::{Duration, Instant};
@@ -62,7 +62,7 @@ async fn rust_analyzer_publishes_after_refresh_file() {
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    let count = broken.as_ref().map(|p| p.diagnostics.len()).unwrap_or(0);
+    let count = broken.as_ref().map_or(0, |p| p.diagnostics.len());
     println!("broken publish: {count} diagnostics");
     assert!(count > 0, "no diagnostics published after introducing a type error");
 }

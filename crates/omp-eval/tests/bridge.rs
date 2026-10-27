@@ -56,7 +56,7 @@ fn js(tag: &str) -> JsKernel {
     JsKernel::start(default_runtime(), &dir).expect("JS kernel starts (bun on PATH)")
 }
 
-fn run<'a>(bridge: &'a dyn HostBridge) -> ExecOptions<'a> {
+fn run(bridge: &dyn HostBridge) -> ExecOptions<'_> {
     ExecOptions {
         bridge: Some(bridge),
         ..Default::default()
@@ -179,7 +179,7 @@ fn py_preludes_install_helpers() {
 }
 
 /// Agent helpers are classes; a bare `__omp_host_call` in a method body is
-/// name-mangled to `_Class__omp_host_call` and raised NameError.
+/// name-mangled to `_Class__omp_host_call` and raised `NameError`.
 #[test]
 fn py_agent_helper_methods_reach_the_host() {
     let k = py("methods");

@@ -33,7 +33,7 @@ pub fn parse_osc11_response(bytes: &[u8]) -> Option<Rgb> {
         .strip_prefix("rgb:")
         .or_else(|| rest.strip_prefix("rgba:"))?;
     // Channels are `/`-separated; the response may end with BEL or ST.
-    let mut parts = values.split(|c: char| matches!(c, '/' | ';' | '\u{7}' | '\u{1b}'));
+    let mut parts = values.split(['/', ';', '\u{7}', '\u{1b}']);
     let mut next = || {
         let hex = parts.next()?.trim_start_matches("0x");
         // 16-bit channel values (usually `0000`-`ffff`): take the high byte,

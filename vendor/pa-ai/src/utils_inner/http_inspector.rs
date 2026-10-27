@@ -17,7 +17,7 @@ use crate::utils_inner::stream_failure::ProviderError;
 const RAW_HTTP_REQUEST_LINE: &str = "raw-http-request=";
 const RAW_HTTP_REQUEST_SAVE_FAILED_LINE: &str = "raw-http-request-save-failed=";
 const HTTP_DUMP_DIR_NAME: &str = "http-400-requests";
-const HTTP_DUMP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const HTTP_DUMP_MAX_AGE: Duration = Duration::from_hours(168);
 const HTTP_DUMP_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 static SENSITIVE_HEADER: LazyLock<Regex> = LazyLock::new(|| {

@@ -7,7 +7,7 @@
 //! entry on the branch ending at the current leaf. Selecting one asks the
 //! host to branch the session to that entry (`Runtime` `branch` rpc, omp
 //! `AgentSession.branch`) — the selection is exposed via [`TreeNavigator::take_selection`]
-//! because `Action` has no rewind variant yet (asked TuiArchitect for
+//! because `Action` has no rewind variant yet (asked `TuiArchitect` for
 //! `Action::Rewind { entry_id }`).
 
 use omp_session::tree::{

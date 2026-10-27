@@ -186,16 +186,13 @@ fn expand_links(s: &str) -> String {
                 mid + 2 + close + 1,
             ))
         });
-        match parsed {
-            Some((label, url, consumed)) => {
-                out.push_str(&rest[..open]);
-                out.push_str(&format!("{label} ({url})"));
-                rest = &rest[open + consumed..];
-            }
-            None => {
-                out.push_str(&rest[..=open]);
-                rest = &rest[open + 1..];
-            }
+        if let Some((label, url, consumed)) = parsed {
+            out.push_str(&rest[..open]);
+            out.push_str(&format!("{label} ({url})"));
+            rest = &rest[open + consumed..];
+        } else {
+            out.push_str(&rest[..=open]);
+            rest = &rest[open + 1..];
         }
     }
     out.push_str(rest);
@@ -242,7 +239,7 @@ fn logo_spans(row: usize) -> Vec<Span<'static>> {
             if c == ' ' {
                 Span::raw(" ")
             } else {
-                let t = (x as f64 / x_span + row as f64 / y_span) / 2.0;
+                let t = f64::midpoint(x as f64 / x_span, row as f64 / y_span);
                 Span::styled(c.to_string(), Style::default().fg(gradient(t)))
             }
         })

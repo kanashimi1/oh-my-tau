@@ -129,7 +129,7 @@ impl SessionInfoLine {
             }
             Self::Head(text) => push(text, Style::default().add_modifier(Modifier::BOLD)),
             Self::Text { text, dim: is_dim } => {
-                push(text, if *is_dim { dim } else { Style::default() })
+                push(text, if *is_dim { dim } else { Style::default() });
             }
         }
         out

@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
     let ctx = Context { system_prompt: None, messages: vec![user_msg(&question)], tools: None };
     let mut o = omp_providers::SimpleStreamOptions::default();
     o.base.api_key.clone_from(&m.api_key);
-    o.reasoning = m.thinking.clone();
+    o.reasoning = m.thinking;
     // abort-by-drop: leaving the loop drops the stream, closing the connection
     let mut s = omp_providers::stream(&m, ctx, Some(o)).await?;
 
@@ -196,7 +196,7 @@ async fn main() -> anyhow::Result<()> {
             }
             AssistantMessageEvent::TextDelta { delta, .. } => answer1.push_str(&delta),
             AssistantMessageEvent::Done { message, .. } => {
-                usage1 = serde_json::to_value(&message.usage).ok().filter(|v| !v.is_null());
+                usage1 = serde_json::to_value(message.usage).ok().filter(|v| !v.is_null());
             }
             AssistantMessageEvent::Error { .. } => break,
             _ => {}
@@ -215,7 +215,7 @@ async fn main() -> anyhow::Result<()> {
     // in base mode: score all chunks post-hoc for trace analysis
     if mode == "base" {
         let mut ch = Chunker::new();
-        for line in thinking.split_inclusive(|c| c == '.' || c == '!' || c == '?' || c == '\n') {
+        for line in thinking.split_inclusive(['.', '!', '?', '\n']) {
             ch.push(line);
         }
         ch.cut();
@@ -251,7 +251,7 @@ async fn main() -> anyhow::Result<()> {
                     match ev {
                         AssistantMessageEvent::TextDelta { delta, .. } => txt.push_str(&delta),
                         AssistantMessageEvent::Done { message, .. } => {
-                            u2 = serde_json::to_value(&message.usage).ok().filter(|v| !v.is_null());
+                            u2 = serde_json::to_value(message.usage).ok().filter(|v| !v.is_null());
                         }
                         AssistantMessageEvent::Error { .. } => break,
                         _ => {}

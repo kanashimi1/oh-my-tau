@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::scorer::ModelPaths;
 
-/// The single question every ctx_policy record carries (also read by the Python dataset builder).
+/// The single question every `ctx_policy` record carries (also read by the Python dataset builder).
 pub const QUESTIONS: &str = include_str!("policy_questions.json");
 
 /// Loaded policy head. Owns the ONNX session; not `Sync`.

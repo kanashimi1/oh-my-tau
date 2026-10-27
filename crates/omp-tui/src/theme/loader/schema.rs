@@ -100,7 +100,7 @@ pub fn is_valid_symbol_preset(preset: &str) -> bool {
     SYMBOL_PRESETS.contains(&preset)
 }
 
-/// camelCase → snake_case alias for every catalog token (static so the
+/// camelCase → `snake_case` alias for every catalog token (static so the
 /// loader never leaks keys).
 pub static ALIASES: &[(&str, &str)] = &[
     ("borderAccent", "border_accent"),
@@ -164,13 +164,13 @@ pub static ALIASES: &[(&str, &str)] = &[
     ("thinkingMax", "thinking_max"),
 ];
 
-/// Snake_case alias for a catalog token, or `None` when identical/unknown.
+/// `Snake_case` alias for a catalog token, or `None` when identical/unknown.
 #[must_use]
 pub fn snake_alias(token: &str) -> Option<&'static str> {
     ALIASES.iter().find(|(c, _)| *c == token).map(|(_, s)| *s)
 }
 
-/// Convert a TS camelCase token name to this crate's snake_case convention
+/// Convert a TS camelCase token name to this crate's `snake_case` convention
 /// (`statusLineSep` → `status_line_sep`), so components using either style
 /// resolve.
 #[must_use]

@@ -1,4 +1,4 @@
-//! Generated: built-in theme registry (TS `theme/loader.ts` BUILTIN_THEMES).
+//! Generated: built-in theme registry (TS `theme/loader.ts` `BUILTIN_THEMES`).
 //! Regenerate by re-copying omp's `pi-tui/src/theme/{dark,light,defaults/*.json}`.
 
 /// Built-in theme name → embedded JSON (TS `getBuiltinThemes`).

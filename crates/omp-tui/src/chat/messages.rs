@@ -390,6 +390,7 @@ impl ChatEntry {
 
     /// Test constructor over the typed payload (block-renderer unit tests).
     #[cfg(test)]
+    #[must_use]
     pub fn new_for_test(role: ChatRole, kind: ChatKind) -> Self {
         let text = match &kind {
             ChatKind::Assistant(a) => a.text(),
@@ -1244,8 +1245,8 @@ impl Messages {
                 path,
                 status: ToolStatus::Pending,
                 preview: None,
-                tool: name.clone(),
-                args: args.clone(),
+                tool: name,
+                args,
                 details: Value::Null,
             };
             let open = self.open_group.or_else(|| self.reusable_group());
@@ -2047,7 +2048,7 @@ mod tests {
         let text: Vec<String> = m
             .entry_lines_at(0, 60)
             .iter()
-            .map(|l| l.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
         assert!(
             text.iter()

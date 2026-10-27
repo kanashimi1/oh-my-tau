@@ -66,13 +66,13 @@ const EMPTY_STREAM_BASE_DELAY_MS: u64 = 500;
 const USER_AGENT: &str = "antigravity";
 const CLAUDE_THINKING_BETA_HEADER: &str = "interleaved-thinking-2025-05-14";
 /// TS `GOOGLE_GEMINI_REFRESH_SKEW_MS` / `ANTIGRAVITY_REFRESH_SKEW_MS`: an already-expired
-/// credential is refused instead of POSTing a stale token.
+/// credential is refused instead of `POSTing` a stale token.
 const REFRESH_SKEW_MS: i64 = 60_000;
 /// `google-antigravity-forced-tool.md`: Cloud Code Assist drops `toolConfig` on Antigravity's
 /// Gemini routes, so a forced choice is restated in the transcript as a tool-only turn.
 const FORCED_TOOL_DIRECTIVE: &str = "TOOL-ONLY TURN. This turn accepts a tool call and nothing else; a text reply here is discarded unread and you will be re-prompted. Emit the tool call now.";
 
-/// TS `getAntigravityUserAgent` (`antigravity/hub/{version}` with the hub's aidev_client
+/// TS `getAntigravityUserAgent` (`antigravity/hub/{version}` with the hub's `aidev_client`
 /// metadata; version falls back to the pinned hub release).
 fn antigravity_user_agent() -> String {
     let version = std::env::var("PI_AI_ANTIGRAVITY_VERSION").unwrap_or_else(|_| "2.19.1".into());
@@ -405,7 +405,7 @@ fn compat_flag(model: &Model, key: &str) -> bool {
 }
 
 /// Build the Cloud Code Assist request body (TS `buildRequest`). Both arms wrap the plain
-/// GenerativeLanguage fields in the envelope `{project, model, request}`; the antigravity arm
+/// `GenerativeLanguage` fields in the envelope `{project, model, request}`; the antigravity arm
 /// adds `requestId`/`userAgent`/`requestType` plus the in-request `sessionId`/`labels`.
 fn build_body(
     model: &Model,
@@ -735,8 +735,8 @@ async fn run_stream(
         let url = format!("{endpoint}/v1internal:streamGenerateContent?alt=sse");
         let body_text = serde_json::to_string(&body_value).unwrap_or_else(|_| "{}".to_string());
         let request_dump = RawHttpRequestDump {
-            provider: model.provider.to_string(),
-            api: model.api.to_string(),
+            provider: model.provider.clone(),
+            api: model.api.clone(),
             model: model.id.clone(),
             method: "POST".to_owned(),
             url: url.clone(),
@@ -1014,7 +1014,7 @@ fn handle_chunk_text(
                 Some(code) if code >= 400 => ProviderError::Http(
                     crate::utils_inner::stream_failure::ProviderHttpError {
                         message,
-                        status: Some(code.min(u16::MAX as u64) as u16),
+                        status: Some(code.min(u64::from(u16::MAX)) as u16),
                         body: None,
                         headers: std::collections::HashMap::new(),
                         request_id: None,

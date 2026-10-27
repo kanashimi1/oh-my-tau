@@ -85,7 +85,7 @@ fn resolver_matches_ts_for_every_catalog_and_cache_row() {
         match (case.get("error").and_then(Value::as_str), rust) {
             (Some(_), Err(_)) => {}
             (Some(e), Ok(_)) => {
-                mismatches.push(format!("{label}: TS threw ({e}) but Rust resolved"))
+                mismatches.push(format!("{label}: TS threw ({e}) but Rust resolved"));
             }
             (None, Err(e)) => mismatches.push(format!("{label}: Rust error {e}")),
             (None, Ok(r)) => {

@@ -77,11 +77,11 @@ pub trait ToolRenderer {
     /// (`tool_execution_start|update|end` JSON payload: `{toolCallId,
     /// toolName, args}` / `{toolCallId, toolName, result}`) into transcript
     /// lines. Default: a pending one-liner via [`ToolRenderer::summary`].
-    fn render_frame<'a>(
+    fn render_frame(
         &self,
         frame: &Value,
         expanded: bool,
-        theme: &'a Theme,
+        theme: &Theme,
     ) -> Vec<ratatui::text::Line<'static>> {
         let _ = expanded;
         let name = frame

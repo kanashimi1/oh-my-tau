@@ -427,17 +427,14 @@ impl KernelProcess {
         let setsid = ["/usr/bin/setsid", "/bin/setsid"]
             .into_iter()
             .find(|p| std::path::Path::new(p).is_file());
-        let mut command = match setsid {
-            Some(setsid) => {
-                let mut c = Command::new(setsid);
-                c.arg("--wait").arg(program);
-                c
-            }
-            None => {
-                let mut c = Command::new(program);
-                c.process_group(0);
-                c
-            }
+        let mut command = if let Some(setsid) = setsid {
+            let mut c = Command::new(setsid);
+            c.arg("--wait").arg(program);
+            c
+        } else {
+            let mut c = Command::new(program);
+            c.process_group(0);
+            c
         };
         let mut child = command
             .args(args)

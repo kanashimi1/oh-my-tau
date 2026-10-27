@@ -559,7 +559,7 @@ fn bracket_object(
 /// ends the buffer. Always linewise.
 fn paragraph_object(buf: &VimBuffer, around: bool) -> TextObjectRange {
     let last = buf.lines.len().saturating_sub(1);
-    let blank = |line: usize| buf.lines.get(line).map_or(true, |l| l.trim().is_empty());
+    let blank = |line: usize| buf.lines.get(line).is_none_or(|l| l.trim().is_empty());
     let target = blank(buf.cursor_line);
     let mut first = buf.cursor_line;
     let mut end = buf.cursor_line;

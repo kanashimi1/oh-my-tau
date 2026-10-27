@@ -166,7 +166,7 @@ impl JsKernel {
             match recv(&self.process, deadline, &id, opts.cancel.as_ref()) {
                 Ok(frame) => match frame {
                     Frame::Stdout { data, .. } | Frame::Stderr { data, .. } => {
-                        output.push_str(&data)
+                        output.push_str(&data);
                     }
                     Frame::Result { bundle, .. } => {
                         if let Some(serde_json::Value::String(text)) = bundle.get("text/plain") {

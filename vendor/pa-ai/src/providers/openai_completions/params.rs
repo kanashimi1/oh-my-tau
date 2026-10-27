@@ -243,7 +243,7 @@ pub(crate) fn build_params_streaming<'a>(
     mut frags: Option<&mut BuiltFrags>,
 ) -> Wire<'a> {
     let options = options.cloned().unwrap_or_default();
-    let reasoning = options.reasoning_effort.map(|level| level.wire_name());
+    let reasoning = options.reasoning_effort.map(pa_types::ai::ModelThinkingLevel::wire_name);
     // `reasoning_enabled == Some(false)` is the TS `disableReasoning` (an explicit off).
     let disable_reasoning = options.reasoning_enabled == Some(false);
     let context_tools = context.tools.as_deref().filter(|t| !t.is_empty());

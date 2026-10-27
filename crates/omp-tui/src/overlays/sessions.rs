@@ -237,13 +237,13 @@ fn relative_time(t: SystemTime) -> String {
         "just now".into()
     } else if age < Duration::from_secs(90) {
         "1m ago".into()
-    } else if age < Duration::from_secs(3600) {
+    } else if age < Duration::from_hours(1) {
         format!("{}m ago", age.as_secs() / 60)
-    } else if age < Duration::from_secs(5400) {
+    } else if age < Duration::from_mins(90) {
         "1h ago".into()
-    } else if age < Duration::from_secs(86_400) {
+    } else if age < Duration::from_hours(24) {
         format!("{}h ago", age.as_secs() / 3600)
-    } else if age < Duration::from_secs(1_209_600) {
+    } else if age < Duration::from_hours(336) {
         format!("{}d ago", age.as_secs() / 86_400)
     } else {
         format!("{}w ago", age.as_secs() / 1_209_600)
@@ -684,9 +684,7 @@ impl Component for SessionPicker {
         if self.confirm_delete {
             // Two-step confirm replaces the list in the same slot (TS 1346).
             let label = self
-                .selected_session()
-                .map(|s| format!("Delete session \"{}\"?", s.display_title()))
-                .unwrap_or_else(|| "Delete session?".into());
+                .selected_session().map_or_else(|| "Delete session?".into(), |s| format!("Delete session \"{}\"?", s.display_title()));
             let line = Line::from(vec![
                 Span::styled(label, Style::default().fg(theme.color("warning"))),
                 Span::raw("  "),
@@ -754,6 +752,7 @@ impl Component for SessionPicker {
 /// Owns the terminal lifecycle the way TS `runStandaloneTui` does: raw mode +
 /// alternate screen for the picker's lifetime, restored on drop (including
 /// panics); Ctrl+C resolves `None` like the TS `process.exit(0)` path.
+#[must_use]
 pub fn select_session_standalone(sources: &[SessionSource], title: &str) -> Option<PathBuf> {
     use crossterm::event::{self, Event};
     use crossterm::terminal::{
@@ -841,7 +840,7 @@ mod tests {
     /// (appending alone can land in the same mtime tick under load).
     fn bump_mtime(path: &Path) {
         let f = fs::OpenOptions::new().append(true).open(path).unwrap();
-        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let later = std::time::SystemTime::now() + std::time::Duration::from_mins(1);
         f.set_modified(later).unwrap();
     }
 
@@ -1139,9 +1138,9 @@ mod tests {
     fn relative_time_buckets() {
         let now = SystemTime::now();
         assert_eq!(relative_time(now), "just now");
-        assert_eq!(relative_time(now - Duration::from_secs(120)), "2m ago");
-        assert_eq!(relative_time(now - Duration::from_secs(7200)), "2h ago");
-        assert_eq!(relative_time(now - Duration::from_secs(172_800)), "2d ago");
+        assert_eq!(relative_time(now - Duration::from_mins(2)), "2m ago");
+        assert_eq!(relative_time(now - Duration::from_hours(2)), "2h ago");
+        assert_eq!(relative_time(now - Duration::from_hours(48)), "2d ago");
     }
 
     #[test]

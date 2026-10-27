@@ -1028,7 +1028,7 @@ mod tests {
             proxy_options(base_url),
         );
 
-        let final_message = tokio::time::timeout(Duration::from_secs(60), async {
+        let final_message = tokio::time::timeout(Duration::from_mins(1), async {
             loop {
                 let Some(event) = stream.next_event().await else {
                     break None;

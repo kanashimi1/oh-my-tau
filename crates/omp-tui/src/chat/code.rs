@@ -141,7 +141,7 @@ impl HighlightStream {
     /// Final rendering of any remaining tail; the authoritative result.
     #[must_use]
     pub fn finish(&mut self) -> Text<'static> {
-        self.take_completed().unwrap_or_else(|| Text::default())
+        self.take_completed().unwrap_or_default()
     }
 
     fn take_completed(&mut self) -> Option<Text<'static>> {

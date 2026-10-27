@@ -141,7 +141,7 @@ pub fn hex_to_oklch(hex: &str) -> Oklch {
     Oklch { l: lab_l, c, h }
 }
 
-/// OKLab back to linear sRGB; channels may fall outside 0..1 when out of gamut.
+/// `OKLab` back to linear sRGB; channels may fall outside 0..1 when out of gamut.
 fn oklab_to_linear_rgb(l: f64, a: f64, b: f64) -> [f64; 3] {
     let l_ = (l + 0.396_337_777_4 * a + 0.215_803_757_3 * b).powi(3);
     let m_ = (l - 0.105_561_345_8 * a - 0.063_854_172_8 * b).powi(3);
@@ -153,7 +153,7 @@ fn oklab_to_linear_rgb(l: f64, a: f64, b: f64) -> [f64; 3] {
     ]
 }
 
-/// Max OKLab saturation (C/L) inside sRGB for a hue direction, via Björn
+/// Max `OKLab` saturation (C/L) inside sRGB for a hue direction, via Björn
 /// Ottosson's polynomial fit plus one Halley refinement (TS
 /// `computeMaxSaturation`).
 fn compute_max_saturation(a: f64, b: f64) -> f64 {
@@ -215,7 +215,7 @@ const GAMUT_EPSILON: f64 = 1e-4;
 
 fn in_srgb_gamut(rgb: [f64; 3]) -> bool {
     rgb.iter()
-        .all(|&ch| ch >= -GAMUT_EPSILON && ch <= 1.0 + GAMUT_EPSILON)
+        .all(|&ch| (-GAMUT_EPSILON..=1.0 + GAMUT_EPSILON).contains(&ch))
 }
 
 /// Convert OKLCH to a `#rrggbb` hex string, gamut-mapping by chroma
@@ -231,7 +231,7 @@ pub fn oklch_to_hex(color: Oklch) -> String {
     if !in_srgb_gamut(rgb) {
         let (mut lo, mut hi) = (0.0_f64, color.c);
         for _ in 0..20 {
-            let mid = (lo + hi) / 2.0;
+            let mid = f64::midpoint(lo, hi);
             if in_srgb_gamut(at(mid)) {
                 lo = mid;
             } else {

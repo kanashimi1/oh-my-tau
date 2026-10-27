@@ -137,15 +137,15 @@ pub fn render_hud_row(entry: &HudEntry, width: usize, theme: &Theme) -> Line<'st
     let mut spans: Vec<Span<'static>> = Vec::new();
     if show_label {
         spans.push(Span::styled(
-            label.clone(),
+            label,
             Style::default().fg(theme.color("text_muted")),
         ));
         spans.push(Span::raw(" "));
     }
     if let Some((glyph, filled)) = bar {
         let filled = filled.min(bar_len);
-        let filled_str: String = std::iter::repeat(glyph).take(filled).collect();
-        let empty_str: String = std::iter::repeat('─').take(bar_len - filled).collect();
+        let filled_str: String = std::iter::repeat_n(glyph, filled).collect();
+        let empty_str: String = std::iter::repeat_n('─', bar_len - filled).collect();
         spans.push(Span::styled(
             filled_str,
             Style::default().fg(theme.color("accent")),

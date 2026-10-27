@@ -149,7 +149,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains("No matches found"));
     }
@@ -166,7 +166,7 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         let shown: usize = buf.content().iter().filter(|c| c.symbol() == "f").count();
-        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let text: String = buf.content().iter().map(ratatui::buffer::Cell::symbol).collect();
         assert!(text.contains("4 more matches"));
         assert!(shown <= 6);
     }

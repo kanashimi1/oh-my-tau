@@ -152,7 +152,7 @@ pub struct AgentProgress {
     pub recent_tools: Vec<RecentTool>,
     /// Cumulative tool-call count.
     pub tool_count: u64,
-    /// Assistant requests (message_end events) across the run.
+    /// Assistant requests (`message_end` events) across the run.
     pub requests: u64,
     /// Cumulative input+output+cacheWrite tokens.
     pub tokens: u64,
@@ -220,8 +220,7 @@ impl AgentProgress {
             status: src
                 .get("status")
                 .and_then(Value::as_str)
-                .map(AgentStatus::from_str)
-                .unwrap_or(AgentStatus::Pending),
+                .map_or(AgentStatus::Pending, AgentStatus::from_str),
             task: get_string(src, "task")
                 .or_else(|| get_string(v, "task"))
                 .unwrap_or_default(),
@@ -396,6 +395,7 @@ pub fn format_number(n: u64) -> String {
 }
 
 /// Display cap for a normalized one-line label (roster line, header).
+#[must_use]
 pub const fn label_max() -> usize {
     LABEL_MAX
 }
@@ -568,7 +568,7 @@ fn render_task_call_lines(args: Option<&Value>, theme: &Theme) -> Vec<Vec<Span<'
     let brief = view
         .task
         .as_ref()
-        .map(|v| task_first_line(v))
+        .map(task_first_line)
         .unwrap_or_default();
     if !name.is_empty() || !brief.is_empty() {
         let mut spans = vec![bullet.clone()];
@@ -606,9 +606,7 @@ fn render_task_call_lines(args: Option<&Value>, theme: &Theme) -> Vec<Vec<Span<'
                 .name
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| format!("#{}", i + 1));
+                .filter(|s| !s.is_empty()).map_or_else(|| format!("#{}", i + 1), ToOwned::to_owned);
             spans.push(Span::styled(
                 id_label,
                 Style::default()
@@ -618,7 +616,7 @@ fn render_task_call_lines(args: Option<&Value>, theme: &Theme) -> Vec<Vec<Span<'
             let brief = item
                 .task
                 .as_ref()
-                .map(|v| task_first_line(v))
+                .map(task_first_line)
                 .unwrap_or_default();
             if !brief.is_empty() {
                 spans.push(Span::raw(": "));
@@ -1482,10 +1480,10 @@ fn render_nested_task_tree(
             );
             continue;
         }
-        if !details.results.is_empty() {
-            render_nested_results(&details.results, ctx, theme, depth, out);
-        } else {
+        if details.results.is_empty() {
             render_nested_progress(&details.progress, ctx, theme, depth, out);
+        } else {
+            render_nested_results(&details.results, ctx, theme, depth, out);
         }
     }
 }
@@ -1870,8 +1868,7 @@ pub fn card_lines(call: &Value, theme: &Theme, ctx: &RenderCtx) -> Vec<Line<'sta
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// Renderer for subagent spawns (`tool.task`).
@@ -1884,7 +1881,7 @@ impl ToolRenderer for Task {
         let brief = params
             .task
             .as_ref()
-            .map(|v| task_first_line(v))
+            .map(task_first_line)
             .or_else(|| params.context.clone())
             .unwrap_or_default();
         let header = format_agent_header_label(args.filter(|a| a.is_object()))
@@ -2325,7 +2322,7 @@ pub mod repair {
                     if matches!(next, b'"' | b'\\' | b'/')
                         || (next == b'u'
                             && i + 5 < bytes.len()
-                            && bytes[i + 2..=i + 5].iter().all(|b| b.is_ascii_hexdigit()))
+                            && bytes[i + 2..=i + 5].iter().all(u8::is_ascii_hexdigit))
                     {
                         return true;
                     }

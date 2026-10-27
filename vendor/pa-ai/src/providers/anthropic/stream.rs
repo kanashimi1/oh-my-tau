@@ -262,8 +262,8 @@ async fn run_stream(
     let url = format!("{base_url}/v1/messages");
     // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
     let request_dump = RawHttpRequestDump {
-        provider: model.provider.to_string(),
-        api: model.api.to_string(),
+        provider: model.provider.clone(),
+        api: model.api.clone(),
         model: model.id.clone(),
         method: "POST".to_owned(),
         url: url.clone(),

@@ -123,6 +123,7 @@ pub struct Identity {
 }
 
 impl Identity {
+    #[must_use]
     pub fn to_json(&self) -> Value {
         let mut m = Map::new();
         m.insert("class".into(), self.class.clone().into());
@@ -146,6 +147,7 @@ impl Identity {
 }
 
 /// Anchored `*`-wildcard match; both sides pre-lowercased.
+#[must_use]
 pub fn glob_match(pattern: &str, value: &str) -> bool {
     let segments: Vec<&str> = pattern.split('*').collect();
     if segments.len() == 1 {
@@ -327,7 +329,7 @@ fn classify_ranks(
             let rank = (matcher_rank(&matcher.kind), matcher.token.len());
             match winner {
                 Some((w, c)) if w == rank && c.id != cls.id => {
-                    tied = Some((c.id.as_str(), cls.id.as_str()))
+                    tied = Some((c.id.as_str(), cls.id.as_str()));
                 }
                 Some((w, _)) if w >= rank => {}
                 _ => {
@@ -464,6 +466,7 @@ pub struct Collapsed {
     pub thinking_variant: bool,
 }
 
+#[must_use]
 pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collapsed {
     let collapse = &rules.taxonomy.collapse;
     let lower = model.to_lowercase();
@@ -551,6 +554,7 @@ pub fn collapse_variant_id(rules: &Rules, provider: &str, model: &str) -> Collap
 }
 
 /// First declared thinking-variant suffix token removed from a model id (`None` when absent).
+#[must_use]
 pub fn strip_thinking_variant_suffix(rules: &Rules, model: &str) -> Option<String> {
     let lower = model.to_lowercase();
     let lb = lower.as_bytes();

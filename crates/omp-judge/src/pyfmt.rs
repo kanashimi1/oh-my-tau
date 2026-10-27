@@ -79,7 +79,7 @@ fn py_quote(s: &str) -> String {
                 out.push(c);
             }
             c if (c as u32) < 0x20 || c as u32 == 0x7f => {
-                out.push_str(&format!("\\x{:02x}", c as u32))
+                out.push_str(&format!("\\x{:02x}", c as u32));
             }
             c => out.push(c),
         }

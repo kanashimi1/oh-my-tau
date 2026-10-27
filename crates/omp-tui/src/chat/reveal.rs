@@ -270,7 +270,7 @@ impl StreamingRevealController {
                 _ => units_from(text, 0, 0),
             });
             if self.cursor.block == idx
-                && !grown.is_some_and(|old| self.cursor.byte <= old.last_start)
+                && grown.is_none_or(|old| self.cursor.byte > old.last_start)
             {
                 self.cursor = RevealCursor {
                     block: idx,
@@ -567,7 +567,7 @@ mod tests {
             for _ in 0..40 {
                 // Grow a random block (earlier ones too, as thinking can).
                 let k = rand(texts.len());
-                for _ in 0..1 + rand(4) {
+                for _ in 0..=rand(4) {
                     texts[k].push_str(PIECES[rand(PIECES.len())]);
                 }
                 let blocks: Vec<RevealBlock> = texts

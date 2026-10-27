@@ -257,7 +257,7 @@ fn find_subsequence(haystack: &[char], needle: &[char], from: usize) -> Option<u
 
 /// Offset of the first whole-word occurrence of `phrase` in `normalized`, or
 /// None (TS `findWordBoundaryPhrase` — rescans past shadowed hits only for
-/// needles >= MIN_SHADOW_RESCAN_LENGTH).
+/// needles >= `MIN_SHADOW_RESCAN_LENGTH`).
 fn find_word_boundary_phrase(normalized: &[char], phrase: &[char]) -> Option<usize> {
     if phrase.is_empty() {
         return None;
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn rank_sorts_best_first() {
         let items = vec!["reimage thing", "image provider", "imaginary"];
-        let ranked = fuzzy_rank(&items, "image", |s| s.to_string());
+        let ranked = fuzzy_rank(&items, "image", std::string::ToString::to_string);
         assert_eq!(ranked[0].item, "image provider");
     }
 

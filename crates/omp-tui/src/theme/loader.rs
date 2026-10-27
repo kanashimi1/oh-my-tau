@@ -5,7 +5,7 @@
 //! `/` is treated as an explicit file path). The JSON is validated against
 //! the TS token catalog ([`schema::REQUIRED_COLORS`]), `vars` references are
 //! resolved, and colors are materialized onto a [`Theme`] under both the TS
-//! camelCase names (`mdHeading`) and this crate's snake_case convention
+//! camelCase names (`mdHeading`) and this crate's `snake_case` convention
 //! (`md_heading`).
 
 use std::path::PathBuf;
@@ -107,14 +107,12 @@ pub fn theme_name_for<'a>(dark: &'a str, light: &'a str, appearance: Appearance)
 /// The user's custom theme directory (TS `getCustomThemesDir`).
 #[must_use]
 pub fn custom_themes_dir() -> PathBuf {
-    let mut p = std::env::var_os("OMP_AGENT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let mut p = std::env::var_os("OMP_AGENT_DIR").map_or_else(|| {
             let mut home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
             home.push(".omp");
             home.push("agent");
             home
-        });
+        }, PathBuf::from);
     p.push("themes");
     p
 }
@@ -317,14 +315,11 @@ fn parse_theme_json(name: &str, content: &str) -> Result<ParsedTheme, ThemeError
         .iter()
         .chain(schema::OPTIONAL_COLORS.iter())
     {
-        let raw = match colors_obj.get(*token) {
-            Some(v) => v,
-            None => {
-                if !schema::OPTIONAL_COLORS.contains(token) {
-                    missing.push(token);
-                }
-                continue;
+        let raw = if let Some(v) = colors_obj.get(*token) { v } else {
+            if !schema::OPTIONAL_COLORS.contains(token) {
+                missing.push(token);
             }
+            continue;
         };
         let resolved = resolve_var_refs(raw, vars, &mut Vec::new())
             .map_err(|e| ThemeError::Invalid(format!("theme {name}: colors.{token}: {e}")))?;
@@ -618,12 +613,12 @@ mod tests {
     #[test]
     fn spinner_override_shapes() {
         assert_eq!(parse_spinner_frames(None), SpinnerFrames::default());
-        let flat = serde_json::from_str::<Value>(r##"["a","b"]"##).unwrap();
+        let flat = serde_json::from_str::<Value>(r#"["a","b"]"#).unwrap();
         let f = parse_spinner_frames(Some(&flat));
         assert_eq!(f.frames("unicode", "status"), vec!["a", "b"]);
         assert_eq!(f.frames("unicode", "activity"), vec!["a", "b"]);
         let split =
-            serde_json::from_str::<Value>(r##"{"status":["s"],"activity":["x","y"]}"##).unwrap();
+            serde_json::from_str::<Value>(r#"{"status":["s"],"activity":["x","y"]}"#).unwrap();
         let f2 = parse_spinner_frames(Some(&split));
         assert_eq!(f2.frames("nerd", "status"), vec!["s"]);
         // split override only touches "activity" here; "status" falls back —

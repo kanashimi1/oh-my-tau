@@ -284,7 +284,7 @@ mod render_tests {
         let p = palette();
         let rows = render_palette(&p, 80, 20);
         let body = rows.join("\n");
-        assert!(body.contains("command"), "title in {:?}", body);
+        assert!(body.contains("command"), "title in {body:?}");
         assert!(body.contains("❯"), "input row");
         assert!(body.contains("/model"));
         assert!(body.contains("/exit"));

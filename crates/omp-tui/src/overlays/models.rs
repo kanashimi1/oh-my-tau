@@ -1019,8 +1019,8 @@ impl ModelPicker {
                     ..
                 },
                 ChipAction::Level(level),
-            ) => {
-                if level != initial {
+            )
+                if level != initial => {
                     self.role_map
                         .insert(role.clone(), format!("{}:{level}", model.selector()));
                     if role == "default" {
@@ -1029,7 +1029,6 @@ impl ModelPicker {
                     }
                     self.emit_roles();
                 }
-            }
             _ => {}
         }
     }

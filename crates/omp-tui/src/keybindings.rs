@@ -410,14 +410,12 @@ pub fn key_id_from_event(event: &KeyEvent) -> Option<String> {
 /// binding.
 #[must_use]
 pub fn user_keybindings_path() -> PathBuf {
-    let mut p = std::env::var_os("OMP_AGENT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let mut p = std::env::var_os("OMP_AGENT_DIR").map_or_else(|| {
             let mut home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
             home.push(".omp");
             home.push("agent");
             home
-        });
+        }, PathBuf::from);
     p.push("keybindings.yml");
     p
 }

@@ -575,9 +575,7 @@ impl Editor {
     /// when Vim consumed the key; `None` means the caller's regular pipeline
     /// handles it (TS `#handleVimInput` :2234).
     pub(crate) fn vim_handle_key(&mut self, key: KeyEvent) -> Option<EditorOutcome> {
-        if self.vim.is_none() {
-            return None;
-        }
+        self.vim.as_ref()?;
         let snapshot = vim::VimBuffer::from_flat(&self.buffer.text(), self.buffer.flat_cursor());
         let (consumed, commands) = {
             let state = self.vim.as_mut().expect("checked above");
@@ -638,7 +636,7 @@ impl Editor {
         if self
             .vim
             .as_ref()
-            .map_or(true, |v| v.mode != vim::VimMode::Normal)
+            .is_none_or(|v| v.mode != vim::VimMode::Normal)
         {
             return;
         }

@@ -1,4 +1,4 @@
-//! CollabController — owns collaboration hosting for one interactive process.
+//! `CollabController` — owns collaboration hosting for one interactive process.
 //!
 //! Rust port of `vendor-src/oh-my-pi/packages/coding-agent/src/collab/controller.ts`
 //! (357 lines). The controller owns the host lifecycle for a live session:
@@ -63,7 +63,7 @@ pub struct CollabLinks {
 }
 
 /// Handle to the dedicated host thread: the room's start/event-loop future is
-/// not `Send` (host.rs holds std MutexGuards across awaits), so it — and every
+/// not `Send` (host.rs holds std `MutexGuards` across awaits), so it — and every
 /// `CollabHost::stop` — must run on that thread, not on the caller's runtime.
 struct HostTask {
     /// Signal the thread to run `CollabHost::stop` and end (tokio channel so
@@ -250,8 +250,8 @@ impl CollabController {
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let start_host = Arc::clone(&host);
-        let relay_for_start = relay_url.clone();
-        let web_for_start = web_url.clone().unwrap_or_default();
+        let relay_for_start = relay_url;
+        let web_for_start = web_url.unwrap_or_default();
         std::thread::Builder::new()
             .name("collab-host".to_string())
             .spawn(move || {
@@ -287,7 +287,7 @@ impl CollabController {
         // connect window still reaches the thread.
         *self.host.lock().unwrap() = Some(Arc::clone(&host));
         *self.host_task.lock().unwrap() = Some(HostTask {
-            stop_tx: stop_tx.clone(),
+            stop_tx,
             done_rx: Some(done_rx),
         });
         let done_rx = self

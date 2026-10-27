@@ -427,7 +427,7 @@ const JSON_SCHEMA_META_DECLARATIONS: [&str; 7] = [
 ];
 
 /// TS `normalizeSchemaForCCA`, compact port: project a tool's JSON Schema onto the legacy
-/// OpenAPI `parameters` subset Cloud Code Assist's proto mapping accepts. It rejects `type`
+/// `OpenAPI` `parameters` subset Cloud Code Assist's proto mapping accepts. It rejects `type`
 /// arrays ("Proto field is not repeating, cannot start list") plus the nullable/combiner
 /// keywords, so type arrays are scalarized (the first non-null member), `nullable`/`not` are
 /// stripped and residual `anyOf`/`oneOf`/`allOf` are removed — every rewrite only widens

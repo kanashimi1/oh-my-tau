@@ -1,4 +1,4 @@
-//! OpenAI Responses request bodies (TS `openai-responses.ts` / `azure-openai-responses.ts`
+//! `OpenAI` Responses request bodies (TS `openai-responses.ts` / `azure-openai-responses.ts`
 //! `buildParams`, `buildResponsesInput` and `convertTools` in `openai-shared.ts`), shared by the
 //! `openai-responses`, `azure-openai-responses` and `openrouter` (Responses default) transports.
 
@@ -498,10 +498,10 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
                                     }
                                 }
                                 Some(_) if !o.preserve_message_ids && !has_replayable => {
-                                    msg_id = None
+                                    msg_id = None;
                                 }
                                 Some(id) if id.len() > 64 => {
-                                    msg_id = Some(format!("msg_{}", base36_hash(id)))
+                                    msg_id = Some(format!("msg_{}", base36_hash(id)));
                                 }
                                 _ => {}
                             }
@@ -968,7 +968,7 @@ fn should_send_service_tier(provider: &str, tier: ServiceTier) -> bool {
 }
 
 fn clamp_output_to_model_max(view: &ModelView, model: &Model) -> Option<u64> {
-    view.is("clampOutputToModelMax").then(|| {
+    view.is("clampOutputToModelMax").then_some({
         if model.max_tokens == 0 {
             OPENAI_MAX_OUTPUT_TOKENS
         } else {
@@ -1054,7 +1054,7 @@ fn apply_responses_compat_policy(
 
 /// Which Responses flavor builds the body.
 pub(crate) enum Flavor {
-    /// `openai-responses` and the OpenRouter Responses default.
+    /// `openai-responses` and the `OpenRouter` Responses default.
     OpenAi,
     /// `azure-openai-responses` with its resolved deployment name.
     Azure { deployment: String },

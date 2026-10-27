@@ -1322,8 +1322,7 @@ pub fn structured_key_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<S
             .and_then(Value::as_str)
             .map(std::string::ToString::to_string)
     };
-    Some(
-        serde_json::to_string(&serde_json::json!({
+    serde_json::to_string(&serde_json::json!({
             "apiEndpoint": pick("apiEndpoint"),
             "token": token,
             "enterpriseUrl": pick("enterpriseUrl"),
@@ -1333,8 +1332,7 @@ pub fn structured_key_by_id(dir: &AgentDir, provider: &str, id: i64) -> Option<S
             "email": pick("email"),
             "accountId": pick("accountId"),
         }))
-        .ok()?,
-    )
+        .ok()
 }
 
 /// After a provider 401 for `failed`: force-refresh that credential and return the replacement,

@@ -188,7 +188,7 @@ fn merge_servers(
         if let Some(cfg) = normalize_server_config(name, &candidate) {
             merged.insert(name.clone(), cfg);
         } else {
-            warn!("Ignoring invalid LSP overrides (keeping previous config): {name}")
+            warn!("Ignoring invalid LSP overrides (keeping previous config): {name}");
         }
     }
     merged

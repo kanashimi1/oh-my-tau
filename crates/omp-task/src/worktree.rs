@@ -359,7 +359,7 @@ fn merge_branch(
     if git(repo, &merge_args).is_ok() {
         if squash {
             // Nothing staged means the branch was already fully contained.
-            let staged = !git(repo, &["diff", "--cached", "--quiet"]).is_ok();
+            let staged = git(repo, &["diff", "--cached", "--quiet"]).is_err();
             if !staged {
                 return Ok(MergeStatus::Merged {
                     commit: git(repo, &["rev-parse", "HEAD"])?.trim().to_string(),

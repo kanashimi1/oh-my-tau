@@ -1,4 +1,4 @@
-//! λ-RLM combinators + SERA rubrics (prelude_combinators.py) against a scripted host:
+//! λ-RLM combinators + SERA rubrics (`prelude_combinators.py`) against a scripted host:
 //! types checked at call time, termination, budget bounds, rubric-before-spawn order.
 
 use std::sync::Mutex;
@@ -58,33 +58,30 @@ impl HostBridge for Host {
                 };
                 Ok(json!({"text": text}))
             }
-            "__lam_plan__" => match self.plan.lock().unwrap().clone() {
-                Some(r) => r,
-                None => {
-                    let n = args["n"].as_u64().unwrap();
-                    let w = args["window"].as_u64().unwrap();
-                    let tau = args.get("tau").and_then(Value::as_u64).unwrap_or(w).min(w);
-                    let extra = args["extra_calls"].as_u64().unwrap_or(0);
-                    if n <= w {
-                        return Ok(
-                            json!({"n": n, "tau": tau, "k": 1, "depth": 0, "max_leaves": 1, "max_calls": 1, "direct": true}),
-                        );
-                    }
-                    let k = args
-                        .get("fanout")
-                        .and_then(Value::as_u64)
-                        .unwrap_or_else(|| n.div_ceil(tau))
-                        .clamp(2, 64);
-                    let (mut s, mut d) = (n, 0u64);
-                    while s > tau {
-                        s = s.div_ceil(k);
-                        d += 1;
-                    }
-                    let leaves = k.pow(d as u32).min(n);
-                    Ok(
-                        json!({"n": n, "tau": tau, "k": k, "depth": d, "max_leaves": leaves, "max_calls": leaves + extra, "direct": false}),
-                    )
+            "__lam_plan__" => if let Some(r) = self.plan.lock().unwrap().clone() { r } else {
+                let n = args["n"].as_u64().unwrap();
+                let w = args["window"].as_u64().unwrap();
+                let tau = args.get("tau").and_then(Value::as_u64).unwrap_or(w).min(w);
+                let extra = args["extra_calls"].as_u64().unwrap_or(0);
+                if n <= w {
+                    return Ok(
+                        json!({"n": n, "tau": tau, "k": 1, "depth": 0, "max_leaves": 1, "max_calls": 1, "direct": true}),
+                    );
                 }
+                let k = args
+                    .get("fanout")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_else(|| n.div_ceil(tau))
+                    .clamp(2, 64);
+                let (mut s, mut d) = (n, 0u64);
+                while s > tau {
+                    s = s.div_ceil(k);
+                    d += 1;
+                }
+                let leaves = k.pow(d as u32).min(n);
+                Ok(
+                    json!({"n": n, "tau": tau, "k": k, "depth": d, "max_leaves": leaves, "max_calls": leaves + extra, "direct": false}),
+                )
             },
             "__rubric_freeze__" => Ok(json!({"id": "rb-test", "criteria": [], "frozen_ms": 1})),
             "__rubric_score__" => {

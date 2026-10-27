@@ -873,7 +873,7 @@ mod tests {
         let args = ReadRenderArgs::from_call(&frame);
         let result = parse_result(&frame);
         let lines = result_lines(&args, &result, false, &theme);
-        let flat: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let flat: Vec<String> = lines.iter().map(std::string::ToString::to_string).collect();
         assert!(flat[0].contains("Read"), "{flat:?}");
         assert!(flat[1].contains("file not found"));
     }
@@ -888,7 +888,7 @@ mod tests {
         let args = ReadRenderArgs::from_call(&frame);
         let result = parse_result(&frame);
         let lines = result_lines(&args, &result, false, &theme);
-        let flat: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let flat: Vec<String> = lines.iter().map(std::string::ToString::to_string).collect();
         assert_eq!(flat[1], "  file not found", "{flat:?}");
         assert!(lines[1]
             .spans

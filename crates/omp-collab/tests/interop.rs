@@ -11,7 +11,7 @@
 //!   See the interop report, mismatch #1.
 //!
 //! * [`ts_guest_interops_with_wire_host`] hosts the room with a wire-level
-//!   rust host driver (relay_client + crypto + replication, hello gate fixed)
+//!   rust host driver (`relay_client` + crypto + replication, hello gate fixed)
 //!   and proves the whole protocol end to end with the same real TS guest:
 //!   link parse, hello, welcome, snapshot chunks, prompt → user-turn
 //!   injection, transcript reply, live entry broadcast, view-link read-only
@@ -43,7 +43,7 @@ use omp_collab::relay_client::{connect_relay, CollabRole, RelayEvent, RelayOptio
 use omp_collab::relay_server::start_local_relay;
 use omp_collab::replication::snapshot_chunks;
 
-/// Prompt text the TS guest sends (must match ts_guest.ts PROMPT_TEXT).
+/// Prompt text the TS guest sends (must match `ts_guest.ts` `PROMPT_TEXT`).
 const PROMPT_TEXT: &str = "interop-prompt-77";
 /// Stop reason the host hands the guests (they must surface it as ended reason).
 const BYE_REASON: &str = "interop-bye";
@@ -167,8 +167,7 @@ fn guest_script_path() -> Option<std::path::PathBuf> {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if !bun_ok {
         eprintln!("skipping: `bun` not found on PATH");
         return None;
@@ -230,14 +229,12 @@ async fn drive_ts_guest(
     let interaction = async {
         while let Some(line) = lines.next_line().await.expect("read child stdout") {
             println!("[ts-guest] {line}");
-            if line.starts_with("FATAL") {
-                panic!(
-                    "TS guest failed: {line}\n\
-                     hint: `timeout waiting for full reaches live` with no prior frames means the \
-                     rust host never answered the hello — see the interop report, mismatch #1 \
-                     (crates/omp-collab/src/host.rs:417 drops the first hello)"
-                );
-            }
+            assert!(!line.starts_with("FATAL"), 
+                "TS guest failed: {line}\n\
+                 hint: `timeout waiting for full reaches live` with no prior frames means the \
+                 rust host never answered the hello — see the interop report, mismatch #1 \
+                 (crates/omp-collab/src/host.rs:417 drops the first hello)"
+            );
             if !line.starts_with("MARK ") {
                 continue;
             }
@@ -298,12 +295,9 @@ async fn drive_ts_guest(
         }
     };
 
-    match tokio::time::timeout(GUEST_BUDGET, interaction).await {
-        Ok(()) => {}
-        Err(_) => {
-            let _ = child.kill().await;
-            panic!("TS guest interaction exceeded {GUEST_BUDGET:?}");
-        }
+    if let Ok(()) = tokio::time::timeout(GUEST_BUDGET, interaction).await {} else {
+        let _ = child.kill().await;
+        panic!("TS guest interaction exceeded {GUEST_BUDGET:?}");
     }
 
     let output = child.wait_with_output().await.expect("reap bun child");
@@ -539,13 +533,10 @@ async fn run_wire_host(
                     match frame {
                         CollabFrame::Hello { proto, name, write_token } => {
                             assert_eq!(proto, COLLAB_PROTO as u32, "TS guest speaks proto 3");
-                            match &write_token {
-                                Some(token) => assert_eq!(
-                                    token, &write_token_b64,
-                                    "TS guest must echo the link's write token verbatim"
-                                ),
-                                None => {}
-                            }
+                            if let Some(token) = &write_token { assert_eq!(
+                                token, &write_token_b64,
+                                "TS guest must echo the link's write token verbatim"
+                            ) }
                             let can_write = write_token.is_some();
                             log.hellos.lock().unwrap().push((
                                 peer,
@@ -632,7 +623,7 @@ async fn run_wire_host(
     }
 }
 
-/// Test B — wire-level rust host (relay_client + crypto + replication) vs
+/// Test B — wire-level rust host (`relay_client` + crypto + replication) vs
 /// the same real TS guest: proves the rust wire format, sealing, link
 /// encoding, and every frame type interop with the browser client.
 #[tokio::test(flavor = "multi_thread")]

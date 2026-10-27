@@ -204,6 +204,7 @@ impl LspClient {
     pub fn is_quiescent(&self) -> bool {
         self.inner.quiescent.load(Ordering::SeqCst)
     }
+    #[must_use]
     pub fn is_rust_analyzer(&self) -> bool {
         fn basename(cmd: &str) -> &str {
             cmd.rsplit(['/', '\\']).next().unwrap_or(cmd)
@@ -496,7 +497,7 @@ impl LspClient {
             match id {
                 Some(id) => {
                     self.handle_server_request(method, id, message.get("params").cloned())
-                        .await
+                        .await;
                 }
                 None => self.handle_server_notification(method, message.get("params").cloned()),
             }

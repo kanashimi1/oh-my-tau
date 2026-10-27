@@ -1,4 +1,4 @@
-//! OpenRouter transport (TS `stream.ts` `openrouter` api): the Responses API by default, chat
+//! `OpenRouter` transport (TS `stream.ts` `openrouter` api): the Responses API by default, chat
 //! completions when `PI_OPENROUTER_RESPONSES=0`.
 
 use crate::event_stream::AssistantMessageEventStream;

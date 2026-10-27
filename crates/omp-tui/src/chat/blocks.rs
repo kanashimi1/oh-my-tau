@@ -1087,34 +1087,31 @@ fn read_group_preview_lines(
         if let Some(preview) = &read.preview {
             frame["result"] = json!({"text": preview});
         }
-        match tools::read::ReadGroupEntry::from_frame(&frame) {
-            Some(mut entry) => {
-                // The stored settlement state wins over frame inference
-                // (pending reads have no result to infer from).
-                entry.status = match read.status {
-                    ToolStatus::Pending | ToolStatus::Running => tools::read::ReadStatus::Pending,
-                    ToolStatus::Ok => entry.status,
-                    ToolStatus::Error => tools::read::ReadStatus::Error,
-                };
-                entries.push(entry);
-            }
-            None => {
-                // URL / non-fs target: a plain head row + first preview line.
-                let glyph = if read.status.settled() {
-                    theme.glyph("success")
-                } else {
-                    "⧗"
-                };
-                plain.push(Line::from(vec![
-                    Span::styled(glyph, Style::default().fg(theme.color("text_muted"))),
-                    Span::raw(format!(" {}", read.path)),
-                ]));
-                if let Some(preview) = &read.preview {
-                    plain.push(Line::from(Span::styled(
-                        format!("    {}", preview.lines().next().unwrap_or("")),
-                        Style::default().fg(theme.color("text_muted")),
-                    )));
-                }
+        if let Some(mut entry) = tools::read::ReadGroupEntry::from_frame(&frame) {
+            // The stored settlement state wins over frame inference
+            // (pending reads have no result to infer from).
+            entry.status = match read.status {
+                ToolStatus::Pending | ToolStatus::Running => tools::read::ReadStatus::Pending,
+                ToolStatus::Ok => entry.status,
+                ToolStatus::Error => tools::read::ReadStatus::Error,
+            };
+            entries.push(entry);
+        } else {
+            // URL / non-fs target: a plain head row + first preview line.
+            let glyph = if read.status.settled() {
+                theme.glyph("success")
+            } else {
+                "⧗"
+            };
+            plain.push(Line::from(vec![
+                Span::styled(glyph, Style::default().fg(theme.color("text_muted"))),
+                Span::raw(format!(" {}", read.path)),
+            ]));
+            if let Some(preview) = &read.preview {
+                plain.push(Line::from(Span::styled(
+                    format!("    {}", preview.lines().next().unwrap_or("")),
+                    Style::default().fg(theme.color("text_muted")),
+                )));
             }
         }
     }
@@ -1290,7 +1287,7 @@ mod tests {
     }
 
     fn rows(lines: &[Line<'static>]) -> Vec<String> {
-        lines.iter().map(|l| l.to_string()).collect()
+        lines.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]
@@ -1463,7 +1460,7 @@ mod tests {
         let entry = ChatEntry::new_for_test(ChatRole::Assistant, ChatKind::Assistant(a));
         assert!(entry_lines(&entry, false, 60, &theme()).is_empty());
         let shown = rows(&entry_lines(&entry, true, 60, &theme()));
-        assert_eq!(shown, vec!["".to_owned(), " Error: 400 boom".to_owned()]);
+        assert_eq!(shown, vec![String::new(), " Error: 400 boom".to_owned()]);
     }
 
     #[test]

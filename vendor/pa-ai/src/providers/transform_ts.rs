@@ -1,5 +1,5 @@
 //! TS `transformMessages` (`providers/transform-messages.ts`): the cross-model history rewrite the
-//! Anthropic Messages and OpenAI Responses request builders run before conversion — thinking
+//! Anthropic Messages and `OpenAI` Responses request builders run before conversion — thinking
 //! blocks re-bound to the target model, tool-call ids normalized, orphan tool calls answered and
 //! stale tool results demoted to notes.
 

@@ -1453,7 +1453,7 @@ mod tests {
         let mut ui = ExtensionUi::new();
         ui.push(&json!({"type":"extension_ui_request","id":"i1","method":"input","title":"Key"}));
         assert!(ui
-            .poll_deadlines(Instant::now() + Duration::from_secs(60))
+            .poll_deadlines(Instant::now() + Duration::from_mins(1))
             .is_empty());
         assert!(
             ui.is_active(),

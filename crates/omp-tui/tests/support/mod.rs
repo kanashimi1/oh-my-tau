@@ -632,7 +632,7 @@ impl TuiHarness {
     /// Whether the spawned loop task has ended (normally or by panic) while
     /// a wait is still outstanding.
     fn aborted(&self) -> bool {
-        self.run.as_ref().is_some_and(|handle| handle.is_finished())
+        self.run.as_ref().is_some_and(tokio::task::JoinHandle::is_finished)
     }
 
     /// Text of the newest frame: one line per terminal row, trailing blanks

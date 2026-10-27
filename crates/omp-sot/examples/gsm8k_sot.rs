@@ -1,4 +1,4 @@
-//! GSM8K smoke bench for the SoT limited-access controllers.
+//! GSM8K smoke bench for the `SoT` limited-access controllers.
 //!
 //! Compares three inference recipes on a deterministic stride sample of the
 //! GSM8K test split against a local Ollama server:
@@ -107,7 +107,7 @@ fn post_json(path: &str, payload: &Value) -> Result<Value, String> {
         .map_err(|e| format!("JSON: {e}; body: {}", &text[..text.len().min(200)]))
 }
 
-/// One chat completion; returns (text, prompt_tokens, completion_tokens).
+/// One chat completion; returns (text, `prompt_tokens`, `completion_tokens`).
 fn chat(prompt: &str, max_tokens: usize) -> Result<(String, u64, u64), String> {
     let resp = post_json(
         "/v1/chat/completions",
@@ -187,7 +187,7 @@ fn extract_number(text: &str) -> Option<f64> {
 
 // --------------------------------------------------------------- backend ----
 
-/// Chat backend used by the SoT loop. Counts every call's usage so the
+/// Chat backend used by the `SoT` loop. Counts every call's usage so the
 /// harness can report generated and re-sent prompt tokens separately.
 struct OllamaBackend {
     prompt_tokens: u64,
@@ -315,7 +315,7 @@ fn parse_args() -> Result<Args, String> {
             "--norm" => args.norm = Some(value),
             "--calibrate" => args.calibrate = Some(value.parse().map_err(|_| "bad --calibrate")?),
             "--cot-sentences" => {
-                args.cot_sentences = value.parse().map_err(|_| "bad --cot-sentences")?
+                args.cot_sentences = value.parse().map_err(|_| "bad --cot-sentences")?;
             }
             "--n" => args.n = value.parse().map_err(|_| "bad --n")?,
             "--methods" => args.methods = value.split(',').map(str::to_owned).collect(),
@@ -395,8 +395,8 @@ fn main() -> Result<(), String> {
             );
             raws.extend(outcome.trajectory.raw_states().iter().copied());
             eprintln!(
-                "calibrate problem: steps={} correct={}",
-                outcome.steps, "n/a"
+                "calibrate problem: steps={} correct=n/a",
+                outcome.steps
             );
         }
         let norm = Normalizer::fit(&raws);

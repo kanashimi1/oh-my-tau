@@ -25,7 +25,7 @@ const CURSOR_FILE: &str = "cursor.json";
 const INGEST_BATCH: i64 = 1_000;
 
 /// The `spelling.autocomplete` setting values (`off` disables ghost text;
-/// `smollm`/`apple` need weights / AppKit that omp-rs does not ship and fall
+/// `smollm`/`apple` need weights / `AppKit` that omp-rs does not ship and fall
 /// back to the n-gram engine).
 #[must_use]
 pub fn method_for_setting(value: &str) -> Option<Method> {
@@ -220,18 +220,15 @@ impl WordHost {
         } else {
             None
         };
-        let mut engine = match pi_predict::open(method, &config) {
-            Ok(engine) => engine,
-            Err(_) => {
-                // Unloadable state (corrupt, or an incompatible engine
-                // version): rebuild it like a fresh install (TS `#open`).
-                let _ = std::fs::remove_file(dir.join(SNAPSHOT_FILE));
-                let _ = std::fs::remove_file(dir.join(CURSOR_FILE));
-                cursor = None;
-                match pi_predict::open(method, &config) {
-                    Ok(engine) => engine,
-                    Err(_) => return false,
-                }
+        let mut engine = if let Ok(engine) = pi_predict::open(method, &config) { engine } else {
+            // Unloadable state (corrupt, or an incompatible engine
+            // version): rebuild it like a fresh install (TS `#open`).
+            let _ = std::fs::remove_file(dir.join(SNAPSHOT_FILE));
+            let _ = std::fs::remove_file(dir.join(CURSOR_FILE));
+            cursor = None;
+            match pi_predict::open(method, &config) {
+                Ok(engine) => engine,
+                Err(_) => return false,
             }
         };
         let mut changed = false;
@@ -246,11 +243,10 @@ impl WordHost {
         let (after, ingested) = ingest_history(&mut *engine, &history, cursor.unwrap_or(0));
         changed |= ingested > 0 || cursor.is_none();
         self.cursor.store(after, Ordering::Relaxed);
-        if changed {
-            if engine.persist().is_err() || write_cursor(&dir, after).is_err() {
+        if changed
+            && (engine.persist().is_err() || write_cursor(&dir, after).is_err()) {
                 self.dirty.store(true, Ordering::Relaxed);
             }
-        }
         let mut slot = self.slot.lock();
         if let Slot::Loading { pending } = &mut *slot {
             for prompt in pending.drain(..) {

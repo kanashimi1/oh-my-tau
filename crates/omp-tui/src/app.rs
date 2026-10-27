@@ -619,7 +619,7 @@ impl App {
         self.appearance = appearance;
     }
 
-    /// Replace the app-wide theme (ThemeLoader startup + hot-swap). The
+    /// Replace the app-wide theme (`ThemeLoader` startup + hot-swap). The
     /// transcript renderer is synced here — not per frame — so a hot-swap
     /// lands everywhere on the next paint (tui-ChatRenderWire caveat).
     pub fn set_theme(&mut self, mut theme: Theme) {
@@ -2134,7 +2134,7 @@ impl App {
     }
 
     /// Whether an open overlay (or a `fullscreen` extension dialog) is full-screen and the shell renderer must
-    /// hold the alternate screen (ShellRender contract); while true the
+    /// hold the alternate screen (`ShellRender` contract); while true the
     /// controller paints [`Self::render_fullscreen`] instead of the live
     /// region.
     #[must_use]
@@ -2378,7 +2378,7 @@ impl App {
 
     /// The uncommitted chat tail: entries at/after the commit watermark
     /// only — committed rows live in terminal scrollback and must never be
-    /// re-drawn here (ShellRender invariant). Rows come from the chat block
+    /// re-drawn here (`ShellRender` invariant). Rows come from the chat block
     /// renderer (`chat::blocks`); the streaming reveal controller is ticked
     /// once per frame here in the draw loop (chat.md §8).
     fn render_chat(&mut self, frame: &mut Frame<'_>, area: Rect) {
@@ -4249,7 +4249,7 @@ mod tests {
         let w = app.welcome.as_mut().unwrap();
         w.started = w
             .started
-            .map(|s| s - Duration::from_millis(welcome::SHIMMER_MS));
+            .map(|s| s.checked_sub(Duration::from_millis(welcome::SHIMMER_MS)).unwrap());
         assert!(w.started.is_some(), "the clock starts at the first paint");
         assert_eq!(app.animation_interval(), None);
         let rows = app.take_scrollback_lines(100, false);
@@ -4528,7 +4528,7 @@ mod paste_tests {
         // Default settings file location derives from cwd/env; keep the
         // default threshold (100 lines) and use a 120-line paste.
         let payload = "line\n".repeat(119) + "line";
-        assert!(app.handle_terminal_event(&Event::Paste(payload.clone()), &port));
+        assert!(app.handle_terminal_event(&Event::Paste(payload), &port));
         assert_eq!(
             app.overlays.open(),
             Some(OpenOverlay::LargePaste),

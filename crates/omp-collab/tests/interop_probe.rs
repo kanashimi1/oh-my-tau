@@ -49,14 +49,14 @@ async fn queued_send_flushes_before_close() {
         tokio::select! {
             ev = guest_events.next() => match ev {
                 Some(RelayEvent::Opened) => guest_opened = true,
-                Some(RelayEvent::Binary(data)) => guest_frames.push(data.to_vec()),
+                Some(RelayEvent::Binary(data)) => guest_frames.push(data.clone()),
                 Some(RelayEvent::Closed { code, reason, .. }) => {
                     guest_closed = Some(format!("{code}:{reason}"));
                     break;
                 }
                 _ => {}
             },
-            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+            () = tokio::time::sleep(Duration::from_millis(50)) => {
                 if guest_opened && !sent {
                     assert!(host.send_binary(envelope.clone()), "send queued");
                     host.close(); // immediately, no grace

@@ -47,7 +47,7 @@ pub enum AnthropicEffort {
     High,
     Xhigh,
     Max,
-    /// `thinking.type: "adaptive"` without `output_config.effort` (MiniMax's binary tag).
+    /// `thinking.type: "adaptive"` without `output_config.effort` (`MiniMax`'s binary tag).
     Adaptive,
 }
 
@@ -374,9 +374,7 @@ pub(crate) fn normalize_mandatory_reasoning(
     options: &SimpleStreamOptions,
 ) -> SimpleStreamOptions {
     let explicit = options
-        .reasoning
-        .filter(|l| *l != ModelThinkingLevel::Off)
-        .is_some()
+        .reasoning.as_ref().is_some_and(|l| *l != ModelThinkingLevel::Off)
         && !options.disable_reasoning;
     if !model.reasoning
         || view.thinking_flag("requiresEffort") != Some(true)

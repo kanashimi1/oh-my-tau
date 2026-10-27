@@ -621,8 +621,8 @@ async fn run_stream(
     // TS `rawRequestDump`: kept so a 400/413 rejection can be dumped and
     // referenced from the error message (`finalizeErrorMessage`).
     let request_dump = RawHttpRequestDump {
-        provider: model.provider.to_string(),
-        api: model.api.to_string(),
+        provider: model.provider.clone(),
+        api: model.api.clone(),
         model: model.id.clone(),
         method: "POST".to_owned(),
         url: url.clone(),

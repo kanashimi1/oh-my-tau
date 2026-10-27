@@ -443,13 +443,13 @@ impl CollabHost {
         if last.as_deref() == Some(json.as_str()) {
             return;
         }
-        *last = Some(json.clone());
+        *last = Some(json);
         drop(last);
         self.send_frame(&json!({ "t": "state", "state": state }), 0);
     }
 
     fn broadcast_allowed(&self) -> bool {
-        !self.ending() && self.inner.peers.lock().unwrap().len() > 0 && self.session_still_current()
+        !self.ending() && !self.inner.peers.lock().unwrap().is_empty() && self.session_still_current()
     }
 
     fn session_still_current(&self) -> bool {
@@ -493,7 +493,7 @@ impl CollabHost {
     }
 
     fn snapshot_chunks(&self, entries: Vec<String>) -> Vec<String> {
-        let bytes: Vec<usize> = entries.iter().map(|e| e.len()).collect();
+        let bytes: Vec<usize> = entries.iter().map(std::string::String::len).collect();
         snapshot_chunks(&entries, &bytes)
             .into_iter()
             .map(|chunk| {
@@ -560,7 +560,7 @@ impl CollabHost {
         self.inner.peers.lock().unwrap().insert(
             from_peer,
             Peer {
-                name: clean_name.clone(),
+                name: clean_name,
                 can_write,
             },
         );
@@ -601,8 +601,7 @@ impl CollabHost {
             .lock()
             .unwrap()
             .get(&from_peer)
-            .map(|p| p.can_write)
-            .unwrap_or(false);
+            .is_some_and(|p| p.can_write);
         if !can_write {
             self.reject_read_only("prompting", from_peer);
             return;
@@ -635,8 +634,7 @@ impl CollabHost {
             .lock()
             .unwrap()
             .get(&from_peer)
-            .map(|p| p.can_write)
-            .unwrap_or(false);
+            .is_some_and(|p| p.can_write);
         if !can_write {
             self.reject_read_only("interrupting", from_peer);
             return;
@@ -666,8 +664,7 @@ impl CollabHost {
             .inner
             .guest_actions_ready
             .as_ref()
-            .map(|f| f())
-            .unwrap_or(true);
+            .is_none_or(|f| f());
         if ready {
             return false;
         }
@@ -776,15 +773,14 @@ impl CollabHostRegistrySource for HostRegistrySource {
         Ok(CollabHostSnapshot {
             instance_id: host.instance_id.clone(),
             generation: host.generation,
-            pid: std::process::id() as i64,
+            pid: i64::from(std::process::id()),
             session_id: host.session_id.clone(),
             session_name: host.backend.session_name(),
             cwd: host.backend.cwd(),
             model: model.map(|(provider, id)| CollabHostModel { provider, id }),
             started_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_millis() as i64),
             participants,
             relay_connected: host
                 .relay_connected

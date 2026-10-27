@@ -6,7 +6,7 @@
 //! in-process clipboard backend in omp-rs, so every platform branch is a
 //! subprocess:
 //!
-//! - WSL: `powershell.exe` over interop (WSLg has no image transport and its
+//! - WSL: `powershell.exe` over interop (`WSLg` has no image transport and its
 //!   Wayland clipboard only works when `wl-clipboard` happens to be
 //!   installed) — the `Get-Clipboard -Raw` text one-liner and the
 //!   clipboard-image→base64-PNG script, both verbatim from TS.
@@ -101,15 +101,15 @@ pub fn perform(request: PasteRequest) -> ClipboardOutcome {
 /// PowerShell one-liner emitting the clipboard text verbatim (TS
 /// `POWERSHELL_TEXT_SCRIPT`): UTF-8 forced output encoding, `Get-Clipboard
 /// -Raw` through `[Console]::Out.Write` (no trailing newline).
-const POWERSHELL_TEXT_SCRIPT: &str = r#"
+const POWERSHELL_TEXT_SCRIPT: &str = r"
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 [Console]::Out.Write([string](Get-Clipboard -Raw))
-"#;
+";
 
 /// PowerShell script emitting the clipboard image as base64 PNG, or nothing
 /// when the clipboard holds no image (TS `POWERSHELL_IMAGE_SCRIPT`).
-const POWERSHELL_IMAGE_SCRIPT: &str = r#"
+const POWERSHELL_IMAGE_SCRIPT: &str = r"
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -119,7 +119,7 @@ if ($img -ne $null) {
 	$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
 	[Console]::Out.Write([Convert]::ToBase64String($ms.ToArray()))
 }
-"#;
+";
 
 /// Run a stub command from an override spec (`OMP_CLIPBOARD_TEXT_GET` /
 /// `OMP_CLIPBOARD_IMAGE_GET` value): whitespace-split argv, resolved from
@@ -259,6 +259,7 @@ fn pipe_to(cmd: &mut Command, text: &str) -> bool {
 /// Copy `text` with the platform clipboard tools (TS `copyToClipboard` native half; blocking,
 /// call off the render thread). `OMP_CLIPBOARD_TEXT_SET` names a command (whitespace-split argv)
 /// that receives the text on stdin instead, for tests. `false` when every tool failed.
+#[must_use]
 pub fn write_text(text: &str) -> bool {
     if let Ok(spec) = std::env::var("OMP_CLIPBOARD_TEXT_SET") {
         let mut argv = spec.split_whitespace();
@@ -353,7 +354,7 @@ fn read_image_via_powershell() -> Option<ClipboardImage> {
 
 fn read_image_via_wl_paste() -> Option<ClipboardImage> {
     let listing = capture(
-        &mut Command::new("wl-paste").arg("--list-types"),
+        Command::new("wl-paste").arg("--list-types"),
         TEXT_TIMEOUT,
     )?;
     let offered: Vec<String> = stdout_lossy(listing).lines().map(str::to_owned).collect();

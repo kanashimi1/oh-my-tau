@@ -411,7 +411,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains("1 jobs settled") || text.contains("jobs"));
         assert!(text.contains("1 failed"));
