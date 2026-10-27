@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use pa_agent::abort::{AbortController, AbortSignal};
-use pa_agent::agent_loop::{AgentEventSink, AgentLoopConfig, run_agent_loop};
+use pa_agent::agent_loop::{run_agent_loop, AgentEventSink, AgentLoopConfig};
 use pa_agent::scripted::{ScriptStep, ScriptedProvider, ScriptedTurn};
 use pa_agent::stream::AssistantMessageEvent;
 use pa_agent::types::{

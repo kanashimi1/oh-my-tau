@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 use pa_types::ai::Model;
 
-use super::resolve::{ModelSpec, resolve_model_policy};
+use super::resolve::{resolve_model_policy, ModelSpec};
 
 #[derive(Debug, Clone, Default)]
 pub struct ModelView {

@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 pub use model::{compat_overrides, materialize, model_from_catalog_row, resolve_for_model};
-pub use resolve::{ModelSpec, ResolveError, ResolvedModelPolicy, resolve_model_policy};
+pub use resolve::{resolve_model_policy, ModelSpec, ResolveError, ResolvedModelPolicy};
 pub use view::ModelView;
 
 /// The compiled rule tree (the parts the resolver reads).

@@ -155,7 +155,12 @@ impl Envelope {
 /// Build the envelope answering `original`: `causation_id` points at the
 /// original message, `correlation_id` continues the thread.
 #[must_use]
-pub fn answer_envelope(original: &Envelope, sender: &str, message_id: String, payload: String) -> Envelope {
+pub fn answer_envelope(
+    original: &Envelope,
+    sender: &str,
+    message_id: String,
+    payload: String,
+) -> Envelope {
     Envelope {
         message_id,
         run_id: original.run_id.clone(),
@@ -199,10 +204,7 @@ pub fn looks_like_pane(a: &str) -> bool {
 /// agents understand pane deliveries unchanged.
 #[must_use]
 pub fn pane_text(env: &Envelope) -> String {
-    let pointer = env
-        .payload_ref
-        .as_ref()
-        .map_or("none", |r| r.path.as_str());
+    let pointer = env.payload_ref.as_ref().map_or("none", |r| r.path.as_str());
     let expected = env.expected.as_deref().unwrap_or("none");
     let mut text = format!(
         "[FROM] {}\n[ID] {}\n[POINTER] {}\n[EXPECTED] {}",
@@ -234,9 +236,8 @@ pub fn new_message_id() -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let x = u64::try_from(nanos).unwrap_or(0)
-            ^ (u64::from(std::process::id()) << 32)
-            ^ (ms << 16);
+        let x =
+            u64::try_from(nanos).unwrap_or(0) ^ (u64::from(std::process::id()) << 32) ^ (ms << 16);
         b = x.to_le_bytes().repeat(2).try_into().unwrap_or(b);
     }
     b[0..6].copy_from_slice(&ms.to_be_bytes()[2..8]);
@@ -275,7 +276,10 @@ mod tests {
         let pa = u128::from_str_radix(&a[0..13].replace('-', ""), 16).unwrap();
         let pb = u128::from_str_radix(&b[0..13].replace('-', ""), 16).unwrap();
         let diff = pa.abs_diff(pb);
-        assert!(diff < 10_000, "v7 timestamps should be within seconds: {diff}");
+        assert!(
+            diff < 10_000,
+            "v7 timestamps should be within seconds: {diff}"
+        );
     }
 
     #[test]
@@ -308,7 +312,10 @@ mod tests {
         e.reply_schema = Some(serde_json::json!({"type":"object"}));
         assert!(e.is_reply_expected());
         let now = 1_000_000;
-        assert_eq!(e.effective_deadline(now), Some(now + DEFAULT_REPLY_DEADLINE_MS));
+        assert_eq!(
+            e.effective_deadline(now),
+            Some(now + DEFAULT_REPLY_DEADLINE_MS)
+        );
         e.deadline = Some(42);
         assert_eq!(e.effective_deadline(now), Some(42));
     }

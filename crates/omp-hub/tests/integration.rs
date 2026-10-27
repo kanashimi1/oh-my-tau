@@ -128,45 +128,54 @@ async fn claims_conflict_fencing_and_expiry() {
     let t0 = 10_000;
 
     // Grant to A with token 1; B conflicts and sees the holder + expiry.
-    let c1 = store.claim("file:x.rs", "worker-a", 60, Some("edit"), t0).unwrap();
+    let c1 = store
+        .claim("file:x.rs", "worker-a", 60, Some("edit"), t0)
+        .unwrap();
     assert!(c1.granted);
     let tok1 = c1.fencing_token.unwrap();
-    let c2 = store.claim("file:x.rs", "worker-b", 60, None, t0 + 1000).unwrap();
+    let c2 = store
+        .claim("file:x.rs", "worker-b", 60, None, t0 + 1000)
+        .unwrap();
     assert!(!c2.granted);
     assert_eq!(c2.holder.as_deref(), Some("worker-a"));
     assert!(c2.expires_ms.unwrap() > t0);
 
     // Re-claim by the same owner renews with a HIGHER token (monotonic).
-    let c3 = store.claim("file:x.rs", "worker-a", 60, None, t0 + 2000).unwrap();
+    let c3 = store
+        .claim("file:x.rs", "worker-a", 60, None, t0 + 2000)
+        .unwrap();
     let tok3 = c3.fencing_token.unwrap();
     assert!(tok3 > tok1);
 
     // Stale token cannot release; the current token can.
-    assert!(!store.release("file:x.rs", "worker-a", tok1, t0 + 3000).unwrap());
-    assert!(store.release("file:x.rs", "worker-a", tok3, t0 + 3000).unwrap());
+    assert!(!store
+        .release("file:x.rs", "worker-a", tok1, t0 + 3000)
+        .unwrap());
+    assert!(store
+        .release("file:x.rs", "worker-a", tok3, t0 + 3000)
+        .unwrap());
 
     // After release B gets it, with an even higher token.
-    let c4 = store.claim("file:x.rs", "worker-b", 60, None, t0 + 4000).unwrap();
+    let c4 = store
+        .claim("file:x.rs", "worker-b", 60, None, t0 + 4000)
+        .unwrap();
     assert!(c4.granted);
     assert!(c4.fencing_token.unwrap() > tok3);
 
     // Expiry frees the resource without a release.
-    let short = store.claim("tmp:lock", "worker-a", 1, None, t0 + 5000).unwrap();
+    let short = store
+        .claim("tmp:lock", "worker-a", 1, None, t0 + 5000)
+        .unwrap();
     assert!(short.granted);
-    assert!(store
-        .check("tmp:lock", t0 + 7000)
-        .unwrap()
-        .is_none());
-    let takeover = store.claim("tmp:lock", "worker-b", 60, None, t0 + 7000).unwrap();
+    assert!(store.check("tmp:lock", t0 + 7000).unwrap().is_none());
+    let takeover = store
+        .claim("tmp:lock", "worker-b", 60, None, t0 + 7000)
+        .unwrap();
     assert!(takeover.granted);
 
     // check() reports the holder for warnings while held.
     assert_eq!(
-        store
-            .check("file:x.rs", t0 + 4100)
-            .unwrap()
-            .unwrap()
-            .owner,
+        store.check("file:x.rs", t0 + 4100).unwrap().unwrap().owner,
         "worker-b"
     );
 }
@@ -175,10 +184,7 @@ async fn claims_conflict_fencing_and_expiry() {
 async fn wire_send_ack_inbox_and_dead_pane_fails_fast() {
     let (_guard, hub, task) = start_hub();
     let c = connect(&hub).await;
-    let r = c
-        .send(env("agent-a", "agent-b", "hello"))
-        .await
-        .unwrap();
+    let r = c.send(env("agent-a", "agent-b", "hello")).await.unwrap();
     assert_eq!(r.seq, 1);
     assert_eq!(r.state, State::SENT);
 
@@ -224,7 +230,10 @@ async fn wire_hello_replay_urgent_first_and_nothing_lost_on_restart() {
     let mut gone = HubClient::connect_with(hub.clone(), false).await.unwrap();
     let mut gone_stream = gone.take_deliver_stream().unwrap();
     gone.hello("agent-gone", 0).await.unwrap();
-    let to_gone = sender.send(env("agent-a", "agent-gone", "for-gone")).await.unwrap();
+    let to_gone = sender
+        .send(env("agent-a", "agent-gone", "for-gone"))
+        .await
+        .unwrap();
     let _ = recv(&mut gone_stream).await; // delivered, never acked
     assert!(to_gone.seq >= 1);
     drop(gone);
@@ -250,7 +259,10 @@ async fn wire_hello_replay_urgent_first_and_nothing_lost_on_restart() {
     let mut stream2 = c2.take_deliver_stream().unwrap();
     let h2 = c2.hello("agent-gone", 0).await.unwrap();
     assert_eq!(h2["replayed"].as_u64().unwrap(), 1);
-    assert_eq!(recv(&mut stream2).await.payload.as_deref(), Some("for-gone"));
+    assert_eq!(
+        recv(&mut stream2).await.payload.as_deref(),
+        Some("for-gone")
+    );
     task2.abort();
 }
 
@@ -361,9 +373,11 @@ async fn wire_deadline_expiry_sends_sender_a_notice() {
     for env in sender.inbox("agent-a", None, None).await.unwrap() {
         if env.kind == Kind::DELIVERY_ACK {
             notices += 1;
-            let payload: Value =
-                serde_json::from_str(env.payload.as_deref().unwrap()).unwrap();
-            assert_eq!(payload["notice"].as_str().unwrap(), "reply_deadline_expired");
+            let payload: Value = serde_json::from_str(env.payload.as_deref().unwrap()).unwrap();
+            assert_eq!(
+                payload["notice"].as_str().unwrap(),
+                "reply_deadline_expired"
+            );
             assert_eq!(payload["message_id"].as_str().unwrap(), sent.message_id);
         }
     }
@@ -375,7 +389,10 @@ async fn wire_deadline_expiry_sends_sender_a_notice() {
 async fn wire_claims_roundtrip() {
     let (_guard, hub, task) = start_hub();
     let c = connect(&hub).await;
-    let c1 = c.claim("crates/omp-hub", "hub-worker", 60, Some("build")).await.unwrap();
+    let c1 = c
+        .claim("crates/omp-hub", "hub-worker", 60, Some("build"))
+        .await
+        .unwrap();
     assert!(c1.granted);
     let c2 = c
         .claim("crates/omp-hub", "task-worker", 60, None)

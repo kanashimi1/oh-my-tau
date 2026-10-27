@@ -354,12 +354,8 @@ pub async fn navigate_tree(
     // move (TS `branch()`; the next append chains onto the target, which is how the loader
     // reconstructs the branch after a restart too).
     let summary_entry = if let Some((text, details)) = &summary_result {
-        let id = rt.append_branch_summary(
-            new_leaf.as_deref(),
-            text,
-            Some(details.clone()),
-            None,
-        )?;
+        let id =
+            rt.append_branch_summary(new_leaf.as_deref(), text, Some(details.clone()), None)?;
         Some(json!({
             "type": "branch_summary",
             "id": id,

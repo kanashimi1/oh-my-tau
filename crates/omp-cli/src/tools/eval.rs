@@ -19,19 +19,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use omp_eval::js::JsKernel;
 use omp_eval::{CancelToken, CellResult, CellStatus, ExecOptions, PythonKernel};
-use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use serde_json::{Value, json};
+use pa_agent::BoxFut;
+use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
 
-use super::Env;
 use super::eval_bridge::{EvalBridge, OpCtx};
 use super::eval_journal::{self, Lang};
-use super::util::{SpillConfig, notice_with_artifact, save_artifact, sink_window, spill_window};
+use super::util::{notice_with_artifact, save_artifact, sink_window, spill_window, SpillConfig};
+use super::Env;
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code

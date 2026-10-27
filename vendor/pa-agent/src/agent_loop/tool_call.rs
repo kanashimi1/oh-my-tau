@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use futures::FutureExt as _;
 
-use crate::abort::{AbortSignal, is_abort_error};
+use crate::abort::{is_abort_error, AbortSignal};
 use crate::types::{
     AfterToolCallContext, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult,
     AgentToolUpdateCallback, AssistantMessage, BeforeToolCallContext, ToolCall, ToolResultMessage,

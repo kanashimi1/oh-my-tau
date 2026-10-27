@@ -6,26 +6,26 @@ use serde_json::Map;
 
 use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::{
-    AssistantMessageEvent, AssistantMessageEventStream, AssistantMessageEventWriter,
-    create_assistant_message_event_stream,
+    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
+    AssistantMessageEventWriter,
 };
-use crate::providers::openai_responses_shared::{ResponsesStreamHooks, apply_service_tier_pricing};
+use crate::providers::openai_responses_shared::{apply_service_tier_pricing, ResponsesStreamHooks};
 use crate::providers::responses_request::{
-    Flavor, ResponsesOptions, build_body, responses_headers,
+    build_body, responses_headers, Flavor, ResponsesOptions,
 };
 use crate::registry::Provider;
 use crate::types::{
-    AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
-    done_reason, error_reason,
+    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason,
+    StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
-use crate::utils_inner::http::{HttpResponse, RequestOptions, send};
-use crate::utils_inner::http_inspector::{RawHttpRequestDump, finalize_http_error};
+use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
 use crate::utils_inner::json_parse::{parse_json_with_repair, parse_streaming_json};
 use crate::utils_inner::sse::SseDecoder;
 use crate::utils_inner::stream_failure::{
-    ProviderError, format_stream_failure_message, record_stream_failure,
-    stream_failure_from_stop_reason,
+    format_stream_failure_message, record_stream_failure, stream_failure_from_stop_reason,
+    ProviderError,
 };
 
 pub const API_OPENAI_RESPONSES: &str = "openai-responses";

@@ -2,10 +2,10 @@
 //! resolve the same wire api and build the same body. Cases come from the transport section of
 //! `scripts/compat-oracle/bodies.ts` (`bodies-transport.jsonl`).
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::compat::materialize;
-use crate::transport::{TransportEnv, plan_simple_request};
+use crate::transport::{plan_simple_request, TransportEnv};
 use crate::types::{Context, Model, ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice};
 
 /// Path of a compat-oracle fixture: `$OMP_COMPAT_ORACLE_DIR` if set, else `<repo

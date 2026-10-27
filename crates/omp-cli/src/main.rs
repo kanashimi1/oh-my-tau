@@ -347,9 +347,7 @@ async fn async_main() -> Result<()> {
         bail!("omt: --mode {mode} is not supported (no {mode} subsystem)");
     }
     if !args.config.is_empty() || !args.add_dir.is_empty() {
-        eprintln!(
-            "omt: --config/--add-dir parsed but their subsystems are not in omt; ignored"
-        );
+        eprintln!("omt: --config/--add-dir parsed but their subsystems are not in omt; ignored");
     }
 
     let mut cwd = match args.cwd {
@@ -361,9 +359,7 @@ async fn async_main() -> Result<()> {
     if !args.allow_home {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
             if cwd == home.canonicalize().unwrap_or(home) {
-                eprintln!(
-                    "omt: started in ~; switching to a temp dir (pass --allow-home to stay)"
-                );
+                eprintln!("omt: started in ~; switching to a temp dir (pass --allow-home to stay)");
                 cwd = std::env::temp_dir();
             }
         }

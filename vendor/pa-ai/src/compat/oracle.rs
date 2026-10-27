@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use super::resolve::{ModelSpec, resolve_model_policy};
+use super::resolve::{resolve_model_policy, ModelSpec};
 
 /// Path of a compat-oracle fixture: `$OMP_COMPAT_ORACLE_DIR` if set, else `<repo
 /// root>/target/compat-oracle/` (where `scripts/compat-oracle/*.ts` writes), else the legacy

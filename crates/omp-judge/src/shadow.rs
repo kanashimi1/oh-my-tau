@@ -50,10 +50,13 @@ impl Config {
         if let Some(t) = get("OMP_LAYA_THREADS").and_then(|t| t.parse().ok()) {
             paths.threads = t;
         }
-        let out = get("OMP_LAYA_JUDGE_OUT").map_or_else(|| {
+        let out = get("OMP_LAYA_JUDGE_OUT").map_or_else(
+            || {
                 PathBuf::from(get("HOME").unwrap_or_else(|| ".".into()))
                     .join(".omp/agent/laya_judge.jsonl")
-            }, PathBuf::from);
+            },
+            PathBuf::from,
+        );
         Some(Self {
             out,
             paths,

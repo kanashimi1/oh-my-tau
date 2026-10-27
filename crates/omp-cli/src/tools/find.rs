@@ -7,12 +7,12 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use pa_agent::types::AgentToolResult;
 use pi_walker::{WalkDetail, WalkRequest};
 
-use super::Env;
 use super::util::{format_bytes, format_path_relative_to_cwd, resolve_to_cwd, str_arg};
+use super::Env;
 
 /// Ranges shown per hit in the model-facing text (omp `RANGES_SHOWN`).
 const RANGES_SHOWN: usize = 3;

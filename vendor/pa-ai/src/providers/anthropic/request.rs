@@ -2,14 +2,14 @@
 //! `convertTools` + prompt-cache placement in `providers/anthropic.ts`), built as an owned JSON
 //! tree so the cache-breakpoint passes can rewrite it in place exactly as TS does.
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::compat::ModelView;
-use crate::providers::anthropic::AnthropicOptions;
 use crate::providers::anthropic::convert::normalize_tool_call_id;
+use crate::providers::anthropic::AnthropicOptions;
 use crate::providers::openai_completions::schema::{spill_to_description, tool_wire_schema};
-use crate::providers::transform_ts::{SYNTHETIC_USER_KEY, transform_messages};
+use crate::providers::transform_ts::{transform_messages, SYNTHETIC_USER_KEY};
 use crate::types::{
     AssistantContent, CacheRetention, Context, Message, Model, ModelExt, ServiceTier,
     UserMessageContent, UserOrToolContent,
@@ -1479,11 +1479,9 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
                 thinking = Some(if dt == "adaptive" {
                     let mut t = json!({ "type": "adaptive" });
                     if view.thinking_flag("supportsDisplay") == Some(true) {
-                        t["display"] = json!(
-                            options
-                                .thinking_display
-                                .map_or("summarized", |d| d.as_str())
-                        );
+                        t["display"] = json!(options
+                            .thinking_display
+                            .map_or("summarized", |d| d.as_str()));
                     }
                     t
                 } else {
@@ -1499,11 +1497,9 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
                     "budget_tokens": options.thinking_budget_tokens.filter(|b| *b > 0).unwrap_or(1024),
                 });
                 if view.thinking_flag("supportsDisplay") != Some(false) {
-                    t["display"] = json!(
-                        options
-                            .thinking_display
-                            .map_or("summarized", |d| d.as_str())
-                    );
+                    t["display"] = json!(options
+                        .thinking_display
+                        .map_or("summarized", |d| d.as_str()));
                 }
                 thinking = Some(t);
                 if mode == Some("anthropic-budget-effort") {
@@ -1514,11 +1510,9 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
             } else {
                 let mut t = json!({ "type": "adaptive" });
                 if view.thinking_flag("supportsDisplay") == Some(true) {
-                    t["display"] = json!(
-                        options
-                            .thinking_display
-                            .map_or("summarized", |d| d.as_str())
-                    );
+                    t["display"] = json!(options
+                        .thinking_display
+                        .map_or("summarized", |d| d.as_str()));
                 }
                 thinking = Some(t);
                 if let Some(e) = effort.filter(|e| e != "adaptive") {
@@ -1600,13 +1594,11 @@ pub(crate) fn build_body(input: &BodyInput<'_>) -> Result<Value, String> {
     let mut params = Map::new();
     params.insert(
         "model".into(),
-        json!(
-            options
-                .request_model_id
-                .clone()
-                .or_else(|| model.request_model_id.clone())
-                .unwrap_or_else(|| model.id.clone())
-        ),
+        json!(options
+            .request_model_id
+            .clone()
+            .or_else(|| model.request_model_id.clone())
+            .unwrap_or_else(|| model.id.clone())),
     );
     let head_breakpoints = {
         let sys = system.as_ref().map_or(0, |s| {

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::compat::resolve_for_model;
 use crate::models::get_supported_thinking_levels;
@@ -467,9 +467,9 @@ pub fn apply_compat_policy(params: &mut Map<String, Value>, policy: &CompatPolic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::openai_completions::OpenAICompletionsOptions;
     use crate::providers::openai_completions::convert::transform_for_request;
     use crate::providers::openai_completions::params::build_params;
+    use crate::providers::openai_completions::OpenAICompletionsOptions;
     use crate::types::{
         CacheRetention, Context, Message, StreamOptions, UserMessage, UserMessageContent,
     };

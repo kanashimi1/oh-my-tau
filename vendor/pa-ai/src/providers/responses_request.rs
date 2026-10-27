@@ -2,18 +2,18 @@
 //! `buildParams`, `buildResponsesInput` and `convertTools` in `openai-shared.ts`), shared by the
 //! `openai-responses`, `azure-openai-responses` and `openrouter` (Responses default) transports.
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::compat::ModelView;
 use crate::providers::openai_completions::compat::{
-    CompatPolicy, ResolvedCompat, is_forced, resolve_policy,
-    should_drop_auto_tool_choice_for_reasoning,
+    is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning, CompatPolicy,
+    ResolvedCompat,
 };
 use crate::providers::openai_completions::schema::{
     adapt_schema_for_strict, flatten_exclusive_required_root_union, normalize_schema_for_moonshot,
     tool_wire_schema,
 };
-use crate::providers::openai_completions::{ToolChoice, normalize_stable_id};
+use crate::providers::openai_completions::{normalize_stable_id, ToolChoice};
 use crate::providers::transform_ts::transform_messages;
 use crate::types::{
     AssistantContent, CacheRetention, Context, Message, Model, ModelExt, ServiceTier,
@@ -1222,10 +1222,9 @@ pub(crate) fn build_body(
             if let Some(max) = output_token.filter(|m| *m > 0).filter(|_| !omit) {
                 params.insert(
                     "max_output_tokens".into(),
-                    json!(
-                        max.min(model_max.unwrap_or(u64::MAX))
-                            .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))
-                    ),
+                    json!(max
+                        .min(model_max.unwrap_or(u64::MAX))
+                        .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))),
                 );
             }
         }
@@ -1267,10 +1266,9 @@ pub(crate) fn build_body(
                 let clamp = clamp_output_to_model_max(view, model);
                 params.insert(
                     "max_output_tokens".into(),
-                    json!(
-                        max.min(model_max.unwrap_or(u64::MAX))
-                            .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))
-                    ),
+                    json!(max
+                        .min(model_max.unwrap_or(u64::MAX))
+                        .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))),
                 );
             }
         }

@@ -19,7 +19,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tokio::process::Command;
 
-use crate::envelope::{pane_text, Envelope, PANE_WAKE_TOOL, State};
+use crate::envelope::{pane_text, Envelope, State, PANE_WAKE_TOOL};
 use crate::store::Store;
 
 /// Minimum poll interval for pane status (`SPEC.md`: no faster than 2 s).
@@ -78,11 +78,7 @@ pub async fn pane_exists(pane: &str) -> anyhow::Result<bool> {
     }
     let parsed: AgentList = serde_json::from_slice(&out.stdout)
         .map_err(|e| anyhow::anyhow!("herdr agent list: bad JSON: {e}"))?;
-    Ok(parsed
-        .result
-        .agents
-        .iter()
-        .any(|a| a.pane_id == pane))
+    Ok(parsed.result.agents.iter().any(|a| a.pane_id == pane))
 }
 
 /// Status of a pane per `herdr agent get` ("unknown" on any failure).
@@ -160,9 +156,7 @@ pub async fn deliver_text(pane: &str, text: &str) -> anyhow::Result<&'static str
 pub fn wake_line(env: &Envelope) -> String {
     format!(
         "[hub] new envelope for you (id={}): {} {}",
-        env.message_id,
-        PANE_WAKE_TOOL,
-        env.recipient
+        env.message_id, PANE_WAKE_TOOL, env.recipient
     )
 }
 
@@ -181,9 +175,9 @@ async fn deliver_to_pane(store: &Arc<Store>, env: Envelope, reply_expected: bool
     let pane = env.recipient.clone();
     let id = env.message_id.clone();
     let full = reply_expected || env.priority.0 == 0;
-    let deadline = env.deadline.unwrap_or_else(|| {
-        crate::now_ms() + NOTE_GIVE_UP_MS
-    });
+    let deadline = env
+        .deadline
+        .unwrap_or_else(|| crate::now_ms() + NOTE_GIVE_UP_MS);
     loop {
         if !pane_exists(&pane).await.unwrap_or(false) {
             tracing::warn!(pane, id, "pane vanished; marking failed");

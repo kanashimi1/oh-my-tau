@@ -6,7 +6,7 @@
 //! draft-07 upgrade is not repeated. Key order follows the TS object construction (the strict
 //! output is order-sensitive on the wire).
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 const NON_STRUCTURAL: [&str; 38] = [
     "format",

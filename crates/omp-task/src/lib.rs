@@ -28,7 +28,7 @@ pub use discovery::{
     DiscoveryResult,
 };
 pub use envelope::{format_task_result, TaskResultEnvelope};
-pub use notes::{REVIEW_NOTES_REF, ReviewNote, Verdict};
+pub use notes::{ReviewNote, Verdict, REVIEW_NOTES_REF};
 pub use params::{SchemaMode, TaskItem, TaskParams};
 pub use runner::{
     current_task_depth, max_recursion_depth, recursion_gate, recursion_gate_at, ChildMode,

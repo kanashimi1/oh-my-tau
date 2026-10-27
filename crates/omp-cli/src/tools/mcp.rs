@@ -15,9 +15,9 @@ use anyhow::Result;
 use omp_mcp::manager::McpManager;
 use omp_mcp::names::create_tool_name;
 use omp_mcp::schema::normalize_schema_for_mcp;
-use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
+use pa_agent::BoxFut;
 use serde_json::Value;
 
 /// Discover MCP tools from omp's config locations (`~/.omp/agent/mcp.json`

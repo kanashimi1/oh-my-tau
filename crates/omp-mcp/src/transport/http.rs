@@ -11,13 +11,13 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
-use serde_json::{Value, json};
 use parking_lot::Mutex;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
+use serde_json::{json, Value};
 
 use crate::config::McpServerConfig;
 use crate::errors::{
-    Failure, JsonRpcError, McpError, McpTransportError, TransportKind, may_have_run,
+    may_have_run, Failure, JsonRpcError, McpError, McpTransportError, TransportKind,
 };
 use crate::transport::{McpTransport, PendingRequests, TransportFut};
 

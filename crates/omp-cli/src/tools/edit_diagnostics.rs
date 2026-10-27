@@ -22,10 +22,10 @@ use std::time::{Duration, Instant};
 use omp_lsp::client::LspClient;
 use omp_lsp::types::{Diagnostic, PublishedDiagnostics};
 use omp_lsp::utils::file_to_uri;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use super::Env;
 use super::util::format_path_relative_to_cwd;
+use super::Env;
 
 /// Total time budget for one `edit`/`write` gate call (split across files).
 pub const GATE_BUDGET_MS: u64 = 2000;
@@ -290,8 +290,7 @@ pub async fn run(env: &Env, files: &[PathBuf]) -> Option<GateResult> {
                 // empty because analysis is still running. Treat an empty
                 // publish as final only once the server is quiescent (or a
                 // non-empty publish arrived, or the budget runs out).
-                let strict = cold
-                    && omp_lsp::servers::is_project_aware_lsp_server(c.config());
+                let strict = cold && omp_lsp::servers::is_project_aware_lsp_server(c.config());
                 let settled = !strict
                     || now.as_ref().is_some_and(|p| !p.diagnostics.is_empty())
                     || c.is_quiescent();

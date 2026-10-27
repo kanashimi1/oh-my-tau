@@ -13,13 +13,13 @@ use std::collections::HashSet;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, anyhow, bail};
-use pa_agent::BoxFut;
+use anyhow::{anyhow, bail, Result};
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
+use pa_agent::BoxFut;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
@@ -2065,9 +2065,7 @@ mod tests {
             }
             let request = String::from_utf8(request).unwrap();
             assert!(request.contains("authorization: Bearer sk-ant-oat-test"));
-            assert!(
-                request.contains("claude-code-20250219,oauth-2025-04-20,web-search-2025-03-05")
-            );
+            assert!(request.contains("claude-code-20250219,oauth-2025-04-20,web-search-2025-03-05"));
             assert!(!request.to_lowercase().contains("x-api-key:"));
             let body = r#"{"id":"msg","model":"claude-opus-5-5","content":[],"usage":{}}"#;
             socket

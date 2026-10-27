@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use pa_agent::abort::AbortSignal;
 use pa_agent::agent::{Agent, AgentOptions};
-use pa_agent::agent_loop::{AgentEventSink, AgentLoopConfig, run_agent_loop_continue};
+use pa_agent::agent_loop::{run_agent_loop_continue, AgentEventSink, AgentLoopConfig};
 use pa_agent::scripted::ScriptedProvider;
 use pa_agent::stream::AssistantMessageEvent;
 use pa_agent::types::{

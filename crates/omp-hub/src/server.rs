@@ -18,8 +18,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use crate::envelope::{
-    looks_like_pane, new_message_id, normalize_address, Envelope, Kind, Priority, State, SENDER_HUB,
-    DEFAULT_REPLY_DEADLINE_MS,
+    looks_like_pane, new_message_id, normalize_address, Envelope, Kind, Priority, State,
+    DEFAULT_REPLY_DEADLINE_MS, SENDER_HUB,
 };
 use crate::pane;
 use crate::schema::{validate_reply, ReplyValidation};
@@ -105,8 +105,8 @@ pub async fn serve(hub: &HubDir) -> Result<()> {
     if let Some(parent) = hub.sock.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let listener = UnixListener::bind(&hub.sock)
-        .with_context(|| format!("bind {}", hub.sock.display()))?;
+    let listener =
+        UnixListener::bind(&hub.sock).with_context(|| format!("bind {}", hub.sock.display()))?;
     let server = Arc::new(Server {
         store: Arc::new(Store::open(&hub.dir)?),
         registry: Registry::default(),
@@ -147,7 +147,10 @@ fn sweep_deadlines(server: &Arc<Server>) -> Result<()> {
     let due = server.store.due_expired(now)?;
     for row in due {
         let env = row.envelope;
-        if !server.store.transition(&env.message_id, State::EXPIRED, now)? {
+        if !server
+            .store
+            .transition(&env.message_id, State::EXPIRED, now)?
+        {
             continue;
         }
         let mut notice = Envelope {
@@ -327,7 +330,10 @@ fn not_found(message: impl Into<String>) -> RpcError {
 fn bad_schema(errors: &[String]) -> RpcError {
     RpcError {
         code: E_SCHEMA,
-        message: format!("answer failed reply_schema validation ({} errors)", errors.len()),
+        message: format!(
+            "answer failed reply_schema validation ({} errors)",
+            errors.len()
+        ),
     }
 }
 
@@ -348,10 +354,7 @@ async fn dispatch_request(
             let agent = normalize_address(
                 str_param(params, "agent").ok_or_else(|| invalid("hello: missing agent"))?,
             );
-            let last_seq = params
-                .get("last_seq")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
+            let last_seq = params.get("last_seq").and_then(Value::as_u64).unwrap_or(0);
             server
                 .store
                 .hello(&agent, last_seq, crate::now_ms())
@@ -459,7 +462,9 @@ async fn dispatch_request(
                 .transition(id, state, crate::now_ms())
                 .map_err(|e| invalid(format!("ack: {e}")))?;
             if !ok {
-                return Err(not_found(format!("no such message or bad transition: {id}")));
+                return Err(not_found(format!(
+                    "no such message or bad transition: {id}"
+                )));
             }
             Ok(json!({"message_id": id, "state": state, "ok": true}))
         }
@@ -486,7 +491,10 @@ async fn dispatch_request(
                     message: format!("{causation_id} already answered"),
                 });
             }
-            match validate_reply(original.reply_schema.as_ref(), answer.payload.as_deref().unwrap_or("")) {
+            match validate_reply(
+                original.reply_schema.as_ref(),
+                answer.payload.as_deref().unwrap_or(""),
+            ) {
                 ReplyValidation::Valid | ReplyValidation::NoSchema => {}
                 other => {
                     let errors = other.error_detail().unwrap_or_default();
@@ -560,7 +568,8 @@ async fn dispatch_request(
                     .ok_or_else(|| invalid("inbox: missing recipient"))?,
             );
             let since = params.get("since_seq").and_then(Value::as_u64).unwrap_or(0);
-            let limit = usize::try_from(params.get("limit").and_then(Value::as_u64).unwrap_or(50)).unwrap_or(50);
+            let limit = usize::try_from(params.get("limit").and_then(Value::as_u64).unwrap_or(50))
+                .unwrap_or(50);
             let rows = server
                 .store
                 .inbox(&recipient, since, limit, false)
@@ -591,9 +600,10 @@ async fn dispatch_request(
             serde_json::to_value(report).map_err(|e| invalid(format!("status: {e}")))
         }
         "claim" => {
-            let resource = str_param(params, "resource")
-                .ok_or_else(|| invalid("claim: missing resource"))?;
-            let owner = str_param(params, "owner").ok_or_else(|| invalid("claim: missing owner"))?;
+            let resource =
+                str_param(params, "resource").ok_or_else(|| invalid("claim: missing resource"))?;
+            let owner =
+                str_param(params, "owner").ok_or_else(|| invalid("claim: missing owner"))?;
             let ttl = params.get("ttl_s").and_then(Value::as_u64).unwrap_or(300);
             let intent = str_param(params, "intent");
             let outcome: ClaimOutcome = server
@@ -605,8 +615,8 @@ async fn dispatch_request(
         "release" => {
             let resource = str_param(params, "resource")
                 .ok_or_else(|| invalid("release: missing resource"))?;
-            let owner = str_param(params, "owner")
-                .ok_or_else(|| invalid("release: missing owner"))?;
+            let owner =
+                str_param(params, "owner").ok_or_else(|| invalid("release: missing owner"))?;
             let token = params
                 .get("fencing_token")
                 .and_then(Value::as_u64)
@@ -632,8 +642,8 @@ async fn dispatch_request(
             Ok(json!({"claims": rows}))
         }
         "check" => {
-            let resource = str_param(params, "resource")
-                .ok_or_else(|| invalid("check: missing resource"))?;
+            let resource =
+                str_param(params, "resource").ok_or_else(|| invalid("check: missing resource"))?;
             let holder = server
                 .store
                 .check(resource, crate::now_ms())

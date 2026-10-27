@@ -11,18 +11,18 @@ use std::time::SystemTime;
 use omp_urls::spec::InternalResource;
 use omp_urls::{Registry, UrlCtx, UrlTarget};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use pa_agent::types::AgentToolResult;
 use pi_edit::path_policy::canonical_key;
 use pi_edit::store::seen_lines_from_body;
 use pi_edit::text::{normalize_to_lf, strip_bom};
 use regex::Regex;
 
-use super::Env;
 use super::util::{
-    DEFAULT_MAX_BYTES, SpillConfig, format_age, format_bytes, format_path_relative_to_cwd,
-    notice_with_artifact, resolve_to_cwd, save_artifact, shorten_path, truncate_head,
+    format_age, format_bytes, format_path_relative_to_cwd, notice_with_artifact, resolve_to_cwd,
+    save_artifact, shorten_path, truncate_head, SpillConfig, DEFAULT_MAX_BYTES,
 };
+use super::Env;
 
 /// `read.defaultLimit` schema default.
 const DEFAULT_LIMIT: usize = 300;

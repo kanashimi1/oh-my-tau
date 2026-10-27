@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 
 use pa_types::ai::{Model, ModelThinkingLevel};
 
-use super::resolve::{ModelSpec, ResolveError, ResolvedModelPolicy, resolve_model_policy};
+use super::resolve::{resolve_model_policy, ModelSpec, ResolveError, ResolvedModelPolicy};
 
 fn spec_of(model: &Model, explicit_thinking: Option<&Value>) -> ModelSpec {
     ModelSpec {

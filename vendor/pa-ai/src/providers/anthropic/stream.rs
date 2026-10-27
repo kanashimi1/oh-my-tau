@@ -1,38 +1,38 @@
 //! Anthropic Messages streaming core: SSE iteration, event handling, and the provider stream
 //! function.
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::cache_pricing::{
-    AnthropicCacheCreationUsage, get_anthropic_cache_write_cost,
-    has_standard_anthropic_cache_pricing,
+    get_anthropic_cache_write_cost, has_standard_anthropic_cache_pricing,
+    AnthropicCacheCreationUsage,
 };
 use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::AssistantMessageEventStream;
 use crate::event_stream::{
-    AssistantMessageEvent, AssistantMessageEventWriter, create_assistant_message_event_stream,
+    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventWriter,
 };
-use crate::models::{CostOverrides, calculate_cost};
+use crate::models::{calculate_cost, CostOverrides};
 use crate::providers::anthropic::convert::map_stop_reason;
 use crate::providers::anthropic::{
-    AnthropicOptions, body_betas, build_request_headers, is_oauth_token,
-    should_use_fine_grained_tool_streaming_beta,
+    body_betas, build_request_headers, is_oauth_token, should_use_fine_grained_tool_streaming_beta,
+    AnthropicOptions,
 };
 use crate::types::{
-    AssistantContent, AssistantMessage, Context, Model, StopReason, TextContent, ThinkingContent,
-    ToolCall, Usage, done_reason, error_reason,
+    done_reason, error_reason, AssistantContent, AssistantMessage, Context, Model, StopReason,
+    TextContent, ThinkingContent, ToolCall, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
-use crate::utils_inner::http::{HttpResponse, RequestOptions, send};
-use crate::utils_inner::http_inspector::{RawHttpRequestDump, finalize_http_error};
+use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
 use crate::utils_inner::json_parse::{
-    StreamingJsonAccumulator, parse_json_with_repair, parse_streaming_json,
+    parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
 };
 use crate::utils_inner::sse::{ServerSentEvent, SseDecoder};
 use crate::utils_inner::stream_failure::{
-    ProviderError, StreamFailureError, StreamFailureInfo, StreamFailureKind,
     classify_stream_failure, format_stream_failure_message, record_stream_failure,
-    stream_failure_from_stop_reason, stream_failure_message, truncate_raw_payload,
+    stream_failure_from_stop_reason, stream_failure_message, truncate_raw_payload, ProviderError,
+    StreamFailureError, StreamFailureInfo, StreamFailureKind,
 };
 
 const ANTHROPIC_MESSAGE_EVENTS: [&str; 6] = [

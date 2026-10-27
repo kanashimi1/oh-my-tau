@@ -340,9 +340,7 @@ mod tests {
         if let Ok(p) = std::env::var("GOLDEN_STATS_DB") {
             return Some(std::path::PathBuf::from(p));
         }
-        let default = std::path::Path::new(
-            "/home/user/omrs-fixtures/stats/golden/_stats.full.db",
-        );
+        let default = std::path::Path::new("/home/user/omrs-fixtures/stats/golden/_stats.full.db");
         default.exists().then(|| default.to_path_buf())
     }
 

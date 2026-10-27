@@ -12,16 +12,16 @@
 
 use std::collections::HashSet;
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
-use super::cascade::{AmbiguousOverlap, ResolvedAxes, Target, resolve_cascade};
+use super::cascade::{resolve_cascade, AmbiguousOverlap, ResolvedAxes, Target};
 use super::hosts::{
     has_local_loopback_base_url, host_matches_url, is_anthropic_signing_proxy_url,
     is_azure_anthropic_route, is_bedrock_anthropic_route, is_official_anthropic_api_url,
     model_matches_host,
 };
-use super::revision::{Revision, compare_revision, parse_revision};
-use super::taxonomy::{AmbiguousIdentity, Identity, classify_model, strip_thinking_variant_suffix};
+use super::revision::{compare_revision, parse_revision, Revision};
+use super::taxonomy::{classify_model, strip_thinking_variant_suffix, AmbiguousIdentity, Identity};
 use super::{axes, rules};
 
 #[derive(Debug, thiserror::Error)]

@@ -537,7 +537,10 @@ mod tests {
             .await
             .expect("chain resolves");
         assert_eq!(selected.model.id, "glm");
-        assert_eq!(selected.fallbacks, vec!["local/keyless".to_string(), "smol:high".to_string()]);
+        assert_eq!(
+            selected.fallbacks,
+            vec!["local/keyless".to_string(), "smol:high".to_string()]
+        );
         // No credentialed entry: the first resolvable entry is kept so
         // keyless-by-design local providers stay selectable.
         let selected = select_chain_with("local/keyless, nope/model", resolve)

@@ -40,7 +40,9 @@ pub fn validate_reply(schema: Option<&Value>, payload: &str) -> ReplyValidation 
     }
     let compiled = match jsonschema::Validator::new(schema) {
         Ok(c) => c,
-        Err(e) => return ReplyValidation::Invalid(vec![format!("uncompileable reply_schema: {e}")]),
+        Err(e) => {
+            return ReplyValidation::Invalid(vec![format!("uncompileable reply_schema: {e}")])
+        }
     };
     let value: Value = match serde_json::from_str(payload.trim()) {
         Ok(v) => v,
@@ -61,7 +63,8 @@ pub fn validate_reply(schema: Option<&Value>, payload: &str) -> ReplyValidation 
 mod tests {
     use super::*;
 
-    const SCHEMA: &str = r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}"#;
+    const SCHEMA: &str =
+        r#"{"type":"object","properties":{"ok":{"type":"boolean"}},"required":["ok"]}"#;
 
     fn schema() -> Value {
         serde_json::from_str(SCHEMA).unwrap()

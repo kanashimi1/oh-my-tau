@@ -13,7 +13,7 @@ use omp_ext::lifecycle::ApprovalMode;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::AgentTool;
 use regex::Regex;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::runtime::Runtime;
 

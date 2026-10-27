@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use super::Rules;
-use super::revision::{Revision, RevisionOp, RevisionTerm, parse_revision, revision_satisfies};
+use super::revision::{parse_revision, revision_satisfies, Revision, RevisionOp, RevisionTerm};
 use super::taxonomy::glob_match;
+use super::Rules;
 
 #[derive(Debug, thiserror::Error)]
 #[error(

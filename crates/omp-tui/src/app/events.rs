@@ -1,4 +1,8 @@
-use super::{App, Value, RuntimePort, Action, welcome, Instant, OpenOverlay, Duration, SPINNER_ADVANCE_MS, Line, now_millis, AppEvent, TitleState, journal_entry, Maintenance, LOCAL_COMMANDS, turn_notification, TerminalNotification};
+use super::{
+    journal_entry, now_millis, turn_notification, welcome, Action, App, AppEvent, Duration,
+    Instant, Line, Maintenance, OpenOverlay, RuntimePort, TerminalNotification, TitleState, Value,
+    LOCAL_COMMANDS, SPINNER_ADVANCE_MS,
+};
 
 impl App {
     /// Mirror the runtime's thinking state (`thinkingLevel`, supported

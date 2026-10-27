@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::BoxFut;
 use crate::abort::AbortSignal;
+use crate::BoxFut;
 
 /// Thinking/reasoning level for models that support it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

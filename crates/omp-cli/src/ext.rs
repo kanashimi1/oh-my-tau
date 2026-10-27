@@ -99,10 +99,11 @@ pub fn has_extensions(extra: &[PathBuf]) -> bool {
     entries.flatten().any(|entry| {
         let path = entry.path();
         if path.is_dir() {
-            ["index.ts", "index.js"].iter().any(|i| path.join(i).is_file())
+            ["index.ts", "index.js"]
+                .iter()
+                .any(|i| path.join(i).is_file())
         } else {
-            path.extension()
-                .is_some_and(|e| e == "ts" || e == "js")
+            path.extension().is_some_and(|e| e == "ts" || e == "js")
         }
     })
 }
@@ -639,10 +640,7 @@ impl Extensions {
             )
             .await?;
         for err in &loaded.errors {
-            eprintln!(
-                "omt: extension failed to load: {}: {}",
-                err.path, err.error
-            );
+            eprintln!("omt: extension failed to load: {}: {}", err.path, err.error);
         }
 
         let ext = Arc::new(Self {
@@ -985,10 +983,7 @@ impl Extensions {
             )
             .await?;
         for err in &loaded.errors {
-            eprintln!(
-                "omt: extension failed to load: {}: {}",
-                err.path, err.error
-            );
+            eprintln!("omt: extension failed to load: {}: {}", err.path, err.error);
         }
         self.send_ctx().await?;
         *self.live.branch_len.lock() = None;

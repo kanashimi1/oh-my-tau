@@ -395,7 +395,11 @@ fn branch_trailers(repo: &Path, branch: &str) -> Vec<(String, Vec<String>)> {
     };
     let Ok(log) = git(
         repo,
-        &["log", "--format=%B%x00", &format!("{}..{branch}", base.trim())],
+        &[
+            "log",
+            "--format=%B%x00",
+            &format!("{}..{branch}", base.trim()),
+        ],
     ) else {
         return Vec::new();
     };

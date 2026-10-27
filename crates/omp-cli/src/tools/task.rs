@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use omp_task::discovery::{discover_project_agents, discover_user_agents};
 use omp_task::envelope::format_task_result;
 use omp_task::params::{SchemaMode, TaskItem};
@@ -18,7 +18,7 @@ use omp_task::runner::RunStatus;
 use omp_task::runner::{ChildMode, TaskRunner, TaskSpec};
 use pa_agent::types::AgentToolResult;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::Env;
 
@@ -1070,7 +1070,7 @@ mod tests {
 
     #[test]
     fn unlisted_agents_move_to_also_line() {
-        use omp_task::agent::{AgentSource, parse_agent};
+        use omp_task::agent::{parse_agent, AgentSource};
         let def = |name: &str, extra: &str| {
             parse_agent(
                 format!("{name}.md"),
@@ -1140,7 +1140,7 @@ mod tests {
     /// selector string and an ordered fallback list.
     #[test]
     fn agent_model_chain_takes_string_and_list_frontmatter() {
-        use omp_task::agent::{AgentSource, parse_agent};
+        use omp_task::agent::{parse_agent, AgentSource};
         let single = parse_agent(
             "single.md",
             "---\nname: single\ndescription: d\nmodel: zai/glm-5.3-flash\n---\nbody\n",
@@ -1174,7 +1174,7 @@ mod tests {
     /// argv; the agent list is a ceiling the item/parent restriction narrows.
     #[test]
     fn agent_definition_stamps_tools_prompt_and_thinking() {
-        use omp_task::agent::{AgentSource, parse_agent};
+        use omp_task::agent::{parse_agent, AgentSource};
         let agent = parse_agent(
             "bb.md",
             "---\nname: bb\ndescription: d\ntools: [read, bash, mcp__blockbench_bb_preview]\nthinkingLevel: high\n---\nCheck every edit with bb_preview.\n",
@@ -1406,13 +1406,11 @@ mod tests {
         let props = s["properties"].as_object().unwrap();
         assert_eq!(props.len(), 3);
         assert!(props["context"]["type"] == "string");
-        assert!(
-            props["tasks"]["items"]["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "solutionSpace")
-        );
+        assert!(props["tasks"]["items"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "solutionSpace"));
         assert_eq!(s["required"].as_array().unwrap().len(), 2);
     }
 
@@ -1916,11 +1914,9 @@ stdin.readline()
             let body = git_in(&repo, &["log", "-1", "--format=%B"]);
             assert!(body.contains("Agent: wt-1"), "{body}");
             assert!(!wt_path.exists(), "worktree removed after the merge");
-            assert!(
-                git_in(&repo, &["branch", "--list", "agent/wt-1"])
-                    .trim()
-                    .is_empty()
-            );
+            assert!(git_in(&repo, &["branch", "--list", "agent/wt-1"])
+                .trim()
+                .is_empty());
             assert_eq!(
                 std::fs::read_to_string(repo.join("leftover.txt")).unwrap(),
                 "uncommitted\n",

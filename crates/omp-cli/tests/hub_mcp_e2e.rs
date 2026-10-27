@@ -107,7 +107,10 @@ impl RawClient {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let mut buf = String::new();
-            assert!(Instant::now() <= deadline, "timeout waiting for response to {method}");
+            assert!(
+                Instant::now() <= deadline,
+                "timeout waiting for response to {method}"
+            );
             match self.out.read_line(&mut buf) {
                 Ok(0) => panic!("MCP server closed stdout waiting for {method}"),
                 Ok(_) => {}
@@ -204,9 +207,7 @@ fn mcp_round_trip_against_temp_hub() {
         .collect();
     assert_eq!(
         names,
-        [
-            "send", "inbox", "ack", "answer", "status", "claim", "release", "check", "claims"
-        ]
+        ["send", "inbox", "ack", "answer", "status", "claim", "release", "check", "claims"]
     );
 
     // send -> CLI endpoint reads, acks, answers -> MCP inbox sees the answer.
@@ -233,15 +234,26 @@ fn mcp_round_trip_against_temp_hub() {
 
     cli_json(
         &world,
-        &["hub", "ack", "--message-id", &question_id, "--state", "read"],
+        &[
+            "hub",
+            "ack",
+            "--message-id",
+            &question_id,
+            "--state",
+            "read",
+        ],
     );
     let ans = cli_json(
         &world,
         &[
-            "hub", "answer",
-            "--causation-id", &question_id,
-            "--from", "cli-bob",
-            "--payload", "{\"answer\":42}",
+            "hub",
+            "answer",
+            "--causation-id",
+            &question_id,
+            "--from",
+            "cli-bob",
+            "--payload",
+            "{\"answer\":42}",
         ],
     );
     assert_eq!(ans["question"]["state"], "answered");

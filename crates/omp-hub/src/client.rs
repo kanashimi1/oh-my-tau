@@ -93,7 +93,11 @@ impl HubClient {
         let exe = std::env::current_exe().context("current_exe for hub auto-start")?;
         server::spawn_detached(&hub, &exe)?;
         if !server::wait_for_socket(&hub.sock, STARTUP_TIMEOUT).await {
-            anyhow::bail!("hub did not start on {} (see {})", hub.sock.display(), hub.dir.join("hub.log").display());
+            anyhow::bail!(
+                "hub did not start on {} (see {})",
+                hub.sock.display(),
+                hub.dir.join("hub.log").display()
+            );
         }
         let stream = UnixStream::connect(&hub.sock)
             .await
@@ -218,11 +222,8 @@ impl HubClient {
     /// # Errors
     /// Hub-side errors (transport or handler failure).
     pub async fn hello(&self, agent: &str, last_seq: u64) -> Result<Value> {
-        self.request(
-            "hello",
-            json!({"agent": agent, "last_seq": last_seq}),
-        )
-        .await
+        self.request("hello", json!({"agent": agent, "last_seq": last_seq}))
+            .await
     }
 
     /// Send one envelope; idempotent on its `message_id`.
@@ -263,11 +264,8 @@ impl HubClient {
     /// # Errors
     /// Hub-side errors (unknown message, bad state, transport).
     pub async fn ack(&self, message_id: &str, state: &str) -> Result<()> {
-        self.request(
-            "ack",
-            json!({"message_id": message_id, "state": state}),
-        )
-        .await?;
+        self.request("ack", json!({"message_id": message_id, "state": state}))
+            .await?;
         Ok(())
     }
 
@@ -319,7 +317,8 @@ impl HubClient {
     /// # Errors
     /// Hub-side errors (unknown message, transport).
     pub async fn status_message(&self, message_id: &str) -> Result<Value> {
-        self.request("status", json!({"message_id": message_id})).await
+        self.request("status", json!({"message_id": message_id}))
+            .await
     }
 
     /// Per-recipient or global status aggregation.
@@ -372,11 +371,8 @@ impl HubClient {
     /// # Errors
     /// Hub-side errors (transport or handler failure).
     pub async fn claims(&self, prefix: Option<&str>, owner: Option<&str>) -> Result<Value> {
-        self.request(
-            "claims",
-            json!({"prefix": prefix, "owner": owner}),
-        )
-        .await
+        self.request("claims", json!({"prefix": prefix, "owner": owner}))
+            .await
     }
 
     /// Who holds a resource right now.

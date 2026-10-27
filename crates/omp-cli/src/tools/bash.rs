@@ -16,7 +16,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::AgentToolResult;
 use serde_json::Value;
@@ -26,8 +26,8 @@ use tokio::sync::oneshot;
 
 use super::jobs::{self, JobRegistry, JobStatus, Service, ServiceState};
 use super::util::{
-    DEFAULT_MAX_BYTES, SpillConfig, enforce_inline_byte_cap, notice_with_artifact, resolve_to_cwd,
-    save_artifact, sink_window, str_arg, truncate_tail,
+    enforce_inline_byte_cap, notice_with_artifact, resolve_to_cwd, save_artifact, sink_window,
+    str_arg, truncate_tail, SpillConfig, DEFAULT_MAX_BYTES,
 };
 
 const DEFAULT_TIMEOUT_SECS: f64 = 300.0;
@@ -265,8 +265,16 @@ fn digest_output(raw: &str) -> String {
         }
         if matches!(
             t.split_whitespace().next().unwrap_or(""),
-            "Compiling" | "Checking" | "Finished" | "Downloading" | "Downloaded" | "Blocking"
-                | "Waiting" | "Doc-tests" | "Fresh" | "Updating"
+            "Compiling"
+                | "Checking"
+                | "Finished"
+                | "Downloading"
+                | "Downloaded"
+                | "Blocking"
+                | "Waiting"
+                | "Doc-tests"
+                | "Fresh"
+                | "Updating"
         ) {
             continue;
         }

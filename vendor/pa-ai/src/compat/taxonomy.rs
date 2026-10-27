@@ -4,8 +4,8 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use super::Rules;
 use super::revision::{format_revision, parse_revision_prefix};
+use super::Rules;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AmbiguousIdentity {

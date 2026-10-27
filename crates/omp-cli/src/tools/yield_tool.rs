@@ -9,11 +9,11 @@
 
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
-use pa_agent::BoxFut;
+use anyhow::{anyhow, Result};
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
-use serde_json::{Map, Value, json};
+use pa_agent::BoxFut;
+use serde_json::{json, Map, Value};
 
 const DESCRIPTION: &str = "Submit subagent output: `{ data: <your output> }` for success, `{ error: \"message\" }` for failure. Never both; never a bare payload outside `data`.\n\nOmit `type` for the usual single terminal structured result. Pass `type: [\"section\"]` to submit an incremental, non-terminal section that accumulates.\nPass `type: \"result\"` to finalize; when `data` is omitted, your last assistant turn becomes the raw final result.";
 

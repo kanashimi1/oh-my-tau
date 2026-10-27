@@ -27,13 +27,13 @@ use std::sync::LazyLock;
 use parking_lot::Mutex;
 
 use omp_task::rubric::{self, FrozenRubric, RubricRecord, RubricScorer};
-use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
+use pa_agent::BoxFut;
 use pa_types::ai::{Model, Usage};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::eval_bridge::OpCtx;
-use super::rlm::{Backend, DEFAULT_MODEL, Limits, SESSION, Session};
+use super::rlm::{Backend, Limits, Session, DEFAULT_MODEL, SESSION};
 
 /// Env: hard cap on the characters a combinator program may chew (default 32 Mi).
 pub const MAX_CHARS_ENV: &str = "OMP_LAM_MAX_CHARS";
@@ -308,7 +308,8 @@ impl Backend for HostBackend {
     ) -> BoxFut<'a, Result<(String, Usage, Model), String>> {
         Box::pin(async move {
             #[cfg(test)]
-            #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
+            #[allow(clippy::disallowed_methods)]
+            // tests: throwaway runtimes drive async code
             {
                 let test_backend = super::rlm::TEST_BACKEND.lock().clone();
                 if let Some(b) = test_backend {

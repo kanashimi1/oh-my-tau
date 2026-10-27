@@ -15,28 +15,28 @@
 //! - the credential is the structured OAuth key `{token, projectId, ...}` (TS `getOAuthApiKey`),
 //!   parsed for both the bearer and the `project` the envelope reports.
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 use sha2::Digest as _;
 
 use crate::event_stream::{
-    AssistantMessageEvent, AssistantMessageEventStream, AssistantMessageEventWriter,
-    create_assistant_message_event_stream,
+    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
+    AssistantMessageEventWriter,
 };
 use crate::providers::google::GoogleOptions;
 use crate::providers::google_shared::{
-    API_GOOGLE_GEMINI_CLI, antigravity_claude_tool_mode, convert_messages, convert_tools,
-    map_tool_choice,
+    antigravity_claude_tool_mode, convert_messages, convert_tools, map_tool_choice,
+    API_GOOGLE_GEMINI_CLI,
 };
 use crate::providers::google_stream::GoogleStreamState;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
-    AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
-    done_reason, error_reason,
+    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason,
+    StreamOptions, Usage,
 };
 use crate::utils_inner::diagnostics::now_ms;
-use crate::utils_inner::http::{HttpResponse, RequestOptions, send};
-use crate::utils_inner::http_inspector::{RawHttpRequestDump, finalize_http_error};
+use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
 use crate::utils_inner::json_parse::parse_json_with_repair;
 use crate::utils_inner::sanitize_unicode::sanitize_surrogates;
 use crate::utils_inner::sse::SseDecoder;
@@ -1339,12 +1339,10 @@ mod tests {
             antigravity_wire_profile("claude-sonnet-4-6").map(|p| p.max_output_tokens),
             Some(64_000)
         );
-        assert!(
-            antigravity_wire_profile("gemini-3.5-flash-extra-low")
-                .unwrap()
-                .model_enum
-                .is_some()
-        );
+        assert!(antigravity_wire_profile("gemini-3.5-flash-extra-low")
+            .unwrap()
+            .model_enum
+            .is_some());
         assert!(antigravity_wire_profile("unknown-model").is_none());
     }
 
@@ -1612,11 +1610,9 @@ mod tests {
     #[test]
     fn credentials_reject_bare_token() {
         let error = parse_credentials("ya29.a0").unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("Invalid Google Cloud Code Assist")
-        );
+        assert!(error
+            .to_string()
+            .contains("Invalid Google Cloud Code Assist"));
         let error = parse_credentials(r#"{"token":"ya29.a0"}"#).unwrap_err();
         assert!(error.to_string().contains("Missing token or projectId"));
     }

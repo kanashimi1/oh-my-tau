@@ -2,7 +2,7 @@
 //! replay, thinking budgets and levels, finish-reason and tool-choice mapping. The shared
 //! stream-chunk processor lives in [`crate::providers::google_stream`].
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::providers::transform_messages::transform_messages_with_normalizer;
 use crate::types::{AssistantContent, Context, Model, ModelExt, StopReason, ThinkingBudgets, Tool};

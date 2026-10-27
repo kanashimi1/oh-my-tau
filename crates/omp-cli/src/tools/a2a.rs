@@ -610,7 +610,8 @@ async fn route(envelope: &A2aEnvelope, owner: &Owner) -> Result<String, String> 
             }),
         };
     }
-    let local_error = match super::eval_agents::deliver_from_peer(to, &text, &envelope.sender).await {
+    let local_error = match super::eval_agents::deliver_from_peer(to, &text, &envelope.sender).await
+    {
         Ok(receipt) => return Ok(receipt),
         Err(error) => error,
     };
@@ -649,10 +650,7 @@ async fn forward_up(envelope: &A2aEnvelope, body: &str) -> Option<Result<String,
 /// (`OMP_HUB=0`) or when no endpoint is registered, so the caller keeps its
 /// local "not running" error; a registered endpoint whose hub is unreachable
 /// is a clear error, never silent loss.
-async fn try_route_external(
-    envelope: &A2aEnvelope,
-    body: &str,
-) -> Option<Result<String, String>> {
+async fn try_route_external(envelope: &A2aEnvelope, body: &str) -> Option<Result<String, String>> {
     if hub_opted_out() {
         return None;
     }
@@ -745,8 +743,8 @@ pub(crate) fn looks_like_pane_id(recipient: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 /// Env opt-outs / modes.
@@ -1313,7 +1311,10 @@ fn receipt_text(receipt: omp_hub::SendReceipt) -> String {
 /// Send one envelope through a live endpoint's hub client. The hub itself is
 /// auto-started (and reconnected) by the endpoint task, never here: a write
 /// must not block on a spawn.
-async fn hub_send_envelope(ep: &Arc<HubEndpoint>, envelope: omp_hub::Envelope) -> Result<String, String> {
+async fn hub_send_envelope(
+    ep: &Arc<HubEndpoint>,
+    envelope: omp_hub::Envelope,
+) -> Result<String, String> {
     let recipient = envelope.recipient.clone();
     if !ep.connected.load(AtomicOrdering::SeqCst) {
         return Err(format!(
@@ -1541,10 +1542,10 @@ pub(crate) async fn claims_block_reason(paths: &[PathBuf]) -> Option<String> {
     if !claims_block_mode() {
         return None;
     }
-    claims_check_files(paths)
-        .await
-        .first()
-        .map(|line| line.trim_end_matches(" — blocked by OMP_CLAIMS=block").to_string())
+    claims_check_files(paths).await.first().map(|line| {
+        line.trim_end_matches(" — blocked by OMP_CLAIMS=block")
+            .to_string()
+    })
 }
 
 /// After a successful write by an agent: auto-claim every repo-relative path
@@ -1575,14 +1576,7 @@ fn claims_note_writes_via(ep: &Arc<HubEndpoint>, paths: &[PathBuf]) {
             continue;
         }
         let (reply, rx) = oneshot::channel();
-        if ep
-            .cmd_tx
-            .send(HubCmd::Claim {
-                resource,
-                reply,
-            })
-            .is_ok()
-        {
+        if ep.cmd_tx.send(HubCmd::Claim { resource, reply }).is_ok() {
             // Fire-and-forget: a slow hub must never stall a write result.
             tokio::spawn(async move {
                 let _ = rx.await;
@@ -1763,167 +1757,170 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn parent_messages_queue_and_drain_once() {
-            without_parent_bus(async {
-        let _serial = LOCK.lock().await;
-        // A private owner: deliveries on this bus can never be consumed
-        // by a concurrent test runtime's park/wake legs.
-        let owner: Owner = Some(crate::persist::uuid_v7().into());
-        let lease = BusLease::acquire_for(&owner).unwrap();
-        let client = Client {
-            sock: lease.sock().to_path_buf(),
-            from: "kid-a2a-test".into(),
-        };
-        let reply = client.send("parent", "need the schema").await.unwrap();
-        assert_eq!(reply, "Delivered to parent.");
-        let drained = take_deliveries();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].from, "kid-a2a-test");
-        assert_eq!(drained[0].kind, kind::MESSAGE);
-        assert_eq!(drained[0].text, "need the schema");
-        assert!(!has_pending());
-        let rendered = render_deliveries(&drained);
-        assert!(rendered.contains("from agent://kid-a2a-test: need"));
-            })
-            .await;
-}
+        without_parent_bus(async {
+            let _serial = LOCK.lock().await;
+            // A private owner: deliveries on this bus can never be consumed
+            // by a concurrent test runtime's park/wake legs.
+            let owner: Owner = Some(crate::persist::uuid_v7().into());
+            let lease = BusLease::acquire_for(&owner).unwrap();
+            let client = Client {
+                sock: lease.sock().to_path_buf(),
+                from: "kid-a2a-test".into(),
+            };
+            let reply = client.send("parent", "need the schema").await.unwrap();
+            assert_eq!(reply, "Delivered to parent.");
+            let drained = take_deliveries();
+            assert_eq!(drained.len(), 1);
+            assert_eq!(drained[0].from, "kid-a2a-test");
+            assert_eq!(drained[0].kind, kind::MESSAGE);
+            assert_eq!(drained[0].text, "need the schema");
+            assert!(!has_pending());
+            let rendered = render_deliveries(&drained);
+            assert!(rendered.contains("from agent://kid-a2a-test: need"));
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn dedup_acks_resend_without_redelivering() {
-            without_parent_bus(async {
-        let _serial = LOCK.lock().await;
-        // A private owner: deliveries on this bus can never be consumed
-        // by a concurrent test runtime's park/wake legs.
-        let owner: Owner = Some(crate::persist::uuid_v7().into());
-        let lease = BusLease::acquire_for(&owner).unwrap();
-        let envelope = A2aEnvelope {
-            message_id: "018f-test-dup-00000000000000".to_string(),
-            sender: "kid-dup".into(),
-            recipient: "parent".into(),
-            kind: kind::MESSAGE.to_string(),
-            payload: Some("same body".to_string()),
-            payload_ref: None,
-        };
-        let first = raw_send(lease.sock(), &envelope).await;
-        assert_eq!(first["ok"], Value::Bool(true));
-        let again = raw_send(lease.sock(), &envelope).await;
-        assert_eq!(again["ok"], Value::Bool(true));
-        assert!(again["text"].as_str().unwrap().contains("Duplicate"), "{again}");
-        // Exactly one delivery despite two sends.
-        let drained = take_deliveries();
-        assert_eq!(drained.len(), 1, "{drained:?}");
-        assert_eq!(drained[0].text, "same body");
-            })
-            .await;
-}
+        without_parent_bus(async {
+            let _serial = LOCK.lock().await;
+            // A private owner: deliveries on this bus can never be consumed
+            // by a concurrent test runtime's park/wake legs.
+            let owner: Owner = Some(crate::persist::uuid_v7().into());
+            let lease = BusLease::acquire_for(&owner).unwrap();
+            let envelope = A2aEnvelope {
+                message_id: "018f-test-dup-00000000000000".to_string(),
+                sender: "kid-dup".into(),
+                recipient: "parent".into(),
+                kind: kind::MESSAGE.to_string(),
+                payload: Some("same body".to_string()),
+                payload_ref: None,
+            };
+            let first = raw_send(lease.sock(), &envelope).await;
+            assert_eq!(first["ok"], Value::Bool(true));
+            let again = raw_send(lease.sock(), &envelope).await;
+            assert_eq!(again["ok"], Value::Bool(true));
+            assert!(
+                again["text"].as_str().unwrap().contains("Duplicate"),
+                "{again}"
+            );
+            // Exactly one delivery despite two sends.
+            let drained = take_deliveries();
+            assert_eq!(drained.len(), 1, "{drained:?}");
+            assert_eq!(drained[0].text, "same body");
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn oversized_payload_travels_by_ref() {
-            without_parent_bus(async {
-        let _serial = LOCK.lock().await;
-        // A private owner: deliveries on this bus can never be consumed
-        // by a concurrent test runtime's park/wake legs.
-        let owner: Owner = Some(crate::persist::uuid_v7().into());
-        let lease = BusLease::acquire_for(&owner).unwrap();
-        let client = Client {
-            sock: lease.sock().to_path_buf(),
-            from: "kid-big".into(),
-        };
-        let big = format!("{}\nTAIL-MARKER", "x".repeat(PAYLOAD_INLINE_MAX + 5000));
-        let reply = client.send("parent", &big).await.unwrap();
-        assert_eq!(reply, "Delivered to parent.");
-        let drained = take_deliveries();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].text, big);
-        assert!(drained[0].text.ends_with("TAIL-MARKER"));
-            })
-            .await;
-}
+        without_parent_bus(async {
+            let _serial = LOCK.lock().await;
+            // A private owner: deliveries on this bus can never be consumed
+            // by a concurrent test runtime's park/wake legs.
+            let owner: Owner = Some(crate::persist::uuid_v7().into());
+            let lease = BusLease::acquire_for(&owner).unwrap();
+            let client = Client {
+                sock: lease.sock().to_path_buf(),
+                from: "kid-big".into(),
+            };
+            let big = format!("{}\nTAIL-MARKER", "x".repeat(PAYLOAD_INLINE_MAX + 5000));
+            let reply = client.send("parent", &big).await.unwrap();
+            assert_eq!(reply, "Delivered to parent.");
+            let drained = take_deliveries();
+            assert_eq!(drained.len(), 1);
+            assert_eq!(drained[0].text, big);
+            assert!(drained[0].text.ends_with("TAIL-MARKER"));
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn payload_ref_verifies_hash_and_is_single_use() {
-            without_parent_bus(async {
-        let _serial = LOCK.lock().await;
-        // A private owner: deliveries on this bus can never be consumed
-        // by a concurrent test runtime's park/wake legs.
-        let owner: Owner = Some(crate::persist::uuid_v7().into());
-        let lease = BusLease::acquire_for(&owner).unwrap();
-        let body = "y".repeat(PAYLOAD_INLINE_MAX + 100);
-        let message_id = crate::persist::uuid_v7();
-        let path = spill_payload(&message_id, body.as_bytes()).unwrap();
-        let envelope = A2aEnvelope {
-            message_id,
-            sender: "kid-ref".into(),
-            recipient: "parent".into(),
-            kind: kind::MESSAGE.to_string(),
-            payload: None,
-            payload_ref: Some(PayloadRef {
-                path: path.to_string_lossy().into_owned(),
-                sha256: sha256_hex(body.as_bytes()),
-                bytes: body.len() as u64,
-            }),
-        };
-        let reply = raw_send(lease.sock(), &envelope).await;
-        assert_eq!(reply["ok"], Value::Bool(true), "{reply}");
-        assert!(!path.exists(), "server removes the ref file after reading");
-        let drained = take_deliveries();
-        assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].text, body);
-        // A tampered ref body is rejected.
-        let body2 = "z".repeat(PAYLOAD_INLINE_MAX + 100);
-        let message_id2 = crate::persist::uuid_v7();
-        let path2 = spill_payload(&message_id2, body2.as_bytes()).unwrap();
-        let bad = A2aEnvelope {
-            message_id: message_id2,
-            sender: "kid-ref".into(),
-            recipient: "parent".into(),
-            kind: kind::MESSAGE.to_string(),
-            payload: None,
-            payload_ref: Some(PayloadRef {
-                path: path2.to_string_lossy().into_owned(),
-                sha256: sha256_hex(body.as_bytes()), // wrong hash for body2
-                bytes: body2.len() as u64,
-            }),
-        };
-        let reply = raw_send(lease.sock(), &bad).await;
-        assert_eq!(reply["ok"], Value::Bool(false), "{reply}");
-        let _ = std::fs::remove_file(&path2);
-            })
-            .await;
-}
+        without_parent_bus(async {
+            let _serial = LOCK.lock().await;
+            // A private owner: deliveries on this bus can never be consumed
+            // by a concurrent test runtime's park/wake legs.
+            let owner: Owner = Some(crate::persist::uuid_v7().into());
+            let lease = BusLease::acquire_for(&owner).unwrap();
+            let body = "y".repeat(PAYLOAD_INLINE_MAX + 100);
+            let message_id = crate::persist::uuid_v7();
+            let path = spill_payload(&message_id, body.as_bytes()).unwrap();
+            let envelope = A2aEnvelope {
+                message_id,
+                sender: "kid-ref".into(),
+                recipient: "parent".into(),
+                kind: kind::MESSAGE.to_string(),
+                payload: None,
+                payload_ref: Some(PayloadRef {
+                    path: path.to_string_lossy().into_owned(),
+                    sha256: sha256_hex(body.as_bytes()),
+                    bytes: body.len() as u64,
+                }),
+            };
+            let reply = raw_send(lease.sock(), &envelope).await;
+            assert_eq!(reply["ok"], Value::Bool(true), "{reply}");
+            assert!(!path.exists(), "server removes the ref file after reading");
+            let drained = take_deliveries();
+            assert_eq!(drained.len(), 1);
+            assert_eq!(drained[0].text, body);
+            // A tampered ref body is rejected.
+            let body2 = "z".repeat(PAYLOAD_INLINE_MAX + 100);
+            let message_id2 = crate::persist::uuid_v7();
+            let path2 = spill_payload(&message_id2, body2.as_bytes()).unwrap();
+            let bad = A2aEnvelope {
+                message_id: message_id2,
+                sender: "kid-ref".into(),
+                recipient: "parent".into(),
+                kind: kind::MESSAGE.to_string(),
+                payload: None,
+                payload_ref: Some(PayloadRef {
+                    path: path2.to_string_lossy().into_owned(),
+                    sha256: sha256_hex(body.as_bytes()), // wrong hash for body2
+                    bytes: body2.len() as u64,
+                }),
+            };
+            let reply = raw_send(lease.sock(), &bad).await;
+            assert_eq!(reply["ok"], Value::Bool(false), "{reply}");
+            let _ = std::fs::remove_file(&path2);
+        })
+        .await;
+    }
 
     #[tokio::test]
     async fn unknown_peer_self_and_pane_ids_are_refused() {
-            let _serial = LOCK.lock().await;
-            // Bus-level refusal semantics: with the hub link opted out the
-            // local "not running" error stays the last word (hub routing of
-            // these ids has its own tests below).
-            let old_hub = std::env::var_os("OMP_HUB");
-            std::env::set_var("OMP_HUB", "0");
-            without_parent_bus(async {
-                // A private owner: deliveries on this bus can never be consumed
-                // by a concurrent test runtime's park/wake legs.
-                let owner: Owner = Some(crate::persist::uuid_v7().into());
-                let lease = BusLease::acquire_for(&owner).unwrap();
-                let client = Client {
-                    sock: lease.sock().to_path_buf(),
-                    from: "kid-x".into(),
-                };
-                let err = client.send("no-such-peer", "hi").await.unwrap_err();
-                assert!(err.contains("no-such-peer"), "{err}");
-                let err = client.send("kid-x", "hi").await.unwrap_err();
-                assert!(err.contains("itself"), "{err}");
-                assert!(looks_like_pane_id("w4:p2P"));
-                assert!(looks_like_pane_id("w12:p9Zz"));
-                assert!(!looks_like_pane_id("agent-1"));
-                assert!(!looks_like_pane_id("w4"));
-                let err = client.send("w4:p2P", "hi").await.unwrap_err();
-                assert!(err.contains("w4:p2P"), "{err}");
-            })
-            .await;
-            match old_hub {
-                Some(v) => std::env::set_var("OMP_HUB", v),
-                None => std::env::remove_var("OMP_HUB"),
-            }
+        let _serial = LOCK.lock().await;
+        // Bus-level refusal semantics: with the hub link opted out the
+        // local "not running" error stays the last word (hub routing of
+        // these ids has its own tests below).
+        let old_hub = std::env::var_os("OMP_HUB");
+        std::env::set_var("OMP_HUB", "0");
+        without_parent_bus(async {
+            // A private owner: deliveries on this bus can never be consumed
+            // by a concurrent test runtime's park/wake legs.
+            let owner: Owner = Some(crate::persist::uuid_v7().into());
+            let lease = BusLease::acquire_for(&owner).unwrap();
+            let client = Client {
+                sock: lease.sock().to_path_buf(),
+                from: "kid-x".into(),
+            };
+            let err = client.send("no-such-peer", "hi").await.unwrap_err();
+            assert!(err.contains("no-such-peer"), "{err}");
+            let err = client.send("kid-x", "hi").await.unwrap_err();
+            assert!(err.contains("itself"), "{err}");
+            assert!(looks_like_pane_id("w4:p2P"));
+            assert!(looks_like_pane_id("w12:p9Zz"));
+            assert!(!looks_like_pane_id("agent-1"));
+            assert!(!looks_like_pane_id("w4"));
+            let err = client.send("w4:p2P", "hi").await.unwrap_err();
+            assert!(err.contains("w4:p2P"), "{err}");
+        })
+        .await;
+        match old_hub {
+            Some(v) => std::env::set_var("OMP_HUB", v),
+            None => std::env::remove_var("OMP_HUB"),
+        }
     }
 
     #[tokio::test]
@@ -1968,7 +1965,9 @@ pub(crate) mod tests {
             let mut line = String::new();
             BufReader::new(read).read_line(&mut line).await.unwrap();
             let env: A2aEnvelope = serde_json::from_str(&line).unwrap();
-            let mut out = json!({"ok": true, "text": format!("routed-by-grandparent:{}", env.recipient)}).to_string();
+            let mut out =
+                json!({"ok": true, "text": format!("routed-by-grandparent:{}", env.recipient)})
+                    .to_string();
             out.push('\n');
             write.write_all(out.as_bytes()).await.unwrap();
             env
@@ -2155,7 +2154,12 @@ pub(crate) mod tests {
         without_parent_bus(async {
             let sender = connect_test_hub(&hub).await;
             let receipt = sender
-                .send_note("w4:p8T", "session:test-inject", kind::MESSAGE, "hello endpoint")
+                .send_note(
+                    "w4:p8T",
+                    "session:test-inject",
+                    kind::MESSAGE,
+                    "hello endpoint",
+                )
                 .await
                 .unwrap();
             assert_eq!(receipt.state, omp_hub::State::DELIVERED, "{receipt:?}");
@@ -2165,7 +2169,11 @@ pub(crate) mod tests {
             let drained = take_deliveries_for(&owner);
             assert_eq!(drained.len(), 1, "{drained:?}");
             assert_eq!(drained[0].from, "w4:p8T");
-            assert!(drained[0].text.contains("hello endpoint"), "{}", drained[0].text);
+            assert!(
+                drained[0].text.contains("hello endpoint"),
+                "{}",
+                drained[0].text
+            );
             // The drain starts the turn: the endpoint acks `read` and the hub
             // state follows (poll — the ack command is processed async).
             wait_for("read ack", || {
@@ -2174,10 +2182,18 @@ pub(crate) mod tests {
             .await;
             wait_for_state(&sender, &receipt.message_id, omp_hub::State::READ).await;
             let status = sender.status_message(&receipt.message_id).await.unwrap();
-            assert_eq!(status["state"], Value::from(omp_hub::State::READ), "{status}");
+            assert_eq!(
+                status["state"],
+                Value::from(omp_hub::State::READ),
+                "{status}"
+            );
             // The read ack advanced the persisted last acked seq.
             let persisted = read_last_seq(dir.path(), "session:test-inject");
-            assert!(persisted >= receipt.seq, "last_seq {persisted} >= {}", receipt.seq);
+            assert!(
+                persisted >= receipt.seq,
+                "last_seq {persisted} >= {}",
+                receipt.seq
+            );
         })
         .await;
         shutdown_hub_endpoint(owner.as_ref().unwrap());
@@ -2215,8 +2231,16 @@ pub(crate) mod tests {
             let drained = take_deliveries_for(&owner);
             assert_eq!(drained.len(), 1);
             // The injected text tells the model how to reply and carries the schema.
-            assert!(drained[0].text.contains("write agent://asker"), "{}", drained[0].text);
-            assert!(drained[0].text.contains("JSON Schema"), "{}", drained[0].text);
+            assert!(
+                drained[0].text.contains("write agent://asker"),
+                "{}",
+                drained[0].text
+            );
+            assert!(
+                drained[0].text.contains("JSON Schema"),
+                "{}",
+                drained[0].text
+            );
             assert!(ep.question_from("asker").is_some());
             // Valid reply: `write agent://asker` becomes an `answer{}` that
             // closes the thread.
@@ -2226,23 +2250,28 @@ pub(crate) mod tests {
             assert!(answered.contains("answered"), "{answered}");
             assert!(ep.question_from("asker").is_none(), "question consumed");
             let status = asker.status_message(&receipt.message_id).await.unwrap();
-            assert_eq!(status["state"], Value::from(omp_hub::State::ANSWERED), "{status}");
+            assert_eq!(
+                status["state"],
+                Value::from(omp_hub::State::ANSWERED),
+                "{status}"
+            );
             // Second question, schema-violating reply: the write surfaces the
             // hub's validation error.
             question.message_id = String::new();
             question.payload = Some("now?".to_string());
             let receipt2 = asker.send(question).await.unwrap();
-            wait_for("second question injected", || {
-                has_pending_for(&owner)
-            })
-            .await;
+            wait_for("second question injected", || has_pending_for(&owner)).await;
             let _ = take_deliveries_for(&owner);
             let bad = route_external_message_via(&ep, "asker", "forty-two")
                 .await
                 .expect_err("schema violation must error");
             assert!(bad.contains("reply_schema"), "{bad}");
             let status2 = asker.status_message(&receipt2.message_id).await.unwrap();
-            assert_ne!(status2["state"], Value::from(omp_hub::State::ANSWERED), "{status2}");
+            assert_ne!(
+                status2["state"],
+                Value::from(omp_hub::State::ANSWERED),
+                "{status2}"
+            );
         })
         .await;
         shutdown_hub_endpoint(ep.owner.as_ref().unwrap());
@@ -2263,8 +2292,10 @@ pub(crate) mod tests {
 
             let owner_a: std::sync::Arc<str> = "owner-a".into();
             let owner_b: std::sync::Arc<str> = "owner-b".into();
-            let ep_a = start_test_endpoint(&Some(owner_a.clone()), "session:test-claims-a", &hub).await;
-            let ep_b = start_test_endpoint(&Some(owner_b.clone()), "session:test-claims-b", &hub).await;
+            let ep_a =
+                start_test_endpoint(&Some(owner_a.clone()), "session:test-claims-a", &hub).await;
+            let ep_b =
+                start_test_endpoint(&Some(owner_b.clone()), "session:test-claims-b", &hub).await;
 
             // A writes: auto-claims the repo-relative path.
             claims_note_writes_via(&ep_a, std::slice::from_ref(&file));
@@ -2273,7 +2304,11 @@ pub(crate) mod tests {
             })
             .await;
             let client = connect_test_hub(&hub).await;
-            let check = client.check_claim("src/lib.rs").await.unwrap().expect("held");
+            let check = client
+                .check_claim("src/lib.rs")
+                .await
+                .unwrap()
+                .expect("held");
             assert_eq!(check.owner, "session:test-claims-a");
 
             // A's own re-check is silent (negative-cacheable, no warning).
@@ -2282,7 +2317,10 @@ pub(crate) mod tests {
             // B (the other session) gets the warning line with holder+intent.
             let warnings = claims_check_files_via(&ep_b, std::slice::from_ref(&file)).await;
             assert_eq!(warnings.len(), 1, "{warnings:?}");
-            assert!(warnings[0].contains("session:test-claims-a"), "{warnings:?}");
+            assert!(
+                warnings[0].contains("session:test-claims-a"),
+                "{warnings:?}"
+            );
             assert!(warnings[0].contains("src/lib.rs"), "{warnings:?}");
             assert!(warnings[0].contains("intent"), "{warnings:?}");
             // B still proceeds (warning, not block) and the check re-fires

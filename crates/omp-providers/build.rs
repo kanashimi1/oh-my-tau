@@ -17,12 +17,16 @@ use std::path::PathBuf;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     // A local oh-my-pi checkout (`vendor-src/`, not in git) wins so a TS bump is picked up;
     // a clean clone builds from the in-repo snapshot (same rules.json pa-ai vendors).
     let ts = manifest.join("../../vendor-src/oh-my-pi/packages");
     let (rules_path, pkg_path) = if ts.join("catalog/src/compat/rules.json").is_file() {
-        (ts.join("catalog/src/compat/rules.json"), ts.join("coding-agent/package.json"))
+        (
+            ts.join("catalog/src/compat/rules.json"),
+            ts.join("coding-agent/package.json"),
+        )
     } else {
         (
             manifest.join("../../vendor/pa-ai/data/compat/rules.json"),

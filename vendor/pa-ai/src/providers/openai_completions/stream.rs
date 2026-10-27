@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::cache_pricing::{get_anthropic_cache_write_cost, has_standard_anthropic_cache_pricing};
 use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::{
-    AssistantMessageEvent, AssistantMessageEventStream, AssistantMessageEventWriter,
-    create_assistant_message_event_stream,
+    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
+    AssistantMessageEventWriter,
 };
 use crate::providers::openai_completions::convert::{
     map_stop_reason, parse_chunk_usage, transform_for_request,
@@ -18,22 +18,22 @@ use crate::providers::openai_completions::errors::{openai_http_error, openrouter
 use crate::providers::openai_completions::params::build_headers;
 use crate::providers::openai_completions::wire_cache;
 use crate::providers::openai_completions::{
-    OpenAICompletionsOptions, REASONING_FIELDS, encode_reasoning_details, resolve_cache_retention,
-    resolve_compat,
+    encode_reasoning_details, resolve_cache_retention, resolve_compat, OpenAICompletionsOptions,
+    REASONING_FIELDS,
 };
 use crate::providers::openai_responses_hooks::apply_service_tier_pricing;
 use crate::types::{
-    AssistantContent, AssistantMessage, CacheRetention, Context, Model, StopReason, TextContent,
-    ThinkingContent, ToolCall, Usage, done_reason, error_reason,
+    done_reason, error_reason, AssistantContent, AssistantMessage, CacheRetention, Context, Model,
+    StopReason, TextContent, ThinkingContent, ToolCall, Usage,
 };
-use crate::utils_inner::http::{HttpResponse, RequestOptions, send};
-use crate::utils_inner::http_inspector::{RawHttpRequestDump, finalize_http_error};
+use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
+use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
 use crate::utils_inner::json_parse::{
-    StreamingJsonAccumulator, parse_json_with_repair, parse_streaming_json,
+    parse_json_with_repair, parse_streaming_json, StreamingJsonAccumulator,
 };
 use crate::utils_inner::sse::{ServerSentEvent, SseDecoder};
 use crate::utils_inner::stream_failure::{
-    OpenStreamBlock, ProviderError, record_stream_failure, stream_drop_failure,
+    record_stream_failure, stream_drop_failure, OpenStreamBlock, ProviderError,
 };
 use crate::utils_inner::wire_json::request_body;
 

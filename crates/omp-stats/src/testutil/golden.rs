@@ -19,8 +19,7 @@ use serde_json::Value;
 use super::TestHome;
 
 /// The fixture `HOME` the goldens were recorded against.
-pub(crate) const FIXTURE_HOME: &str =
-    "/home/user/omrs-fixtures/stats/fixture/home";
+pub(crate) const FIXTURE_HOME: &str = "/home/user/omrs-fixtures/stats/fixture/home";
 /// `golden/_index.json` + `NNN.json` (`{request, status, body}`).
 pub(crate) const GOLDEN_DIR: &str = "/home/user/omrs-fixtures/stats/golden";
 

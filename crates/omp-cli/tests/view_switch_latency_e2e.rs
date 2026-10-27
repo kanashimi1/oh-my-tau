@@ -27,12 +27,12 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt as _, StreamExt as _};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::http::Request;
+use tokio_tungstenite::tungstenite::Message;
 
 /// Message entries seeded after the file header (bench-proto's transcript
 /// shape: alternating user question / 1 KiB assistant answer chain).

@@ -17,13 +17,15 @@ pub mod store;
 
 pub use client::{hub_dir_from, DeliverStream, HubClient, SendReceipt};
 pub use envelope::{
-    answer_envelope, looks_like_pane, new_message_id, normalize_address, pane_text, Envelope,
-    Kind, PayloadRef, Priority, State, DEFAULT_REPLY_DEADLINE_MS, KIND_ANSWER, PANE_WAKE_TOOL,
+    answer_envelope, looks_like_pane, new_message_id, normalize_address, pane_text, Envelope, Kind,
+    PayloadRef, Priority, State, DEFAULT_REPLY_DEADLINE_MS, KIND_ANSWER, PANE_WAKE_TOOL,
     SENDER_HUB,
 };
 pub use schema::{validate_reply, ReplyValidation};
 pub use server::{serve, HubDir};
-pub use store::{ClaimOutcome, ClaimRow, EnvelopeRow, InsertOutcome, PendingReply, StatusReport, Store};
+pub use store::{
+    ClaimOutcome, ClaimRow, EnvelopeRow, InsertOutcome, PendingReply, StatusReport, Store,
+};
 
 /// Default hub directory (`~/.omp/hub`), overridable with `OMP_HUB_DIR`.
 #[must_use]

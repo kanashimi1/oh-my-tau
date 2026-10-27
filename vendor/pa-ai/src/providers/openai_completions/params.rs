@@ -6,11 +6,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::providers::openai_completions::compat::{
-    DisableReason, ResolvedCompat, apply_compat_policy, is_forced, resolve_policy,
-    should_drop_auto_tool_choice_for_reasoning,
+    apply_compat_policy, is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning,
+    DisableReason, ResolvedCompat,
 };
 use crate::providers::openai_completions::convert::{
     convert_message_range, convert_tools, push_system_messages,
@@ -18,7 +18,7 @@ use crate::providers::openai_completions::convert::{
 use crate::providers::openai_completions::has_tool_history;
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
 use crate::types::{CacheRetention, Context, Message, Model};
-use crate::utils_inner::wire_json::{Wire, WireObject, obj, to_json_string};
+use crate::utils_inner::wire_json::{obj, to_json_string, Wire, WireObject};
 
 /// How the `messages` array reaches the params tree in [`build_params_streaming`].
 pub(crate) enum MsgsInput {

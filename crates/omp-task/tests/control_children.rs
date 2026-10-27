@@ -289,13 +289,22 @@ async fn child_gets_spec_env_and_never_inherits_a_stale_bus() {
     std::env::set_var("OMP_A2A_SOCK", "/stale/grandparent.sock");
     std::env::set_var("OMP_A2A_SELF", "stale-self");
 
-    let plain = runner.start(spec("p", dir.path()), ChildMode::Print).1.await;
+    let plain = runner
+        .start(spec("p", dir.path()), ChildMode::Print)
+        .1
+        .await;
     assert_eq!(plain.output.trim(), "sock=none self=none extra=none");
 
     let mut wired = spec("w", dir.path());
     wired.env = vec![
-        (omp_task::runner::A2A_SOCK_ENV.to_string(), "/run/bus.sock".to_string()),
-        (omp_task::runner::A2A_SELF_ENV.to_string(), "kid-1".to_string()),
+        (
+            omp_task::runner::A2A_SOCK_ENV.to_string(),
+            "/run/bus.sock".to_string(),
+        ),
+        (
+            omp_task::runner::A2A_SELF_ENV.to_string(),
+            "kid-1".to_string(),
+        ),
         ("MY_EXTRA".to_string(), "1".to_string()),
     ];
     let out = runner.start(wired, ChildMode::Print).1.await;

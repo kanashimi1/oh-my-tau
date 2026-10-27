@@ -19,17 +19,19 @@ async fn rust_analyzer_publishes_after_refresh_file() {
     std::fs::write(src.join("lib.rs"), "pub fn f() -> u32 { 1 }\n").unwrap();
 
     let config = omp_lsp::config::get_config(&dir);
-    let (name, mut server) = omp_lsp::servers::get_lsp_server_for_file(&config, &src.join("lib.rs"))
-        .expect("rust-analyzer configured");
+    let (name, mut server) =
+        omp_lsp::servers::get_lsp_server_for_file(&config, &src.join("lib.rs"))
+            .expect("rust-analyzer configured");
     println!("server: {name}");
     if std::env::var_os("LIVE_PUB_PROXY").is_some() {
         server.resolved_command = Some("/tmp/prewarm-check/ra-proxy".to_string());
         server.args = Some(Vec::new());
         println!("proxy: on");
     }
-    let client = omp_lsp::client::get_or_create_client(&server, &dir, Some(Duration::from_secs(10)), None)
-        .await
-        .expect("client init");
+    let client =
+        omp_lsp::client::get_or_create_client(&server, &dir, Some(Duration::from_secs(10)), None)
+            .await
+            .expect("client init");
 
     let file = src.join("lib.rs");
     if std::env::var_os("LIVE_PUB_WAIT").is_some() {
@@ -65,5 +67,8 @@ async fn rust_analyzer_publishes_after_refresh_file() {
     }
     let count = broken.as_ref().map_or(0, |p| p.diagnostics.len());
     println!("broken publish: {count} diagnostics");
-    assert!(count > 0, "no diagnostics published after introducing a type error");
+    assert!(
+        count > 0,
+        "no diagnostics published after introducing a type error"
+    );
 }

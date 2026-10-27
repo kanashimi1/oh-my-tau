@@ -800,7 +800,10 @@ mod tests {
         let a = r.begin_attempt(&f, 0.0);
         assert_eq!(a.retry_after_ms, Some(0));
         assert_eq!(a.delay_ms, 100);
-        assert!(matches!(r.finish_attempt(&a, false), Verdict::Retry { delay_ms: 100 }));
+        assert!(matches!(
+            r.finish_attempt(&a, false),
+            Verdict::Retry { delay_ms: 100 }
+        ));
     }
 
     #[test]

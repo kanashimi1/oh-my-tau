@@ -207,7 +207,11 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn sleeper() -> Child {
-        Command::new("sleep").arg("30").process_group(0).spawn().expect("spawn sleep")
+        Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn sleep")
     }
 
     fn exited(child: &mut Child) -> bool {
@@ -229,7 +233,10 @@ mod tests {
         let mut bystander = sleeper();
         assert!(kill_group(target.id(), target.id()));
         assert!(exited(&mut target), "target group survived");
-        assert!(bystander.try_wait().expect("try_wait").is_none(), "bystander was signalled");
+        assert!(
+            bystander.try_wait().expect("try_wait").is_none(),
+            "bystander was signalled"
+        );
         let _ = bystander.kill();
         let _ = bystander.wait();
     }

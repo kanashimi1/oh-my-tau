@@ -4,21 +4,21 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use pa_agent::types::AgentToolResult;
-use pi_edit::EditMode;
 use pi_edit::engine::FileOp;
 use pi_edit::error::{EditError, EditResult};
 use pi_edit::path_policy::PathPolicy;
 use pi_edit::session::{
     ApplyRequest, EditWriter, Session, SessionConfig, WriteRequest, WriteResponse,
 };
-use serde_json::{Value, json};
+use pi_edit::EditMode;
+use serde_json::{json, Value};
 
-use super::Env;
 use super::edit_diagnostics;
 use super::util::{format_path_relative_to_cwd, resolve_to_cwd, str_arg};
+use super::Env;
 
 /// Parameter schema of `edit` for `mode` (omp `edit/schemas.ts`).
 #[must_use]

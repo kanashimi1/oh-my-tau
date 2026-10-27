@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::compat::ModelView;
 use crate::types::{

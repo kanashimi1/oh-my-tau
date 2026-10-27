@@ -691,9 +691,7 @@ async fn collab_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
                             },
                         ));
                     }
-                    lines.push(
-                        "Get a link: omt collab link <instanceId|pid> [--view]".to_string(),
-                    );
+                    lines.push("Get a link: omt collab link <instanceId|pid> [--view]".to_string());
                     output(rt, &lines.join("\n"));
                 }
                 Err(err) => output(rt, &format!("Failed to list collab hosts: {err:#}")),

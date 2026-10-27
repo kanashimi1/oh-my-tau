@@ -372,10 +372,7 @@ mod tests {
             "π > Продолжить"
         );
         assert_eq!(build_terminal_title_with_state("!", None), "π !");
-        assert_eq!(
-            build_terminal_title_with_state("⠋", Some("omt")),
-            "π ⠋ omt"
-        );
+        assert_eq!(build_terminal_title_with_state("⠋", Some("omt")), "π ⠋ omt");
     }
 
     #[test]

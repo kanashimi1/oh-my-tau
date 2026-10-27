@@ -8,14 +8,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow};
-use omp_lsp::Cancel;
+use anyhow::{anyhow, Result};
 use omp_lsp::client::{self, LspError};
-use pa_agent::BoxFut;
-use pa_agent::abort::{AbortSignal, is_abort_error};
+use omp_lsp::Cancel;
+use pa_agent::abort::{is_abort_error, AbortSignal};
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
+use pa_agent::BoxFut;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::Env;
 

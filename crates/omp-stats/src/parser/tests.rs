@@ -10,8 +10,7 @@ use super::wyhash_hex;
 use super::{list_all_session_files, parse_session_file};
 use crate::testutil::TestHome;
 
-const FIXTURE_SESSIONS: &str =
-    "/home/user/omrs-fixtures/stats/fixture/home/.omp/agent/sessions";
+const FIXTURE_SESSIONS: &str = "/home/user/omrs-fixtures/stats/fixture/home/.omp/agent/sessions";
 
 /// TS `parseSessionFile` totals over the fixture (26 files), from
 /// `bun /tmp/ts-parse-compare.ts` against the vendored parser.ts.

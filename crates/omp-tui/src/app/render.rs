@@ -1,4 +1,7 @@
-use super::{App, Frame, Rect, Component, Line, Instant, Layout, Direction, Constraint, Style, Span, SPINNER_ADVANCE_MS, SPINNER, Maintenance};
+use super::{
+    App, Component, Constraint, Direction, Frame, Instant, Layout, Line, Maintenance, Rect, Span,
+    Style, SPINNER, SPINNER_ADVANCE_MS,
+};
 
 impl App {
     // ---- Live-region layout (ShellRender commit/live API) ----------------

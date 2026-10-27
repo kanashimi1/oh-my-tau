@@ -692,7 +692,12 @@ impl omp_tui::RuntimePort for Port {
         let last = LAST.load(std::sync::atomic::Ordering::Relaxed);
         if now.saturating_sub(last) < 30
             || LAST
-                .compare_exchange(last, now, std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed)
+                .compare_exchange(
+                    last,
+                    now,
+                    std::sync::atomic::Ordering::Relaxed,
+                    std::sync::atomic::Ordering::Relaxed,
+                )
                 .is_err()
         {
             return;

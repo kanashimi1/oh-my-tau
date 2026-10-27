@@ -5,10 +5,10 @@
 //! protocol (`kimiApiFormat`); the Anthropic format streams through the Anthropic Messages
 //! provider against a model rebuilt for that API.
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::compat::ModelView;
-use crate::providers::anthropic::{AnthropicOptions, map_tool_choice};
+use crate::providers::anthropic::{map_tool_choice, AnthropicOptions};
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
 use crate::types::{
     Model, ModelThinkingLevel, SimpleStreamOptions, SimpleToolChoice, StreamOptions,

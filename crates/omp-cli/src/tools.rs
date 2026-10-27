@@ -26,9 +26,9 @@ pub(crate) mod rlm_combinators;
 mod search;
 pub(crate) mod task;
 mod todo;
+pub use todo::{phases_from_entries, TodoPhase, TodoTool};
 #[cfg(test)]
 pub use todo::{Status, TodoItem};
-pub use todo::{TodoPhase, TodoTool, phases_from_entries};
 mod goal;
 mod lsp;
 mod think;
@@ -43,11 +43,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use pa_agent::BoxFut;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
+use pa_agent::BoxFut;
 use pi_edit::{EditMode, EditStore};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Job registry of the most recently built tool set (see [`take_last_jobs`]).
 static LAST_JOBS: parking_lot::Mutex<Option<jobs::JobRegistry>> = parking_lot::Mutex::new(None);
@@ -556,7 +556,7 @@ pub fn hidden_tool_by_name(name: &str) -> Option<Arc<dyn AgentTool>> {
     }
 }
 
-pub use ask::{AskUi, SelectOption, tool_with_ui};
+pub use ask::{tool_with_ui, AskUi, SelectOption};
 
 #[cfg(test)]
 mod tests {
@@ -677,10 +677,9 @@ mod tests {
         );
         let edit = tools.iter().find(|t| t.name() == "edit").unwrap();
         assert_eq!(edit.parameters()["properties"]["input"]["type"], "string");
-        assert!(
-            edit.description()
-                .starts_with("Hashline patches existing files")
-        );
+        assert!(edit
+            .description()
+            .starts_with("Hashline patches existing files"));
         let read = tools.iter().find(|t| t.name() == "read").unwrap();
         assert_eq!(read.parameters()["required"], json!(["path"]));
     }

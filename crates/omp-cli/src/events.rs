@@ -839,9 +839,14 @@ mod tests {
             );
         }
         if !root.join("ext-host/host.ts").is_file() {
-            return Some("ext-host/host.ts is missing (test needs a full repository checkout)".into());
+            return Some(
+                "ext-host/host.ts is missing (test needs a full repository checkout)".into(),
+            );
         }
-        if !root.join("crates/omp-ext/tests/fixtures/mutating.ts").is_file() {
+        if !root
+            .join("crates/omp-ext/tests/fixtures/mutating.ts")
+            .is_file()
+        {
             return Some(
                 "crates/omp-ext/tests/fixtures/mutating.ts is missing (test needs a full repository checkout)"
                     .into(),

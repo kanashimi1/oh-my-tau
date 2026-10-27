@@ -14,12 +14,12 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
-use pa_agent::BoxFut;
-use pa_agent::abort::{AbortSignal, is_abort_error, race_with_abort};
+use anyhow::{anyhow, Result};
+use pa_agent::abort::{is_abort_error, race_with_abort, AbortSignal};
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback, ToolResultContent};
+use pa_agent::BoxFut;
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 const DESCRIPTION: &str = r#"Ask only for materially different tradeoffs the user must decide. Default: act using code/config/docs/history and conventions. Several viable choices: pick conservative/standard, proceed, state choice.
 
@@ -960,11 +960,10 @@ mod tests {
             "Ask dialog answer \"storage\" selected unknown option \"Nope\""
         );
         let (_, tool) = fake(Some(json!({"answers": []})));
-        assert!(
-            tool.run(storage_args(), &AbortSignal::never())
-                .await
-                .is_err()
-        );
+        assert!(tool
+            .run(storage_args(), &AbortSignal::never())
+            .await
+            .is_err());
     }
 
     #[tokio::test]

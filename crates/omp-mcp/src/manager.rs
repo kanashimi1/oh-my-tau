@@ -315,10 +315,12 @@ async fn call_with_updates(
         let progress = async {
             match rx.as_mut() {
                 Some(rx) => rx.recv().await,
-                None => std::future::pending::<
-                    Result<McpProgress, tokio::sync::broadcast::error::RecvError>,
-                >()
-                .await,
+                None => {
+                    std::future::pending::<
+                        Result<McpProgress, tokio::sync::broadcast::error::RecvError>,
+                    >()
+                    .await
+                }
             }
         };
         tokio::select! {
@@ -348,4 +350,3 @@ fn is_retriable(error: &McpError) -> bool {
         McpError::JsonRpc(_) | McpError::Config(_) => false,
     }
 }
-

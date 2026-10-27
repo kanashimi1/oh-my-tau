@@ -39,7 +39,11 @@ pub fn run(args: &[String]) -> Result<i32> {
     let flags = std::sync::Arc::new(flags);
     let agent = super::hub::flag(&flags, "agent")
         .map(ToOwned::to_owned)
-        .or_else(|| std::env::var("OMP_HUB_AGENT").ok().filter(|v| !v.is_empty()));
+        .or_else(|| {
+            std::env::var("OMP_HUB_AGENT")
+                .ok()
+                .filter(|v| !v.is_empty())
+        });
     let hub = match super::hub::flag(&flags, "dir") {
         Some(dir) => HubDir::explicit(
             PathBuf::from(dir),
@@ -51,7 +55,9 @@ pub fn run(args: &[String]) -> Result<i32> {
     eprintln!(
         "omt hub mcp: stdio MCP server ({PROTOCOL_VERSION}) dir={} agent={}",
         hub.dir.display(),
-        agent.as_deref().unwrap_or("mcp:<client name from initialize>"),
+        agent
+            .as_deref()
+            .unwrap_or("mcp:<client name from initialize>"),
     );
     // `subcmd::run` executes on the CLI's own runtime thread; drive ours on a
     // dedicated current-thread runtime (the `subcmd::hub::cmd_serve` pattern).
@@ -174,7 +180,10 @@ async fn handle_message(state: &Arc<McpState>, msg: Value) -> Option<Value> {
         "tools/list" => Ok(json!({ "tools": tool_definitions() })),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
-            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             match handle_tool_call(state, name, &args).await {
                 Ok(v) => Ok(tool_result(&v, false)),
                 Err(e) => Ok(tool_result(&json!({"error": e}), true)),
@@ -248,9 +257,7 @@ fn tool_result(v: &Value, is_error: bool) -> Value {
 // --------------------------------------------------------------------- tools
 
 fn tool_definitions() -> Value {
-    let obj = |properties: Value, required: &[&str]| {
-        json!({"type": "object", "properties": properties, "required": required})
-    };
+    let obj = |properties: Value, required: &[&str]| json!({"type": "object", "properties": properties, "required": required});
     json!([
         {
             "name": "send",
@@ -357,7 +364,11 @@ async fn handle_tool_call(
 
 // --------------------------------------------------------------- arg helpers
 
-fn arg_str<'v>(args: &'v Value, key: &str, required: bool) -> std::result::Result<Option<&'v str>, String> {
+fn arg_str<'v>(
+    args: &'v Value,
+    key: &str,
+    required: bool,
+) -> std::result::Result<Option<&'v str>, String> {
     match args.get(key) {
         None | Some(Value::Null) if !required => Ok(None),
         None | Some(Value::Null) => Err(format!("missing required argument: {key}")),
@@ -384,7 +395,9 @@ fn arg_bool(args: &Value, key: &str) -> bool {
 
 /// Resolve the body: `payload` inline or `payload_path` (hash computed here).
 /// Bodies over [`INLINE_LIMIT`] go by `payload_ref`; both-set is an error.
-fn resolve_payload(args: &Value) -> std::result::Result<(Option<String>, Option<PayloadRef>), String> {
+fn resolve_payload(
+    args: &Value,
+) -> std::result::Result<(Option<String>, Option<PayloadRef>), String> {
     let inline = arg_str(args, "payload", false)?;
     let path = arg_str(args, "payload_path", false)?;
     match (inline, path) {
@@ -410,8 +423,8 @@ fn resolve_payload(args: &Value) -> std::result::Result<(Option<String>, Option<
                     }),
                 ))
             } else {
-                let text =
-                    String::from_utf8(raw).map_err(|_| format!("payload_path {p}: not UTF-8 text"))?;
+                let text = String::from_utf8(raw)
+                    .map_err(|_| format!("payload_path {p}: not UTF-8 text"))?;
                 Ok((Some(text), None))
             }
         }
@@ -447,7 +460,9 @@ async fn tool_send(state: &Arc<McpState>, args: &Value) -> std::result::Result<V
     let deadline = arg_u64(args, "deadline_s", false)?
         .map(|s| omp_hub::now_ms().saturating_add(s.saturating_mul(1000)));
     let env = Envelope {
-        message_id: arg_str(args, "message_id", false)?.unwrap_or_default().to_string(),
+        message_id: arg_str(args, "message_id", false)?
+            .unwrap_or_default()
+            .to_string(),
         correlation_id: arg_str(args, "correlation_id", false)?.map(ToOwned::to_owned),
         sender: state.identity(),
         recipient: to.to_string(),
@@ -462,7 +477,13 @@ async fn tool_send(state: &Arc<McpState>, args: &Value) -> std::result::Result<V
         payload_ref,
         ..Envelope::default()
     };
-    let receipt = state.hub().await.map_err(|e| e.to_string())?.send(env).await.map_err(|e| e.to_string())?;
+    let receipt = state
+        .hub()
+        .await
+        .map_err(|e| e.to_string())?
+        .send(env)
+        .await
+        .map_err(|e| e.to_string())?;
     serde_json::to_value(receipt).map_err(|e| e.to_string())
 }
 
@@ -482,11 +503,16 @@ async fn tool_inbox(state: &Arc<McpState>, args: &Value) -> std::result::Result<
     if arg_bool(args, "mark_read") {
         for env in &envelopes {
             if let Err(e) = hub.ack(&env.message_id, omp_hub::State::READ).await {
-                mark_read_errors.push(json!({"message_id": env.message_id, "error": e.to_string()}));
+                mark_read_errors
+                    .push(json!({"message_id": env.message_id, "error": e.to_string()}));
             }
         }
     }
-    let envelopes: Vec<Value> = envelopes.iter().map(serde_json::to_value).collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())?;
+    let envelopes: Vec<Value> = envelopes
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|e| e.to_string())?;
     Ok(json!({
         "recipient": me,
         "envelopes": envelopes,
@@ -500,7 +526,13 @@ async fn tool_ack(state: &Arc<McpState>, args: &Value) -> std::result::Result<Va
     if !matches!(s, omp_hub::State::DELIVERED | omp_hub::State::READ) {
         return Err("state must be delivered|read".to_string());
     }
-    state.hub().await.map_err(|e| e.to_string())?.ack(id, s).await.map_err(|e| e.to_string())?;
+    state
+        .hub()
+        .await
+        .map_err(|e| e.to_string())?
+        .ack(id, s)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(json!({"message_id": id, "state": s, "ok": true}))
 }
 
@@ -508,7 +540,9 @@ async fn tool_answer(state: &Arc<McpState>, args: &Value) -> std::result::Result
     let causation_id = arg_str(args, "causation_id", true)?.unwrap_or_default();
     let (payload, payload_ref) = resolve_payload(args)?;
     let answer = Envelope {
-        message_id: arg_str(args, "message_id", false)?.unwrap_or_default().to_string(),
+        message_id: arg_str(args, "message_id", false)?
+            .unwrap_or_default()
+            .to_string(),
         sender: state.identity(),
         kind: omp_hub::KIND_ANSWER.to_string(),
         priority: omp_hub::Priority::URGENT,
@@ -629,9 +663,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [
-                "send", "inbox", "ack", "answer", "status", "claim", "release", "check", "claims"
-            ]
+            ["send", "inbox", "ack", "answer", "status", "claim", "release", "check", "claims"]
         );
         for t in tools.as_array().unwrap() {
             assert!(t["description"].as_str().unwrap().len() < 300);
@@ -711,7 +743,10 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(handle_message(&st, json!({"jsonrpc": "2.0", "id": 3, "result": {}})));
+            .block_on(handle_message(
+                &st,
+                json!({"jsonrpc": "2.0", "id": 3, "result": {}}),
+            ));
         assert!(out.is_none());
         let out = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -803,13 +838,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let small = dir.path().join("small.txt");
         std::fs::write(&small, "hello").unwrap();
-        let (payload, refr) = resolve_payload(&json!({"payload_path": small.to_str().unwrap()})).unwrap();
+        let (payload, refr) =
+            resolve_payload(&json!({"payload_path": small.to_str().unwrap()})).unwrap();
         assert_eq!(payload.as_deref(), Some("hello"));
         assert!(refr.is_none());
 
         let big = dir.path().join("big.txt");
         std::fs::write(&big, "y".repeat(INLINE_LIMIT + 1)).unwrap();
-        let (payload, refr) = resolve_payload(&json!({"payload_path": big.to_str().unwrap()})).unwrap();
+        let (payload, refr) =
+            resolve_payload(&json!({"payload_path": big.to_str().unwrap()})).unwrap();
         assert!(payload.is_none());
         let refr = refr.unwrap();
         assert_eq!(refr.bytes, (INLINE_LIMIT + 1) as u64);

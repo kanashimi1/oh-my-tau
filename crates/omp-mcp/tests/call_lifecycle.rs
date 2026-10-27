@@ -16,10 +16,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use omp_mcp::errors::McpError;
-use omp_mcp::transport::McpTransport;
 use omp_mcp::transport::stdio::StdioTransport;
+use omp_mcp::transport::McpTransport;
 use omp_mcp::{McpManager, McpServerConfig, ServerKind};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 /// Fake MCP stdio server:
 /// - logs every received message (method, id, params) as one JSON line to

@@ -3,10 +3,10 @@
 //! OAuth/Claude-Code header modes, beta headers, and adaptive vs budget-based thinking selection
 //! live here.
 
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 use crate::event_stream::{
-    AssistantMessageEvent, AssistantMessageEventStream, create_assistant_message_event_stream,
+    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
 };
 use crate::registry::Provider;
 use crate::types::{
@@ -284,14 +284,12 @@ pub(crate) fn build_request_headers(
             if is_oauth {
                 headers.insert(
                     "anthropic-beta".into(),
-                    json!(
-                        ["claude-code-20250219", "oauth-2025-04-20"]
-                            .iter()
-                            .chain(beta_features.iter())
-                            .copied()
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ),
+                    json!(["claude-code-20250219", "oauth-2025-04-20"]
+                        .iter()
+                        .chain(beta_features.iter())
+                        .copied()
+                        .collect::<Vec<_>>()
+                        .join(",")),
                 );
                 headers.insert(
                     "user-agent".into(),
@@ -591,7 +589,7 @@ impl Provider for AnthropicMessagesProvider {
 #[cfg(test)]
 mod subscription_identity_tests {
     use super::build_request_headers;
-    use crate::types::{Model, ModelInput, zero_model_cost};
+    use crate::types::{zero_model_cost, Model, ModelInput};
 
     // TS #2645's wire-contract assertions (anthropic-thinking-disable.test.ts): subscription
     // requests claim the Claude Code client identity, and the claimed version must stay at or above
@@ -676,9 +674,7 @@ mod subscription_identity_tests {
             "{betas:?}"
         );
         let plain = crate::compat::ModelView::of(&test_model());
-        assert!(
-            !super::body_betas(&plain, &serde_json::json!({}))
-                .contains(&"thinking-binding-controls-2026-08-01")
-        );
+        assert!(!super::body_betas(&plain, &serde_json::json!({}))
+            .contains(&"thinking-binding-controls-2026-08-01"));
     }
 }

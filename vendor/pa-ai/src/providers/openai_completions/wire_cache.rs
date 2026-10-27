@@ -21,7 +21,7 @@ use serde_json::value::RawValue;
 
 use crate::providers::openai_completions::compat::ResolvedCompat;
 use crate::providers::openai_completions::params::{
-    BuiltFrags, MsgsInput, ToolsInput, build_params, build_params_streaming,
+    build_params, build_params_streaming, BuiltFrags, MsgsInput, ToolsInput,
 };
 use crate::providers::openai_completions::{OpenAICompletionsOptions, ToolChoice};
 use crate::types::{CacheRetention, Context, Message, Model, Tool};

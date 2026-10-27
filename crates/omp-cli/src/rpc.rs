@@ -909,10 +909,10 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             .await
             .unwrap_or_default();
             let mut models: Vec<Value> = catalog
-                    .iter()
-                    .filter(|b| b.available && b.kind.is_empty() && !b.model.id.is_empty())
-                    .map(|b| model_info(&b.model))
-                    .collect();
+                .iter()
+                .filter(|b| b.available && b.kind.is_empty() && !b.model.id.is_empty())
+                .map(|b| model_info(&b.model))
+                .collect();
             if let Some((p, i)) = current {
                 if !models
                     .iter()
@@ -1552,7 +1552,9 @@ fn parse_line(rt: &Runtime, line: &str) -> Option<Value> {
             rt.send(response(
                 None,
                 "parse",
-                Err(CmdError::new("Failed to parse command: expected a JSON object")),
+                Err(CmdError::new(
+                    "Failed to parse command: expected a JSON object",
+                )),
             ));
             None
         }
@@ -1639,7 +1641,10 @@ mod tests {
         let t = tree(&entries);
         assert_eq!(t.len(), 2, "two roots: the title header and the session");
         assert_eq!(t[0]["children"], json!([]));
-        assert_eq!(t[1]["children"][0]["children"][0]["entry"]["id"], json!("m2"));
+        assert_eq!(
+            t[1]["children"][0]["children"][0]["entry"]["id"],
+            json!("m2")
+        );
     }
 
     fn big_response(id: &str) -> Value {

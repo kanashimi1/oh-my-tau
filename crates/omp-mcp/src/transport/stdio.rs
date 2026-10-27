@@ -13,8 +13,8 @@ use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 
 use crate::config::McpServerConfig;
-use crate::timeout::is_timeout_enabled;
 use crate::errors::{may_have_run, Failure, McpError, McpTransportError, TransportKind};
+use crate::timeout::is_timeout_enabled;
 use crate::transport::{
     await_with_timeout, default_handler, dispatch_message, McpProgress, McpTransport,
     NotificationCallback, PendingRequests, RequestHandler, RequestIdAllocator, RespondCallback,

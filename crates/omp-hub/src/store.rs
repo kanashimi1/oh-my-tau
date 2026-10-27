@@ -135,8 +135,8 @@ impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         let db_path = dir.join("hub.db");
-        let conn = Connection::open(&db_path)
-            .with_context(|| format!("open {}", db_path.display()))?;
+        let conn =
+            Connection::open(&db_path).with_context(|| format!("open {}", db_path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
@@ -168,7 +168,10 @@ impl Store {
         if let Some(row) = self.get(&env.message_id)? {
             return Ok(InsertOutcome {
                 seq: row.envelope.seq.unwrap_or(0),
-                state: row.envelope.state.unwrap_or_else(|| State::SENT.to_string()),
+                state: row
+                    .envelope
+                    .state
+                    .unwrap_or_else(|| State::SENT.to_string()),
                 dedup: true,
             });
         }
@@ -199,16 +202,16 @@ impl Store {
                 .map(serde_json::to_string)
                 .transpose()?;
             let state_log_s = serde_json::to_string(&state_log)?;
-            let (p_path, p_sha, p_bytes) = env.payload_ref.as_ref().map_or(
-                (None, None, None),
-                |r: &PayloadRef| {
-                    (
-                        Some(r.path.clone()),
-                        Some(r.sha256.clone()),
-                        Some(i64_of(r.bytes)),
-                    )
-                },
-            );
+            let (p_path, p_sha, p_bytes) =
+                env.payload_ref
+                    .as_ref()
+                    .map_or((None, None, None), |r: &PayloadRef| {
+                        (
+                            Some(r.path.clone()),
+                            Some(r.sha256.clone()),
+                            Some(i64_of(r.bytes)),
+                        )
+                    });
             c.execute(
                 "INSERT INTO envelopes(
                    message_id, seq, run_id, parent_id, correlation_id, causation_id,
@@ -353,7 +356,10 @@ impl Store {
              ORDER BY priority ASC, seq ASC LIMIT ?3",
         ))?;
         let rows = stmt
-            .query_map(params![recipient, i64_of(since_seq), i64_of_sz(limit)], row_from_sql)?
+            .query_map(
+                params![recipient, i64_of(since_seq), i64_of_sz(limit)],
+                row_from_sql,
+            )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows
             .into_iter()
@@ -419,7 +425,10 @@ impl Store {
              WHERE state IN ('sent','delivered') GROUP BY recipient ORDER BY recipient",
         )?;
         let mapped = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0)))
+            Ok((
+                r.get::<_, String>(0)?,
+                u64::try_from(r.get::<_, i64>(1)?).unwrap_or(0),
+            ))
         })?;
         let unread_by_recipient = mapped.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(StatusReport {
@@ -464,7 +473,9 @@ impl Store {
                  ON CONFLICT(key) DO UPDATE SET value = value + 1",
                 [],
             )?;
-            c.query_row("SELECT value FROM meta WHERE key = 'fencing'", [], |r| r.get(0))?
+            c.query_row("SELECT value FROM meta WHERE key = 'fencing'", [], |r| {
+                r.get(0)
+            })?
         };
         c.execute(
             "INSERT INTO claims(resource, owner, fencing_token, expires_ms, intent, acquired_ms)
@@ -488,7 +499,13 @@ impl Store {
     ///
     /// # Errors
     /// Errors from the `SQLite` store.
-    pub fn release(&self, resource: &str, owner: &str, fencing_token: u64, now: u64) -> Result<bool> {
+    pub fn release(
+        &self,
+        resource: &str,
+        owner: &str,
+        fencing_token: u64,
+        now: u64,
+    ) -> Result<bool> {
         let c = self.lock();
         let Some(row) = claim_row(&c, resource)? else {
             return Ok(false);
@@ -496,10 +513,7 @@ impl Store {
         if row.owner != owner || row.fencing_token != fencing_token || row.expires_ms <= now {
             return Ok(false);
         }
-        let n = c.execute(
-            "DELETE FROM claims WHERE resource = ?1",
-            params![resource],
-        )?;
+        let n = c.execute("DELETE FROM claims WHERE resource = ?1", params![resource])?;
         Ok(n > 0)
     }
 
@@ -560,16 +574,16 @@ impl Store {
     }
 }
 
-fn pending_rows(
-    c: &Connection,
-    recipient: Option<&str>,
-    now: u64,
-) -> Result<Vec<PendingReply>> {
+fn pending_rows(c: &Connection, recipient: Option<&str>, now: u64) -> Result<Vec<PendingReply>> {
     let sql = format!(
         "SELECT message_id, recipient, kind, created_ms, deadline_ms FROM envelopes
          WHERE reply_expected = 1 AND state IN ('sent','delivered'){} 
          ORDER BY deadline_ms IS NULL, deadline_ms ASC LIMIT 100",
-        if recipient.is_some() { " AND recipient = ?1" } else { "" }
+        if recipient.is_some() {
+            " AND recipient = ?1"
+        } else {
+            ""
+        }
     );
     let mut stmt = c.prepare(&sql)?;
     let map = |r: &rusqlite::Row<'_>| {

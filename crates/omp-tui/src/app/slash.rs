@@ -1,4 +1,7 @@
-use super::{App, RuntimePort, P0_BUILTINS, CONFIRM_BARE, OpenOverlay, TreeMode, Action, parse_model_string, Value};
+use super::{
+    parse_model_string, Action, App, OpenOverlay, RuntimePort, TreeMode, Value, CONFIRM_BARE,
+    P0_BUILTINS,
+};
 
 impl App {
     /// Steps 7-8: bare-slash confirmation arming and builtin dispatch.

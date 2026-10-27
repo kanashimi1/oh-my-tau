@@ -27,7 +27,9 @@ pub fn run(args: &[String]) -> Result<i32> {
         "list" => list(json),
         "get" => {
             let Some(key) = positional.get(1) else {
-                anyhow::bail!("Usage: omt config get <key>\n\nRun 'omt config list' to see available keys");
+                anyhow::bail!(
+                    "Usage: omt config get <key>\n\nRun 'omt config list' to see available keys"
+                );
             };
             get(key, json)?;
         }

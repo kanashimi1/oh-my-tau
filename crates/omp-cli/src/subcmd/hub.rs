@@ -71,7 +71,9 @@ Common flags: --json   machine-readable output
 }
 
 /// Simple `--key value` / `--key=value` / boolean-flag parser.
-pub(crate) fn parse_flags(args: &[String]) -> (std::collections::HashMap<String, String>, Vec<String>) {
+pub(crate) fn parse_flags(
+    args: &[String],
+) -> (std::collections::HashMap<String, String>, Vec<String>) {
     let mut flags = std::collections::HashMap::new();
     let mut rest = Vec::new();
     let mut it = args.iter().peekable();
@@ -111,15 +113,15 @@ fn json_mode(flags: &std::sync::Arc<std::collections::HashMap<String, String>>) 
 }
 
 fn print_json(v: &Value) {
-    println!("{}", serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string()));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+    );
 }
 
 fn hub_dir(flags: &std::sync::Arc<std::collections::HashMap<String, String>>) -> HubDir {
     match flag(flags, "dir") {
-        Some(dir) => HubDir::explicit(
-            PathBuf::from(dir),
-            flag(flags, "sock").map(PathBuf::from),
-        ),
+        Some(dir) => HubDir::explicit(PathBuf::from(dir), flag(flags, "sock").map(PathBuf::from)),
         None => HubDir::resolve(),
     }
 }
@@ -195,7 +197,9 @@ fn envelope_from_flags(
         // Optional on `answer`: the hub routes the reply to the original
         // sender; required for `send` (checked there).
         recipient: flag(flags, "to").unwrap_or_default().to_string(),
-        kind: flag(flags, "kind").unwrap_or(omp_hub::Kind::AGENT_MESSAGE).to_string(),
+        kind: flag(flags, "kind")
+            .unwrap_or(omp_hub::Kind::AGENT_MESSAGE)
+            .to_string(),
         priority: Priority(
             flag(flags, "priority")
                 .and_then(|p| p.parse().ok())
@@ -203,8 +207,7 @@ fn envelope_from_flags(
         ),
         expected: flag(flags, "expected").map(ToOwned::to_owned),
         reply_schema: reply_schema_from_flags(flags)?,
-        deadline: flag(flags, "deadline-ms")
-            .and_then(|d| d.parse().ok()),
+        deadline: flag(flags, "deadline-ms").and_then(|d| d.parse().ok()),
         ..Envelope::default()
     };
     let payload = match flag(flags, "payload") {
@@ -284,7 +287,9 @@ async fn cmd_send(flags: std::sync::Arc<std::collections::HashMap<String, String
     Ok(i32::from(receipt.state == State::FAILED))
 }
 
-async fn cmd_inbox(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_inbox(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let recipient = need_flag(&flags, "recipient")?.to_string();
     let since = flag(&flags, "since-seq").and_then(|v| v.parse().ok());
     let limit = flag(&flags, "limit").and_then(|v| v.parse().ok());
@@ -322,7 +327,9 @@ async fn cmd_inbox(flags: std::sync::Arc<std::collections::HashMap<String, Strin
     Ok(0)
 }
 
-async fn cmd_status(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_status(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let c = connect(&flags).await?;
     if let Some(id) = flag(&flags, "message-id") {
         let v = c.status_message(id).await?;
@@ -355,7 +362,9 @@ async fn cmd_status(flags: std::sync::Arc<std::collections::HashMap<String, Stri
                 p["recipient"].as_str().unwrap_or("?"),
                 p["kind"].as_str().unwrap_or("?"),
                 p["age_ms"].as_u64().unwrap_or(0),
-                p["deadline_ms"].as_u64().map_or_else(|| "none".into(), |d| d.to_string()),
+                p["deadline_ms"]
+                    .as_u64()
+                    .map_or_else(|| "none".into(), |d| d.to_string()),
             );
         }
         println!("active claims:");
@@ -409,11 +418,15 @@ async fn cmd_ack(flags: std::sync::Arc<std::collections::HashMap<String, String>
     Ok(0)
 }
 
-async fn cmd_answer(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_answer(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let causation_id = need_flag(&flags, "causation-id")?.to_string();
     let mut env = envelope_from_flags(&flags, false)?;
     env.causation_id = Some(causation_id.clone());
-    env.kind = flag(&flags, "kind").unwrap_or(omp_hub::KIND_ANSWER).to_string();
+    env.kind = flag(&flags, "kind")
+        .unwrap_or(omp_hub::KIND_ANSWER)
+        .to_string();
     let c = connect(&flags).await?;
     let v = c.answer(&causation_id, env).await?;
     if json_mode(&flags) {
@@ -428,7 +441,9 @@ async fn cmd_answer(flags: std::sync::Arc<std::collections::HashMap<String, Stri
     Ok(0)
 }
 
-async fn cmd_claim(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_claim(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let resource = need_flag(&flags, "resource")?.to_string();
     let owner = need_flag(&flags, "owner")?.to_string();
     let ttl = flag(&flags, "ttl-s")
@@ -455,7 +470,9 @@ async fn cmd_claim(flags: std::sync::Arc<std::collections::HashMap<String, Strin
     Ok(i32::from(!outcome.granted))
 }
 
-async fn cmd_release(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_release(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let resource = need_flag(&flags, "resource")?.to_string();
     let owner = need_flag(&flags, "owner")?.to_string();
     let token = flag(&flags, "fencing-token")
@@ -471,7 +488,9 @@ async fn cmd_release(flags: std::sync::Arc<std::collections::HashMap<String, Str
     Ok(0)
 }
 
-async fn cmd_claims(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_claims(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let prefix = flag(&flags, "prefix").map(ToOwned::to_owned);
     let c = connect(&flags).await?;
     let v = c.claims(prefix.as_deref(), None).await?;
@@ -491,7 +510,9 @@ async fn cmd_claims(flags: std::sync::Arc<std::collections::HashMap<String, Stri
     Ok(0)
 }
 
-async fn cmd_check(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_check(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let resource = need_flag(&flags, "resource")?.to_string();
     let c = connect(&flags).await?;
     let v = c.check(&resource).await?;
@@ -511,7 +532,9 @@ async fn cmd_check(flags: std::sync::Arc<std::collections::HashMap<String, Strin
     Ok(0)
 }
 
-async fn cmd_subscribe(flags: std::sync::Arc<std::collections::HashMap<String, String>>) -> Result<i32> {
+async fn cmd_subscribe(
+    flags: std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<i32> {
     let agent = need_flag(&flags, "agent")?.to_string();
     let last_seq = flag(&flags, "last-seq").and_then(|v| v.parse().ok());
     let c = connect(&flags).await?;

@@ -1,4 +1,7 @@
-use super::{App, Event, RuntimePort, Component, Instant, Action, KeyEvent, KeyCode, KeyModifiers, OpenOverlay, DOUBLE_TAP_WINDOW, EditorOutcome, Maintenance, TreeMode, QueueKind, SubmitBehavior};
+use super::{
+    Action, App, Component, EditorOutcome, Event, Instant, KeyCode, KeyEvent, KeyModifiers,
+    Maintenance, OpenOverlay, QueueKind, RuntimePort, SubmitBehavior, TreeMode, DOUBLE_TAP_WINDOW,
+};
 
 impl App {
     /// Handle one terminal event. Returns `false` when the app should quit.
