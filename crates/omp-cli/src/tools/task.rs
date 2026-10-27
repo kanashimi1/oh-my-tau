@@ -13,9 +13,9 @@ use anyhow::{Result, bail};
 use omp_task::discovery::{discover_project_agents, discover_user_agents};
 use omp_task::envelope::format_task_result;
 use omp_task::params::{SchemaMode, TaskItem};
-use omp_task::runner::{ChildMode, TaskRunner, TaskSpec};
 #[cfg(test)]
 use omp_task::runner::RunStatus;
+use omp_task::runner::{ChildMode, TaskRunner, TaskSpec};
 use pa_agent::types::AgentToolResult;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -594,7 +594,14 @@ pub async fn task(env: std::sync::Arc<Env>, args: Value) -> Result<AgentToolResu
     // Non-blocking (TS async task semantics): the children keep running; each
     // result is scored (SERA — the rubrics were frozen above, before any spawn)
     // and auto-delivers to the parent at its next turn boundary.
-    let spawned = spawn_children(&runner, specs, rubrics, prompts, &super::a2a::current_owner()).await?;
+    let spawned = spawn_children(
+        &runner,
+        specs,
+        rubrics,
+        prompts,
+        &super::a2a::current_owner(),
+    )
+    .await?;
     let mut text = format!(
         "Spawned {} task child agent{}; results auto-deliver as messages when they settle:",
         spawned.len(),
@@ -654,6 +661,91 @@ static ASYNC_CHILDREN: std::sync::Mutex<AsyncChildren> = std::sync::Mutex::new(A
     leases: Vec::new(),
 });
 
+/// Process-wide counter behind spawn-batch ids (one per `spawn_children`
+/// call), so `wait` can tell which children were spawned together.
+static BATCH_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Which spawn batch each child belongs to. A child's entry outlives its own
+/// settle (until the whole batch settles) so its result delivery can still be
+/// attributed to a possibly still-running batch.
+#[derive(Default)]
+struct BatchRegistry {
+    /// Child id -> its spawn batch.
+    child_batch: std::collections::HashMap<String, u64>,
+    /// Batch id -> children of the batch not settled yet.
+    remaining: std::collections::HashMap<u64, usize>,
+}
+
+static BATCHES: std::sync::LazyLock<std::sync::Mutex<BatchRegistry>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(BatchRegistry::default()));
+
+/// Claim a fresh batch id for one `spawn_children` call and remember its
+/// children: `wait` holds each settled child's result until the child's whole
+/// spawn batch settles, so one parent turn gets the batch's results together
+/// instead of one extra wait/turn per child.
+fn register_batch(child_ids: &[String]) -> u64 {
+    let batch = BATCH_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let mut reg = BATCHES.lock().expect("task batch lock");
+    for id in child_ids {
+        reg.child_batch.insert(id.clone(), batch);
+    }
+    reg.remaining.insert(batch, child_ids.len());
+    batch
+}
+
+/// One child settled: drop it from its batch; the last settle dissolves the
+/// batch so nothing about it is held anymore.
+fn note_batch_child_settled(child_id: &str) {
+    let mut reg = BATCHES.lock().expect("task batch lock");
+    let Some(batch) = reg.child_batch.get(child_id).copied() else {
+        return;
+    };
+    let Some(remaining) = reg.remaining.get_mut(&batch) else {
+        return;
+    };
+    *remaining -= 1;
+    if *remaining == 0 {
+        // Last settle dissolves the batch: drop it wholesale so nothing
+        // about it is held anymore.
+        reg.remaining.remove(&batch);
+        reg.child_batch.retain(|_, member| *member != batch);
+    }
+}
+
+/// Whether the task-result delivery `from` belongs to a spawn batch that
+/// still has running children (its result is held for one combined delivery).
+#[must_use]
+pub(crate) fn batch_still_running(from: &str) -> bool {
+    let reg = BATCHES.lock().expect("task batch lock");
+    reg.child_batch
+        .get(from)
+        .and_then(|batch| reg.remaining.get(batch))
+        .is_some_and(|remaining| *remaining > 0)
+}
+
+/// Split drained deliveries into what may be returned now and task results
+/// whose spawn batch still has running children (held so one `wait` returns
+/// the whole settled batch together). Messages/steering/questions and results
+/// of completed or batch-less children always return now.
+pub(crate) fn split_batch_ready(
+    deliveries: Vec<super::a2a::PendingDelivery>,
+) -> (
+    Vec<super::a2a::PendingDelivery>,
+    Vec<super::a2a::PendingDelivery>,
+) {
+    deliveries.into_iter().partition(|delivery| {
+        delivery.kind != super::a2a::KIND_TASK_RESULT || !batch_still_running(&delivery.from)
+    })
+}
+
+/// Re-queue held deliveries (relative order preserved) so a later `wait` (or
+/// turn boundary) returns them.
+pub(crate) fn requeue_deliveries(deliveries: Vec<super::a2a::PendingDelivery>) {
+    for delivery in deliveries {
+        super::a2a::queue_delivery(delivery);
+    }
+}
+
 /// How many `task` children are still running (all sessions; tests).
 #[cfg(test)]
 #[must_use]
@@ -691,7 +783,9 @@ pub(crate) fn kill_async_children_for(owner: &super::a2a::Owner) {
     let (mine, others): (Vec<_>, Vec<_>) = {
         let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
         let children = std::mem::take(&mut reg.children);
-        children.into_iter().partition(|child| &child.owner == owner)
+        children
+            .into_iter()
+            .partition(|child| &child.owner == owner)
     };
     {
         let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
@@ -710,13 +804,19 @@ pub(crate) fn kill_async_children_for(owner: &super::a2a::Owner) {
 /// them all (one combined delivery per settled batch). Returns empty only
 /// when the race "children settled and their deliveries were consumed
 /// elsewhere" wins — the caller then settles normally.
-pub(crate) async fn next_delivery_batch(owner: &super::a2a::Owner) -> Vec<super::a2a::PendingDelivery> {
+pub(crate) async fn next_delivery_batch(
+    owner: &super::a2a::Owner,
+) -> Vec<super::a2a::PendingDelivery> {
     loop {
         let pending = super::a2a::take_deliveries_for(owner);
         if !pending.is_empty() {
-            return pending;
+            let (ready, held) = split_batch_ready(pending);
+            requeue_deliveries(held);
+            if !ready.is_empty() {
+                return ready;
+            }
         }
-        if live_children_for(owner) == 0 {
+        if live_children_for(owner) == 0 && !super::a2a::has_pending_for(owner) {
             return Vec::new();
         }
         // Park on the queue with a tick as a missed-notify safety net.
@@ -800,6 +900,14 @@ pub(crate) async fn spawn_children(
     // dropped when its last child settles.
     let call_lease = super::a2a::BusLease::acquire_for(owner)
         .map_err(|e| anyhow::anyhow!("task: cannot start the agent message bus: {e}"))?;
+    // Register only after every fallible setup step. Settlement can now
+    // only observe a batch whose children are about to be spawned.
+    register_batch(
+        &specs
+            .iter()
+            .map(|spec| spec.id.clone().unwrap_or_default())
+            .collect::<Vec<_>>(),
+    );
     let sock = {
         let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
         if let Some((_, lease)) = reg.leases.iter().find(|(l_owner, _)| l_owner == owner) {
@@ -823,7 +931,8 @@ pub(crate) async fn spawn_children(
             super::a2a::SOCK_ENV.to_string(),
             sock.to_string_lossy().into_owned(),
         ));
-        spec.env.push((super::a2a::SELF_ENV.to_string(), id.clone()));
+        spec.env
+            .push((super::a2a::SELF_ENV.to_string(), id.clone()));
         let agent = spec.agent.clone();
         let (control, join) = runner.start(spec, ChildMode::Rpc);
         slot.attach(control.clone());
@@ -867,6 +976,11 @@ pub(crate) async fn spawn_children(
                 use std::fmt::Write as _;
                 let _ = writeln!(text, "{}", worktree_delivery_line(&summary));
             }
+            // Record the settle before queueing: a single-child (or last)
+            // batch is already dissolved when its delivery lands, so its
+            // result is never held; earlier siblings' results stay held
+            // until this last settle.
+            note_batch_child_settled(&id);
             super::a2a::queue_delivery(super::a2a::PendingDelivery {
                 owner: task_owner.clone(),
                 from: id,
@@ -877,7 +991,8 @@ pub(crate) async fn spawn_children(
             let mut reg = ASYNC_CHILDREN.lock().expect("async children lock");
             reg.children.retain(|child| child.id != output.id);
             if !reg.children.iter().any(|child| &child.owner == &task_owner) {
-                reg.leases.retain(|(lease_owner, _)| lease_owner != &task_owner);
+                reg.leases
+                    .retain(|(lease_owner, _)| lease_owner != &task_owner);
             }
         });
     }
@@ -1062,7 +1177,7 @@ mod tests {
     /// argv; the agent list is a ceiling the item/parent restriction narrows.
     #[test]
     fn agent_definition_stamps_tools_prompt_and_thinking() {
-        use omp_task::agent::{parse_agent, AgentSource};
+        use omp_task::agent::{AgentSource, parse_agent};
         let agent = parse_agent(
             "bb.md",
             "---\nname: bb\ndescription: d\ntools: [read, bash, mcp__blockbench_bb_preview]\nthinkingLevel: high\n---\nCheck every edit with bb_preview.\n",
@@ -1215,7 +1330,10 @@ mod tests {
     fn result_delivery_text_renders_envelopes_and_failures() {
         let completed = result_delivery_text(&run_output("a", RunStatus::Completed), None);
         assert!(completed.contains("\"id\": \"a\""), "{completed}");
-        assert!(completed.contains("\"status\": \"completed\""), "{completed}");
+        assert!(
+            completed.contains("\"status\": \"completed\""),
+            "{completed}"
+        );
         let failed = run_output("b", RunStatus::Failed);
         let failed = result_delivery_text(&failed, None);
         assert!(failed.contains("\"status\": \"failed\""), "{failed}");
@@ -1236,10 +1354,8 @@ mod tests {
             Some(1.0),
         )
         .unwrap();
-        let scored = result_delivery_text(
-            &run_output("agent-1", RunStatus::Completed),
-            Some(&Ok(rec)),
-        );
+        let scored =
+            result_delivery_text(&run_output("agent-1", RunStatus::Completed), Some(&Ok(rec)));
         assert!(scored.contains("score=0.750"), "{scored}");
         let scorer_failed = result_delivery_text(
             &run_output("agent-1", RunStatus::Completed),
@@ -1380,13 +1496,21 @@ stdin.readline()
             // The call returns immediately while the child is still running:
             // the immediate return names the child and the child is still
             // steerable afterwards.
-            let spawned =
-                spawn_children(&runner, vec![spec], vec![None], vec!["go".to_string()], &None)
-                    .await
-                    .unwrap();
+            let spawned = spawn_children(
+                &runner,
+                vec![spec],
+                vec![None],
+                vec!["go".to_string()],
+                &None,
+            )
+            .await
+            .unwrap();
             assert_eq!(spawned.len(), 1);
             assert_eq!(spawned[0].id, "e2e-b");
-            assert!(live_children() >= 1, "child still running after the call returned");
+            assert!(
+                live_children() >= 1,
+                "child still running after the call returned"
+            );
 
             // A `write agent://e2e-b` from a later turn steers the running child.
             let receipt = super::super::eval_agents::deliver_message("e2e-b", "from-parent")
