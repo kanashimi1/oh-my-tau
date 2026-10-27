@@ -13,7 +13,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::config::McpServerConfig;
 use crate::errors::{
@@ -89,9 +89,7 @@ impl HttpTransport {
 
     /// Record the protocol version negotiated by `initialize`.
     fn set_protocol_version_sync(&self, version: &str) {
-        if let Ok(mut guard) = self.state.try_lock() {
-            guard.protocol_version = Some(version.to_string());
-        }
+        self.state.lock().protocol_version = Some(version.to_string());
     }
 
     fn headers(&self, state: &HttpState) -> HeaderMap {
@@ -262,7 +260,7 @@ async fn send_request(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         if let Some(s) = &session {
-            *session_cell_inner.lock().await = Some(s.clone());
+            *session_cell_inner.lock() = Some(s.clone());
         }
         let content_type = response
             .headers()
@@ -337,11 +335,9 @@ async fn send_request(
         }
     }
     if result.is_ok() {
-        if let Some(session) = session_cell.lock().await.take() {
-            state.lock().await.session_id = Some(session);
+        if let Some(session) = session_cell.lock().take() {
+            state.lock().session_id = Some(session);
         }
-        let mut guard = state.lock().await;
-        guard.next_id += 1;
     }
     result
 }
@@ -362,8 +358,15 @@ impl McpTransport for HttpTransport {
     }
 
     fn request(&mut self, method: &str, params: Value) -> TransportFut<Result<Value, McpError>> {
-        let state = futures::executor::block_on(self.state.lock()).clone();
-        let id = Value::from(state.next_id + 1);
+        // Claim the id before the request future exists: ids stay unique for
+        // concurrent requests and are never reused after a failed one (MCP:
+        // an id must not be reused within a session).
+        let state = {
+            let mut guard = self.state.lock();
+            guard.next_id += 1;
+            guard.clone()
+        };
+        let id = Value::from(state.next_id);
         let url = self.config.url.clone().unwrap_or_default();
         let headers = self.headers(&state);
         let client = self.client.clone();
@@ -378,7 +381,7 @@ impl McpTransport for HttpTransport {
     fn notify(&mut self, method: &str, params: Value) -> TransportFut<Result<(), McpError>> {
         let url = self.config.url.clone().unwrap_or_default();
         let body = json!({ "jsonrpc": "2.0", "method": method, "params": params });
-        let state = futures::executor::block_on(self.state.lock()).clone();
+        let state = self.state.lock().clone();
         let request = self
             .client
             .post(&url)
@@ -410,7 +413,7 @@ impl McpTransport for HttpTransport {
         let state = self.state.clone();
         let client = self.client.clone();
         Box::pin(async move {
-            let session = state.lock().await.session_id.take();
+            let session = state.lock().session_id.take();
             if let Some(session) = session {
                 let _ = client
                     .delete(&url)
