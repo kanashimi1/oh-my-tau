@@ -3,12 +3,12 @@
 //! finalize path.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::abort::{is_abort_error, AbortSignal};
+use crate::abort::{AbortSignal, is_abort_error};
 use crate::stream::{LlmContext, StreamFn, StreamRequestOptions, ToolDefinition};
 use crate::types::{
     AgentContext, AgentEvent, AgentMessage, AssistantMessage, ContextSnapshot, Message, StopReason,
@@ -17,7 +17,7 @@ use crate::types::{
 
 use super::abort::{create_aborted_assistant_message, race_with_abort};
 use super::run::clone_context;
-use super::tool_call::{execute_prepared_tool_call, ExecutedToolCallOutcome};
+use super::tool_call::{ExecutedToolCallOutcome, execute_prepared_tool_call};
 use super::tools::{Preparation, PreparedToolCall};
 use super::{AgentEventSink, AgentLoopConfig};
 

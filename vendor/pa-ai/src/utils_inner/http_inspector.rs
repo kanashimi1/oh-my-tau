@@ -280,8 +280,11 @@ fn prune_http_request_dumps(dir: &Path, keep: &str) {
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
             let meta = entry.metadata().ok()?;
-            (name.ends_with(".json") && meta.is_file())
-                .then(|| (name, meta.modified().unwrap_or(now), meta.len()))
+            (name
+                .rsplit_once('.')
+                .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("json"))
+                && meta.is_file())
+            .then(|| (name, meta.modified().unwrap_or(now), meta.len()))
         })
         .collect();
     dumps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));

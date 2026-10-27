@@ -12,9 +12,9 @@ use crate::types::{
 
 use super::run::clone_context;
 use super::tool_call::{
-    create_tool_result_message, emit_tool_execution_end, emit_tool_result_message,
-    execute_prepared_tool_call, finalize_executed_tool_call, is_non_blank, prepare_tool_call,
-    ExecutedToolCallOutcome,
+    ExecutedToolCallOutcome, create_tool_result_message, emit_tool_execution_end,
+    emit_tool_result_message, execute_prepared_tool_call, finalize_executed_tool_call,
+    is_non_blank, prepare_tool_call,
 };
 use super::{AgentEventSink, AgentLoopConfig};
 

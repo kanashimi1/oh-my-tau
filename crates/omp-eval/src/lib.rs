@@ -650,6 +650,8 @@ impl PythonKernel {
     ///
     /// # Errors
     /// Fails on broken kernel I/O.
+    // By value to match the other kernels' `execute_with`; the options are only read.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn execute_with(&self, code: &str, opts: ExecOptions<'_>) -> io::Result<CellResult> {
         self.execute_opts(code, &opts, false)
     }
@@ -933,6 +935,9 @@ impl PythonKernel {
     }
 
     /// True while the runner subprocess is alive.
+    ///
+    /// # Panics
+    /// If the OS reports the child's exit status unrecoverably.
     #[must_use]
     pub fn is_alive(&self) -> bool {
         let mut guard = self.process.lock();

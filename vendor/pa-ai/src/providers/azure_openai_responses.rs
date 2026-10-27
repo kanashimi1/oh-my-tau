@@ -8,24 +8,24 @@ use serde_json::Map;
 
 use crate::env_api_keys::get_env_api_key;
 use crate::event_stream::{
-    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
-    AssistantMessageEventWriter,
+    AssistantMessageEvent, AssistantMessageEventStream, AssistantMessageEventWriter,
+    create_assistant_message_event_stream,
 };
 use crate::providers::openai_responses_shared::ResponsesStreamHooks;
-use crate::providers::responses_request::{build_body, Flavor, ResponsesOptions};
+use crate::providers::responses_request::{Flavor, ResponsesOptions, build_body};
 use crate::registry::Provider;
 use crate::types::{
-    done_reason, error_reason, AssistantMessage, Context, Model, SimpleStreamOptions, StopReason,
-    StreamOptions, Usage,
+    AssistantMessage, Context, Model, SimpleStreamOptions, StopReason, StreamOptions, Usage,
+    done_reason, error_reason,
 };
 use crate::utils_inner::diagnostics::now_ms;
-use crate::utils_inner::http::{send, HttpResponse, RequestOptions};
-use crate::utils_inner::http_inspector::{finalize_http_error, RawHttpRequestDump};
+use crate::utils_inner::http::{HttpResponse, RequestOptions, send};
+use crate::utils_inner::http_inspector::{RawHttpRequestDump, finalize_http_error};
 use crate::utils_inner::json_parse::{parse_json_with_repair, parse_streaming_json};
 use crate::utils_inner::sse::SseDecoder;
 use crate::utils_inner::stream_failure::{
-    format_stream_failure_message, record_stream_failure, stream_failure_from_stop_reason,
-    ProviderError,
+    ProviderError, format_stream_failure_message, record_stream_failure,
+    stream_failure_from_stop_reason,
 };
 
 pub const API_AZURE_OPENAI_RESPONSES: &str = "azure-openai-responses";
@@ -255,8 +255,7 @@ async fn run_stream(
         &Flavor::Azure {
             deployment: deployment_name.clone(),
         },
-    )
-    .map_err(ProviderError::Message)?;
+    );
     if let Some(on_payload) = &options.responses.base.on_payload {
         if let Some(next) = on_payload(params.clone(), model) {
             params = next;

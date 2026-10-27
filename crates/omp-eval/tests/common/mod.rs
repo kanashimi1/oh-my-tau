@@ -10,7 +10,7 @@ pub fn bun_on_path() -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| is_executable(dir.join("bun")))
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join("bun")))
 }
 
 /// Prerequisite gate for tests that need the Bun JS runtime: returns `true`
@@ -27,13 +27,12 @@ pub fn require_bun(test: &str) -> bool {
 }
 
 #[cfg(unix)]
-fn is_executable(path: std::path::PathBuf) -> bool {
+fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
-    std::fs::metadata(&path)
-        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
-fn is_executable(path: std::path::PathBuf) -> bool {
-    std::fs::metadata(&path).is_ok_and(|m| m.is_file())
+fn is_executable(path: &std::path::Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|m| m.is_file())
 }

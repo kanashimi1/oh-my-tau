@@ -53,10 +53,13 @@ impl OAuthLoginUi for ScriptedUi {
     }
 }
 
+/// Scripted HTTP reply closure.
+type ReplyFn = Box<dyn Fn(&ProviderHttpRequest) -> (u16, String) + Send + Sync>;
+
 /// Records requests, answers from a closure.
 struct ScriptedHttp {
     seen: Mutex<Vec<ProviderHttpRequest>>,
-    reply: Box<dyn Fn(&ProviderHttpRequest) -> (u16, String) + Send + Sync>,
+    reply: ReplyFn,
 }
 
 impl ProviderHttp for ScriptedHttp {
@@ -104,7 +107,10 @@ fn temp_target() -> (tempfile::TempDir, Target) {
     (dir, target)
 }
 
-fn raw_rows(target: &Target) -> Vec<(i64, String, String, String, Option<String>, Option<String>)> {
+/// One stored credential row: `(id, kind, provider, label, api_key, metadata)`.
+type RawRow = (i64, String, String, String, Option<String>, Option<String>);
+
+fn raw_rows(target: &Target) -> Vec<RawRow> {
     let Target::Local(db) = target else {
         unreachable!()
     };

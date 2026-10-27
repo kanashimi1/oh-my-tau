@@ -3,10 +3,10 @@
 //! OAuth/Claude-Code header modes, beta headers, and adaptive vs budget-based thinking selection
 //! live here.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::event_stream::{
-    create_assistant_message_event_stream, AssistantMessageEvent, AssistantMessageEventStream,
+    AssistantMessageEvent, AssistantMessageEventStream, create_assistant_message_event_stream,
 };
 use crate::registry::Provider;
 use crate::types::{
@@ -200,6 +200,7 @@ pub(crate) fn headers_to_pairs(headers: &Map<String, Value>) -> Vec<(String, Str
 
 /// Build the request headers for the messages endpoint, mirroring the SDK client configurations
 /// (OAuth/Claude Code mode, cloudflare gateway, github-copilot, plain API key).
+#[allow(clippy::too_many_lines)] // one branch per SDK client configuration, mirroring the TS source
 pub(crate) fn build_request_headers(
     model: &Model,
     api_key: &str,
@@ -283,12 +284,14 @@ pub(crate) fn build_request_headers(
             if is_oauth {
                 headers.insert(
                     "anthropic-beta".into(),
-                    json!(["claude-code-20250219", "oauth-2025-04-20"]
-                        .iter()
-                        .chain(beta_features.iter())
-                        .copied()
-                        .collect::<Vec<_>>()
-                        .join(",")),
+                    json!(
+                        ["claude-code-20250219", "oauth-2025-04-20"]
+                            .iter()
+                            .chain(beta_features.iter())
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
                 );
                 headers.insert(
                     "user-agent".into(),
@@ -374,7 +377,9 @@ pub(crate) fn normalize_mandatory_reasoning(
     options: &SimpleStreamOptions,
 ) -> SimpleStreamOptions {
     let explicit = options
-        .reasoning.as_ref().is_some_and(|l| *l != ModelThinkingLevel::Off)
+        .reasoning
+        .as_ref()
+        .is_some_and(|l| *l != ModelThinkingLevel::Off)
         && !options.disable_reasoning;
     if !model.reasoning
         || view.thinking_flag("requiresEffort") != Some(true)
@@ -418,7 +423,7 @@ pub(crate) fn map_simple_options(
         let mut o = AnthropicOptions::from_base(base);
         o.request_model_id = wire_id(None);
         o.thinking_enabled = Some(false);
-        o.tool_choice = tool_choice.clone();
+        o.tool_choice.clone_from(&tool_choice);
         o
     };
     let reasoning = options.reasoning.filter(|l| *l != ModelThinkingLevel::Off);
@@ -426,7 +431,7 @@ pub(crate) fn map_simple_options(
     else {
         return Ok(off(base));
     };
-    let mut budget = thinking_budget_for(&options, reasoning) as i64;
+    let mut budget = thinking_budget_for(&options, reasoning).cast_signed();
     if budget <= 0 {
         return Ok(off(base));
     }
@@ -441,7 +446,8 @@ pub(crate) fn map_simple_options(
         None
     };
     let cap = |uncapped: u64| model_max.map_or(uncapped, |m| uncapped.min(m));
-    let with_thinking = |max: u64, budget: i64| cap(max.saturating_add(budget.max(0) as u64));
+    let with_thinking =
+        |max: u64, budget: i64| cap(max.saturating_add(budget.max(0).cast_unsigned()));
     let max_with_thinking = base.max_tokens.map(|m| with_thinking(m, budget));
     let finish = |mut base: StreamOptions, max: Option<u64>, budget_tokens: Option<u64>| {
         base.max_tokens = max;
@@ -450,7 +456,7 @@ pub(crate) fn map_simple_options(
         o.thinking_enabled = Some(true);
         o.thinking_budget_tokens = budget_tokens;
         o.effort = effort;
-        o.tool_choice = tool_choice.clone();
+        o.tool_choice.clone_from(&tool_choice);
         o
     };
     if mode == Some("anthropic-adaptive") {
@@ -458,25 +464,29 @@ pub(crate) fn map_simple_options(
     }
     if std::env::var("PI_NO_INTERLEAVED_THINKING").as_deref() != Ok("1") {
         if let Some(m) = model_max {
-            if (m as i64) < budget + request::OUTPUT_FALLBACK_BUFFER as i64 {
-                budget = m as i64 - request::OUTPUT_FALLBACK_BUFFER as i64;
+            if m.cast_signed() < budget + request::OUTPUT_FALLBACK_BUFFER.cast_signed() {
+                budget = m.cast_signed() - request::OUTPUT_FALLBACK_BUFFER.cast_signed();
             }
         }
         if budget >= 1024 {
-            return Ok(finish(base, max_with_thinking, Some(budget as u64)));
+            return Ok(finish(
+                base,
+                max_with_thinking,
+                Some(budget.cast_unsigned()),
+            ));
         }
     }
     let max_tokens = match base.max_tokens {
         None => cap(64_000),
         Some(m) => with_thinking(m, budget),
     };
-    if (max_tokens as i64) < budget + request::OUTPUT_FALLBACK_BUFFER as i64 {
-        budget = max_tokens as i64 - request::OUTPUT_FALLBACK_BUFFER as i64;
+    if max_tokens.cast_signed() < budget + request::OUTPUT_FALLBACK_BUFFER.cast_signed() {
+        budget = max_tokens.cast_signed() - request::OUTPUT_FALLBACK_BUFFER.cast_signed();
     }
     if budget < 1024 {
         return Ok(off(base));
     }
-    Ok(finish(base, Some(max_tokens), Some(budget as u64)))
+    Ok(finish(base, Some(max_tokens), Some(budget.cast_unsigned())))
 }
 
 /// The request body the anthropic transport sends for `options` (`api_key` decides OAuth mode).
@@ -581,7 +591,7 @@ impl Provider for AnthropicMessagesProvider {
 #[cfg(test)]
 mod subscription_identity_tests {
     use super::build_request_headers;
-    use crate::types::{zero_model_cost, Model, ModelInput};
+    use crate::types::{Model, ModelInput, zero_model_cost};
 
     // TS #2645's wire-contract assertions (anthropic-thinking-disable.test.ts): subscription
     // requests claim the Claude Code client identity, and the claimed version must stay at or above
@@ -666,7 +676,9 @@ mod subscription_identity_tests {
             "{betas:?}"
         );
         let plain = crate::compat::ModelView::of(&test_model());
-        assert!(!super::body_betas(&plain, &serde_json::json!({}))
-            .contains(&"thinking-binding-controls-2026-08-01"));
+        assert!(
+            !super::body_betas(&plain, &serde_json::json!({}))
+                .contains(&"thinking-binding-controls-2026-08-01")
+        );
     }
 }

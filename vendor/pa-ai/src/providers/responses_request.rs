@@ -2,18 +2,18 @@
 //! `buildParams`, `buildResponsesInput` and `convertTools` in `openai-shared.ts`), shared by the
 //! `openai-responses`, `azure-openai-responses` and `openrouter` (Responses default) transports.
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::compat::ModelView;
 use crate::providers::openai_completions::compat::{
-    is_forced, resolve_policy, should_drop_auto_tool_choice_for_reasoning, CompatPolicy,
-    ResolvedCompat,
+    CompatPolicy, ResolvedCompat, is_forced, resolve_policy,
+    should_drop_auto_tool_choice_for_reasoning,
 };
 use crate::providers::openai_completions::schema::{
     adapt_schema_for_strict, flatten_exclusive_required_root_union, normalize_schema_for_moonshot,
     tool_wire_schema,
 };
-use crate::providers::openai_completions::{normalize_stable_id, ToolChoice};
+use crate::providers::openai_completions::{ToolChoice, normalize_stable_id};
 use crate::providers::transform_ts::transform_messages;
 use crate::types::{
     AssistantContent, CacheRetention, Context, Message, Model, ModelExt, ServiceTier,
@@ -67,7 +67,6 @@ pub(crate) fn responses_headers(
     extra: Option<&std::collections::HashMap<String, String>>,
     session_id: Option<&str>,
 ) -> Vec<(String, String)> {
-    let mut headers: Vec<(String, String)> = Vec::new();
     fn set(headers: &mut Vec<(String, String)>, name: &str, value: &str) {
         headers.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
         headers.push((name.to_string(), value.to_string()));
@@ -77,6 +76,7 @@ pub(crate) fn responses_headers(
             headers.push((name.to_string(), value.to_string()));
         }
     }
+    let mut headers: Vec<(String, String)> = Vec::new();
     for (k, v) in model.headers.iter().flatten() {
         headers.push((k.clone(), v.clone()));
     }
@@ -255,6 +255,8 @@ fn sanitize_call_id(id: &str) -> String {
 }
 
 /// TS `normalizeResponsesToolCallIdForTransform`.
+// `Option` return is required by the `transform_messages` normalizer signature.
+#[allow(clippy::unnecessary_wraps)]
 fn normalize_call_id_for_transform(
     id: &str,
     model: &Model,
@@ -390,6 +392,8 @@ fn with_required_reasoning_text(item: Value) -> Value {
     item
 }
 
+// One flag per TS buildResponsesInput option; callers set them from compat views.
+#[allow(clippy::struct_excessive_bools)]
 struct InputOptions {
     strict_pairing: bool,
     supports_original: bool,
@@ -427,20 +431,20 @@ fn build_input(model: &Model, view: &ModelView, context: &Context, o: &InputOpti
     for msg in &transformed {
         match msg {
             Message::User(user) | Message::Developer(user) => {
-                let Some(content) =
+                let Some(parts) =
                     convert_input_content(&user.content, supports_images, o.supports_original)
                 else {
                     continue;
                 };
-                let content = match (&msg, &user.content) {
+                let rendered = match (&msg, &user.content) {
                     (Message::Developer(_), UserMessageContent::Text(text))
                         if o.developer_string_content =>
                     {
                         json!(text)
                     }
-                    _ => json!(content),
+                    _ => json!(parts),
                 };
-                messages.push(json!({ "role": "user", "content": content }));
+                messages.push(json!({ "role": "user", "content": rendered }));
             }
             Message::Assistant(a) => {
                 let mut out: Vec<Value> = Vec::new();
@@ -993,7 +997,7 @@ fn apply_responses_compat_policy(
     params: &mut Map<String, Value>,
     policy: &CompatPolicy,
     view: &ModelView,
-    summary: &Summary,
+    summary: Summary,
     map_effort: &dyn Fn(&str) -> String,
 ) {
     let r = &policy.reasoning;
@@ -1024,7 +1028,7 @@ fn apply_responses_compat_policy(
         }
         return;
     }
-    if r.requested_effort.is_some() || *summary != Summary::Unset {
+    if r.requested_effort.is_some() || summary != Summary::Unset {
         if r.omit_reasoning_effort {
             if let Summary::Mode(m) = summary {
                 params.insert("reasoning".into(), json!({ "summary": m.as_str() }));
@@ -1041,7 +1045,7 @@ fn apply_responses_compat_policy(
             .unwrap_or_else(|| map_effort(&requested));
         let mut reasoning = Map::new();
         reasoning.insert("effort".into(), json!(wire));
-        if *summary != Summary::Null {
+        if summary != Summary::Null {
             let s = match summary {
                 Summary::Mode(m) => m.as_str(),
                 _ => "auto",
@@ -1071,7 +1075,7 @@ pub(crate) fn build_body(
     context: &Context,
     options: &ResponsesOptions,
     flavor: &Flavor,
-) -> Result<Value, String> {
+) -> Value {
     let compat = compat_of(view);
     let has_tools = false;
     let policy = resolve_policy(
@@ -1218,9 +1222,10 @@ pub(crate) fn build_body(
             if let Some(max) = output_token.filter(|m| *m > 0).filter(|_| !omit) {
                 params.insert(
                     "max_output_tokens".into(),
-                    json!(max
-                        .min(model_max.unwrap_or(u64::MAX))
-                        .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))),
+                    json!(
+                        max.min(model_max.unwrap_or(u64::MAX))
+                            .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))
+                    ),
                 );
             }
         }
@@ -1262,9 +1267,10 @@ pub(crate) fn build_body(
                 let clamp = clamp_output_to_model_max(view, model);
                 params.insert(
                     "max_output_tokens".into(),
-                    json!(max
-                        .min(model_max.unwrap_or(u64::MAX))
-                        .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))),
+                    json!(
+                        max.min(model_max.unwrap_or(u64::MAX))
+                            .min(clamp.unwrap_or(OPENAI_MAX_OUTPUT_TOKENS))
+                    ),
                 );
             }
         }
@@ -1399,7 +1405,7 @@ pub(crate) fn build_body(
             false,
         )
     };
-    apply_responses_compat_policy(&mut params, &reasoning_policy, view, &summary, &map_effort);
+    apply_responses_compat_policy(&mut params, &reasoning_policy, view, summary, &map_effort);
 
     if let Some(provider_routing) = view
         .compat
@@ -1410,7 +1416,7 @@ pub(crate) fn build_body(
     }
     params.insert("input".into(), Value::Array(input));
     // `instructions` keeps its slot after `input`.
-    Ok(Value::Object(params))
+    Value::Object(params)
 }
 
 fn drop_auto_tool_choice(

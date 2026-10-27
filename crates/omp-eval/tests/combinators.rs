@@ -25,6 +25,9 @@ impl Host {
 }
 
 impl HostBridge for Host {
+    // Plan math uses compact single-letter names mirroring the spec (n, w, tau, k, d);
+    // depth d is < 64 by construction.
+    #[allow(clippy::many_single_char_names, clippy::cast_possible_truncation)]
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
         self.calls.lock().push((op.to_string(), args.clone()));
         match op {
@@ -50,31 +53,35 @@ impl HostBridge for Host {
                 };
                 Ok(json!({"text": text}))
             }
-            "__lam_plan__" => if let Some(r) = self.plan.lock().clone() { r } else {
-                let n = args["n"].as_u64().unwrap();
-                let w = args["window"].as_u64().unwrap();
-                let tau = args.get("tau").and_then(Value::as_u64).unwrap_or(w).min(w);
-                let extra = args["extra_calls"].as_u64().unwrap_or(0);
-                if n <= w {
-                    return Ok(
-                        json!({"n": n, "tau": tau, "k": 1, "depth": 0, "max_leaves": 1, "max_calls": 1, "direct": true}),
-                    );
+            "__lam_plan__" => {
+                if let Some(r) = self.plan.lock().clone() {
+                    r
+                } else {
+                    let n = args["n"].as_u64().unwrap();
+                    let w = args["window"].as_u64().unwrap();
+                    let tau = args.get("tau").and_then(Value::as_u64).unwrap_or(w).min(w);
+                    let extra = args["extra_calls"].as_u64().unwrap_or(0);
+                    if n <= w {
+                        return Ok(
+                            json!({"n": n, "tau": tau, "k": 1, "depth": 0, "max_leaves": 1, "max_calls": 1, "direct": true}),
+                        );
+                    }
+                    let k = args
+                        .get("fanout")
+                        .and_then(Value::as_u64)
+                        .unwrap_or_else(|| n.div_ceil(tau))
+                        .clamp(2, 64);
+                    let (mut s, mut d) = (n, 0u64);
+                    while s > tau {
+                        s = s.div_ceil(k);
+                        d += 1;
+                    }
+                    let leaves = k.pow(d as u32).min(n);
+                    Ok(
+                        json!({"n": n, "tau": tau, "k": k, "depth": d, "max_leaves": leaves, "max_calls": leaves + extra, "direct": false}),
+                    )
                 }
-                let k = args
-                    .get("fanout")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_else(|| n.div_ceil(tau))
-                    .clamp(2, 64);
-                let (mut s, mut d) = (n, 0u64);
-                while s > tau {
-                    s = s.div_ceil(k);
-                    d += 1;
-                }
-                let leaves = k.pow(d as u32).min(n);
-                Ok(
-                    json!({"n": n, "tau": tau, "k": k, "depth": d, "max_leaves": leaves, "max_calls": leaves + extra, "direct": false}),
-                )
-            },
+            }
             "__rubric_freeze__" => Ok(json!({"id": "rb-test", "criteria": [], "frozen_ms": 1})),
             "__rubric_score__" => {
                 // Stand-in for the host op: score by output text and echo the verified outcome.

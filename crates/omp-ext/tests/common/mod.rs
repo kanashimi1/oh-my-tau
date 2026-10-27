@@ -22,8 +22,7 @@ fn bun_on_path() -> bool {
 #[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    path.is_file()
-        && std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    path.is_file() && std::fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
@@ -42,8 +41,7 @@ fn omp_pkg_root() -> Option<PathBuf> {
         return Some(PathBuf::from(root));
     }
     std::env::var_os("HOME").map(|home| {
-        PathBuf::from(home)
-            .join(".bun/install/global/node_modules/@oh-my-pi/pi-coding-agent")
+        PathBuf::from(home).join(".bun/install/global/node_modules/@oh-my-pi/pi-coding-agent")
     })
 }
 

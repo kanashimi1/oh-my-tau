@@ -10,14 +10,14 @@ use std::time::Duration;
 
 use pa_agent::abort::AbortSignal;
 use pa_agent::agent::{Agent, AgentOptions};
-use pa_agent::agent_loop::{run_agent_loop_continue, AgentEventSink, AgentLoopConfig};
+use pa_agent::agent_loop::{AgentEventSink, AgentLoopConfig, run_agent_loop_continue};
 use pa_agent::scripted::ScriptedProvider;
 use pa_agent::stream::AssistantMessageEvent;
 use pa_agent::types::{
     AfterToolCallResult, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult,
-    AgentToolUpdateCallback, AssistantContent, AssistantMessage, BeforeToolCallResult, Message,
-    Model, StopReason, TextContent, ToolExecutionMode, ToolResultContent, ToolResultMessage,
-    UserContent,
+    AgentToolUpdateCallback, AssistantContent, AssistantMessage, AssistantMeta,
+    BeforeToolCallResult, Message, Model, StopReason, TextContent, ToolExecutionMode,
+    ToolResultContent, ToolResultMessage, UserContent,
 };
 
 fn test_model() -> Model {
@@ -711,7 +711,7 @@ fn scripted_event_shapes_round_trip_through_the_event_enum() {
         error_status: None,
         error_message: None,
         timestamp: 0,
-        meta: Default::default(),
+        meta: AssistantMeta::default(),
     };
     let event = AssistantMessageEvent::TextDelta {
         content_index: 0,

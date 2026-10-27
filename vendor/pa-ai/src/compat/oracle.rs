@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use super::resolve::{resolve_model_policy, ModelSpec};
+use super::resolve::{ModelSpec, resolve_model_policy};
 
 /// Path of a compat-oracle fixture: `$OMP_COMPAT_ORACLE_DIR` if set, else `<repo
 /// root>/target/compat-oracle/` (where `scripts/compat-oracle/*.ts` writes), else the legacy
@@ -17,7 +17,10 @@ fn oracle_file(name: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("OMP_COMPAT_ORACLE_DIR")
         .map(std::path::PathBuf::from)
         .into_iter()
-        .chain([repo.join("target/compat-oracle"), repo.join("runs/omp-rust/compat-oracle")])
+        .chain([
+            repo.join("target/compat-oracle"),
+            repo.join("runs/omp-rust/compat-oracle"),
+        ])
         .map(|dir| dir.join(name))
         .find(|path| path.is_file())
 }
