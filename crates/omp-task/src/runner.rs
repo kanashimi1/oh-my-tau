@@ -497,6 +497,7 @@ fn is_transient_spawn_error(e: &std::io::Error) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::params::SchemaMode;

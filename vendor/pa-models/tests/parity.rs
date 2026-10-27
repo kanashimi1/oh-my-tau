@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! Parity verifier: parse the real catalog payload (a byte-faithful
 //! snapshot of `prime-agent-catalog` `models/catalog.v1.json`; refresh
 //! with `scripts/generate-catalog-fixture.py`) against the strict

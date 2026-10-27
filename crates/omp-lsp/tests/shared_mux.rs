@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Shared-mux integration test: N sessions over one server process through
 //! the `omp-lsp-mux` daemon, with document-sync isolation, server exit after
 //! the last session plus the linger timeout, and RSS/process-count

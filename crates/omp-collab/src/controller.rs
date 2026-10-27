@@ -179,6 +179,7 @@ impl CollabController {
     /// # Errors
     /// When the controller is shut down, the relay is unconfigured, or the
     /// host fails to start.
+    #[allow(clippy::disallowed_methods)] // dedicated thread with its own scratch runtime (pre-existing pattern)
     pub async fn start_host(&self, options: CollabStartOptions) -> Result<Arc<CollabHost>> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(anyhow!("collab controller shut down"));
@@ -439,6 +440,7 @@ fn random_instance_id() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::link::parse_collab_link;

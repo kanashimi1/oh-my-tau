@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! `omp-lsp-mux`: the broker-shared LSP mux daemon binary (omp
 //! `src/lsp/mux/server.ts` `startLspMuxFromEnvironment`). Started detached by
 //! `omp-lsp`'s mux client side on first shared use; exits after an idle

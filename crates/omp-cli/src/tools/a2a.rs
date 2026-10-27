@@ -289,6 +289,7 @@ pub(crate) fn queue_delivery(delivery: PendingDelivery) {
 
 /// Drain every pending delivery (tests and unscoped readers).
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 pub(crate) fn take_deliveries() -> Vec<PendingDelivery> {
     DELIVERIES.lock().expect("a2a deliveries lock").drain(..).collect()
 }
@@ -325,6 +326,7 @@ pub(crate) fn take_deliveries_for(owner: &Owner) -> Vec<PendingDelivery> {
 
 /// Whether any delivery is waiting (any session).
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 #[must_use]
 pub(crate) fn has_pending() -> bool {
     !DELIVERIES.lock().expect("a2a deliveries lock").is_empty()
@@ -1563,18 +1565,6 @@ pub(crate) async fn claims_block_reason(paths: &[PathBuf]) -> Option<String> {
         .map(|line| line.trim_end_matches(" — blocked by OMP_CLAIMS=block").to_string())
 }
 
-/// Blocking variant of [`claims_block_reason`] for the synchronous `write`.
-pub(crate) fn claims_block_reason_blocking(paths: &[PathBuf]) -> Option<String> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.block_on(claims_block_reason(paths)),
-        Err(_) => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("claims block runtime")
-            .block_on(claims_block_reason(paths)),
-    }
-}
-
 /// After a successful write by an agent: auto-claim every repo-relative path
 /// for this endpoint (ttl [`CLAIM_TTL_S`], renewed on further writes at most
 /// every [`CLAIM_RENEW_EVERY`], released at session end). Fire-and-forget.
@@ -1620,20 +1610,6 @@ fn claims_note_writes_via(ep: &Arc<HubEndpoint>, paths: &[PathBuf]) {
     }
 }
 
-/// Synchronous wrapper for the tools that run off the async runtime
-/// (`write` executes on a `spawn_blocking` thread).
-pub(crate) fn claims_check_files_blocking(paths: &[PathBuf]) -> Vec<String> {
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle.block_on(claims_check_files(paths)),
-        Err(_) => tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("claims check runtime")
-            .block_on(claims_check_files(paths)),
-    }
-}
-
-
 // ---------------------------------------------------------------------------
 // Bus client (child side)
 // ---------------------------------------------------------------------------
@@ -1657,6 +1633,7 @@ impl Client {
 
     /// A client for an explicit socket/sender (tests drive the bus directly).
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     pub(crate) fn for_test(sock: &Path, from: &str) -> Self {
         Self {
             sock: sock.to_path_buf(),
@@ -1745,6 +1722,7 @@ impl Client {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 pub(crate) mod tests {
     use super::*;
 

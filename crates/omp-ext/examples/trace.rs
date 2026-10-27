@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Load every user extension into the host, emit a scripted omp event sequence and compare the
 //! per-handler trace with a TS-omp reference (`hook_trace.jsonl` rows of one `omp -p` run).
 //!

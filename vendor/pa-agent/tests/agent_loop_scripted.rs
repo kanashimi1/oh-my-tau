@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! Scripted-loop verifier tests for the agent crate: each test replays a
 //! scripted tool-call conversation through the loop via [`ScriptedProvider`],
 //! checking normal turns, parallel tool calls, tool errors, mid-turn failures

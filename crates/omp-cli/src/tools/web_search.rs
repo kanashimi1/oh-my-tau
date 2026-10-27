@@ -1823,6 +1823,7 @@ async fn web_search(params: Value, signal: AbortSignal) -> Result<AgentToolResul
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

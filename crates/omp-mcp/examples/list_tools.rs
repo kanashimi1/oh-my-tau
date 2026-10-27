@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! List the MCP tools omp-rs would register from the real config locations,
 //! exactly as the agent startup does. Usage: `cargo run --example list_tools`.
 

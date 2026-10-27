@@ -83,6 +83,7 @@ fn dist_dir() -> PathBuf {
 ///
 /// # Errors
 /// Bad flags, a non-localhost `--host`, or relay bind/start failure.
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 pub fn run(args: &[String]) -> Result<i32> {
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("{USAGE}");

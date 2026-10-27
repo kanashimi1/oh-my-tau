@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 //! `omt hub mcp` end-to-end: a real stdio MCP client (raw JSON-RPC 2.0, and
 //! omt's own `omp-mcp` client in `omt_mcp_client_interop`) talks to the
 //! spawned `omt hub mcp` process against a temp `OMP_HUB_DIR`; `omt hub` CLI

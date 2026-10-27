@@ -1589,6 +1589,7 @@ fn rewrite_replica_header(host_header: &Value, replica_id: &str) -> Value {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::{

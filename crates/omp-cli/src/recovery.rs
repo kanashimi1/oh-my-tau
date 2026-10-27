@@ -394,6 +394,7 @@ impl AccountRotation {
     /// The provider's cooldown expired: rotation may retry the cooled alternates once —
     /// clear the cooling set (the burned set keeps them out of the next cycle).
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     pub fn clear_cooldown(&mut self, provider: &str, model: &str) {
         if let Some(v) = self.cooling.get_mut(&Self::slot(provider, model)) {
             v.clear();
@@ -401,6 +402,7 @@ impl AccountRotation {
     }
 
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     fn burned_of(&self, provider: &str, model: &str) -> Vec<i64> {
         self.burned
             .get(&Self::slot(provider, model))
@@ -456,6 +458,7 @@ impl TurnRecovery {
 
     /// Whether `selector` is on a cooldown at `now_ms`.
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     #[must_use]
     pub fn is_cooling(&self, selector: &str, now_ms: u64) -> bool {
         self.state.is_suppressed(selector, now_ms)
@@ -724,6 +727,7 @@ impl TurnRecovery {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! Early read-only tool execution: read-only calls (host-declared via
 //! `AgentLoopConfig::is_tool_read_only`) must start preparing and executing at
 //! their streamed `ToolCallEnd`, before the assistant stream ends; hooks stay

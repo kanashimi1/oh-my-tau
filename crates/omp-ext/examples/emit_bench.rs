@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Emit-latency micro-bench: load the user's extensions, then time N repeated
 //! `tool_result` emits and report the median. Used to compare per-event cost
 //! between the stdio host (default) and the shared daemon (`OMP_EXT_TEST_SHARED=1`).

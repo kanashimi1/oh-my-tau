@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 //! End-to-end guard for detached rpc children (`web/detach.rs` scenario):
 //! an `--mode rpc` child must survive its hub terminating, a restarting hub
 //! must adopt it back into the roster, and `DELETE /api/agents/<id>` must

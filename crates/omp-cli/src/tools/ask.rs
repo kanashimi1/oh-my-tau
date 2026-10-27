@@ -802,6 +802,7 @@ pub fn schema() -> Value {
     },"required":["questions"]})
 }
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use parking_lot::Mutex;
 

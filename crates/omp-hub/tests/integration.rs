@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Acceptance tests for the hub (`SPEC.md`): store durability, dedup,
 //! per-recipient seq, priority order, replay after restart, deadline
 //! expiry, schema-valid/invalid answers, claims (conflict/fencing/expiry),

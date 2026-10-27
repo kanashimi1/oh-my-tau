@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Live check: does a locally spawned rust-analyzer publish diagnostics to an
 //! omp-lsp client after `refresh_file` (didOpen)? Run with --nocapture:
 //! `cargo test -p omp-lsp --test live_publish -- --nocapture --ignored`

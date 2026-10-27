@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 #![allow(clippy::float_cmp)]
 
 use std::collections::BTreeSet;

@@ -296,6 +296,7 @@ pub fn rewind_tool() -> Arc<dyn AgentTool> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

@@ -1103,6 +1103,7 @@ fn emit_payload(event: &Value, skip: &[String]) -> Value {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::lifecycle::{serve, HeadlessResponder};

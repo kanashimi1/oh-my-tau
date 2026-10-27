@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 //! Unit tests for the eval tool loop: the pre-port parity tests plus the
 //! new loop behavior (default timeout, cancel, is_error, per-language reset,
 //! output cap, kernel-loss notice, bridge-backed helpers).

@@ -506,6 +506,7 @@ pub struct Shared {
 
 impl Shared {
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     #[must_use]
     pub fn new(kind: Kind, limits: Limits) -> Arc<Self> {
         Self::with_policy(kind, limits, None)
@@ -965,6 +966,7 @@ fn result_text(c: &[ToolResultContent]) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use pa_agent::types::ToolResultMessage;

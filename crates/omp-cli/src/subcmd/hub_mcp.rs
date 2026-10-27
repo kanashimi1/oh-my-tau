@@ -31,6 +31,7 @@ pub(crate) const INLINE_LIMIT: usize = 8 * 1024;
 ///
 /// # Errors
 /// Flag parse or startup failures (printed by `main`).
+#[allow(clippy::disallowed_methods)] // entry point: dedicated runtime on its own thread
 pub fn run(args: &[String]) -> Result<i32> {
     let (flags, rest) = super::hub::parse_flags(args);
     let _ = rest;
@@ -593,6 +594,7 @@ async fn tool_claims(state: &Arc<McpState>, args: &Value) -> std::result::Result
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

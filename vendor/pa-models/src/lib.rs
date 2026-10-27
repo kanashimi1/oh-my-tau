@@ -2,6 +2,7 @@
 //! Everything the catalog can do is select among transports the client
 //! compiled in; it can never introduce a transport or change what a
 //! request sends. Depends on pa-ai and pa-types; nothing above pa-agent.
+#![allow(clippy::disallowed_methods)] // vendored third-party code: the sync-bridge rule applies to omp-rs first-party crates only
 
 pub mod bundled;
 pub mod cache;

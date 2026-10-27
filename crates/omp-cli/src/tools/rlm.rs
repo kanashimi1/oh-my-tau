@@ -949,11 +949,13 @@ fn append_session_entry(record: &CallRecord, usage: &Usage) {
 pub static SESSION: LazyLock<Session> = LazyLock::new(Session::default);
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 pub(crate) static TEST_BACKEND: Mutex<Option<std::sync::Arc<dyn Backend>>> = Mutex::new(None);
 
 /// `__llm_query__` host op.
 pub async fn llm_query_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     if let Some(backend) = TEST_BACKEND.lock().expect("test backend").clone() {
         return SESSION
             .query(backend.as_ref(), Limits::effective(), args, &ctx.signal)
@@ -1099,6 +1101,7 @@ When done, reply with the final answer in plain text.\n\nQuestion: {question}",
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 

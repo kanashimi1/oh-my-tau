@@ -395,7 +395,7 @@ pub fn builtin_tools(cwd: &Path, edit_mode: EditMode) -> Vec<Arc<dyn AgentTool>>
             "write",
             WRITE_DESCRIPTION.to_string(),
             json!({"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path"],"additionalProperties":false}),
-            blocking(edit::write),
+            Arc::new(|env, args, _| Box::pin(async move { edit::write(&env, &args).await })),
         ),
         mk(
             "find",

@@ -586,6 +586,7 @@ impl ModelStream for PumpedStream {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod auth_retry_tests {
     use super::*;
     use pa_agent::stream::{event_stream, AssistantMessageEvent as E};

@@ -472,6 +472,7 @@ pub fn clamp_level(model: &pa_types::ai::Model, level: ThinkingLevel) -> Thinkin
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

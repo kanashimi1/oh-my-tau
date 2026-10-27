@@ -5,6 +5,7 @@
 //!
 //! Every wire struct carries a `#[serde(flatten)] rest: JsonMap` catch-all, so unmodeled fields
 //! survive a parse/serialize round trip: the re-parsed JSON must equal the original.
+#![allow(clippy::disallowed_methods)] // vendored third-party code: the sync-bridge rule applies to omp-rs first-party crates only
 
 pub mod ai;
 pub mod daemon;

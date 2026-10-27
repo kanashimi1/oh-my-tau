@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration test driving `omp-lsp` against the `fake_lsp` fixture binary
 //! (a minimal stdio JSON-RPC server built via `CARGO_BIN_EXE_fake_lsp`).
 //!

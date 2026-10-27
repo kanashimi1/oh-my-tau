@@ -5,6 +5,7 @@
 //!
 //! Wire-shape enums mirror the TS tagged unions 1:1, so `large_enum_variant` and
 //! `result_large_err` are allowed crate-wide rather than boxing payloads.
+#![allow(clippy::disallowed_methods)] // vendored third-party code: the sync-bridge rule applies to omp-rs first-party crates only
 #![allow(clippy::large_enum_variant, clippy::result_large_err)]
 
 pub mod compat;

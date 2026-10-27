@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Streamable-HTTP JSON-RPC ids: unique per request within a session, never
 //! reused after a failed request and distinct for concurrent requests.
 

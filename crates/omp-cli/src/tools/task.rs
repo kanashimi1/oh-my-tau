@@ -750,6 +750,7 @@ pub(crate) fn requeue_deliveries(deliveries: Vec<super::a2a::PendingDelivery>) {
 
 /// How many `task` children are still running (all sessions; tests).
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 #[must_use]
 pub(crate) fn live_children() -> usize {
     ASYNC_CHILDREN
@@ -1050,6 +1051,7 @@ fn result_delivery_text(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 
