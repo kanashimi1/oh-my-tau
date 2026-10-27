@@ -204,16 +204,23 @@ fn envelope_body(envelope: &A2aEnvelope) -> Result<String, String> {
 // Parent-side delivery queue
 // ---------------------------------------------------------------------------
 
-/// Identifies the session a delivery/child belongs to: the runtime registers
-/// its token at `Runtime::start`; spawns and child messages stamp it, and
-/// only that runtime's park/wake/wait legs consume them. `None` = no live
+/// Identifies the session a delivery/child belongs to. Two carriers:
+/// per-session, the owning runtime stamps its token on the tools' Envs
+/// (`crate::tools::Env::a2a_owner`) and `task`/`wait`/`agent()` stamp and
+/// consume children/deliveries under it, so concurrent sessions in one
+/// process never see each other's traffic; process-global ([`OWNER`], for
+/// the Env-less hub endpoint / `BusLease` paths, where the latest Runtime
+/// wins — production runs one Runtime per process). `None` = no live
 /// runtime (unit tests driving the bus directly).
 pub(crate) type Owner = Option<std::sync::Arc<str>>;
 
 static OWNER: LazyLock<Mutex<Owner>> = LazyLock::new(|| Mutex::new(None));
 
-/// Register the live session's owner token (the latest Runtime wins; the
-/// previous one is a finished session in tests).
+/// Register the live session's owner token for the Env-less paths (hub
+/// endpoint lookup, `BusLease::acquire`); per-session traffic goes through
+/// the tools' `crate::tools::Env::a2a_owner` instead. The latest Runtime
+/// wins; the previous one is a finished session in tests. Production runs
+/// one runtime per process.
 pub(crate) fn set_owner(owner: std::sync::Arc<str>) {
     *OWNER.lock().expect("a2a owner lock") = Some(owner);
 }
@@ -226,7 +233,9 @@ pub(crate) fn clear_owner(owner: &std::sync::Arc<str>) {
     }
 }
 
-/// The currently registered session owner (stamped on new spawns/deliveries).
+/// The process-global session owner (see [`set_owner`]); only for paths with
+/// no tool `Env` at hand. Tools must read `crate::tools::Env::a2a_owner`
+/// instead.
 #[must_use]
 pub(crate) fn current_owner() -> Owner {
     OWNER.lock().expect("a2a owner lock").clone()

@@ -97,6 +97,13 @@ pub struct Env {
     /// Escalation ledger for the post-write `edit`/`write` diagnostics gate:
     /// maps a `(file, delta-hash)` to how many times that exact delta recurred.
     pub diagnostics_ledger: parking_lot::Mutex<HashMap<(PathBuf, u64), usize>>,
+    /// The a2a session these tools belong to ([`a2a::Owner`]): the runtime
+    /// stamps its token here at session start, and `task`/`wait`/`agent()`
+    /// stamp and consume children/deliveries under it — so concurrent
+    /// sessions in one process (the unit-test suite) never see each other's
+    /// task children or deliveries. `None` = not stamped (bare tool tests
+    /// drive the bus with a private or unowned token).
+    pub a2a_owner: parking_lot::Mutex<a2a::Owner>,
 }
 
 impl Env {
@@ -110,7 +117,21 @@ impl Env {
             jobs: jobs::JobRegistry::default(),
             query: parking_lot::Mutex::default(),
             diagnostics_ledger: parking_lot::Mutex::new(HashMap::new()),
+            a2a_owner: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Stamp this Env's a2a owner token (the owning runtime does this once
+    /// at session start; see [`Env::a2a_owner`]).
+    pub fn set_a2a_owner(&self, owner: Arc<str>) {
+        *self.a2a_owner.lock() = Some(owner);
+    }
+
+    /// The a2a owner stamped on this Env ([`a2a::Owner`]); `None` before a
+    /// runtime stamps it, matching unowned deliveries.
+    #[must_use]
+    pub fn a2a_owner(&self) -> a2a::Owner {
+        self.a2a_owner.lock().clone()
     }
 
     /// The current call's request text (see [`Env::query`]).
@@ -183,6 +204,12 @@ impl AgentTool for FnTool {
     fn is_read_only(&self) -> bool {
         self.read_only
     }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        self.env.set_a2a_owner(owner.clone());
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.env.a2a_owner()
+    }
     fn execute(
         self: Arc<Self>,
         tool_call_id: String,
@@ -217,6 +244,12 @@ struct DedupTool {
 impl AgentTool for DedupTool {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        self.inner.set_a2a_owner(owner);
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.inner.a2a_owner()
     }
     fn description(&self) -> &str {
         self.inner.description()
@@ -482,6 +515,16 @@ pub fn session_builtin_tools(
     tools
 }
 
+/// Stamp the session's a2a owner token on every tool that carries an `Env`
+/// (the built-ins). The runtime calls this at start (and after a model-swap
+/// tool rebuild) so `task`/`wait`/`agent()` stamp and consume children and
+/// deliveries under this session's token instead of a process-global one.
+pub async fn stamp_a2a_owner(agent: &pa_agent::agent::Agent, owner: &Arc<str>) {
+    for tool in agent.tools().await {
+        tool.set_a2a_owner(owner);
+    }
+}
+
 /// Active hidden tools for a session (TS `resolveBuiltinToolPlan`'s
 /// `...(externalThinkingActive ? ["think"] : [])`, `...(includeYield ? ["yield"]
 /// : [])`, `...(goalModeActive ? ["goal"] : [])` legs, in that order; never in
@@ -528,6 +571,47 @@ pub use ask::{AskUi, SelectOption, tool_with_ui};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_tools_carry_the_stamped_owner_through_wrappers() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = omp_settings::Settings::load(dir.path());
+        let tools = session_builtin_tools(dir.path(), EditMode::Hashline, &settings);
+        // Wrap like production: the approval gate wraps every tool, the
+        // dedup layer wraps the pure ones (`OMT_TOOLS_DEDUP`).
+        let gate = crate::approval::Gate::for_test(dir.path());
+        let tools = gate.wrap_tools(tools);
+        let tools: Vec<Arc<dyn AgentTool>> = tools
+            .into_iter()
+            .map(|t| {
+                if matches!(t.name(), "read" | "grep" | "glob" | "lsp") {
+                    Arc::new(DedupTool {
+                        inner: t,
+                        last: tokio::sync::Mutex::new(None),
+                    }) as Arc<dyn AgentTool>
+                } else {
+                    t
+                }
+            })
+            .collect();
+        let owner: Arc<str> = crate::persist::uuid_v7().into();
+        for tool in &tools {
+            tool.set_a2a_owner(&owner);
+        }
+        // Every Env-carrying tool sees the token through both wrapper layers.
+        let want = Some(owner);
+        for name in ["task", "wait", "eval", "read", "bash"] {
+            let tool = tools
+                .iter()
+                .find(|t| t.name() == name)
+                .unwrap_or_else(|| panic!("tool {name} in the session set"));
+            assert_eq!(
+                tool.a2a_owner(),
+                want,
+                "owner stamped through wrappers reaches the {name} tool's Env"
+            );
+        }
+    }
 
     #[test]
     fn edit_mode_follows_omp_model_rule() {

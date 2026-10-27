@@ -89,6 +89,12 @@ impl AgentTool for WaitTool {
     fn label(&self) -> &'static str {
         "Wait"
     }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        self.env.set_a2a_owner(owner.clone());
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.env.a2a_owner()
+    }
     fn execute(
         self: Arc<Self>,
         _tool_call_id: String,
@@ -102,10 +108,10 @@ impl AgentTool for WaitTool {
 
 impl WaitTool {
     async fn run(&self, signal: AbortSignal) -> Result<AgentToolResult> {
-        // Deliveries belong to the running session ([`super::a2a::Owner`]);
-        // `None` (no registered runtime, e.g. bare unit tests) matches
-        // unowned deliveries.
-        let owner = super::a2a::current_owner();
+        // Deliveries belong to this Env's session ([`super::a2a::Owner`],
+        // stamped by the runtime at start); `None` (no stamped runtime, e.g.
+        // bare unit tests) matches unowned deliveries.
+        let owner = self.env.a2a_owner();
         // A delivery that already landed is the immediate answer — except
         // results of a still-running spawn batch: those are held so the whole
         // batch delivers in one combined result (messages/steering still
@@ -230,10 +236,16 @@ stdin.readline()
             let bin = dir.path().join("fake-wait-child");
             std::fs::write(&bin, FAKE_WAIT_CHILD).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let _ = super::super::a2a::take_deliveries();
+            // A private owner for this test's Env: its children and
+            // deliveries are invisible to a concurrent test runtime's
+            // park/wake legs, and vice versa.
+            let env = std::sync::Arc::new(Env::new(dir.path(), false));
+            env.set_a2a_owner(crate::persist::uuid_v7().into());
+            let owner = env.a2a_owner();
+            let _ = super::super::a2a::take_deliveries_for(&owner);
             let tool = WaitTool {
                 schema: schema(),
-                env: std::sync::Arc::new(Env::new(dir.path(), false)),
+                env: env.clone(),
             };
             // Nothing owned running: errors, like jobs/services alone.
             let err = tool
@@ -261,7 +273,7 @@ stdin.readline()
                 }],
                 vec![None],
                 vec!["go".to_string()],
-                &None,
+                &owner,
             )
             .await
             .unwrap();
@@ -330,6 +342,7 @@ stdin.readline()
         bin: &std::path::Path,
         dir: &std::path::Path,
         items: Vec<(&str, &str)>,
+        owner: &super::super::a2a::Owner,
     ) -> Vec<task::SpawnedChild> {
         let specs: Vec<_> = items
             .iter()
@@ -341,7 +354,7 @@ stdin.readline()
             specs,
             vec![None; items.len()],
             prompts,
-            &None,
+            owner,
         )
         .await
         .unwrap()
@@ -380,11 +393,16 @@ stdin.readline()
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             let _ = super::super::a2a::take_deliveries();
             let env = std::sync::Arc::new(Env::new(dir.path(), false));
+            // A private owner for this Env, so a concurrent test runtime
+            // neither consumes this batch nor keeps this wait pending.
+            env.set_a2a_owner(crate::persist::uuid_v7().into());
+            let owner = env.a2a_owner();
 
             let spawned = spawn_batch(
                 &bin,
                 dir.path(),
                 vec![("batch-fast", "fast work"), ("batch-slow", "slow work")],
+                &owner,
             )
             .await;
             assert_eq!(spawned.len(), 2);
@@ -404,7 +422,7 @@ stdin.readline()
             // not delivered early in a separate wait.
             assert_eq!(task::live_children(), 0);
             assert!(
-                !super::super::a2a::has_pending(),
+                !super::super::a2a::has_pending_for(&owner),
                 "nothing left held after the batch delivered"
             );
         })
@@ -423,16 +441,19 @@ stdin.readline()
             std::fs::write(&bin, FAKE_BATCH_CHILD).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             let _ = super::super::a2a::take_deliveries();
+            // A private owner for this test's bus traffic.
+            let owner: super::super::a2a::Owner = Some(crate::persist::uuid_v7().into());
             spawn_batch(
                 &bin,
                 dir.path(),
                 vec![("auto-fast", "fast work"), ("auto-slow", "slow work")],
+                &owner,
             )
             .await;
 
             let deliveries = tokio::time::timeout(
                 std::time::Duration::from_secs(4),
-                task::next_delivery_batch(&None),
+                task::next_delivery_batch(&owner),
             )
             .await
             .expect("joined auto delivery");
@@ -442,7 +463,7 @@ stdin.readline()
                 text.contains("auto-fast") && text.contains("auto-slow"),
                 "{text}"
             );
-            assert!(!super::super::a2a::has_pending());
+            assert!(!super::super::a2a::has_pending_for(&owner));
             assert_eq!(task::live_children(), 0);
         })
         .await;
@@ -462,12 +483,17 @@ stdin.readline()
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
             let _ = super::super::a2a::take_deliveries();
             let env = std::sync::Arc::new(Env::new(dir.path(), false));
+            // A private owner for this Env, so a concurrent test runtime
+            // neither consumes this test's deliveries nor feeds it.
+            env.set_a2a_owner(crate::persist::uuid_v7().into());
+            let owner = env.a2a_owner();
 
             // First batch: two children, one combined delivery.
             spawn_batch(
                 &bin,
                 dir.path(),
                 vec![("batch-fast", "fast work"), ("batch-slow", "slow work")],
+                &owner,
             )
             .await;
             let first = wait_once(env.clone()).await;
@@ -478,7 +504,7 @@ stdin.readline()
 
             // Independent later child: one wait, one delivery, only its own
             // result (the earlier batch must not be re-held or re-delivered).
-            spawn_batch(&bin, dir.path(), vec![("later-child", "slow later work")]).await;
+            spawn_batch(&bin, dir.path(), vec![("later-child", "slow later work")], &owner).await;
             let second = wait_once(env).await;
             assert!(second.starts_with("<task-results>"), "{second}");
             assert!(
@@ -489,7 +515,10 @@ stdin.readline()
                 !second.contains("batch-fast") && !second.contains("batch-slow"),
                 "no residue of the earlier batch: {second}"
             );
-            assert!(!super::super::a2a::has_pending(), "nothing held: {second}");
+            assert!(
+                !super::super::a2a::has_pending_for(&owner),
+                "nothing held: {second}"
+            );
             assert_eq!(task::live_children(), 0);
         })
         .await;

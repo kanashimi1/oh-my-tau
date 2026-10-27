@@ -696,7 +696,9 @@ fn cancel_handle(handle: &Handle) -> bool {
 // ---------------------------------------------------------------------------
 
 async fn run_agent(env: &Arc<Env>, args: &Value, ctx: &OpCtx) -> Result<Value, String> {
-    run_agent_with(env, args, ctx, &LAUNCHER, &super::a2a::current_owner()).await
+    // This Env's session token: the child and its deliveries belong to the
+    // session whose `agent()` call spawned it.
+    run_agent_with(env, args, ctx, &LAUNCHER, &env.a2a_owner()).await
 }
 
 pub(crate) async fn run_agent_with(

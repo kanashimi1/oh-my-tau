@@ -589,6 +589,15 @@ pub trait AgentTool: Send + Sync {
     fn prepare_arguments(&self, _args: &serde_json::Value) -> Option<serde_json::Value> {
         None
     }
+    /// Host hook: stamp the session-scoped a2a owner token into the tool's
+    /// environment, when it carries one (default no-op). Lets a runtime
+    /// label its live tools without knowing concrete tool types.
+    fn set_a2a_owner(&self, _owner: &std::sync::Arc<str>) {}
+    /// The a2a owner token stamped via [`AgentTool::set_a2a_owner`], when the
+    /// tool carries one (default `None`).
+    fn a2a_owner(&self) -> Option<std::sync::Arc<str>> {
+        None
+    }
     /// Execute the tool call. Return `Err` on failure instead of encoding
     /// errors in `content`, like a `throw` in the TS reference.
     fn execute(
