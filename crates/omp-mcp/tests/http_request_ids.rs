@@ -57,14 +57,20 @@ async fn respond(stream: &mut TcpStream, status: &str, body: &str) {
 
 /// Fake server: answers `n` requests, the first with HTTP 500, the rest with
 /// a JSON-RPC result; returns the request ids in arrival order.
+/// Notifications (the `notifications/cancelled` a failed request owes) are
+/// acknowledged and not counted.
 async fn serve(listener: TcpListener, n: usize) -> Vec<Value> {
     let mut ids = Vec::new();
-    for i in 0..n {
+    while ids.len() < n {
         let (mut stream, _) = listener.accept().await.expect("accept");
         let body = read_request(&mut stream).await;
+        if body.get("id").is_none() {
+            respond(&mut stream, "202 Accepted", "").await;
+            continue;
+        }
         let id = body["id"].clone();
         ids.push(id.clone());
-        if i == 0 {
+        if ids.len() == 1 {
             respond(&mut stream, "500 Internal Server Error", "boom").await;
         } else {
             let ok = json!({"jsonrpc": "2.0", "id": id, "result": {}}).to_string();
