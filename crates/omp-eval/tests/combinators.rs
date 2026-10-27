@@ -1,5 +1,6 @@
 //! λ-RLM combinators + SERA rubrics (`prelude_combinators.py`) against a scripted host:
 //! types checked at call time, termination, budget bounds, rubric-before-spawn order.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use parking_lot::Mutex;
 

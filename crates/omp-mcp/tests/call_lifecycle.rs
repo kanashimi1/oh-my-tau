@@ -9,6 +9,7 @@
 //! All scenarios run against a fake stdio MCP server (python3) that logs
 //! every message it receives to `MCP_TEST_LOG` so the tests can assert on
 //! the server's side of the wire.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

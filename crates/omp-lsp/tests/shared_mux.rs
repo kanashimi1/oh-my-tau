@@ -3,6 +3,7 @@
 //! the `omp-lsp-mux` daemon, with document-sync isolation, server exit after
 //! the last session plus the linger timeout, and RSS/process-count
 //! measurement for N = 1/4/8 against private spawns.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::Path;
 use std::time::Duration;

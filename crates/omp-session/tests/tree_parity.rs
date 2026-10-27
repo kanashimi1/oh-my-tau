@@ -3,6 +3,7 @@
 //! `branched-session.expectation.json` was produced by running the TS sources under bun (see
 //! `reports/SessionTree.md`); the companion `buildSessionContext` check lives in omp-cli
 //! (which depends on omp-compact; a dev-dependency here would cycle).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use serde_json::{json, Value};
 

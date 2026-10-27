@@ -1,6 +1,7 @@
 //! `omp-rs login` / `logout` end to end in a temp HOME against a mock Kimi OAuth host: the row
 //! the Rust CLI writes is what TS `omp` reads (`omp-rs`-side reader is `omp_providers::auth`),
 //! and logout soft-deletes it like TS. Never touches the real `~/.omp`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::{Read, Write};
 use std::net::TcpListener;

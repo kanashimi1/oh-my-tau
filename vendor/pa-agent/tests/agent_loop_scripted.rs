@@ -3,6 +3,7 @@
 //! scripted tool-call conversation through the loop via [`ScriptedProvider`],
 //! checking normal turns, parallel tool calls, tool errors, mid-turn failures
 //! with retry, abort, and max-iteration stops.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

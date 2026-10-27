@@ -27,6 +27,7 @@
 //! always lands inside the window). The only bounded animator at startup is
 //! the clean-theme welcome shimmer (`SHIMMER_MS` = 1.5 s), well inside the
 //! 5 s settle budget.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::collections::VecDeque;
 use std::io;

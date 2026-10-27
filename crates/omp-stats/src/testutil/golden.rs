@@ -11,6 +11,7 @@
 //! must map the golden row's `sessionFile` + `entryId` to the Rust id). For
 //! relative ranges (`range=1h|24h|7d|30d|90d`, "now"-dependent) only the shape
 //! (key sets and JSON types) is compared.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::Path;
 

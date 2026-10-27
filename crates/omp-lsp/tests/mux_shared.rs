@@ -3,6 +3,7 @@
 //! two sessions attach to one shared `fake_lsp` process behind the
 //! `omp-lsp-mux` daemon, the full client path works over the socket, and the
 //! daemon (plus its server child) idles out after the links drop.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::PathBuf;
 use std::time::Duration;

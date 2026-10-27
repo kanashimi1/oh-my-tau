@@ -59,6 +59,10 @@ pedantic = "warn"
 # can deadlock the runtime or make the future !Send, so these are hard errors.
 await_holding_lock = { level = "deny", priority = 1 }
 await_holding_refcell_ref = { level = "deny", priority = 1 }
+# Library code returns errors instead of panicking; documented invariants
+# carry an item-level #[allow] with the reason. Tests are exempt (clippy.toml).
+unwrap_used = { level = "deny", priority = 1 }
+expect_used = { level = "deny", priority = 1 }
 redundant_clone = "warn"
 clone_on_copy = "warn"
 assigning_clones = "warn"

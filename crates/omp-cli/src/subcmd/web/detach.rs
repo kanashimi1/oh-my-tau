@@ -199,6 +199,7 @@ pub fn foreign_owner(entry: &Entry, my_pid: u32) -> Option<u32> {
     (owner != my_pid && pid_alive(owner)).then_some(owner)
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)] // test helpers (cfg(all(test, …)) is not seen as test code)
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

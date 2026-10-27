@@ -26,6 +26,9 @@
 //!     --n 60 --methods vanilla,cot,sot
 //! ```
 
+// A bench binary: a failed request or bad fixture should abort the run loudly.
+#![allow(clippy::expect_used)]
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::Instant;

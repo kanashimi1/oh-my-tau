@@ -9,3 +9,8 @@ pa-types.workspace = true
 serde_json = { workspace = true, features = ["float_roundtrip"] }
 serde.workspace = true
 anyhow.workspace = true
+
+[lints.clippy]
+await_holding_lock = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

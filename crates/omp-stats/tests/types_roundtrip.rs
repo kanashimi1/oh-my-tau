@@ -3,6 +3,7 @@
 //! value). Goldens: `OMP_STATS_GOLDEN` or runs/omp-rust/webui-port/golden;
 //! skipped when absent.
 #![cfg(feature = "types")]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::PathBuf;
 

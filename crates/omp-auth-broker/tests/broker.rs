@@ -9,6 +9,7 @@
 //! always set so the daemon never touches `~/.omp`. Egress proxy env vars are
 //! pinned to a dead proxy with `NO_PROXY` for loopback so the mock token server
 //! is reached directly.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};

@@ -20,6 +20,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tempfile = "3"
 
 [lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
 # Lock convention: see the workspace root manifest.
 await_holding_lock = "deny"
 await_holding_refcell_ref = "deny"

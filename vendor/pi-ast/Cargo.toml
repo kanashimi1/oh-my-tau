@@ -32,3 +32,8 @@ tree-sitter-toml-ng = "0.7"
 tree-sitter-typescript = "0.23"
 tree-sitter-yaml = "0.7"
 xxhash-rust = { version = "0.8", features = ["xxh64", "xxh32"] }
+
+[lints.clippy]
+await_holding_lock = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

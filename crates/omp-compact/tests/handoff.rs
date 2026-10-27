@@ -3,6 +3,7 @@
 //! committed `method: "handoff"` entry, and its context replay. Real sessions
 //! contain 62 handoff compactions (the most common non-soft method), so this
 //! lane is exercised end-to-end here with an injected completer.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use omp_compact::build_session_context;
 use omp_compact::context::Leaf;

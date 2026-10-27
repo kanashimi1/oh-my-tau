@@ -4,6 +4,7 @@
 //! spawned `omt hub mcp` process against a temp `OMP_HUB_DIR`; `omt hub` CLI
 //! is the other endpoint. The real `~/.omp/hub` is never touched (temp HOME
 //! + explicit hub dir everywhere).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};

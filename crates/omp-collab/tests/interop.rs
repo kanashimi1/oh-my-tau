@@ -24,6 +24,7 @@
 //! checkout) or `<repo root>/vendor-src/oh-my-pi`. `$INTEROP_TS_GUEST`
 //! overrides the guest script. When any prerequisite is missing the tests
 //! print a `skipping: ...` line to stderr and pass without running.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use parking_lot::Mutex;
 use std::collections::HashMap;

@@ -1,6 +1,7 @@
 //! Integration tests for the in-cell host bridge: `host` frames round-trip
 //! through [`HostBridge`], idle-timeout pauses while the host works, cancel
 //! interrupts a running cell, and the preludes install their helpers.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use parking_lot::Mutex;
 use std::sync::Arc;

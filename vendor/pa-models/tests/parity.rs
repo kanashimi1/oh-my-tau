@@ -3,6 +3,7 @@
 //! snapshot of `prime-agent-catalog` `models/catalog.v1.json`; refresh
 //! with `scripts/generate-catalog-fixture.py`) against the strict
 //! schema and transport pinning.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use pa_models::pinning::{parse_provider_model_catalog, PinnedTemplates};
 use pa_models::schema::{parse_model_catalog, InvalidEntries};

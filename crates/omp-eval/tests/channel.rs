@@ -1,6 +1,7 @@
 //! Protocol-channel isolation: cell code and the subprocesses it spawns must
 //! not be able to write NDJSON frames to the host or read host replies, and
 //! junk on the frame channel must never wedge the host reader.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use parking_lot::Mutex;
 use std::time::Duration;

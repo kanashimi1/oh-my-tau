@@ -21,6 +21,8 @@ regex = "1"
 tempfile = "3"
 
 [lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
 # pa-types keeps its OWN lints table (not `workspace = true`): the
 # workspace's `rust.unsafe_code = "forbid"` would outlaw the platform
 # bindings' legitimate unsafe blocks. The clippy rows mirror the

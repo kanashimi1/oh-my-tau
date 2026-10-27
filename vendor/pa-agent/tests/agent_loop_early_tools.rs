@@ -5,6 +5,7 @@
 //! sequential/stateful while executions overlap; mutating tools never run
 //! early; aborted or failed turns never commit early tool results; no call
 //! executes twice.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

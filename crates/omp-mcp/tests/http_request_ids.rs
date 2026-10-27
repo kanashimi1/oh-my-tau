@@ -1,6 +1,7 @@
 #![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Streamable-HTTP JSON-RPC ids: unique per request within a session, never
 //! reused after a failed request and distinct for concurrent requests.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

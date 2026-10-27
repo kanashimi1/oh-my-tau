@@ -1,5 +1,6 @@
 #![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 #![allow(clippy::float_cmp)]
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::collections::BTreeSet;
 

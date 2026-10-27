@@ -3,6 +3,7 @@
 //! scripted local HTTP server: fake future versions keep last-good
 //! silently, malformed entries skip, failures keep state unchanged,
 //! hourly gating + coalescing hold, and scopes isolate accounts.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 mod common;
 

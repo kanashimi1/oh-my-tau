@@ -3,6 +3,7 @@
 //! per-recipient seq, priority order, replay after restart, deadline
 //! expiry, schema-valid/invalid answers, claims (conflict/fencing/expiry),
 //! and the client/server wire over a real UDS.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::time::Duration;
 

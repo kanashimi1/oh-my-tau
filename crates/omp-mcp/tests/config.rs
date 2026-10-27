@@ -1,6 +1,7 @@
 //! Config loading tests: user config via `OMP_CONFIG_DIR`, project configs,
 //! disabled/forced servers. Env-mutating cases live in ONE test because
 //! cargo runs tests of a binary in parallel threads sharing the process env.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

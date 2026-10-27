@@ -3,6 +3,7 @@
 //! verifier (every line must deserialize into [`FileEntry`] and re-serialize identically, including
 //! un-tagged user text blocks and unknown entry types). Live sessions are opt-in with
 //! `PA_TYPES_LIVE_SESSIONS=1`; the default run is hermetic.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use pa_types::session::FileEntry;
 use serde_json::Value;

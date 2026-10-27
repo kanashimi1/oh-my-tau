@@ -16,6 +16,7 @@
 //!   5. hub B boots and adopts the child (`GET /api/agents` lists it);
 //!   6. `DELETE /api/agents/<id>` — the registry entry is removed and the
 //!      process group is gone (dead or reaped zombie).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::Path;
 use std::process::Stdio;

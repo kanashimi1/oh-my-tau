@@ -6,6 +6,7 @@
 //! remote (kept tail skipped), remote with `providerReplayThroughEntryId`,
 //! Anthropic native (kept tail + `historyRewriteAt`), snapcompact (blob-referenced
 //! frames replay as unavailable gaps).
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use omp_compact::context::Leaf;
 use omp_compact::{build_session_context, convert_to_llm};

@@ -1,6 +1,7 @@
 //! Golden tests: expectations in `fixtures/compacted-session.expected.json` were produced by
 //! running omp's own TypeScript (`buildSessionContext` + `convertToLlm` + `prepareCompaction`,
 //! pi-coding-agent 18.6.1) over the redacted real session `fixtures/compacted-session.jsonl`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use omp_compact::context::{branch_path, Leaf};
 use omp_compact::settings::CompactionSettings;

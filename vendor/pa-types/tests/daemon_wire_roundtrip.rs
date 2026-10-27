@@ -2,6 +2,7 @@
 //! `tests/data/`
 //! is the verifier. Live descriptors are real daemon state, opt-in with `PA_TYPES_LIVE_WORKERS=1`;
 //! the default run is hermetic.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use pa_types::daemon::DaemonWorkerDescriptor;
 use serde_json::Value;

@@ -1,4 +1,5 @@
 //! Behavior tests for the layered settings model.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use omp_settings::{lookup, Provenance, ServiceTier, SettingType, Settings, SETTINGS};
 use std::collections::BTreeMap;

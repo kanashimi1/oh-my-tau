@@ -2,6 +2,7 @@
 //! Integration tests for the controllable-runner review findings
 //! (ReviewEvalAgents 1-4 + the process-group security finding) with fake
 //! `--mode rpc` / `-p` shell children.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;

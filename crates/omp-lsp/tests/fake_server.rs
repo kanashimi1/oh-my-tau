@@ -5,6 +5,7 @@
 //! Covers the full acceptance path: config discovery, initialize handshake,
 //! didOpen → publishDiagnostics (exactly one diagnostic echoing the document
 //! version), definition, hover, and clean termination via `shutdown`/`exit`.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::PathBuf;
 use std::time::Duration;

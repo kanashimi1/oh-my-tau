@@ -21,6 +21,7 @@
 //! (see `model::select` in `src/model.rs`), which synthesizes a fixture
 //! model without touching provider catalogs; nothing dials the endpoint
 //! because no agent turn is ever streamed.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

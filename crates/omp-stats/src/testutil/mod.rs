@@ -1,6 +1,7 @@
 //! Test-only helpers shared by every module that touches the global stats db.
 //! `cargo test` runs all lib tests in one process; the db handle and `HOME`
 //! are process-global, so db tests must hold [`TestHome`] for their duration.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 #[cfg(feature = "db_ingest")]
 pub(crate) mod golden;

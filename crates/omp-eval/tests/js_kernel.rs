@@ -1,5 +1,6 @@
 //! Integration tests: persistent JS kernel — state across cells, top-level
 //! await, timeout force-kill, omp-style error formatting.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};
