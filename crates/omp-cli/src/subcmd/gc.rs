@@ -370,15 +370,14 @@ fn archive_session(
             .unwrap_or(artifacts.dir.as_path()),
     );
     let has_dir = artifacts.dir.is_dir();
-    // Check every destination before the first move, so a clash leaves the
-    // session intact rather than half-archived.
     if dest.exists() {
         anyhow::bail!("archive destination exists: {}", dest.display());
     }
-    if has_dir && artifact_dest.exists() {
-        anyhow::bail!("archive destination exists: {}", artifact_dest.display());
-    }
-    archive_file(path, &dest)?;
+    // Artifacts first, the JSONL last: if an artifact fails, the session
+    // file is still in `sessions/`, so the next run picks the session up
+    // again and resumes with the artifacts that are left (each archived
+    // file is already gone from the source; a clash on one that is not
+    // still fails that file).
     for (file, _) in &artifacts.files {
         let rel = file.strip_prefix(&artifacts.dir).unwrap_or(file);
         let mut name = rel.as_os_str().to_owned();
@@ -396,7 +395,7 @@ fn archive_session(
             fs::remove_dir(dir).with_context(|| format!("remove {}", dir.display()))?;
         }
     }
-    Ok(())
+    archive_file(path, &dest)
 }
 
 /// Gzip `src` into `dest` (parents created) and remove `src` only once the
@@ -405,6 +404,16 @@ fn archive_file(src: &Path, dest: &Path) -> Result<()> {
     if dest.exists() {
         anyhow::bail!("archive destination exists: {}", dest.display());
     }
+    let result = write_archive(src, dest);
+    if result.is_err() && src.exists() {
+        // Drop a partial archive so a rerun is not blocked by it; the source
+        // is still intact.
+        let _ = fs::remove_file(dest);
+    }
+    result
+}
+
+fn write_archive(src: &Path, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
@@ -565,6 +574,47 @@ mod tests {
             gunzip(&archive.join("proj").join("2026-01-01_s1.jsonl.gz")),
             "{\"type\":\"session\"}\n"
         );
+    }
+
+    /// A failing artifact leaves the session JSONL in place (so the next run
+    /// retries it) and the rerun resumes with the remaining artifacts.
+    #[cfg(unix)]
+    #[test]
+    fn failed_artifact_keeps_session_for_a_resumable_rerun() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = tempfile::tempdir().unwrap();
+        let sessions = root.path().join("sessions");
+        let archive = root.path().join("archive").join("sessions");
+        let proj = sessions.join("proj");
+        let artifacts = proj.join("2026-01-01_s1");
+        fs::create_dir_all(&artifacts).unwrap();
+        let file = proj.join("2026-01-01_s1.jsonl");
+        fs::write(&file, "{\"type\":\"session\"}\n").unwrap();
+        fs::write(artifacts.join("0.log"), "zero\n").unwrap();
+        let locked = artifacts.join("1.log");
+        fs::write(&locked, "one\n").unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&locked).is_ok() {
+            eprintln!("running as root: permissions not enforced; skipping");
+            return;
+        }
+
+        let tree = scan_artifacts(&file).unwrap();
+        archive_session(&sessions, &archive, &file, &tree).expect_err("unreadable artifact");
+        assert!(file.exists(), "the session must stay for a retry");
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+        let tree = scan_artifacts(&file).unwrap();
+        archive_session(&sessions, &archive, &file, &tree).unwrap();
+        assert_eq!(
+            fs::read_dir(&proj).unwrap().count(),
+            0,
+            "session left behind"
+        );
+        let archived_dir = archive.join("proj").join("2026-01-01_s1");
+        assert_eq!(gunzip(&archived_dir.join("0.log.gz")), "zero\n");
+        assert_eq!(gunzip(&archived_dir.join("1.log.gz")), "one\n");
+        assert!(archive.join("proj").join("2026-01-01_s1.jsonl.gz").exists());
     }
 
     #[test]
