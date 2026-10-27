@@ -42,7 +42,7 @@ pub async fn connect_to_server(
 ) -> Result<Connection, McpError> {
     let timeout_ms = config.timeout_ms();
     let connect = async {
-        let mut transport = create_transport(name, config, cwd)?;
+        let mut transport = create_transport(name, config, cwd).await?;
         let init_result = initialize_connection(&mut *transport).await?;
         if let Some(version) = init_result.get("protocolVersion").and_then(Value::as_str) {
             transport.set_protocol_version(version);
@@ -84,7 +84,7 @@ pub async fn connect_to_server(
 
 /// Build the transport for a server config (omp `createTransport`). The stdio
 /// subprocess is spawned here so spawn failures surface as connect errors.
-fn create_transport(
+async fn create_transport(
     name: &str,
     config: &McpServerConfig,
     cwd: Arc<PathBuf>,
@@ -92,7 +92,7 @@ fn create_transport(
     match config.kind {
         ServerKind::Stdio => {
             let mut transport = StdioTransport::new(name, config.clone(), cwd);
-            futures::executor::block_on(transport.connect())?;
+            transport.connect().await?;
             Ok(Box::new(transport))
         }
         ServerKind::Http | ServerKind::Sse => {
