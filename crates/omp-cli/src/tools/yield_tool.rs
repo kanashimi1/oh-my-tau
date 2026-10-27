@@ -62,12 +62,14 @@ fn parse_yield_error(value: Option<&Value>) -> Result<Option<String>> {
 }
 
 /// omp `parseYieldType`: `null` (strict-mode omitted optional) is absent.
+// invariant: the match arms above guarantee value is the matched Some variant.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn parse_yield_type(value: Option<&Value>) -> Result<Option<Value>> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(_)) => Ok(Some(value.unwrap().clone())),
+        Some(Value::String(_)) => Ok(Some(value.expect("matched variant").clone())),
         Some(Value::Array(items)) if !items.is_empty() && items.iter().all(Value::is_string) => {
-            Ok(Some(value.unwrap().clone()))
+            Ok(Some(value.expect("all-string array matched above").clone()))
         }
         Some(_) => Err(anyhow!(
             "type must be a string or non-empty array of strings"

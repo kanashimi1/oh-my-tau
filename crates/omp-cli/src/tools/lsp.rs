@@ -1004,7 +1004,10 @@ fn collect_workspace_files(cwd: &Path, file_types: &[String], max: usize) -> Vec
 
 impl LspTool {
     /// `request` — raw JSON-RPC method passthrough.
-    #[allow(clippy::too_many_lines)] // one passthrough: validate, dispatch to the client, shape the reply
+    #[allow(clippy::too_many_lines)]
+    // one passthrough: validate, dispatch to the client, shape the reply
+    // invariant: all.is_empty() returned early above, so into_iter().next() is Some.
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
     async fn action_request(
         self: &Arc<Self>,
         params: &Params,
@@ -1045,7 +1048,7 @@ impl LspTool {
                         json!({"action": action, "success": false, "request": params.request_json()}),
                     ));
                 }
-                let (n, c) = all.into_iter().next().unwrap();
+                let (n, c) = all.into_iter().next().expect("is_empty checked above");
                 chosen_name = n;
                 chosen_config = c;
             }

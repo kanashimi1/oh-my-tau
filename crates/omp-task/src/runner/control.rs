@@ -327,6 +327,8 @@ impl TaskRunner {
     }
 }
 
+// invariant: the runner never closes its own semaphore, so acquiring never errors.
+#[allow(clippy::expect_used)]
 async fn run_controlled(
     runner: TaskRunner,
     id: String,

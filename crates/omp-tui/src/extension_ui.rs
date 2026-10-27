@@ -754,6 +754,8 @@ impl ExtensionUi {
         }
     }
 
+    // invariant: is_ascii_digit guarantees to_digit(10) succeeds.
+    #[allow(clippy::expect_used)]
     fn key_select(dialog: &mut ActiveDialog, key: KeyEvent) -> KeyResult {
         let DialogKind::Select {
             options,

@@ -37,6 +37,8 @@ fn output(rt: &Runtime, text: &str) {
 /// ledger and hands the RLM loop prompt to the model.
 /// The conversation as plain text for `/rlm <question>` without a context
 /// source: one `[role]` header per message, text and tool output bodies.
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 fn session_transcript(messages: &[Value]) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();

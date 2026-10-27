@@ -54,9 +54,13 @@ const ANTHROPIC_QUERY_SYNTAX: QuerySyntax = QuerySyntax {
 
 // ─── Compiled regexes ──────────────────────────────────────────────────────
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static DIRECTIVE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^([+-]?)([a-z][a-z-]*):(.*)$").unwrap());
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static PAGE_AGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)^(\d+)\s*(s|sec|second|m|min|minute|h|hour|d|day|w|week|mo|month|y|year)s?\s*(ago)?$",
@@ -64,11 +68,15 @@ static PAGE_AGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static RELATIVE_AGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^(\d+)\s*(minute|min|hour|hr|day|week|month|mo|year|yr|[mhdwy])s?\s*(ago)?$")
         .unwrap()
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static ISO_DATE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\d{4})-(\d{2})-(\d{2})").unwrap());
 
@@ -333,6 +341,8 @@ fn iso_date(year: i32, month: u32, day: u32) -> Option<String> {
     Some(format!("{year:04}-{month:02}-{day:02}"))
 }
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn parse_date_value(value: &str) -> Option<String> {
     let t = value.trim();
     let re1 = Regex::new(r"^(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?$").unwrap();
@@ -826,6 +836,8 @@ fn constraint_dimensions(q: &StructuredQuery) -> Vec<ConstraintDimension> {
     dims
 }
 
+// invariant: time.is_none() returned true above; the None arm is unreachable.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn dimension_pred(dim: &ConstraintDimension, q: &StructuredQuery, source: &SearchSource) -> bool {
     match dim.kind {
         ConstraintKind::DateRange => {
@@ -833,7 +845,7 @@ fn dimension_pred(dim: &ConstraintDimension, q: &StructuredQuery, source: &Searc
             if time.is_none() {
                 return true;
             }
-            let time = time.unwrap();
+            let time = time.expect("is_none checked above");
             let after = q.after.as_ref().and_then(|d| iso_date_to_epoch_secs(d));
             let before = q.before.as_ref().and_then(|d| iso_date_to_epoch_secs(d));
             if let Some(after) = after {

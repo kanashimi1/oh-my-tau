@@ -133,7 +133,8 @@ fn cos(a: &[f64], b: &[f64]) -> f64 {
 }
 fn median(v: &[f64]) -> f64 {
     let mut s = v.to_vec();
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // NaN probe values sort equal rather than crashing the probe.
+    s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = s.len();
     if n == 0 {
         0.0
@@ -144,10 +145,13 @@ fn median(v: &[f64]) -> f64 {
     }
 }
 
+// invariant: the json! literal is a well-formed user message shape.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 fn user_msg(text: &str) -> Message {
     Message::User(UserMessage {
         content: UserMessageContent::Text(text.into()),
-        ..serde_json::from_value(json!({"role":"user","content":"","timestamp":0})).unwrap()
+        ..serde_json::from_value(json!({"role":"user","content":"","timestamp":0}))
+            .expect("literal user message shape")
     })
 }
 

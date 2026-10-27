@@ -321,7 +321,10 @@ fn set_string(a: &mut Args, flag: &str, value: String, invalid: &mut Vec<String>
 
 /// Parse argv exactly like the TS `parseArgs` dispatch (no extension flags —
 /// omp-rs has no extension-registered flag table at parse time).
-#[allow(clippy::too_many_lines)] // one flat flag table mirrors the TS parseArgs dispatch; splitting scatters it
+#[allow(clippy::too_many_lines)]
+// one flat flag table mirrors the TS parseArgs dispatch; splitting scatters it
+// invariant: find('=') succeeds because contains('=') was checked above.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
     let mut args: Vec<String> = it.collect();
     let mut a = Args::default();
@@ -347,7 +350,7 @@ pub fn parse_from<I: Iterator<Item = String>>(it: I) -> Result<Args> {
         // the same way); an unconsumed value is dropped after the loop body.
         let mut equals_value_index: Option<usize> = None;
         if arg.starts_with("--") && arg.contains('=') {
-            let eq = arg.find('=').unwrap();
+            let eq = arg.find('=').expect("contains('=') checked above");
             let value = arg[eq + 1..].to_string();
             arg = arg[..eq].to_string();
             args.insert(i + 1, value);

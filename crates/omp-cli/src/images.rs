@@ -138,6 +138,8 @@ fn encode_jpeg(rgb: &image::DynamicImage, quality: u8) -> Vec<u8> {
 }
 
 /// Pick the smallest of the encoded candidates (omp `pickSmallest`).
+// invariant: callers always pass at least one encoded candidate.
+#[allow(clippy::expect_used)]
 fn smallest(candidates: Vec<(Vec<u8>, &'static str)>) -> (Vec<u8>, String) {
     candidates
         .into_iter()

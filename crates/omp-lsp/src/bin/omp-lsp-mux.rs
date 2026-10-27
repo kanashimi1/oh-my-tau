@@ -21,11 +21,17 @@ fn main() {
     // One thread is enough: the daemon is a socket accept loop plus async
     // pipe pump tasks, and a lean runtime keeps the per-project daemon's
     // own footprint small (it is charged to every shared session).
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .thread_name("omp-lsp-mux")
         .build()
-        .expect("build mux runtime");
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("omp lsp mux failed to start its async runtime: {error}");
+            std::process::exit(1);
+        }
+    };
     if let Err(error) = runtime.block_on(omp_lsp::mux::server::run(&endpoint, &project_dir)) {
         eprintln!("omp lsp mux failed on {}: {error}", endpoint.display());
         std::process::exit(1);

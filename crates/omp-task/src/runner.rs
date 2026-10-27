@@ -283,6 +283,8 @@ impl TaskRunner {
     ///
     /// # Panics
     /// Panics if the runner's internal semaphore is unexpectedly closed.
+    // invariant: acquiring the permit only fails if the semaphore is closed, which the runner never does.
+    #[allow(clippy::expect_used)]
     pub async fn spawn(&self, spec: TaskSpec) -> RunOutput {
         let id = match &spec.id {
             Some(id) => id.clone(),

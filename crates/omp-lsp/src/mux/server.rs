@@ -62,6 +62,8 @@ fn rpc_error(id: &Value, code: i64, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
+// invariant: serializing an in-memory serde_json::Value cannot fail.
+#[allow(clippy::expect_used)]
 fn frame(message: &Value) -> Vec<u8> {
     let body = serde_json::to_string(message).expect("serialize mux frame");
     format!("Content-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
@@ -488,6 +490,8 @@ async fn from_session(state: &Arc<MuxState>, session: &Arc<Session>, message: Va
     }
 }
 
+// invariant: serializing the in-memory connect result cannot fail.
+#[allow(clippy::expect_used)]
 async fn handle_mux_connect(
     state: &Arc<MuxState>,
     session: &Arc<Session>,

@@ -103,10 +103,14 @@ impl Herdr {
             cv: Condvar::new(),
         });
         let weak = Arc::downgrade(&this);
-        std::thread::Builder::new()
+        // A failed spawn (OS resource exhaustion) leaves reporting disabled
+        // rather than crashing the session.
+        if let Err(error) = std::thread::Builder::new()
             .name("herdr-report".into())
             .spawn(move || worker(&weak))
-            .expect("herdr report thread");
+        {
+            eprintln!("herdr report thread unavailable: {error}");
+        }
         this
     }
 

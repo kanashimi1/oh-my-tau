@@ -281,6 +281,8 @@ fn open_frame(cipher: &CollabCipher, sealed: &[u8]) -> DecodedFrame {
 
 /// Seal one frame into a peer-0 envelope (guest send path; the relay
 /// rewrites the peer id, protocol.ts:179-181).
+// invariant: CollabFrame is a plain data struct, serde_json cannot fail to serialize it.
+#[allow(clippy::expect_used)]
 fn seal_frame(cipher: &CollabCipher, frame: &CollabFrame) -> Vec<u8> {
     let json = serde_json::to_string(frame).expect("CollabFrame serializes infallibly");
     pack_envelope(0, &cipher.seal(json.as_bytes()))
@@ -930,6 +932,8 @@ impl GuestDriver {
         tokio::spawn(self.run_inner());
     }
 
+    // invariant: Deadline is only emitted while sync_deadline is armed (see driver).
+    #[allow(clippy::expect_used)]
     async fn run_inner(mut self) {
         while !self.ended {
             // Take the deadline out for the poll: the select future borrows
@@ -1456,6 +1460,8 @@ fn synthesize_missing_message_start(synced: &mut bool, event: &Value) -> Option<
 /// Diff a host agent snapshot into the mirror (guest.ts:763-790):
 /// unregister missing ids, register new ones, update status on known ones,
 /// and patch host timestamps/display names on the refs.
+// invariant: agent id inserted or updated above, so the find succeeds.
+#[allow(clippy::expect_used)]
 fn apply_agent_snapshots(core: &mut GuestCore, agents: &[Value]) {
     let seen: HashSet<&str> = agents
         .iter()

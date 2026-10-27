@@ -8,7 +8,10 @@ use omp_mcp::McpManager;
 
 #[tokio::main]
 async fn main() {
-    let cwd = std::env::current_dir().expect("cwd");
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("cannot determine current directory");
+        std::process::exit(1);
+    };
     let manager = McpManager::from_default_configs(&cwd);
     let tools = manager.tools().await;
     if tools.is_empty() {

@@ -285,6 +285,8 @@ struct StatsIdentity {
     omp_binary_stats: Regex,
 }
 
+// invariant: fixed regex literals always compile.
+#[allow(clippy::expect_used)]
 static IDENTITY: LazyLock<StatsIdentity> = LazyLock::new(|| StatsIdentity {
     omp_stats_binary: Regex::new(r#"(?:^|[/"'\s])omp-stats(?:\.exe)?(?:["'\s]|$)"#)
         .expect("omp-stats binary pattern"),
@@ -462,6 +464,8 @@ fn find_linux_port_holder(port: u16) -> Option<PortHolder> {
 }
 
 #[cfg(target_os = "linux")]
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 static SOCKET_LINK: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^socket:\[(\d+)\]$").expect("socket link pattern"));
 

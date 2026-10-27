@@ -176,6 +176,8 @@ impl PoolState {
 
     /// TS `workpool-batch.md`, minus the keyed incremental `yield` contract
     /// (omp-rs children answer once, with their final text).
+    // invariant: write!/writeln! to a String is infallible.
+    #[allow(clippy::expect_used)]
     fn batch_prompt(&self, batch: usize) -> String {
         use std::fmt::Write as _;
         let batch = &self.batches[batch];

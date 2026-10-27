@@ -275,7 +275,10 @@ fn cell_is_error(result: &CellResult) -> bool {
 }
 
 /// Execute one `eval` cell (the tool entry point).
-#[allow(clippy::too_many_lines)] // cell loop: language select, kernel start/reuse, run, journal, reply
+#[allow(clippy::too_many_lines)]
+// cell loop: language select, kernel start/reuse, run, journal, reply
+// invariant: the execution loop above always pushes at least one cell result.
+#[allow(clippy::expect_used)]
 pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolResult> {
     use std::fmt::Write as _;
     // omp's schema requires `language`; a missing one fails TS input

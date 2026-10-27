@@ -49,6 +49,8 @@ fn write_mcp_file(path: &Path, file: &Value) -> Result<(), String> {
 
 /// `/mcp` scoped config path: user (`~/.omp/agent/mcp.json`) or the first
 /// project candidate (`mcp.json` / `.mcp.json` / `.omp/mcp.json`).
+// invariant: omp_mcp::config::project_config_paths always returns at least one candidate path.
+#[allow(clippy::expect_used)]
 fn mcp_scope_path(rt: &Runtime, scope: &str, create: bool) -> Result<PathBuf, String> {
     match scope {
         "user" => omp_mcp::config::user_config_path()
@@ -228,6 +230,8 @@ async fn mcp_menu(rt: &Runtime) -> Outcome {
     }
 }
 
+// invariant: the or_insert(json!({})) above guarantees mcpServers is an object.
+#[allow(clippy::expect_used)]
 fn mcp_set_enabled(rt: &Runtime, name: &str, scope: &str, enabled: bool) -> Outcome {
     let Ok(path) = mcp_scope_path(rt, scope, true) else {
         return usage(rt, &format!("No {scope} MCP config to modify."));
@@ -244,7 +248,12 @@ fn mcp_set_enabled(rt: &Runtime, name: &str, scope: &str, enabled: bool) -> Outc
     let Some(server) = servers.get_mut(name) else {
         return usage(rt, &format!("No {scope} MCP server named \"{name}\"."));
     };
-    let obj = server.as_object_mut().expect("server config object");
+    let Some(obj) = server.as_object_mut() else {
+        return usage(
+            rt,
+            &format!("MCP server \"{name}\" config is not an object."),
+        );
+    };
     if enabled {
         obj.remove("enabled");
         if let Some(arr) = file
@@ -292,6 +301,8 @@ fn mcp_remove(rt: &Runtime, name: &str, scope: &str) -> Outcome {
     }
 }
 
+// invariant: the or_insert(json!({})) above guarantees mcpServers is an object.
+#[allow(clippy::expect_used)]
 fn mcp_add(rt: &Runtime, rest: &str) -> Outcome {
     const ADD_USAGE: &str = "Usage: /mcp add <name> [--scope project|user] [--url <url> --transport http|sse] [--token <token>] [-- <command...>]";
     let tokens: Vec<&str> = rest.split_whitespace().collect();

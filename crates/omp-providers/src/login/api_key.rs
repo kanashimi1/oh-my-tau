@@ -46,6 +46,8 @@ pub struct ApiKeyProvider {
     pub validate: Option<Validate>,
 }
 
+// invariant: api_key_providers.json is bundled via include_str! and parses at compile-time shape.
+#[allow(clippy::expect_used)]
 static TABLE: LazyLock<Vec<ApiKeyProvider>> = LazyLock::new(|| {
     serde_json::from_str(include_str!("api_key_providers.json"))
         .expect("api_key_providers.json parses")

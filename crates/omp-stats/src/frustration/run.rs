@@ -281,6 +281,8 @@ impl Drop for Starting {
 }
 
 /// The private runtime judge runs execute on; the HTTP handlers are synchronous.
+// invariant: the judge runtime is built lazily; construction only fails on resource exhaustion, where failing fast is intended.
+#[allow(clippy::expect_used)]
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

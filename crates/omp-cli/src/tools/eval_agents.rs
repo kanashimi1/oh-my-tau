@@ -467,6 +467,8 @@ async fn deliver_local(to: &str, content: &str, exclude: Option<&str>) -> Result
 }
 
 /// TS broadcast receipt text over every running eval subagent.
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 async fn broadcast_message(content: &str, exclude: Option<&str>) -> Result<String, String> {
     use std::fmt::Write as _;
     let mut targets: Vec<(String, Arc<Handle>)> = AGENT_HANDLES

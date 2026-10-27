@@ -61,9 +61,13 @@ pub enum Selector {
     Tail { count: usize, raw: bool },
 }
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static RANGE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^L?(\d+)(?:(\.\.|[-+])L?(\d+)?)?$").expect("valid line range regex")
 });
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static TAIL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^-(\d+)$").expect("valid tail regex"));
 
@@ -550,6 +554,8 @@ fn format_read_output(
 // ------------------------------------------------------------- internal URLs
 
 /// Process-global scheme registry (TS `InternalUrlRouter.instance()`).
+// invariant: omp_urls::schemes::register_all only fails on duplicate registration, which cannot happen once.
+#[allow(clippy::expect_used)]
 pub(crate) fn url_registry() -> &'static Registry {
     static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {

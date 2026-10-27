@@ -544,6 +544,8 @@ fn deep_merge(base: &mut Map<String, Value>, over: Map<String, Value>) {
     }
 }
 
+// invariant: entry replaced with/inserted as Object above, so as_object_mut is Some.
+#[allow(clippy::expect_used)]
 fn set_path(base: &mut Map<String, Value>, id: &str, value: Value) {
     let mut segments = id.split('.').peekable();
     let mut current = base;
@@ -640,6 +642,8 @@ fn parse_env_value(def: &SettingDef, raw: &str) -> Option<Value> {
 
 /// Dotted paths in `merged` that no registered setting explains: not an exact id,
 /// not a group prefix of one, and not inside a `record`-typed subtree.
+// invariant: is_object()/as_object() checked on the same line, so the object view is Some.
+#[allow(clippy::expect_used)]
 fn collect_unknown(merged: &Map<String, Value>) -> Vec<String> {
     let mut unknown = Vec::new();
     let mut stack: Vec<(String, &Map<String, Value>)> = vec![(String::new(), merged)];

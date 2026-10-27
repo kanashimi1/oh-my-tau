@@ -489,6 +489,8 @@ fn base_url_for(provider: &str) -> Option<&'static str> {
     })
 }
 
+// invariant: pcfg is Some because the and_then chain above only runs when it is.
+#[allow(clippy::expect_used)]
 fn find_model(
     dir: &Path,
     cfg: &Config,

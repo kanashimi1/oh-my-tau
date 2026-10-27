@@ -47,6 +47,8 @@ impl CollabCipher {
     /// When `key` is not [`ROOM_KEY_BYTES`] bytes, mirroring the TS
     /// `importRoomKey` throw (crypto.ts:28-30).
     #[must_use]
+    // invariant: key length asserted to ROOM_KEY_BYTES above, AES-256 accepts any 32-byte key.
+    #[allow(clippy::expect_used)]
     pub fn new(key: &[u8]) -> Self {
         assert!(
             key.len() == ROOM_KEY_BYTES,
@@ -86,6 +88,8 @@ impl CollabCipher {
     /// Test hook: seal with a caller-chosen IV so golden vectors against
     /// `WebCrypto` (`crypto.subtle.encrypt` with a fixed iv) stay deterministic.
     #[must_use]
+    // invariant: ring seal_in_place_append_tag only fails on key/nonce misuse, not with these fixed-size inputs.
+    #[allow(clippy::expect_used)]
     fn seal_with_iv(&self, iv: &[u8; IV_LENGTH], plaintext: &[u8]) -> Vec<u8> {
         let nonce = Nonce::assume_unique_for_key(*iv);
         let mut in_out = plaintext.to_vec();

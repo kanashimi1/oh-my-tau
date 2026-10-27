@@ -34,6 +34,8 @@ pub fn now_iso() -> String {
 
 /// UUID v7 string (48-bit ms timestamp + random).
 #[must_use]
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 pub fn uuid_v7() -> String {
     use rand::RngCore;
     let mut b = [0u8; 16];

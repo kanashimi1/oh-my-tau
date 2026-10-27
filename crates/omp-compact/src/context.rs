@@ -635,6 +635,8 @@ pub fn build_session_context_owned(
 
 /// Root→leaf path for the owned builder: same walk as [`branch_path`], but the
 /// entries are moved out of the input instead of referenced.
+// invariant: idx_path indices index into slots exactly once each (unique by construction).
+#[allow(clippy::expect_used)]
 fn branch_path_owned(entries: Vec<Value>, leaf: Leaf<'_>) -> Vec<Value> {
     if entries.is_empty() {
         return Vec::new();

@@ -250,7 +250,10 @@ pub async fn fork(rt: &Arc<Runtime>, entry_id: Option<&str>) -> CmdResult {
 /// `summarize` is the model call used for that (the runtime's compaction summarizer);
 /// required exactly when `options.summarize` is set, like TS requires a model.
 #[allow(dead_code)] // host-request entry point (omp parity), wired with the rpc surface
-#[allow(clippy::too_many_lines)] // host-request flow: fork + optional branch summary + context rebuild
+#[allow(clippy::too_many_lines)]
+// host-request flow: fork + optional branch summary + context rebuild
+// invariant: summarize is Some in this branch (checked above).
+#[allow(clippy::expect_used)]
 pub async fn navigate_tree(
     rt: &Arc<Runtime>,
     target: &str,

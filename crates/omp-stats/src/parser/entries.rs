@@ -404,6 +404,8 @@ pub(crate) fn extract_model_usage_stats(
 
 /// Extract one [`ToolCallStats`] per `toolCall` content block of an assistant
 /// message. Returns an empty vector for turns without tool calls.
+// invariant: content was reached via message.content, so message exists.
+#[allow(clippy::expect_used)]
 pub(crate) fn extract_tool_calls(
     session_file: &str,
     folder: &str,
