@@ -105,6 +105,7 @@ mod tests {
 
     #[test]
     fn output_keeps_live_tail() {
+        #[allow(clippy::format_collect)] // test fixture; a bytecount-style dep is not warranted
         let lines: String = (0..20).map(|i| format!("line {i}\n")).collect();
         let call = json!({"name": "eval", "arguments": {"language": "js", "code": "x"},
             "result": {"content": [{"type": "text", "text": lines}]}});

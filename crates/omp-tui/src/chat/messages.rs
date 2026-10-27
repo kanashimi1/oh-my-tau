@@ -862,7 +862,7 @@ impl Messages {
                 self.seen_parts = total;
                 if live {
                     self.reveal
-                        .set_target(reveal_blocks(&segments, &ThinkingDisplay::default()));
+                        .set_target(reveal_blocks(&segments, ThinkingDisplay::default()));
                 }
                 match self.live_assistant {
                     Some(idx) => {
@@ -1600,7 +1600,6 @@ fn entry_visible(entry: &ChatEntry) -> bool {
                 })
         }
         ChatKind::Usage(_) => false,
-        ChatKind::ReadGroup(_) => true,
         _ => true,
     }
 }
@@ -1712,8 +1711,15 @@ fn parse_usage(message: &Value) -> Option<Usage> {
     let usage = message.get("usage")?;
     let ms = |key: &str| -> Option<u64> {
         let v = message.get(key)?;
-        v.as_u64()
-            .or_else(|| v.as_f64().map(|f| f.round().max(0.0) as u64))
+        v.as_u64().or_else(|| {
+            // Usage values are small positive counts.
+            v.as_f64().map(|f| {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    f.round().max(0.0) as u64
+                }
+            })
+        })
     };
     let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
     let parsed = Usage {
@@ -1914,7 +1920,7 @@ fn result_text(result: &Value) -> String {
 
 /// Build reveal blocks from assistant segments (chat.md §8): thinking text
 /// is kept in display form, mirroring TS `rawThinking`.
-fn reveal_blocks(segments: &[AssistantSegment], settings: &ThinkingDisplay) -> Vec<RevealBlock> {
+fn reveal_blocks(segments: &[AssistantSegment], settings: ThinkingDisplay) -> Vec<RevealBlock> {
     segments
         .iter()
         .map(|s| match s {

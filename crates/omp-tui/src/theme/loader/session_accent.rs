@@ -32,7 +32,11 @@ pub fn name_to_hash(name: &str) -> u32 {
     for ch in name.chars() {
         let mut h = i64::from(hash);
         h = ((h << 5) + h) ^ i64::from(ch as u32);
-        hash = (h & 0xFFFF_FFFF) as u32;
+        // djb2: keep the low 32 bits (the mask bounds the value).
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        {
+            hash = (h & 0xFFFF_FFFF) as u32;
+        }
     }
     hash
 }
@@ -110,6 +114,8 @@ fn find_safe_hue(pos: u32, occupied: &[f64], intervals: &[HueInterval]) -> f64 {
     for d in 1..total {
         for dir in [1i64, -1] {
             let cand_i = (i64::from(pos) + i64::from(d) * dir).rem_euclid(i64::from(total));
+            // cand_i is a rem_euclid result over `total` (fits u32 hues).
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let candidate = arc_to_hue(intervals, cand_i as u32);
             if occupied
                 .iter()

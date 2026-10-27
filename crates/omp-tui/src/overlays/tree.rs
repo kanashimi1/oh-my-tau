@@ -371,8 +371,10 @@ mod tests {
 
     #[test]
     fn render_snapshot() {
-        let mut nav = TreeNavigator::default();
-        nav.title = "rewind".into();
+        let mut nav = TreeNavigator {
+            title: "rewind".into(),
+            ..TreeNavigator::default()
+        };
         nav.set_entries(&user_entries(), TreeMode::Rewind);
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();

@@ -59,8 +59,10 @@ fn is_new(tip: &str) -> bool {
     tip.trim_end().ends_with("[NEW]")
 }
 
-/// Weighted pick (`pickWeightedTip`); `r` uniform in `[0, 1)`.
+/// Weighted pick (`pickWeightedTip`); `r` uniform in `[0, 1)`. Tip counts
+/// are tiny, so the usize->f64 casts are exact.
 #[must_use]
+#[allow(clippy::cast_precision_loss)]
 pub fn pick_weighted_tip(tips: &[String], r: f64) -> String {
     if tips.is_empty() {
         return String::new();
@@ -163,7 +165,8 @@ fn expand_tip(tip: &str) -> String {
             }
             Some(("tap", k)) => {
                 let h = format_key_hint(k);
-                out.push_str(&format!("{h}{h}"));
+                out.push_str(&h);
+                out.push_str(&h);
             }
             _ => out.push_str(&rest[start..=start + end]),
         }
@@ -188,7 +191,10 @@ fn expand_links(s: &str) -> String {
         });
         if let Some((label, url, consumed)) = parsed {
             out.push_str(&rest[..open]);
-            out.push_str(&format!("{label} ({url})"));
+            out.push_str(label);
+            out.push_str(" (");
+            out.push_str(url);
+            out.push(')');
             rest = &rest[open + consumed..];
         } else {
             out.push_str(&rest[..=open]);
@@ -220,15 +226,26 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 /// Gradient color at diagonal position `t` (`gradientEscape`, truecolor).
+/// Stop counts and channel math are tiny; the f64->u8 casts are clamped.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 fn gradient(t: f64) -> Color {
-    let seg = t * (GRADIENT_STOPS.len() - 1) as f64;
-    let i = (seg.floor() as usize).min(GRADIENT_STOPS.len() - 2);
-    let f = seg - i as f64;
-    let (a, b) = (GRADIENT_STOPS[i], GRADIENT_STOPS[i + 1]);
-    let ch = |x: f64, y: f64| (x + (y - x) * f).round().clamp(0.0, 255.0) as u8;
-    Color::Rgb(ch(a.0, b.0), ch(a.1, b.1), ch(a.2, b.2))
+    let scaled = t * (GRADIENT_STOPS.len() - 1) as f64;
+    let stop = (scaled.floor() as usize).min(GRADIENT_STOPS.len() - 2);
+    let frac = scaled - stop as f64;
+    let (lo, hi) = (GRADIENT_STOPS[stop], GRADIENT_STOPS[stop + 1]);
+    let channel = |from: f64, to: f64| (from + (to - from) * frac).round().clamp(0.0, 255.0) as u8;
+    Color::Rgb(
+        channel(lo.0, hi.0),
+        channel(lo.1, hi.1),
+        channel(lo.2, hi.2),
+    )
 }
 
+#[allow(clippy::cast_precision_loss)] // logo dimensions are tiny
 fn logo_spans(row: usize) -> Vec<Span<'static>> {
     let x_span = (LOGO_WIDTH - 1) as f64;
     let y_span = (PI_LOGO.len() - 1) as f64;

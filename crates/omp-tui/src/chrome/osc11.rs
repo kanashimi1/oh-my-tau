@@ -39,6 +39,8 @@ pub fn parse_osc11_response(bytes: &[u8]) -> Option<Rgb> {
         // 16-bit channel values (usually `0000`-`ffff`): take the high byte,
         // matching TS which scales to 0-255 the same way.
         let v = u32::from_str_radix(hex, 16).ok()?;
+        // 16-bit channels: keep the high byte (bounded by the shift).
+        #[allow(clippy::cast_possible_truncation)]
         Some((v >> 8) as u8)
     };
     let r = next()?;

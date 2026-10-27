@@ -180,7 +180,7 @@ impl Editor {
 
     /// Apply an autocomplete pick: replace the buffer with `lines` and
     /// place the cursor at (`line`, byte `col`). Undoable.
-    pub fn apply_completion(&mut self, lines: Vec<String>, line: usize, col: usize) {
+    pub fn apply_completion(&mut self, lines: &[String], line: usize, col: usize) {
         self.record_undo();
         self.replace_lines(lines, Cursor { line, col });
     }
@@ -691,7 +691,7 @@ impl Editor {
                 lines.push(String::new());
             }
             let line = from.line.min(lines.len() - 1);
-            self.replace_lines(lines, Cursor { line, col: 0 });
+            self.replace_lines(&lines, Cursor { line, col: 0 });
             return;
         }
         let removed = self.slice_vim_range(from, to, false);
@@ -705,7 +705,7 @@ impl Editor {
         let tail = char_slice(&lines[last], to.col, usize::MAX);
         lines.splice(from.line..=last, [format!("{head}{tail}")]);
         self.replace_lines(
-            lines,
+            &lines,
             Cursor {
                 line: from.line,
                 col: head.len(),
@@ -723,7 +723,7 @@ impl Editor {
         };
         let at = at.min(lines.len());
         lines.insert(at, String::new());
-        self.replace_lines(lines, Cursor { line: at, col: 0 });
+        self.replace_lines(&lines, Cursor { line: at, col: 0 });
     }
 
     fn paste_vim_register(&mut self, after: bool, count: usize) {
@@ -752,7 +752,7 @@ impl Editor {
                 payload.extend(body.iter().cloned());
             }
             lines.splice(at..at, payload);
-            self.replace_lines(lines, Cursor { line: at, col: 0 });
+            self.replace_lines(&lines, Cursor { line: at, col: 0 });
         } else {
             let line_text = lines[cur.line].clone();
             let cursor_char = line_text[..cur.col.min(line_text.len())].chars().count();
@@ -769,7 +769,7 @@ impl Editor {
                 &line_text[at.min(line_text.len())..]
             );
             self.replace_lines(
-                lines,
+                &lines,
                 Cursor {
                     line: cur.line,
                     col: at + last_char,
@@ -779,7 +779,7 @@ impl Editor {
     }
 
     /// Rebuild the buffer from logical lines and park the cursor.
-    fn replace_lines(&mut self, lines: Vec<String>, cursor: Cursor) {
+    fn replace_lines(&mut self, lines: &[String], cursor: Cursor) {
         self.buffer.set_text(&lines.join("\n"));
         self.buffer.set_cursor(cursor);
         self.history_nav.reset();
@@ -1305,8 +1305,11 @@ mod render_tests {
         let mut e = Editor::new();
         assert_eq!(e.desired_height(80), 2, "band row + one prompt row");
         for i in 0..20 {
+            // i < 20, so the modulo is well inside u8.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let ch = char::from(b'a' + i as u8 % 26);
             let _ = e.handle_key(crate::keys::KeyEvent::new(
-                crate::keys::KeyCode::Char(char::from(b'a' + i as u8 % 26)),
+                crate::keys::KeyCode::Char(ch),
                 KeyModifiers::NONE,
             ));
             e.insert_newline();

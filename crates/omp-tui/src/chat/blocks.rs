@@ -191,7 +191,9 @@ pub fn collapse_chips(text: &str) -> String {
             return out;
         };
         let label = if alt.is_empty() { "image" } else { alt };
-        out.push_str(&format!("[▨ {label}]"));
+        out.push_str("[▨ ");
+        out.push_str(label);
+        out.push(']');
         rest = &rest[after + end + 1..];
     }
     out.push_str(rest);
@@ -209,6 +211,8 @@ fn user_lines(
     // `userMessageBg` fill — a flush-left bubble, no glyph, full-width rows.
     let chipped = collapse_chips(text);
     let inner = width.saturating_sub(2).max(1);
+    // Width is bounded by the frame area (u16-sized ratatui buffer).
+    #[allow(clippy::cast_possible_truncation)]
     let mut text = markdown::render(&chipped, inner as u16, theme);
     let bg = theme.color("userMessageBg");
     let fg = theme.color("userMessageText");
@@ -287,6 +291,7 @@ fn prose_lines(text: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
 }
 
 /// Markdown layout width inside the prose padding.
+#[allow(clippy::cast_possible_truncation)] // bounded by the u16 frame area
 fn prose_width(width: usize) -> u16 {
     width.saturating_sub(2).max(1) as u16
 }
@@ -634,9 +639,17 @@ pub fn format_duration(ms: u64) -> String {
         0 => "0ms".to_owned(),
         1..SEC => format!("{ms}ms"),
         SEC..MIN => {
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
             let tenths = (ms as f64 / 100.0).round() as u64;
             if tenths < 600 {
-                format!("{:.1}s", tenths as f64 / 10.0)
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    format!("{:.1}s", tenths as f64 / 10.0)
+                }
             } else {
                 "1m".to_owned()
             }
@@ -747,10 +760,13 @@ fn tool_card_body(
 /// [`TestBackend`] and read the visible rows back as styled lines.
 fn family_frame_lines(name: &str, call: &Value, width: usize, theme: &Theme) -> Vec<Line<'static>> {
     let width = width.max(8);
+    // Test-backend width is bounded by the u16 buffer.
+    #[allow(clippy::cast_possible_truncation)]
     let Ok(mut term) = Terminal::new(TestBackend::new(width as u16, CARD_MAX_ROWS)) else {
         return Vec::new();
     };
     let _ = term.draw(|frame| {
+        #[allow(clippy::cast_possible_truncation)]
         let area = Rect::new(0, 0, width as u16, CARD_MAX_ROWS);
         tools::family(name).render(frame, area, call, theme);
     });
@@ -841,6 +857,8 @@ fn explore_item_desc(item: &crate::chat::ReadItem, theme: &Theme) -> Vec<Span<'s
 /// Clean style: consecutive reads/searches as one "Explored" rail row.
 /// Settled + collapsed: a single line naming every item; live or ctrl+O:
 /// one row per item under the `⎿` elbow.
+// One pass over the group's items, collapsing/expanding in place.
+#[allow(clippy::too_many_lines)]
 fn explore_group_lines(
     group: &ReadGroup,
     expanded: bool,
@@ -1205,6 +1223,8 @@ fn compaction_lines(
             Style::default().fg(theme.color("warning")),
         )));
     }
+    // Width is bounded by the frame area.
+    #[allow(clippy::cast_possible_truncation)]
     let summary = markdown::render(&c.summary, width as u16, theme);
     let cap = if expanded {
         usize::MAX
@@ -1223,6 +1243,8 @@ fn branch_lines(summary: &str, expanded: bool, width: usize, theme: &Theme) -> V
         Style::default().fg(theme.color("text_muted")),
     ))];
     if expanded {
+        // Width is bounded by the frame area.
+        #[allow(clippy::cast_possible_truncation)]
         lines.extend(markdown::render(summary, width as u16, theme).lines);
     } else {
         lines.push(Line::from(Span::styled(

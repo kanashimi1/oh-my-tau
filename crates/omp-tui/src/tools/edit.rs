@@ -203,7 +203,7 @@ pub(crate) fn frame_card(
     } else {
         vec![super::frame::CardSection::plain(body)]
     };
-    super::frame::framed_card_padded(header, sections, width, border, 0)
+    super::frame::framed_card_padded(header.as_ref(), sections, width, border, 0)
 }
 
 /// Concatenated text blocks of a tool-result message.

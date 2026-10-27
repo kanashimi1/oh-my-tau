@@ -170,7 +170,6 @@ impl Component for Help {
             // Close keys (`?`/q/esc/ctrl+c per the TS sheet): intentionally
             // ignored so they bubble to the host, which owns open/close
             // state. Esc/q/? are unmodified; `c` requires ctrl.
-            KeyCode::Esc | KeyCode::Char('q' | '?') => EventOutcome::Ignored,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 EventOutcome::Ignored
             }

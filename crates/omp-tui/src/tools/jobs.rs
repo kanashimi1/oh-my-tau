@@ -59,8 +59,10 @@ mod tests {
     use serde_json::json;
 
     fn call_with(jobs: Value) -> Value {
-        json!({"name": "jobs", "arguments": {},
-            "result": {"content": [], "details": {"jobs": jobs}}})
+        let mut call = json!({"name": "jobs", "arguments": {},
+            "result": {"content": []}});
+        call["result"]["details"]["jobs"] = jobs;
+        call
     }
 
     #[test]
