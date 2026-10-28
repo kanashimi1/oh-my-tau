@@ -288,7 +288,7 @@
       s.agents = res.agents || [];
     } catch { return; }
     // `/desktop` from a terminal asks open pages to show its agent. On the
-    // first poll only a fresh request counts (omrs was just started for it).
+    // first poll only a fresh request counts (Tau was just started for it).
     const f = res.focus;
     if (f && f.ms > (s.focusSeen || 0)) {
       const fresh = s.focusSeen !== undefined || Date.now() - f.ms < 60000;

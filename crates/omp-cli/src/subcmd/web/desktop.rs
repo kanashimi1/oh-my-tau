@@ -1,5 +1,5 @@
 //! Switching a live hub agent between front ends on a WSL host: raise (or
-//! start) the omrs desktop window, or open a Windows Terminal tab running
+//! start) the Tau desktop window, or open a Windows Terminal tab running
 //! `omt attach <id>`. Both are fire-and-forget Windows processes started
 //! through WSL interop.
 
@@ -13,8 +13,8 @@ const POWERSHELL: &str = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powersh
 /// cmd/powershell warn and fall back anyway.
 const WIN_CWD: &str = "/mnt/c/";
 
-/// Raise-or-start script: restore + foreground an existing omrs window, start
-/// omrs only when no omrs process exists (a tray-hidden one is left alone).
+/// Raise-or-start script: restore + foreground an existing Tau window, start
+/// Tau only when no Tau process exists (a tray-hidden one is left alone).
 const RAISE_PS: &str = r#"
 Add-Type @'
 using System; using System.Runtime.InteropServices;
@@ -25,7 +25,7 @@ public class OmtWin {
   [DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);
 }
 '@
-$p = Get-Process omrs -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } | Select-Object -First 1
+$p = Get-Process tau -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle } | Select-Object -First 1
 if ($p) {
   $h = $p.MainWindowHandle
   if ([OmtWin]::IsIconic($h)) { [OmtWin]::ShowWindow($h, 9) | Out-Null }
@@ -33,8 +33,8 @@ if ($p) {
   [OmtWin]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
   [OmtWin]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
   [OmtWin]::SetForegroundWindow($h) | Out-Null
-} elseif (-not (Get-Process omrs -ErrorAction SilentlyContinue)) {
-  Start-Process "$env:LOCALAPPDATA\Programs\omrs\omrs.exe"
+} elseif (-not (Get-Process tau -ErrorAction SilentlyContinue)) {
+  Start-Process "$env:LOCALAPPDATA\Programs\Tau\tau.exe"
 }
 "#;
 
@@ -58,7 +58,7 @@ fn require_wsl() -> Result<()> {
     Ok(())
 }
 
-/// Bring the omrs window to the front, starting omrs when it is not running.
+/// Bring the Tau window to the front, starting Tau when it is not running.
 pub fn raise() -> Result<()> {
     require_wsl()?;
     detached(Command::new(POWERSHELL).args([

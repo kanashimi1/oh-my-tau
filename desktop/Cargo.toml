@@ -1,7 +1,7 @@
 [package]
-name = "omrs"
+name = "tau"
 version = "0.1.0"
-description = "omt desktop shell (Tauri 2)"
+description = "Tau: omt desktop app (Tauri 2)"
 edition = "2021"
 rust-version = "1.77"
 

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "omrs",
+  "productName": "Tau",
   "version": "0.1.0",
-  "identifier": "com.omt.omrs",
+  "identifier": "com.omt.tau",
   "build": {
     "frontendDist": "ui"
   },

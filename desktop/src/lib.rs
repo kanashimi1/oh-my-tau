@@ -1,4 +1,4 @@
-// omrs: Tauri 2 desktop shell for the omt web UI.
+// Tau: Tauri 2 desktop app for the omt web UI.
 //
 // Responsibilities:
 //   * ensure the local omt service (http://127.0.0.1:7467) is up, starting it
@@ -91,7 +91,7 @@ pub fn run() {
             }
         })
         .run(tauri::generate_context!())
-        .expect("error while running omrs");
+        .expect("error while running Tau");
 }
 
 fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -109,7 +109,7 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
         .icon(icon)
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("omt")
+        .tooltip("Tau")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show_hide" => toggle_windows(app),
             "new_window" => {
@@ -158,7 +158,7 @@ fn setup_main_window(app: &tauri::App) -> tauri::Result<()> {
     let handle = app.handle().clone();
 
     let _win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("omt")
+        .title("Tau")
         .inner_size(1280.0, 820.0)
         .min_inner_size(760.0, 540.0)
         .visible(false)
@@ -197,7 +197,7 @@ fn open_new_window(app: &AppHandle, hash: &str) -> tauri::Result<()> {
     }
     let parsed = Url::parse(&url).map_err(|e| tauri::Error::Anyhow(e.into()))?;
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
-        .title("omt")
+        .title("Tau")
         .inner_size(1280.0, 820.0)
         .min_inner_size(760.0, 540.0)
         .build()?;
@@ -349,9 +349,9 @@ async fn capture_done(window: tauri::WebviewWindow) {
     let _ = window.set_fullscreen(false);
 }
 
-/// Append one line to `%TEMP%\\omrs.log` (a GUI-subsystem exe has no stderr).
+/// Append one line to `%TEMP%\\tau.log` (a GUI-subsystem exe has no stderr).
 fn log_line(msg: &str) {
-    let path = std::env::temp_dir().join("omrs.log");
+    let path = std::env::temp_dir().join("tau.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let _ = writeln!(f, "{secs} {msg}");

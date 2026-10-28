@@ -1,4 +1,4 @@
-# omrs — omt desktop shell (Tauri 2, Windows)
+# Tau — omt desktop app (Tauri 2, Windows)
 
 A native Windows shell for the omt web UI. It loads the UI from the local
 service (`http://127.0.0.1:7467`), starting that service via WSL when it is
@@ -29,23 +29,23 @@ cargo xwin build --target x86_64-pc-windows-msvc --release
 The portable binary is produced at:
 
 ```sh
-target/x86_64-pc-windows-msvc/release/omrs.exe
+target/x86_64-pc-windows-msvc/release/tau.exe
 ```
 
 Copy it to the install location:
 
 ```sh
-cp target/x86_64-pc-windows-msvc/release/omrs.exe \
-  /mnt/c/Users/kaneki/AppData/Local/Programs/omrs/omrs.exe
+cp target/x86_64-pc-windows-msvc/release/tau.exe \
+  /mnt/c/Users/kaneki/AppData/Local/Programs/Tau/tau.exe
 ```
 
-No installer is required; `omrs.exe` runs standalone (WebView2 is installed on
+No installer is required; `tau.exe` runs standalone (WebView2 is installed on
 the host).
 
 ## Run
 
 ```sh
-/mnt/c/Users/kaneki/AppData/Local/Programs/omrs/omrs.exe &
+/mnt/c/Users/kaneki/AppData/Local/Programs/Tau/tau.exe &
 ```
 
 On startup the app probes `http://127.0.0.1:7467/api/info`. If the service is
@@ -80,4 +80,4 @@ is shown). Closing the app never stops the service.
   none). They only appear if Windows toasts are enabled
   (Settings → System → Notifications).
 - The tray icon starts in the taskbar overflow (^); drag it out to pin it.
-- Log: `%TEMP%\omrs.log` (hotkey, capture, shortcut registration errors).
+- Log: `%TEMP%\tau.log` (hotkey, capture, shortcut registration errors).
