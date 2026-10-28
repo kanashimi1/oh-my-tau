@@ -1974,6 +1974,81 @@ mod tests {
         );
     }
 
+    /// A detached child's log (`--mode rpc` stdout tailed and replayed by the
+    /// hub) grows O(reply) instead of O(reply²): `message_update` deltas, while
+    /// the hub's expansion yields byte-identical full frames.
+    #[tokio::test]
+    async fn detached_log_compacts_message_updates() {
+        let reply = (0..2000).fold(String::new(), |mut s, i| {
+            use std::fmt::Write as _;
+            let _ = write!(s, "word{i} ");
+            s
+        });
+        let mut h = harness(&[Ok(reply.as_str())], cfg(&["p/a"])).await;
+        h.rt.prompt(None, "hello", None, Vec::new())
+            .await
+            .expect("prompt");
+        let mut frames = Vec::new();
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv())
+                .await
+                .expect("frame in time")
+                .expect("open");
+            let end = f["type"] == "agent_end";
+            frames.push(f);
+            if end {
+                break;
+            }
+        }
+        let updates = frames
+            .iter()
+            .filter(|f| f["type"] == "message_update")
+            .count();
+        assert!(updates > 1000, "streamed in {updates} updates");
+        let plain = crate::rpc::encode_log(&frames, false);
+        let compact = crate::rpc::encode_log(&frames, true);
+        let bytes = |lines: &[String]| lines.iter().map(|l| l.len() + 1).sum::<usize>();
+        let (before, after) = (bytes(&plain), bytes(&compact));
+        eprintln!(
+            "reply {}B, {updates} message_update frames: log {before}B before, {after}B after",
+            reply.len()
+        );
+        // Linear: a fixed envelope per update plus the text, not the whole reply each time.
+        assert!(
+            after < 4 * reply.len() + 400 * updates,
+            "log {after}B for a {}B reply",
+            reply.len()
+        );
+        assert!(after * 50 < before, "{after}B vs {before}B");
+
+        // The hub's expansion (as in `Agent::on_child_line`) restores every frame.
+        let mut hub = crate::rpc::UpdateExpander::default();
+        let expanded: Vec<String> = compact
+            .iter()
+            .map(|line| {
+                let frame: Value = serde_json::from_str(line).expect("json line");
+                match hub.expand(line, &frame) {
+                    crate::rpc::Expansion::Unchanged => line.clone(),
+                    crate::rpc::Expansion::Expanded(full) => full,
+                    crate::rpc::Expansion::Unsynced => panic!("unsynced at {line}"),
+                }
+            })
+            .collect();
+        assert_eq!(expanded.len(), plain.len());
+        for (got, want) in expanded.iter().zip(&plain) {
+            assert_eq!(got, want);
+        }
+        let last: Value = serde_json::from_str(
+            expanded
+                .iter()
+                .rev()
+                .find(|l| l.contains("\"message_update\""))
+                .expect("update"),
+        )
+        .expect("json");
+        assert_eq!(last["message"]["content"][0]["text"], json!(reply));
+    }
+
     /// Read frames until `pred` matches (30 s guard).
     async fn wait_for(rx: &mut UnboundedReceiver<Value>, pred: impl Fn(&Value) -> bool) {
         loop {

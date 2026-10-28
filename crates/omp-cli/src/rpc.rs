@@ -1321,6 +1321,8 @@ struct FrameEncoder {
     version: u8,
     streamed: Vec<Value>,
     chunks: u64,
+    /// `Some` for a detached child (stdout is the agent log): see [`UpdateCompactor`].
+    compact: Option<UpdateCompactor>,
 }
 
 impl FrameEncoder {
@@ -1329,7 +1331,14 @@ impl FrameEncoder {
             version: 1,
             streamed: Vec::new(),
             chunks: 0,
+            compact: None,
         }
+    }
+
+    /// Write `message_update` frames as deltas (detached-log mode).
+    fn compacting(mut self) -> Self {
+        self.compact = Some(UpdateCompactor::default());
+        self
     }
 
     fn fits(json: &str) -> bool {
@@ -1380,6 +1389,8 @@ impl FrameEncoder {
 
     /// Physical JSONL lines (without newlines) for one logical frame.
     fn encode(&mut self, frame: &Value) -> Vec<String> {
+        let compacted = self.compact.as_mut().and_then(|c| c.compact(frame));
+        let frame = compacted.as_ref().unwrap_or(frame);
         let kind = frame.get("type").and_then(Value::as_str);
         let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
         if trace {
@@ -1445,6 +1456,301 @@ impl FrameEncoder {
     }
 }
 
+/// Byte length of the common prefix of `a` and `b`, at a char boundary of both.
+fn common_prefix(a: &str, b: &str) -> usize {
+    let mut p = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    while !(a.is_char_boundary(p) && b.is_char_boundary(p)) {
+        p -= 1;
+    }
+    p
+}
+
+/// Byte length of the common suffix of `a` and `b`, at a char boundary of both.
+fn common_suffix(a: &str, b: &str) -> usize {
+    let mut q = a
+        .bytes()
+        .rev()
+        .zip(b.bytes().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    while !(a.is_char_boundary(a.len() - q) && b.is_char_boundary(b.len() - q)) {
+        q -= 1;
+    }
+    q
+}
+
+/// Detached-log `message_update` compaction. Every `message_update` carries
+/// the whole partial message — twice: `message` and
+/// `assistantMessageEvent.partial` — so a log written verbatim grows
+/// O(reply²) (one real log reached 1.3 GB). In the log, an update whose
+/// serializations differ from the previous update's only by a small middle
+/// part is written with `message` replaced (in place) by
+/// `messageDelta: {n, p, q, s}` — the previous JSON (`n` bytes long) with the
+/// bytes between its first `p` and its last `q` replaced by `s` — and
+/// `assistantMessageEvent.partial` likewise by `partialDelta`. A full frame
+/// (keyframe) goes out for a message's first update and whenever the message
+/// has doubled since the last keyframe, so the log stays O(output) and a
+/// reader joining mid-stream resyncs. Readers rebuild the full frames,
+/// byte for byte, with [`UpdateExpander`].
+#[derive(Default)]
+struct UpdateCompactor {
+    /// Serialized `message` of the previous update of the current message.
+    prev_message: Option<String>,
+    /// Serialized `assistantMessageEvent.partial` of that update.
+    prev_partial: Option<String>,
+    /// Length of the message JSON at the last keyframe.
+    key_len: usize,
+}
+
+/// Field replacing `message` in a delta-encoded `message_update`.
+const MESSAGE_DELTA_KEY: &str = "messageDelta";
+/// Field replacing `assistantMessageEvent.partial` there.
+const PARTIAL_DELTA_KEY: &str = "partialDelta";
+const EVENT_KEY: &str = "assistantMessageEvent";
+
+/// `{n, p, q, s}` turning `prev` into `json`, unless the change is most of `json`.
+fn text_delta(prev: &str, json: &str) -> Option<Value> {
+    let p = common_prefix(prev, json);
+    let q = common_suffix(&prev[p..], &json[p..]);
+    let s = &json[p..json.len() - q];
+    (s.len() * 2 < json.len()).then(|| json!({"n": prev.len(), "p": p, "q": q, "s": s}))
+}
+
+/// Apply a [`text_delta`] to `base`.
+fn apply_text_delta(base: &str, delta: &Value) -> Option<String> {
+    let int = |k: &str| usize::try_from(delta.get(k)?.as_u64()?).ok();
+    let (n, p, q) = (int("n")?, int("p")?, int("q")?);
+    let s = delta.get("s")?.as_str()?;
+    let tail = n.checked_sub(q)?;
+    if base.len() != n || p > tail || !base.is_char_boundary(p) || !base.is_char_boundary(tail) {
+        return None;
+    }
+    let mut out = String::with_capacity(p + s.len() + q);
+    out.push_str(&base[..p]);
+    out.push_str(s);
+    out.push_str(&base[tail..]);
+    Some(out)
+}
+
+/// `obj` with the value under `from` swapped for `value`, renamed `to`
+/// (key order kept).
+fn swap_field(obj: &Map<String, Value>, from: &str, to: &str, value: Value) -> Value {
+    let mut value = Some(value);
+    let mut m = Map::with_capacity(obj.len());
+    for (k, v) in obj {
+        match value.take_if(|_| k == from) {
+            Some(value) => m.insert(to.to_owned(), value),
+            None => m.insert(k.clone(), v.clone()),
+        };
+    }
+    Value::Object(m)
+}
+
+impl UpdateCompactor {
+    /// The delta frame replacing `frame`, or `None` to write `frame` as is.
+    fn compact(&mut self, frame: &Value) -> Option<Value> {
+        match frame.get("type").and_then(Value::as_str) {
+            Some("message_update") => {
+                let (Some(obj), Some(message)) = (frame.as_object(), frame.get("message")) else {
+                    self.prev_message = None;
+                    return None;
+                };
+                let event = frame.get(EVENT_KEY).and_then(Value::as_object);
+                let message_json = message.to_string();
+                let partial_json = event.and_then(|e| e.get("partial")).map(Value::to_string);
+                // A keyframe on doubling lets a reader joining mid-stream resync.
+                let keyframe = message_json.len() >= self.key_len.saturating_mul(2);
+                let message_delta = self
+                    .prev_message
+                    .as_deref()
+                    .filter(|_| !keyframe)
+                    .and_then(|prev| text_delta(prev, &message_json));
+                let partial_delta = match (&partial_json, &self.prev_partial) {
+                    (None, _) => Some(None),
+                    (Some(json), Some(prev)) => text_delta(prev, json).map(Some),
+                    (Some(_), None) => None,
+                };
+                let out = message_delta.zip(partial_delta).map(|(md, pd)| {
+                    let mut out = swap_field(obj, "message", MESSAGE_DELTA_KEY, md);
+                    if let (Some(pd), Some(event)) = (pd, event) {
+                        out[EVENT_KEY] = swap_field(event, "partial", PARTIAL_DELTA_KEY, pd);
+                    }
+                    out
+                });
+                if out.is_none() {
+                    self.key_len = message_json.len();
+                }
+                self.prev_message = Some(message_json);
+                self.prev_partial = partial_json;
+                out
+            }
+            Some("message_start" | "message_end" | "agent_start" | "agent_end") => {
+                self.prev_message = None;
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+/// What the expander last saw of the current partial message.
+enum UpdateBase {
+    /// A full `message_update` line; its parts are extracted on demand.
+    Line(String),
+    /// The exact serialized `message` and `assistantMessageEvent.partial`.
+    Parts {
+        message: String,
+        partial: Option<String>,
+    },
+}
+
+/// What [`UpdateExpander::expand`] did with a log frame.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Expansion {
+    /// Pass the line on as is.
+    Unchanged,
+    /// A delta `message_update` rebuilt into the full frame line.
+    Expanded(String),
+    /// A delta whose base is unknown (reader joined mid-stream or lost
+    /// sync): drop it; the next keyframe or `message_end` resyncs.
+    Unsynced,
+}
+
+/// Reader side of [`UpdateCompactor`]: rebuilds full `message_update` lines
+/// (byte-identical to what a non-compacting child writes) from a detached
+/// agent log. Feed it every frame of the log in order.
+#[derive(Default)]
+pub struct UpdateExpander {
+    base: Option<UpdateBase>,
+}
+
+/// Serialize `obj` compactly, writing raw JSON `raw` as `to` in place of `from`.
+fn splice_object(out: &mut String, obj: &Map<String, Value>, from: &str, to: &str, raw: &str) {
+    out.push('{');
+    for (i, (k, v)) in obj.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        if k == from {
+            out.push_str(&Value::String(to.to_owned()).to_string());
+            out.push(':');
+            out.push_str(raw);
+        } else {
+            out.push_str(&Value::String(k.clone()).to_string());
+            out.push(':');
+            out.push_str(&v.to_string());
+        }
+    }
+    out.push('}');
+}
+
+impl UpdateExpander {
+    /// `line` is the frame's JSON text (after `rpc_chunk` reassembly), `frame` its parse.
+    pub fn expand(&mut self, line: &str, frame: &Value) -> Expansion {
+        match frame.get("type").and_then(Value::as_str) {
+            Some("message_update") => {
+                let Some(delta) = frame.get(MESSAGE_DELTA_KEY) else {
+                    self.base = frame
+                        .get("message")
+                        .map(|_| UpdateBase::Line(line.to_owned()));
+                    return Expansion::Unchanged;
+                };
+                let partial_delta = frame.get(EVENT_KEY).and_then(|e| e.get(PARTIAL_DELTA_KEY));
+                let rebuilt = self.base_parts().and_then(|(message, partial)| {
+                    let message = apply_text_delta(message, delta)?;
+                    let partial = match partial_delta {
+                        Some(d) => Some(apply_text_delta(partial?, d)?),
+                        None => None,
+                    };
+                    Some((message, partial))
+                });
+                let (Some((message, partial)), Some(obj)) = (rebuilt, frame.as_object()) else {
+                    self.base = None;
+                    return Expansion::Unsynced;
+                };
+                let event = match (&partial, obj.get(EVENT_KEY).and_then(Value::as_object)) {
+                    (Some(partial), Some(event)) => {
+                        let mut s = String::with_capacity(partial.len() + 128);
+                        splice_object(&mut s, event, PARTIAL_DELTA_KEY, "partial", partial);
+                        Some(s)
+                    }
+                    _ => None,
+                };
+                let mut out = String::with_capacity(
+                    message.len() + event.as_ref().map_or(0, String::len) + 64,
+                );
+                out.push('{');
+                for (i, (k, v)) in obj.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    if k == MESSAGE_DELTA_KEY {
+                        out.push_str("\"message\":");
+                        out.push_str(&message);
+                        continue;
+                    }
+                    out.push_str(&Value::String(k.clone()).to_string());
+                    out.push(':');
+                    match (&event, k == EVENT_KEY) {
+                        (Some(event), true) => out.push_str(event),
+                        _ => out.push_str(&v.to_string()),
+                    }
+                }
+                out.push('}');
+                self.base = Some(UpdateBase::Parts { message, partial });
+                Expansion::Expanded(out)
+            }
+            Some("message_start" | "message_end" | "agent_start" | "agent_end") => {
+                self.base = None;
+                Expansion::Unchanged
+            }
+            _ => Expansion::Unchanged,
+        }
+    }
+
+    /// The exact serialized base parts, extracted from a full line on first use.
+    fn base_parts(&mut self) -> Option<(&str, Option<&str>)> {
+        #[derive(serde::Deserialize)]
+        struct Event<'a> {
+            #[serde(borrow, default)]
+            partial: Option<&'a serde_json::value::RawValue>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Full<'a> {
+            #[serde(borrow)]
+            message: &'a serde_json::value::RawValue,
+            #[serde(borrow, default, rename = "assistantMessageEvent")]
+            event: Option<Event<'a>>,
+        }
+        if let Some(UpdateBase::Line(line)) = &self.base {
+            let parts = serde_json::from_str::<Full<'_>>(line)
+                .ok()
+                .map(|f| UpdateBase::Parts {
+                    message: f.message.get().to_owned(),
+                    partial: f.event.and_then(|e| e.partial).map(|p| p.get().to_owned()),
+                });
+            self.base = parts;
+        }
+        match &self.base {
+            Some(UpdateBase::Parts { message, partial }) => Some((message, partial.as_deref())),
+            _ => None,
+        }
+    }
+}
+
+/// Test hook: the physical log lines a child writes for `frames` after the
+/// hub negotiated protocol v2, with (`compact`, detached mode) or without
+/// `message_update` compaction.
+#[cfg(test)]
+pub(crate) fn encode_log(frames: &[Value], compact: bool) -> Vec<String> {
+    let mut encoder = FrameEncoder::new();
+    encoder.version = 2;
+    if compact {
+        encoder = encoder.compacting();
+    }
+    frames.iter().flat_map(|f| encoder.encode(f)).collect()
+}
+
 /// Hook run once the runtime exists, before the `ready` frame (extension host start-up).
 pub type OnStart = Box<
     dyn FnOnce(Arc<Runtime>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
@@ -1497,9 +1803,14 @@ pub async fn run_with(
             rt.agent.set_tools(tools).await;
         }
     }
+    // A detached child's stdout is the agent log the hub tails and replays.
+    let compact_log = detached.is_some();
     let writer = tokio::spawn(async move {
         let mut out = tokio::io::stdout();
         let mut encoder = FrameEncoder::new();
+        if compact_log {
+            encoder = encoder.compacting();
+        }
         while let Some(v) = rx.recv().await {
             if v.get(FLUSH_MARKER).is_some() {
                 break;
