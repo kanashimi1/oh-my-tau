@@ -201,6 +201,24 @@
           "markdownDescription": "Enables the open_window command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_capture_shortcut command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-capture-shortcut",
+          "markdownDescription": "Enables the set_capture_shortcut command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_devtools_port command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-devtools-port",
+          "markdownDescription": "Enables the set_devtools_port command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tau_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tau-settings",
+          "markdownDescription": "Enables the tau_settings command without any pre-configured scope."
+        },
+        {
           "description": "Denies the capture_done command without any pre-configured scope.",
           "type": "string",
           "const": "deny-capture-done",
@@ -223,6 +241,24 @@
           "type": "string",
           "const": "deny-open-window",
           "markdownDescription": "Denies the open_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_capture_shortcut command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-capture-shortcut",
+          "markdownDescription": "Denies the set_capture_shortcut command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_devtools_port command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-devtools-port",
+          "markdownDescription": "Denies the set_devtools_port command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tau_settings command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tau-settings",
+          "markdownDescription": "Denies the tau_settings command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

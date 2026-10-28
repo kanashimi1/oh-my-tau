@@ -408,3 +408,11 @@ html.has-wall .empty-state { text-shadow: 0 1px 12px var(--bg); }
 .ap-slider { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; font-size: 12.5px; color: var(--fg-muted); }
 .ap-slider input { accent-color: var(--accent); width: 100%; }
 .ap-val { font: 11.5px var(--mono); min-width: 38px; text-align: right; }
+
+/* Appearance → Desktop (Tau) */
+.ap-desk { display: flex; flex-direction: column; gap: 8px; }
+.ap-desk-row { display: grid; grid-template-columns: 260px auto 1fr; gap: 10px; align-items: center; font-size: 12.5px; color: var(--fg-muted); }
+.ap-key { font: 12px var(--mono); min-width: 120px; }
+.ap-key.rec { border-color: var(--accent); color: var(--accent); }
+.ap-port { width: 120px; background: var(--bg-inset); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 4px 8px; font: 12px var(--mono); }
+.ap-desk-status.err { color: var(--warn); }

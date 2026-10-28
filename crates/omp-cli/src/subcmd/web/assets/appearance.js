@@ -186,6 +186,7 @@
       el("div.ap-title", { text: "Theme" }), themeGrid,
       el("div.ap-title", null, el("span", { text: "Wallpaper" }), el("span.faint.small", { text: "drop images here to add them" })), wallGrid,
       sliders, fileInput);
+    if (OMP.desktop && OMP.desktop.available) body.append(desktopSection());
     renderAll();
     const m = OMP.dialogs.modal({
       title: "Appearance",
@@ -205,6 +206,72 @@
       renderAll();
     });
     return m.promise;
+  }
+
+  // ── Tau desktop settings: capture shortcut, DevTools port ──────────────
+  /** "Ctrl+Alt+S" from a keydown, or null while only modifiers are held. */
+  function comboOf(e) {
+    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return null;
+    const key = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3) : /^Digit\d$/.test(e.code) ? e.code.slice(5) : e.code;
+    const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Super"].filter(Boolean);
+    return mods.length ? [...mods, key].join("+") : null;
+  }
+
+  function desktopSection() {
+    const status = el("span.ap-desk-status.small");
+    const keyBtn = el("button.chip.ap-key", { text: "…", title: "Click, then press the new shortcut (Esc cancels)" });
+    const portIn = el("input.ap-port", { type: "number", min: "1024", max: "65535", placeholder: "off" });
+    const portNote = el("span.faint.small");
+    let current = "";
+
+    async function load() {
+      const s = await OMP.desktop.settings();
+      current = s.captureShortcut;
+      keyBtn.textContent = current;
+      status.textContent = s.captureShortcutError ? "⚠ " + s.captureShortcutError : "active";
+      status.classList.toggle("err", !!s.captureShortcutError);
+      portIn.value = s.devtoolsPort ?? "";
+      portNote.textContent = s.devtoolsActive ? `running on 127.0.0.1:${s.devtoolsActive}` : "off in this run";
+    }
+
+    keyBtn.addEventListener("click", () => {
+      keyBtn.textContent = "press keys…";
+      keyBtn.classList.add("rec");
+      const onKey = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === "Escape") { done(); keyBtn.textContent = current; return; }
+        const combo = comboOf(e);
+        if (!combo) return;
+        done();
+        try {
+          await OMP.desktop.setCaptureShortcut(combo);
+          OMP.toast(`Capture shortcut: ${combo}`, "success");
+        } catch (err) {
+          OMP.toast(String(err), "error", 7000);
+        }
+        load();
+      };
+      const done = () => { keyBtn.classList.remove("rec"); window.removeEventListener("keydown", onKey, true); };
+      window.addEventListener("keydown", onKey, true);
+    });
+
+    portIn.addEventListener("change", async () => {
+      const v = portIn.value.trim();
+      try {
+        await OMP.desktop.setDevtoolsPort(v ? Number(v) : null);
+        OMP.toast(v ? `DevTools port ${v}: restart Tau (tray → Quit) to apply` : "DevTools port off after restart", "info", 6000);
+      } catch (err) {
+        OMP.toast(String(err), "error");
+      }
+      load();
+    });
+
+    load().catch((e) => { status.textContent = "⚠ " + e; });
+    return el("div.ap-desk", null,
+      el("div.ap-title", { text: "Desktop (Tau)" }),
+      el("label.ap-desk-row", null, el("span", { text: "Screen capture shortcut" }), keyBtn, status),
+      el("label.ap-desk-row", null, el("span", { text: "DevTools port (automation, 127.0.0.1)" }), portIn, portNote));
   }
 
   apply();

@@ -53,6 +53,20 @@
     return webNotify(title, body, agent, key);
   };
 
+  // ── desktop settings (Tau only) ───────────────────────────────────────
+  /** {captureShortcut, captureShortcutError, devtoolsPort, devtoolsActive} or null outside Tau. */
+  desktop.settings = async function () {
+    return inTauri() ? TAURI.core.invoke("tau_settings") : null;
+  };
+  /** Re-register the capture shortcut ("Ctrl+Alt+S"); rejects when taken. */
+  desktop.setCaptureShortcut = function (shortcut) {
+    return TAURI.core.invoke("set_capture_shortcut", { shortcut });
+  };
+  /** DevTools port (null = off); takes effect after restarting Tau. */
+  desktop.setDevtoolsPort = function (port) {
+    return TAURI.core.invoke("set_devtools_port", { port });
+  };
+
   // ── capture (preview pins) ─────────────────────────────────────────────
   /** Screen pixels of a viewport rect as a PNG data URL: native capture in
    *  the desktop app, tab capture (asks once per pin) in a browser. */
@@ -197,6 +211,7 @@
   if (inTauri()) {
     window.addEventListener("keydown", (e) => {
       const ctrlR = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === "KeyR";
+      if (document.querySelector(".ap-key.rec")) return; // recording a shortcut
       if (e.key === "F5" || ctrlR) { e.preventDefault(); location.reload(); }
     }, true);
   }

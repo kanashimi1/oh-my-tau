@@ -7,6 +7,9 @@ fn main() {
             "notify",
             "capture_done",
             "capture_rect",
+            "tau_settings",
+            "set_capture_shortcut",
+            "set_devtools_port",
         ]),
     ))
     .expect("tauri build");

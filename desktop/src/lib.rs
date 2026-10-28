@@ -4,12 +4,13 @@
 //   * ensure the local omt service (http://127.0.0.1:7467) is up, starting it
 //     via WSL if needed, then load the UI in the main window
 //   * tray icon (Show/Hide, New window, Quit); closing a window hides to tray
-//   * global Ctrl+Shift+S shortcut: captures the monitor under the cursor and
+//   * global capture shortcut (default Ctrl+Shift+S, settable): captures the monitor under the cursor and
 //     lets the user drag a region in the window; the crop lands in that
 //     window's composer
 //   * commands used by desktop-bridge.js: open_window(hash), notify(title,
 //     body, agent, key) — Windows toast, click opens that session —
-//     capture_rect(x, y, w, h) — screen pixels of a page region (preview pins)
+//     capture_rect(x, y, w, h) — screen pixels of a page region (preview pins),
+//     tau_settings / set_capture_shortcut / set_devtools_port (settings.rs)
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -34,8 +35,77 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 static WINDOW_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
+mod settings;
+
 struct AppState {
     quitting: AtomicBool,
+    /// Capture shortcut currently registered (None: registration failed).
+    shortcut: std::sync::Mutex<Option<Shortcut>>,
+    /// Why the configured shortcut could not be registered (taken by another app…).
+    shortcut_error: std::sync::Mutex<Option<String>>,
+    /// DevTools port this process started with (browser args are fixed at startup).
+    devtools_port: Option<u16>,
+}
+
+/// Current desktop settings plus live state, for the web UI's Desktop section.
+#[tauri::command]
+async fn tau_settings(app: AppHandle) -> serde_json::Value {
+    let s = settings::load();
+    let state = app.state::<AppState>();
+    let error = state
+        .shortcut_error
+        .lock()
+        .map(|e| e.clone())
+        .unwrap_or(None);
+    serde_json::json!({
+        "captureShortcut": s.capture_shortcut,
+        "captureShortcutError": error,
+        "devtoolsPort": s.devtools_port,
+        "devtoolsActive": state.devtools_port,
+    })
+}
+
+/// Re-register the capture shortcut live; on failure the previous one stays.
+#[tauri::command]
+async fn set_capture_shortcut(app: AppHandle, shortcut: String) -> Result<String, String> {
+    let wanted: Shortcut = shortcut
+        .trim()
+        .parse()
+        .map_err(|e| format!("\"{shortcut}\": {e}"))?;
+    let state = app.state::<AppState>();
+    let old = state.shortcut.lock().map_err(|e| e.to_string())?.take();
+    if let Some(old) = old {
+        let _ = app.global_shortcut().unregister(old);
+    }
+    match register_capture(&app, wanted) {
+        Ok(()) => {
+            *state.shortcut.lock().map_err(|e| e.to_string())? = Some(wanted);
+            *state.shortcut_error.lock().map_err(|e| e.to_string())? = None;
+            let mut s = settings::load();
+            s.capture_shortcut = shortcut.trim().to_string();
+            settings::save(&s)?;
+            Ok(s.capture_shortcut)
+        }
+        Err(e) => {
+            if let Some(old) = old {
+                if register_capture(&app, old).is_ok() {
+                    *state.shortcut.lock().map_err(|e| e.to_string())? = Some(old);
+                }
+            }
+            Err(format!("{} is taken or invalid: {e}", shortcut.trim()))
+        }
+    }
+}
+
+/// Store the DevTools port (None turns it off); applies on the next start.
+#[tauri::command]
+async fn set_devtools_port(port: Option<u16>) -> Result<(), String> {
+    if port.is_some_and(|p| p < 1024) {
+        return Err("port must be 1024–65535".into());
+    }
+    let mut s = settings::load();
+    s.devtools_port = port;
+    settings::save(&s)
 }
 
 // Both commands are async: a sync command runs on the main thread, and
@@ -265,7 +335,10 @@ pub fn run() {
             open_window,
             notify,
             capture_done,
-            capture_rect
+            capture_rect,
+            tau_settings,
+            set_capture_shortcut,
+            set_devtools_port
         ])
         // Composer dictation: windows only ever show the local omt service,
         // so the microphone is granted without a WebView2 prompt per launch.
@@ -274,8 +347,12 @@ pub fn run() {
             _ => tauri::webview::PermissionResponse::Default,
         })
         .setup(|app| {
+            let prefs = settings::load();
             app.manage(AppState {
                 quitting: AtomicBool::new(false),
+                shortcut: std::sync::Mutex::new(None),
+                shortcut_error: std::sync::Mutex::new(None),
+                devtools_port: settings::devtools_port(&prefs),
             });
             register_toast_app_id();
             setup_tray(app)?;
@@ -322,7 +399,9 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = open_new_window(app, "");
             }
             "quit" => {
-                app.state::<AppState>().quitting.store(true, Ordering::Relaxed);
+                app.state::<AppState>()
+                    .quitting
+                    .store(true, Ordering::Relaxed);
                 app.exit(0);
             }
             _ => {}
@@ -349,21 +428,49 @@ fn toggle_windows(app: &AppHandle) {
 }
 
 fn setup_global_shortcut(app: &tauri::App) -> tauri::Result<()> {
-    let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS);
+    let configured = settings::load().capture_shortcut;
+    let shortcut = configured.parse::<Shortcut>().unwrap_or_else(|e| {
+        log_line(&format!(
+            "capture shortcut {configured:?} invalid ({e}), using default"
+        ));
+        Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyS)
+    });
+    let state = app.state::<AppState>();
+    match register_capture(app.handle(), shortcut) {
+        Ok(()) => {
+            if let Ok(mut s) = state.shortcut.lock() {
+                *s = Some(shortcut);
+            }
+        }
+        Err(e) => {
+            log_line(&format!("register {configured} failed: {e}"));
+            if let Ok(mut err) = state.shortcut_error.lock() {
+                *err = Some(format!("{configured} is taken by another app: {e}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn register_capture(app: &AppHandle, shortcut: Shortcut) -> Result<(), String> {
     app.global_shortcut()
         .on_shortcut(shortcut, |app, _sc, event| {
             if event.state() == ShortcutState::Pressed {
                 trigger_screenshot(app);
             }
         })
-        .unwrap_or_else(|e| log_line(&format!("register Ctrl+Shift+S failed: {e}")));
-    Ok(())
+        .map_err(|e| e.to_string())
 }
 
 fn setup_main_window(app: &tauri::App) -> tauri::Result<()> {
     let handle = app.handle().clone();
 
+    let port = app.state::<AppState>().devtools_port;
+    if let Some(port) = port {
+        log_line(&format!("devtools: remote debugging on 127.0.0.1:{port}"));
+    }
     let _win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+        .additional_browser_args(&settings::browser_args(port))
         .title("Tau")
         .inner_size(1280.0, 820.0)
         .min_inner_size(760.0, 540.0)
@@ -402,7 +509,9 @@ fn open_new_window(app: &AppHandle, hash: &str) -> tauri::Result<()> {
         url.push_str(h);
     }
     let parsed = Url::parse(&url).map_err(|e| tauri::Error::Anyhow(e.into()))?;
+    let port = app.state::<AppState>().devtools_port;
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
+        .additional_browser_args(&settings::browser_args(port))
         .title("Tau")
         .inner_size(1280.0, 820.0)
         .min_inner_size(760.0, 540.0)
@@ -415,14 +524,14 @@ fn open_new_window(app: &AppHandle, hash: &str) -> tauri::Result<()> {
 // Service lifecycle
 
 fn probe_service() -> bool {
-    let Ok(mut stream) = TcpStream::connect_timeout(
-        &SERVICE_HOST.parse().expect("host"),
-        Duration::from_secs(2),
-    ) else {
+    let Ok(mut stream) =
+        TcpStream::connect_timeout(&SERVICE_HOST.parse().expect("host"), Duration::from_secs(2))
+    else {
         return false;
     };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let req = format!("GET /api/info HTTP/1.1\r\nHost: {SERVICE_HOST}\r\nConnection: close\r\n\r\n");
+    let req =
+        format!("GET /api/info HTTP/1.1\r\nHost: {SERVICE_HOST}\r\nConnection: close\r\n\r\n");
     if stream.write_all(req.as_bytes()).is_err() {
         return false;
     }
@@ -474,7 +583,7 @@ fn wait_for_service() -> bool {
 // calls `capture_done` to restore the window.
 
 fn trigger_screenshot(app: &AppHandle) {
-    log_line("hotkey: Ctrl+Shift+S");
+    log_line("hotkey: capture");
     let app = app.clone();
     std::thread::spawn(move || run_capture_flow(&app));
 }
@@ -487,13 +596,21 @@ fn run_capture_flow(app: &AppHandle) {
         .cloned()
         .or_else(|| app.get_webview_window("main"));
     let Some(target) = target else { return };
-    let visible: Vec<_> = windows.iter().filter(|w| w.is_visible().unwrap_or(false)).cloned().collect();
+    let visible: Vec<_> = windows
+        .iter()
+        .filter(|w| w.is_visible().unwrap_or(false))
+        .cloned()
+        .collect();
     for w in &visible {
         let _ = w.hide();
     }
     std::thread::sleep(Duration::from_millis(250)); // let DWM drop our windows from the frame
     let shot = capture_monitor_under_cursor();
-    log_line(&format!("capture: {}", shot.as_ref().map_or("failed".to_string(), |p| format!("{} bytes png", p.len()))));
+    log_line(&format!(
+        "capture: {}",
+        shot.as_ref()
+            .map_or("failed".to_string(), |p| format!("{} bytes png", p.len()))
+    ));
     for w in &visible {
         let _ = w.show();
     }
@@ -521,7 +638,10 @@ fn capture_monitor_under_cursor() -> Option<Vec<u8>> {
         .iter()
         .find(|m| {
             let (x, y) = (m.x().unwrap_or(0), m.y().unwrap_or(0));
-            let (w, h) = (m.width().unwrap_or(0) as i32, m.height().unwrap_or(0) as i32);
+            let (w, h) = (
+                m.width().unwrap_or(0) as i32,
+                m.height().unwrap_or(0) as i32,
+            );
             cx >= x && cx < x + w && cy >= y && cy < y + h
         })
         .or_else(|| monitors.iter().find(|m| m.is_primary().unwrap_or(false)))
@@ -534,7 +654,9 @@ fn capture_monitor_under_cursor() -> Option<Vec<u8>> {
         }
     };
     let mut out = std::io::Cursor::new(Vec::new());
-    image::DynamicImage::ImageRgba8(img).write_to(&mut out, image::ImageFormat::Png).ok()?;
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .ok()?;
     Some(out.into_inner())
 }
 
@@ -558,8 +680,14 @@ async fn capture_done(window: tauri::WebviewWindow) {
 /// Append one line to `%TEMP%\\tau.log` (a GUI-subsystem exe has no stderr).
 fn log_line(msg: &str) {
     let path = std::env::temp_dir().join("tau.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         let _ = writeln!(f, "{secs} {msg}");
     }
 }
