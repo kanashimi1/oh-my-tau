@@ -118,6 +118,8 @@ pub struct Agent {
     notices: Mutex<Vec<Arc<str>>>,
     /// Partially received protocol-v2 `rpc_chunk` sequences by chunk id.
     chunks: Mutex<crate::rpc::ChunkAssembler>,
+    /// Rebuilds the full `message_update` frames the child logs as deltas.
+    updates: Mutex<crate::rpc::UpdateExpander>,
     alive: AtomicBool,
 }
 
@@ -199,6 +201,7 @@ impl Agent {
             stderr: Mutex::new(VecDeque::new()),
             notices: Mutex::new(Vec::new()),
             chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
+            updates: Mutex::new(crate::rpc::UpdateExpander::default()),
             alive: AtomicBool::new(true),
         });
 
@@ -245,6 +248,7 @@ impl Agent {
             stderr: Mutex::new(VecDeque::new()),
             notices: Mutex::new(Vec::new()),
             chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
+            updates: Mutex::new(crate::rpc::UpdateExpander::default()),
             alive: AtomicBool::new(true),
         });
         // Replay from the start to rebuild state, then tail live.
@@ -467,6 +471,12 @@ impl Agent {
             let _ = self.tx.send(Arc::from(text));
             return;
         };
+        let expanded = match lock(&self.updates).expand(text, &frame) {
+            crate::rpc::Expansion::Unchanged => None,
+            crate::rpc::Expansion::Expanded(full) => Some(full),
+            crate::rpc::Expansion::Unsynced => return,
+        };
+        let text = expanded.as_deref().unwrap_or(text);
         let kind = frame.get("type").and_then(Value::as_str).unwrap_or("");
         let mut refresh = false;
         match kind {
@@ -563,6 +573,108 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bridge with no child: just enough to drive `feed_log_line`.
+    fn bare_agent() -> Agent {
+        Agent {
+            id: "t".into(),
+            cwd: PathBuf::new(),
+            started_ms: 0,
+            pid: 0,
+            pgid: 0,
+            adopted: false,
+            approval_mode: None,
+            control: tokio::sync::Mutex::new(None),
+            child: tokio::sync::Mutex::new(None),
+            tx: broadcast::channel(8192).0,
+            pending_ui: Mutex::new(Vec::new()),
+            summary: Mutex::new(Summary::default()),
+            stderr: Mutex::new(VecDeque::new()),
+            notices: Mutex::new(Vec::new()),
+            chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
+            updates: Mutex::new(crate::rpc::UpdateExpander::default()),
+            alive: AtomicBool::new(true),
+        }
+    }
+
+    /// One streamed assistant reply, as the runtime frames it.
+    fn stream(reply: &str) -> Vec<Value> {
+        let msg = |text: &str| {
+            json!({"role": "assistant", "content": [{"type": "text", "text": text}],
+                   "provider": "p", "model": "m", "usage": {"input": 1, "output": 2},
+                   "stopReason": "stop", "timestamp": 1})
+        };
+        let mut frames = vec![
+            json!({"type": "agent_start"}),
+            json!({"type": "message_start", "message": msg("")}),
+        ];
+        let mut text = String::new();
+        for chunk in reply.split_inclusive(' ') {
+            text.push_str(chunk);
+            frames.push(json!({"type": "message_update", "message": msg(&text),
+                "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": chunk}}));
+        }
+        frames.push(json!({"type": "message_end", "message": msg(&text)}));
+        frames.push(json!({"type": "agent_end", "messages": [msg(&text)]}));
+        frames
+    }
+
+    /// Feed `lines` to a fresh bridge; collect what its websocket clients get.
+    async fn broadcast_of(lines: &[String]) -> Vec<String> {
+        let agent = bare_agent();
+        let mut rx = agent.subscribe();
+        let mut out = Vec::new();
+        for line in lines {
+            agent.feed_log_line(line).await;
+            while let Ok(frame) = rx.try_recv() {
+                out.push(frame.to_string());
+            }
+        }
+        out
+    }
+
+    /// The child logs `message_update` as deltas; websocket clients still get
+    /// the frames a verbatim log gives them (full partial message on every
+    /// update, identical final text), from the start or joining mid-stream.
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    async fn websocket_frames_survive_compact_log() {
+        let reply: String = "lorem ipsum dolor sit amet ü ".repeat(300);
+        let frames = stream(&reply);
+        let plain = crate::rpc::encode_log(&frames, false);
+        let compact = crate::rpc::encode_log(&frames, true);
+        let bytes = |l: &[String]| l.iter().map(|l| l.len() + 1).sum::<usize>();
+        assert!(bytes(&compact) * 20 < bytes(&plain));
+        assert!(compact.iter().any(|l| l.contains("\"messageDelta\"")));
+        assert_eq!(broadcast_of(&compact).await, broadcast_of(&plain).await);
+
+        // Joining mid-stream: deltas without a base are held back; the next
+        // keyframe carries the full partial message, and every update sent
+        // matches the verbatim frame.
+        let mid = compact.len() / 3;
+        let got = broadcast_of(&compact[mid..]).await;
+        let want = broadcast_of(&plain[mid..]).await;
+        let updates: Vec<&String> = got
+            .iter()
+            .filter(|l| l.contains("\"message_update\""))
+            .collect();
+        assert!(!updates.is_empty());
+        for update in &updates {
+            assert!(want.contains(update), "not a verbatim frame: {update}");
+        }
+        let last = |l: &[String]| -> Value {
+            serde_json::from_str(
+                l.iter()
+                    .rev()
+                    .find(|l| l.contains("\"message_update\""))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(last(&got), last(&want));
+        assert_eq!(last(&got)["message"]["content"][0]["text"], json!(reply));
+        assert_eq!(got.last(), want.last());
+    }
 
     /// `needs_input` follows the pending-dialog queue: any unanswered dialog
     /// sets it, resolving the last one clears it.

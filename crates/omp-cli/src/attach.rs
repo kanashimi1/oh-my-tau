@@ -371,6 +371,18 @@ fn add_desktop(commands: &mut Value) {
 fn start_tail(conn: Arc<Conn>, mut file: tokio::fs::File, socket: PathBuf) {
     tokio::spawn(async move {
         let mut chunks = crate::rpc::ChunkAssembler::default();
+        let mut updates = crate::rpc::UpdateExpander::default();
+        // The log holds `message_update` deltas; hand the TUI full frames.
+        let frames = Arc::clone(&conn);
+        let mut deliver = move |text: &str, frame: Value| match updates.expand(text, &frame) {
+            crate::rpc::Expansion::Unchanged => frames.on_frame(frame),
+            crate::rpc::Expansion::Expanded(full) => {
+                if let Ok(frame) = serde_json::from_str::<Value>(&full) {
+                    frames.on_frame(frame);
+                }
+            }
+            crate::rpc::Expansion::Unsynced => {}
+        };
         let mut carry: Vec<u8> = Vec::new();
         let mut buf = vec![0u8; 64 * 1024];
         let mut idle_ticks = 0u32;
@@ -396,17 +408,20 @@ fn start_tail(conn: Arc<Conn>, mut file: tokio::fs::File, socket: PathBuf) {
                             continue;
                         }
                         let line = std::mem::take(&mut carry);
-                        let Ok(frame) = serde_json::from_slice::<Value>(&line) else {
+                        let Ok(line) = std::str::from_utf8(&line) else {
+                            continue;
+                        };
+                        let Ok(frame) = serde_json::from_str::<Value>(line) else {
                             continue;
                         };
                         if frame["type"] == "rpc_chunk" {
                             if let Some(text) = chunks.push(&frame) {
                                 if let Ok(frame) = serde_json::from_str::<Value>(&text) {
-                                    conn.on_frame(frame);
+                                    deliver(&text, frame);
                                 }
                             }
                         } else if frame.is_object() {
-                            conn.on_frame(frame);
+                            deliver(line, frame);
                         }
                     }
                 }
