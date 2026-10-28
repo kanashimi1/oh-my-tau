@@ -192,5 +192,13 @@
       }).catch(() => { /* noop */ });
     } catch { /* noop */ }
   }
+  // The desktop shell has no browser reload keys; F5 / Ctrl+R reload the
+  // page so a restarted omt service's new UI shows up without restarting Tau.
+  if (inTauri()) {
+    window.addEventListener("keydown", (e) => {
+      const ctrlR = (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.code === "KeyR";
+      if (e.key === "F5" || ctrlR) { e.preventDefault(); location.reload(); }
+    }, true);
+  }
   OMP.desktop && (OMP.desktop._regionSelect = regionSelect); // test hook
 })(window.OMP);
