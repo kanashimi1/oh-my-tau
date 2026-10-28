@@ -15,6 +15,7 @@
     pdf: ["pdf"],
     office: ["ppt", "pptx", "pps", "ppsx", "odp", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods"],
     markdown: ["md", "markdown"],
+    model: ["bbmodel", "glb", "gltf"],
     text: ["txt", "log", "csv", "tsv", "json", "py", "rs", "js", "mjs", "ts", "tsx", "jsx", "css", "toml", "yaml", "yml", "sh", "xml", "ini", "cfg", "c", "h", "cpp", "go", "java", "lua", "sql"],
   };
   const extOf = (p) => (String(p).match(/\.([A-Za-z0-9]+)$/) || [])[1]?.toLowerCase() || "";
@@ -89,6 +90,8 @@
 
   // ── renderers ──────────────────────────────────────────────────────────
   function renderBody(a) {
+    stopLive();
+    root.classList.remove("wide");
     const body = root.querySelector("#art-body");
     body.replaceChildren();
     const actions = root.querySelector("#art-actions");
@@ -167,61 +170,170 @@
   }
 
   // ── files on the agent host ────────────────────────────────────────────
+  // `live` is the open file view: polled for changes (live preview, keeps
+  // scroll / playback time / 3D camera) and asked for a still for pins.
+  let live = null;
+  function stopLive() {
+    if (!live) return;
+    clearInterval(live.timer);
+    window.removeEventListener("message", live.onMessage);
+    if (live.viewer) live.viewer.dispose();
+    live = null;
+  }
+
   function renderFile(body, actions, a) {
+    stopLive();
     const kind = fileKind(a.path);
-    let mount = null;
-    const draw = async () => {
-      body.replaceChildren(el("p.muted.art-loading", { text: "Loading…" }));
-      let info;
-      try {
-        info = await OMP.api("/api/preview/info?path=" + encodeURIComponent(a.path));
-      } catch (e) {
-        body.replaceChildren(el("p.art-error", { text: e.message }));
+    const L = (live = { a, kind, mtime: 0, viewer: null, scroll: null, timer: 0, busy: false, on: true });
+    const url = (p, extra = "") => previewUrl(p) + "?v=" + Date.now() + extra;
+    const info = () => OMP.api("/api/preview/info?path=" + encodeURIComponent(a.path));
+    // Embedded HTML reports its scroll position; restore it after a reload.
+    L.onMessage = (e) => {
+      const frame = body.querySelector("iframe");
+      if (!frame || e.source !== frame.contentWindow || !e.data) return;
+      if (e.data.tauScroll) L.scroll = e.data.tauScroll;
+      if (e.data.tauLoaded && L.scroll) frame.contentWindow.postMessage({ tauScrollTo: L.scroll }, "*");
+    };
+    window.addEventListener("message", L.onMessage);
+
+    async function draw(reload) {
+      if (live !== L) return;
+      let i;
+      try { i = await info(); } catch (e) { body.replaceChildren(el("p.art-error", { text: e.message })); return; }
+      a.hostPath = i.path;
+      L.mtime = i.mtimeMs;
+      const cur = body.firstElementChild;
+      if (kind === "model") {
+        if (reload && L.viewer) return L.viewer.reload(url(i.path)).catch((e) => OMP.toast("3D: " + e.message, "error"));
+        body.replaceChildren(el("p.muted.art-loading", { text: "Loading 3D…" }));
+        try {
+          const V = await import("/assets/viewer3d.js");
+          const host = el("div.art-3d");
+          body.replaceChildren(host);
+          const viewer = await V.mount(host, { url: url(i.path), format: extOf(i.path) === "bbmodel" ? "bbmodel" : "gltf" });
+          if (live === L) L.viewer = viewer; else viewer.dispose();
+        } catch (e) {
+          if (live === L) body.replaceChildren(el("p.art-error", { text: "3D preview: " + e.message }));
+        }
         return;
       }
-      a.hostPath = info.path;
-      const url = previewUrl(info.path) + "?v=" + Date.now();
       if (kind === "html" || kind === "pdf") {
-        mount = el("iframe.art-frame", { src: url, title: a.title || "preview" });
-        if (kind === "html") mount.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+        if (reload && cur && cur.tagName === "IFRAME") { cur.src = url(i.path, kind === "html" ? "&embed=1" : ""); return; }
+        const frame = el("iframe.art-frame", { src: url(i.path, kind === "html" ? "&embed=1" : ""), title: a.title || "preview" });
+        if (kind === "html") frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+        body.replaceChildren(frame);
       } else if (kind === "image") {
-        mount = el("img.art-img", { src: url, alt: a.title || "" });
-      } else if (kind === "video") {
-        mount = el("video.art-media", { src: url, controls: true, autoplay: false, preload: "metadata" });
-      } else if (kind === "audio") {
-        mount = el("div.art-audio", null, el("div.art-audio-name", { text: baseName(info.path) }), el("audio", { src: url, controls: true, preload: "metadata" }));
+        if (reload && cur && cur.tagName === "IMG") { cur.src = url(i.path); return; }
+        body.replaceChildren(el("img.art-img", { src: url(i.path), alt: a.title || "" }));
+      } else if (kind === "video" || kind === "audio") {
+        const old = body.querySelector("video, audio");
+        const keep = old ? { t: old.currentTime, paused: old.paused } : null;
+        const media = kind === "video"
+          ? el("video.art-media", { src: url(i.path), controls: true, preload: "metadata" })
+          : el("audio", { src: url(i.path), controls: true, preload: "metadata" });
+        if (keep) media.addEventListener("loadedmetadata", () => { media.currentTime = Math.min(keep.t, media.duration || keep.t); if (!keep.paused) media.play().catch(() => {}); }, { once: true });
+        body.replaceChildren(kind === "video" ? media : el("div.art-audio", null, el("div.art-audio-name", { text: baseName(i.path) }), media));
       } else if (kind === "office") {
-        body.replaceChildren(el("p.muted.art-loading", { text: "Converting with Microsoft Office… (first open of a document takes a few seconds)" }));
+        if (!reload) body.replaceChildren(el("p.muted.art-loading", { text: "Converting with Microsoft Office… (the first open of a document takes a few seconds)" }));
         try {
-          const r = await OMP.api("/api/preview/office?path=" + encodeURIComponent(info.path), { method: "POST" });
-          mount = el("iframe.art-frame", { src: previewUrl(r.pdf), title: a.title || "document" });
+          const r = await OMP.api("/api/preview/office?path=" + encodeURIComponent(i.path), { method: "POST" });
+          if (live !== L) return;
+          const frame = body.querySelector("iframe");
+          if (frame) frame.src = url(r.pdf);
+          else body.replaceChildren(el("iframe.art-frame", { src: url(r.pdf), title: a.title || "document" }));
         } catch (e) {
           body.replaceChildren(el("p.art-error", { text: e.message }));
-          return;
         }
       } else {
-        const text = info.size > 4 << 20 ? null : await fetch(url).then((r) => r.text()).catch(() => null);
+        const top = body.scrollTop;
+        const text = i.size > 4 << 20 ? null : await fetch(url(i.path)).then((r) => r.text()).catch(() => null);
+        if (live !== L) return;
         if (text == null) { body.replaceChildren(el("p.muted", { text: "Too large to show here — use Open." })); return; }
-        if (kind === "markdown") mount = el("div.art-md", { html: OMP.md(text) });
-        else {
-          const pre = el("pre.art-code");
-          pre.innerHTML = OMP.highlight(text, extOf(info.path));
-          mount = pre;
-        }
+        let node;
+        if (kind === "markdown") node = el("div.art-md", { html: OMP.md(text) });
+        else { node = el("pre.art-code"); node.innerHTML = OMP.highlight(text, extOf(i.path)); }
+        body.replaceChildren(node);
+        body.scrollTop = top;
       }
-      body.replaceChildren(mount);
+    }
+
+    // Live preview: redraw when the file's mtime changes.
+    const liveChip = el("button.icon-btn.live-chip.on", { text: "● live", title: "Live preview: reloads when the file changes (click to pause)" });
+    liveChip.onclick = () => {
+      L.on = !L.on;
+      liveChip.classList.toggle("on", L.on);
+      liveChip.textContent = L.on ? "● live" : "○ paused";
     };
+    L.check = async () => {
+      if (live !== L || !L.on || L.busy || document.hidden) return;
+      L.busy = true;
+      try {
+        const i = await info();
+        if (i.mtimeMs && L.mtime && i.mtimeMs !== L.mtime) {
+          L.mtime = i.mtimeMs;
+          await draw(true);
+          liveChip.classList.remove("flash"); void liveChip.offsetWidth; liveChip.classList.add("flash");
+        }
+      } catch { /* file being rewritten: next tick */ } finally { L.busy = false; }
+    };
+    L.timer = setInterval(L.check, 1000);
+
     const btn = (text, title, onclick) => el("button.icon-btn", { text, title, onclick });
     const winOpen = (reveal) => OMP.api(`/api/open?path=${encodeURIComponent(a.hostPath || a.path)}${reveal ? "&reveal=1" : ""}`, { method: "POST" })
       .catch((e) => OMP.toast(e.message, "error"));
     actions.append(
-      btn("↻", "Reload (after the file changed)", () => draw()),
+      liveChip,
+      btn("📍", "Pin: freeze what you see here, add numbered comments and attach it to your message", () => pinStill(body, L)),
+      btn("↻", "Reload", () => draw(true)),
       btn("⤢", "Wide panel / back", () => root.classList.toggle("wide")),
       btn("↗", "Open in a new window", () => window.open(previewUrl(a.hostPath || a.path), "_blank")),
       btn("Open", "Open with the Windows default app", () => winOpen(false)),
       btn("📁", "Show in Explorer", () => winOpen(true)),
     );
-    draw();
+    draw(false);
+  }
+
+  // Still image of the current view → pin editor → composer attachment.
+  async function pinStill(body, L) {
+    const path = L.a.hostPath || L.a.path;
+    const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+    let dataUrl = null, note = "";
+    try {
+      const media = body.querySelector("video");
+      const img = body.querySelector("img.art-img");
+      if (L.kind === "model" && L.viewer) {
+        dataUrl = L.viewer.snapshot();
+        if (L.viewer.clip) note = `${L.viewer.clip.replace(/^animation\.[^.]+\./, "")} at ${L.viewer.time.toFixed(2)}s`;
+      } else if (media && media.videoWidth) {
+        media.pause();
+        const c = document.createElement("canvas");
+        c.width = media.videoWidth; c.height = media.videoHeight;
+        c.getContext("2d").drawImage(media, 0, 0);
+        dataUrl = c.toDataURL("image/png");
+        note = `frame at ${fmt(media.currentTime)}`;
+      } else if (img && img.naturalWidth) {
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext("2d").drawImage(img, 0, 0);
+        dataUrl = c.toDataURL("image/png");
+      } else {
+        // Pages, PDFs, documents: the pixels on screen.
+        dataUrl = await OMP.desktop.captureRect(body.getBoundingClientRect());
+        if (L.kind === "html" && L.scroll) note = `scrolled to y=${Math.round(L.scroll[1])}px`;
+      }
+    } catch (e) {
+      OMP.toast("Pin: " + (e.message || e), "error", 8000);
+      return;
+    }
+    if (!dataUrl) return;
+    const composer = OMP.app && OMP.app.composer;
+    if (!composer) return OMP.toast("Open a session to send pins", "error");
+    composer.addImageData({
+      data: dataUrl.slice(dataUrl.indexOf(",") + 1),
+      mimeType: "image/png",
+      annotate: true,
+      caption: `preview of ${path}${note ? ` (${note})` : ""}`,
+    });
   }
 
   function copyBtn(text) {
@@ -298,12 +410,14 @@
       return true;
     },
     close() {
+      stopLive();
       if (!root) return;
       root.classList.remove("open");
       appEl.classList.remove("has-artifacts");
     },
     isOpen() { return !!(root && root.classList.contains("open")); },
     clearHistory() {
+      stopLive();
       history.length = 0;
       current = null;
       if (root) { root.classList.remove("open"); appEl.classList.remove("has-artifacts"); renderTabs(); }
@@ -349,9 +463,11 @@
     OMP.preview.open(link.dataset.path);
   });
 
-  // History is per-session: clear when the agent/session changes.
+  // History is per-session: clear when the agent/session changes. A finished
+  // tool call may have rewritten the previewed file: check right away.
   window.addEventListener("omp:frame", (e) => {
     const f = e.detail && e.detail.frame;
+    if (f && f.type === "tool_execution_end" && live && live.check) setTimeout(live.check, 120);
     if (f && (f.type === "session_loaded" || f.type === "session_reset")) OMP.artifacts.clearHistory();
   });
   window.addEventListener("hashchange", () => OMP.artifacts.clearHistory());

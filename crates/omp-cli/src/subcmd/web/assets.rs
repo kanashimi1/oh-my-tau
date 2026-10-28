@@ -106,6 +106,20 @@ const FILES: &[(&str, &str, &str)] = &[
         include_str!("assets/artifacts.js"),
     ),
     (
+        "/assets/viewer3d.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/viewer3d.js"),
+    ),
+    // three.js r186 (`three@0.186.1`, MIT, assets/vendor/three.LICENSE) with
+    // GLTFLoader + OrbitControls in one dependency-free ES module:
+    //   printf 'export * from "three";\nexport { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";\nexport { OrbitControls } from "three/addons/controls/OrbitControls.js";\n' > entry.js
+    //   bun build entry.js --minify --format esm --target browser --outfile three.min.js
+    (
+        "/assets/vendor/three.min.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/vendor/three.min.js"),
+    ),
+    (
         "/assets/desktop-bridge.js",
         "text/javascript; charset=utf-8",
         include_str!("assets/desktop-bridge.js"),

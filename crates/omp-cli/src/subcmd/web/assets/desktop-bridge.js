@@ -3,11 +3,11 @@
 // screenshot attachment. Owner: desktop slice.
 //
 // Contracts (BRIEF.md):
-//   OMP.desktop = { available, openWindow(hash), notify(title, body) }
+//   OMP.desktop = { available, openWindow(hash), notify(title, body, agent?, key?),
+//                   captureRect(viewportRect) → PNG data URL }
 //   OMP.app.composer.addImageData({ data, mimeType }) — guarded, may not exist yet
 (function (OMP) {
   const TAURI = window.__TAURI__ || null;
-  const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor", "ask"]);
 
   function inTauri() {
     return !!(TAURI && TAURI.core && typeof TAURI.core.invoke === "function");
@@ -28,54 +28,96 @@
   };
 
   // ── notify ──────────────────────────────────────────────────────────────
-  function webNotify(title, body) {
-    if (document.hidden && "Notification" in window) {
-      const show = () => { try { new Notification(title, { body }); } catch { /* noop */ } };
-      if (Notification.permission === "granted") show();
-      else if (Notification.permission !== "denied") {
-        Notification.requestPermission().then((p) => { if (p === "granted") show(); });
-      }
-    }
+  const goTo = (agent) => { if (agent) location.hash = "#/a/" + agent; };
+
+  function webNotify(title, body, agent, key) {
+    if (!("Notification" in window) || (!document.hidden && document.hasFocus())) return false;
+    const show = () => {
+      try {
+        const n = new Notification(title, { body, tag: key || undefined, icon: "/favicon.svg" });
+        n.onclick = () => { window.focus(); goTo(agent); n.close(); };
+      } catch { /* noop */ }
+    };
+    if (Notification.permission === "granted") show();
+    else if (Notification.permission !== "denied") Notification.requestPermission().then((p) => { if (p === "granted") show(); });
+    return true;
   }
 
-  desktop.notify = function (title, body) {
+  /** System notification; `agent` = session to open on click. Resolves to
+   *  whether one was shown (not shown while the app window has focus). */
+  desktop.notify = async function (title, body, agent, key) {
     if (inTauri()) {
-      try { return TAURI.core.invoke("notify", { title, body }); }
-      catch { return; }
+      try { return !!(await TAURI.core.invoke("notify", { title, body, agent: agent || null, key: key || null })); }
+      catch { return false; }
     }
-    webNotify(title, body);
+    return webNotify(title, body, agent, key);
+  };
+
+  // ── capture (preview pins) ─────────────────────────────────────────────
+  /** Screen pixels of a viewport rect as a PNG data URL: native capture in
+   *  the desktop app, tab capture (asks once per pin) in a browser. */
+  desktop.captureRect = async function (rect) {
+    const r = { x: Math.max(0, rect.left), y: Math.max(0, rect.top), w: rect.width, h: rect.height };
+    if (inTauri()) return TAURI.core.invoke("capture_rect", r);
+    if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("screen capture is not available in this browser");
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: { displaySurface: "browser" }, preferCurrentTab: true, audio: false });
+    try {
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      video.muted = true;
+      await video.play();
+      await new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok)));
+      const kx = video.videoWidth / window.innerWidth, ky = video.videoHeight / window.innerHeight;
+      const c = document.createElement("canvas");
+      c.width = Math.round(r.w * kx); c.height = Math.round(r.h * ky);
+      c.getContext("2d").drawImage(video, r.x * kx, r.y * ky, r.w * kx, r.h * ky, 0, 0, c.width, c.height);
+      return c.toDataURL("image/png");
+    } finally {
+      stream.getTracks().forEach((t) => t.stop());
+    }
   };
 
   OMP.desktop = desktop;
 
-  // ── focus detection ──────────────────────────────────────────────────────
-  function currentFocused() {
-    if (inTauri() && TAURI.window && TAURI.window.getCurrentWindow) {
-      try {
-        const w = TAURI.window.getCurrentWindow();
-        if (w && typeof w.isFocused === "function") return Promise.resolve(w.isFocused());
-      } catch { /* fall through */ }
+  // ── agent notifications ────────────────────────────────────────────────
+  // From roster transitions (`omp:agents`, every session, not just the open
+  // one): busy → idle = finished, needsInput rising = waiting for an answer.
+  // While the window has focus a background session gets an in-app toast.
+  const roster = new Map();
+  let primed = false;
+  const nameOf = (a) => a.sessionName || String(a.cwd || "").split("/").filter(Boolean).pop() || a.id;
+  function announce(a, kind) {
+    const current = OMP.app && OMP.app.S && OMP.app.S.agentId;
+    const title = kind === "wait" ? "Tau: waiting for your answer" : "Tau: agent finished";
+    const body = `${nameOf(a)}${a.model ? " · " + a.model.split("/").pop() : ""}`;
+    const key = `${a.id}:${kind}:${Math.floor(Date.now() / 30000)}`;
+    desktop.notify(title, body, a.id, key).then((shown) => {
+      if (!shown && a.id !== current && document.hasFocus()) {
+        OMP.toast(`${kind === "wait" ? "Waiting for you" : "Finished"}: ${nameOf(a)}`, "info", 5000);
+      }
+    });
+  }
+  window.addEventListener("omp:agents", (e) => {
+    const agents = (e.detail && e.detail.agents) || [];
+    for (const a of agents) {
+      const busy = !!(a.streaming || a.runningTools);
+      const prev = roster.get(a.id);
+      if (primed && prev) {
+        if (a.needsInput && !prev.needsInput) announce(a, "wait");
+        else if (prev.busy && !busy && !a.needsInput && a.alive) announce(a, "done");
+      }
+      roster.set(a.id, { busy, needsInput: !!a.needsInput });
     }
-    return Promise.resolve(!document.hidden);
-  }
-
-  function maybeNotify(title, body) {
-    Promise.resolve(currentFocused()).then((focused) => {
-      if (!focused) desktop.notify(title, body);
-    }).catch(() => desktop.notify(title, body));
-  }
-
-  // ── frame bus: notify when an agent finishes / waits for input ───────────
+    primed = true;
+  });
+  // The open session flips to busy immediately (runs shorter than a roster poll).
   window.addEventListener("omp:frame", (e) => {
     const d = e.detail || {};
-    const f = d.frame || {};
-    if (f.type === "agent_end") {
-      maybeNotify("Agent finished", d.agentId ? `Agent ${d.agentId} finished.` : "An agent finished.");
-    } else if (f.type === "extension_ui_request" && DIALOG_METHODS.has(f.method)) {
-      const msg = f.message || f.title || f.text || "An agent is waiting for your input.";
-      maybeNotify("Needs your input", msg);
-    }
+    if (d.frame && d.frame.type === "agent_start" && d.agentId && roster.has(d.agentId)) roster.get(d.agentId).busy = true;
   });
+  if (inTauri() && TAURI.event && typeof TAURI.event.listen === "function") {
+    try { TAURI.event.listen("omp:navigate", (ev) => goTo(ev && ev.payload)).catch(() => {}); } catch { /* noop */ }
+  }
 
   // ── screenshot hotkey (Ctrl+Shift+S): the Rust side captured the monitor
   // and made this window fullscreen; drag a region, Enter/release to attach,

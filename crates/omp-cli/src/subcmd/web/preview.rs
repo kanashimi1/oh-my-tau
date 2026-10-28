@@ -58,7 +58,7 @@ pub fn mime(path: &Path) -> &'static str {
         "svg" => "image/svg+xml",
         "css" => "text/css; charset=utf-8",
         "js" | "mjs" => "text/javascript; charset=utf-8",
-        "json" | "map" => "application/json; charset=utf-8",
+        "json" | "map" | "bbmodel" => "application/json; charset=utf-8",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
@@ -86,7 +86,7 @@ pub fn mime(path: &Path) -> &'static str {
         "gltf" => "model/gltf+json",
         "md" | "markdown" | "txt" | "log" | "csv" | "tsv" | "py" | "rs" | "ts" | "tsx" | "jsx"
         | "toml" | "yaml" | "yml" | "sh" | "xml" | "ini" | "cfg" | "c" | "h" | "cpp" | "go"
-        | "java" | "lua" | "sql" | "bbmodel" => "text/plain; charset=utf-8",
+        | "java" | "lua" | "sql" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     }
 }
@@ -133,8 +133,16 @@ fn plain(status: StatusCode, msg: &str) -> Response<Body> {
     res
 }
 
-/// Serve `path` (a host path), honouring a `Range` header.
-pub fn serve(path: &Path, range: Option<&str>) -> Response<Body> {
+/// Script appended to HTML shown in the preview panel (`?embed=1`): reports
+/// the scroll position to the panel and restores it after a live reload.
+const EMBED_SCRIPT: &str = "<script>(()=>{const p=parent;if(p===window)return;\
+addEventListener('message',e=>{const s=e.data&&e.data.tauScrollTo;if(s)scrollTo(s[0],s[1])});\
+let t=0;addEventListener('scroll',()=>{clearTimeout(t);t=setTimeout(()=>p.postMessage({tauScroll:[scrollX,scrollY]},'*'),80)},{passive:true});\
+addEventListener('load',()=>p.postMessage({tauLoaded:1},'*'))})()</script>";
+
+/// Serve `path` (a host path), honouring a `Range` header. `embed` marks a
+/// request from the preview panel (HTML gets [`EMBED_SCRIPT`]).
+pub fn serve(path: &Path, range: Option<&str>, embed: bool) -> Response<Body> {
     let meta = match std::fs::metadata(path) {
         Ok(m) if m.is_file() => m,
         Ok(_) => return plain(StatusCode::NOT_FOUND, "not a file"),
@@ -154,7 +162,7 @@ pub fn serve(path: &Path, range: Option<&str>) -> Response<Body> {
         _ if len > MAX_WHOLE => (StatusCode::PARTIAL_CONTENT, 0, MAX_CHUNK - 1),
         _ => (StatusCode::OK, 0, len.saturating_sub(1)),
     };
-    let body = if len == 0 {
+    let mut body = if len == 0 {
         Vec::new()
     } else {
         match read_slice(path, start, end - start + 1) {
@@ -162,6 +170,9 @@ pub fn serve(path: &Path, range: Option<&str>) -> Response<Body> {
             Err(e) => return plain(StatusCode::INTERNAL_SERVER_ERROR, &format!("read: {e}")),
         }
     };
+    if embed && status == StatusCode::OK && ctype.starts_with("text/html") {
+        body.extend_from_slice(EMBED_SCRIPT.as_bytes());
+    }
     let mut res = Response::new(Body::new(body.into()));
     *res.status_mut() = status;
     let h = res.headers_mut();

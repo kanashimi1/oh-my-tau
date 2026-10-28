@@ -246,9 +246,10 @@
     }
     /** External API (contract): attach an image from raw base64 data;
      *  `annotate` opens the pin editor on it right away. */
-    addImageData({ data, mimeType, annotate }) {
+    addImageData({ data, mimeType, annotate, caption }) {
       if (!data) return;
       const att = { type: "image", data, mimeType: mimeType || "image/png" };
+      if (caption) att.caption = caption; // what the image shows (preview pins), sent with the pin notes
       this.images.push(att);
       this.renderAttachments();
       if (annotate) this.annotate(att);

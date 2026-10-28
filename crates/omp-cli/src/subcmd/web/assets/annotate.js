@@ -142,8 +142,12 @@
   OMP.pinNotes = function pinNotes(images) {
     const blocks = [];
     images.forEach((img, n) => {
-      if (!img.pins?.length) return;
-      const head = images.length > 1 ? `Pins on image ${n + 1}:` : "Pins on the image:";
+      const label = images.length > 1 ? `image ${n + 1}` : "the image";
+      if (!img.pins?.length) {
+        if (img.caption) blocks.push(`Attached ${label}: ${img.caption}`);
+        return;
+      }
+      const head = `Pins on ${label}${img.caption ? ` — ${img.caption}` : ""}:`;
       const lines = img.pins.map((p, i) =>
         `${i + 1}. (x ${Math.round(p.x * 100)}%, y ${Math.round(p.y * 100)}%) ${(p.text || "").trim() || "(no comment)"}`);
       blocks.push([head, ...lines].join("\n"));

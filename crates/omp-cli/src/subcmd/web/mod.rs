@@ -627,7 +627,8 @@ fn serve_preview(req: &Request<Incoming>, path: &str, port: u16) -> Response<Bod
         return error(StatusCode::FORBIDDEN, "cross-origin request rejected");
     }
     let file = preview::host_path(&percent_decode(&path["/preview".len()..]));
-    preview::serve(&file, header("range"))
+    let embed = query_param(req, "embed").is_some_and(|v| v == "1");
+    preview::serve(&file, header("range"), embed)
 }
 
 /// `/api/preview/info`, `/api/preview/office`, `/api/open` (see `preview.rs`).
@@ -641,6 +642,9 @@ async fn preview_api(req: Request<Incoming>) -> Response<Body> {
             Ok(m) if m.is_file() => json_response(
                 StatusCode::OK,
                 &json!({"path": file.display().to_string(), "size": m.len(),
+                        "mtimeMs": m.modified().ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map_or(0, |d| d.as_millis()),
                         "mime": preview::mime(&file), "office": preview::is_office(&file)}),
             ),
             Ok(_) => error(StatusCode::BAD_REQUEST, "not a file"),

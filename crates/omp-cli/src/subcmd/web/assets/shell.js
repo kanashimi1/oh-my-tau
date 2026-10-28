@@ -287,6 +287,7 @@
       res = await api("/api/agents");
       s.agents = res.agents || [];
     } catch { return; }
+    window.dispatchEvent(new CustomEvent("omp:agents", { detail: { agents: s.agents } }));
     // `/desktop` from a terminal asks open pages to show its agent. On the
     // first poll only a fresh request counts (Tau was just started for it).
     const f = res.focus;

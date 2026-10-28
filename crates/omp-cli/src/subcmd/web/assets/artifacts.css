@@ -135,3 +135,19 @@
 a.file-link { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 3px; cursor: pointer; }
 a.file-link:hover { text-decoration-style: solid; }
 .tool-open.tool-preview { color: var(--accent); }
+
+/* live preview, pins, 3D */
+.live-chip { font-size: 11px; color: var(--fg-faint); }
+.live-chip.on { color: var(--ok); }
+.live-chip.flash { animation: live-flash 0.9s ease-out; }
+@keyframes live-flash { 0% { background: var(--ok); color: #000 } 100% { background: transparent } }
+.art-3d { position: absolute; inset: 0; }
+.art-body:has(.art-3d) { position: relative; overflow: hidden; padding: 0; }
+.v3d { position: absolute; inset: 0; }
+.v3d canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+.v3d canvas:active { cursor: grabbing; }
+.v3d-bar { position: absolute; left: 8px; top: 8px; display: flex; align-items: center; gap: 4px; padding: 3px 6px; border-radius: 8px; background: rgba(10, 10, 16, .62); backdrop-filter: blur(6px); color: #ddd; font-size: 12px; }
+.v3d-bar select { background: transparent; color: inherit; border: 1px solid rgba(255, 255, 255, .18); border-radius: 6px; padding: 2px 4px; font: inherit; max-width: 180px; }
+.v3d-bar select option { background: #1b1d24; }
+.v3d-bar .icon-btn { color: inherit; padding: 2px 6px; }
+.v3d-info { font: 11px var(--mono); color: #aab; min-width: 76px; }
