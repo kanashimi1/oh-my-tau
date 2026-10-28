@@ -231,7 +231,7 @@
           entry.parts[i] = part;
         }
         if (kind === "text") {
-          if (part.last !== block.text) { part.node.innerHTML = OMP.md(block.text); part.last = block.text; }
+          if (part.last !== block.text) { part.node.innerHTML = OMP.md(block.text); part.last = block.text; OMP.linkifyPaths(part.node); }
         } else if (kind === "thinking") {
           part.thinking.setText(block.thinking || "", streaming && i === content.length - 1);
         } else if (kind === "redactedThinking") {

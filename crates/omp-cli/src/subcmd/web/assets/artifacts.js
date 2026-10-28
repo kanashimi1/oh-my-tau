@@ -4,7 +4,23 @@
 (function (OMP) {
   const { el, esc } = OMP;
   const LS_WIDTH = "omp-artifacts-width";
-  const OPEN_KINDS = new Set(["code", "diff", "html", "markdown", "image"]);
+  const OPEN_KINDS = new Set(["code", "diff", "html", "markdown", "image", "file"]);
+
+  // Files on the agent host previewed via /preview/<path> (preview.rs).
+  const EXT = {
+    html: ["html", "htm", "svg"],
+    image: ["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico"],
+    video: ["mp4", "m4v", "webm", "mov", "mkv", "ogv"],
+    audio: ["mp3", "wav", "ogg", "oga", "opus", "m4a", "flac"],
+    pdf: ["pdf"],
+    office: ["ppt", "pptx", "pps", "ppsx", "odp", "doc", "docx", "odt", "rtf", "xls", "xlsx", "ods"],
+    markdown: ["md", "markdown"],
+    text: ["txt", "log", "csv", "tsv", "json", "py", "rs", "js", "mjs", "ts", "tsx", "jsx", "css", "toml", "yaml", "yml", "sh", "xml", "ini", "cfg", "c", "h", "cpp", "go", "java", "lua", "sql"],
+  };
+  const extOf = (p) => (String(p).match(/\.([A-Za-z0-9]+)$/) || [])[1]?.toLowerCase() || "";
+  const fileKind = (p) => Object.keys(EXT).find((k) => EXT[k].includes(extOf(p))) || null;
+  const previewUrl = (p) => "/preview" + String(p).split("/").map(encodeURIComponent).join("/");
+  const baseName = (p) => String(p).split(/[\\/]/).pop();
 
   let root = null;          // aside#artifacts-panel
   let appEl = null;
@@ -84,6 +100,7 @@
     else if (a.kind === "html") renderHtml(body, actions, a);
     else if (a.kind === "markdown") renderMarkdown(body, actions, a);
     else if (a.kind === "image") renderImage(body, actions, a);
+    else if (a.kind === "file") renderFile(body, actions, a);
     else body.append(el("p.muted", { text: "Unsupported artifact." }));
   }
 
@@ -149,6 +166,64 @@
     draw();
   }
 
+  // ── files on the agent host ────────────────────────────────────────────
+  function renderFile(body, actions, a) {
+    const kind = fileKind(a.path);
+    let mount = null;
+    const draw = async () => {
+      body.replaceChildren(el("p.muted.art-loading", { text: "Loading…" }));
+      let info;
+      try {
+        info = await OMP.api("/api/preview/info?path=" + encodeURIComponent(a.path));
+      } catch (e) {
+        body.replaceChildren(el("p.art-error", { text: e.message }));
+        return;
+      }
+      a.hostPath = info.path;
+      const url = previewUrl(info.path) + "?v=" + Date.now();
+      if (kind === "html" || kind === "pdf") {
+        mount = el("iframe.art-frame", { src: url, title: a.title || "preview" });
+        if (kind === "html") mount.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+      } else if (kind === "image") {
+        mount = el("img.art-img", { src: url, alt: a.title || "" });
+      } else if (kind === "video") {
+        mount = el("video.art-media", { src: url, controls: true, autoplay: false, preload: "metadata" });
+      } else if (kind === "audio") {
+        mount = el("div.art-audio", null, el("div.art-audio-name", { text: baseName(info.path) }), el("audio", { src: url, controls: true, preload: "metadata" }));
+      } else if (kind === "office") {
+        body.replaceChildren(el("p.muted.art-loading", { text: "Converting with Microsoft Office… (first open of a document takes a few seconds)" }));
+        try {
+          const r = await OMP.api("/api/preview/office?path=" + encodeURIComponent(info.path), { method: "POST" });
+          mount = el("iframe.art-frame", { src: previewUrl(r.pdf), title: a.title || "document" });
+        } catch (e) {
+          body.replaceChildren(el("p.art-error", { text: e.message }));
+          return;
+        }
+      } else {
+        const text = info.size > 4 << 20 ? null : await fetch(url).then((r) => r.text()).catch(() => null);
+        if (text == null) { body.replaceChildren(el("p.muted", { text: "Too large to show here — use Open." })); return; }
+        if (kind === "markdown") mount = el("div.art-md", { html: OMP.md(text) });
+        else {
+          const pre = el("pre.art-code");
+          pre.innerHTML = OMP.highlight(text, extOf(info.path));
+          mount = pre;
+        }
+      }
+      body.replaceChildren(mount);
+    };
+    const btn = (text, title, onclick) => el("button.icon-btn", { text, title, onclick });
+    const winOpen = (reveal) => OMP.api(`/api/open?path=${encodeURIComponent(a.hostPath || a.path)}${reveal ? "&reveal=1" : ""}`, { method: "POST" })
+      .catch((e) => OMP.toast(e.message, "error"));
+    actions.append(
+      btn("↻", "Reload (after the file changed)", () => draw()),
+      btn("⤢", "Wide panel / back", () => root.classList.toggle("wide")),
+      btn("↗", "Open in a new window", () => window.open(previewUrl(a.hostPath || a.path), "_blank")),
+      btn("Open", "Open with the Windows default app", () => winOpen(false)),
+      btn("📁", "Show in Explorer", () => winOpen(true)),
+    );
+    draw();
+  }
+
   function copyBtn(text) {
     return el("button.icon-btn", { text: "copy", title: "Copy content", onclick: async (e) => {
       if (await OMP.copyText(text)) { e.target.textContent = "copied"; setTimeout(() => (e.target.textContent = "copy"), 1200); }
@@ -200,6 +275,15 @@
   }
 
   // ── public API ─────────────────────────────────────────────────────────
+  /** Preview a file on the agent host (absolute, ~/ or C:\ path). */
+  OMP.preview = {
+    kind: fileKind,
+    open(path) {
+      const same = history.find((h) => h.kind === "file" && h.path === path);
+      return OMP.artifacts.open(same || { kind: "file", path, title: baseName(path) });
+    },
+  };
+
   OMP.artifacts = {
     open(opts) {
       const a = opts && OPEN_KINDS.has(opts.kind) ? opts : null;
@@ -225,6 +309,45 @@
       if (root) { root.classList.remove("open"); appEl.classList.remove("has-artifacts"); renderTabs(); }
     },
   };
+
+  // File paths in rendered messages become preview links (absolute, ~/, or
+  // Windows drive paths with a previewable extension).
+  const exts = Object.values(EXT).flat().join("|");
+  const PATH_RE = new RegExp(`((?:[A-Za-z]:[\\\\/]|~/|/)[^\\s"'<>|*?\`]*?\\.(?:${exts}))(?=$|[\\s"'<>)\\],;:!?.]|\\.\\s)`, "gi");
+  function linkify(root) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.parentElement.closest("pre, a, button, .file-link") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (const node of nodes) {
+      const text = node.nodeValue;
+      PATH_RE.lastIndex = 0;
+      if (!PATH_RE.test(text)) continue;
+      PATH_RE.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let last = 0, m;
+      while ((m = PATH_RE.exec(text))) {
+        const path = m[1];
+        // Inside a URL or a word ("http://x/a.html", "foo/x.md") it is not a path.
+        const prev = text[m.index - 1];
+        if ((prev && /[\w:./-]/.test(prev)) || /^[A-Za-z]:\/\//.test(path)) continue;
+        frag.append(text.slice(last, m.index));
+        frag.append(el("a.file-link", { href: "#", title: `Preview ${path}`, "data-path": path, text: path }));
+        last = m.index + path.length;
+      }
+      if (!last) continue;
+      frag.append(text.slice(last));
+      node.replaceWith(frag);
+    }
+  }
+  OMP.linkifyPaths = linkify;
+  document.addEventListener("click", (e) => {
+    const link = e.target.closest && e.target.closest("a.file-link");
+    if (!link) return;
+    e.preventDefault();
+    OMP.preview.open(link.dataset.path);
+  });
 
   // History is per-session: clear when the agent/session changes.
   window.addEventListener("omp:frame", (e) => {

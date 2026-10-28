@@ -254,6 +254,14 @@
         el("span.tool-dur", { text: dur }),
         el("span.status", { text: mark }),
       );
+      const file = (this.name === "write" || this.name === "edit") && this.status === "ok" && (this.args.path || this.args.file_path);
+      if (file && OMP.preview && OMP.preview.kind(file) && OMP.preview.kind(file) !== "text") {
+        this.head.insertBefore(el("button.tool-open.tool-preview", {
+          text: "Preview",
+          title: `Preview ${file}`,
+          onclick: (e) => { e.stopPropagation(); OMP.preview.open(file); },
+        }), this.head.querySelector(".tool-dur"));
+      }
       const art = OMP.artifacts && artifactFor(this);
       if (art) {
         this.head.insertBefore(el("button.tool-open", {

@@ -16,6 +16,9 @@
 //!   `DELETE /api/agents/<id>`.
 //! - `GET /api/export?session=<file>`: HTML export of a stored session.
 //! - `POST /api/transcribe?ext=&lang=` (raw audio): local dictation, see `stt.rs`.
+//! - `GET /preview/<abs path>` (Range-aware file serving), `GET /api/preview/info?path=`,
+//!   `POST /api/preview/office?path=` (Office → PDF), `POST /api/open?path=&reveal=`:
+//!   file previews, see `preview.rs`.
 //! - `POST /api/uploads?name=` (raw file): composer attachments, see `uploads.rs`.
 //! - `GET /api/wallpapers`, `POST /api/wallpapers?name=` (raw image body),
 //!   `DELETE /api/wallpapers/<name>`, `GET /wallpapers/custom/<name>`.
@@ -28,6 +31,7 @@ mod agent;
 mod assets;
 mod desktop;
 pub(crate) mod detach;
+mod preview;
 mod sessions;
 mod stt;
 mod uploads;
@@ -433,11 +437,14 @@ async fn read_json(req: Request<Incoming>) -> Result<Value> {
 
 async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
     let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+    let path = req.uri().path().to_string();
+    let method = req.method().clone();
+    if method == Method::GET && path.starts_with("/preview/") {
+        return serve_preview(&req, &path, hub.port);
+    }
     if !same_origin(header("host"), header("origin"), hub.port) {
         return error(StatusCode::FORBIDDEN, "cross-origin request rejected");
     }
-    let path = req.uri().path().to_string();
-    let method = req.method().clone();
     if let Some(id) = path.strip_prefix("/ws/") {
         return websocket(&hub, req, id);
     }
@@ -470,28 +477,7 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
         }
         (&Method::POST, "/api/agents") => create_agent(&hub, req).await,
         (&Method::POST, p) if p.starts_with("/api/agents/") => {
-            let rest = &p["/api/agents/".len()..];
-            let Some((id, action)) = rest.split_once('/') else {
-                return error(StatusCode::NOT_FOUND, "not found");
-            };
-            let Some(agent) = hub.agent(id) else {
-                return error(StatusCode::NOT_FOUND, "no such agent");
-            };
-            let result = match action {
-                // Show the agent in the desktop app: open pages pick the
-                // request up from `GET /api/agents`, the window is raised.
-                "focus" => {
-                    *lock(&hub.focus) = Some(json!({"id": agent.id, "ms": pa_agent::now_ms()}));
-                    desktop::raise()
-                }
-                // Continue the agent in a terminal (`omt attach <id>`).
-                "terminal" => desktop::open_terminal(&hub.exe, &agent.cwd, &agent.id),
-                _ => return error(StatusCode::NOT_FOUND, "not found"),
-            };
-            match result {
-                Ok(()) => json_response(StatusCode::OK, &json!({"ok": true})),
-                Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
-            }
+            agent_action(&hub, &p["/api/agents/".len()..])
         }
         (&Method::DELETE, p) if p.starts_with("/api/agents/") => {
             match hub.agent(&p["/api/agents/".len()..]) {
@@ -508,6 +494,7 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
         }
         (&Method::GET, "/api/export") => export(query_param(&req, "session")),
         (&Method::POST, "/api/transcribe") => transcribe(req).await,
+        (_, "/api/preview/info" | "/api/preview/office" | "/api/open") => preview_api(req).await,
         (&Method::POST, "/api/uploads") => upload_file(req).await,
         (&Method::GET, "/api/wallpapers") => json_response(StatusCode::OK, &wallpapers::list()),
         (&Method::POST, "/api/wallpapers") => upload_wallpaper(req).await,
@@ -599,6 +586,78 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
     match hub.spawn(spec).await {
         Ok(agent) => json_response(StatusCode::OK, &agent.info_json()),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, &format!("{e:#}")),
+    }
+}
+
+/// `POST /api/agents/<id>/{focus,terminal}`: show the agent in the desktop
+/// app, or continue it in a terminal (`omt attach <id>`).
+fn agent_action(hub: &Hub, rest: &str) -> Response<Body> {
+    let Some((id, action)) = rest.split_once('/') else {
+        return error(StatusCode::NOT_FOUND, "not found");
+    };
+    let Some(agent) = hub.agent(id) else {
+        return error(StatusCode::NOT_FOUND, "no such agent");
+    };
+    let result = match action {
+        // Show the agent in the desktop app: open pages pick the
+        // request up from `GET /api/agents`, the window is raised.
+        "focus" => {
+            *lock(&hub.focus) = Some(json!({"id": agent.id, "ms": pa_agent::now_ms()}));
+            desktop::raise()
+        }
+        // Continue the agent in a terminal (`omt attach <id>`).
+        "terminal" => desktop::open_terminal(&hub.exe, &agent.cwd, &agent.id),
+        _ => return error(StatusCode::NOT_FOUND, "not found"),
+    };
+    match result {
+        Ok(()) => json_response(StatusCode::OK, &json!({"ok": true})),
+        Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
+    }
+}
+
+/// `GET /preview/<path>`: sandboxed preview pages load their assets with
+/// `Origin: null`. Read-only and without CORS headers, so a foreign page
+/// still cannot read the files.
+fn serve_preview(req: &Request<Incoming>, path: &str, port: u16) -> Response<Body> {
+    let header = |name: &str| req.headers().get(name).and_then(|v| v.to_str().ok());
+    let host_ok = same_origin(header("host"), None, port);
+    let origin_ok = header("origin").is_none_or(|o| o == "null")
+        || same_origin(header("host"), header("origin"), port);
+    if !(host_ok && origin_ok) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request rejected");
+    }
+    let file = preview::host_path(&percent_decode(&path["/preview".len()..]));
+    preview::serve(&file, header("range"))
+}
+
+/// `/api/preview/info`, `/api/preview/office`, `/api/open` (see `preview.rs`).
+async fn preview_api(req: Request<Incoming>) -> Response<Body> {
+    let Some(raw) = query_param(&req, "path") else {
+        return error(StatusCode::BAD_REQUEST, "missing path");
+    };
+    let file = preview::host_path(&raw);
+    match (req.method(), req.uri().path()) {
+        (&Method::GET, "/api/preview/info") => match std::fs::metadata(&file) {
+            Ok(m) if m.is_file() => json_response(
+                StatusCode::OK,
+                &json!({"path": file.display().to_string(), "size": m.len(),
+                        "mime": preview::mime(&file), "office": preview::is_office(&file)}),
+            ),
+            Ok(_) => error(StatusCode::BAD_REQUEST, "not a file"),
+            Err(e) => error(StatusCode::NOT_FOUND, &format!("{}: {e}", file.display())),
+        },
+        (&Method::POST, "/api/preview/office") => match preview::office_pdf(&file).await {
+            Ok(v) => json_response(StatusCode::OK, &v),
+            Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
+        },
+        (&Method::POST, "/api/open") => {
+            let reveal = query_param(&req, "reveal").is_some_and(|v| v == "1");
+            match preview::open_in_windows(&file, reveal) {
+                Ok(()) => json_response(StatusCode::OK, &json!({"ok": true})),
+                Err(e) => error(StatusCode::BAD_GATEWAY, &format!("{e:#}")),
+            }
+        }
+        _ => error(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
     }
 }
 
