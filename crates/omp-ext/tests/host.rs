@@ -430,6 +430,53 @@ async fn tools_and_commands() {
 
 /// `skipExtensions` leaves the named extension's handlers out of that one
 /// emit; the others still run, and the next emit without it runs everything.
+/// A handler that edits the message clone in place and returns nothing
+/// changes the context (Pi semantics); a handler that only reads does not.
+#[tokio::test]
+async fn context_in_place_edits_travel_back() {
+    use pa_agent::types::AgentMessage;
+    if common::bun_missing("context_in_place_edits_travel_back") {
+        return;
+    }
+    let host = ExtHost::spawn(&config()).await.unwrap();
+    let r = host
+        .load(
+            Some(&[fixture("context-inplace.ts")]),
+            None,
+            "/tmp",
+            Some(json!({"sessionId": "s1"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.loaded.len(), 1, "{r:?}");
+    let out = hooks::context_owned(&host, vec![AgentMessage::user("a long tool output")], None)
+        .await
+        .unwrap();
+    let v = serde_json::to_value(&out[0]).unwrap();
+    assert_eq!(v["content"][0]["text"], json!("packed"), "{v}");
+    host.shutdown().await.unwrap();
+
+    // Read-only handler (fixture.ts): the list comes back untouched.
+    let host = ExtHost::spawn(&config()).await.unwrap();
+    host.load(
+        Some(&[fixture("fixture.ts")]),
+        None,
+        "/tmp",
+        Some(json!({"sessionId": "s1"})),
+    )
+    .await
+    .unwrap();
+    let msgs = vec![AgentMessage::user("hi")];
+    let out = hooks::context_owned(&host, msgs.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&out).unwrap(),
+        serde_json::to_value(&msgs).unwrap()
+    );
+    host.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn context_emit_skips_listed_extensions() {
     use pa_agent::types::AgentMessage;

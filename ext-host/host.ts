@@ -675,13 +675,29 @@ async function emit(p: Json) {
     result = !modified ? (c === undefined ? undefined : { additionalContext: c }) : { content: cur.content, details: cur.details, isError: cur.isError, ...(c ? { additionalContext: c } : {}) };
   } else if (type === "context") {
     let messages = event.messages as unknown[];
-    // Only a handler replacement travels back: the core keeps its own list otherwise.
+    // A handler may return a replacement list, or (Pi semantics: handlers get a clone of the
+    // conversation) edit that clone in place — SoL-Pi ObservationPack sets `message.content`
+    // and returns nothing. Both travel back; an untouched list does not (the core keeps its own).
+    const shape = (ms: unknown[]) => ms.map((m) => {
+      const c = (m as { content?: unknown } | null)?.content;
+      return [m, c, Array.isArray(c) ? c.length : -1, Array.isArray(c) ? c.map((b) => b) : null] as const;
+    });
+    const before = shape(messages);
     let modified = false;
     for (const e of exts)
       for (const h of handlersFor(e)) {
         const hr = (await runHandler(e, h, { type, messages }, timeoutMs, rec)).value as Json | undefined;
         if (hr && Array.isArray(hr.messages)) ((messages = hr.messages), (modified = true));
       }
+    if (!modified) {
+      modified = messages.length !== before.length || messages.some((m, i) => {
+        const [m0, c0, n0, blocks0] = before[i];
+        const c = (m as { content?: unknown } | null)?.content;
+        if (m !== m0 || c !== c0) return true;
+        if (!Array.isArray(c)) return false;
+        return c.length !== n0 || c.some((b, j) => b !== blocks0?.[j]);
+      });
+    }
     result = modified ? { messages } : undefined;
   } else if (type === "before_agent_start") {
     // Handlers run concurrently: every one gates the prompt, and several of them
