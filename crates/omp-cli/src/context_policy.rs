@@ -163,6 +163,9 @@ pub struct Policy {
     pub rule_offload_high: usize,
     /// Target history size (tokens) of a batch eviction.
     pub rule_offload_low: usize,
+    /// Recall-on-miss budget: offloaded blocks matching the new user turn are re-inlined, at
+    /// most this many chars per turn (0 = off).
+    pub recall_chars: usize,
     pub schedule: Vec<u8>,
     laya_paths: Option<LayaPaths>,
     laya: Mutex<Option<Result<omp_judge::policy::PolicyScorer, ()>>>,
@@ -191,6 +194,7 @@ impl Policy {
             rule_offload_hist: 0,
             rule_offload_high: 0,
             rule_offload_low: 0,
+            recall_chars: 0,
             schedule: Vec::new(),
             laya_paths: None,
             laya: Mutex::new(None),
@@ -264,6 +268,11 @@ impl Policy {
             "OMP_CONTEXT_POLICY_RULE_LOW",
             "context.policy.ruleOffloadLow",
             p.rule_offload_high / 2,
+        );
+        p.recall_chars = num(
+            "OMP_CONTEXT_POLICY_RECALL",
+            "context.policy.recallChars",
+            p.recall_chars,
         );
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
             .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())

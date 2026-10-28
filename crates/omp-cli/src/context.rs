@@ -499,6 +499,9 @@ pub struct Shared {
     allowed: AtomicBool,
     /// Offloaded blocks: message index -> the reference that replaces its text on every request.
     offloaded: Mutex<Vec<(usize, String)>>,
+    /// Recall-on-miss: user message index -> offloaded blocks re-inlined into it. Decided once
+    /// per user turn and sticky afterwards, so the wire prefix (and the prompt cache) is stable.
+    recalls: Mutex<Vec<(usize, Vec<usize>)>>,
 }
 
 impl Shared {
@@ -522,6 +525,7 @@ impl Shared {
             policy,
             allowed: AtomicBool::new(true),
             offloaded: Mutex::new(Vec::new()),
+            recalls: Mutex::new(Vec::new()),
         })
     }
 
@@ -569,12 +573,18 @@ impl Shared {
                 }
             }
         }
+        let recalled = self.recall(&messages, &off, pol.recall_chars);
         for (i, reference) in off.iter() {
             if let Some(AgentMessage::Standard(m)) = messages.get_mut(*i) {
                 replace_block_text(m, reference);
             }
         }
         drop(off);
+        for (u, text) in recalled {
+            if let Some(AgentMessage::Standard(Message::User(m))) = messages.get_mut(u) {
+                append_user_text(m, &text);
+            }
+        }
         let edit = action == crate::context_policy::Action::ClmEdit;
         let done = edited_this_turn(&messages);
         let (mut out, p) = build_wire(messages, self.kind, &self.limits);
@@ -584,6 +594,148 @@ impl Shared {
             out.push(user_msg(crate::context_policy::MAINT_NOTICE.to_owned()));
         }
         out
+    }
+}
+
+impl Shared {
+    /// Recall-on-miss (T2): when the newest user message lexically matches offloaded blocks,
+    /// their full text is re-inlined into that user message (appended, so everything before it
+    /// keeps its cached prefix). Returns `(user message index, text to append)` for every turn
+    /// that recalled something — decisions are sticky. `budget` = max recalled chars per turn
+    /// (0 = off). `messages` must still hold the original (not yet replaced) block texts.
+    fn recall(
+        &self,
+        messages: &[AgentMessage],
+        off: &[(usize, String)],
+        budget: usize,
+    ) -> Vec<(usize, String)> {
+        if budget == 0 {
+            return Vec::new();
+        }
+        let mut rec = self.recalls.lock();
+        if let Some(&u) = user_turns(messages).last() {
+            if !off.is_empty() && rec.iter().all(|(i, _)| *i != u) {
+                let q = block_text(&messages[u]).unwrap_or_default();
+                let hits = recall_matches(messages, off, &q, budget);
+                rec.push((u, hits));
+            }
+        }
+        rec.iter()
+            .filter(|(u, b)| !b.is_empty() && *u < messages.len())
+            .map(|(u, blocks)| {
+                use std::fmt::Write as _;
+                let mut s = String::new();
+                for &i in blocks {
+                    let (text, call) = recall_source(messages, i);
+                    let _ = write!(
+                        s,
+                        "\n\n[recalled: block-{i}.txt was offloaded from your context earlier and matches this \
+                         message; its full text{} follows]\n{text}\n[end of block-{i}.txt]",
+                        call.map(|c| format!(" (result of {c})")).unwrap_or_default()
+                    );
+                }
+                (*u, s)
+            })
+            .collect()
+    }
+}
+
+/// Lowercased word tokens; `_ . -` stay inside a token (file names, ids), `/` splits paths.
+fn recall_tokens(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '-'))
+        .map(|t| t.trim_matches(|c| c == '.' || c == '-').to_lowercase())
+        .filter(|t| t.len() >= 2)
+        .collect()
+}
+
+/// A token specific enough to identify a block on its own: a name with a digit or `_ . -`.
+fn is_distinctive(t: &str) -> bool {
+    t.len() >= 5
+        && t.chars()
+            .any(|c| c.is_ascii_digit() || matches!(c, '_' | '.' | '-'))
+}
+
+/// Block text plus, for a tool result, `name {args}` of the call that produced it.
+fn recall_source(messages: &[AgentMessage], idx: usize) -> (String, Option<String>) {
+    let text = block_text(&messages[idx]).unwrap_or_default();
+    let AgentMessage::Standard(Message::ToolResult(tr)) = &messages[idx] else {
+        return (text, None);
+    };
+    let call = messages[..idx].iter().rev().find_map(|m| match m {
+        AgentMessage::Standard(Message::Assistant(a)) => a.content.iter().find_map(|c| match c {
+            AssistantContent::ToolCall(tc) if tc.id == tr.tool_call_id => {
+                Some(format!("`{}` {}", tc.name, tc.arguments))
+            }
+            _ => None,
+        }),
+        _ => None,
+    });
+    (text, call)
+}
+
+/// Offloaded blocks that the query points at, best first, within `budget` chars (max 3).
+/// A block qualifies with >= 3 shared word trigrams (a quoted line) or a shared distinctive
+/// token (file name, id) that occurs in at most two offloaded blocks.
+fn recall_matches(
+    messages: &[AgentMessage],
+    off: &[(usize, String)],
+    query: &str,
+    budget: usize,
+) -> Vec<usize> {
+    use std::collections::{HashMap, HashSet};
+    let qt = recall_tokens(query);
+    let qgrams: HashSet<String> = qt.windows(3).map(|w| w.join(" ")).collect();
+    let qdist: HashSet<&String> = qt.iter().filter(|t| is_distinctive(t)).collect();
+    let blocks: Vec<(usize, String, HashSet<String>, HashSet<String>)> = off
+        .iter()
+        .map(|(i, _)| {
+            let (text, call) = recall_source(messages, *i);
+            let toks = recall_tokens(&format!("{}\n{text}", call.unwrap_or_default()));
+            let grams = toks.windows(3).map(|w| w.join(" ")).collect();
+            let set = toks.into_iter().collect();
+            (*i, text, grams, set)
+        })
+        .collect();
+    let mut df: HashMap<&String, usize> = HashMap::new();
+    for t in &qdist {
+        df.insert(
+            t,
+            blocks.iter().filter(|b| b.3.contains(t.as_str())).count(),
+        );
+    }
+    let mut scored: Vec<(usize, usize, usize)> = blocks
+        .iter()
+        .filter_map(|(i, text, grams, set)| {
+            let g = qgrams.iter().filter(|q| grams.contains(*q)).count();
+            let d = qdist
+                .iter()
+                .filter(|t| set.contains(t.as_str()) && df.get(*t).copied().unwrap_or(0) <= 2)
+                .count();
+            (g >= 3 || d >= 1).then_some((*i, g + 5 * d, text.chars().count()))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let mut used = 0;
+    let mut out = Vec::new();
+    for (i, _, n) in scored {
+        if out.len() == 3 || used + n > budget {
+            continue;
+        }
+        used += n;
+        out.push(i);
+    }
+    out
+}
+
+fn append_user_text(m: &mut UserMessage, extra: &str) {
+    match &mut m.content {
+        UserContent::Text(t) => t.push_str(extra),
+        UserContent::Parts(ps) => ps.push(pa_agent::types::UserPart::Text(
+            pa_agent::types::TextContent {
+                text: extra.to_owned(),
+                text_signature: None,
+            },
+        )),
     }
 }
 
@@ -1424,6 +1576,71 @@ mod tests {
         // (file names only: the offload dir env var is shared with parallel tests)
         assert!(
             j.contains("block-2.txt") && j.contains("block-4.txt") && !j.contains("block-6.txt")
+        );
+    }
+
+    #[test]
+    fn recall_on_miss_reinlines_a_matching_block_once_and_sticky() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pol = crate::context_policy::Policy::new(crate::context_policy::Kind::Rule);
+        pol.rule_tokens = 0;
+        pol.rule_offload_high = 20_000;
+        pol.rule_offload_low = 27_600;
+        pol.recall_chars = 20_000;
+        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let usage = |i: u64| {
+            let v = json!({"role":"assistant","content":[{"type":"text","text":"r"}],"api":"x","provider":"x",
+                "model":"x","usage":{"input":i,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
+                "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
+                "stopReason":"stop","timestamp":0});
+            AgentMessage::Standard(serde_json::from_value::<Message>(v).unwrap())
+        };
+        let file = format!("def spawn_gate(limit_42):\n{}", "    pass\n".repeat(600));
+        let other = "b".repeat(5000);
+        let mut h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            asst(
+                &json!([{"type":"toolCall","id":"r1","name":"read","arguments":{"path":"/src/spawn_gate.py"}}]),
+                "toolUse",
+            ),
+            AgentMessage::Standard(Message::ToolResult(ToolResultMessage {
+                tool_call_id: "r1".into(),
+                tool_name: "read".into(),
+                content: vec![ToolResultContent::text(&file)],
+                details: None,
+                is_error: false,
+                timestamp: 0,
+            })),
+            assistant_text("1"),
+            user(&other),
+            usage(30_000),
+            user("Which file did your earlier read of spawn_gate.py show? Quote its first line."),
+        ];
+        std::env::set_var("OMP_CONTEXT_OFFLOAD_DIR", dir.path());
+        let j = wire_json(&sh.wire(h.clone()));
+        assert!(j.contains("[offloaded:"), "the blocks were evicted");
+        assert_eq!(
+            j.matches("[recalled: block-3.txt").count(),
+            1,
+            "matching block re-inlined"
+        );
+        assert!(
+            j.contains("def spawn_gate(limit_42)") && j.contains("`read`"),
+            "full text + its call"
+        );
+        assert!(!j.contains(&other), "the unrelated block stays out");
+        h.push(assistant_text("it is spawn_gate.py"));
+        h.push(user("Thanks. Anything else pending today?"));
+        let j2 = wire_json(&sh.wire(h));
+        assert_eq!(
+            j2.matches("[recalled: block-3.txt").count(),
+            1,
+            "sticky, not repeated"
+        );
+        assert!(
+            j2.starts_with(&j[..j.len() - 1]),
+            "earlier wire is a prefix: cache-safe"
         );
     }
 

@@ -55,6 +55,11 @@ ARMS = {
     # so the prompt cache breaks once per cycle instead of every turn (lcm's 2.2x on L4).
     "tier": dict(strategy="clm", policy="rule",
                  rule=dict(offload=0, age=1, restated=0, tokens=10**9, every=0, summary=400, high=32000, low=16000)),
+    # TierMem T2: tier + recall-on-miss — an offloaded block that the new user turn points at (quoted line,
+    # file name, id) is re-inlined into that turn (appended, sticky: the cached prefix is untouched).
+    "tier2": dict(strategy="clm", policy="rule",
+                  rule=dict(offload=0, age=1, restated=0, tokens=10**9, every=0, summary=400, high=32000, low=16000,
+                            recall=24000)),
     # L3 only: no sub-model recursion; the root reads the log through the read tool and counts itself (does RLM recursion pay?).
     "direct": dict(strategy="append"),
 }
@@ -377,6 +382,8 @@ def run_rollout(name, family, seed, arm, rep, steps=None, force=False, max_spend
                 env["OMP_CONTEXT_POLICY_RULE_OFFLOAD_HIST"] = str(r["hist"])
             if r.get("summary"):
                 env["OMP_CONTEXT_OFFLOAD_SUMMARY"] = str(r["summary"])
+            if r.get("recall"):
+                env["OMP_CONTEXT_POLICY_RECALL"] = str(r["recall"])
             if r.get("high"):
                 env["OMP_CONTEXT_POLICY_RULE_HIGH"] = str(r["high"])
                 env["OMP_CONTEXT_POLICY_RULE_LOW"] = str(r["low"])
