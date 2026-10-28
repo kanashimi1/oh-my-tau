@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-ui",
-  "description": "Capability for the remote omt UI (http://127.0.0.1:7467) loaded in every app window: event listening (screenshot frames), window focus checks, and the app commands open_window / notify / capture_done.",
+  "description": "Capability for the remote omt UI (http://127.0.0.1:7467) loaded in every app window: event listening (screenshot frames), window focus checks, and the app commands open_window / notify / capture_done / capture_rect.",
   "global": true,
   "platforms": [
     "windows"
@@ -17,7 +17,8 @@
     "core:window:allow-is-focused",
     "allow-open-window",
     "allow-notify",
-    "allow-capture-done"
+    "allow-capture-done",
+    "allow-capture-rect"
   ],
   "windows": [
     "*"

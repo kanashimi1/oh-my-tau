@@ -7,7 +7,9 @@
 //   * global Ctrl+Shift+S shortcut: captures the monitor under the cursor and
 //     lets the user drag a region in the window; the crop lands in that
 //     window's composer
-//   * commands used by desktop-bridge.js: open_window(hash), notify(title, body)
+//   * commands used by desktop-bridge.js: open_window(hash), notify(title,
+//     body, agent, key) — Windows toast, click opens that session —
+//     capture_rect(x, y, w, h) — screen pixels of a page region (preview pins)
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -44,24 +46,217 @@ async fn open_window(app: AppHandle, hash: String) -> Result<(), String> {
     open_new_window(&app, &hash).map_err(|e| e.to_string())
 }
 
+/// Toast source registered under `HKCU\\Software\\Classes\\AppUserModelId`
+/// (name + icon in the notification); PowerShell's ID is the fallback.
+const TOAST_APP_ID: &str = "com.omt.tau";
+
+/// Recent toast keys (agent + kind): every window polls the roster, so the
+/// same transition arrives once per window.
+static TOAST_SEEN: std::sync::Mutex<Vec<(String, Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// Windows toast for an agent event. Skipped (returns `false`) while a Tau
+/// window has focus; clicking it shows the window and opens `agent`.
 #[tauri::command]
-async fn notify(title: String, body: String) -> Result<(), String> {
+async fn notify(
+    app: AppHandle,
+    title: String,
+    body: String,
+    agent: Option<String>,
+    key: Option<String>,
+) -> Result<bool, String> {
     use tauri_winrt_notification::{Duration as ToastDuration, Toast};
-    // A portable exe has no registered AppUserModelID (no Start-menu
-    // shortcut), and Windows drops toasts from unregistered IDs; PowerShell's
-    // ID is always registered.
-    Toast::new(Toast::POWERSHELL_APP_ID)
-        .duration(ToastDuration::Short)
-        .title(&title)
-        .text1(&body)
-        .show()
-        .map_err(|e| e.to_string())
+    let focused = app
+        .webview_windows()
+        .values()
+        .any(|w| w.is_focused().unwrap_or(false) && !w.is_minimized().unwrap_or(false));
+    if focused {
+        return Ok(false);
+    }
+    if let Some(key) = key {
+        let mut seen = TOAST_SEEN.lock().map_err(|e| e.to_string())?;
+        seen.retain(|(_, at)| at.elapsed() < Duration::from_secs(30));
+        if seen.iter().any(|(k, _)| *k == key) {
+            return Ok(false);
+        }
+        seen.push((key, Instant::now()));
+    }
+    // Taskbar flash: visible even with Windows notifications turned off.
+    flash_taskbar(&app);
+    let toast = |id: &str| {
+        let (app, agent) = (app.clone(), agent.clone());
+        Toast::new(id)
+            .duration(ToastDuration::Short)
+            .title(&title)
+            .text1(&body)
+            .on_activated(move |_| {
+                show_agent(&app, agent.as_deref());
+                Ok(())
+            })
+            .show()
+    };
+    match toast(TOAST_APP_ID) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            log_line(&format!("toast ({TOAST_APP_ID}): {e}"));
+            // A portable exe has no installer-registered ID; PowerShell's
+            // always is.
+            toast(Toast::POWERSHELL_APP_ID)
+                .map(|()| true)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// Flash the main window's taskbar button until the window is focused.
+fn flash_taskbar(app: &AppHandle) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FlashWindowEx, FLASHWINFO, FLASHW_TIMERNOFG, FLASHW_TRAY,
+    };
+    let windows = app.webview_windows();
+    let Some(win) = windows.get("main").or_else(|| windows.values().next()) else {
+        return;
+    };
+    let Ok(hwnd) = win.hwnd() else { return };
+    let info = FLASHWINFO {
+        cbSize: u32::try_from(std::mem::size_of::<FLASHWINFO>()).unwrap_or(0),
+        hwnd: hwnd.0.cast(),
+        dwFlags: FLASHW_TRAY | FLASHW_TIMERNOFG,
+        uCount: 0,
+        dwTimeout: 0,
+    };
+    // SAFETY: `info` is a fully initialised FLASHWINFO for a live window handle.
+    unsafe { FlashWindowEx(&info) };
+}
+
+/// Show the main (else any) window and navigate it to `agent`.
+fn show_agent(app: &AppHandle, agent: Option<&str>) {
+    let windows = app.webview_windows();
+    let Some(win) = windows.get("main").or_else(|| windows.values().next()) else {
+        return;
+    };
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    if let Some(id) = agent {
+        let _ = win.emit("omp:navigate", id.to_string());
+    }
+}
+
+/// Register [`TOAST_APP_ID`] (display name + icon) so toasts show as Tau.
+fn register_toast_app_id() {
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, REG_SZ,
+    };
+    let icon_dir = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|d| d.join("Tau"));
+    let icon = icon_dir.and_then(|d| {
+        std::fs::create_dir_all(&d).ok()?;
+        let p = d.join("toast-icon.png");
+        std::fs::write(&p, include_bytes!("../icons/icon.png")).ok()?;
+        Some(p)
+    });
+    let wide = |s: &str| {
+        s.encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<u16>>()
+    };
+    let subkey = wide(&format!(
+        "Software\\Classes\\AppUserModelId\\{TOAST_APP_ID}"
+    ));
+    let mut key: HKEY = std::ptr::null_mut();
+    // SAFETY: valid NUL-terminated wide strings and out-pointer; the key is closed below.
+    let rc = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, subkey.as_ptr(), &mut key) };
+    if rc != 0 {
+        log_line(&format!("register toast app id: {rc}"));
+        return;
+    }
+    let set = |name: &str, value: &str| {
+        let (n, v) = (wide(name), wide(value));
+        // SAFETY: `key` is open; `v` is a NUL-terminated UTF-16 buffer of the given byte length.
+        unsafe {
+            RegSetValueExW(
+                key,
+                n.as_ptr(),
+                0,
+                REG_SZ,
+                v.as_ptr().cast(),
+                (v.len() * 2) as u32,
+            )
+        };
+    };
+    set("DisplayName", "Tau");
+    if let Some(icon) = icon {
+        set("IconUri", &icon.display().to_string());
+    }
+    set("IconBackgroundColor", "FF141018");
+    // SAFETY: `key` was opened above.
+    unsafe { RegCloseKey(key) };
+}
+
+/// Screen pixels of a region of the calling window's page (CSS px relative
+/// to the viewport) as a `data:image/png;base64,…` URL. Used to pin pages,
+/// PDFs and documents in the preview panel, whose content a page script
+/// cannot read.
+#[tauri::command]
+async fn capture_rect(
+    window: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+) -> Result<String, String> {
+    // Monitor pixels: the caller is the window the user just clicked, so it
+    // is on top.
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let origin = window.inner_position().map_err(|e| e.to_string())?;
+    #[allow(clippy::cast_possible_truncation)]
+    let (px, py) = (
+        origin.x + (x * scale).round() as i32,
+        origin.y + (y * scale).round() as i32,
+    );
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let (pw, ph) = (
+        (w * scale).round().max(1.0) as u32,
+        (h * scale).round().max(1.0) as u32,
+    );
+    let monitor = xcap::Monitor::from_point(px + 1, py + 1).map_err(|e| e.to_string())?;
+    let (mx, my) = (
+        monitor.x().map_err(|e| e.to_string())?,
+        monitor.y().map_err(|e| e.to_string())?,
+    );
+    let (mw, mh) = (
+        monitor.width().map_err(|e| e.to_string())?,
+        monitor.height().map_err(|e| e.to_string())?,
+    );
+    let rx = u32::try_from((px - mx).max(0))
+        .unwrap_or(0)
+        .min(mw.saturating_sub(1));
+    let ry = u32::try_from((py - my).max(0))
+        .unwrap_or(0)
+        .min(mh.saturating_sub(1));
+    let img = monitor
+        .capture_region(rx, ry, pw.min(mw - rx), ph.min(mh - ry))
+        .map_err(|e| e.to_string())?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(out.into_inner())
+    ))
 }
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![open_window, notify, capture_done])
+        .invoke_handler(tauri::generate_handler![
+            open_window,
+            notify,
+            capture_done,
+            capture_rect
+        ])
         // Composer dictation: windows only ever show the local omt service,
         // so the microphone is granted without a WebView2 prompt per launch.
         .on_permission_request(|_webview, kind| match kind {
@@ -72,6 +267,7 @@ pub fn run() {
             app.manage(AppState {
                 quitting: AtomicBool::new(false),
             });
+            register_toast_app_id();
             setup_tray(app)?;
             setup_global_shortcut(app)?;
             setup_main_window(app)?;

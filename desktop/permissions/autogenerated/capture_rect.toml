@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-capture-rect"
+description = "Enables the capture_rect command without any pre-configured scope."
+commands.allow = ["capture_rect"]
+
+[[permission]]
+identifier = "deny-capture-rect"
+description = "Denies the capture_rect command without any pre-configured scope."
+commands.deny = ["capture_rect"]
