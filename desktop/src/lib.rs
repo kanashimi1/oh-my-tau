@@ -250,6 +250,16 @@ async fn capture_rect(
 
 pub fn run() {
     tauri::Builder::default()
+        // One Tau per user: launching it again (Start menu, the hub's "raise")
+        // shows the running window instead of a second tray icon fighting
+        // over the Ctrl+Shift+S shortcut.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.unminimize();
+                let _ = main.show();
+                let _ = main.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             open_window,

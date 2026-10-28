@@ -24,3 +24,4 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
 tauri-winrt-notification = "0.7"
 url = "2"
+tauri-plugin-single-instance = "2"
