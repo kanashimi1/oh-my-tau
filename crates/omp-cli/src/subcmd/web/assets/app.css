@@ -84,6 +84,18 @@
   --user-bg: #1c1747; --code-bg: #08061a;
   --kw: #ff2a6d; --fn: #ffd319; --str: #05ffa1; --num: #f706cf; --cm: #6274a0; --ty: #7b61ff;
 }
+/* Calm: warm graphite, parchment text, muted sage — low saturation, body
+   text at ~11:1 instead of the 15:1 white-on-black glare; every colour ≥ 6:1. */
+[data-theme="calm"] {
+  --bg: #22211f; --bg-raised: #292826; --bg-inset: #1c1b19; --bg-overlay: #302e2b; --bg-hover: #36342f;
+  --fg: #dcd5c9; --fg-muted: #a59e92; --fg-faint: #857e73;
+  --accent: #86b5a8; --accent-2: #d3ad7a; --accent-muted: rgba(134, 181, 168, .14); --on-accent: #1c1b19;
+  --ok: #9cc19a; --err: #d98b7f; --warn: #d6b26b; --link: #8db6d1; --info: #8db6d1;
+  --border: rgba(236,226,210,.08); --border-strong: rgba(236,226,210,.14);
+  --user-bg: #2f2d2a; --code-bg: #1c1b19;
+  --kw: #b59bcf; --fn: #d3ad7a; --str: #9cc19a; --num: #d9998a; --cm: #857e73; --ty: #86b5a8;
+}
+[data-theme="calm"] .wordmark { background: linear-gradient(90deg, #86b5a8, #d3ad7a); -webkit-background-clip: text; background-clip: text; }
 [data-theme="vaporwave"] .wordmark, [data-theme="synthwave"] .wordmark { text-shadow: 0 0 18px rgba(255,113,206,.45); }
 
 * { box-sizing: border-box; }

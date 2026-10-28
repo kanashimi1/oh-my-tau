@@ -21,6 +21,7 @@
   const THEMES = [
     { id: "omt", name: "OMT", sw: ["#0f0b14", "#16111c", "#ed4abf", "#e6e3ea"], wall: "" },
     { id: "midnight", name: "Midnight", sw: ["#050506", "#0c0c0f", "#ff5ca8", "#e8e8ec"], wall: "/wallpapers/midnight.svg" },
+    { id: "calm", name: "Calm", sw: ["#22211f", "#292826", "#86b5a8", "#dcd5c9"], wall: "" },
     { id: "light", name: "Light", sw: ["#fbf9fc", "#ffffff", "#c42a95", "#2b2233"], wall: "" },
     { id: "sakura", name: "Sakura", sw: ["#14112a", "#1c1836", "#ef92bd", "#f4ecf2"], wall: "/wallpapers/anime-sakura.svg" },
     { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#191430", "#221b3a", "#f0a35c", "#f3ecdf"], wall: "/wallpapers/anime-city.svg" },
