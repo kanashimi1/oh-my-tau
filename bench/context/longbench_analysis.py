@@ -14,7 +14,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "results", "long")
 P_IN = 0.15e-6
-ARM_ORDER = ["append", "clm", "clm-host", "offload", "rule", "lcm", "lcm2", "direct", "laya", "oracle"]
+ARM_ORDER = ["append", "clm", "clm-host", "offload", "rule", "lcm", "lcm2", "tier", "direct", "laya", "oracle"]
 
 
 def teq(c):

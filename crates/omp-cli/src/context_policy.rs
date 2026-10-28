@@ -157,6 +157,12 @@ pub struct Policy {
     pub rule_offload_restated: usize,
     /// `rule`: do not offload while the whole history is below this many tokens (0 = no gate).
     pub rule_offload_hist: usize,
+    /// `rule`, cache-aligned batch eviction: once history reaches this many tokens, evict old
+    /// blocks oldest-first in ONE turn until it is at most [`Self::rule_offload_low`] (0 = off,
+    /// the per-turn single-block offload above applies). One prompt-cache break per cycle.
+    pub rule_offload_high: usize,
+    /// Target history size (tokens) of a batch eviction.
+    pub rule_offload_low: usize,
     pub schedule: Vec<u8>,
     laya_paths: Option<LayaPaths>,
     laya: Mutex<Option<Result<omp_judge::policy::PolicyScorer, ()>>>,
@@ -183,6 +189,8 @@ impl Policy {
             rule_offload_age: 0,
             rule_offload_restated: 0,
             rule_offload_hist: 0,
+            rule_offload_high: 0,
+            rule_offload_low: 0,
             schedule: Vec::new(),
             laya_paths: None,
             laya: Mutex::new(None),
@@ -247,6 +255,16 @@ impl Policy {
             "context.policy.ruleOffloadHist",
             p.rule_offload_hist,
         );
+        p.rule_offload_high = num(
+            "OMP_CONTEXT_POLICY_RULE_HIGH",
+            "context.policy.ruleOffloadHigh",
+            p.rule_offload_high,
+        );
+        p.rule_offload_low = num(
+            "OMP_CONTEXT_POLICY_RULE_LOW",
+            "context.policy.ruleOffloadLow",
+            p.rule_offload_high / 2,
+        );
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
             .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
             .unwrap_or_default();
@@ -268,6 +286,14 @@ impl Policy {
             });
         }
         Ok(Some(p))
+    }
+
+    /// Batch-eviction plan: `Some((low_tokens, min_age_turns))` when `rule` runs in
+    /// cache-aligned batch mode (see [`Self::rule_offload_high`]).
+    #[must_use]
+    pub fn batch_target(&self) -> Option<(usize, usize)> {
+        (self.kind == Kind::Rule && self.rule_offload_high > 0)
+            .then_some((self.rule_offload_low, self.rule_offload_age))
     }
 
     /// Rule decision (pure).
@@ -324,7 +350,18 @@ impl Policy {
         let action = match self.kind {
             Kind::Always => Action::ClmEdit,
             Kind::Rule => {
-                if self.rule_offload_chars > 0
+                if self.rule_offload_high > 0 {
+                    // Batch mode: the trigger is the history size, not one block.
+                    if st.history_tokens >= self.rule_offload_high
+                        && st.largest_block_chars >= OFFLOAD_MIN_CHARS
+                    {
+                        Action::RlmOffload
+                    } else if self.rule(st) {
+                        Action::ClmEdit
+                    } else {
+                        Action::Noop
+                    }
+                } else if self.rule_offload_chars > 0
                     && st.largest_block_chars >= self.rule_offload_chars.max(OFFLOAD_MIN_CHARS)
                     && st.block_age_turns >= self.rule_offload_age
                     && st.block_restated_pct >= self.rule_offload_restated

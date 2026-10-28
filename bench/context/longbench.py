@@ -32,7 +32,7 @@ import run as R  # noqa: E402
 
 OUT = os.path.join(HERE, "results", "long")
 MODEL = "zai/glm-5.3-flash"
-RELAY = "zen-cli/space-bunny-free"
+RELAY = os.environ.get("LONGBENCH_RELAY", "zen-cli/space-bunny-free")
 LEDGER = os.path.join(OUT, "ledger.jsonl")
 LOCK = threading.Lock()
 
@@ -50,6 +50,11 @@ ARMS = {
     # lcm with the block threshold lowered to the size of an L2 tool result (lcm's 4000 never fires there)
     "lcm2": dict(strategy="clm", policy="rule",
                  rule=dict(offload=2000, age=2, restated=0, tokens=10**9, every=0, hist=16000, summary=400)),
+    # TierMem T1 (runs/hybrid-ctx/DESIGN.md): cache-aligned lossless eviction — nothing happens below `high`
+    # tokens; at `high` the oldest eligible blocks go in ONE turn (file + extractive summary) down to `low`,
+    # so the prompt cache breaks once per cycle instead of every turn (lcm's 2.2x on L4).
+    "tier": dict(strategy="clm", policy="rule",
+                 rule=dict(offload=0, age=1, restated=0, tokens=10**9, every=0, summary=400, high=32000, low=16000)),
     # L3 only: no sub-model recursion; the root reads the log through the read tool and counts itself (does RLM recursion pay?).
     "direct": dict(strategy="append"),
 }
@@ -372,7 +377,10 @@ def run_rollout(name, family, seed, arm, rep, steps=None, force=False, max_spend
                 env["OMP_CONTEXT_POLICY_RULE_OFFLOAD_HIST"] = str(r["hist"])
             if r.get("summary"):
                 env["OMP_CONTEXT_OFFLOAD_SUMMARY"] = str(r["summary"])
-        cmd = [R.DEFAULT_BIN, "--mode", "rpc", "--model", MODEL, "--thinking", "minimal", "--tools", "bash,read,eval",
+            if r.get("high"):
+                env["OMP_CONTEXT_POLICY_RULE_HIGH"] = str(r["high"])
+                env["OMP_CONTEXT_POLICY_RULE_LOW"] = str(r["low"])
+        cmd = [R.DEFAULT_BIN, "--mode", "rpc", "--model", MODEL, "--thinking", os.environ.get("LONGBENCH_THINKING", "minimal"), "--tools", "bash,read,eval",
                "--no-extensions", "--no-skills", "--no-rules", "--no-title", "--no-lsp", "--no-pty",
                "--context-strategy", cfg["strategy"]]
         first_step = 0

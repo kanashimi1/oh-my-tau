@@ -547,7 +547,23 @@ impl Shared {
         st.offload_reads = offload_reads(&messages, &off);
         let (action, fresh) = pol.decide(&st);
         if action == crate::context_policy::Action::RlmOffload && fresh {
-            if let Some((i, _)) = largest_old_block(&messages, &off) {
+            if let Some((low, min_age)) = pol.batch_target() {
+                // Cache-aligned: evict oldest-first in one go, down to `low` tokens.
+                let mut hist = st.history_tokens;
+                for (i, chars) in old_blocks(&messages, &off) {
+                    if hist <= low {
+                        break;
+                    }
+                    if block_features(&messages, i).0 < min_age {
+                        continue;
+                    }
+                    if let Some(reference) = offload_block(&messages[i], i) {
+                        hist = hist
+                            .saturating_sub(chars.saturating_sub(reference.chars().count()) / 4);
+                        off.push((i, reference));
+                    }
+                }
+            } else if let Some((i, _)) = largest_old_block(&messages, &off) {
                 if let Some(reference) = offload_block(&messages[i], i) {
                     off.push((i, reference));
                 }
@@ -583,6 +599,13 @@ fn block_text(m: &AgentMessage) -> Option<String> {
 /// Largest not-yet-offloaded user/tool-result block before the newest user message, outside
 /// the pinned prefix, that is big enough to be worth a reference. `(index, chars)`.
 fn largest_old_block(messages: &[AgentMessage], off: &[(usize, String)]) -> Option<(usize, usize)> {
+    old_blocks(messages, off)
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+}
+
+/// Every such candidate block, oldest first. `(index, chars)`.
+fn old_blocks(messages: &[AgentMessage], off: &[(usize, String)]) -> Vec<(usize, usize)> {
     let pinned_end = messages
         .iter()
         .position(|m| matches!(m, AgentMessage::Standard(Message::Assistant(_))))
@@ -594,7 +617,7 @@ fn largest_old_block(messages: &[AgentMessage], off: &[(usize, String)]) -> Opti
         .filter(|(i, _)| *i >= pinned_end && *i < last_user && off.iter().all(|(j, _)| j != i))
         .filter_map(|(i, m)| block_text(m).map(|t| (i, t.chars().count())))
         .filter(|(_, n)| *n >= crate::context_policy::OFFLOAD_MIN_CHARS)
-        .max_by_key(|(_, n)| *n)
+        .collect()
 }
 
 /// Distinctive tokens of a block: identifiers/numbers (>= 6 chars with a digit), at most 400.
@@ -1360,6 +1383,47 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("block-2.txt")).unwrap(),
             big
+        );
+    }
+
+    #[test]
+    fn batch_offload_evicts_oldest_blocks_once_down_to_low() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut pol = crate::context_policy::Policy::new(crate::context_policy::Kind::Rule);
+        pol.rule_tokens = 0;
+        pol.rule_offload_high = 20_000;
+        pol.rule_offload_low = 28_000;
+        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let usage = |i: u64| {
+            let v = json!({"role":"assistant","content":[{"type":"text","text":"r"}],"api":"x","provider":"x",
+                "model":"x","usage":{"input":i,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
+                "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},
+                "stopReason":"stop","timestamp":0});
+            AgentMessage::Standard(serde_json::from_value::<Message>(v).unwrap())
+        };
+        let (b1, b2, b3) = ("a".repeat(5000), "b".repeat(5000), "c".repeat(5000));
+        let h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            user(&b1),
+            assistant_text("1"),
+            user(&b2),
+            assistant_text("2"),
+            user(&b3),
+            usage(30_000),
+            user("now"),
+        ];
+        std::env::set_var("OMP_CONTEXT_OFFLOAD_DIR", dir.path());
+        let j = wire_json(&sh.wire(h));
+        // 30k tokens, each 5000-char block frees ~1.2k: the two oldest go, the third stays.
+        assert!(
+            !j.contains(&b1) && !j.contains(&b2),
+            "two oldest evicted in one turn"
+        );
+        assert!(j.contains(&b3), "eviction stops at the low mark");
+        // (file names only: the offload dir env var is shared with parallel tests)
+        assert!(
+            j.contains("block-2.txt") && j.contains("block-4.txt") && !j.contains("block-6.txt")
         );
     }
 

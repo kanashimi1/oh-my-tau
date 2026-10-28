@@ -133,7 +133,12 @@ def gen_l4(seed, steps=14):
     d = json.load(open(cp))
     msgs, calls = d["msgs"], d["calls"]
     sess_path = os.path.join(CACHE, f"s{seed % len(SOURCES)}.session.jsonl")
-    write_session(msgs, sess_path, "/tmp")
+    # Parallel workers share this file: write it once, atomically (a rewrite raced with a
+    # reader's switch_session and resumed a truncated prefix — 32 of 319 messages).
+    if not os.path.exists(sess_path):
+        tmp = f"{sess_path}.{os.getpid()}.{uuid.uuid4().hex[:6]}.tmp"
+        write_session(msgs, tmp, "/tmp")
+        os.replace(tmp, sess_path)
     rng = random.Random(f"l4-{seed}")
     early = calls[: max(12, len(calls) // 2)]
 
