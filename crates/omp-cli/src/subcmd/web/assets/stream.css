@@ -120,5 +120,5 @@
   border: 1px solid var(--border-strong); border-radius: 999px;
   background: transparent; color: var(--fg-muted); opacity: 0; transition: opacity .12s;
 }
-.tool:hover .tool-open, .tool-open:focus-visible { opacity: 1; }
+.tool:hover .tool-open, .tool-open:focus-visible, .tool-open.tool-preview { opacity: 1; }
 .tool-open:hover { color: var(--fg); border-color: var(--accent); }

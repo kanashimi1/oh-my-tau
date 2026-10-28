@@ -151,3 +151,17 @@ a.file-link:hover { text-decoration-style: solid; }
 .v3d-bar select option { background: #1b1d24; }
 .v3d-bar .icon-btn { color: inherit; padding: 2px 6px; }
 .v3d-info { font: 11px var(--mono); color: #aab; min-width: 76px; }
+
+/* files of this session */
+.art-files { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+.art-files-open { display: flex; gap: 6px; }
+.art-files-input { flex: 1; min-width: 0; background: var(--bg-input, var(--bg)); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 8px; padding: 6px 10px; font: inherit; font-size: 12.5px; }
+.art-files-input:focus { outline: none; border-color: var(--accent); }
+.art-files-list { display: flex; flex-direction: column; gap: 2px; }
+.art-file-row { display: grid; grid-template-columns: 64px minmax(0, auto) minmax(0, 1fr); align-items: baseline; gap: 8px; text-align: left; background: none; border: 1px solid transparent; border-radius: 8px; padding: 6px 8px; color: var(--fg); }
+.art-file-row:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.art-file-kind { text-transform: uppercase; letter-spacing: .06em; font-size: 9.5px; color: var(--accent); }
+.art-file-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-file-dir { color: var(--fg-faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.art-file-dir bdi { direction: ltr; unicode-bidi: isolate; }
+.art-files-empty { padding: 8px; }

@@ -254,7 +254,8 @@
         el("span.tool-dur", { text: dur }),
         el("span.status", { text: mark }),
       );
-      const file = (this.name === "write" || this.name === "edit") && this.status === "ok" && (this.args.path || this.args.file_path);
+      const file = ["write", "edit", "read"].includes(this.name) && this.status === "ok" && (this.args.path || this.args.file_path);
+      if (OMP.preview) OMP.preview.noteArgs(this.args);
       if (file && OMP.preview && OMP.preview.kind(file) && OMP.preview.kind(file) !== "text") {
         this.head.insertBefore(el("button.tool-open.tool-preview", {
           text: "Preview",

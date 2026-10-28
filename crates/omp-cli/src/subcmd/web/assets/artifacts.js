@@ -4,7 +4,7 @@
 (function (OMP) {
   const { el, esc } = OMP;
   const LS_WIDTH = "omp-artifacts-width";
-  const OPEN_KINDS = new Set(["code", "diff", "html", "markdown", "image", "file"]);
+  const OPEN_KINDS = new Set(["code", "diff", "html", "markdown", "image", "file", "files"]);
 
   // Files on the agent host previewed via /preview/<path> (preview.rs).
   const EXT = {
@@ -104,6 +104,7 @@
     else if (a.kind === "markdown") renderMarkdown(body, actions, a);
     else if (a.kind === "image") renderImage(body, actions, a);
     else if (a.kind === "file") renderFile(body, actions, a);
+    else if (a.kind === "files") renderFiles(body);
     else body.append(el("p.muted", { text: "Unsupported artifact." }));
   }
 
@@ -179,6 +180,64 @@
     window.removeEventListener("message", live.onMessage);
     if (live.viewer) live.viewer.dispose();
     live = null;
+  }
+
+  // ── files of this session ─────────────────────────────────────────────
+  // Every previewable path the session mentioned (reply links, tool args),
+  // newest first; the panel's "Files" view lists them with a path box.
+  const seen = new Map(); // path → last-seen order
+  const exists = new Map(); // path → Promise<bool>
+  function fileExists(path) {
+    if (!exists.has(path)) {
+      exists.set(path, OMP.api("/api/preview/info?path=" + encodeURIComponent(path)).then(() => true, () => false));
+    }
+    return exists.get(path);
+  }
+  let seenSeq = 0;
+  const FILES = { kind: "files", title: "Files in this session" };
+  function note(path) {
+    if (!path || !fileKind(path)) return;
+    seen.delete(path);
+    seen.set(path, ++seenSeq);
+    if (current === FILES && root && root.classList.contains("open")) renderBody(FILES);
+  }
+  function noteArgs(args) {
+    if (!args || typeof args !== "object") return;
+    for (const v of Object.values(args)) {
+      if (typeof v !== "string") continue;
+      const text = v.length > 4000 ? v.slice(0, 4000) : v;
+      PATH_RE.lastIndex = 0;
+      let m;
+      while ((m = PATH_RE.exec(text))) {
+        const prev = text[m.index - 1], p = m[1];
+        // Skip format templates (`bust_{n}.png`, `${dir}/x.html`) and
+        // tails of joined paths (`f"{B}/HANDOFF.md"`).
+        if (prev && /[\w:./\-{}$)]/.test(prev)) continue;
+        if (/[{}$%]/.test(p) || /^\/[^/]+$/.test(p)) continue;
+        note(p);
+      }
+    }
+  }
+
+  function renderFiles(body) {
+    const input = el("input.art-files-input", { placeholder: "Path to a file: /home/…, ~/…, C:\\…", spellcheck: false });
+    const go = () => { const p = input.value.trim().replace(/^["']|["']$/g, ""); if (p) OMP.preview.open(p); };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+    const list = el("div.art-files-list");
+    const paths = [...seen.keys()].reverse();
+    for (const p of paths) {
+      const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+      const row = el("button.art-file-row", { title: p, onclick: () => OMP.preview.open(p) },
+        el("span.art-file-kind", { text: fileKind(p) }),
+        el("span.art-file-name", { text: p.slice(i + 1) }),
+        el("span.art-file-dir", null, el("bdi", { text: p.slice(0, i + 1) })));
+      list.append(row);
+      // Temp files get deleted; list only what is still there.
+      fileExists(p).then((ok) => { if (!ok) row.remove(); });
+    }
+    if (!paths.length) list.append(el("p.muted.art-files-empty", { text: "No files mentioned in this session yet. Paste a path above, or click a file path in a reply." }));
+    body.append(el("div.art-files", null, el("div.art-files-open", null, input, el("button.chip", { text: "Open", onclick: go })), list));
+    setTimeout(() => input.focus(), 0);
   }
 
   function renderFile(body, actions, a) {
@@ -368,6 +427,10 @@
   function renderTabs() {
     const tabs = root.querySelector("#art-tabs");
     tabs.replaceChildren();
+    tabs.append(el("button.art-tab.art-tab-files" + (current === FILES ? ".active" : ""), {
+      title: "All previewable files this session mentioned",
+      onclick: () => { current = FILES; show(); },
+    }, el("span.art-tab-kind", { text: "files" }), el("span.art-tab-title", { text: "all" })));
     history.forEach((h, i) => {
       const t = el("button.art-tab" + (h === current ? ".active" : ""), {
         title: `${h.kind}: ${h.title || "(untitled)"}`,
@@ -390,6 +453,13 @@
   /** Preview a file on the agent host (absolute, ~/ or C:\ path). */
   OMP.preview = {
     kind: fileKind,
+    note,
+    noteArgs,
+    /** Topbar button: close, reopen the last preview, or show the file list. */
+    toggle() {
+      if (OMP.artifacts.isOpen()) return OMP.artifacts.close();
+      return OMP.artifacts.open(current || FILES);
+    },
     open(path) {
       const same = history.find((h) => h.kind === "file" && h.path === path);
       return OMP.artifacts.open(same || { kind: "file", path, title: baseName(path) });
@@ -401,10 +471,12 @@
       const a = opts && OPEN_KINDS.has(opts.kind) ? opts : null;
       if (!a) return false;
       ensureDom();
-      const idx = history.indexOf(a);
-      if (idx !== -1) history.splice(idx, 1);
-      history.unshift(a);
-      if (history.length > 20) history.pop();
+      if (a !== FILES) {
+        const idx = history.indexOf(a);
+        if (idx !== -1) history.splice(idx, 1);
+        history.unshift(a);
+        if (history.length > 20) history.pop();
+      }
       current = a;
       show();
       return true;
@@ -419,6 +491,8 @@
     clearHistory() {
       stopLive();
       history.length = 0;
+      seen.clear();
+      exists.clear();
       current = null;
       if (root) { root.classList.remove("open"); appEl.classList.remove("has-artifacts"); renderTabs(); }
     },
@@ -428,14 +502,37 @@
   // Windows drive paths with a previewable extension).
   const exts = Object.values(EXT).flat().join("|");
   const PATH_RE = new RegExp(`((?:[A-Za-z]:[\\\\/]|~/|/)[^\\s"'<>|*?\`]*?\\.(?:${exts}))(?=$|[\\s"'<>)\\],;:!?.]|\\.\\s)`, "gi");
+  // A directory mentioned earlier in the same reply ("Files in `~/x/`:")
+  // anchors bare file names in inline code that follow it (`report.html`).
+  const DIR_RE = /(?:^|[\s"'(`])((?:[A-Za-z]:[\\/]|~\/|\/)[^\s"'<>|*?`]*[\\/])(?=$|[\s"'<>)\],;:!?`])/g;
+  const REL_RE = new RegExp(`^(?![A-Za-z]:|~|/)[\\w.-]+(?:/[\\w.-]+)*\\.(?:${Object.values(EXT).flat().join("|")})$`, "i");
+  function linkRelative(node, base) {
+    const name = node.nodeValue.trim();
+    const path = base + name;
+    const a = el("a.file-link", { href: "#", title: `Preview ${path}`, "data-path": path, text: node.nodeValue });
+    node.replaceWith(a);
+    // Only keep the link when the file is really there (cached: streaming
+    // re-renders the same reply many times).
+    fileExists(path).then((ok) => {
+      if (ok) note(path);
+      else if (a.isConnected) a.replaceWith(document.createTextNode(a.textContent));
+    });
+  }
   function linkify(root) {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode: (n) => (n.parentElement.closest("pre, a, button, .file-link") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
     });
     const nodes = [];
     while (walker.nextNode()) nodes.push(walker.currentNode);
+    let base = null;
     for (const node of nodes) {
       const text = node.nodeValue;
+      DIR_RE.lastIndex = 0;
+      for (let d; (d = DIR_RE.exec(text));) base = d[1];
+      if (base && node.parentElement.tagName === "CODE" && REL_RE.test(text.trim())) {
+        linkRelative(node, base);
+        continue;
+      }
       PATH_RE.lastIndex = 0;
       if (!PATH_RE.test(text)) continue;
       PATH_RE.lastIndex = 0;
@@ -448,6 +545,7 @@
         if ((prev && /[\w:./-]/.test(prev)) || /^[A-Za-z]:\/\//.test(path)) continue;
         frag.append(text.slice(last, m.index));
         frag.append(el("a.file-link", { href: "#", title: `Preview ${path}`, "data-path": path, text: path }));
+        note(path);
         last = m.index + path.length;
       }
       if (!last) continue;
@@ -471,4 +569,9 @@
     if (f && (f.type === "session_loaded" || f.type === "session_reset")) OMP.artifacts.clearHistory();
   });
   window.addEventListener("hashchange", () => OMP.artifacts.clearHistory());
+  const btn = document.getElementById("preview-btn");
+  if (btn) btn.addEventListener("click", () => OMP.preview.toggle());
+  document.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === "KeyP") { e.preventDefault(); OMP.preview.toggle(); }
+  });
 })(window.OMP);
