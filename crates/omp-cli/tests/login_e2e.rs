@@ -42,6 +42,7 @@ fn mock_kimi_host() -> String {
 fn omp_rs(home: &std::path::Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_omt"));
     cmd.env("HOME", home)
+        .env("OMP_HUB", "0") // no auto-started hub outliving the temp HOME
         .env_remove("OMP_AGENT_DIR")
         .env_remove("OMP_AUTH_BROKER_URL")
         .env_remove("OMP_AUTH_BROKER_TOKEN")

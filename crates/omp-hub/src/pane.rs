@@ -162,10 +162,12 @@ pub fn wake_line(env: &Envelope) -> String {
 
 /// Spawn the background delivery task for one envelope addressed to a pane.
 /// Urgent or reply-expected envelopes get the full text, notes the wake
-/// line; give up to `failed` after the deadline.
-pub fn spawn_delivery(store: Arc<Store>, env: Envelope) {
+/// line; give up to `failed` after the deadline. `hold` lives as long as the
+/// task (the server's busy guard: no idle exit mid-delivery).
+pub fn spawn_delivery(store: Arc<Store>, env: Envelope, hold: impl Send + 'static) {
     let reply_expected = env.is_reply_expected();
     tokio::spawn(async move {
+        let _hold = hold;
         deliver_to_pane(&store, env, reply_expected).await;
     });
 }

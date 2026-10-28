@@ -5,11 +5,12 @@
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -31,6 +32,13 @@ const MAX_LINE: usize = 1 << 20;
 const DELIVER_CAP: usize = 512;
 /// Deadline sweep cadence.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+/// Idle/orphan watchdog cadence (a shorter idle limit ticks faster).
+const WATCH_INTERVAL: Duration = Duration::from_secs(2);
+/// Default idle limit: no client connection and no in-flight pane delivery
+/// for this long and the hub exits; clients auto-start it again on demand.
+pub const DEFAULT_IDLE_EXIT: Duration = Duration::from_mins(15);
+/// Overrides [`DEFAULT_IDLE_EXIT`] in seconds; `0` disables the idle exit.
+pub const IDLE_EXIT_ENV: &str = "OMP_HUB_IDLE_EXIT_SECS";
 
 /// JSON-RPC error codes (app range -32xxx).
 const E_PARSE: i64 = -32700;
@@ -79,14 +87,81 @@ struct Registry {
 struct Server {
     store: Arc<Store>,
     registry: Registry,
+    activity: Arc<Activity>,
 }
 
-/// Run the hub server until killed. Holds a single-instance lock on
-/// `<dir>/hub.lock`; a second `serve` refuses to start.
+/// Live work that keeps the hub up: client connections (every registered
+/// agent holds one) and in-flight pane deliveries.
+struct Activity {
+    busy: AtomicUsize,
+    /// When `busy` last dropped to zero (or the server started).
+    idle_since: Mutex<Instant>,
+}
+
+impl Activity {
+    fn enter(self: &Arc<Self>) -> BusyGuard {
+        self.busy.fetch_add(1, Ordering::SeqCst);
+        BusyGuard(self.clone())
+    }
+
+    /// How long nothing has been live; `None` while anything is.
+    fn idle_for(&self) -> Option<Duration> {
+        let since = self.idle_since.lock();
+        (self.busy.load(Ordering::SeqCst) == 0).then(|| since.elapsed())
+    }
+}
+
+/// Holds one unit of [`Activity`] until dropped.
+struct BusyGuard(Arc<Activity>);
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        let mut since = self.0.idle_since.lock();
+        if self.0.busy.fetch_sub(1, Ordering::SeqCst) == 1 {
+            *since = Instant::now();
+        }
+    }
+}
+
+/// Why [`serve`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServeExit {
+    /// No client and no in-flight pane delivery for the idle limit.
+    Idle,
+    /// The hub dir or socket was deleted or replaced and nothing is
+    /// connected: no client can reach this instance any more.
+    Orphaned,
+}
+
+/// The idle limit from [`IDLE_EXIT_ENV`] (default [`DEFAULT_IDLE_EXIT`];
+/// `0` means never).
+#[must_use]
+pub fn idle_exit_from_env() -> Option<Duration> {
+    match std::env::var(IDLE_EXIT_ENV).map(|v| v.trim().parse::<u64>()) {
+        Ok(Ok(0)) => None,
+        Ok(Ok(secs)) => Some(Duration::from_secs(secs)),
+        _ => Some(DEFAULT_IDLE_EXIT),
+    }
+}
+
+/// Run the hub server with the idle limit from [`idle_exit_from_env`].
+///
+/// # Errors
+/// See [`serve_with`].
+pub async fn serve(hub: &HubDir) -> Result<ServeExit> {
+    serve_with(hub, idle_exit_from_env()).await
+}
+
+/// Run the hub server until killed or until it has nothing left to serve.
+/// Holds a single-instance lock on `<dir>/hub.lock`; a second `serve`
+/// refuses to start. While no client is connected (so no agent is
+/// registered) and no pane delivery is in flight, it returns
+/// [`ServeExit::Orphaned`] as soon as its dir or socket file is gone or
+/// replaced, and [`ServeExit::Idle`] after `idle_exit` (`None`: never).
 ///
 /// # Errors
 /// Lock held, socket bind, or store open failures.
-pub async fn serve(hub: &HubDir) -> Result<()> {
+pub async fn serve_with(hub: &HubDir, idle_exit: Option<Duration>) -> Result<ServeExit> {
     std::fs::create_dir_all(&hub.dir).with_context(|| format!("create {}", hub.dir.display()))?;
     let lock_path = hub.dir.join("hub.lock");
     let lock_file = std::fs::OpenOptions::new()
@@ -107,14 +182,19 @@ pub async fn serve(hub: &HubDir) -> Result<()> {
     }
     let listener =
         UnixListener::bind(&hub.sock).with_context(|| format!("bind {}", hub.sock.display()))?;
+    let sock_ino = std::fs::symlink_metadata(&hub.sock).ok().map(|m| m.ino());
     let server = Arc::new(Server {
         store: Arc::new(Store::open(&hub.dir)?),
         registry: Registry::default(),
+        activity: Arc::new(Activity {
+            busy: AtomicUsize::new(0),
+            idle_since: Mutex::new(Instant::now()),
+        }),
     });
     tracing::info!(dir = %hub.dir.display(), sock = %hub.sock.display(), "hub serving");
 
     // Deadline sweeper: expire reply-expected envelopes and notify senders.
-    {
+    let sweeper = {
         let server = server.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(SWEEP_INTERVAL);
@@ -124,20 +204,81 @@ pub async fn serve(hub: &HubDir) -> Result<()> {
                     tracing::warn!(error = %e, "deadline sweep failed");
                 }
             }
-        });
-    }
+        })
+    };
 
-    loop {
-        let Ok((stream, _)) = listener.accept().await else {
-            continue;
-        };
-        let server = server.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_conn(server, stream).await {
-                tracing::debug!(error = %e, "connection closed");
+    let mut watch = tokio::time::interval(
+        idle_exit
+            .map_or(WATCH_INTERVAL, |d| d.min(WATCH_INTERVAL))
+            .max(Duration::from_millis(10)),
+    );
+    watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let exit = loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                if let Ok((stream, _)) = accepted {
+                    spawn_conn(&server, stream);
+                }
             }
-        });
+            _ = watch.tick() => {
+                let Some(reason) = exit_reason(&server, hub, sock_ino, idle_exit) else {
+                    continue;
+                };
+                // A client that connected right before the decision: serve
+                // it and re-check on the next tick.
+                if let Ok(Ok((stream, _))) =
+                    tokio::time::timeout(Duration::ZERO, listener.accept()).await
+                {
+                    spawn_conn(&server, stream);
+                    continue;
+                }
+                break reason;
+            }
+        }
+    };
+    sweeper.abort();
+    if sock_ino.is_some() && std::fs::symlink_metadata(&hub.sock).ok().map(|m| m.ino()) == sock_ino
+    {
+        let _ = std::fs::remove_file(&hub.sock);
     }
+    drop(listener);
+    tracing::info!(?exit, dir = %hub.dir.display(), "hub exiting");
+    Ok(exit)
+}
+
+fn spawn_conn(server: &Arc<Server>, stream: UnixStream) {
+    let busy = server.activity.enter();
+    let server = server.clone();
+    tokio::spawn(async move {
+        let _busy = busy;
+        if let Err(e) = handle_conn(server, stream).await {
+            tracing::debug!(error = %e, "connection closed");
+        }
+    });
+}
+
+/// The idle-exit rule. Never while a connection (so a registered agent) or
+/// a pane delivery is live; otherwise exit when this instance became
+/// unreachable (dir gone, socket gone or replaced) or stayed idle for
+/// `idle_exit`.
+fn exit_reason(
+    server: &Server,
+    hub: &HubDir,
+    sock_ino: Option<u64>,
+    idle_exit: Option<Duration>,
+) -> Option<ServeExit> {
+    let idle_for = server.activity.idle_for()?;
+    if !server.registry.endpoints.lock().is_empty() {
+        return None;
+    }
+    let sock_lost = sock_ino
+        .is_some_and(|ino| std::fs::symlink_metadata(&hub.sock).ok().map(|m| m.ino()) != Some(ino));
+    if sock_lost || !hub.dir.is_dir() {
+        return Some(ServeExit::Orphaned);
+    }
+    idle_exit
+        .is_some_and(|limit| idle_for >= limit)
+        .then_some(ServeExit::Idle)
 }
 
 /// Mark overdue envelopes `expired` and send their senders a delivery
@@ -215,7 +356,7 @@ fn dispatch(server: &Arc<Server>, env: Envelope) -> bool {
             }
         }
     } else if looks_like_pane(&recipient) {
-        pane::spawn_delivery(server.store.clone(), env);
+        pane::spawn_delivery(server.store.clone(), env, server.activity.enter());
         false
     } else {
         false

@@ -163,6 +163,7 @@ async fn spawn_web_server(home: &Path, proj: &Path) -> WebServer {
     cmd.args(["web", "--port", "0", "--cwd"])
         .arg(proj)
         .env("HOME", home)
+        .env("OMP_HUB", "0") // no auto-started hub outliving the temp HOME
         .env("OMP_RS_BASE_URL", FIXTURE_BASE_URL)
         .env("OMP_RS_MODEL", FIXTURE_MODEL)
         .env("NO_COLOR", "1")

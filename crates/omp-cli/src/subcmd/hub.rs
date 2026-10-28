@@ -51,7 +51,10 @@ fn usage() {
 Usage: omt hub <command> [flags]
 
 Commands:
-  serve [--dir DIR] [--sock PATH]     run the hub in the foreground
+  serve [--dir DIR] [--sock PATH]     run the hub in the foreground; exits when
+                                      unreachable (dir/socket gone) or idle with
+                                      no client for OMP_HUB_IDLE_EXIT_SECS
+                                      (default 900, 0 = never)
   send --from A --to B [flags]        send an envelope (idempotent on --id)
   inbox --recipient R                 list mail, urgent first
   status [--recipient R|--message-id M]  unread / reply-expected with age / claims
@@ -175,7 +178,8 @@ fn cmd_serve(flags: &std::sync::Arc<std::collections::HashMap<String, String>>) 
     });
     match rx.recv() {
         Ok(result) => {
-            result?;
+            let exit = result?;
+            eprintln!("omt hub serve: exiting ({exit:?})");
             Ok(0)
         }
         Err(e) => anyhow::bail!("hub serve thread died: {e}"),

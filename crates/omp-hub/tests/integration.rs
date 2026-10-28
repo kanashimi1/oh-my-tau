@@ -8,7 +8,8 @@
 use std::time::Duration;
 
 use omp_hub::{
-    new_message_id, DeliverStream, Envelope, HubClient, HubDir, Kind, Priority, State, Store,
+    new_message_id, DeliverStream, Envelope, HubClient, HubDir, Kind, Priority, ServeExit, State,
+    Store,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -411,4 +412,52 @@ async fn wire_claims_roundtrip() {
     let claims = c.claims(Some("crates/"), None).await.unwrap();
     assert_eq!(claims["claims"].as_array().unwrap().len(), 0);
     task.abort();
+}
+
+fn spawn_serve_with(
+    hub: &HubDir,
+    idle_exit: Option<Duration>,
+) -> JoinHandle<anyhow::Result<ServeExit>> {
+    let hub = hub.clone();
+    tokio::spawn(async move { omp_hub::serve_with(&hub, idle_exit).await })
+}
+
+async fn exit_of(task: JoinHandle<anyhow::Result<ServeExit>>) -> ServeExit {
+    tokio::time::timeout(Duration::from_secs(10), task)
+        .await
+        .expect("hub did not exit")
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn idle_exit_never_under_a_registered_agent_then_after_the_limit() {
+    let dir = TempDir::new().unwrap();
+    let hub = HubDir::explicit(dir.path().to_path_buf(), None);
+    let task = spawn_serve_with(&hub, Some(Duration::from_millis(600)));
+    let c = connect(&hub).await;
+    c.hello("idle-agent", 0).await.unwrap();
+    // A registered agent keeps the hub up far past the idle limit.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(!task.is_finished(), "hub exited under a registered agent");
+    assert!(hub.sock.exists());
+    drop(c);
+    assert_eq!(exit_of(task).await, ServeExit::Idle);
+    assert!(!hub.sock.exists(), "idle exit leaves no stale socket");
+}
+
+#[tokio::test]
+async fn orphaned_hub_exits_once_its_dir_is_gone_and_clients_left() {
+    let home = TempDir::new().unwrap();
+    let hub = HubDir::explicit(home.path().join(".omp/hub"), None);
+    // Idle limit disabled: only the orphan rule can end it.
+    let task = spawn_serve_with(&hub, None);
+    let c = connect(&hub).await;
+    c.hello("orphan-agent", 0).await.unwrap();
+    std::fs::remove_dir_all(home.path().join(".omp")).unwrap();
+    // Longer than one watchdog tick (2 s): still up while the agent is.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!task.is_finished(), "hub exited under a registered agent");
+    drop(c);
+    assert_eq!(exit_of(task).await, ServeExit::Orphaned);
 }

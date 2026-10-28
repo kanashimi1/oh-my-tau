@@ -22,7 +22,9 @@ pub use envelope::{
     SENDER_HUB,
 };
 pub use schema::{validate_reply, ReplyValidation};
-pub use server::{serve, HubDir};
+pub use server::{
+    idle_exit_from_env, serve, serve_with, HubDir, ServeExit, DEFAULT_IDLE_EXIT, IDLE_EXIT_ENV,
+};
 pub use store::{
     ClaimOutcome, ClaimRow, EnvelopeRow, InsertOutcome, PendingReply, StatusReport, Store,
 };
