@@ -267,6 +267,8 @@ fn strip_deleted_suffix(exe: &std::path::Path) -> Option<std::path::PathBuf> {
 
 #[allow(clippy::disallowed_methods)] // entry point: sync main drives the process runtime
 fn main() -> Result<()> {
+    // Before any thread exists: removing an env var is not thread-safe.
+    rpc::take_detached_socket_env();
     // The rpc/print loop is strictly sequential; a multi-thread runtime costs
     // ~20-30 ms CPU/turn in scheduler overhead (measured, RPC12 team run).
     // Run those modes on a current-thread runtime; interactive TUI keeps the

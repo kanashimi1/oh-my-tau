@@ -136,6 +136,23 @@ impl RpcAskUi {
 /// Internal end-of-stream frame: the stdout writer stops after the frames queued before it.
 const FLUSH_MARKER: &str = "__omt_flush";
 
+/// `OMP_RPC_SOCKET`, taken out of the environment at startup (see
+/// [`take_detached_socket_env`]).
+static DETACHED_SOCKET: std::sync::OnceLock<Option<std::ffi::OsString>> =
+    std::sync::OnceLock::new();
+
+/// Move `OMP_RPC_SOCKET` (set by `omt web` for the agent it spawns) out of the
+/// environment before any thread starts. Left in place it is inherited by
+/// every subprocess — a `task` child `omt --mode rpc` would rebind the
+/// parent's control socket path and swallow the frames meant for the parent.
+pub fn take_detached_socket_env() {
+    let value = std::env::var_os("OMP_RPC_SOCKET");
+    if value.is_some() {
+        std::env::remove_var("OMP_RPC_SOCKET");
+    }
+    let _ = DETACHED_SOCKET.set(value);
+}
+
 thread_local! {
     /// Frame channel of the active RPC loop (set in `run_with`).
     static RUNTIME_TX: std::cell::RefCell<Option<mpsc::UnboundedSender<Value>>> =
@@ -1459,7 +1476,7 @@ pub async fn run_with(
     // per-agent Unix socket and outlive the hub. Binding before the runtime
     // warms up lets a restarting hub connect immediately; connections queue
     // in the listener backlog until `serve_detached` below starts.
-    let detached = match std::env::var_os("OMP_RPC_SOCKET") {
+    let detached = match DETACHED_SOCKET.get().cloned().flatten() {
         Some(path) => Some(bind_detached(Path::new(&path))?),
         None => None,
     };
