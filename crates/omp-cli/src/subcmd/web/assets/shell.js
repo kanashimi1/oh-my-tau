@@ -137,6 +137,7 @@
         active: a.id === s.agentId, pinned: pinned.has(key),
         dot: a.streaming || a.runningTools ? "busy" : "live",
         status: a.needsInput ? "needs input" : a.runningTools ? "running" : a.streaming ? "working" : null,
+        waitingMs: !a.streaming && a.awaitingTasksSinceMs ? Date.now() - a.awaitingTasksSinceMs : null,
       });
     }
 
@@ -196,9 +197,18 @@
   const rowNode = (s, row) => {
     const dot = row.dot ? el("span.sess-dot." + row.dot, { title: row.dot === "busy" ? "working" : "running" })
       : el("span.sess-dot", { title: "stored" });
+    // Parked on background subagents: harmless for a few minutes, a likely
+    // stuck child after that (the session never settles on its own).
+    const waitChip = row.waitingMs != null && !row.status
+      ? el("span." + (row.waitingMs > STUCK_MS ? "needs-input.stuck" : "muted-run"), {
+          text: "subagent " + waitText(row.waitingMs),
+          title: "Waiting for its background subagents since " + new Date(Date.now() - row.waitingMs).toLocaleString() + ". Click to cancel them.",
+          onclick: (e) => { e.stopPropagation(); cancelSubagents(S(), row.id); },
+        })
+      : null;
     const chip = row.status === "needs input"
       ? el("span.needs-input", { text: row.status })
-      : row.status ? el("span.muted-run", { text: row.status }) : null;
+      : row.status ? el("span.muted-run", { text: row.status }) : waitChip;
     const actions = el("span.sess-actions", null,
       el("button.row-action" + (row.pinned ? ".pinned" : ""), { title: row.pinned ? "Unpin" : "Pin", html: PIN_SVG, onclick: (e) => { e.stopPropagation(); togglePin(s, row); } }),
       el("button.row-action", { title: "Open in new window", html: NEWWIN_SVG, onclick: (e) => { e.stopPropagation(); openInNewWindow(s, row); } }),
@@ -274,6 +284,9 @@
       { label: "Open in new window", run: () => openInNewWindow(s, row) },
       { label: "Open in terminal", run: () => openInTerminal(s, row) },
     ];
+    if (row.waitingMs != null) {
+      items.push("-", { label: "Cancel waiting subagents", run: () => cancelSubagents(S(), row.id) });
+    }
     if (row.kind === "agent" && row.id === S().agentId) {
       items.push("-", { label: "Stop agent", run: () => stopAgent(S(), row.id) });
     }
@@ -374,6 +387,19 @@
       }
     }
     openSession(s, { ...row, cwd });
+  }
+
+  const STUCK_MS = 10 * 60 * 1000;
+  const waitText = (ms) => ms < 3600000 ? Math.max(1, Math.round(ms / 60000)) + "m" : (ms / 3600000).toFixed(ms < 36000000 ? 1 : 0).replace(/\.0$/, "") + "h";
+
+  /** Abort a session parked on background subagents (kills the children). */
+  async function cancelSubagents(s, id) {
+    const ok = await OMP.dialogs.confirmBox("Cancel subagents",
+      "This session is waiting for its background subagents. Cancel them and end the wait? Their unfinished results are lost; the session stays and you can continue it.").promise;
+    if (!ok) return;
+    try { await api("/api/agents/" + id + "/abort", { method: "POST" }); OMP.toast("Subagents cancelled", "success"); }
+    catch (e) { OMP.toast(e.message, "error"); }
+    setTimeout(() => refreshAgents(s), 600);
   }
 
   async function stopAgent(s, id) {

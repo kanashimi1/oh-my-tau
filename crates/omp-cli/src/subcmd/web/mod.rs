@@ -477,7 +477,7 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
         }
         (&Method::POST, "/api/agents") => create_agent(&hub, req).await,
         (&Method::POST, p) if p.starts_with("/api/agents/") => {
-            agent_action(&hub, &p["/api/agents/".len()..])
+            agent_action(&hub, &p["/api/agents/".len()..]).await
         }
         (&Method::DELETE, p) if p.starts_with("/api/agents/") => {
             match hub.agent(&p["/api/agents/".len()..]) {
@@ -589,9 +589,10 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
     }
 }
 
-/// `POST /api/agents/<id>/{focus,terminal}`: show the agent in the desktop
-/// app, or continue it in a terminal (`omt attach <id>`).
-fn agent_action(hub: &Hub, rest: &str) -> Response<Body> {
+/// `POST /api/agents/<id>/{focus,terminal,abort}`: show the agent in the
+/// desktop app, continue it in a terminal (`omt attach <id>`), or abort its
+/// run (also cancels its background `task` children).
+async fn agent_action(hub: &Hub, rest: &str) -> Response<Body> {
     let Some((id, action)) = rest.split_once('/') else {
         return error(StatusCode::NOT_FOUND, "not found");
     };
@@ -607,6 +608,13 @@ fn agent_action(hub: &Hub, rest: &str) -> Response<Body> {
         }
         // Continue the agent in a terminal (`omt attach <id>`).
         "terminal" => desktop::open_terminal(&hub.exe, &agent.cwd, &agent.id),
+        // A parked parent waiting on a stuck subagent: the rpc `abort` kills
+        // the session's `task` children and ends the park.
+        "abort" => {
+            agent
+                .send_line(&json!({"id": "web-abort", "type": "abort"}).to_string())
+                .await
+        }
         _ => return error(StatusCode::NOT_FOUND, "not found"),
     };
     match result {

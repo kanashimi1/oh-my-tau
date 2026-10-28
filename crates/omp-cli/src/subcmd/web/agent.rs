@@ -77,6 +77,13 @@ pub struct Summary {
     /// tool-level flag (`Runtime::state` only exposes `isStreaming`), so this
     /// honestly mirrors `streaming` until the state grows such a signal.
     pub running_tools: bool,
+    /// The last run ended parked on background `task` children
+    /// (`agent_end` with `awaitingAsyncWork`) and nothing ran since: when.
+    /// Lets the UI flag a session silently waiting on a stuck subagent.
+    pub awaiting_tasks_since_ms: Option<i64>,
+    /// While an adopted agent's log is replayed: the log's mtime, used as the
+    /// clock for replayed frames (the replay itself happens "now").
+    replay_clock_ms: Option<i64>,
 }
 
 /// How to start an agent.
@@ -284,7 +291,16 @@ impl Agent {
                 agent.alive.store(false, Ordering::SeqCst);
                 return;
             };
-            if !from_start {
+            if from_start {
+                let mtime = file
+                    .metadata()
+                    .await
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .and_then(|d| i64::try_from(d.as_millis()).ok());
+                lock(&agent.summary).replay_clock_ms = mtime;
+            } else {
                 let _ = file.seek(std::io::SeekFrom::End(0)).await;
             }
             let mut carry: Vec<u8> = Vec::new();
@@ -292,6 +308,7 @@ impl Agent {
             loop {
                 match file.read(&mut buf).await {
                     Ok(0) => {
+                        lock(&agent.summary).replay_clock_ms = None; // caught up: live from here
                         if !agent.alive.load(Ordering::SeqCst) {
                             break;
                         }
@@ -419,6 +436,7 @@ impl Agent {
             "streaming": s.streaming,
             "needsInput": s.needs_input,
             "runningTools": s.running_tools,
+            "awaitingTasksSinceMs": s.awaiting_tasks_since_ms,
         })
     }
 
@@ -526,9 +544,9 @@ impl Agent {
                     }
                 }
             }
-            "agent_start" => lock(&self.summary).streaming = true,
+            "agent_start" => note_run_frame(&mut lock(&self.summary), &frame, pa_agent::now_ms()),
             "agent_end" | "session_settled" => {
-                lock(&self.summary).streaming = false;
+                note_run_frame(&mut lock(&self.summary), &frame, pa_agent::now_ms());
                 refresh = true;
             }
             "session_info" | "session_loaded" | "session_reset" | "model_changed" => refresh = true,
@@ -560,12 +578,78 @@ impl Agent {
     }
 }
 
+/// Run-state bookkeeping for `agent_start` / `agent_end` / `session_settled`:
+/// streaming flag plus "parked on background subagents since" — an
+/// `agent_end` with `awaitingAsyncWork` starts the clock (replayed frames use
+/// the log's mtime), any new run or a normal settle clears it.
+fn note_run_frame(s: &mut Summary, frame: &Value, now_ms: i64) {
+    match frame.get("type").and_then(Value::as_str) {
+        Some("agent_start") => {
+            s.streaming = true;
+            s.awaiting_tasks_since_ms = None;
+        }
+        Some("agent_end") => {
+            s.streaming = false;
+            if frame.get("awaitingAsyncWork").and_then(Value::as_bool) == Some(true) {
+                let at = s.replay_clock_ms.unwrap_or(now_ms);
+                s.awaiting_tasks_since_ms.get_or_insert(at);
+            } else {
+                s.awaiting_tasks_since_ms = None;
+            }
+        }
+        Some("session_settled") => {
+            s.streaming = false;
+            s.awaiting_tasks_since_ms = None;
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// `needs_input` follows the pending-dialog queue: any unanswered dialog
     /// sets it, resolving the last one clears it.
+    #[test]
+    fn parked_on_subagents_is_tracked_until_the_next_run() {
+        let mut s = Summary::default();
+        note_run_frame(&mut s, &json!({"type": "agent_start"}), 1);
+        assert!(s.streaming);
+        note_run_frame(
+            &mut s,
+            &json!({"type": "agent_end", "awaitingAsyncWork": true}),
+            100,
+        );
+        assert_eq!(s.awaiting_tasks_since_ms, Some(100));
+        assert!(!s.streaming);
+        // A second parked end keeps the original start of the wait.
+        note_run_frame(
+            &mut s,
+            &json!({"type": "agent_end", "awaitingAsyncWork": true}),
+            500,
+        );
+        assert_eq!(s.awaiting_tasks_since_ms, Some(100));
+        // The delivery turn starts: no longer waiting.
+        note_run_frame(&mut s, &json!({"type": "agent_start"}), 600);
+        assert_eq!(s.awaiting_tasks_since_ms, None);
+        note_run_frame(
+            &mut s,
+            &json!({"type": "agent_end", "awaitingAsyncWork": true}),
+            700,
+        );
+        note_run_frame(&mut s, &json!({"type": "session_settled"}), 800);
+        assert_eq!(s.awaiting_tasks_since_ms, None, "settled: nothing pending");
+        // Replay of an old log dates the wait by the log, not by now.
+        s.replay_clock_ms = Some(42);
+        note_run_frame(
+            &mut s,
+            &json!({"type": "agent_end", "awaitingAsyncWork": true}),
+            9_999,
+        );
+        assert_eq!(s.awaiting_tasks_since_ms, Some(42));
+    }
+
     #[test]
     fn needs_input_tracks_pending_ui() {
         let pending = Mutex::new(Vec::new());

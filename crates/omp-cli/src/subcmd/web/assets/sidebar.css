@@ -84,3 +84,5 @@
 
 .sess-empty { padding: 8px; }
 .pin-badge { font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--fg-faint); flex: none; }
+.session-row .needs-input.stuck { cursor: pointer; }
+.session-row .muted-run[title] { cursor: pointer; }
