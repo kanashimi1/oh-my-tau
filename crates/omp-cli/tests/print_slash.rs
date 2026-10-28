@@ -18,6 +18,7 @@ fn print_mode_prints_handled_command_output() {
     std::fs::create_dir_all(&work).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_omt"))
         .env("HOME", home.path())
+        .env("OMP_HUB", "0") // no auto-started hub outliving the temp HOME
         .env_remove("OMP_AGENT_DIR")
         .env_remove("OMP_AUTH_BROKER_URL")
         .env_remove("OMP_AUTH_BROKER_TOKEN")
