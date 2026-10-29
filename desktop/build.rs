@@ -10,6 +10,9 @@ fn main() {
             "tau_settings",
             "set_capture_shortcut",
             "set_devtools_port",
+            "quick_toggle",
+            "quick_capture",
+            "continue_main",
         ]),
     ))
     .expect("tauri build");

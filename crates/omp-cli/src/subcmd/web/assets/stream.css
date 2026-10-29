@@ -102,6 +102,15 @@
 }
 @keyframes tool-spin { to { transform: rotate(360deg); } }
 
+/* ---------- Message-level elapsed timer ---------- */
+.msg-timer {
+  font: 11px var(--mono);
+  color: var(--fg-faint);
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.msg-timer.live { color: var(--fg-muted); }
+
 /* ---------- Open action ---------- */
 .open-btn {
   align-self: flex-start;

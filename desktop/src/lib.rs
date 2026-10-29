@@ -35,6 +35,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 static WINDOW_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
+mod quick;
 mod settings;
 
 struct AppState {
@@ -259,7 +260,7 @@ fn register_toast_app_id() {
     if let Some(icon) = icon {
         set("IconUri", &icon.display().to_string());
     }
-    set("IconBackgroundColor", "FF141018");
+    set("IconBackgroundColor", "FF181818");
     // SAFETY: `key` was opened above.
     unsafe { RegCloseKey(key) };
 }
@@ -338,6 +339,9 @@ pub fn run() {
             capture_rect,
             tau_settings,
             set_capture_shortcut,
+            quick::quick_toggle,
+            quick::quick_capture,
+            quick::continue_main,
             set_devtools_port
         ])
         // Composer dictation: windows only ever show the local omt service,
@@ -357,6 +361,7 @@ pub fn run() {
             register_toast_app_id();
             setup_tray(app)?;
             setup_global_shortcut(app)?;
+            quick::register(app.handle());
             setup_main_window(app)?;
             Ok(())
         })
@@ -462,6 +467,40 @@ fn register_capture(app: &AppHandle, shortcut: Shortcut) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn apply_window_chrome(window: &tauri::WebviewWindow) {
+    // Match the native Windows caption to the default graphite harness theme.
+    use std::ffi::c_void;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+    let Ok(hwnd) = window.hwnd() else { return };
+    let dark = 1_i32;
+    let caption = 0x0018_1818_u32; // COLORREF #181818
+    let text = 0x00d6_d6d6_u32; // COLORREF #d6d6d6
+    for (attribute, value, size) in [
+        (
+            DWMWA_USE_IMMERSIVE_DARK_MODE,
+            &dark as *const _ as *const c_void,
+            std::mem::size_of::<i32>(),
+        ),
+        (
+            DWMWA_CAPTION_COLOR,
+            &caption as *const _ as *const c_void,
+            std::mem::size_of::<u32>(),
+        ),
+        (
+            DWMWA_TEXT_COLOR,
+            &text as *const _ as *const c_void,
+            std::mem::size_of::<u32>(),
+        ),
+    ] {
+        // SAFETY: valid window handle and pointers to initialized values of the declared sizes.
+        unsafe {
+            DwmSetWindowAttribute(hwnd.0 as *mut c_void, attribute as u32, value, size as u32)
+        };
+    }
+}
+
 fn setup_main_window(app: &tauri::App) -> tauri::Result<()> {
     let handle = app.handle().clone();
 
@@ -469,13 +508,14 @@ fn setup_main_window(app: &tauri::App) -> tauri::Result<()> {
     if let Some(port) = port {
         log_line(&format!("devtools: remote debugging on 127.0.0.1:{port}"));
     }
-    let _win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+    let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .additional_browser_args(&settings::browser_args(port))
         .title("Tau")
         .inner_size(1280.0, 820.0)
         .min_inner_size(760.0, 540.0)
         .visible(false)
         .build()?;
+    apply_window_chrome(&win);
 
     std::thread::spawn(move || {
         let up = wait_for_service();
@@ -516,6 +556,7 @@ fn open_new_window(app: &AppHandle, hash: &str) -> tauri::Result<()> {
         .inner_size(1280.0, 820.0)
         .min_inner_size(760.0, 540.0)
         .build()?;
+    apply_window_chrome(&win);
     let _ = win.show();
     let _ = win.set_focus();
     Ok(())

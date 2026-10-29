@@ -38,8 +38,10 @@ const RESUME_ID: &str = "__web_resume";
 const PROTOCOL_ID: &str = "__web_protocol";
 /// Dialog methods a browser must answer; replayed to late attachers.
 const DIALOG_METHODS: &[&str] = &["select", "confirm", "input", "editor", "ask"];
+/// Bound retained frames: large history replies must not accumulate for slow clients.
+/// Lagging clients receive `web_lagged` and resynchronize their transcript.
+const FRAME_QUEUE: usize = 64;
 const STDERR_TAIL: usize = 40;
-
 fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
     m.lock()
 }
@@ -188,7 +190,7 @@ impl Agent {
             }
         };
 
-        let (tx, _) = broadcast::channel(8192);
+        let (tx, _) = broadcast::channel(FRAME_QUEUE);
         let agent = Arc::new(Self {
             id: id.clone(),
             cwd: spec.cwd.clone(),
@@ -246,7 +248,7 @@ impl Agent {
             approval_mode: entry.approval_mode.clone(),
             control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(None),
-            tx: broadcast::channel(8192).0,
+            tx: broadcast::channel(FRAME_QUEUE).0,
             pending_ui: Mutex::new(Vec::new()),
             summary: Mutex::new(Summary {
                 session_file: entry.session.clone(),
@@ -631,7 +633,7 @@ mod tests {
             approval_mode: None,
             control: tokio::sync::Mutex::new(None),
             child: tokio::sync::Mutex::new(None),
-            tx: broadcast::channel(8192).0,
+            tx: broadcast::channel(FRAME_QUEUE).0,
             pending_ui: Mutex::new(Vec::new()),
             summary: Mutex::new(Summary::default()),
             stderr: Mutex::new(VecDeque::new()),
@@ -773,5 +775,21 @@ mod tests {
         assert!(lock(&summary).needs_input, "d2 is still unanswered");
         set_dialog_pending(&pending, &summary, "d2", None);
         assert!(!lock(&summary).needs_input);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    async fn slow_receivers_do_not_retain_unbounded_frames() {
+        let agent = bare_agent();
+        let mut rx = agent.subscribe();
+        for _ in 0..FRAME_QUEUE + 8 {
+            agent
+                .feed_log_line(r#"{"type":"command_output","text":"x"}"#)
+                .await;
+        }
+        assert!(matches!(
+            rx.recv().await,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(8))
+        ));
     }
 }

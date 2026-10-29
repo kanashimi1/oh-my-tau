@@ -1,0 +1,80 @@
+/* Integrated terminal (feature: terminal.js) — topbar button + resizable
+   bottom panel with shell tabs, output, input and a processes/ports view. */
+.term-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--fg); }
+
+.term-panel {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  height: 320px; max-height: 80vh;
+  display: flex; flex-direction: column;
+  background: var(--bg, #14161a); color: var(--fg);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -8px 24px rgb(0 0 0 / 0.35);
+  font-family: var(--mono, monospace); font-size: 13px;
+}
+.term-resize {
+  height: 6px; cursor: ns-resize; flex: none;
+  background: transparent;
+}
+.term-resize:hover { background: var(--accent); opacity: 0.5; }
+
+.term-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-bottom: 1px solid var(--border); flex: none;
+}
+.term-head .icon-btn { padding: 2px 7px; font-size: 12px; border-radius: 6px; }
+.term-tabs { display: flex; align-items: center; gap: 4px; overflow-x: auto; min-width: 0; }
+.term-tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 1px solid transparent; border-radius: 6px;
+  background: none; color: var(--fg-muted); cursor: pointer; white-space: nowrap;
+  font: inherit; font-size: 12.5px;
+}
+.term-tab:hover { background: var(--bg-hover); }
+.term-tab.active { color: var(--fg); border-color: var(--border); background: var(--bg-hover); }
+.term-tab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+.term-tab-dot.dead { background: var(--fg-faint); }
+.term-tab-x { opacity: 0.6; padding: 0 2px; }
+.term-tab-x:hover { opacity: 1; color: var(--danger, var(--warn)); }
+.term-new { color: var(--accent); font-weight: 700; }
+
+.term-body { flex: 1; min-height: 0; position: relative; display: flex; }
+.term-out {
+  flex: 1; margin: 0; padding: 8px 12px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word;
+  font: inherit; line-height: 1.45; outline: none;
+}
+
+.term-input-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-top: 1px solid var(--border); flex: none;
+}
+.term-cwd {
+  color: var(--accent-2, var(--accent)); cursor: pointer; white-space: nowrap;
+  max-width: 30%; overflow: hidden; text-overflow: ellipsis;
+  flex: none; font-size: 12px;
+}
+.term-cwd:hover { text-decoration: underline; }
+.term-input {
+  flex: 1; min-width: 0; background: none; border: none; outline: none;
+  color: inherit; font: inherit;
+}
+
+.term-status {
+  flex: none; padding: 2px 10px 4px; color: var(--fg-muted); font-size: 11.5px;
+  border-top: 1px solid var(--border);
+}
+
+.term-sys {
+  position: absolute; inset: 0; z-index: 5; overflow: auto;
+  background: var(--bg, #14161a); padding: 12px 16px;
+  font-family: var(--font, inherit);
+}
+.term-sys h3 { margin: 10px 0 4px; font-size: 13px; }
+.term-sys ul { margin: 0; padding: 0 0 0 18px; }
+.term-sys li { font-family: var(--mono, monospace); font-size: 12.5px; line-height: 1.6; }
+.term-sys-state { color: var(--fg-muted); }
+
+@media (max-width: 640px) {
+  .term-panel { height: 260px; }
+  .term-cwd { display: none; }
+}

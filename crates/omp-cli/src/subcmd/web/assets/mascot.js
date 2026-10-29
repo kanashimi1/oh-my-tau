@@ -1,222 +1,77 @@
 "use strict";
-// Tau — the omt mascot: a little τ-shaped spirit (hood = crossbar, body =
-// stem, wispy tail = the hook). Pixel frames rendered as crisp SVG.
+// Tau — the rounded τ from the brand mark, with light moving through the glyph.
+// The public API and agent states are shared with the rest of the web UI.
 //
 //   OMP.mascot.svg(state, { size, title })  → <svg> element
 //   OMP.mascot.mount(host)                   → live sprite; .set(state)
 //   OMP.mascot.stateOf(S)                    → state for an app state
-//
-// States: idle (blinks), think, work, wave (needs your input), error.
-// Glyphs: # body · h highlight · d shade · D visor · E eyes · R error eyes ·
-// s sparkle (animated separately) · . empty. A dark outline is added
-// around the silhouette so the sprite reads on light and dark themes.
+//   OMP.mascot.setPalette(id)                → recolor every live Tau
 (function (OMP) {
-  const FRAMES = {
-    idle: [
-      ".......................",
-      "........hhhhhhh........",
-      ".......#########.......",
-      "......##DDDDDDD##......",
-      "......#DDEDDDEDD#......",
-      "......#DDEDDDEDD#......",
-      "......##DDDDDDD##......",
-      "..h#################h..",
-      ".####################d.",
-      ".##d.....#####.....##d.",
-      ".#d......#####......#d.",
-      ".........#####.........",
-      ".........#####.........",
-      ".........#####.........",
-      "..........#####........",
-      "..........######..##...",
-      "...........#######d....",
-      ".............dddd......",
-      ".......................",
-    ],
-    blink: [
-      ".......................",
-      "........hhhhhhh........",
-      ".......#########.......",
-      "......##DDDDDDD##......",
-      "......#DDDDDDDDD#......",
-      "......#DEEEDEEED#......",
-      "......##DDDDDDD##......",
-      "..h#################h..",
-      ".####################d.",
-      ".##d.....#####.....##d.",
-      ".#d......#####......#d.",
-      ".........#####.........",
-      ".........#####.........",
-      ".........#####.........",
-      "..........#####........",
-      "..........######..##...",
-      "...........#######d....",
-      ".............dddd......",
-      ".......................",
-    ],
-    think: [
-      ".......................",
-      "........hhhhhhh...s....",
-      ".......#########.sss...",
-      "....s.##DDEDDDE##.s....",
-      "......#DDDEDDDED#......",
-      "......#DDDDDDDDD#...s..",
-      "......##DDDDDDD##......",
-      "..h#################h..",
-      ".####################d.",
-      ".##d.....#####.....##d.",
-      ".#d......#####......#d.",
-      ".........#####.........",
-      ".........#####.........",
-      ".........#####.........",
-      "..........#####........",
-      "..........######..##...",
-      "...........#######d....",
-      ".............dddd......",
-      ".......................",
-    ],
-    wave: [
-      ".......................",
-      "........hhhhhhh........",
-      ".......#########....hh.",
-      "......##DDDDDDD##...##.",
-      "......#DDEDDDEDD#..###.",
-      "......#DEDEDEDED#.###..",
-      "......##DDDDDDD#####...",
-      "..h#################...",
-      ".###################d..",
-      ".##d.....#####.........",
-      ".#d......#####.........",
-      ".........#####.........",
-      ".........#####.........",
-      ".........#####.........",
-      "..........#####........",
-      "..........######..##...",
-      "...........#######d....",
-      ".............dddd......",
-      ".......................",
-    ],
-    work: [
-      ".......................",
-      "........hhhhhhh........",
-      ".......#########.......",
-      "......##DDDDDDD##......",
-      "......#DDDDDDDDD#......",
-      "......#DEEDDDEED#......",
-      "......##DDDDDDD##......",
-      "..h#################h..",
-      ".####################d.",
-      ".##d.....#####.....##d.",
-      ".#d......#####.....s#d.",
-      ".........#####.......s.",
-      ".........#####......s.s",
-      ".........#####.......s.",
-      "..........#####........",
-      "..........######..##...",
-      "...........#######d....",
-      ".............dddd......",
-      ".......................",
-    ],
-    error: [
-      ".......................",
-      "........hhhhhhh........",
-      ".......#########.......",
-      "......##RDRDRDR##......",
-      "......#DDRDDDRDD#......",
-      "......#DRDRDRDRD#......",
-      "......##DDDDDDD##......",
-      "..h#################h..",
-      ".####################d.",
-      ".##d.....#####.....##d.",
-      ".#d......#####......#d.",
-      ".........#####.........",
-      ".........#####.........",
-      ".........#####.........",
-      "..........#####........",
-      "..........######..##...",
-      "...........#######d....",
-      ".............dddd......",
-      ".......................",
-    ],
-  };
-  const W = 23, H = 19;
-  const PINK = [255, 92, 168], VIOLET = [170, 90, 255], CYAN = [80, 220, 255];
-  const OUTLINE = [18, 8, 30];
-  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * Math.min(1, Math.max(0, t))));
-  const body = (x, y) => {
-    const t = (x / (W - 1)) * 0.55 + (y / (H - 1)) * 0.45;
-    return t < 0.5 ? mix(PINK, VIOLET, t * 2) : mix(VIOLET, CYAN, (t - 0.5) * 2);
-  };
-  const COLOR = {
-    "#": body,
-    h: (x, y) => mix(body(x, y), [255, 255, 255], 0.5),
-    d: (x, y) => mix(body(x, y), [40, 10, 70], 0.35),
-    D: () => [30, 14, 48],
-    E: () => [150, 252, 255],
-    R: () => [255, 84, 104],
-    s: () => [255, 236, 140],
-  };
-  const rgb = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
-  const at = (f, x, y) => (y >= 0 && y < H && x >= 0 && x < W ? f[y][x] : ".");
+  const FRAMES = Object.fromEntries(["idle", "think", "work", "wave", "error"].map((s) => [s, s]));
+  const W = 64, H = 64;
+  const PATH = "M22 6H54Q56 6 56 8V15Q56 17 54 17H38L35 42C34.2 49 36 52 40.5 52C44 52 46.3 50.2 48.2 46.8L53.5 49.3C50.8 56 45.9 59.5 38.8 59.5C29.4 59.5 24.1 54.3 25.6 44.1L28.8 17H22.5C18.7 17 16.3 19.6 15.3 24.7L8.7 23.4C10 13.5 13.8 6 22 6Z";
+  const PALETTES = Object.freeze({
+    volt: { name: "Volt", stops: ["#f1ff9b", "#8aefa7", "#16b68e"], glow: "#77e6a2" },
+    ember: { name: "Ember", stops: ["#fff1ae", "#ffb13b", "#ff5c49"], glow: "#ff9a51" },
+    tide: { name: "Tide", stops: ["#dcfff2", "#62e6c8", "#168fa0"], glow: "#5bdcc5" },
+    titanium: { name: "Titanium", stops: ["#ffffff", "#b8c4cc", "#627381"], glow: "#b5c6d2" },
+    copper: { name: "Copper", stops: ["#ffe2ae", "#d99055", "#8f4934"], glow: "#d89561" },
+    infrared: { name: "Infrared", stops: ["#ffd36e", "#ff7048", "#d92545"], glow: "#ff604f" },
+  });
+  const ERROR = { name: "Error", stops: ["#ffe0b8", "#ff8066", "#d92f4d"], glow: "#ff5b62" };
+  let sequence = 0;
+  let current = "volt";
+  try {
+    const saved = localStorage.getItem("omp-tau-palette");
+    if (PALETTES[saved]) current = saved;
+  } catch { /* storage can be unavailable in embedded previews */ }
 
-  // Horizontal runs of one colour per row → few <rect>s.
-  function rects(cells) {
-    const out = [];
-    for (let y = 0; y < H; y++) {
-      let run = null;
-      for (let x = 0; x <= W; x++) {
-        const c = x < W ? cells[y][x] : null;
-        if (run && c === run.c) { run.w++; continue; }
-        if (run) out.push(`<rect x="${run.x}" y="${y}" width="${run.w}" height="1" fill="${run.c}"/>`);
-        run = c ? { x, w: 1, c } : null;
-      }
-    }
-    return out.join("");
+  function markup(state, id) {
+    const palette = state === "error" ? ERROR : PALETTES[current];
+    const [a, b, c] = palette.stops;
+    return `
+      <defs>
+        <linearGradient id="${id}-paint" x1="12" y1="7" x2="52" y2="58" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="${a}"/>
+          <stop offset=".48" stop-color="${b}"/>
+          <stop offset="1" stop-color="${c}"/>
+        </linearGradient>
+        <linearGradient id="${id}-sheen" x1="0" y1="0" x2="1" y2="0">
+          <stop stop-color="#fff" stop-opacity="0"/>
+          <stop offset=".48" stop-color="#fff" stop-opacity=".7"/>
+          <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+        </linearGradient>
+        <clipPath id="${id}-clip"><path d="${PATH}"/></clipPath>
+        <filter id="${id}-glow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="2.4"/>
+        </filter>
+      </defs>
+      <path class="tau-aura" d="${PATH}" fill="${palette.glow}" opacity=".34" filter="url(#${id}-glow)"/>
+      <g class="tau-body">
+        <path d="${PATH}" transform="translate(0 1.1)" fill="#05090c" opacity=".38"/>
+        <path class="tau-mark" d="${PATH}" fill="url(#${id}-paint)"/>
+        <g clip-path="url(#${id}-clip)">
+          <g transform="rotate(17 32 32)"><rect class="tau-sheen" x="-35" y="-15" width="19" height="96" fill="url(#${id}-sheen)"/></g>
+          <path class="tau-trace" d="${PATH}" fill="none" stroke="#fff" stroke-opacity=".52" stroke-width=".65" stroke-dasharray="7 190"/>
+        </g>
+        <path d="${PATH}" fill="none" stroke="${a}" stroke-opacity=".32" stroke-width=".35" stroke-linejoin="round"/>
+      </g>`;
   }
 
-  const cache = new Map();
-  // SVG markup of one frame: outline, body, sparkles in their own group.
-  function markup(state) {
-    if (cache.has(state)) return cache.get(state);
-    const f = FRAMES[state] || FRAMES.idle;
-    const blank = () => Array.from({ length: H }, () => Array(W).fill(null));
-    const main = blank(), spark = blank(), blink = blank();
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        const g = f[y][x];
-        if (g === "s") { spark[y][x] = rgb(COLOR.s()); continue; }
-        if (g !== ".") { main[y][x] = rgb(COLOR[g](x, y)); continue; }
-        const solid = (gx) => gx !== "." && gx !== "s";
-        if (solid(at(f, x + 1, y)) || solid(at(f, x - 1, y)) || solid(at(f, x, y + 1)) || solid(at(f, x, y - 1))) {
-          main[y][x] = rgb(OUTLINE);
-        }
-      }
-    }
-    // Idle blink: the pixels where the blink frame differs, shown briefly.
-    if (state === "idle") {
-      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-        const b = FRAMES.blink[y][x];
-        if (b !== f[y][x]) blink[y][x] = rgb(COLOR[b](x, y));
-      }
-    }
-    const s = `<g class="tau-body">${rects(main)}</g>` +
-      (state === "idle" ? `<g class="tau-blink">${rects(blink)}</g>` : "") +
-      `<g class="tau-spark">${rects(spark)}</g>`;
-    cache.set(state, s);
-    return s;
-  }
+  function palette(id) { return PALETTES[id] || PALETTES[current]; }
 
   function svg(state = "idle", { size = 32, title = "Tau" } = {}) {
-    const ns = "http://www.w3.org/2000/svg";
-    const el = document.createElementNS(ns, "svg");
+    state = FRAMES[state] ? state : "idle";
+    const el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     el.setAttribute("viewBox", `0 0 ${W} ${H}`);
     el.setAttribute("width", String(size));
-    el.setAttribute("height", String(Math.round((size * H) / W)));
-    el.setAttribute("shape-rendering", "crispEdges");
+    el.setAttribute("height", String(size));
     el.setAttribute("role", "img");
     el.setAttribute("aria-label", title);
-    el.classList.add("tau-sprite", "tau-" + (FRAMES[state] ? state : "idle"));
-    el.innerHTML = `<title>${title}</title>` + markup(state);
+    el.classList.add("tau-sprite", "tau-" + state);
+    el.dataset.palette = state === "error" ? "error" : current;
+    el.style.setProperty("--tau-glow", palette(state === "error" ? "error" : current).glow);
+    el.innerHTML = `<title>${title}</title>` + markup(state, `tau-mark-${++sequence}`);
     return el;
   }
 
@@ -228,8 +83,7 @@
     error: "Tau: something went wrong",
   };
 
-  // A sprite that swaps frames only when the state changes (re-rendering
-  // the same state would restart its animation).
+  // Swap only on a state change so a roster refresh does not restart CSS animation.
   function mount(host, { size = 32, state = "idle" } = {}) {
     let cur = null;
     const api = {
@@ -237,6 +91,7 @@
         next = FRAMES[next] ? next : "idle";
         if (next === cur) return;
         cur = next;
+        host.style.setProperty("--tau-glow", palette(next === "error" ? "error" : current).glow);
         host.replaceChildren(svg(next, { size, title: TITLES[next] || "Tau" }));
         host.dataset.state = next;
       },
@@ -246,7 +101,6 @@
     return api;
   }
 
-  // Mascot state for the web app state `S` (app.js).
   function stateOf(S) {
     if (!S || !S.agentId) return "idle";
     const info = (S.agents || []).find((a) => a.id === S.agentId) || {};
@@ -256,7 +110,6 @@
     return "idle";
   }
 
-  // Static placeholders: <span data-tau="idle" data-size="96">.
   function hydrate(root = document) {
     for (const host of root.querySelectorAll("[data-tau]")) {
       if (host.firstChild) continue;
@@ -264,11 +117,30 @@
     }
   }
 
-  // Standalone SVG source of a frame (favicon / icon generation).
-  const svgText = (state = "idle") =>
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" shape-rendering="crispEdges">${markup(state)}</svg>`;
+  function setPalette(id, { persist = true } = {}) {
+    if (!PALETTES[id]) return false;
+    current = id;
+    if (persist) {
+      try { localStorage.setItem("omp-tau-palette", id); } catch { /* non-persistent preview */ }
+    }
+    document.documentElement.dataset.tauPalette = id;
+    for (const host of document.querySelectorAll("[data-tau]")) {
+      const sprite = host.querySelector("svg.tau-sprite");
+      const size = Number(host.dataset.size) || Number(sprite?.getAttribute("width")) || 32;
+      const state = host.dataset.state || host.dataset.tau || "idle";
+      host.replaceChildren(svg(state, { size, title: TITLES[state] || "Tau" }));
+      host.dataset.state = state;
+    }
+    return true;
+  }
 
-  OMP.mascot = { svg, svgText, mount, stateOf, hydrate, FRAMES, W, H };
+  const svgText = (state = "idle") => {
+    state = FRAMES[state] ? state : "idle";
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}">${markup(state, "tau-icon")}</svg>`;
+  };
+
+  OMP.mascot = { svg, svgText, mount, stateOf, hydrate, setPalette, palette, PALETTES, PATH, FRAMES, W, H };
+  document.documentElement.dataset.tauPalette = current;
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => hydrate());
   else hydrate();
 })(window.OMP = window.OMP || {});

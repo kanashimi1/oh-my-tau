@@ -297,22 +297,34 @@ button.wide { width: 100%; }
 
 /* ── brand ─────────────────────────────────────────────────────────────── */
 .brand { display: flex; align-items: center; gap: 9px; }
-/* Tau, the mascot (mascot.js). */
+/* Rounded Tau glyph (mascot.js): light travels through the mark itself. */
 .tau-sprite { display: block; overflow: visible; }
 .tau-brand { display: block; }
-.tau-hero { display: block; filter: drop-shadow(0 0 22px rgba(186, 92, 255, .35)); animation: tau-float 3.4s ease-in-out infinite; }
+.tau-hero { display: block; filter: drop-shadow(0 0 18px color-mix(in srgb, var(--tau-glow) 28%, transparent)); animation: tau-float 4.8s ease-in-out infinite; }
 .tau-live { display: inline-flex; align-items: center; margin: -3px 0 -2px; }
-.tau-sprite .tau-blink { opacity: 0; animation: tau-blink 5.2s steps(1, end) infinite; }
-.tau-think { animation: tau-float 1.6s ease-in-out infinite; }
-.tau-think .tau-spark { animation: tau-twinkle 1.1s steps(2, jump-none) infinite; }
-.tau-work .tau-spark { animation: tau-twinkle .34s steps(2, jump-none) infinite; }
-.tau-wave { animation: tau-hop .9s ease-in-out infinite; }
+.tau-sprite .tau-body { transform-origin: 32px 36px; }
+.tau-sprite .tau-aura { animation: tau-aura 4.8s ease-in-out infinite; }
+.tau-sprite .tau-sheen { animation: tau-sheen 5.8s cubic-bezier(.45, 0, .2, 1) infinite; }
+.tau-sprite .tau-trace { animation: tau-trace 8s linear infinite; }
+.tau-think .tau-body { animation: tau-rock 2.2s ease-in-out infinite; }
+.tau-think .tau-sheen { animation-duration: 2.8s; }
+.tau-think .tau-aura { animation-duration: 2.2s; }
+.tau-work .tau-body { animation: tau-work-pulse .85s ease-in-out infinite; }
+.tau-work .tau-sheen { animation-duration: .85s; }
+.tau-work .tau-trace { animation-duration: .85s; stroke-opacity: .9; }
+.tau-work .tau-aura { animation-duration: .85s; }
+.tau-wave { animation: tau-wave 1.25s ease-in-out infinite; }
 .tau-error { animation: tau-shake .45s ease-in-out 2; }
-@keyframes tau-blink { 0% { opacity: 0 } 93% { opacity: 1 } 96% { opacity: 0 } }
-@keyframes tau-float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-6%) } }
-@keyframes tau-hop { 0%, 100% { transform: translateY(0) } 35% { transform: translateY(-12%) } 60% { transform: translateY(0) } }
-@keyframes tau-twinkle { from { opacity: 1 } to { opacity: .2 } }
-@keyframes tau-shake { 25% { transform: translateX(-6%) } 75% { transform: translateX(6%) } }
+.tau-error .tau-body { animation: tau-error-pulse 1s ease-in-out infinite; }
+@keyframes tau-sheen { 0%, 16% { transform: translateX(0) } 62%, 100% { transform: translateX(112px) } }
+@keyframes tau-trace { to { stroke-dashoffset: -197; } }
+@keyframes tau-aura { 0%, 100% { opacity: .2 } 50% { opacity: .42 } }
+@keyframes tau-rock { 0%, 100% { transform: rotate(-8deg) scale(.96); opacity: .78 } 50% { transform: rotate(8deg) scale(1.06); opacity: 1 } }
+@keyframes tau-work-pulse { 0%, 100% { transform: scale(.96); opacity: .8 } 50% { transform: scale(1.08); opacity: 1 } }
+@keyframes tau-error-pulse { 0%, 100% { transform: scale(.96); opacity: .7 } 50% { transform: scale(1.06); opacity: 1 } }
+@keyframes tau-float { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-4%) } }
+@keyframes tau-wave { 0%, 100% { transform: translateY(0) rotate(0) } 25% { transform: translateY(-14%) rotate(-9deg) } 50% { transform: translateY(0) rotate(0) } 72% { transform: translateY(-7%) rotate(7deg) } }
+@keyframes tau-shake { 25% { transform: translateX(-5%) } 75% { transform: translateX(5%) } }
 @media (prefers-reduced-motion: reduce) {
   .tau-hero, .tau-sprite, .tau-sprite * { animation: none !important; }
 }

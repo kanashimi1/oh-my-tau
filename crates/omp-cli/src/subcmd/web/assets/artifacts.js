@@ -4,7 +4,7 @@
 (function (OMP) {
   const { el, esc } = OMP;
   const LS_WIDTH = "omp-artifacts-width";
-  const OPEN_KINDS = new Set(["code", "diff", "html", "markdown", "image", "file", "files"]);
+  const OPEN_KINDS = new Set(["code", "diff", "html", "markdown", "image", "file", "files", "gallery"]);
 
   // Files on the agent host previewed via /preview/<path> (preview.rs).
   const EXT = {
@@ -77,9 +77,22 @@
       grip.addEventListener("pointerup", up);
     });
 
-    // Esc closes when focus is inside the panel
+    // Esc closes when focus is inside the panel; media keys for gallery/video/pdf views
     root.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { e.stopPropagation(); OMP.artifacts.close(); }
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        if (compareOpen) { compareOpen = false; show(); return; }
+        OMP.artifacts.close();
+        return;
+      }
+      const typing = e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.isContentEditable;
+      if (typing) return;
+      if (current === GALLERY && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        if (galleryMove(e.key === "ArrowRight" ? 1 : -1)) e.preventDefault();
+      } else if (live && live.kind === "video" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (e.key === ",") { e.preventDefault(); live.stepFrame(-1); }
+        else if (e.key === ".") { e.preventDefault(); live.stepFrame(1); }
+      }
     });
 
     window.addEventListener("resize", () => { applyOverlayMode(); setWidth(width); });
@@ -103,6 +116,7 @@
     else if (a.kind === "html") renderHtml(body, actions, a);
     else if (a.kind === "markdown") renderMarkdown(body, actions, a);
     else if (a.kind === "image") renderImage(body, actions, a);
+    else if (a.kind === "gallery") renderGallery(body, actions);
     else if (a.kind === "file") renderFile(body, actions, a);
     else if (a.kind === "files") renderFiles(body);
     else body.append(el("p.muted", { text: "Unsupported artifact." }));
@@ -148,10 +162,191 @@
     draw();
   }
 
+  // ── image gallery of this session ──────────────────────────────────────
+  // Only images actually seen (opened, embedded as artifacts, or mentioned
+  // and confirmed to exist) — never a blind directory listing.
+  const GALLERY = { kind: "gallery", title: "Image gallery" };
+  const gallery = []; // {path?, src?, title}, newest first, capped
+  function galleryAdd(g) {
+    const key = g.path || g.src;
+    if (!key) return;
+    const i = gallery.findIndex((x) => (x.path || x.src) === key);
+    if (i !== -1) gallery.splice(i, 1);
+    gallery.unshift({ path: g.path, src: g.src, title: g.title });
+    if (gallery.length > 60) gallery.pop();
+  }
+  const gallerySrc = (g) => (g.path ? previewUrl(g.path) : g.src);
+  const galleryLabel = (g) => g.title || (g.path ? baseName(g.path) : "image");
+
+  let compareOpen = false;
+  let compareSel = new Set(); // gallery entries selected for comparison
+
+  function galleryMove(dir) {
+    const thumbs = [...root.querySelectorAll("#art-body .art-thumb")];
+    if (!thumbs.length) return false;
+    const i = thumbs.indexOf(document.activeElement);
+    const n = i === -1 ? (dir > 0 ? 0 : Math.max(0, thumbs.length - 1)) : Math.min(thumbs.length - 1, Math.max(0, i + dir));
+    thumbs[n].focus();
+    return true;
+  }
+
+  function renderGallery(body, actions) {
+    compareOpen = false;
+    compareSel.clear();
+    const cmpBtn = el("button.icon-btn", { text: "Compare", title: "Compare the two selected images with a slider", disabled: true, onclick: () => renderCompare([...compareSel]) });
+    const refreshCmp = () => { cmpBtn.disabled = compareSel.size !== 2; };
+    const strip = el("div.art-gallery", { role: "listbox", "aria-label": "Images seen in this session" });
+    for (const g of gallery) {
+      const cell = el("button.art-thumb", { title: galleryLabel(g), "aria-pressed": "false" },
+        el("img", { src: gallerySrc(g), alt: galleryLabel(g), loading: "lazy" }));
+      cell.addEventListener("click", () => {
+        if (compareSel.has(g)) compareSel.delete(g);
+        else { if (compareSel.size >= 2) compareSel.delete([...compareSel][0]); compareSel.add(g); }
+        cell.classList.toggle("sel", compareSel.has(g));
+        cell.setAttribute("aria-pressed", String(compareSel.has(g)));
+        refreshCmp();
+      });
+      cell.addEventListener("dblclick", () => openGalleryItem(g));
+      strip.append(cell);
+    }
+    if (!gallery.length) strip.append(el("p.muted.art-files-empty", { text: "No images yet. Images you preview or that appear as artifacts are collected here." }));
+    body.append(el("div.art-gallery-wrap", null,
+      el("p.muted.art-gallery-hint", { text: "Click to select · double-click to open · select two thumbnails, then Compare · ←/→ move" }),
+      strip));
+    actions.append(cmpBtn);
+  }
+
+  function openGalleryItem(g) {
+    if (g.path) OMP.preview.open(g.path);
+    else OMP.artifacts.open({ kind: "image", src: g.src, title: g.title || "image" });
+  }
+
+  // Before/after slider for two gallery images. The range input keeps the
+  // whole control keyboard-accessible (native arrow-key handling).
+  function renderCompare(items) {
+    if (items.length !== 2) return;
+    const [a, b] = items;
+    compareOpen = true;
+    const body = root.querySelector("#art-body");
+    const actions = root.querySelector("#art-actions");
+    actions.replaceChildren(el("button.icon-btn", { text: "← Gallery", title: "Back to the gallery (Esc)", onclick: backToGallery }));
+    const handle = el("div.art-cmp-handle");
+    const topImg = el("img.art-cmp-img", { src: gallerySrc(b), alt: galleryLabel(b) });
+    const slider = el("input.art-cmp-range", { type: "range", min: "0", max: "100", value: "50",
+      "aria-label": `Compare: left ${galleryLabel(a)}, right ${galleryLabel(b)}` });
+    const setPos = () => {
+      const v = Number(slider.value);
+      topImg.style.clipPath = `inset(0 0 0 ${v}%)`;
+      handle.style.left = `calc(${v}% - 1px)`;
+      slider.setAttribute("aria-valuetext", v + "%");
+    };
+    slider.addEventListener("input", setPos);
+    body.replaceChildren(el("div.art-compare", null,
+      el("img.art-cmp-img", { src: gallerySrc(a), alt: galleryLabel(a) }),
+      topImg, handle,
+      el("span.art-cmp-tag.a", { text: galleryLabel(a) }),
+      el("span.art-cmp-tag.b", { text: galleryLabel(b) }),
+      slider));
+    setPos();
+  }
+
+  function backToGallery() {
+    compareOpen = false;
+    if (current === GALLERY) show();
+  }
+
+  // Shared frame/time indicator text: m:ss.mmm · ~frame n/total (30fps est.)
+  const fmtT = (t) => {
+    t = Math.max(0, t || 0);
+    return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}.${String(Math.floor((t % 1) * 1000)).padStart(3, "0")}`;
+  };
+
+  // Frame-by-frame controls for <video>. Stepping uses
+  // requestVideoFrameCallback to confirm the frame is actually shown when
+  // available, with a `seeked` listener + timeout as the safe fallback.
+  function videoControls(media, L) {
+    const STEP = 1 / 30;
+    const ind = el("span.art-vid-ind", { text: "–:––.––·" });
+    const update = () => {
+      if (!media.duration) { ind.textContent = "–:––.––·"; return; }
+      const f = Math.floor(media.currentTime / STEP) + 1;
+      ind.textContent = `${fmtT(media.currentTime)} · ~frame ${f}/${Math.max(1, Math.floor(media.duration / STEP))}`;
+    };
+    const onTime = () => update();
+    media.addEventListener("timeupdate", onTime);
+    media.addEventListener("loadedmetadata", onTime);
+    L.cleanups.push(() => media.removeEventListener("timeupdate", onTime));
+    const step = (d) => {
+      if (!media.duration || media.seeking) return;
+      media.pause();
+      let settled = false;
+      const done = () => { if (settled) return; settled = true; update(); };
+      if (typeof media.requestVideoFrameCallback === "function") {
+        try { media.requestVideoFrameCallback(done); } catch { /* fall back below */ }
+      }
+      media.addEventListener("seeked", done, { once: true });
+      setTimeout(done, 300); // rVFC may never fire while paused/hidden
+      media.currentTime = Math.min(media.duration, Math.max(0, media.currentTime + d * STEP));
+    };
+    L.stepFrame = step;
+    L.videoEl = media;
+    return el("div.art-vid-bar", { role: "group", "aria-label": "Video frame controls" },
+      el("button.icon-btn", { text: "⏮", title: "Previous frame (,)", "aria-label": "Previous frame", onclick: () => step(-1) }),
+      el("button.icon-btn", { text: "⏭", title: "Next frame (.)", "aria-label": "Next frame", onclick: () => step(1) }),
+      ind,
+      el("button.icon-btn", { text: "⏯", title: "Play / pause", "aria-label": "Play or pause", onclick: () => (media.paused ? media.play().catch(() => {}) : media.pause()) }));
+  }
+
   function renderMarkdown(body, actions, a) {
     actions.append(copyBtn(a.content ?? ""), openTabBtnForHtml(a));
     const art = el("div.art-md", { html: OMP.md(a.content ?? "") });
     body.append(art);
+  }
+
+  // Resolve an image artifact's src to {data, mimeType} so it can be handed
+  // to the composer: inline data URLs as-is, same-origin preview URLs via
+  // fetch. Anything else is unsupported and reported, not ignored.
+  async function imageSrcToData(src) {
+    const m = /^data:([^;,]*)(;base64)?,(.*)$/s.exec(String(src || ""));
+    if (m) {
+      if (!m[2]) throw new Error("Non-base64 (encoded) data URLs are not supported.");
+      return { data: m[3], mimeType: m[1] || "image/png" };
+    }
+    let url;
+    try { url = new URL(src, location.href); } catch { throw new Error("Unusable image address."); }
+    if (url.origin !== location.origin || !/^https?:$/.test(url.protocol)) {
+      throw new Error("Only inline images and same-origin previews can be annotated.");
+    }
+    const r = await fetch(url.href);
+    if (!r.ok) throw new Error(`Preview fetch failed (${r.status}).`);
+    const blob = await r.blob();
+    const dataUrl = await new Promise((ok, bad) => {
+      const reader = new FileReader();
+      reader.onload = () => ok(reader.result);
+      reader.onerror = () => bad(reader.error || new Error("Read failed."));
+      reader.readAsDataURL(blob);
+    });
+    return { data: dataUrl.slice(dataUrl.indexOf(",") + 1), mimeType: blob.type || r.headers.get("content-type") || "image/png" };
+  }
+
+  // "Annotate" action for image artifacts: bring the image into the composer
+  // and open the existing numbered pin/comment editor on it.
+  function annotateBtn(a) {
+    const btn = el("button.icon-btn", { text: "Annotate", title: "Pin numbered comments on this image and attach it to your message" });
+    btn.addEventListener("click", async () => {
+      const composer = OMP.app && OMP.app.composer;
+      if (!composer) return OMP.toast("Open a session to annotate", "error");
+      btn.disabled = true;
+      try {
+        const { data, mimeType } = await imageSrcToData(a.src);
+        composer.addImageData({ data, mimeType, annotate: true, caption: a.title || "" });
+      } catch (e) {
+        OMP.toast("Annotate: " + (e.message || e), "error", 8000);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    return btn;
   }
 
   function renderImage(body, actions, a) {
@@ -160,7 +355,9 @@
       toggle.textContent = imageFit === "fit" ? "1:1" : "Fit";
       draw();
     } });
-    actions.append(toggle, openTabBtn(a));
+    actions.append(toggle, annotateBtn(a), openTabBtn(a),
+      el("button.icon-btn", { text: "🖼", title: "Image gallery (images seen this session)", onclick: () => { current = GALLERY; show(); } }));
+    galleryAdd({ src: a.src, title: a.title });
     const draw = () => {
       body.replaceChildren();
       const img = el("img.art-img", { src: a.src, alt: a.title || "artifact image" });
@@ -178,6 +375,7 @@
     if (!live) return;
     clearInterval(live.timer);
     window.removeEventListener("message", live.onMessage);
+    for (const fn of live.cleanups || []) { try { fn(); } catch { /* listener already gone */ } }
     if (live.viewer) live.viewer.dispose();
     live = null;
   }
@@ -199,6 +397,7 @@
     if (!path || !fileKind(path)) return;
     seen.delete(path);
     seen.set(path, ++seenSeq);
+    if (fileKind(path) === "image") galleryAdd({ path, title: baseName(path) });
     if (current === FILES && root && root.classList.contains("open")) renderBody(FILES);
   }
   function noteArgs(args) {
@@ -243,9 +442,25 @@
   function renderFile(body, actions, a) {
     stopLive();
     const kind = fileKind(a.path);
-    const L = (live = { a, kind, mtime: 0, viewer: null, scroll: null, timer: 0, busy: false, on: true });
+    const L = (live = { a, kind, mtime: 0, viewer: null, scroll: null, timer: 0, busy: false, on: true, cleanups: [] });
     const url = (p, extra = "") => previewUrl(p) + "?v=" + Date.now() + extra;
     const info = () => OMP.api("/api/preview/info?path=" + encodeURIComponent(a.path));
+    // PDF/office page tracking: #page=N keeps the browser PDF viewer on page.
+    let page = 1;
+    const pageHash = () => (page > 1 ? "#page=" + page : "");
+    const pdfBar = () => {
+      const ind = el("span.art-vid-ind", { text: `page ${page}` });
+      const go = (n) => {
+        page = Math.max(1, n);
+        ind.textContent = `page ${page}`;
+        const f = body.querySelector("iframe");
+        if (f && f.src) { try { f.src = f.src.split("#")[0] + "#page=" + page; } catch { /* cross-origin: ignore */ } }
+      };
+      return el("div.art-vid-bar", { role: "group", "aria-label": "Document page controls" },
+        el("button.icon-btn", { text: "◀ page", title: "Previous page", "aria-label": "Previous page", onclick: () => go(page - 1) }),
+        ind,
+        el("button.icon-btn", { text: "page ▶", title: "Next page", "aria-label": "Next page", onclick: () => go(page + 1) }));
+    };
     // Embedded HTML reports its scroll position; restore it after a reload.
     L.onMessage = (e) => {
       const frame = body.querySelector("iframe");
@@ -277,29 +492,40 @@
         return;
       }
       if (kind === "html" || kind === "pdf") {
-        if (reload && cur && cur.tagName === "IFRAME") { cur.src = url(i.path, kind === "html" ? "&embed=1" : ""); return; }
-        const frame = el("iframe.art-frame", { src: url(i.path, kind === "html" ? "&embed=1" : ""), title: a.title || "preview" });
+        const src = url(i.path, kind === "html" ? "&embed=1" : "") + (kind === "pdf" ? pageHash() : "");
+        if (reload && cur && cur.tagName === "IFRAME") { cur.src = src; return; }
+        const frame = el("iframe.art-frame", { src, title: a.title || "preview" });
         if (kind === "html") frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
         body.replaceChildren(frame);
+        if (kind === "pdf") body.append(pdfBar());
       } else if (kind === "image") {
+        galleryAdd({ path: i.path, title: a.title || baseName(i.path) });
         if (reload && cur && cur.tagName === "IMG") { cur.src = url(i.path); return; }
         body.replaceChildren(el("img.art-img", { src: url(i.path), alt: a.title || "" }));
       } else if (kind === "video" || kind === "audio") {
         const old = body.querySelector("video, audio");
-        const keep = old ? { t: old.currentTime, paused: old.paused } : null;
+        const keep = old ? { t: old.currentTime, paused: old.paused, rate: old.playbackRate } : null;
         const media = kind === "video"
           ? el("video.art-media", { src: url(i.path), controls: true, preload: "metadata" })
           : el("audio", { src: url(i.path), controls: true, preload: "metadata" });
-        if (keep) media.addEventListener("loadedmetadata", () => { media.currentTime = Math.min(keep.t, media.duration || keep.t); if (!keep.paused) media.play().catch(() => {}); }, { once: true });
-        body.replaceChildren(kind === "video" ? media : el("div.art-audio", null, el("div.art-audio-name", { text: baseName(i.path) }), media));
+        if (keep) media.addEventListener("loadedmetadata", () => {
+          media.playbackRate = keep.rate || 1;
+          media.currentTime = Math.min(keep.t, media.duration || keep.t);
+          if (!keep.paused) media.play().catch(() => {});
+        }, { once: true });
+        // Targeted refresh: only the media element is replaced; position and
+        // playback state survive, and the panel (tabs, gallery) is untouched.
+        if (kind === "video") body.replaceChildren(media, videoControls(media, L));
+        else body.replaceChildren(el("div.art-audio", null, el("div.art-audio-name", { text: baseName(i.path) }), media));
       } else if (kind === "office") {
         if (!reload) body.replaceChildren(el("p.muted.art-loading", { text: "Converting with Microsoft Office… (the first open of a document takes a few seconds)" }));
         try {
           const r = await OMP.api("/api/preview/office?path=" + encodeURIComponent(i.path), { method: "POST" });
           if (live !== L) return;
+          const src = url(r.pdf) + pageHash();
           const frame = body.querySelector("iframe");
-          if (frame) frame.src = url(r.pdf);
-          else body.replaceChildren(el("iframe.art-frame", { src: url(r.pdf), title: a.title || "document" }));
+          if (frame) frame.src = src;
+          else body.replaceChildren(el("iframe.art-frame", { src, title: a.title || "document" }), pdfBar());
         } catch (e) {
           body.replaceChildren(el("p.art-error", { text: e.message }));
         }
@@ -342,6 +568,7 @@
       .catch((e) => OMP.toast(e.message, "error"));
     actions.append(
       liveChip,
+      ...(kind === "image" ? [el("button.icon-btn", { text: "🖼", title: "Image gallery (images seen this session)", onclick: () => { current = GALLERY; show(); } })] : []),
       btn("📍", "Pin: freeze what you see here, add numbered comments and attach it to your message", () => pinStill(body, L)),
       btn("↻", "Reload", () => draw(true)),
       btn("⤢", "Wide panel / back", () => root.classList.toggle("wide")),
@@ -427,6 +654,10 @@
   function renderTabs() {
     const tabs = root.querySelector("#art-tabs");
     tabs.replaceChildren();
+    tabs.append(el("button.art-tab.art-tab-gallery" + (current === GALLERY ? ".active" : ""), {
+      title: "Images seen in this session",
+      onclick: () => { current = GALLERY; show(); },
+    }, el("span.art-tab-kind", { text: "gal" }), el("span.art-tab-title", { text: "gallery" })));
     tabs.append(el("button.art-tab.art-tab-files" + (current === FILES ? ".active" : ""), {
       title: "All previewable files this session mentioned",
       onclick: () => { current = FILES; show(); },
@@ -493,8 +724,43 @@
       history.length = 0;
       seen.clear();
       exists.clear();
+      gallery.length = 0;
+      compareSel.clear();
+      compareOpen = false;
       current = null;
       if (root) { root.classList.remove("open"); appEl.classList.remove("has-artifacts"); renderTabs(); }
+    },
+    /** Stable entry point for workspaces/other features: preview a host file. */
+    openFile(path) { return OMP.preview.open(path); },
+    /** Serializable panel state for workspaces. */
+    getState() {
+      const state = { open: false, width, gallery: gallery.map((g) => ({ ...g })) };
+      if (!root || !current) return state;
+      state.open = OMP.artifacts.isOpen();
+      if (current === FILES) state.current = { kind: "files" };
+      else if (current === GALLERY) state.current = { kind: "gallery" };
+      else if (current.kind === "file") state.current = { kind: "file", path: current.path, title: current.title };
+      else state.current = { kind: current.kind, title: current.title, content: current.content, lang: current.lang, src: current.src };
+      return state;
+    },
+    /** Restore a state from getState(). Returns true when something was opened. */
+    restoreState(s) {
+      if (!s || typeof s !== "object") return false;
+      for (const g of Array.isArray(s.gallery) ? s.gallery : []) if (g && (g.path || g.src)) galleryAdd(g);
+      if (typeof s.width === "number") setWidth(s.width);
+      if (!s.open || !s.current) return false;
+      const c = s.current;
+      if (c.kind === "files") { ensureDom(); current = FILES; show(); return true; }
+      if (c.kind === "gallery") { ensureDom(); current = GALLERY; show(); return true; }
+      if (c.kind === "file" && c.path) { OMP.preview.open(c.path); return true; }
+      if (OPEN_KINDS.has(c.kind)) return OMP.artifacts.open(c);
+      return false;
+    },
+    /** Gallery API: images seen this session (never a directory listing). */
+    gallery: {
+      list: () => gallery.map((g) => ({ ...g })),
+      add: galleryAdd,
+      open() { ensureDom(); current = GALLERY; show(); return true; },
     },
   };
 

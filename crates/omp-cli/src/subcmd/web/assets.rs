@@ -120,6 +120,66 @@ const FILES: &[(&str, &str, &str)] = &[
         include_str!("assets/vendor/three.min.js"),
     ),
     (
+        "/assets/palette.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/palette.css"),
+    ),
+    (
+        "/assets/palette.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/palette.js"),
+    ),
+    (
+        "/assets/tasks.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/tasks.css"),
+    ),
+    (
+        "/assets/tasks.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/tasks.js"),
+    ),
+    (
+        "/assets/changes.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/changes.css"),
+    ),
+    (
+        "/assets/changes.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/changes.js"),
+    ),
+    (
+        "/assets/workspaces.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/workspaces.css"),
+    ),
+    (
+        "/assets/workspaces.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/workspaces.js"),
+    ),
+    (
+        "/assets/quick.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/quick.css"),
+    ),
+    (
+        "/assets/quick.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/quick.js"),
+    ),
+    (
+        "/assets/terminal.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/terminal.css"),
+    ),
+    (
+        "/assets/terminal.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/terminal.js"),
+    ),
+    (
         "/assets/desktop-bridge.js",
         "text/javascript; charset=utf-8",
         include_str!("assets/desktop-bridge.js"),

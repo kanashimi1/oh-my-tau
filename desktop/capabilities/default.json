@@ -1,14 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-ui",
-  "description": "Capability for the remote omt UI (http://127.0.0.1:7467) loaded in every app window: event listening (screenshot frames), window focus checks, and the app commands open_window / notify / capture_done / capture_rect / tau_settings / set_capture_shortcut / set_devtools_port.",
+  "description": "Capability for the remote omt UI loaded in every app window, including native quick-ask capture and continuation.",
   "global": true,
   "platforms": [
     "windows"
   ],
   "remote": {
     "urls": [
-      "http://127.0.0.1:7467/*"
+      "http://127.0.0.1:7467"
     ]
   },
   "permissions": [
@@ -21,7 +21,10 @@
     "allow-capture-rect",
     "allow-tau-settings",
     "allow-set-capture-shortcut",
-    "allow-set-devtools-port"
+    "allow-set-devtools-port",
+    "allow-quick-toggle",
+    "allow-quick-capture",
+    "allow-continue-main"
   ],
   "windows": [
     "*"

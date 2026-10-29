@@ -29,11 +29,14 @@
 
 mod agent;
 mod assets;
+mod changes;
 mod desktop;
 pub(crate) mod detach;
 mod preview;
+mod search;
 mod sessions;
 mod stt;
+mod terminal;
 mod uploads;
 mod wallpapers;
 
@@ -475,6 +478,9 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             let focus = lock(&hub.focus).clone();
             json_response(StatusCode::OK, &json!({"agents": list, "focus": focus}))
         }
+        (&Method::GET, "/api/search") => search::api(req).await,
+        (_, p) if p.starts_with("/api/changes") => changes::api(req).await,
+        (_, p) if p.starts_with("/api/terminal/") => terminal::api(req).await,
         (&Method::POST, "/api/agents") => create_agent(&hub, req).await,
         (&Method::POST, p) if p.starts_with("/api/agents/") => {
             agent_action(&hub, &p["/api/agents/".len()..]).await

@@ -165,3 +165,66 @@ a.file-link:hover { text-decoration-style: solid; }
 .art-file-dir { color: var(--fg-faint); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
 .art-file-dir bdi { direction: ltr; unicode-bidi: isolate; }
 .art-files-empty { padding: 8px; }
+
+/* improved viewer: image gallery + before/after compare (feature 7) */
+.art-gallery-wrap { display: flex; flex-direction: column; gap: 8px; padding: 12px; }
+.art-gallery-hint { margin: 0; font-size: 11.5px; }
+.art-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.art-thumb {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+  cursor: pointer;
+}
+.art-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.art-thumb:hover { border-color: var(--accent); }
+.art-thumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.art-thumb.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-muted); }
+.art-thumb.sel::after {
+  content: "✓";
+  position: absolute;
+  top: 2px;
+  right: 5px;
+  color: var(--accent);
+  font-weight: 700;
+  text-shadow: 0 0 3px #000;
+}
+.art-compare { position: relative; flex: 1; min-height: 320px; overflow: hidden; background: #000; }
+.art-cmp-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.art-cmp-tag {
+  position: absolute;
+  top: 8px;
+  z-index: 2;
+  max-width: 45%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .55);
+  color: #fff;
+  font: 10px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.art-cmp-tag.a { left: 8px; }
+.art-cmp-tag.b { right: 8px; }
+.art-cmp-handle { position: absolute; top: 0; bottom: 36px; width: 2px; background: var(--accent); z-index: 1; pointer-events: none; }
+.art-cmp-range { position: absolute; left: 5%; right: 5%; bottom: 10px; width: 90%; z-index: 3; accent-color: var(--accent); }
+
+/* improved viewer: video frame controls + document page controls (feature 7) */
+.art-vid-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-overlay);
+  flex: none;
+}
+.art-vid-bar .icon-btn { font-size: 12px; padding: 2px 8px; }
+.art-vid-ind { font: 11px var(--mono); color: var(--fg-muted); min-width: 130px; text-align: center; }
+.art-body > video.art-media { flex: 1; min-height: 0; }

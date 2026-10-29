@@ -189,6 +189,12 @@
           "markdownDescription": "Enables the capture_rect command without any pre-configured scope."
         },
         {
+          "description": "Enables the continue_main command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-continue-main",
+          "markdownDescription": "Enables the continue_main command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notify command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notify",
@@ -199,6 +205,18 @@
           "type": "string",
           "const": "allow-open-window",
           "markdownDescription": "Enables the open_window command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the quick_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-quick-capture",
+          "markdownDescription": "Enables the quick_capture command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the quick_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-quick-toggle",
+          "markdownDescription": "Enables the quick_toggle command without any pre-configured scope."
         },
         {
           "description": "Enables the set_capture_shortcut command without any pre-configured scope.",
@@ -231,6 +249,12 @@
           "markdownDescription": "Denies the capture_rect command without any pre-configured scope."
         },
         {
+          "description": "Denies the continue_main command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-continue-main",
+          "markdownDescription": "Denies the continue_main command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notify command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notify",
@@ -241,6 +265,18 @@
           "type": "string",
           "const": "deny-open-window",
           "markdownDescription": "Denies the open_window command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the quick_capture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-quick-capture",
+          "markdownDescription": "Denies the quick_capture command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the quick_toggle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-quick-toggle",
+          "markdownDescription": "Denies the quick_toggle command without any pre-configured scope."
         },
         {
           "description": "Denies the set_capture_shortcut command without any pre-configured scope.",

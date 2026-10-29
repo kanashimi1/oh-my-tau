@@ -17,11 +17,10 @@
     W("midnight.svg", "Midnight aurora"),
   ];
 
-  /** id, name, preview swatches [bg, panel, accent, fg], suggested wallpaper. */
   const THEMES = [
+    { id: "calm", name: "Graphite", sw: ["#181818", "#1f1f1f", "#1a88ff", "#d6d6d6"], wall: "" },
     { id: "omt", name: "OMT", sw: ["#0f0b14", "#16111c", "#ed4abf", "#e6e3ea"], wall: "" },
     { id: "midnight", name: "Midnight", sw: ["#050506", "#0c0c0f", "#ff5ca8", "#e8e8ec"], wall: "/wallpapers/midnight.svg" },
-    { id: "calm", name: "Calm", sw: ["#181818", "#1f1f1f", "#1a88ff", "#d6d6d6"], wall: "" },
     { id: "light", name: "Light", sw: ["#fbf9fc", "#ffffff", "#c42a95", "#2b2233"], wall: "" },
     { id: "sakura", name: "Sakura", sw: ["#14112a", "#1c1836", "#ef92bd", "#f4ecf2"], wall: "/wallpapers/anime-sakura.svg" },
     { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#191430", "#221b3a", "#f0a35c", "#f3ecdf"], wall: "/wallpapers/anime-city.svg" },
@@ -29,7 +28,7 @@
     { id: "vaporwave", name: "Vaporwave", sw: ["#1a0b2e", "#241040", "#ff71ce", "#f4e8ff"], wall: "/wallpapers/vaporwave-sunset.svg" },
     { id: "synthwave", name: "Synthwave", sw: ["#0b0820", "#120e2e", "#01cdfe", "#e6f7ff"], wall: "/wallpapers/vaporwave-grid.svg" },
   ];
-  const DEFAULTS = { theme: "omt", wallpaper: "", dim: 35, blur: 0, glass: 78 };
+  const DEFAULTS = { theme: "calm", wallpaper: "", dim: 35, blur: 0, glass: 78 };
 
   function load() {
     let saved = {};

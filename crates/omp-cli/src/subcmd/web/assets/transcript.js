@@ -64,6 +64,7 @@
     }
 
     reset() {
+      for (const e of (this.live ? this.live.values() : [])) if (e.timer) { clearInterval(e.timer); e.timer = null; }
       this.root.replaceChildren();
       this.live = new Map(); // messageId -> {node, parts, msg}
       this.cards = new Map(); // toolCallId -> ToolCard
@@ -195,15 +196,46 @@
 
     assistantEntry(messageId) {
       if (messageId && this.live.has(messageId)) return this.live.get(messageId);
-      const entry = { node: el("div.msg.assistant"), parts: [], tail: null };
+      const entry = { node: el("div.msg.assistant"), parts: [], tail: null, timer: null, startedAt: null, badge: null, done: false };
       if (messageId) this.live.set(messageId, entry);
       this.append(entry.node);
       return entry;
     }
 
+    fmtElapsed(ms) {
+      const s = Math.max(0, Math.floor(ms / 1000));
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+
+    // Message-level elapsed timer: starts with the first live content, ticks
+    // once per second, freezes at message_end. History never gets one.
+    startTimer(entry) {
+      if (entry.startedAt && !entry.done) return;
+      if (entry.timer) { clearInterval(entry.timer); entry.timer = null; }
+      entry.done = false;
+      entry.startedAt = Date.now();
+      if (!entry.badge) entry.badge = el("span.msg-timer");
+      entry.badge.classList.add("live");
+      entry.badge.textContent = this.fmtElapsed(0);
+      if (!entry.badge.isConnected) entry.node.append(entry.badge);
+      entry.timer = setInterval(() => {
+        entry.badge.textContent = this.fmtElapsed(Date.now() - entry.startedAt);
+      }, 1000);
+    }
+
+    stopTimer(entry) {
+      if (entry.timer) { clearInterval(entry.timer); entry.timer = null; }
+      if (!entry.startedAt) return;
+      entry.done = true;
+      entry.badge.classList.remove("live");
+      entry.badge.textContent = this.fmtElapsed(Date.now() - entry.startedAt);
+    }
+
     updateAssistant(entry, msg, streaming) {
       const stick = this.isNearBottom();
       const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content || "") }];
+      if (streaming && content.length) this.startTimer(entry);
+      else if (!streaming && entry.badge) this.stopTimer(entry);
       content.forEach((block, i) => {
         let part = entry.parts[i];
         const kind = block.type;
@@ -260,6 +292,8 @@
           entry.meta = meta;
         }
       }
+      // Keep the timer badge last (parts are inserted before it as they stream).
+      if (entry.badge && entry.badge.isConnected) entry.node.append(entry.badge);
       if (!entry.node.childNodes.length) entry.node.hidden = true; else entry.node.hidden = false;
       if (stick) this.scheduleScroll();
     }

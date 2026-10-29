@@ -86,3 +86,14 @@
 .pin-badge { font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--fg-faint); flex: none; }
 .session-row .needs-input.stuck { cursor: pointer; }
 .session-row .muted-run[title] { cursor: pointer; }
+
+/* Subagents activity: compact block pinned above the session list, shown
+   only while the current session has live/waiting background subagents. */
+#subagents-section { padding-bottom: 4px; }
+#subagents-section .group-head { padding-top: 8px; }
+#subagents-section .group-head .count { text-transform: none; letter-spacing: 0; }
+#subagents-section .subagent-row { padding: 4px 6px; border-radius: 8px; background: var(--bg-hover, transparent); }
+#subagents-section .subagent-row .main { align-items: center; }
+#subagents-section .subagent-row .sess-title { font-weight: 400; font-size: 12px; }
+#subagents-section .subagent-row .sess-sub { font-size: 10.5px; }
+#subagents-section .sess-dot.wait { background: var(--warn); animation: pulse 1.6s infinite; }

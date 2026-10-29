@@ -56,6 +56,22 @@
   }
   OMP.rpc = rpc;
 
+  async function getMessages() {
+    // Full history can contain many MiB of inline images. Keep such responses
+    // out of the hub's broadcast queue whenever the snapshot is stable.
+    if (S.state?.isStreaming) {
+      const response = await rpc("get_messages");
+      return response.messages;
+    }
+    const messages = [];
+    let cursor = null;
+    do {
+      const page = await rpc("get_messages_page", { limit: 256, ...(cursor ? { cursor } : {}) });
+      messages.push(...page.messages);
+      cursor = page.nextCursor || null;
+    } while (cursor);
+    return messages;
+  }
   function connect(agentId) {
     if (S.ws) { S.ws.onclose = null; S.ws.close(); }
     for (const p of S.pending.values()) p.reject(new Error("disconnected"));
@@ -100,13 +116,13 @@
     composer.setEnabled(true);
     send({ type: "set_ask_dialog", enabled: true });
     try {
-      const [state, msgs, cmds] = await Promise.all([rpc("get_state"), rpc("get_messages"), rpc("get_available_commands")]);
-      S.state = state;
+      S.state = await rpc("get_state");
+      const [messages, cmds] = await Promise.all([getMessages(), rpc("get_available_commands")]);
       renderWidgets();
-    updateHome();
+      updateHome();
       setCommands(cmds.commands);
-      transcript.loadMessages(msgs.messages);
-      setStreaming(!!state.isStreaming);
+      transcript.loadMessages(messages);
+      setStreaming(!!S.state.isStreaming);
       renderHeader();
       refreshStats();
     } catch (e) {
@@ -244,8 +260,7 @@
 
   async function resync() {
     try {
-      const msgs = await rpc("get_messages");
-      transcript.loadMessages(msgs.messages);
+      transcript.loadMessages(await getMessages());
     } catch { /* ignore */ }
   }
 
@@ -365,8 +380,11 @@
   function thinkingPicker() { return OMP.shellImpl.thinkingPicker(S); }
   function exportHtml() { return OMP.shellImpl.exportHtml(S); }
 
-  OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand };
+  OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand, getMessages };
   OMP.shellImpl.init(OMP.app);
+  for (const feature of [OMP.palette, OMP.tasks, OMP.changes, OMP.terminal, OMP.workspaces, OMP.quick]) {
+    if (feature && typeof feature.init === "function") feature.init(OMP.app);
+  }
   updateHome(); // no agent yet: start on the centered home composer
   // Dock/undock whenever the transcript gains or loses content (history replay,
   // first live message, /new) instead of chasing every frame type.

@@ -186,6 +186,50 @@
       frag.push(el("div.sess-empty.muted.small", { text: s.project ? "No matching sessions" : "No sessions yet" }));
     }
     $("#session-list").replaceChildren(...frag);
+    renderSubagents(s);
+  }
+
+  // Subagents activity for the CURRENT session. `/api/agents` exposes one
+  // record per top-level hub agent and no parent/child link, so the only
+  // truthful signals are the current agent's own fields: `streaming` /
+  // `runningTools` (a run is in flight, its background `task` children may be
+  // working) and `awaitingTasksSinceMs` (the backend's explicit "parked on
+  // background subagents" flag, also rendered as the sidebar "subagent" chip).
+  // Per-subagent names/models/counts are NOT in the API, so none are shown.
+  function renderSubagents(s) {
+    let host = $("#subagents-section");
+    const section = $(".side-section");
+    if (!host && section) {
+      host = el("div", { id: "subagents-section" });
+      section.prepend(host);
+    }
+    if (!host) return;
+    const a = s.agents.find((x) => x.id === s.agentId);
+    const waitingMs = a && !a.streaming && a.awaitingTasksSinceMs
+      ? Date.now() - a.awaitingTasksSinceMs : null;
+    const active = !!(a && (a.streaming || a.runningTools));
+    if (!a || a.alive === false || (!active && waitingMs == null)) {
+      host.replaceChildren();
+      return;
+    }
+    const title = a.sessionName || basename(a.cwd);
+    const state = active
+      ? { dot: "busy", chip: "working", cls: "muted-run", text: "running task subagents" }
+      : { dot: "wait", chip: waitingMs > STUCK_MS ? "stuck" : "waiting", cls: waitingMs > STUCK_MS ? "needs-input" : "muted-run", text: "waiting on background subagents " + waitText(waitingMs) };
+    host.replaceChildren(
+      el("div.group-head", null,
+        el("span", { text: "Subagents" }),
+        el("span.count", { text: "of " + title, title: "Background task subagents of the current session \u201C" + title + "\u201D" })),
+      el("div.session-row.subagent-row", {
+        title: "Background subagents of this session\n" + title
+          + (a.model ? "\nmodel: " + a.model : "")
+          + (waitingMs != null ? "\nwaiting since " + new Date(Date.now() - waitingMs).toLocaleString() : ""),
+      },
+        el("div.main", null,
+          el("span.sess-dot." + state.dot),
+          el("span.sess-title", { text: state.text }),
+          el("span." + state.cls, { text: state.chip })),
+        el("div.sess-sub", { text: `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}` })));
   }
 
   const PIN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l-1 8 3 3H6l3-3z"/><line x1="12" y1="18" x2="12" y2="21"/></svg>';
@@ -329,6 +373,7 @@
   function setProject(s, cwd) {
     s.project = cwd;
     localStorage.setItem("omp-web-project", cwd);
+    window.dispatchEvent(new CustomEvent("omp:project", { detail: { cwd } }));
     loadSessions(s);
   }
 
@@ -376,8 +421,7 @@
     if (s.agentId && !s.streaming && !s.dead) {
       try {
         await app.rpc("switch_session", { sessionPath: row.path });
-        const msgs = await app.rpc("get_messages");
-        app.transcript.loadMessages(msgs.messages);
+        app.transcript.loadMessages(await app.getMessages());
         await refreshAgents(s);
         app.S.state = await app.rpc("get_state");
         renderHeader(s);
@@ -595,9 +639,8 @@
     if (m && !s.agents.some((x) => x.id === m[1])) navigate(null);
     else route();
   }
-
   OMP.shellImpl = {
     init, renderHeader, renderStatus, renderSidebar, renderQueue, renderWidgets, refreshAgents, loadSessions,
-    openSession, newSession, resumePicker, stopAgent, showHotkeys, modelPicker, thinkingPicker, exportHtml,
+    openSession, newSession, resumePicker, stopAgent, showHotkeys, modelPicker, thinkingPicker, exportHtml, setProject,
   };
 })(window.OMP);
