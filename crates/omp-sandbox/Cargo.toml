@@ -1,0 +1,20 @@
+[package]
+name = "omp-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Landlock/seccomp confinement for tool subprocesses. This crate exists as a
+# separate member (not inside `omp-cli`) because it needs `unsafe` (the
+# `execve`/syscall work), which the `omp-cli` workspace `forbid`s; the public
+# API here is safe and the confined unsafe regions are isolated to this crate.
+# omt links it and re-executes itself as `omt __sandbox-exec ...` (see
+# features/sandbox.rs and main.rs), so there is no separate launcher binary.
+# Linux-only: it builds on other platforms as a no-op.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+seccompiler = "0.5.0"
+libc = "0.2"
+
+[lints.rust]
+unsafe_code = "allow"

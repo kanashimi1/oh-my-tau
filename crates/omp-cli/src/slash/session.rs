@@ -1,8 +1,8 @@
 //! Session slash commands: `/pin`, `/move`, `/plugins`, `/handoff`.
 
 use super::{
-    extension_commands, output, subcommand, usage, Handled, HashSet, Outcome, Path, PathBuf,
-    Runtime, Value,
+    Handled, HashSet, Outcome, Path, PathBuf, Runtime, Value, extension_commands, output,
+    subcommand, usage,
 };
 
 // =============================================================================
@@ -92,8 +92,16 @@ pub(super) fn setting_status_toggle(
     let current = settings.get_bool(setting).unwrap_or(false);
     match args.trim().to_lowercase().as_str() {
         "" | "status" => {
-            output(rt, &format!("{label}: {} (from config).", if current { "on" } else { "off" }));
-            Handled { agent_invoked: false }
+            output(
+                rt,
+                &format!(
+                    "{label}: {} (from config).",
+                    if current { "on" } else { "off" }
+                ),
+            );
+            Handled {
+                agent_invoked: false,
+            }
         }
         "toggle" | "on" | "off" => usage(
             rt,
@@ -148,7 +156,9 @@ pub(super) async fn plugins_command(rt: &Runtime, args: &str) -> Outcome {
     if matches!(verb.as_str(), "enable" | "disable") {
         return usage(
             rt,
-            &format!("/plugins {verb} needs the plugin registry (marketplace plugins), which is not ported to omt."),
+            &format!(
+                "/plugins {verb} needs the plugin registry (marketplace plugins), which is not ported to omt."
+            ),
         );
     }
     if verb == "list" || verb.is_empty() {

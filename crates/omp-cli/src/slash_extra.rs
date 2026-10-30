@@ -69,6 +69,11 @@ fn session_transcript(messages: &[Value]) -> String {
     out
 }
 
+/// `session_transcript` for sibling features (`/refine` planner context).
+pub(crate) fn session_transcript_for_prompt(messages: &[Value]) -> String {
+    session_transcript(messages)
+}
+
 async fn rlm_command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     use crate::tools::rlm;
     let trimmed = args.trim();
@@ -232,6 +237,8 @@ pub fn is_extra_command(name: &str) -> bool {
             | "login"
             | "logout"
             | "debug"
+            | "budget"
+            | "refine"
             | "restart"
             | "btw"
             | "rlm"
@@ -358,6 +365,14 @@ pub fn extra_catalog() -> Vec<Value> {
             "source": "builtin",
         }),
         json!({
+            "name": "refine",
+            "description": "Review the trajectory and distill small prompt/memory lessons into the persistent harness (prime-agent port)",
+            "input": {
+                "hint": "[instructions] | list | history | rollback [id] | global [instructions]"
+            },
+            "source": "builtin",
+        }),
+        json!({
             "name": "restart",
             "description": "Restart omp with the same launch flags, resuming this session",
             "source": "builtin",
@@ -383,6 +398,14 @@ pub fn extra_catalog() -> Vec<Value> {
             "description": "Share this session live via a relay",
             "input": {
                 "hint": "[start|view|list|stop|status] [relayUrl]"
+            },
+            "source": "builtin",
+        }),
+        json!({
+            "name": "budget",
+            "description": "Set a session spend limit (USD); warns and can stop prompting when tripped",
+            "input": {
+                "hint": "[<limit>|off|status]"
             },
             "source": "builtin",
         }),
@@ -464,15 +487,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
             })
         }
         "branch" | "rewind" => Some(interactive::branch_command(rt).await),
-        "plan" => {
-            output(
-                rt,
-                "/plan: plan mode is not ported to omt; prompt the model directly with planning instructions or use the TS CLI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "plan" => Some(crate::features::plan::command(rt, args).await),
         "goal" => {
             output(
                 rt,
@@ -482,15 +497,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "loop" => {
-            output(
-                rt,
-                "/loop: loop mode is not ported to omt; use the TS CLI to run prompt loops",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "loop" => Some(crate::features::loop_mode::command(rt, args).await),
         "queue" => {
             let text = args.trim();
             if text.is_empty() {
@@ -503,15 +510,7 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
                 agent_invoked: false,
             })
         }
-        "skills" => {
-            output(
-                rt,
-                "/skills: skills registry (skills.omp.sh) is not ported to omt; use `omp skills` from the TS CLI",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "skills" => Some(crate::features::skills::command(rt, args).await),
         "agents" => Some(interactive::agents_command(rt).await),
         "extensions" | "status" => Some(interactive::extensions_command(rt).await),
         "login" => {
@@ -527,24 +526,10 @@ pub async fn dispatch_extra(rt: &Arc<Runtime>, name: &str, args: &str) -> Option
             })
         }
         "debug" => Some(interactive::debug_command(rt).await),
-        "restart" => {
-            output(
-                rt,
-                "/restart: process restart is not ported to omt; exit and re-run with --resume",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
-        "btw" => {
-            output(
-                rt,
-                "/btw: side-question conversation (btw) is not ported to omt; prompt the model directly in the main session",
-            );
-            Some(Outcome::Handled {
-                agent_invoked: false,
-            })
-        }
+        "restart" => Some(crate::features::restart::command(rt, args).await),
+        "refine" => Some(crate::features::refine::command(rt, args).await),
+        "btw" => Some(crate::features::btw::command(rt, args).await),
+        "budget" => Some(crate::features::budget::command(rt, args).await),
         "collab" => Some(collab_command(rt, args).await),
         _ => None,
     }
@@ -763,7 +748,7 @@ mod tests {
     #[test]
     fn test_extra_catalog_names_all_handled() {
         let catalog = extra_catalog();
-        assert_eq!(catalog.len(), 20, "expected 20 extra commands in catalog");
+        assert_eq!(catalog.len(), 22, "expected 22 extra commands in catalog");
         for cmd in &catalog {
             let name = cmd["name"].as_str().expect("command must have name");
             assert!(

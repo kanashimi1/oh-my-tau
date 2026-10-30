@@ -17,6 +17,8 @@ use std::fmt::Write as _;
 
 use crate::runtime::Runtime;
 
+#[path = "slash/center.rs"]
+mod center;
 #[path = "slash/files.rs"]
 mod files;
 #[path = "slash/info.rs"]
@@ -34,6 +36,7 @@ mod usage;
 
 pub(crate) use usage::usage_panel_frame;
 
+pub(crate) use center::command_center;
 pub use files::load_file_commands;
 use files::{expand_file_command, refresh_file_commands, FILE_COMMANDS};
 use info::{changelog_command, stats_command, trace_command};
@@ -622,7 +625,10 @@ async fn dispatch_builtin_more(
             })
         }
         "reload-plugins" => {
-            output(rt, "Plugins reloaded.");
+            output(
+                rt,
+                "Extensions are discovered at session start and reload automatically when the extension host reconnects; to force a full rediscovery, restart the session (/new) or /restart.",
+            );
             Some(Handled {
                 agent_invoked: false,
             })
@@ -701,9 +707,21 @@ async fn dispatch_ported(rt: &std::sync::Arc<Runtime>, name: &str, args: &str) -
         "fast" => Some(fast_command(rt, args)),
         "slow" => Some(slow_command(rt, args)),
         "todo" => Some(todo_command(rt, args).await),
+        "usage" if args.is_empty() && crate::slash_extra::dialog::has_ui() => {
+            Some(command_center(rt, "usage").await)
+        }
         "usage" => Some(usage_command(rt, args).await),
+        "stats" if args.is_empty() && crate::slash_extra::dialog::has_ui() => {
+            Some(command_center(rt, "stats").await)
+        }
         "stats" => Some(stats_command(rt, args).await),
+        "changelog" if args.is_empty() && crate::slash_extra::dialog::has_ui() => {
+            Some(command_center(rt, "changelog").await)
+        }
         "changelog" => Some(changelog_command(rt, args)),
+        "trace" if args.is_empty() && crate::slash_extra::dialog::has_ui() => {
+            Some(command_center(rt, "trace").await)
+        }
         "trace" => Some(trace_command(rt).await),
         "mcp" => Some(mcp_command(rt, args).await),
         "modelpreset" => Some(modelpreset_command(rt, args).await),
@@ -722,19 +740,19 @@ async fn dispatch_ported(rt: &std::sync::Arc<Runtime>, name: &str, args: &str) -
             "Extended context",
             "Usage: /extended-context [on|off|status]",
         )),
-        "computer" => Some(notice(rt, "Computer use needs the eval-prelude subsystem, which is not ported to omt (no computer-use prelude, display, or input injection).")),
+        "computer" => Some(crate::features::browser::computer_command(rt, args).await),
         "ratchet" => Some(notice(rt, "/ratchet needs the ratchet eval-harness subsystem (eval preludes + hill-climb runner), which is not ported to omt.")),
         "prewalk" => Some(notice(rt, "Prewalk is a startup-time feature in omt (the --prewalk/--no-prewalk/--prewalk-into flags); arming or restarting it mid-session is not supported.")),
         "security" => Some(notice(rt, "/security needs the security-scan mode controller (plan/run/compare), which is not ported to omt.")),
-        "share" => Some(notice(rt, "/share needs the share server / secret-gist uploader, which is not ported to omt.")),
-        "browser" => Some(notice(rt, "/browser needs the browser automation subsystem (eval-prelude browser + headless/visible restart), which is not ported to omt.")),
-        "ssh" => Some(notice(rt, "/ssh needs the SSH host manager (hosts config + remote session transport), which is not ported to omt.")),
-        "shake" => Some(notice(rt, "/shake needs AgentSession.shake (elide/images/thinking context stripping), which is not ported to omt.")),
+        "share" => Some(crate::features::share::command(rt, args).await),
+        "browser" => Some(crate::features::browser::command(rt, args).await),
+        "ssh" => Some(crate::features::ssh::command(rt, args).await),
+        "shake" => Some(crate::features::shake::command(rt, args).await),
         "handoff" => Some(handoff_command(rt, args).await),
         "move" => Some(move_command(rt, args).await),
-        "wt" | "worktree" => Some(notice(rt, "/wt needs the session-worktree machinery (git worktree creation + source-checkout cleanup), which is not ported to omt.")),
+        "wt" | "worktree" => Some(crate::features::worktree::command(rt, args).await),
         "add-dir" | "remove-dir" | "dirs" => Some(notice(rt, "Multi-root workspace directories are not tracked per-session in omt; there is no sessionManager workspace-dir store to add to.")),
-        "marketplace" => Some(notice(rt, "/marketplace needs the marketplace manager (sources, catalogs, install/uninstall), which is not ported to omt.")),
+        "marketplace" => Some(crate::features::skills::marketplace_command(rt, args).await),
         "plugins" | "plugin" => Some(plugins_command(rt, args).await),
         _ => None,
     }

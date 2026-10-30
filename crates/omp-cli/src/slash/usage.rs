@@ -13,41 +13,50 @@ use super::*;
 pub(super) async fn usage_command(rt: &Runtime, args: &str) -> Outcome {
     let (verb, rest) = subcommand(args);
     match verb.as_str() {
-        "" | "show" if rest.is_empty() => {
-            let stats = rt.session_stats().await;
-            let tokens = &stats["tokens"];
-            let mut lines = vec![
-                "Session token usage:".to_string(),
-                format!("  input:       {}", tokens["input"].as_u64().unwrap_or(0)),
-                format!("  output:      {}", tokens["output"].as_u64().unwrap_or(0)),
-                format!(
-                    "  cache read:  {}",
-                    tokens["cacheRead"].as_u64().unwrap_or(0)
-                ),
-                format!(
-                    "  cache write: {}",
-                    tokens["cacheWrite"].as_u64().unwrap_or(0)
-                ),
-                format!("  total:       {}", tokens["total"].as_u64().unwrap_or(0)),
-                format!(
-                    "  cost:        {:.4}",
-                    stats["cost"].as_f64().unwrap_or(0.0)
-                ),
-            ];
-            if let Some(window) = stats["contextUsage"]["contextWindow"].as_u64() {
-                lines.push(format!("  context window: {window} tokens"));
-            }
-            lines.extend(provider_usage_lines(rt).await);
-            output(rt, &lines.join("\n"));
-            Handled {
-                agent_invoked: false,
-            }
-        }
+        "" | "show" if rest.is_empty() => usage_show(rt, true, true).await,
+        "session" if rest.is_empty() => usage_show(rt, true, false).await,
+        "provider" if rest.is_empty() => usage_show(rt, false, true).await,
         "reset" => usage_reset(rt, &rest).await,
         _ => usage(
             rt,
-            "Usage: /usage [show|reset [provider/credential-id|provider/active]]",
+            "Usage: /usage [show|session|provider|reset [provider/credential-id|provider/active]]",
         ),
+    }
+}
+
+async fn usage_show(rt: &Runtime, session: bool, provider: bool) -> Outcome {
+    let mut lines = Vec::new();
+    if session {
+        let stats = rt.session_stats().await;
+        let tokens = &stats["tokens"];
+        lines.extend([
+            "Session token usage:".to_string(),
+            format!("  input:       {}", tokens["input"].as_u64().unwrap_or(0)),
+            format!("  output:      {}", tokens["output"].as_u64().unwrap_or(0)),
+            format!(
+                "  cache read:  {}",
+                tokens["cacheRead"].as_u64().unwrap_or(0)
+            ),
+            format!(
+                "  cache write: {}",
+                tokens["cacheWrite"].as_u64().unwrap_or(0)
+            ),
+            format!("  total:       {}", tokens["total"].as_u64().unwrap_or(0)),
+            format!(
+                "  cost:        {:.4}",
+                stats["cost"].as_f64().unwrap_or(0.0)
+            ),
+        ]);
+        if let Some(window) = stats["contextUsage"]["contextWindow"].as_u64() {
+            lines.push(format!("  context window: {window} tokens"));
+        }
+    }
+    if provider {
+        lines.extend(provider_usage_lines(rt).await);
+    }
+    output(rt, lines.join("\n").trim_start());
+    Handled {
+        agent_invoked: false,
     }
 }
 

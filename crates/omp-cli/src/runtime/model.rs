@@ -76,6 +76,12 @@ impl Runtime {
         target.map_or(Value::Null, |t| model_info(&t.model))
     }
 
+    /// Shared provider-target slot (`set_model` swaps it): callers resolve the
+    /// live model/credentials per request (`LiveCompleter::from_target`).
+    pub(crate) fn provider_target(&self) -> crate::agent::Target {
+        self.target.clone()
+    }
+
     /// `set_model`: `model_change` entry with role `default`.
     pub async fn set_model(&self, provider: &str, model_id: &str) -> Result<Value, CmdError> {
         self.select_model(provider, model_id, Some("default")).await

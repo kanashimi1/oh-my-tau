@@ -1,6 +1,6 @@
 //! Model, preset and fast/slow-mode slash commands.
 
-use super::{json, output, usage, Handled, Outcome, Runtime, Value};
+use super::{Handled, Outcome, Runtime, Value, json, output, usage};
 
 // =============================================================================
 // /modelpreset (config/model-presets.ts `runPresetsCommand`)
@@ -72,13 +72,20 @@ pub(super) fn fast_command(rt: &Runtime, args: &str) -> Outcome {
         "" | "toggle" => {
             let next = rt.service_tier() != Some(pa_types::ai::ServiceTier::Priority);
             rt.set_service_tier(next.then_some(pa_types::ai::ServiceTier::Priority));
-            output(rt, &format!("Fast mode {}.", if next { "enabled" } else { "disabled" }));
-            Handled { agent_invoked: false }
+            output(
+                rt,
+                &format!("Fast mode {}.", if next { "enabled" } else { "disabled" }),
+            );
+            Handled {
+                agent_invoked: false,
+            }
         }
         "on" => {
             rt.set_service_tier(Some(pa_types::ai::ServiceTier::Priority));
             output(rt, "Fast mode enabled.");
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "ultra" | "ultrafast" => usage(
             rt,
@@ -87,7 +94,9 @@ pub(super) fn fast_command(rt: &Runtime, args: &str) -> Outcome {
         "off" => {
             rt.set_service_tier(None);
             output(rt, "Fast mode disabled.");
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "status" => {
             output(
@@ -98,7 +107,9 @@ pub(super) fn fast_command(rt: &Runtime, args: &str) -> Outcome {
                     format!("Fast mode is off ({}).", tier_label(rt.service_tier()))
                 },
             );
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         _ => usage(rt, FAST_USAGE),
     }
@@ -235,7 +246,9 @@ pub(super) async fn modelpreset_command(rt: &Runtime, args: &str) -> Outcome {
             if !preset_name_valid(&name) {
                 return usage(
                     rt,
-                    &format!("Invalid preset name \"{name}\": use a letter, then letters, digits, - or _"),
+                    &format!(
+                        "Invalid preset name \"{name}\": use a letter, then letters, digits, - or _"
+                    ),
                 );
             }
             let roles = settings.get("modelRoles");

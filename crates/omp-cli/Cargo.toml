@@ -51,6 +51,7 @@ omp-settings = { path = "../omp-settings" }
 omp-tui = { path = "../omp-tui" }
 omp-stats = { path = "../omp-stats" }
 omp-collab = { path = "../omp-collab" }
+omp-sandbox = { path = "../omp-sandbox" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 flate2 = "1"
@@ -69,4 +70,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", default-features = false, features = ["signal"] }
+nix = { version = "0.29", default-features = false, features = ["signal", "inotify"] }

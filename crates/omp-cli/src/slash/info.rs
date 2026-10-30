@@ -1,6 +1,6 @@
 //! Info slash commands: `/stats`, `/trace`, `/changelog`.
 
-use super::{output, usage, Handled, Outcome, PathBuf, Runtime};
+use super::{Handled, Outcome, PathBuf, Runtime, output, usage};
 
 /// `/stats [--port <port>] [--host <host>]` — start (or reuse) the in-process
 /// dashboard; sessions sync in the background (TS `launchStatsDashboard`).

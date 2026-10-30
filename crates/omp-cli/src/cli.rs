@@ -89,7 +89,7 @@ pub struct Args {
 
 /// Flags whose value is taken from the next argv token, even when it looks
 /// like a flag (`--system-prompt --profile foo` ⇒ prompt is `--profile`).
-const STRING_FLAGS: &[&str] = &[
+pub(crate) const STRING_FLAGS: &[&str] = &[
     "--cwd",
     "--config",
     "--add-dir",

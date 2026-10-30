@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/omp-sandbox",
     "vendor/pa-types",
     "vendor/pa-ai",
     "vendor/pa-models",

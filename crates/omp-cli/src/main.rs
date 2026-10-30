@@ -11,6 +11,7 @@ mod context_policy;
 mod dedup;
 mod events;
 mod ext;
+mod features;
 mod herdr;
 mod images;
 mod methodology;
@@ -267,6 +268,15 @@ fn strip_deleted_suffix(exe: &std::path::Path) -> Option<std::path::PathBuf> {
 
 #[allow(clippy::disallowed_methods)] // entry point: sync main drives the process runtime
 fn main() -> Result<()> {
+    // Sandbox self-relaunch: `omt` acts as its own confinement launcher
+    // (`omt __sandbox-exec ...`, features/sandbox.rs). This must run before
+    // any runtime/tokio/global setup — the process is exec-replaced into the
+    // confined tool command. Never triggers off Linux (sandbox unsupported).
+    #[cfg(target_os = "linux")]
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("__sandbox-exec")) {
+        let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        omp_sandbox::exec_confined(&argv);
+    }
     // Before any thread exists: removing an env var is not thread-safe.
     rpc::take_detached_socket_env();
     // The rpc/print loop is strictly sequential; a multi-thread runtime costs

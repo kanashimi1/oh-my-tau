@@ -1,7 +1,7 @@
 //! `/mcp` slash command: MCP server management (ACP mode).
 
 use super::{
-    json, output, subcommand, usage, Handled, HashSet, Outcome, Path, PathBuf, Runtime, Value,
+    Handled, HashSet, Outcome, Path, PathBuf, Runtime, Value, json, output, subcommand, usage,
 };
 
 // =============================================================================
@@ -345,7 +345,12 @@ fn mcp_add(rt: &Runtime, rest: &str) -> Outcome {
                 }
                 _ => return usage(rt, "Invalid --transport value. Use http or sse."),
             },
-            "--token" => return usage(rt, "--token is only persisted by the TUI MCP add flow in omt; use headers in the config file."),
+            "--token" => {
+                return usage(
+                    rt,
+                    "--token is only persisted by the TUI MCP add flow in omt; use headers in the config file.",
+                );
+            }
             other => return usage(rt, &format!("Unknown option: {other}")),
         }
     }
@@ -410,7 +415,9 @@ pub(super) async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
         "" if crate::slash_extra::dialog::has_ui() => mcp_menu(rt).await,
         "" | "help" => {
             output(rt, MCP_HELP);
-            Handled { agent_invoked: false }
+            Handled {
+                agent_invoked: false,
+            }
         }
         "notifications" => usage(
             rt,
@@ -418,7 +425,9 @@ pub(super) async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
         ),
         "reauth" | "unauth" | "smithery-login" | "smithery-logout" | "reconnect" => usage(
             rt,
-            &format!("/mcp {verb} requires OAuth or browser flows only available in the TUI client."),
+            &format!(
+                "/mcp {verb} requires OAuth or browser flows only available in the TUI client."
+            ),
         ),
         "smithery-search" => usage(
             rt,
@@ -443,13 +452,21 @@ pub(super) async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
                 None => (rest.trim().to_string(), "project".to_string()),
             };
             if name.is_empty() {
-                return usage(rt, &format!("Usage: /mcp {verb} <name> [--scope project|user]"));
+                return usage(
+                    rt,
+                    &format!("Usage: /mcp {verb} <name> [--scope project|user]"),
+                );
             }
             mcp_set_enabled(rt, &name, &scope, enabled)
         }
         "reload" => {
-            output(rt, "MCP runtime reload requested. (New tools apply on next session; the live agent toolset is fixed at startup.)");
-            Handled { agent_invoked: false }
+            output(
+                rt,
+                "MCP runtime reload requested. (New tools apply on next session; the live agent toolset is fixed at startup.)",
+            );
+            Handled {
+                agent_invoked: false,
+            }
         }
         "test" => {
             let name = rest.trim();
@@ -470,11 +487,18 @@ pub(super) async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
                                 rt,
                                 &format!("Connected to {name}. {} tool(s) available.", tools.len()),
                             );
-                            Handled { agent_invoked: false }
+                            Handled {
+                                agent_invoked: false,
+                            }
                         }
                         Err(e) => {
-                            output(rt, &format!("Connected to {name}, but listing tools failed: {e}"));
-                            Handled { agent_invoked: false }
+                            output(
+                                rt,
+                                &format!("Connected to {name}, but listing tools failed: {e}"),
+                            );
+                            Handled {
+                                agent_invoked: false,
+                            }
                         }
                     }
                 }
@@ -483,8 +507,13 @@ pub(super) async fn mcp_command(rt: &Runtime, args: &str) -> Outcome {
         }
         "resources" | "prompts" => usage(
             rt,
-            &format!("/mcp {verb} needs the MCPManager resource/prompt listing, which the omt MCP client does not implement (tools only)."),
+            &format!(
+                "/mcp {verb} needs the MCPManager resource/prompt listing, which the omt MCP client does not implement (tools only)."
+            ),
         ),
-        _ => usage(rt, &format!("Unknown /mcp subcommand: {verb}. Use /mcp help for available subcommands.")),
+        _ => usage(
+            rt,
+            &format!("Unknown /mcp subcommand: {verb}. Use /mcp help for available subcommands."),
+        ),
     }
 }

@@ -1938,6 +1938,7 @@ dependencies = [
  "omp-lsp",
  "omp-mcp",
  "omp-providers",
+ "omp-sandbox",
  "omp-session",
  "omp-settings",
  "omp-stats",
@@ -2105,6 +2106,15 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "omp-sandbox"
+version = "0.10.0"
+dependencies = [
+ "landlock",
+ "libc",
+ "seccompiler",
 ]
 
 [[package]]

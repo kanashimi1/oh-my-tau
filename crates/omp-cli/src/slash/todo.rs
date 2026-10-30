@@ -70,11 +70,7 @@ fn todo_markdown_path(input: &str, cwd: &Path) -> PathBuf {
         return cwd.join("TODO.md");
     }
     let p = PathBuf::from(raw);
-    if p.is_absolute() {
-        p
-    } else {
-        cwd.join(p)
-    }
+    if p.is_absolute() { p } else { cwd.join(p) }
 }
 
 fn phase_name(phase: &Value) -> &str {
