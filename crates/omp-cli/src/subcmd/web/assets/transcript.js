@@ -31,9 +31,9 @@
       return `Thinking… ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
     }
     setText(text, live) {
-      if (!this.redacted && text !== this.last) {
-        this.body.innerHTML = OMP.md(text);
-        this.last = text;
+      if (!this.redacted) {
+        this.markdown ??= new StreamingMarkdown(this.body);
+        this.markdown.set(text, !live);
         this.inner.scrollTop = this.inner.scrollHeight;
       }
       if (live && !this.done) this.open = true;
@@ -80,6 +80,7 @@
       if (force || this.stick) this.scroller.scrollTop = this.scroller.scrollHeight;
     }
     append(node) {
+      if (this.batchTarget) { this.batchTarget.append(node); return node; }
       this.stick = this.isNearBottom() || this.stick;
       this.root.append(node);
       this.scheduleScroll();
@@ -231,6 +232,34 @@
       entry.badge.textContent = this.fmtElapsed(Date.now() - entry.startedAt);
     }
 
+    /** One copy action per assistant message: created once, updated in place
+     *  so streaming rerenders never duplicate it. Hidden while streaming. */
+    refreshCopy(entry, text, streaming) {
+      if (!entry.copy) {
+        entry.copy = el("button.msg-copy", { type: "button", title: "Copy response", "aria-label": "Copy response" },
+          el("span.msg-copy-icon", { html: COPY_ICON, "aria-hidden": "true" }), el("span.copy-label", { text: "Copy" }));
+        entry.copy.addEventListener("click", async () => {
+          const label = entry.copy.querySelector(".copy-label");
+          const copied = await OMP.copyText(entry.copyText || "");
+          if (copied) {
+            entry.copy.classList.add("copied");
+            if (label) label.textContent = "Copied";
+            clearTimeout(entry.copyTimer);
+            entry.copyTimer = setTimeout(() => {
+              entry.copy.classList.remove("copied");
+              if (label) label.textContent = "Copy";
+            }, 1600);
+          } else {
+            if (label) label.textContent = "Copy";
+            OMP.toast("Copy failed — clipboard is unavailable", "error");
+          }
+        });
+      }
+      entry.copyText = text;
+      entry.copy.hidden = streaming || !text;
+      if (!entry.copy.hidden && !entry.copy.isConnected) entry.node.append(entry.copy);
+    }
+
     updateAssistant(entry, msg, streaming) {
       const stick = this.isNearBottom();
       const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: String(msg.content || "") }];
@@ -242,7 +271,7 @@
         if (!part || part.kind !== kind) {
           if (part) { if (part.thinking) part.thinking.dispose(); part.node.remove(); }
           part = { kind, node: null, last: null };
-          if (kind === "text") part.node = el("div.md");
+          if (kind === "text") { part.node = el("div.md"); part.stream = new StreamingMarkdown(part.node); }
           else if (kind === "thinking" || kind === "redactedThinking") {
             part.thinking = new ThinkingBlock(kind === "redactedThinking", streaming);
             part.node = part.thinking.node;
@@ -263,7 +292,11 @@
           entry.parts[i] = part;
         }
         if (kind === "text") {
-          if (part.last !== block.text) { part.node.innerHTML = OMP.md(block.text); part.last = block.text; OMP.linkifyPaths(part.node); }
+          if (part.last !== block.text || part.streaming !== streaming) {
+            part.stream.set(block.text, !streaming);
+            part.last = block.text;
+            part.streaming = streaming;
+          }
         } else if (kind === "thinking") {
           part.thinking.setText(block.thinking || "", streaming && i === content.length - 1);
         } else if (kind === "redactedThinking") {
@@ -275,6 +308,9 @@
       });
       for (let i = content.length; i < entry.parts.length; i++) if (entry.parts[i]) entry.parts[i].node.remove();
       entry.parts.length = content.length;
+      // Exact response text (Markdown source) for the copy action.
+      const textSource = content.filter((b) => b.type === "text").map((b) => b.text || "").join("\n\n").trim();
+      this.refreshCopy(entry, textSource, streaming);
       if (!streaming) {
         if (entry.tail) entry.tail.remove();
         entry.tail = null;
@@ -284,12 +320,33 @@
         if (entry.tail) entry.node.append(entry.tail);
         const u = msg.usage;
         if (u && (u.output || u.input) && msg.stopReason !== "toolUse") {
+          // This response's own footer: duration/output/completedAt are stamped
+          // on every assistant turn, so live turns and history replay agree.
+          const durMs = typeof msg.duration === "number" && msg.duration > 0
+            ? msg.duration
+            : (entry.startedAt ? Date.now() - entry.startedAt : null);
+          const perf = durMs != null
+            ? { durMs, tps: durMs >= 1000 && u.output ? u.output / (durMs / 1000) : null, endedAt: msg.completedAt || Date.now() }
+            : null;
+          // Live turns only (startedAt set); history replay must not clobber a
+          // live value. Replay is chronological, so the newest duration wins.
+          if (entry.startedAt || perf || !OMP.perf.last) {
+            OMP.perf.last = { output: u.output || 0, cacheRead: u.cacheRead || 0, input: u.input || 0,
+                              durMs: perf ? perf.durMs : null, tps: perf ? perf.tps : null, endedAt: perf ? perf.endedAt : Date.now() };
+          }
+          const perfSpan = perf
+            ? el("span", { text: `${this.fmtElapsed(perf.durMs)}${perf.tps ? ` · ${perf.tps.toFixed(1)} t/s` : ""}`,
+                title: `this response: ${this.fmtElapsed(perf.durMs)}${perf.tps ? ` · ${perf.tps.toFixed(1)} t/s` : ""} · finished ${new Date(perf.endedAt).toTimeString().slice(0, 5)}` })
+            : null;
           const meta = el("div.meta", null,
-            el("span", { text: msg.model || "" }),
+            el("span", { text: modelName(msg.model), title: msg.model || "" }),
+            perfSpan,
             el("span", { text: `↑${OMP.fmtTokens((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0))} ↓${OMP.fmtTokens(u.output)}` }),
             u.cost && u.cost.total ? el("span", { text: OMP.fmtCost(u.cost.total) }) : null);
           if (entry.meta) entry.meta.replaceWith(meta); else entry.node.append(meta);
           entry.meta = meta;
+          // The meta footer carries the final timing; drop the live timer badge.
+          if (perfSpan && entry.badge) { entry.badge.remove(); entry.badge = null; }
         }
       }
       // Keep the timer badge last (parts are inserted before it as they stream).

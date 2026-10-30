@@ -12,6 +12,7 @@
 //! Routes:
 //! - `GET /`, `/assets/*`: the embedded app.
 //! - `GET /api/info`, `/api/projects`, `/api/sessions?cwd=`, `/api/fs?path=`.
+//! - `GET /api/maps`: graph map data from `~/.config/omt/maps.json`.
 //! - `GET /api/agents`, `POST /api/agents {cwd, resume?, model?}`,
 //!   `DELETE /api/agents/<id>`.
 //! - `GET /api/export?session=<file>`: HTML export of a stored session.
@@ -381,6 +382,32 @@ fn json_response(status: StatusCode, value: &Value) -> Response<Body> {
 
 fn error(status: StatusCode, message: &str) -> Response<Body> {
     json_response(status, &json!({"error": message}))
+}
+
+/// Path of the graph-map data file (`~/.config/omt/maps.json`).
+fn maps_path() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+        .join(".config/omt/maps.json")
+}
+
+/// `GET /api/maps`: serve `~/.config/omt/maps.json`, if present and valid.
+fn maps_json() -> Response<Body> {
+    let raw = match std::fs::read(maps_path()) {
+        Ok(raw) => raw,
+        Err(_) => {
+            return error(
+                StatusCode::NOT_FOUND,
+                "maps.json not found — запусти hypertrail/compose_maps.py",
+            )
+        }
+    };
+    match serde_json::from_slice::<Value>(&raw) {
+        Ok(v) => json_response(StatusCode::OK, &v),
+        Err(e) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("maps.json is not valid JSON: {e}"),
+        ),
+    }
 }
 
 fn query_param(req: &Request<Incoming>, key: &str) -> Option<String> {

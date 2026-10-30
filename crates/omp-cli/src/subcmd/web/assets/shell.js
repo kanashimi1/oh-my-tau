@@ -7,6 +7,7 @@
   const S = () => app.S;
 
   const shortPath = (p) => OMP.shortPath(p, S().info.home);
+  const fmtMS = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
   const basename = (p) => String(p || "").replace(/\/+$/, "").split("/").pop() || p;
 
   function navigate(id) {
@@ -15,6 +16,8 @@
     else location.hash = target;
   }
   function route() {
+    if (/^#maps(\/|$)/.test(location.hash)) { app.setView("maps"); return; }
+    if (S().view === "maps") app.setView("chat");
     const m = location.hash.match(/^#\/a\/([\w-]+)/);
     const id = m ? m[1] : null;
     if (id === S().agentId && S().ws) return;
@@ -29,14 +32,25 @@
     $("#session-title").textContent = title;
     document.title = s.agentId ? `${title} — omt` : "omt";
     $("#session-cwd").textContent = info.cwd ? shortPath(info.cwd) : "";
-    const model = st.model ? `${st.model.provider}/${st.model.id}` : "model";
+    const fullModel = st.model ? `${st.model.provider}/${st.model.id}` : "model";
     const modelBtn = $("#composer-model");
-    modelBtn.textContent = st.model ? `${st.model.provider}/${st.model.id}` : "model";
+    modelBtn.textContent = st.model ? st.model.id : "model";
+    modelBtn.title = st.model ? `${fullModel} (/model)` : "Model (/model)";
     modelBtn.disabled = !s.agentId;
     const tBtn = $("#composer-thinking");
-    if (st.ultra) tBtn.textContent = "τ " + st.ultra;
-    else tBtn.textContent = "◇ " + (st.thinkingLevel || "thinking");
+    const effort = st.ultra || st.thinkingLevel || "thinking";
+    const previousEffort = tBtn.dataset.effort;
+    const rank = st.ultra || /^(high|xhigh|max)$/i.test(effort) ? 3 : /^(medium|mid|auto)$/i.test(effort) ? 2 : /^(off|none)$/i.test(effort) ? 0 : 1;
+    tBtn.querySelector(".effort-label").textContent = effort;
+    tBtn.querySelectorAll(".effort-segment").forEach((segment, i) => segment.classList.toggle("active", i < rank));
+    tBtn.dataset.effort = effort;
+    tBtn.dataset.level = String(rank);
     tBtn.classList.toggle("ultra", !!st.ultra);
+    if (previousEffort && previousEffort !== effort) {
+      tBtn.classList.remove("effort-changing");
+      void tBtn.offsetWidth;
+      tBtn.classList.add("effort-changing");
+    }
     tBtn.disabled = !s.agentId;
     tBtn.hidden = !!(st.model && !st.model.reasoning && !st.ultra);
   }
@@ -44,6 +58,7 @@
   // Tau in the status bar: one persistent sprite, re-framed only when the
   // agent's state changes (re-inserting it would restart its animation).
   const liveHost = el("span.tau-live");
+  let runOut0 = null; // stats.tokens.output snapshot at run start
   let live = null;
 
   function renderStatus(s) {
@@ -55,6 +70,13 @@
     const parts = [];
     const st = s.state || {};
     const stats = s.stats || {};
+    if (s.streaming && runOut0 == null) runOut0 = stats.tokens?.output ?? 0;
+    if (!s.streaming && runOut0 != null) {
+      const durMs = s.runStart ? Date.now() - s.runStart : null;
+      const out = Math.max(0, (stats.tokens?.output || 0) - runOut0);
+      if (durMs > 0) OMP.perf.last = { ...(OMP.perf.last || {}), durMs, tps: out / (durMs / 1000), endedAt: Date.now() };
+      runOut0 = null;
+    }
     if (s.dead) parts.push(el("span.warn", { text: "stopped" }));
     else if (mood === "wave") parts.push(el("span.busy", { text: "waiting for you" }));
     else if (s.streaming) parts.push(el("span.busy", { text: `${mood === "work" ? "working" : "thinking"} ${OMP.fmtDuration(Date.now() - s.runStart)}` }));
@@ -69,6 +91,20 @@
     }
     const t = stats.tokens;
     if (t && t.total) parts.push(el("span", { text: `↑${OMP.fmtTokens(t.input + (t.cacheRead || 0) + (t.cacheWrite || 0))} ↓${OMP.fmtTokens(t.output)}`, title: `input ${t.input} · output ${t.output} · cache read ${t.cacheRead} · cache write ${t.cacheWrite}` }));
+    if (t && (t.cacheRead || t.cacheWrite)) parts.push(el("span", { text: "cache " + OMP.fmtTokens((t.cacheRead || 0) + (t.cacheWrite || 0)), title: "cache read " + (t.cacheRead || 0) + " · cache write " + (t.cacheWrite || 0) }));
+    if (s.streaming && s.runStart) {
+      const out = Math.max(0, (t?.output || 0) - (runOut0 || 0));
+      const sec = (Date.now() - s.runStart) / 1000;
+      if (sec >= 2 && out > 0) parts.push(el("span.busy", { text: (out / sec).toFixed(1) + " t/s", title: "output tokens per second (live)" }));
+    }
+    const L = !s.streaming ? OMP.perf.last : null;
+    if (L) {
+      const segs = [];
+      if (L.durMs != null) segs.push(fmtMS(L.durMs));
+      if (L.tps) segs.push(L.tps.toFixed(1) + " t/s");
+      if (L.endedAt) segs.push(new Date(L.endedAt).toTimeString().slice(0, 5));
+      if (segs.length) parts.push(el("span", { text: segs.join(" · "), title: "last response: duration · speed · finished at" }));
+    }
     if (stats.cost) parts.push(el("span", { text: OMP.fmtCost(stats.cost) }));
     const q = (st.queuedMessageCount || 0);
     if (q) parts.push(el("span.warn", { text: `${q} queued` }));
@@ -89,29 +125,12 @@
     band.replaceChildren(...items.map(([k, m]) => el("div.q", { text: `${k}: ${typeof m === "string" ? m : OMP.contentText(m.content) || JSON.stringify(m)}` })));
   }
 
-  const TODO_ICON = { completed: "✓", in_progress: "▸", inProgress: "▸", pending: "○", blocked: "⊘", abandoned: "✗" };
-  function todoWidget(s) {
-    const phases = (s.state && Array.isArray(s.state.todoPhases)) ? s.state.todoPhases : [];
-    const tasks = phases.flatMap((p) => (p.tasks || []).map((t) => ({ ...t, phase: p.name })));
-    if (!tasks.length) return null;
-    const done = tasks.filter((t) => t.status === "completed" || t.status === "abandoned").length;
-    if (done === tasks.length) return null;
-    const lines = [];
-    for (const p of phases) {
-      if (!(p.tasks || []).length) continue;
-      if (phases.length > 1) lines.push(p.name);
-      for (const t of p.tasks) lines.push(`${phases.length > 1 ? "  " : ""}${TODO_ICON[t.status] || "○"} ${t.content}${t.blocker ? "  (blocked: " + t.blocker + ")" : ""}`);
-    }
-    return el("details.todo-hud", { open: true }, el("summary", { text: `Todos ${done}/${tasks.length}` }), el("div", { text: lines.join("\n") }));
-  }
-
   function renderWidgets(s) {
     const above = [], below = [];
-    const todo = todoWidget(s);
-    if (todo) above.push(todo);
     for (const w of s.widgets.values()) (w.below ? below : above).push(el("div", { text: w.lines.join("\n") }));
     $("#widgets-above").replaceChildren(...above);
     $("#widgets-below").replaceChildren(...below);
+    if (OMP.agentPanel) { OMP.agentPanel.renderLeft($("#agent-dock")); OMP.agentPanel.renderRight($("#subagents-dock")); }
   }
 
   function renderSidebar(s) {
@@ -127,6 +146,7 @@
 
     // Running agents inline (live dot, needs-input/running chips).
     for (const a of s.agents) {
+      if (a.alive === false && !q) continue;
       const key = "a:" + a.id;
       const title = a.sessionName || basename(a.cwd);
       const sub = `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}`;
@@ -141,8 +161,14 @@
       });
     }
 
+    // Default view: all live agents + five recent stopped sessions. Search
+    // deliberately scans the complete stored history; pinned/current sessions
+    // stay reachable even when they are older than the recent slice.
+    const stored = s.sessions.filter((r) => !openByAgent.has(r.path))
+      .sort((a, b) => (b.modifiedMs || 0) - (a.modifiedMs || 0));
+    const visibleStored = q ? stored : stored.filter((r, i) => i < 5 || pinned.has("s:" + r.path) || (current && current.sessionFile === r.path));
     // Stored sessions (skipped when an agent already has the file open).
-    for (const r of s.sessions) {
+    for (const r of visibleStored) {
       if (openByAgent.has(r.path)) continue;
       const key = "s:" + r.path;
       const title = r.title || r.preview || r.id;
@@ -186,50 +212,7 @@
       frag.push(el("div.sess-empty.muted.small", { text: s.project ? "No matching sessions" : "No sessions yet" }));
     }
     $("#session-list").replaceChildren(...frag);
-    renderSubagents(s);
-  }
-
-  // Subagents activity for the CURRENT session. `/api/agents` exposes one
-  // record per top-level hub agent and no parent/child link, so the only
-  // truthful signals are the current agent's own fields: `streaming` /
-  // `runningTools` (a run is in flight, its background `task` children may be
-  // working) and `awaitingTasksSinceMs` (the backend's explicit "parked on
-  // background subagents" flag, also rendered as the sidebar "subagent" chip).
-  // Per-subagent names/models/counts are NOT in the API, so none are shown.
-  function renderSubagents(s) {
-    let host = $("#subagents-section");
-    const section = $(".side-section");
-    if (!host && section) {
-      host = el("div", { id: "subagents-section" });
-      section.prepend(host);
-    }
-    if (!host) return;
-    const a = s.agents.find((x) => x.id === s.agentId);
-    const waitingMs = a && !a.streaming && a.awaitingTasksSinceMs
-      ? Date.now() - a.awaitingTasksSinceMs : null;
-    const active = !!(a && (a.streaming || a.runningTools));
-    if (!a || a.alive === false || (!active && waitingMs == null)) {
-      host.replaceChildren();
-      return;
-    }
-    const title = a.sessionName || basename(a.cwd);
-    const state = active
-      ? { dot: "busy", chip: "working", cls: "muted-run", text: "running task subagents" }
-      : { dot: "wait", chip: waitingMs > STUCK_MS ? "stuck" : "waiting", cls: waitingMs > STUCK_MS ? "needs-input" : "muted-run", text: "waiting on background subagents " + waitText(waitingMs) };
-    host.replaceChildren(
-      el("div.group-head", null,
-        el("span", { text: "Subagents" }),
-        el("span.count", { text: "of " + title, title: "Background task subagents of the current session \u201C" + title + "\u201D" })),
-      el("div.session-row.subagent-row", {
-        title: "Background subagents of this session\n" + title
-          + (a.model ? "\nmodel: " + a.model : "")
-          + (waitingMs != null ? "\nwaiting since " + new Date(Date.now() - waitingMs).toLocaleString() : ""),
-      },
-        el("div.main", null,
-          el("span.sess-dot." + state.dot),
-          el("span.sess-title", { text: state.text }),
-          el("span." + state.cls, { text: state.chip })),
-        el("div.sess-sub", { text: `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}` })));
+    if (OMP.agentPanel) { OMP.agentPanel.renderLeft($("#agent-dock")); OMP.agentPanel.renderRight($("#subagents-dock")); }
   }
 
   const PIN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l-1 8 3 3H6l3-3z"/><line x1="12" y1="18" x2="12" y2="21"/></svg>';
@@ -407,7 +390,7 @@
     if (i === dirs.length) dir = await OMP.dialogs.pickFolder(s.project || s.info.home).promise;
     if (!dir) return;
     setProject(s, dir);
-    await spawn({ cwd: dir });
+    await spawn({ cwd: dir, ...(OMP.agentPanel ? OMP.agentPanel.creationOptions() : {}) });
   }
 
   async function resumePicker(s, cwd) {
@@ -540,8 +523,8 @@
       ["Enter", "send (steer while the agent works)"], ["Alt+Enter", "queue a follow-up while the agent works"],
       ["Shift+Enter", "new line"], ["Esc", "interrupt the running turn"], ["↑ / ↓", "prompt history"],
       ["/", "slash commands (Tab completes)"], ["!cmd", "run a shell command (!!cmd: keep it out of the context)"],
+      ["Ctrl+B", "hide or show the sidebar"],
       ["Ctrl+Shift+M / Ctrl+Shift+T", "model picker / thinking level"],
-      ["Ctrl+N / Ctrl+Shift+N", "new session"], ["Ctrl+Shift+R", "resume a session"],
       ["paste / drop", "attach images"],
     ];
     OMP.dialogs.modal({
@@ -582,6 +565,7 @@
     OMP.popupMenu(anchor, items);
   }
 
+
   async function projectMenu(anchor, s) {
     let projects = [];
     try { projects = (await api("/api/projects")).projects || []; } catch { /* none */ }
@@ -593,17 +577,55 @@
   // ── boot ────────────────────────────────────────────────────────────────────
   async function init(a) {
     app = a;
+    // Ticker: keeps the streaming "working m:ss" chip and live tok/s fresh;
+    // otherwise a safe no-op (app.js renders status only on events).
+    setInterval(() => { if (app && S().agentId && (S().streaming || OMP.perf.last)) renderStatus(S()); }, 1000);
     const s = S();
     $("#appearance-btn").onclick = () => OMP.appearance.open();
-    $("#sidebar-toggle").onclick = () => {
-      const appEl = $("#app");
-      if (window.innerWidth <= 760) appEl.classList.toggle("show-sidebar"); else appEl.classList.toggle("no-sidebar");
+    const appEl = $("#app");
+    const sidebarButton = $("#sidebar-toggle");
+    const hideButton = $("#sidebar-hide");
+    const activityCollapse = $("#activity-collapse");
+    const activityExpand = $("#activity-expand");
+    const setActivityCollapsed = (collapsed, persist = true) => {
+      appEl.classList.toggle("activity-collapsed", collapsed);
+      activityCollapse.setAttribute("aria-expanded", String(!collapsed));
+      activityExpand.hidden = !collapsed;
+      if (persist) try { localStorage.setItem("omp-activity-collapsed", String(collapsed)); } catch { /* storage unavailable */ }
     };
+    let activityCollapsed = false;
+    try { activityCollapsed = localStorage.getItem("omp-activity-collapsed") === "true"; } catch { /* storage unavailable */ }
+    setActivityCollapsed(activityCollapsed, false);
+    activityCollapse.onclick = () => setActivityCollapsed(true);
+    activityExpand.onclick = () => setActivityCollapsed(false);
+    const setSidebarHidden = (hidden, persist = true) => {
+      appEl.classList.toggle("no-sidebar", hidden);
+      sidebarButton.setAttribute("aria-expanded", String(!hidden));
+      sidebarButton.title = `${hidden ? "Show" : "Hide"} sidebar (Ctrl+B)`;
+      if (hideButton) {
+        hideButton.setAttribute("aria-pressed", String(hidden));
+        hideButton.title = `${hidden ? "Show" : "Hide"} sidebar (Ctrl+B)`;
+      }
+      if (persist) try { localStorage.setItem("omp-web-sidebar-hidden", String(hidden)); } catch { /* storage unavailable */ }
+    };
+    let sidebarHidden = false;
+    try { sidebarHidden = localStorage.getItem("omp-web-sidebar-hidden") === "true"; } catch { /* storage unavailable */ }
+    setSidebarHidden(sidebarHidden, false);
+    sidebarButton.onclick = () => {
+      if (window.innerWidth <= 760) appEl.classList.toggle("show-sidebar");
+      else setSidebarHidden(!appEl.classList.contains("no-sidebar"));
+    };
+    // Optional in-sidebar hide button (parent adds it): same path as the topbar
+    // toggle, so a hidden menu stays reopenable via #sidebar-toggle / Ctrl+B.
+    if (hideButton) {
+      setSidebarHidden(sidebarHidden, false); // sync its aria/title state
+      hideButton.onclick = () => setSidebarHidden(!appEl.classList.contains("no-sidebar"));
+    }
     $("#new-session").onclick = () => newSession(s, s.project);
+    $("#maps-btn").onclick = () => { if (OMP.maps) OMP.maps.toggle(); };
     $("#project-pick").onclick = (e) => projectMenu(e.currentTarget, s);
     $("#session-filter").oninput = () => renderSidebar(s);
     // The stored list is a snapshot: re-scan when the user goes looking.
-    $("#session-filter").onfocus = () => loadSessions(s);
     window.addEventListener("focus", () => { loadSessions(s); refreshAgents(s); });
     $("#composer-model").onclick = () => modelPicker(s);
     $("#composer-thinking").onclick = () => thinkingPicker(s);
@@ -620,12 +642,18 @@
     document.addEventListener("keydown", (e) => {
       if ($("#modal-root").childElementCount) return;
       const k = e.key.toLowerCase();
-      if (e.ctrlKey && e.shiftKey && k === "m") { e.preventDefault(); if (s.agentId) modelPicker(s); }
+      if (e.ctrlKey && !e.shiftKey && (k === "b" || e.code === "KeyB")) {
+        e.preventDefault();
+        if (window.innerWidth <= 760) appEl.classList.toggle("show-sidebar");
+        else setSidebarHidden(!appEl.classList.contains("no-sidebar"));
+      }
+      else if (e.ctrlKey && e.shiftKey && k === "m") { e.preventDefault(); if (s.agentId) modelPicker(s); }
       else if (e.ctrlKey && e.shiftKey && k === "t") { e.preventDefault(); if (s.agentId) thinkingPicker(s); }
       else if (e.ctrlKey && e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
       else if (e.ctrlKey && !e.shiftKey && k === "n") { e.preventDefault(); newSession(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "r") { e.preventDefault(); resumePicker(s, app.currentCwd()); }
       else if (e.ctrlKey && e.shiftKey && k === "a") { e.preventDefault(); OMP.appearance.open(); }
+      else if (e.key === "Escape" && OMP.maps && OMP.maps.isOpen()) { e.preventDefault(); if (!OMP.maps.closeDetail()) OMP.maps.close(); }
       else if (e.key === "Escape" && (s.streaming || s.bashRunning) && document.activeElement !== $("#composer")) { e.preventDefault(); app.abort(); }
     });
     setInterval(() => { if (s.streaming) renderStatus(s); }, 1000);

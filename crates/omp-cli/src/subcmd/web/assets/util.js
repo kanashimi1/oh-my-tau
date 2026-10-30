@@ -57,6 +57,8 @@ window.OMP = window.OMP || {};
     if (s < 60) return s.toFixed(s < 10 ? 1 : 0) + "s";
     return Math.floor(s / 60) + "m" + String(Math.round(s % 60)).padStart(2, "0") + "s";
   };
+  // Last completed response stats, shared transcript -> statusbar.
+  OMP.perf = { last: null };
   OMP.timeAgo = (ms) => {
     if (!ms) return "";
     const d = (Date.now() - ms) / 1000;

@@ -45,6 +45,10 @@
 
   const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`);
 
+  // Polished upward arrow for the send button (swap keeps the stop state on the
+  // separate #stop-btn untouched).
+  const SEND_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>';
+
   class Composer {
     constructor({ onSubmit, onAbort }) {
       this.ta = OMP.$("#composer");
@@ -66,6 +70,13 @@
       try { this.history = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { this.history = []; }
       this.histPos = -1;
       this.draft = "";
+      this.sendBtn.innerHTML = SEND_ICON;
+      this.sendBtn.setAttribute("aria-label", "Send");
+      // Keep the microphone immediately next to send, whatever the markup order.
+      this.sendBtn.before(this.micBtn);
+      this.micBtn.setAttribute("type", "button");
+      this.micBtn.setAttribute("aria-label", "Dictate");
+      this.micBtn.setAttribute("aria-pressed", "false");
       this.bind();
     }
 
@@ -145,6 +156,7 @@
       time.hidden = false;
       rec.timer = setInterval(tick, 500);
       this.micBtn.classList.add("recording");
+      this.micBtn.setAttribute("aria-pressed", "true");
       this.micBtn.title = "Recording… click to insert the text · Esc cancels";
     }
 
@@ -155,6 +167,7 @@
       clearInterval(rec.timer);
       this.rec = null;
       this.micBtn.classList.remove("recording");
+      this.micBtn.setAttribute("aria-pressed", "false");
       this.micBtn.querySelector(".mic-time").hidden = true;
       this.micBtn.title = "Dictate (click to start, click again to insert the text · Esc cancels)";
       if (rec.recorder.state !== "inactive") rec.recorder.stop();
@@ -255,7 +268,11 @@
       if (annotate) this.annotate(att);
     }
     async annotate(att) {
-      if (await OMP.annotate(att)) this.renderAttachments();
+      if (await OMP.annotate(att)) {
+        this.renderAttachments();
+        const count = att.pins?.length || 0;
+        OMP.toast(count ? `Saved ${count} image pin${count === 1 ? "" : "s"}` : "Image pins cleared", "success", 2200);
+      }
       this.focus();
     }
     renderAttachments() {

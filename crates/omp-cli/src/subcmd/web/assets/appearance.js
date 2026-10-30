@@ -27,6 +27,9 @@
     { id: "summer-sky", name: "Summer Sky", sw: ["#edf4fb", "#ffffff", "#2a6cc0", "#1e3350"], wall: "/wallpapers/anime-sky.svg" },
     { id: "vaporwave", name: "Vaporwave", sw: ["#1a0b2e", "#241040", "#ff71ce", "#f4e8ff"], wall: "/wallpapers/vaporwave-sunset.svg" },
     { id: "synthwave", name: "Synthwave", sw: ["#0b0820", "#120e2e", "#01cdfe", "#e6f7ff"], wall: "/wallpapers/vaporwave-grid.svg" },
+    { id: "phosphor", name: "Phosphor", sw: ["#0b0f0d", "#101812", "#3ddc84", "#d6e8dc"], wall: "" },
+    { id: "paper", name: "Paper", sw: ["#faf8f4", "#ffffff", "#c8401f", "#1a1815"], wall: "" },
+    { id: "drafting", name: "Drafting", sw: ["#0e2a44", "#143750", "#7fd6f0", "#d8ecf7"], wall: "" },
   ];
   const DEFAULTS = { theme: "calm", wallpaper: "", dim: 35, blur: 0, glass: 78 };
 

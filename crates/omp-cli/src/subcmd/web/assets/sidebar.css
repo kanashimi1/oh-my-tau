@@ -1,8 +1,34 @@
 /* sidebar slice: Kimi-style grouped session list with per-row actions */
-#sidebar { padding-bottom: 8px; }
-#new-session { flex: none; }
-#new-session.compact { padding: 7px 12px; font-weight: 600; }
 
+/* ── White Tau marks ────────────────────────────────────────────────────────
+   CSS beats SVG presentation attributes, so no !important is needed. Kept at
+   class specificity so agent.css can override .ap-sub-tau per role later. */
+.tau-brand .tau-mark { fill: #fff; }
+.tau-brand .tau-aura { fill: #fff; opacity: .16; }
+.tau-brand svg.tau-sprite { --tau-glow: rgba(255, 255, 255, .5); }
+.tau-brand .tau-body path[stroke] { stroke: rgba(255, 255, 255, .35); }
+/* Subagent marks are white in both the left and right activity surfaces. */
+.ap-sub-tau .tau-mark { fill: #fff; }
+.ap-sub-tau .tau-aura { fill: #fff; opacity: .16; }
+.ap-sub-tau svg.tau-sprite { --tau-glow: transparent; }
+.ap-sub-tau .tau-body path[stroke] { stroke: rgba(255, 255, 255, .35); }
+
+#sidebar { padding-bottom: 8px; }
+#new-session { flex: none; background: var(--fg); color: var(--bg); border-color: transparent; }
+#new-session:hover { filter: brightness(1.08); }
+#new-session:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#new-session.compact { padding: 7px 12px; font-weight: 600; }
+.agent-dock {
+  flex: none;
+  max-height: min(44vh, 430px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+  scrollbar-gutter: stable;
+}
+
+.sess-sub, .ap-progress, .ap-status, .statusbar { font-variant-numeric: tabular-nums; }
 .group-head {
   display: flex;
   align-items: center;
@@ -86,14 +112,3 @@
 .pin-badge { font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--fg-faint); flex: none; }
 .session-row .needs-input.stuck { cursor: pointer; }
 .session-row .muted-run[title] { cursor: pointer; }
-
-/* Subagents activity: compact block pinned above the session list, shown
-   only while the current session has live/waiting background subagents. */
-#subagents-section { padding-bottom: 4px; }
-#subagents-section .group-head { padding-top: 8px; }
-#subagents-section .group-head .count { text-transform: none; letter-spacing: 0; }
-#subagents-section .subagent-row { padding: 4px 6px; border-radius: 8px; background: var(--bg-hover, transparent); }
-#subagents-section .subagent-row .main { align-items: center; }
-#subagents-section .subagent-row .sess-title { font-weight: 400; font-size: 12px; }
-#subagents-section .subagent-row .sess-sub { font-size: 10.5px; }
-#subagents-section .sess-dot.wait { background: var(--warn); animation: pulse 1.6s infinite; }

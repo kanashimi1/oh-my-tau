@@ -71,6 +71,16 @@ const FILES: &[(&str, &str, &str)] = &[
         include_str!("assets/shell.js"),
     ),
     (
+        "/assets/maps.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/maps.css"),
+    ),
+    (
+        "/assets/maps.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/maps.js"),
+    ),
+    (
         "/assets/app.js",
         "text/javascript; charset=utf-8",
         include_str!("assets/app.js"),
@@ -84,6 +94,11 @@ const FILES: &[(&str, &str, &str)] = &[
         "/assets/composer.css",
         "text/css; charset=utf-8",
         include_str!("assets/composer.css"),
+    ),
+    (
+        "/assets/annotate.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/annotate.css"),
     ),
     (
         "/assets/artifacts.css",

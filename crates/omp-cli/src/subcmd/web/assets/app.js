@@ -32,11 +32,17 @@
     queue: { steering: [], followUp: [] },
     dead: null,
     bashRunning: 0,
+    view: "chat",
   };
 
   const transcript = new OMP.Transcript($("#transcript"), $("#transcript-wrap"));
   const composer = new OMP.Composer({ onSubmit: submit, onAbort: abort });
   OMP.dialogs.afterClose = () => { composer.focus(); renderStatus(); };
+
+  // Bounded cache of loaded session histories (see OMP.SessionHistoryCache).
+  // Any live frame that can mutate history marks every entry dirty, so a
+  // cached snapshot is only ever reused when the session is provably quiet.
+  const sessionCache = new OMP.SessionHistoryCache();
 
   // ── rpc ──────────────────────────────────────────────────────────────────
   function send(frame) {
@@ -101,6 +107,7 @@
       if (S.ws !== ws) return;
       S.ws = null;
       composer.setEnabled(false);
+      sessionCache.markAllDirty(); // frames may have been missed while detached
       if (!S.dead) {
         transcript.addSystem("Connection lost. Reconnecting…", "warn");
         setTimeout(async () => {
@@ -187,7 +194,7 @@
         OMP.copyText(f.text || "").then((ok) => OMP.toast(ok ? "Copied to clipboard" : "Clipboard unavailable", ok ? "success" : "error"));
         return;
       case "available_commands_update": return setCommands(f.commands);
-      case "agent_start": setStreaming(true); return;
+      case "agent_start": sessionCache.markAllDirty(); setStreaming(true); return;
       case "agent_end": setStreaming(false); refreshStats(); refreshAgents(); loadSessions(); updateHome(); return;
       case "session_settled": case "agent_settled": setStreaming(false); return;
       case "turn_end": refreshStats(); refreshState(); return;
@@ -195,10 +202,12 @@
         S.queue = { steering: f.steering || [], followUp: f.followUp || [] };
         return renderQueue();
       case "session_loaded":
-        transcript.loadMessages(f.messages);
+        sessionCache.markAllDirty();
+        transcript.loadLatest(f.messages);
         refreshState(); refreshStats(); refreshAgents();
         return;
       case "session_reset":
+        sessionCache.markAllDirty();
         transcript.reset();
         refreshState(); refreshStats(); refreshAgents();
         return;
@@ -213,6 +222,12 @@
       case "tool_execution_start": case "tool_execution_end":
         S.toolsRunning = Math.max(0, (S.toolsRunning || 0) + (f.type === "tool_execution_start" ? 1 : -1));
         renderStatus();
+        return transcript.onEvent(f);
+      case "message_start": case "message_end":
+        sessionCache.markAllDirty();
+        return transcript.onEvent(f);
+      case "auto_compaction_end":
+        sessionCache.markAllDirty();
         return transcript.onEvent(f);
       default:
         transcript.onEvent(f);
@@ -260,7 +275,9 @@
 
   async function resync() {
     try {
-      transcript.loadMessages(await getMessages());
+      const messages = await getMessages(); // full refetch, never the cache
+      if (OMP.agentPanel) OMP.agentPanel.ingestMessages(messages);
+      transcript.loadLatest(messages);
     } catch { /* ignore */ }
   }
 
@@ -380,7 +397,8 @@
   function thinkingPicker() { return OMP.shellImpl.thinkingPicker(S); }
   function exportHtml() { return OMP.shellImpl.exportHtml(S); }
 
-  OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand, getMessages };
+  OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand, getMessages, getCapabilities, sessionCache, setView };
+  if (OMP.agentPanel && typeof OMP.agentPanel.init === "function") OMP.agentPanel.init(OMP.app);
   OMP.shellImpl.init(OMP.app);
   for (const feature of [OMP.palette, OMP.tasks, OMP.changes, OMP.terminal, OMP.workspaces, OMP.quick]) {
     if (feature && typeof feature.init === "function") feature.init(OMP.app);

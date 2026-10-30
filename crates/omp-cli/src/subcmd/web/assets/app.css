@@ -95,6 +95,41 @@
   --user-bg: #252525; --code-bg: #121212;
   --kw: #b48cff; --fn: #e5c07b; --str: #98c379; --num: #d19a66; --cm: #7f7f7f; --ty: #61afef;
 }
+/* Phosphor: green CRT terminal — phosphor glow on near-black. */
+[data-theme="phosphor"] {
+  --bg: #0b0f0d; --bg-raised: #101812; --bg-inset: #070a08; --bg-overlay: #14201a; --bg-hover: #1a2a20;
+  --fg: #d6e8dc; --fg-muted: #7e948a; --fg-faint: #5a6b62;
+  --accent: #3ddc84; --accent-2: #ffb300; --accent-muted: rgba(61,220,132,.14); --on-accent: #04140b;
+  --ok: #3ddc84; --err: #ff6e6e; --warn: #ffb300; --link: #6fd9a8; --info: #6fd9a8;
+  --border: rgba(61,220,132,.12); --border-strong: rgba(61,220,132,.24);
+  --user-bg: #0e1a13; --code-bg: #060a07;
+  --kw: #ffb300; --fn: #8fe6b8; --str: #6fd9a8; --num: #3ddc84; --cm: #5a6b62; --ty: #b8e6c9;
+}
+/* Paper: swiss print light — warm paper, ink black, signal red. */
+[data-theme="paper"] {
+  --bg: #faf8f4; --bg-raised: #ffffff; --bg-inset: #f1ede5; --bg-overlay: #f5f1ea; --bg-hover: #ede7dd;
+  --fg: #1a1815; --fg-muted: #5c5548; --fg-faint: #8b8377;
+  --accent: #c8401f; --accent-2: #1a1815; --accent-muted: rgba(200,64,31,.1);
+  --ok: #2e7d32; --err: #c8401f; --warn: #8a6000; --link: #b0521f; --info: #b0521f;
+  --border: rgba(26,24,21,.12); --border-strong: rgba(26,24,21,.2);
+  --user-bg: #f0eae0; --code-bg: #f5f2ec;
+  --kw: #7b3fa2; --fn: #8a6000; --str: #247a3d; --num: #c8401f; --cm: #8b8377; --ty: #5a3fb8;
+  color-scheme: light;
+}
+/* Drafting: drafting-table blueprint — deep blue, cyan ink, amber rules. */
+[data-theme="drafting"] {
+  --bg: #0e2a44; --bg-raised: #143750; --bg-inset: #081c30; --bg-overlay: #1b4266; --bg-hover: #22507a;
+  --fg: #d8ecf7; --fg-muted: #8fb4cc; --fg-faint: #5e82a0;
+  --accent: #7fd6f0; --accent-2: #f0b24a; --accent-muted: rgba(127,214,240,.15); --on-accent: #061826;
+  --ok: #58c99a; --err: #f07a6e; --warn: #f0c46a; --link: #7fd6f0; --info: #7fd6f0;
+  --border: rgba(127,214,240,.14); --border-strong: rgba(127,214,240,.26);
+  --user-bg: #16405f; --code-bg: #06121e;
+  --kw: #7fd6f0; --fn: #f0c46a; --str: #58c99a; --num: #9fe0f5; --cm: #5e82a0; --ty: #b0d9ee;
+}
+/* Identity effects: scanline / grid textures on the base layer (body keeps
+   background-color: var(--bg); image-only overlay, no layout shift). */
+html[data-theme="phosphor"] body, [data-theme="phosphor"] body { background-image: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px); }
+[data-theme="drafting"] body { background-image: linear-gradient(rgba(127,214,240,.05) 1px, transparent 1px), linear-gradient(90deg, rgba(127,214,240,.05) 1px, transparent 1px); background-size: 24px 24px; }
 [data-theme="calm"] .wordmark { background: linear-gradient(90deg, #4ca3ff, #a78bfa); -webkit-background-clip: text; background-clip: text; }
 [data-theme="vaporwave"] .wordmark, [data-theme="synthwave"] .wordmark { text-shadow: 0 0 18px rgba(255,113,206,.45); }
 
@@ -211,6 +246,14 @@ button.wide { width: 100%; }
 .tool .status { width: 14px; text-align: center; flex: none; }
 .tool.running .status { color: var(--accent); animation: pulse 1s infinite; }
 .tool.ok .status { color: var(--ok); } .tool.error .status { color: var(--err); } .tool.error { border-color: rgba(240, 86, 83, .45); }
+.tool-inline-preview-slot { border-top: 1px solid var(--border); padding: 8px 10px; background: var(--bg); display: flex; flex-direction: column; gap: 8px; }
+.tool-inline-preview-slot[hidden] { display: none; }
+.chat-file-preview { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.chat-file-preview-name { color: var(--fg-muted); font: 11px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-file-preview img, .chat-file-preview video { display: block; width: auto; max-width: 100%; max-height: 360px; object-fit: contain; border-radius: 6px; border: 1px solid var(--border); background: var(--code-bg); }
+.chat-file-preview audio { display: block; width: min(100%, 520px); }
+.chat-file-preview iframe { display: block; width: 100%; height: 360px; border: 1px solid var(--border); border-radius: 6px; background: #fff; }
+.chat-file-preview[data-kind="html"] iframe { height: 320px; }
 .tool-body { border-top: 1px solid var(--border); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
 .tool-body pre, .tool-tail { margin: 0; font: 12px/1.45 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 420px; overflow: auto; background: var(--code-bg); border-radius: 6px; padding: 6px 8px; }
 .tool-tail { border-top: 1px solid var(--border); border-radius: 0; max-height: 130px; color: var(--fg-muted); }
