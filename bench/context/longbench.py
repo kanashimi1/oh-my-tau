@@ -42,6 +42,8 @@ ARMS = {
     "clm-host": dict(strategy="clm-host", legacy=True),
     "offload": dict(strategy="clm", policy="rule", rule=dict(offload=2000, age=0, restated=0, tokens=0, every=0)),
     "rule": dict(strategy="clm", policy="rule", rule=dict(offload=8000, age=3, restated=0, tokens=24000, every=0)),
+    # Learned controller over the same real RPC/context pipeline; ckpt/onnx come from OMP_CONTEXT_LAYA_*.
+    "laya": dict(strategy="clm", policy="laya", rule=dict(offload=8000, age=3, restated=0, tokens=24000, every=0)),
     # LCM-lite (arXiv 2605.04050): engine-managed, no model decision. Below `hist` tokens it does nothing (wire == append
     # modulo the clm slot table); above it the oldest large blocks become extractive summary + lossless file pointer.
     # L3 additionally gets the engine-run `llm_map` primitive instead of a model-written chunk loop.

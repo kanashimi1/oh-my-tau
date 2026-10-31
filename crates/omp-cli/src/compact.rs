@@ -220,10 +220,10 @@ impl Completer for LiveCompleter {
                     headers: headers.map(|h| h.into_iter().collect()),
                     ..pa_ai::types::StreamOptions::default()
                 },
-                // `resolveCompactionEffort`: High by default, only for reasoning models.
+                // `resolveCompactionEffort`: Low (cheap summaries), only for reasoning models.
                 reasoning: model
                     .reasoning
-                    .then_some(pa_types::ai::ModelThinkingLevel::High),
+                    .then_some(pa_types::ai::ModelThinkingLevel::Low),
                 thinking_budgets: None,
                 disable_reasoning: false,
                 tool_choice: None,
@@ -251,6 +251,32 @@ impl LiveCompleter {
             headers: t.headers,
             credential_id: t.credential_id,
         })
+    }
+
+    /// A resolved model selection (`crate::model::select`) as a completer.
+    #[must_use]
+    pub fn from_selected(selected: crate::model::Selected) -> Self {
+        Self {
+            model: selected.model,
+            api_key: selected.api_key,
+            headers: selected.headers,
+            credential_id: selected.credential_id,
+        }
+    }
+}
+
+/// The model reference compaction summaries run on: `OMP_COMPACTION_MODEL`
+/// when set, else a cheap low-effort model that is available in the current setup.
+#[must_use]
+pub fn compaction_model_ref() -> String {
+    compaction_model_ref_from(std::env::var("OMP_COMPACTION_MODEL").ok().as_deref()).to_owned()
+}
+
+/// [`compaction_model_ref`] over an injected env value (unit-testable).
+fn compaction_model_ref_from(env: Option<&str>) -> &str {
+    match env {
+        Some(m) if !m.trim().is_empty() => m.trim(),
+        _ => "zai/glm-5.3-flash:low",
     }
 }
 
@@ -992,6 +1018,26 @@ mod tests {
             keep_recent_tokens: 100,
             ..CompactionSettings::default()
         }
+    }
+
+    #[test]
+    fn compaction_model_ref_defaults_to_fast_model_and_honors_override() {
+        assert_eq!(
+            super::compaction_model_ref_from(None),
+            "zai/glm-5.3-flash:low"
+        );
+        assert_eq!(
+            super::compaction_model_ref_from(Some("")),
+            "zai/glm-5.3-flash:low"
+        );
+        assert_eq!(
+            super::compaction_model_ref_from(Some("  ")),
+            "zai/glm-5.3-flash:low"
+        );
+        assert_eq!(
+            super::compaction_model_ref_from(Some("zai/glm-5.3-flash:low")),
+            "zai/glm-5.3-flash:low"
+        );
     }
 
     async fn talk(h: &mut Harness, prompts: usize) {

@@ -25,6 +25,8 @@ use serde_json::json;
 
 /// Smallest block `rlm_offload` will move (shorter blocks are not worth a reference line).
 pub const OFFLOAD_MIN_CHARS: usize = 2_000;
+/// Maximum full-text chars re-inlined by an explicit Laya `rlm_recall` decision.
+pub const POLICY_RECALL_CHARS: usize = 100_000;
 
 /// Per-turn maintenance instruction sent by the host (same wording the bench used for `clm`).
 pub const MAINT_NOTICE: &str =
@@ -63,6 +65,7 @@ pub enum Action {
     Noop,
     ClmEdit,
     RlmOffload,
+    RlmRecall,
 }
 
 impl Action {
@@ -72,6 +75,7 @@ impl Action {
             Self::Noop => "noop",
             Self::ClmEdit => "clm_edit",
             Self::RlmOffload => "rlm_offload",
+            Self::RlmRecall => "rlm_recall",
         }
     }
 }
@@ -339,6 +343,7 @@ impl Policy {
                 match best {
                     Some("noop") => Action::Noop,
                     Some("rlm_offload") => Action::RlmOffload,
+                    Some("rlm_recall") => Action::RlmRecall,
                     _ => Action::ClmEdit,
                 }
             }
@@ -385,8 +390,10 @@ impl Policy {
             }
             Kind::Laya => {
                 let a = self.laya_action(st);
-                // nothing to offload: the host cannot do it, so it is a noop
+                // Actions are legal only when their public preconditions hold.
                 if a == Action::RlmOffload && st.largest_block_chars < OFFLOAD_MIN_CHARS {
+                    Action::Noop
+                } else if a == Action::RlmRecall && st.offloads_total == 0 {
                     Action::Noop
                 } else {
                     a
@@ -395,6 +402,7 @@ impl Policy {
             Kind::Schedule => match self.schedule.get(st.step).copied().unwrap_or(0) {
                 1 => Action::ClmEdit,
                 2 => Action::RlmOffload,
+                3 => Action::RlmRecall,
                 _ => Action::Noop,
             },
         };
@@ -495,7 +503,7 @@ mod tests {
     #[test]
     fn decide_is_memoized_per_turn_and_schedule_replays() {
         let mut p = Policy::new(Kind::Schedule);
-        p.schedule = vec![0, 1, 2];
+        p.schedule = vec![0, 1, 2, 3];
         assert_eq!(p.decide(&st(0, 0, None)), (Action::Noop, true));
         assert_eq!(p.decide(&st(1, 0, None)), (Action::ClmEdit, true));
         assert_eq!(
@@ -504,6 +512,7 @@ mod tests {
             "same turn: memoized, not fresh"
         );
         assert_eq!(p.decide(&st(2, 0, None)).0, Action::RlmOffload);
+        assert_eq!(p.decide(&st(3, 0, None)).0, Action::RlmRecall);
         assert_eq!(
             p.decide(&st(7, 0, None)).0,
             Action::Noop,

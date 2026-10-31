@@ -42,6 +42,13 @@ use cli::{Args, Resume};
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+/// Return retained per-turn transient segments to the OS. Purge delay and
+/// generic collection bound steady-state churn, but do not force partially
+/// cached heaps to release their free pages at a turn boundary.
+pub(crate) fn collect_retained_memory() {
+    pa_types::memory_release::collect_mimalloc();
+}
+
 const HELP: &str = r"usage: omt [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
        [--provider <name>] [--api-key <key>] [--smol <m>] [--slow <m>] [--plan <m>]
        [--cwd DIR] [--add-dir DIR]... [--config FILE]... [--session-dir DIR]

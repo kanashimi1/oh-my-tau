@@ -813,8 +813,7 @@ impl omp_tui::RuntimePort for Port {
     fn request_usage(&self) {
         let rt = self.rt.clone();
         tokio::spawn(async move {
-            let frame = crate::rpc::slash::usage_panel_frame(&rt).await;
-            rt.send(frame);
+            crate::rpc::slash::command_center(&rt, "usage").await;
         });
     }
 }

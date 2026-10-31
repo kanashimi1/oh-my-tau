@@ -41,9 +41,24 @@ impl Runtime {
         *lock(&self.summarizer) = f;
     }
 
-    fn summarizer(&self) -> Result<crate::compact::Summarizer> {
+    async fn summarizer(&self) -> Result<crate::compact::Summarizer> {
         if let Some(f) = lock(&self.summarizer).clone() {
             return Ok(crate::compact::Summarizer::Injected(f));
+        }
+        // Cheap per-compaction model (`OMP_COMPACTION_MODEL` overrides the default);
+        // fall back to the live target when it cannot be resolved.
+        if let Ok(selected) =
+            crate::model::select(Some(&crate::compact::compaction_model_ref())).await
+        {
+            let mut completer = crate::compact::LiveCompleter::from_selected(selected);
+            if completer.model.provider == "opencode-go" {
+                let session = format!("{}-compaction", self.persist.session_id());
+                completer
+                    .headers
+                    .get_or_insert_with(std::collections::BTreeMap::new)
+                    .insert("x-opencode-session".to_owned(), session);
+            }
+            return Ok(crate::compact::Summarizer::Live(Arc::new(completer)));
         }
         Ok(crate::compact::Summarizer::Live(Arc::new(
             crate::compact::LiveCompleter::from_target(&self.target)?,
@@ -179,7 +194,7 @@ impl Runtime {
     ) -> Result<Value, CmdError> {
         let trace = std::env::var_os("OMP_RS_TURN_TRACE").is_some();
         turn_trace!("[turn-trace] compact-begin rss={}kB", rss_kb());
-        let summarizer = self.summarizer()?;
+        let summarizer = self.summarizer().await?;
         // Only the prompt overhead and the model id are needed from the state:
         // release the snapshot (a full copy of the live context) before the
         // summarization, which is the compaction's memory peak.

@@ -573,7 +573,12 @@ impl Shared {
                 }
             }
         }
-        let recalled = self.recall(&messages, &off, pol.recall_chars);
+        let recall_budget = if action == crate::context_policy::Action::RlmRecall {
+            pol.recall_chars.max(crate::context_policy::POLICY_RECALL_CHARS)
+        } else {
+            pol.recall_chars
+        };
+        let recalled = self.recall(&messages, &off, recall_budget);
         for (i, reference) in off.iter() {
             if let Some(AgentMessage::Standard(m)) = messages.get_mut(*i) {
                 replace_block_text(m, reference);

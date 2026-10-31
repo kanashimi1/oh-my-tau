@@ -21,6 +21,15 @@ pub fn trim_freed_heap() {
     }
 }
 
+/// Force mimalloc to collect free pages from its per-thread heaps. The CLI
+/// calls this only at quiescent turn boundaries, never on the allocation path.
+pub fn collect_mimalloc() {
+    // SAFETY: process-wide collection does not invalidate live allocations.
+    unsafe {
+        libmimalloc_sys::mi_collect(true);
+    }
+}
+
 /// Trim only when a phase actually allocated: `bytes` is the transient's
 /// size (a serialized frame, a loaded file); small responses skip the
 /// arena walk entirely.

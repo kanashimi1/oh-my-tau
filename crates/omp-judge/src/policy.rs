@@ -1,5 +1,5 @@
-//! Laya context-policy inference: one `action` question (`noop | clm_edit | rlm_offload`) over a
-//! controller-state text rendered by `omp-cli`'s `context_policy` module (and, byte-identically,
+//! Laya context-policy inference: one `action` question (`noop | clm_edit | rlm_offload | rlm_recall`)
+//! over a controller-state text rendered by `omp-cli`'s `context_policy` module (and, byte-identically,
 //! by `bench/context/ctxp.py` when the training set is built).
 
 use std::path::Path;
@@ -60,7 +60,7 @@ impl PolicyScorer {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn questions_parse_and_have_three_actions() {
+    fn questions_parse_and_have_four_actions() {
         let v: serde_json::Value = serde_json::from_str(super::QUESTIONS).unwrap();
         let keys: Vec<_> = v["action"]["criteria"]
             .as_object()
@@ -68,6 +68,6 @@ mod tests {
             .keys()
             .cloned()
             .collect();
-        assert_eq!(keys, ["noop", "clm_edit", "rlm_offload"]);
+        assert_eq!(keys, ["noop", "clm_edit", "rlm_offload", "rlm_recall"]);
     }
 }
