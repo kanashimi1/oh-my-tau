@@ -19,17 +19,17 @@
 
   const THEMES = [
     { id: "calm", name: "Graphite", sw: ["#181818", "#1f1f1f", "#1a88ff", "#d6d6d6"], wall: "" },
-    { id: "omt", name: "OMT", sw: ["#0f0b14", "#16111c", "#ed4abf", "#e6e3ea"], wall: "" },
-    { id: "midnight", name: "Midnight", sw: ["#050506", "#0c0c0f", "#ff5ca8", "#e8e8ec"], wall: "/wallpapers/midnight.svg" },
-    { id: "light", name: "Light", sw: ["#fbf9fc", "#ffffff", "#c42a95", "#2b2233"], wall: "" },
-    { id: "sakura", name: "Sakura", sw: ["#14112a", "#1c1836", "#ef92bd", "#f4ecf2"], wall: "/wallpapers/anime-sakura.svg" },
-    { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#191430", "#221b3a", "#f0a35c", "#f3ecdf"], wall: "/wallpapers/anime-city.svg" },
-    { id: "summer-sky", name: "Summer Sky", sw: ["#edf4fb", "#ffffff", "#2a6cc0", "#1e3350"], wall: "/wallpapers/anime-sky.svg" },
-    { id: "vaporwave", name: "Vaporwave", sw: ["#1a0b2e", "#241040", "#ff71ce", "#f4e8ff"], wall: "/wallpapers/vaporwave-sunset.svg" },
-    { id: "synthwave", name: "Synthwave", sw: ["#0b0820", "#120e2e", "#01cdfe", "#e6f7ff"], wall: "/wallpapers/vaporwave-grid.svg" },
-    { id: "phosphor", name: "Phosphor", sw: ["#0b0f0d", "#101812", "#3ddc84", "#d6e8dc"], wall: "" },
-    { id: "paper", name: "Paper", sw: ["#faf8f4", "#ffffff", "#c8401f", "#1a1815"], wall: "" },
-    { id: "drafting", name: "Drafting", sw: ["#0e2a44", "#143750", "#7fd6f0", "#d8ecf7"], wall: "" },
+    { id: "omt", name: "OMT", sw: ["#171024", "#1f1730", "#ff5cc8", "#ece8f4"], wall: "" },
+    { id: "midnight", name: "Midnight", sw: ["#0b0f16", "#121826", "#7fd4ff", "#e6edf6"], wall: "/wallpapers/midnight.svg" },
+    { id: "light", name: "Light", sw: ["#eef3f6", "#ffffff", "#119c95", "#19303f"], wall: "" },
+    { id: "sakura", name: "Sakura", sw: ["#1a1230", "#221a3c", "#ff9ec7", "#f5edf6"], wall: "/wallpapers/anime-sakura.svg" },
+    { id: "tokyo-dusk", name: "Tokyo Dusk", sw: ["#211a17", "#2a211d", "#ff8c42", "#f2e9e0"], wall: "/wallpapers/anime-city.svg" },
+    { id: "summer-sky", name: "Summer Sky", sw: ["#e9f2fb", "#ffffff", "#ffb020", "#16334f"], wall: "/wallpapers/anime-sky.svg" },
+    { id: "vaporwave", name: "Vaporwave", sw: ["#221739", "#2c2050", "#ff9ad5", "#f0e8fa"], wall: "/wallpapers/vaporwave-sunset.svg" },
+    { id: "synthwave", name: "Synthwave", sw: ["#0d0a24", "#161134", "#00e0ff", "#eef0ff"], wall: "/wallpapers/vaporwave-grid.svg" },
+    { id: "phosphor", name: "Phosphor", sw: ["#0a0f0c", "#111811", "#3df59a", "#ccf2d8"], wall: "" },
+    { id: "paper", name: "Paper", sw: ["#f6f3ec", "#ffffff", "#e23b23", "#191612"], wall: "" },
+    { id: "drafting", name: "Drafting", sw: ["#0e1c30", "#142542", "#5bd0ff", "#d9eaf5"], wall: "" },
   ];
   const DEFAULTS = { theme: "calm", wallpaper: "", dim: 35, blur: 0, glass: 78 };
 
