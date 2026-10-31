@@ -18,8 +18,11 @@ fn schema_covers_ts_registry() {
     // 526 register({...}) definitions extracted from TS v18.6.1, plus the 19
     // settings only the TS panel (`createSettingsHost`) lists, plus the omp-rs
     // `magicKeywords.ultracode` gate.
-    assert_eq!(SETTINGS.len(), 546);
+    assert_eq!(SETTINGS.len(), 547);
     assert!(lookup("magicKeywords.ultracode").is_some());
+    assert!(
+        matches!(lookup("tools.codeMode"), Some(def) if matches!(def.ty, SettingType::Boolean))
+    );
     assert!(lookup("modelRoles").is_some());
     assert!(lookup("cycleOrder").is_some());
     assert!(lookup("workspace.additionalDirectories").is_some());
