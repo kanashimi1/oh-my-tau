@@ -460,6 +460,44 @@ fn none() -> CmdResult {
     Ok(None)
 }
 
+/// Conservative profile for agents that predate `get_capabilities` (they reject
+/// it as an unknown command): the web frontend must assume these bounds
+/// instead of requiring an agent restart. The legacy page limit is deliberately
+/// below the current [`crate::paging::MAX_LIMIT`] so requests stay valid on
+/// both old and new agents.
+pub const LEGACY_MAX_GET_MESSAGES_PAGE_SIZE: usize = 256;
+
+/// Versioned capability payload. `maxPageSize` is injected so tests (and the
+/// legacy profile) can pin it independently of the live paging limit.
+fn capabilities_payload(max_get_messages_page_size: usize) -> Value {
+    json!({
+        "protocolVersion": 1,
+        "supportedProtocolVersions": [1, 2],
+        "maxFrameBytes": MAX_FRAME_BYTES,
+        "maxReassembledFrameBytes": MAX_REASSEMBLED_BYTES,
+        "limits": {
+            "getMessages": {
+                "defaultPageSize": crate::paging::DEFAULT_LIMIT,
+                "maxPageSize": max_get_messages_page_size,
+                "maxPageBytes": crate::paging::MAX_PAGE_BYTES,
+                "maxCursorChars": crate::paging::MAX_CURSOR_CHARS,
+            },
+        },
+        "features": {
+            "messagesBackwardPaging": true,
+        }
+    })
+}
+
+/// Payload a frontend should assume when `get_capabilities` fails (older
+/// detached agent that answers "Unknown command").
+pub fn legacy_capabilities_payload() -> Value {
+    let mut capabilities = capabilities_payload(LEGACY_MAX_GET_MESSAGES_PAGE_SIZE);
+    capabilities["supportedProtocolVersions"] = json!([1]);
+    capabilities["features"]["messagesBackwardPaging"] = json!(false);
+    capabilities
+}
+
 async fn cycle_model(rt: &Runtime) -> CmdResult {
     let info = rt.model_info();
     let models = available_models(None).await;
@@ -893,14 +931,14 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
         }
         "steer_subagent" => {
             let id = subagent_id(cmd, "steer_subagent")?;
-            if cmd
-                .get("message")
-                .and_then(Value::as_str)
-                .is_none_or(|m| m.trim().is_empty())
-            {
+            let message = str_field(cmd, "message")?;
+            if message.trim().is_empty() {
                 return Err(CmdError::new("`message` is required for steer_subagent."));
             }
-            Err(CmdError::new(format!("Subagent not running: {id}")))
+            let receipt = crate::tools::eval_agents::send_to_agent(id, message)
+                .await
+                .map_err(CmdError::new)?;
+            ok(json!({"delivered": true, "receipt": receipt}))
         }
         "live_start" => Err(unsupported("Live voice")),
         "live_stop" => none(),
@@ -1073,8 +1111,13 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
             Err(unsupported("Handoff"))
         }
         "get_messages" => ok(json!({"messages": rt.messages().await})),
+        "get_capabilities" => ok(capabilities_payload(crate::paging::MAX_LIMIT)),
         "get_messages_page" => {
-            if rt.agent.is_streaming().await {
+            let direction = cmd
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("forward");
+            if rt.agent.is_streaming().await && direction != "backward" {
                 return Err(CmdError::coded(
                     "Cannot page messages while the session is changing",
                     "session_busy",
@@ -1099,12 +1142,16 @@ async fn dispatch(rt: &Arc<Runtime>, cmd: &Value, kind: &str) -> CmdResult {
                 Some(n) if n.fract() == 0.0 && n >= 0.0 => Some(n as usize),
                 Some(_) => Some(0),
             };
-            paging::page(
-                &messages,
-                &snapshot,
-                cmd.get("cursor").and_then(Value::as_str),
-                limit,
-            )
+            let cursor = cmd.get("cursor").and_then(Value::as_str);
+            match direction {
+                "forward" => paging::page(&messages, &snapshot, cursor, limit),
+                "backward" => paging::page_backward(&messages, &snapshot, cursor, limit),
+                _ => {
+                    return Err(CmdError::new(
+                        "RPC message page direction must be forward or backward",
+                    ));
+                }
+            }
             .map(Some)
             .map_err(|e| CmdError {
                 message: e.message,
@@ -1815,6 +1862,11 @@ pub async fn run_with(
             if v.get(FLUSH_MARKER).is_some() {
                 break;
             }
+            let collect = matches!(
+                v.get("type").and_then(Value::as_str),
+                Some("session_settled")
+            ) || (v.get("type").and_then(Value::as_str) == Some("agent_end")
+                && v.get("willContinue") != Some(&json!(true)));
             let mut buf = String::new();
             for line in encoder.encode(&v) {
                 buf.push_str(&line);
@@ -1822,6 +1874,10 @@ pub async fn run_with(
             }
             if out.write_all(buf.as_bytes()).await.is_err() || out.flush().await.is_err() {
                 break;
+            }
+            drop(buf);
+            if collect {
+                crate::collect_retained_memory();
             }
         }
     });
@@ -2021,6 +2077,75 @@ async fn route_frame(
 #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
+
+    #[test]
+    fn get_capabilities_reports_version_and_page_limits() {
+        let caps = capabilities_payload(crate::paging::MAX_LIMIT);
+        assert_eq!(caps["protocolVersion"], 1);
+        assert_eq!(caps["supportedProtocolVersions"], json!([1, 2]));
+        assert_eq!(caps["features"]["messagesBackwardPaging"], json!(true));
+        assert_eq!(caps["maxFrameBytes"], MAX_FRAME_BYTES);
+        assert_eq!(
+            caps["limits"]["getMessages"]["maxPageSize"],
+            crate::paging::MAX_LIMIT
+        );
+        assert_eq!(
+            caps["limits"]["getMessages"]["defaultPageSize"],
+            crate::paging::DEFAULT_LIMIT
+        );
+        assert_eq!(
+            caps["limits"]["getMessages"]["maxPageBytes"],
+            crate::paging::MAX_PAGE_BYTES
+        );
+        assert_eq!(
+            caps["limits"]["getMessages"]["maxCursorChars"],
+            crate::paging::MAX_CURSOR_CHARS
+        );
+    }
+
+    #[test]
+    fn legacy_profile_page_limit_is_within_both_agent_generations_bounds() {
+        let caps = legacy_capabilities_payload();
+        assert_eq!(caps["supportedProtocolVersions"], json!([1]));
+        assert_eq!(caps["features"]["messagesBackwardPaging"], json!(false));
+        // Same shape as the live payload (frontend needs one parser).
+        assert_eq!(
+            caps["limits"]["getMessages"]["defaultPageSize"],
+            capabilities_payload(crate::paging::MAX_LIMIT)["limits"]["getMessages"]
+                ["defaultPageSize"]
+        );
+        let legacy = caps["limits"]["getMessages"]["maxPageSize"].as_u64().unwrap();
+        assert_eq!(legacy, LEGACY_MAX_GET_MESSAGES_PAGE_SIZE as u64);
+        assert!(legacy <= crate::paging::MAX_LIMIT as u64);
+        assert!(legacy >= 1);
+    }
+
+    #[test]
+    fn page_accepts_legacy_limit_and_rejects_over_limit() {
+        let m = vec![json!({"role": "user", "content": "hi"}); 300];
+        let snap = paging::Snapshot {
+            session_id: "s",
+            leaf_id: None,
+            message_count: 300,
+        };
+        // A page minted at the legacy limit must still be valid on a new agent.
+        let paged = crate::paging::page(&m, &snap, None, Some(LEGACY_MAX_GET_MESSAGES_PAGE_SIZE))
+            .expect("legacy limit accepted");
+        assert_eq!(
+            paged["messages"].as_array().unwrap().len(),
+            LEGACY_MAX_GET_MESSAGES_PAGE_SIZE
+        );
+        assert!(paged["nextCursor"].is_string());
+        let err = crate::paging::page(
+            &m,
+            &snap,
+            None,
+            Some(crate::paging::MAX_LIMIT + 1),
+        )
+        .unwrap_err();
+        assert_eq!(err.code, None);
+        assert!(err.message.contains("between 1 and 512"));
+    }
 
     #[test]
     fn tree_with_id_less_header_terminates() {

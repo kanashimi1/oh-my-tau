@@ -3,10 +3,10 @@
 
 use serde_json::{json, Value};
 
-const DEFAULT_LIMIT: usize = 100;
-const MAX_LIMIT: usize = 256;
-const MAX_PAGE_BYTES: usize = 768 * 1024;
-const MAX_CURSOR_CHARS: usize = 2048;
+pub const DEFAULT_LIMIT: usize = 100;
+pub const MAX_LIMIT: usize = 512;
+pub const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_CURSOR_CHARS: usize = 2048;
 
 pub const STALE_ERROR: &str = "RPC message cursor is stale";
 
@@ -175,6 +175,60 @@ pub fn page(
     Ok(out)
 }
 
+/// Page backwards from the newest message, preserving chronological order within each page.
+/// The cursor is the exclusive older offset for the following request.
+pub fn page_backward(
+    messages: &[Value],
+    snapshot: &Snapshot<'_>,
+    cursor: Option<&str>,
+    limit: Option<usize>,
+) -> Result<Value, PageError> {
+    if snapshot.message_count != messages.len() {
+        return Err(PageError::plain(
+            "RPC message snapshot does not match current messages",
+        ));
+    }
+    let limit = limit.unwrap_or(DEFAULT_LIMIT);
+    if !(1..=MAX_LIMIT).contains(&limit) {
+        return Err(PageError::plain(format!(
+            "RPC message page limit must be between 1 and {MAX_LIMIT}"
+        )));
+    }
+    let mut end = messages.len();
+    if let Some(c) = cursor {
+        let (sid, leaf, count, offset) = decode_cursor(c)?;
+        if sid != snapshot.session_id
+            || leaf.as_deref() != snapshot.leaf_id
+            || count != snapshot.message_count
+        {
+            return Err(PageError {
+                message: STALE_ERROR.into(),
+                code: Some("stale_cursor"),
+            });
+        }
+        end = offset;
+    }
+    let mut start = end;
+    let mut page: Vec<Value> = Vec::new();
+    let mut page_bytes = 2usize;
+    while start > 0 && page.len() < limit {
+        let message = &messages[start - 1];
+        let bytes = message.to_string().len() + usize::from(!page.is_empty());
+        if !page.is_empty() && page_bytes + bytes > MAX_PAGE_BYTES {
+            break;
+        }
+        page.push(message.clone());
+        page_bytes += bytes;
+        start -= 1;
+    }
+    page.reverse();
+    let mut out = json!({"messages": page, "totalMessages": messages.len()});
+    if start > 0 {
+        out["nextCursor"] = Value::String(encode_cursor(snapshot, start));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +260,28 @@ mod tests {
     }
 
     #[test]
+    fn backward_pages_start_at_latest_and_preserve_conversation_order() {
+        let m = msgs(6);
+        let snap = Snapshot {
+            session_id: "s1",
+            leaf_id: Some("leaf"),
+            message_count: 6,
+        };
+        let first = page_backward(&m, &snap, None, Some(2)).unwrap();
+        assert_eq!(first["messages"][0]["content"], "m4");
+        assert_eq!(first["messages"][1]["content"], "m5");
+        let cursor = first["nextCursor"].as_str().unwrap().to_string();
+        let second = page_backward(&m, &snap, Some(&cursor), Some(2)).unwrap();
+        assert_eq!(second["messages"][0]["content"], "m2");
+        assert_eq!(second["messages"][1]["content"], "m3");
+        let cursor = second["nextCursor"].as_str().unwrap().to_string();
+        let last = page_backward(&m, &snap, Some(&cursor), Some(2)).unwrap();
+        assert_eq!(last["messages"][0]["content"], "m0");
+        assert_eq!(last["messages"][1]["content"], "m1");
+        assert!(last.get("nextCursor").is_none());
+    }
+
+    #[test]
     fn stale_and_invalid_cursors_are_rejected() {
         let m = msgs(3);
         let snap = Snapshot {
@@ -233,8 +309,23 @@ mod tests {
         );
         assert_eq!(
             page(&m, &snap, None, Some(0)).unwrap_err().message,
-            "RPC message page limit must be between 1 and 256"
+            "RPC message page limit must be between 1 and 512"
         );
+    }
+
+    #[test]
+    fn marble_sized_history_fits_one_bounded_page() {
+        let m: Vec<Value> = (0..318)
+            .map(|_| json!({"role": "user", "content": "x".repeat(10 * 1024)}))
+            .collect();
+        let snap = Snapshot {
+            session_id: "s1",
+            leaf_id: None,
+            message_count: m.len(),
+        };
+        let result = page(&m, &snap, None, Some(512)).unwrap();
+        assert_eq!(result["messages"].as_array().unwrap().len(), 318);
+        assert!(result.get("nextCursor").is_none());
     }
 
     #[test]
