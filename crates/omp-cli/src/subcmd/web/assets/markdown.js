@@ -88,8 +88,12 @@
       .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
   }
 
-  function codeBlock(code, lang) {
-    const id = "cb" + Math.random().toString(36).slice(2, 9);
+  function codeBlock(code, lang, ctx) {
+    // Streaming callers provide a stable scope: rerendering the same block
+    // reuses its store slot instead of adding one random entry per frame.
+    const id = ctx && ctx.scope != null
+      ? `cb${ctx.scope}-${ctx.index++}`
+      : "cb" + Math.random().toString(36).slice(2, 9);
     OMP._codeStore = OMP._codeStore || new Map();
     OMP._codeStore.set(id, { code, lang: lang || "" });
     if (OMP._codeStore.size > 3000) OMP._codeStore.delete(OMP._codeStore.keys().next().value);
@@ -101,7 +105,7 @@
 
   const LIST_RE = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
 
-  function blocks(lines) {
+  function blocks(lines, ctx) {
     let out = "";
     let i = 0;
     let para = [];
@@ -119,7 +123,7 @@
         i++;
         while (i < lines.length && !lines[i].trim().startsWith(marker)) body.push(lines[i++]);
         i++;
-        out += codeBlock(body.join("\n"), fence[2]);
+        out += codeBlock(body.join("\n"), fence[2], ctx);
         continue;
       }
       if (!line.trim()) { flush(); i++; continue; }
@@ -130,7 +134,7 @@
         flush();
         const quote = [];
         while (i < lines.length && /^\s*>/.test(lines[i])) quote.push(lines[i++].replace(/^\s*>\s?/, ""));
-        out += `<blockquote>${blocks(quote)}</blockquote>`;
+        out += `<blockquote>${blocks(quote, ctx)}</blockquote>`;
         continue;
       }
       if (line.includes("|") && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
@@ -177,7 +181,7 @@
         for (const it of items) {
           const task = it[0].match(/^\[([ xX])\]\s+(.*)$/);
           if (task) it[0] = (task[1] === " " ? "☐ " : "☑ ") + task[2];
-          const inner = it.length === 1 ? inline(it[0]) : blocks(it).replace(/^<p>([\s\S]*?)<\/p>/, "$1");
+          const inner = it.length === 1 ? inline(it[0]) : blocks(it, ctx).replace(/^<p>([\s\S]*?)<\/p>/, "$1");
           out += `<li>${inner}</li>`;
         }
         out += `</${tag}>`;
@@ -190,8 +194,10 @@
     return out;
   }
 
-  OMP.md = function md(text) {
-    return blocks(String(text ?? "").replace(/\r\n?/g, "\n").split("\n"));
+  let mdScope = 0;
+  OMP.mdScope = () => ++mdScope;
+  OMP.md = function md(text, scope) {
+    return blocks(String(text ?? "").replace(/\r\n?/g, "\n").split("\n"), { scope, index: 0 });
   };
 
   // Delegated copy + open buttons for code blocks.

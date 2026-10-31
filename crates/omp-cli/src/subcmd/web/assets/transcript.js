@@ -3,6 +3,136 @@
 (function (OMP) {
   const { el } = OMP;
 
+  // Display name of a model: strip any "provider/" prefix ("kimi-code/k3.1-pro"
+  // -> "k3.1-pro"); the full id stays available via the element title.
+  const modelName = (m) => {
+    const s = String(m || "");
+    const i = s.lastIndexOf("/");
+    return i > 0 ? s.slice(i + 1) : s;
+  };
+  const COPY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+
+  const utf8 = new TextEncoder();
+  const utf8Decode = new TextDecoder("utf-8", { fatal: true });
+
+  // RPC deltas carry UTF-8 byte offsets. Keep the ASCII path cheap, but never
+  // apply those offsets as JavaScript UTF-16 string indexes.
+  function applyTextDelta(base, d) {
+    if (!d || !Number.isSafeInteger(d.n) || !Number.isSafeInteger(d.p) || !Number.isSafeInteger(d.q) || typeof d.s !== "string") return null;
+    if (base.length === d.n && d.p >= 0 && d.q >= 0 && d.p + d.q <= base.length) {
+      return base.slice(0, d.p) + d.s + base.slice(base.length - d.q);
+    }
+    try {
+      const prev = utf8.encode(base), insert = utf8.encode(d.s);
+      if (prev.length !== d.n || d.p < 0 || d.q < 0 || d.p + d.q > prev.length) return null;
+      const out = new Uint8Array(d.p + insert.length + d.q);
+      out.set(prev.subarray(0, d.p), 0);
+      out.set(insert, d.p);
+      out.set(prev.subarray(prev.length - d.q), d.p + insert.length);
+      return utf8Decode.decode(out);
+    } catch { return null; }
+  }
+
+  class RpcDeltaDecoder {
+    constructor() { this.reset(); }
+    reset() { this.messageJson = null; }
+    expand(frame) {
+      if (["message_start", "message_end", "agent_start", "agent_end"].includes(frame.type)) this.reset();
+      if (frame.type !== "message_update") return frame;
+      if (frame.message) {
+        this.messageJson = JSON.stringify(frame.message);
+        return frame;
+      }
+      if (!frame.messageDelta || this.messageJson == null) { this.reset(); return null; }
+      const json = applyTextDelta(this.messageJson, frame.messageDelta);
+      if (json == null) { this.reset(); return null; }
+      try {
+        const message = JSON.parse(json);
+        this.messageJson = json;
+        return { ...frame, message };
+      } catch { this.reset(); return null; }
+    }
+    seed(message) { this.messageJson = JSON.stringify(message); }
+  }
+  OMP.RpcDeltaDecoder = RpcDeltaDecoder;
+
+  // Only blank lines outside fences are safe streaming checkpoints. The final
+  // render still reparses the complete source, so Markdown spanning a checkpoint
+  // cannot change the settled output.
+  function stableCutoff(text) {
+    let offset = 0, cut = 0, fence = null;
+    for (;;) {
+      const nl = text.indexOf("\n", offset);
+      const end = nl < 0 ? text.length : nl + 1;
+      const line = text.slice(offset, nl < 0 ? text.length : nl);
+      const match = line.match(/^\s*(`{3,}|~{3,})/);
+      if (match) {
+        if (!fence) fence = match[1];
+        else if (match[1][0] === fence[0] && match[1].length >= fence.length) fence = null;
+      } else if (!fence && !line.trim()) cut = end;
+      offset = end;
+      if (nl < 0) return cut;
+    }
+  }
+
+  class StreamingMarkdown {
+    constructor(node) {
+      this.node = node;
+      this.scope = OMP.mdScope();
+      this.streaming = false;
+      this.finalSource = null;
+      this.stableSource = "";
+      this.chunk = 0;
+    }
+    link(node) { if (OMP.linkifyPaths) OMP.linkifyPaths(node); }
+    begin() {
+      if (this.streaming) return;
+      this.streaming = true;
+      this.finalSource = null;
+      this.stableSource = "";
+      this.chunk = 0;
+      this.stable = el("div.stream-stable");
+      this.tail = el("div.stream-tail");
+      this.node.replaceChildren(this.stable, this.tail);
+    }
+    set(text, done) {
+      if (done) {
+        if (this.finalSource === text) return;
+        this.streaming = false;
+        this.finalSource = text;
+        this.node.innerHTML = OMP.md(text, `${this.scope}-final`);
+        this.link(this.node);
+        return;
+      }
+      this.begin();
+      const cut = stableCutoff(text), stable = text.slice(0, cut), tail = text.slice(cut);
+      if (!stable.startsWith(this.stableSource)) {
+        this.stableSource = "";
+        this.stable.replaceChildren();
+      }
+      if (stable.length > this.stableSource.length) {
+        const addition = stable.slice(this.stableSource.length);
+        const template = document.createElement("template");
+        template.innerHTML = OMP.md(addition, `${this.scope}-stable-${this.chunk++}`);
+        const fragment = template.content;
+        this.link(fragment);
+        this.stable.append(fragment);
+        this.stableSource = stable;
+      }
+      // A huge still-open paragraph/fence is rendered as text until a stable
+      // checkpoint or message_end; this bounds work even for one giant block.
+      if (tail.length > 32768) {
+        this.tail.textContent = tail;
+        this.tail.style.whiteSpace = "pre-wrap";
+      } else {
+        this.tail.style.whiteSpace = "";
+        this.tail.innerHTML = OMP.md(tail, `${this.scope}-tail`);
+        this.link(this.tail);
+      }
+    }
+  }
+
   // Collapsible thinking block: live mm:ss timer while streaming ("Thinking… 0:12",
   // expanded showing the tail), "Thought for 12s" collapsed once finished. History
   // replay without timing data shows plain "Thought". Redacted gets a neutral label.
@@ -48,13 +178,183 @@
     }
   }
 
+  // ── history paging (latest-first session load) ───────────────────────────
+  // `get_messages_page` walks a stable snapshot forward (oldest → newest) with
+  // an opaque cursor and refuses to page while the agent is streaming. These
+  // helpers keep every response bounded (no full `get_messages` on a quiet
+  // session), let the UI render only the newest window first, and feed older
+  // pages to the transcript on upward scroll.
+
+  // Shape shared with the agent's `legacy_capabilities_payload()`: what the
+  // frontend must assume when `get_capabilities` is rejected by an older
+  // detached agent. The legacy page limit is deliberately 256.
+  const LEGACY_CAPABILITIES = Object.freeze({
+    protocolVersion: 1,
+    supportedProtocolVersions: Object.freeze([1]),
+    maxFrameBytes: 1 << 20,
+    maxReassembledFrameBytes: 16 << 20,
+    limits: Object.freeze({
+      getMessages: Object.freeze({
+        defaultPageSize: 100,
+        maxPageSize: 256,
+        maxPageBytes: 4 << 20,
+        maxCursorChars: 2048,
+      }),
+    }),
+  });
+
+  OMP.legacyCapabilities = () => JSON.parse(JSON.stringify(LEGACY_CAPABILITIES));
+
+  // Normalize a `get_capabilities` response (or its absence) into the same
+  // shape, filling gaps from the conservative legacy profile. Never throws.
+  OMP.normalizeCapabilities = (caps) => {
+    const top = caps && typeof caps === "object" ? caps : {};
+    const gl = top.limits && typeof top.limits === "object" ? top.limits.getMessages || {} : {};
+    const pick = (v, fallback) => (typeof v === "number" && v > 0 ? v : fallback);
+    return {
+      protocolVersion: pick(top.protocolVersion, LEGACY_CAPABILITIES.protocolVersion),
+      supportedProtocolVersions: Array.isArray(top.supportedProtocolVersions) && top.supportedProtocolVersions.length
+        ? [...top.supportedProtocolVersions]
+        : [...LEGACY_CAPABILITIES.supportedProtocolVersions],
+      maxFrameBytes: pick(top.maxFrameBytes, LEGACY_CAPABILITIES.maxFrameBytes),
+      maxReassembledFrameBytes: pick(top.maxReassembledFrameBytes, LEGACY_CAPABILITIES.maxReassembledFrameBytes),
+      limits: {
+        getMessages: {
+          defaultPageSize: pick(gl.defaultPageSize, LEGACY_CAPABILITIES.limits.getMessages.defaultPageSize),
+          maxPageSize: pick(gl.maxPageSize, LEGACY_CAPABILITIES.limits.getMessages.maxPageSize),
+          maxPageBytes: pick(gl.maxPageBytes, LEGACY_CAPABILITIES.limits.getMessages.maxPageBytes),
+          maxCursorChars: pick(gl.maxCursorChars, LEGACY_CAPABILITIES.limits.getMessages.maxCursorChars),
+        },
+      },
+      features: {
+        // Backend opt-in; the legacy profile never claims it.
+        messagesBackwardPaging: !!(top.features && top.features.messagesBackwardPaging),
+      },
+    };
+  };
+
+  /** Bounded paging over the message history.
+   *  - forward (legacy agents): walks oldest → newest to the end of the
+   *    snapshot; the full list is then windowed client-side.
+   *  - backward (capabilities.features.messagesBackwardPaging): each response
+   *    is chronological and its nextCursor points at an older offset, so the
+   *    newest bounded page can render immediately and older pages are fetched
+   *    lazily on upward scroll. */
+  class HistoryBuffer {
+    constructor(caps, { backward = false } = {}) {
+      const n = OMP.normalizeCapabilities(caps);
+      this.backward = backward;
+      const requested = backward ? n.limits.getMessages.defaultPageSize : n.limits.getMessages.maxPageSize;
+      this.pageLimit = Math.max(1, Math.min(requested, n.limits.getMessages.maxPageSize, 512));
+      this.pages = []; // forward mode: chronological chunks, one per response
+      this.total = null;
+      this.cursor = null;
+      this.done = false;
+    }
+    /** One paged request; keeps the working set out of huge single frames. */
+    async fetchPage(page) {
+      const params = this.backward
+        ? { direction: "backward", limit: this.pageLimit, ...(this.cursor ? { cursor: this.cursor } : {}) }
+        : { limit: this.pageLimit, ...(this.cursor ? { cursor: this.cursor } : {}) };
+      const p = await page(params);
+      const messages = Array.isArray(p && p.messages) ? p.messages : [];
+      if (!this.backward) this.pages.push(messages);
+      this.total = (p && p.totalMessages) ?? (this.total == null ? null : this.total + messages.length);
+      this.cursor = (p && p.nextCursor) || null;
+      this.done = !this.cursor;
+      return messages;
+    }
+    /** Fetch the whole snapshot one bounded page at a time (forward mode). */
+    async loadAll(page) {
+      while (!this.done) await this.fetchPage(page);
+      return this;
+    }
+    /** Full snapshot in conversation order (forward mode). */
+    messages() { return [].concat(...this.pages); }
+  }
+  OMP.HistoryBuffer = HistoryBuffer;
+
+  /**
+   * Load session history for rendering.
+   * - Backward-capable agents: resolve with only the newest bounded page plus
+   *   a `fetchOlder()` continuation — no full snapshot is ever taken.
+   * - Legacy agents: page forward through the whole snapshot (bounded
+   *   responses instead of one giant `get_messages`).
+   * - Either way, if paging fails because the session started streaming
+   *   mid-load (`session_busy`), fall back to a single `get_messages` snapshot.
+   */
+  OMP.loadSessionHistory = async function (rpc, caps) {
+    const backward = !!(caps && caps.features && caps.features.messagesBackwardPaging);
+    try {
+      const buffer = new HistoryBuffer(caps, { backward });
+      const latest = await buffer.fetchPage((params) => rpc("get_messages_page", params));
+      if (!backward) {
+        await buffer.loadAll((params) => rpc("get_messages_page", params));
+        return { messages: buffer.messages(), paged: true, backward: false, streaming: false, hasOlder: false, fetchOlder: null, pageLimit: buffer.pageLimit };
+      }
+      return {
+        messages: latest,
+        paged: true, backward: true, streaming: false,
+        get hasOlder() { return !buffer.done; },
+        pageLimit: buffer.pageLimit,
+        // Resolves with the next older chunk (chronological) or null at the
+        // start of history; safe to call repeatedly until null.
+        fetchOlder: async () => (buffer.done ? null : buffer.fetchPage((params) => rpc("get_messages_page", params))),
+      };
+    } catch (error) {
+      const state = await rpc("get_state").catch(() => null);
+      if (!state || !state.isStreaming) throw error;
+      const full = await rpc("get_messages");
+      return { messages: full.messages || [], paged: false, backward: false, streaming: true, hasOlder: false, fetchOlder: null, pageLimit: OMP.normalizeCapabilities(caps).limits.getMessages.maxPageSize };
+    }
+  };
+
+  /**
+   * Bounded LRU cache of loaded session histories, so revisiting a session can
+   * skip the paging round-trips. Entries are never reused once any live frame
+   * may have changed history (`markAllDirty`), when stale beyond `ttlMs`, or
+   * when oversized; `maxEntries` bounds total memory.
+   */
+  class SessionHistoryCache {
+    constructor({ maxEntries = 4, maxMessages = 4000, ttlMs = 60000, now = () => Date.now() } = {}) {
+      this.maxEntries = Math.max(1, maxEntries);
+      this.maxMessages = Math.max(1, maxMessages);
+      this.ttlMs = ttlMs;
+      this.now = now;
+      this.map = new Map(); // key -> {messages, at, dirty}
+    }
+    key(agentId, sessionFile) { return `${agentId || ""}\u0000${sessionFile || ""}`; }
+    get(k) {
+      const e = this.map.get(k);
+      if (!e || e.dirty) return null;
+      if (this.now() - e.at > this.ttlMs) { this.map.delete(k); return null; }
+      this.map.delete(k); this.map.set(k, e); // LRU touch
+      return e.messages;
+    }
+    put(k, messages) {
+      if (!Array.isArray(messages) || messages.length > this.maxMessages) return;
+      this.map.delete(k);
+      this.map.set(k, { messages, at: this.now(), dirty: false });
+      while (this.map.size > this.maxEntries) this.map.delete(this.map.keys().next().value);
+    }
+    /** Any frame that may mutate history invalidates every cached session. */
+    markAllDirty() { for (const e of this.map.values()) e.dirty = true; }
+    clear() { this.map.clear(); }
+  }
+  OMP.SessionHistoryCache = SessionHistoryCache;
+
   class Transcript {
     constructor(root, scroller) {
       this.root = root;
       this.scroller = scroller;
+      this.decoder = new RpcDeltaDecoder();
+      this.pendingOlder = []; // not-yet-rendered older history, chronological
+      this.loadingOlder = false;
+      this.batchTarget = null; // set while rendering into a detached fragment
       this.reset();
       this.scheduleScroll = OMP.rafThrottle(() => this.scrollToBottom());
       this.scheduleFlush = OMP.rafThrottle(() => this.flushUpdates());
+      scroller.addEventListener?.("scroll", () => this.maybeLoadOlder());
     }
 
     flushUpdates() {
@@ -69,6 +369,12 @@
       this.live = new Map(); // messageId -> {node, parts, msg}
       this.cards = new Map(); // toolCallId -> ToolCard
       this.pendingUpdates = new Map(); // messageId -> newest streaming message
+      this.pendingOlder = [];
+      this.loadingOlder = false;
+      this.batchTarget = null;
+      this.olderSource = null;
+      this.windowStart = null; // first node of the latest window (insert marker)
+      this.decoder.reset();
       this.stick = true;
     }
 
@@ -90,8 +396,91 @@
     loadMessages(messages) {
       this.reset();
       for (const m of messages || []) this.renderMessage(m);
+      // get_messages is the keyframe for a browser attaching mid-stream.
+      const current = (messages || []).findLast((m) => m && m.role === "assistant");
+      if (current) this.decoder.seed(current);
+      this.windowStart = this.root.firstChild;
       this.stick = true;
       this.scrollToBottom(true);
+    }
+
+    /**
+     * Latest-first load: render only the newest `windowSize` messages now and
+     * hold the older ones for prepending on upward scroll. Conversation order
+     * is preserved; live frames keep appending after the loaded window.
+     */
+    loadLatest(messages, windowSize = 256) {
+      this.reset();
+      const list = Array.isArray(messages) ? messages : [];
+      const cut = Math.max(0, list.length - Math.max(1, windowSize));
+      this.pendingOlder = list.slice(0, cut);
+      for (const m of list.slice(cut)) this.renderMessage(m);
+      const current = list.findLast((m) => m && m.role === "assistant");
+      if (current) this.decoder.seed(current);
+      this.windowStart = this.root.firstChild;
+      this.stick = true;
+      this.scrollToBottom(true);
+      this.fillViewport();
+    }
+
+    /** Very short sessions may not fill the viewport yet; keep going. */
+    fillViewport() {
+      let guard = 64;
+      while (this.pendingOlder.length && guard-- > 0) {
+        const s = this.scroller;
+        if (s.scrollHeight > s.clientHeight + 1) break;
+        this.prependOlder();
+      }
+    }
+
+    /** Render the next older chunk (chronologically before what is shown).
+     *  atStart=false (default, forward pendingOlder): chunks come off the head
+     *  oldest-first, each newer than the previous one, so insertion goes just
+     *  before the original latest window. atStart=true (backward source):
+     *  chunks arrive nearest-the-window first and each one is older still, so
+     *  insertion goes at the very start of the rendered history. */
+    prependOlder(chunkSize = 256, list = null, atStart = false) {
+      if (this.loadingOlder) return null;
+      const chunk = list || (this.pendingOlder.length ? this.pendingOlder.splice(0, Math.max(1, chunkSize)) : null);
+      if (!chunk || !chunk.length) return null;
+      this.loadingOlder = true;
+      try {
+        const s = this.scroller;
+        const prevHeight = s.scrollHeight, prevTop = s.scrollTop;
+        const frag = document.createDocumentFragment();
+        this.batchTarget = frag;
+        try { for (const m of chunk) this.renderMessage(m); } finally { this.batchTarget = null; }
+        const at = atStart ? this.root.firstChild : (this.windowStart || this.root.firstChild);
+        this.root.insertBefore(frag, at);
+        // Keep the viewport anchored on the same content despite the growth.
+        s.scrollTop = prevTop + (s.scrollHeight - prevHeight);
+        this.stick = false;
+        return chunk;
+      } finally { this.loadingOlder = false; }
+    }
+
+    /** Register a lazy source of older pages (backward paging): resolves with
+     *  a chronological chunk or null at the start of history. */
+    setOlderSource(fn) { this.olderSource = fn; }
+
+    /** Upward scroll pulls in older pages: first from the already-fetched
+     *  snapshot, then (backward paging) from the agent via the older source. */
+    maybeLoadOlder() {
+      if (this.loadingOlder || this.scroller.scrollTop > 200) return;
+      if (this.pendingOlder.length) { this.prependOlder(128); return; }
+      const src = this.olderSource;
+      if (!src) return;
+      this.loadingOlder = true;
+      return Promise.resolve()
+        .then(src)
+        .then((older) => {
+          if (older && older.length) {
+            this.loadingOlder = false; // prependOlder guards on the same flag
+            this.prependOlder(older.length, older, true);
+          } else if (!older) this.olderSource = null; // history start reached
+        })
+        .catch(() => { this.olderSource = null; })
+        .finally(() => { this.loadingOlder = false; });
     }
 
     addSystem(text, cls = "") {
@@ -357,6 +746,9 @@
 
     /** Apply one rpc event frame. Returns true when handled. */
     onEvent(f) {
+      const expanded = this.decoder.expand(f);
+      if (!expanded) return true;
+      f = expanded;
       switch (f.type) {
         case "message_start":
           if (f.message && f.message.role === "assistant") this.updateAssistant(this.assistantEntry(f.messageId), f.message, true);

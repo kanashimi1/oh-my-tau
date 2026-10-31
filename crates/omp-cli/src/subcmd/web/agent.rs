@@ -42,6 +42,15 @@ const DIALOG_METHODS: &[&str] = &["select", "confirm", "input", "editor", "ask"]
 /// Lagging clients receive `web_lagged` and resynchronize their transcript.
 const FRAME_QUEUE: usize = 64;
 const STDERR_TAIL: usize = 40;
+#[cfg(target_os = "linux")]
+struct LogEvents(nix::sys::inotify::Inotify);
+#[cfg(target_os = "linux")]
+impl std::os::fd::AsRawFd for LogEvents {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsFd;
+        self.0.as_fd().as_raw_fd()
+    }
+}
 fn lock<T>(m: &Mutex<T>) -> parking_lot::MutexGuard<'_, T> {
     m.lock()
 }
@@ -64,6 +73,16 @@ fn set_dialog_pending(
     lock(summary).needs_input = !queue.is_empty();
 }
 
+/// Bridge state persisted out-of-band (`state.json`) so adoption restores
+/// dialogs / run markers without scanning a multi-GB log. `pending` are
+/// unanswered dialog frames `{id, raw payload}`; `awaiting_tasks_since_ms`
+/// cannot be re-probed via RPC, so it survives a restart here.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct PersistedState {
+    pending: Vec<(String, String)>,
+    awaiting_tasks_since_ms: Option<i64>,
+}
+
 /// What the sidebar shows for a running agent.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
@@ -83,9 +102,6 @@ pub struct Summary {
     /// (`agent_end` with `awaitingAsyncWork`) and nothing ran since: when.
     /// Lets the UI flag a session silently waiting on a stuck subagent.
     pub awaiting_tasks_since_ms: Option<i64>,
-    /// While an adopted agent's log is replayed: the log's mtime, used as the
-    /// clock for replayed frames (the replay itself happens "now").
-    replay_clock_ms: Option<i64>,
 }
 
 /// How to start an agent.
@@ -98,6 +114,88 @@ pub struct Spawn {
     pub model: Option<String>,
     /// `always-ask` | `write` | `yolo`, forwarded as `--approval-mode`.
     pub approval_mode: Option<String>,
+    /// Requested agent role (`POST /api/agents {role}`): the child runs as the
+    /// matching registered agent definition, not as a generic session.
+    pub role: Option<String>,
+}
+
+/// Roles the web UI offers for a new agent (`OMP.agentPanel`). `universal`
+/// keeps the unrestricted default session; every other role must resolve to a
+/// registered agent definition (project `.omp/agents` shadows
+/// `~/.omp/agent/agents`) so the role picks real instructions, tools and
+/// model — never a cosmetic label.
+pub const AGENT_ROLES: &[&str] = &["universal", "coder", "blockbench", "blender", "reviewer"];
+
+/// Resolve a requested role to a registered agent definition: a definition
+/// named exactly like the role wins, then a stable preferred general-purpose
+/// definition, then any name containing the role token as a fallback.
+/// `home` is a parameter (not `HOME`) so tests can point at a fixture dir.
+fn resolve_role_in(
+    cwd: &Path,
+    home: &Path,
+    role: &str,
+) -> Option<omp_task::agent::AgentDefinition> {
+    let mut all = omp_task::discovery::discover_project_agents(cwd).agents;
+    all.extend(omp_task::discovery::discover_user_agents(home).agents);
+    let token = role.trim().to_lowercase();
+    if let Some(def) = all.iter().find(|a| a.fields.name.to_lowercase() == token) {
+        return Some(def.clone());
+    }
+    let preferred = match token.as_str() {
+        "coder" => &["kimi-coder", "haiku-coder"][..],
+        "blockbench" => &["blockbench-modeler"][..],
+        "blender" => &["blender-modeler"][..],
+        "reviewer" => &["asymmetric-reviewer"][..],
+        _ => &[][..],
+    };
+    for name in preferred {
+        if let Some(def) = all.iter().find(|a| a.fields.name == *name) {
+            return Some(def.clone());
+        }
+    }
+    all.iter()
+        .filter(|a| a.fields.name.to_lowercase().contains(&token))
+        .min_by(|a, b| a.fields.name.cmp(&b.fields.name))
+        .cloned()
+}
+
+/// The argv a role contributes to the child: the definition's tool
+/// allow-list (`--tools`), body as the system-prompt addition
+/// (`--append-system-prompt`), `thinkingLevel` (`--thinking`) and model
+/// chain (`--model`, only when the caller did not pick one). Mirrors the
+/// task tool's `stamp_agent_definition`, so a web agent with a role runs on
+/// exactly the configuration a `task` spawn of that agent would get.
+fn role_args(model: Option<&str>, def: &omp_task::agent::AgentDefinition) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(tools) = def.fields.tools.as_ref().filter(|t| !t.is_empty()) {
+        args.extend(["--tools".to_string(), tools.join(",")]);
+    }
+    let body = def.system_prompt.trim();
+    if !body.is_empty() {
+        args.extend(["--append-system-prompt".to_string(), body.to_string()]);
+    }
+    let level = match def.fields.thinking_level {
+        Some(omp_task::agent::ThinkingLevel::Low) => Some("low"),
+        Some(omp_task::agent::ThinkingLevel::Medium) => Some("medium"),
+        Some(omp_task::agent::ThinkingLevel::High) => Some("high"),
+        Some(omp_task::agent::ThinkingLevel::Max) => Some("max"),
+        Some(omp_task::agent::ThinkingLevel::Other(_)) | None => None,
+    };
+    // A `provider/model:level` selector already pins the level.
+    let pinned = model.is_some_and(|m| m.split(',').next().unwrap_or("").contains(':'));
+    if let (Some(level), false) = (level, pinned) {
+        args.extend(["--thinking".to_string(), level.to_string()]);
+    }
+    let chain = def
+        .fields
+        .model
+        .as_ref()
+        .filter(|chain| !chain.is_empty())
+        .map(|chain| chain.join(","));
+    if let Some(chain) = chain.filter(|_| model.is_none_or(|m| m.trim().is_empty())) {
+        args.extend(["--model".to_string(), chain]);
+    }
+    args
 }
 
 pub struct Agent {
@@ -113,6 +211,9 @@ pub struct Agent {
     pub adopted: bool,
     /// `--approval-mode` the child runs with (kept from spawn/adoption for `info_json`).
     approval_mode: Option<String>,
+    /// Requested role: the resolved agent definition name (`spawn`); adopted
+    /// agents report none (the registry entry carries no role yet).
+    role: Option<String>,
     /// Client connection to the child's control socket (replaces the stdin pipe).
     control: tokio::sync::Mutex<Option<UnixStream>>,
     /// `Some` only for children we spawned ourselves; adopted children have no
@@ -127,8 +228,6 @@ pub struct Agent {
     notices: Mutex<Vec<Arc<str>>>,
     /// Partially received protocol-v2 `rpc_chunk` sequences by chunk id.
     chunks: Mutex<crate::rpc::ChunkAssembler>,
-    /// Rebuilds the full `message_update` frames the child logs as deltas.
-    updates: Mutex<crate::rpc::UpdateExpander>,
     alive: AtomicBool,
 }
 
@@ -161,7 +260,55 @@ impl Agent {
             cmd.arg("--model").arg(model);
         }
         if let Some(mode) = spec.approval_mode.as_deref().filter(|m| !m.is_empty()) {
-            cmd.arg("--approval-mode").arg(mode);
+            cmd.args(["--approval-mode", mode]);
+        }
+        // A requested role re-configures the child beyond a label: the
+        // resolved definition's instructions, tool allow-list, thinking level
+        // and model chain become real child flags. `universal` is the
+        // explicit default (no stamping). An unknown role fails the spawn so
+        // the UI reports it instead of silently running a generic session.
+        let mut role = spec.role.clone();
+        if let Some(requested) = role.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+            if requested != "universal" {
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .ok_or_else(|| anyhow!("HOME is not set; cannot resolve role {requested:?}"))?;
+                let Some(def) = resolve_role_in(&spec.cwd, &home, requested) else {
+                    let discovered: Vec<String> = {
+                        let mut names = omp_task::discovery::discover_project_agents(&spec.cwd)
+                            .agents
+                            .iter()
+                            .chain(
+                                omp_task::discovery::discover_user_agents(&home)
+                                    .agents
+                                    .iter(),
+                            )
+                            .map(|a| a.fields.name.clone())
+                            .collect::<Vec<_>>();
+                        names.sort();
+                        names.dedup();
+                        names
+                    };
+                    return Err(anyhow!(
+                        "unknown agent role {requested:?} (expected one of {:?}); discovered agent definitions: {}",
+                        AGENT_ROLES,
+                        if discovered.is_empty() {
+                            "none".to_string()
+                        } else {
+                            discovered.join(", ")
+                        }
+                    ));
+                };
+                for chunk in role_args(spec.model.as_deref().filter(|m| !m.trim().is_empty()), &def)
+                {
+                    cmd.arg(chunk);
+                }
+                role = Some(def.fields.name.clone());
+            } else {
+                role = Some("universal".to_string());
+            }
+        } else {
+            role = None;
         }
         #[cfg(unix)]
         {
@@ -199,6 +346,7 @@ impl Agent {
             pgid: group_id,
             adopted: false,
             approval_mode: spec.approval_mode.clone(),
+            role,
             control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(Some(child)),
             tx,
@@ -210,11 +358,13 @@ impl Agent {
             stderr: Mutex::new(VecDeque::new()),
             notices: Mutex::new(Vec::new()),
             chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
-            updates: Mutex::new(crate::rpc::UpdateExpander::default()),
             alive: AtomicBool::new(true),
         });
+        // A freshly spawned agent starts with empty persisted state (any
+        // state.json here belongs to a previous incarnation of the id).
+        detach::save_state(&id, &PersistedState::default());
 
-        Self::start_tail(Arc::clone(&agent), log_path, false);
+        Self::start_tail(Arc::clone(&agent), log_path);
         Self::start_exit_watcher(Arc::clone(&agent), on_exit);
 
         agent.negotiate_protocol().await?;
@@ -226,9 +376,10 @@ impl Agent {
         Ok(agent)
     }
 
-    /// Adopt a live detached child from the registry: replay its log history to
-    /// rebuild summary/dialog state, connect its control socket, and watch it
-    /// for exit. No `Child` handle is held — the process is not our child.
+    /// Adopt a live detached child from the registry: restore dialogs / run
+    /// markers from the persisted bridge state, connect its control socket,
+    /// and watch it for exit. No `Child` handle is held — the process is not
+    /// our child.
     pub async fn adopt(
         entry: &detach::Entry,
         on_exit: impl FnOnce(&str) + Send + 'static,
@@ -246,6 +397,7 @@ impl Agent {
             pgid: entry.pgid,
             adopted: true,
             approval_mode: entry.approval_mode.clone(),
+            role: None,
             control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(None),
             tx: broadcast::channel(FRAME_QUEUE).0,
@@ -257,11 +409,12 @@ impl Agent {
             stderr: Mutex::new(VecDeque::new()),
             notices: Mutex::new(Vec::new()),
             chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
-            updates: Mutex::new(crate::rpc::UpdateExpander::default()),
             alive: AtomicBool::new(true),
         });
-        // Replay from the start to rebuild state, then tail live.
-        Self::start_tail(Arc::clone(&agent), detach::log_path(&entry.id), true);
+        // Adoption restores dialogs / run markers from persisted state — not by
+        // scanning the (possibly multi-GB) log — then tails live from the end.
+        agent.restore_state();
+        Self::start_tail(Arc::clone(&agent), detach::log_path(&entry.id));
         Self::start_adopted_watcher(Arc::clone(&agent), entry.pid, on_exit);
         agent.negotiate_protocol().await?;
         agent.probe_state().await;
@@ -286,37 +439,59 @@ impl Agent {
         Err(anyhow!(last.to_string()))
     }
 
-    /// Tail the agent log. JSON object lines go to `on_child_line`; other lines
-    /// (the child's stderr, mixed into the same file) feed the stderr tail used
-    /// by the exit frame. When `from_start` the whole log is replayed first
-    /// (adoption), otherwise tailing starts at the current end.
-    fn start_tail(agent: Arc<Self>, log_path: PathBuf, from_start: bool) {
+    /// Tail the agent log from its current end. JSON object lines go to
+    /// `on_child_line`; other lines (the child's stderr, mixed into the same
+    /// file) feed the stderr tail used by the exit frame. The log is never
+    /// replayed from the front — adoption restores state from `state.json`.
+    fn start_tail(agent: Arc<Self>, log_path: PathBuf) {
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncSeekExt};
             let Ok(mut file) = tokio::fs::File::open(&log_path).await else {
                 agent.alive.store(false, Ordering::SeqCst);
                 return;
             };
-            if from_start {
-                let mtime = file
-                    .metadata()
-                    .await
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .and_then(|d| i64::try_from(d.as_millis()).ok());
-                lock(&agent.summary).replay_clock_ms = mtime;
-            } else {
-                let _ = file.seek(std::io::SeekFrom::End(0)).await;
-            }
+            let _ = file.seek(std::io::SeekFrom::End(0)).await;
+            #[cfg(target_os = "linux")]
+            let log_events = (|| {
+                use nix::sys::inotify::{AddWatchFlags, Inotify, InitFlags};
+                let inotify = Inotify::init(InitFlags::IN_NONBLOCK).ok()?;
+                inotify
+                    .add_watch(
+                        &log_path,
+                        AddWatchFlags::IN_MODIFY
+                            | AddWatchFlags::IN_CLOSE_WRITE
+                            | AddWatchFlags::IN_MOVE_SELF
+                            | AddWatchFlags::IN_DELETE_SELF,
+                    )
+                    .ok()?;
+                tokio::io::unix::AsyncFd::new(LogEvents(inotify)).ok()
+            })();
             let mut carry: Vec<u8> = Vec::new();
             let mut buf = [0u8; 8192];
             loop {
                 match file.read(&mut buf).await {
                     Ok(0) => {
-                        lock(&agent.summary).replay_clock_ms = None; // caught up: live from here
                         if !agent.alive.load(Ordering::SeqCst) {
                             break;
+                        }
+                        #[cfg(target_os = "linux")]
+                        if let Some(events) = &log_events {
+                            match tokio::time::timeout(
+                                Duration::from_millis(50),
+                                events.readable(),
+                            )
+                            .await
+                            {
+                                Ok(Ok(mut ready)) => {
+                                    let _ = events.get_ref().0.read_events();
+                                    ready.clear_ready();
+                                }
+                                Ok(Err(_)) => {
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
+                                }
+                                Err(_) => {}
+                            }
+                            continue;
                         }
                         tokio::time::sleep(Duration::from_millis(50)).await;
                     }
@@ -403,6 +578,9 @@ impl Agent {
         let stderr: Vec<String> = lock(&self.stderr).iter().cloned().collect();
         let frame = json!({"type": "web_agent_exit", "code": code, "stderr": stderr});
         let _ = self.tx.send(Arc::from(frame.to_string()));
+        // The child is dead: the log is complete, so rotate it safely (the
+        // live writer/tail are gone).
+        detach::rotate_log(&self.id);
         on_exit(&self.id);
     }
 
@@ -435,6 +613,7 @@ impl Agent {
             "adopted": self.adopted,
             "alive": self.is_alive(),
             "approvalMode": self.approval_mode,
+            "role": self.role,
             "sessionFile": s.session_file,
             "sessionId": s.session_id,
             "sessionName": s.session_name,
@@ -451,7 +630,7 @@ impl Agent {
         if let Ok(v) = serde_json::from_str::<Value>(line) {
             if v.get("type").and_then(Value::as_str) == Some("extension_ui_response") {
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    set_dialog_pending(&self.pending_ui, &self.summary, id, None);
+                    self.set_dialog(id, None);
                     // Other tabs showing the same dialog close it.
                     let close = json!({"type": "extension_ui_request", "method": "cancelDialog",
                                        "params": {"id": id}, "web": "answered"});
@@ -465,6 +644,7 @@ impl Agent {
             stream.write_all(b"\n").await?;
             stream.flush().await?;
         }
+        drop(control);
         Ok(())
     }
 
@@ -486,17 +666,56 @@ impl Agent {
         let _ = self.send_line(&probe).await;
     }
 
+    /// Snapshot the bridge state that must survive a hub restart (pending
+    /// dialogs, parked-task marker) to `state.json`. Adoption reads this
+    /// instead of scanning the log, so it stays O(1) in log size.
+    fn persist_state(&self) {
+        let pending = lock(&self.pending_ui)
+            .iter()
+            .map(|(id, f)| (id.clone(), f.to_string()))
+            .collect();
+        let awaiting_tasks_since_ms = lock(&self.summary).awaiting_tasks_since_ms;
+        detach::save_state(
+            &self.id,
+            &PersistedState {
+                pending,
+                awaiting_tasks_since_ms,
+            },
+        );
+    }
+
+    /// Restore bridge state saved by a previous hub incarnation (adoption).
+    fn restore_state(&self) {
+        if let Some(st) = detach::load_state::<PersistedState>(&self.id) {
+            let mut pending = lock(&self.pending_ui);
+            *pending = st
+                .pending
+                .into_iter()
+                .map(|(id, f)| (id, Arc::from(f)))
+                .collect();
+            lock(&self.summary).awaiting_tasks_since_ms = st.awaiting_tasks_since_ms;
+            lock(&self.summary).needs_input = !pending.is_empty();
+        }
+    }
+
+    /// Push (`frame`) or resolve (`None`) a dialog, keeping `needs_input`
+    /// live and persisting the queue so adoption can restore it.
+    fn set_dialog(&self, id: &str, frame: Option<Arc<str>>) {
+        set_dialog_pending(&self.pending_ui, &self.summary, id, frame);
+        self.persist_state();
+    }
+
+    /// Apply a run-state frame and persist any parked-task marker.
+    fn note_run(&self, frame: &Value) {
+        note_run_frame(&mut lock(&self.summary), frame, pa_agent::now_ms());
+        self.persist_state();
+    }
+
     async fn on_child_line(&self, text: &str) {
         let Ok(frame) = serde_json::from_str::<Value>(text) else {
             let _ = self.tx.send(Arc::from(text));
             return;
         };
-        let expanded = match lock(&self.updates).expand(text, &frame) {
-            crate::rpc::Expansion::Unchanged => None,
-            crate::rpc::Expansion::Expanded(full) => Some(full),
-            crate::rpc::Expansion::Unsynced => return,
-        };
-        let text = expanded.as_deref().unwrap_or(text);
         let kind = frame.get("type").and_then(Value::as_str).unwrap_or("");
         let mut refresh = false;
         match kind {
@@ -539,26 +758,32 @@ impl Agent {
                         | "cycle_model"
                 );
             }
+            // An answered dialog: close the stale pending copy when the answer
+            // catches up; never rebroadcast the answer or forward it again.
+            "extension_ui_response" => {
+                if let Some(id) = frame.get("id").and_then(Value::as_str) {
+                    self.set_dialog(id, None);
+                    let close = json!({"type": "extension_ui_request", "method": "cancelDialog",
+                                       "params": {"id": id}, "web": "answered"});
+                    let _ = self.tx.send(Arc::from(close.to_string()));
+                }
+                return;
+            }
             "extension_ui_request" => {
                 let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
                 if DIALOG_METHODS.contains(&method) {
                     if let Some(id) = frame.get("id").and_then(Value::as_str) {
-                        set_dialog_pending(
-                            &self.pending_ui,
-                            &self.summary,
-                            id,
-                            Some(Arc::from(text)),
-                        );
+                        self.set_dialog(id, Some(Arc::from(text)));
                     }
                 } else if method == "cancelDialog" {
                     if let Some(id) = frame.pointer("/params/id").and_then(Value::as_str) {
-                        set_dialog_pending(&self.pending_ui, &self.summary, id, None);
+                        self.set_dialog(id, None);
                     }
                 }
             }
-            "agent_start" => note_run_frame(&mut lock(&self.summary), &frame, pa_agent::now_ms()),
+            "agent_start" => self.note_run(&frame),
             "agent_end" | "session_settled" => {
-                note_run_frame(&mut lock(&self.summary), &frame, pa_agent::now_ms());
+                self.note_run(&frame);
                 refresh = true;
             }
             "session_info" | "session_loaded" | "session_reset" | "model_changed" => refresh = true,
@@ -592,8 +817,8 @@ impl Agent {
 
 /// Run-state bookkeeping for `agent_start` / `agent_end` / `session_settled`:
 /// streaming flag plus "parked on background subagents since" — an
-/// `agent_end` with `awaitingAsyncWork` starts the clock (replayed frames use
-/// the log's mtime), any new run or a normal settle clears it.
+/// `agent_end` with `awaitingAsyncWork` starts the clock, any new run or a
+/// normal settle clears it.
 fn note_run_frame(s: &mut Summary, frame: &Value, now_ms: i64) {
     match frame.get("type").and_then(Value::as_str) {
         Some("agent_start") => {
@@ -603,8 +828,7 @@ fn note_run_frame(s: &mut Summary, frame: &Value, now_ms: i64) {
         Some("agent_end") => {
             s.streaming = false;
             if frame.get("awaitingAsyncWork").and_then(Value::as_bool) == Some(true) {
-                let at = s.replay_clock_ms.unwrap_or(now_ms);
-                s.awaiting_tasks_since_ms.get_or_insert(at);
+                s.awaiting_tasks_since_ms.get_or_insert(now_ms);
             } else {
                 s.awaiting_tasks_since_ms = None;
             }
@@ -620,6 +844,9 @@ fn note_run_frame(s: &mut Summary, frame: &Value, now_ms: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `HOME` is process-global; serialize the tests that redirect it to a
+    /// tempdir so they cannot clobber each other (they run in parallel).
+    static HOME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// A bridge with no child: just enough to drive `feed_log_line`.
     fn bare_agent() -> Agent {
@@ -631,6 +858,7 @@ mod tests {
             pgid: 0,
             adopted: false,
             approval_mode: None,
+            role: None,
             control: tokio::sync::Mutex::new(None),
             child: tokio::sync::Mutex::new(None),
             tx: broadcast::channel(FRAME_QUEUE).0,
@@ -639,7 +867,6 @@ mod tests {
             stderr: Mutex::new(VecDeque::new()),
             notices: Mutex::new(Vec::new()),
             chunks: Mutex::new(crate::rpc::ChunkAssembler::default()),
-            updates: Mutex::new(crate::rpc::UpdateExpander::default()),
             alive: AtomicBool::new(true),
         }
     }
@@ -680,12 +907,17 @@ mod tests {
         out
     }
 
-    /// The child logs `message_update` as deltas; websocket clients still get
-    /// the frames a verbatim log gives them (full partial message on every
-    /// update, identical final text), from the start or joining mid-stream.
+    /// The child logs `message_update` as deltas; websocket clients get those
+    /// compact frames verbatim (the browser reconstructs them), so the web
+    /// path never expands/serializes O(reply²) full frames. Attachment/TUI
+    /// still expand via `rpc::UpdateExpander` (see attach.rs) and are
+    /// unaffected.
     #[tokio::test]
     #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
-    async fn websocket_frames_survive_compact_log() {
+    async fn web_receives_compact_delta_frames_verbatim() {
+        let _guard = HOME_LOCK.lock().await;
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
         let reply: String = "lorem ipsum dolor sit amet ü ".repeat(300);
         let frames = stream(&reply);
         let plain = crate::rpc::encode_log(&frames, false);
@@ -693,34 +925,16 @@ mod tests {
         let bytes = |l: &[String]| l.iter().map(|l| l.len() + 1).sum::<usize>();
         assert!(bytes(&compact) * 20 < bytes(&plain));
         assert!(compact.iter().any(|l| l.contains("\"messageDelta\"")));
-        assert_eq!(broadcast_of(&compact).await, broadcast_of(&plain).await);
-
-        // Joining mid-stream: deltas without a base are held back; the next
-        // keyframe carries the full partial message, and every update sent
-        // matches the verbatim frame.
+        assert_eq!(
+            broadcast_of(&compact).await,
+            compact,
+            "delta frames must pass through verbatim"
+        );
+        // Joining mid-stream: deltas (with their keyframe base) forward as-is.
         let mid = compact.len() / 3;
         let got = broadcast_of(&compact[mid..]).await;
-        let want = broadcast_of(&plain[mid..]).await;
-        let updates: Vec<&String> = got
-            .iter()
-            .filter(|l| l.contains("\"message_update\""))
-            .collect();
-        assert!(!updates.is_empty());
-        for update in &updates {
-            assert!(want.contains(update), "not a verbatim frame: {update}");
-        }
-        let last = |l: &[String]| -> Value {
-            serde_json::from_str(
-                l.iter()
-                    .rev()
-                    .find(|l| l.contains("\"message_update\""))
-                    .unwrap(),
-            )
-            .unwrap()
-        };
-        assert_eq!(last(&got), last(&want));
-        assert_eq!(last(&got)["message"]["content"][0]["text"], json!(reply));
-        assert_eq!(got.last(), want.last());
+        assert_eq!(got, &compact[mid..]);
+        assert!(got.iter().any(|l| l.contains("\"messageDelta\"")));
     }
 
     /// `needs_input` follows the pending-dialog queue: any unanswered dialog
@@ -754,14 +968,6 @@ mod tests {
         );
         note_run_frame(&mut s, &json!({"type": "session_settled"}), 800);
         assert_eq!(s.awaiting_tasks_since_ms, None, "settled: nothing pending");
-        // Replay of an old log dates the wait by the log, not by now.
-        s.replay_clock_ms = Some(42);
-        note_run_frame(
-            &mut s,
-            &json!({"type": "agent_end", "awaitingAsyncWork": true}),
-            9_999,
-        );
-        assert_eq!(s.awaiting_tasks_since_ms, Some(42));
     }
 
     #[test]
@@ -775,6 +981,161 @@ mod tests {
         assert!(lock(&summary).needs_input, "d2 is still unanswered");
         set_dialog_pending(&pending, &summary, "d2", None);
         assert!(!lock(&summary).needs_input);
+    }
+
+    /// An answered dialog is dropped from the persisted bridge state, so after
+    /// a hub restart adoption restores no stale ask (no resurrection).
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    async fn answered_dialog_is_cleared_from_persisted_state() {
+        let _guard = HOME_LOCK.lock().await;
+        let request = json!({"type":"extension_ui_request","method":"ask","id":"d1",
+                             "params":{"message":"allow write?"}})
+        .to_string();
+        let answer = json!({"type":"extension_ui_response","id":"d1",
+                            "params":{"confirm":true}})
+        .to_string();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+
+        let agent = bare_agent();
+        agent.feed_log_line(&request).await;
+        assert_eq!(lock(&agent.pending_ui).len(), 1);
+        assert!(lock(&agent.summary).needs_input);
+        let st: PersistedState = detach::load_state("t").expect("request persisted");
+        assert_eq!(st.pending.len(), 1);
+        assert_eq!(st.pending[0].0, "d1");
+
+        agent.send_line(&answer).await.unwrap();
+        assert!(lock(&agent.pending_ui).is_empty());
+        assert!(!lock(&agent.summary).needs_input);
+        let st: PersistedState = detach::load_state("t").expect("state present");
+        assert!(st.pending.is_empty(), "answered dialog dropped from state");
+
+        // Adoption recovery reads the persisted state: no stale ask remains.
+        let adopted = bare_agent();
+        adopted.restore_state();
+        assert!(lock(&adopted.pending_ui).is_empty());
+        assert!(!lock(&adopted.summary).needs_input);
+    }
+
+    /// Several dialogs: only the answered id is dropped, an unanswered one
+    /// stays pending (and answered-then-new reuse of the id stays open).
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    async fn replay_clears_only_answered_dialogs() {
+        let _guard = HOME_LOCK.lock().await;
+        let ask = |id: &str| {
+            json!({"type": "extension_ui_request", "method": "ask", "id": id,
+                   "params": {"message": "m"}})
+            .to_string()
+        };
+        let answer = |id: &str| {
+            json!({"type": "extension_ui_response", "id": id, "params": {"confirm": false}})
+                .to_string()
+        };
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        let agent = bare_agent();
+        agent.feed_log_line(&ask("d1")).await;
+        agent.feed_log_line(&ask("d2")).await;
+        agent.feed_log_line(&answer("d1")).await;
+        {
+            let pending = lock(&agent.pending_ui);
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].0, "d2");
+            assert!(lock(&agent.summary).needs_input);
+        }
+        agent.feed_log_line(&ask("d3")).await;
+        agent.feed_log_line(&answer("d3")).await;
+        agent.feed_log_line(&ask("d3")).await; // id reuse: pending again
+        assert_eq!(lock(&agent.pending_ui).len(), 2);
+    }
+
+    /// Adoption restores unanswered dialogs and the parked-task marker from the
+    /// persisted state file (not from the log).
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    async fn restore_state_seeds_pending_dialogs_and_wait_marker() {
+        let _guard = HOME_LOCK.lock().await;
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        detach::save_state(
+            "t",
+            &PersistedState {
+                pending: vec![(
+                    "d9".into(),
+                    r#"{"type":"extension_ui_request","method":"ask","id":"d9"}"#.into(),
+                )],
+                awaiting_tasks_since_ms: Some(12345),
+            },
+        );
+        let agent = bare_agent();
+        agent.restore_state();
+        assert_eq!(lock(&agent.pending_ui).len(), 1);
+        assert_eq!(lock(&agent.pending_ui)[0].0, "d9");
+        assert!(lock(&agent.summary).needs_input);
+        assert_eq!(lock(&agent.summary).awaiting_tasks_since_ms, Some(12345));
+    }
+
+    /// Adoption never replays the log from the front: the live tail opens at
+    /// the current end, so preexisting history neither sets streaming nor is
+    /// broadcast. (Dialogs come from `state.json`, see the tests above.)
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    async fn adopted_tail_skips_preexisting_log_history() {
+        let _guard = HOME_LOCK.lock().await;
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        let log_path = detach::agents_dir().join("t").join("log");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        let mut log = String::new();
+        for _ in 0..5_000 {
+            log.push_str(r#"{"type":"command_output","text":"noise"}"#);
+            log.push('\n');
+        }
+        log.push_str(r#"{"type":"agent_start"}"#);
+        log.push('\n');
+        std::fs::write(&log_path, log).unwrap();
+
+        let agent = Arc::new(bare_agent());
+        let mut rx = agent.subscribe();
+        Agent::start_tail(Arc::clone(&agent), log_path);
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(
+            !lock(&agent.summary).streaming,
+            "preexisting history was replayed"
+        );
+        assert!(rx.try_recv().is_err(), "preexisting frames were broadcast");
+        agent.alive.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    async fn tail_wakes_on_new_frames_without_poll_delay() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("log");
+        std::fs::write(&log_path, "").unwrap();
+        let agent = Arc::new(bare_agent());
+        let mut rx = agent.subscribe();
+        Agent::start_tail(Arc::clone(&agent), log_path.clone());
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .unwrap();
+        writeln!(log, r#"{{"type":"command_output","text":"live"}}"#).unwrap();
+        log.flush().unwrap();
+        let frame = tokio::time::timeout(Duration::from_millis(25), rx.recv())
+            .await
+            .expect("new frame waited for the old 50 ms polling interval")
+            .unwrap();
+        assert!(frame.contains("live"));
+        agent.alive.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(60)).await;
     }
 
     #[tokio::test]
@@ -791,5 +1152,135 @@ mod tests {
             rx.recv().await,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(8))
         ));
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::{resolve_role_in, role_args, AGENT_ROLES};
+    use omp_task::agent::{parse_agent, AgentSource};
+    use std::fs;
+    use std::path::Path;
+
+    /// Fixture dirs: `cwd/.omp/agents/<name>.md` (project, shadows) and
+    /// `<home>/.omp/agent/agents/<name>.md` (user level).
+    fn fixture(cwd: &Path, home: &Path, project: &[(&str, &str)], user: &[(&str, &str)]) {
+        for (dir, defs) in [
+            (cwd.join(".omp/agents"), project),
+            (home.join(".omp/agent/agents"), user),
+        ] {
+            fs::create_dir_all(&dir).unwrap();
+            for (name, body) in defs {
+                fs::write(
+                    dir.join(format!("{name}.md")),
+                    format!("---\nname: {name}\ndescription: d\n{body}\n---\nDo the {name} job."),
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn exact_name_beats_substring() {
+        let tmp = std::env::temp_dir().join(format!("omp-role-{}", std::process::id()));
+        let cwd = tmp.join("proj");
+        let home = tmp.join("home");
+        let _ = fs::remove_dir_all(&tmp);
+        fixture(
+            &cwd,
+            &home,
+            &[("coder", "tools: [read]")],
+            &[
+                ("haiku-coder", "tools: [read, grep]"),
+                ("reviewer", "tools: [read]"),
+            ],
+        );
+        let hit = resolve_role_in(&cwd, &home, "coder").unwrap();
+        assert_eq!(hit.fields.name, "coder");
+        // The parser appends `yield` to every explicit tool list.
+        assert_eq!(hit.fields.tools.as_deref().unwrap(), ["read", "yield"]);
+        // Substring fallback, deterministic (lexicographically first).
+        assert_eq!(
+            resolve_role_in(&cwd, &home, "coder").unwrap().fields.name,
+            "coder"
+        );
+        assert_eq!(
+            resolve_role_in(&cwd, &home, "review").unwrap().fields.name,
+            "reviewer"
+        );
+        // Project definitions shadow user-level ones of the same name.
+        fixture(
+            &cwd,
+            &home,
+            &[("blockbench", "tools: [read]")],
+            &[("blockbench", "tools: [bash]")],
+        );
+        let bb = resolve_role_in(&cwd, &home, "blockbench").unwrap();
+        assert_eq!(bb.fields.tools.as_deref().unwrap(), ["read", "yield"]);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn preferred_role_does_not_depend_on_lexicographic_order() {
+        let tmp = std::env::temp_dir().join(format!("omp-role-preferred-{}", std::process::id()));
+        let cwd = tmp.join("proj");
+        let home = tmp.join("home");
+        let _ = fs::remove_dir_all(&tmp);
+        fixture(
+            &cwd,
+            &home,
+            &[],
+            &[("cat-jam-coder", ""), ("kimi-coder", "")],
+        );
+        assert_eq!(
+            resolve_role_in(&cwd, &home, "coder").unwrap().fields.name,
+            "kimi-coder"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn stamp_turns_a_definition_into_real_child_flags() {
+        let def = parse_agent(
+            "test-coder.md",
+            "---\nname: coder\ndescription: d\ntools: [read, edit, bash]\nmodel: zai/glm-5.3-flash, kimi/k2\nthinkingLevel: high\n---\nCheck every edit with the build.\n",
+            AgentSource::User,
+        )
+        .unwrap();
+        // Caller picked no model: definition's model chain applies too.
+        let args = role_args(None, &def);
+        let expected = [
+            "--tools",
+            "read,edit,bash,yield",
+            "--append-system-prompt",
+            "Check every edit with the build.",
+            "--thinking",
+            "high",
+            "--model",
+            "zai/glm-5.3-flash,kimi/k2",
+        ];
+        assert_eq!(
+            args,
+            expected.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        );
+        // Caller's model wins over the chain; a pinned `:level` keeps --thinking off.
+        let args = role_args(Some("openai/gpt-5:high"), &def);
+        assert!(!args.iter().any(|a| a == "--thinking"));
+        assert!(!args.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn known_roles_and_unknown_resolution() {
+        assert_eq!(
+            AGENT_ROLES,
+            ["universal", "coder", "blockbench", "blender", "reviewer"]
+        );
+        let tmp = std::env::temp_dir().join(format!("omp-role-none-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        // No agents dir at all: only `universal` resolves (the default);
+        // everything else must report a clear miss.
+        assert!(resolve_role_in(&tmp, &tmp, "universal").is_none());
+        assert!(resolve_role_in(&tmp, &tmp, "coder").is_none());
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

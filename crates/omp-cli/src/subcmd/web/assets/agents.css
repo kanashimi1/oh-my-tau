@@ -1,0 +1,189 @@
+/* Agent panel (OMP.agentPanel) styles, split per surface:
+   - left dock #agent-dock: role picker + todos (scoped .agent-dock)
+   - right dock #subagents-dock: subagents (scoped #subagents-dock, full-height
+     sidebar section inside the parent's #subagents-sidebar)
+   Theme colors come from app.css. */
+
+/* ── left: role picker ──────────────────────────────────────────────────── */
+.agent-dock .ap-role { display: flex; align-items: center; gap: 8px; }
+.agent-dock .ap-role-label { color: var(--fg-muted); font-size: 11px; white-space: nowrap; }
+.agent-dock .ap-role-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-inset);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 12px;
+}
+.agent-dock .ap-role-select:hover { border-color: var(--border-strong); }
+
+/* ── left: todos ────────────────────────────────────────────────────────── */
+.agent-dock .ap-section { display: flex; flex-direction: column; gap: 4px; }
+.agent-dock .ap-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.agent-dock .ap-ic { display: inline-flex; width: 13px; height: 13px; color: var(--fg-muted); flex: none; }
+.agent-dock .ap-ic svg { width: 100%; height: 100%; }
+
+#subagents-dock .ap-todo-section { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+#subagents-dock .ap-collapse-toggle { width: 100%; border: 0; background: none; font: inherit; cursor: pointer; text-align: left; }
+#subagents-dock .ap-collapse-toggle:hover { color: var(--fg); }
+#subagents-dock .ap-collapse-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+#subagents-dock .ap-collapse-chevron { display: inline-flex; width: 12px; height: 12px; margin-left: auto; transition: transform .15s ease; }
+#subagents-dock .ap-collapse-chevron svg { width: 100%; height: 100%; }
+#subagents-dock .ap-collapse-toggle[aria-expanded="false"] .ap-collapse-chevron { transform: rotate(-90deg); }
+#subagents-dock .ap-todo-body { display: flex; flex-direction: column; gap: 4px; }
+#subagents-dock .ap-phase { padding: 4px 0 2px; }
+#subagents-dock .ap-phase-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+#subagents-dock .ap-phase-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-weight: 500;
+}
+#subagents-dock .ap-phase.active .ap-phase-name { color: var(--accent); }
+#subagents-dock .ap-progress { color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+#subagents-dock .ap-tasks { margin: 2px 0 0; padding: 0 0 0 4px; list-style: none; }
+#subagents-dock .ap-task {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 1.5px 2px;
+  border-left: 2px solid transparent;
+}
+#subagents-dock .ap-task.is-active { border-left-color: var(--accent); background: var(--accent-muted); border-radius: 0 4px 4px 0; }
+#subagents-dock .ap-task-mark { display: inline-flex; align-items: center; flex: none; width: 12px; height: 12px; text-align: center; color: var(--fg-faint); }
+#subagents-dock .ap-task-mark svg { width: 12px; height: 12px; display: block; }
+#subagents-dock .ap-task.is-blocked .ap-task-mark, #subagents-dock .ap-task.is-blocked .ap-task-status { color: var(--warn); }
+#subagents-dock .ap-task.is-active .ap-task-mark { color: var(--accent); }
+#subagents-dock .ap-task.is-done .ap-task-mark { color: var(--ok); }
+#subagents-dock .ap-task-text { flex: 1; min-width: 0; color: var(--fg); overflow-wrap: anywhere; }
+#subagents-dock .ap-task.is-done .ap-task-text { color: var(--fg-muted); text-decoration: line-through; text-decoration-color: var(--border-strong); }
+#subagents-dock .ap-task-status { flex: none; color: var(--fg-faint); font-size: 11px; }
+#subagents-dock .ap-task.is-active .ap-task-status { color: var(--accent); }
+#subagents-dock .ap-task.is-done .ap-task-status { color: var(--ok); }
+#subagents-dock .ap-empty { color: var(--fg-faint); font-size: 11.5px; padding: 2px 2px 3px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-dock { scrollbar-width: thin; }
+}
+
+/* ── right: subagents dock ──────────────────────────────────────────────── */
+.activity-panel-head { display: flex; align-items: center; min-height: 44px; padding: 0 10px 0 14px; border-bottom: 1px solid var(--border); }
+.activity-panel-title { color: var(--fg); font-size: 13px; font-weight: 600; }
+#activity-collapse { margin-left: auto; }
+/* Parent contract: #subagents-dock is the scrollable full-height section
+   inside #subagents-sidebar; both selectors style the rendered section. */
+#subagents-dock {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 12px 14px;
+  font-size: 12.5px;
+  overflow-y: auto;
+}
+#subagents-dock .ap-sub-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+#subagents-dock .ap-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  padding-bottom: 6px;
+}
+#subagents-dock .ap-ic { display: inline-flex; width: 13px; height: 13px; color: var(--fg-muted); flex: none; }
+#subagents-dock .ap-ic svg { width: 100%; height: 100%; }
+#subagents-dock .ap-tau { width: 13px; height: 13px; }
+#subagents-dock .ap-head-tau { display: inline-flex; color: var(--accent); }
+
+/* Subagent rows: per-child Tau logo + name/role/action + explicit status */
+#subagents-dock .ap-subs { display: flex; flex-direction: column; gap: 4px; }
+#subagents-dock .ap-sub {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  font: inherit;
+  color: var(--fg);
+  cursor: default;
+}
+#subagents-dock .ap-sub:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+#subagents-dock .ap-sub-tau { display: inline-flex; flex: none; width: 16px; height: 16px; color: #fff; }
+#subagents-dock .ap-sub-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+#subagents-dock .ap-sub-msg {
+  flex: none;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+#subagents-dock .ap-sub-msg:hover { color: var(--fg); border-color: var(--border-strong); background: var(--bg-hover); }
+#subagents-dock .ap-sub-msg:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#subagents-dock .ap-sub-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#subagents-dock .ap-sub-role { color: var(--fg-faint); font-size: 11px; }
+#subagents-dock .ap-sub-action { color: var(--fg-muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+#subagents-dock .ap-status { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 11px; }
+#subagents-dock .ap-status .ap-ic { width: 12px; height: 12px; }
+#subagents-dock .ap-status.ap-working { color: var(--info); }
+#subagents-dock .ap-status.ap-waiting { color: var(--warn); }
+#subagents-dock .ap-status.ap-done { color: var(--ok); }
+#subagents-dock .ap-status.ap-error { color: var(--err); }
+#subagents-dock .ap-status.ap-working .ap-ic { animation: ap-spin 1.4s linear infinite; }
+#subagents-dock .ap-sub.is-working .ap-sub-tau { animation: ap-pulse 1.6s ease-in-out infinite; }
+@keyframes ap-spin { to { transform: rotate(360deg); } }
+@keyframes ap-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) {
+  #subagents-dock .ap-status.ap-working .ap-ic,
+  #subagents-dock .ap-sub.is-working .ap-sub-tau { animation: none; }
+}
+
+/* Session-level blockers (needs input / waiting on subagents) */
+#subagents-dock .ap-blocker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 7px;
+  color: var(--warn);
+  background: var(--bg-inset);
+}
+#subagents-dock .ap-blocker span:last-child { color: var(--fg-muted); }
+
+#subagents-dock .ap-empty { color: var(--fg-faint); font-size: 11.5px; padding: 2px 2px 3px; }

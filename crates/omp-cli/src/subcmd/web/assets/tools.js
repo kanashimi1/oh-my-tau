@@ -198,9 +198,11 @@
       this.open = false;
       this.node = el("div.tool.pending");
       this.head = el("div.tool-head", { onclick: () => this.toggle() });
+      this.inline = el("div.tool-inline-preview-slot", { hidden: true });
+      this.inlineKey = "";
       this.body = el("div.tool-body", { hidden: true });
       this.tail = el("pre.tool-tail", { hidden: true });
-      this.node.append(this.head, this.tail, this.body);
+      this.node.append(this.head, this.inline, this.tail, this.body);
       this.renderHead();
     }
     setArgs(args) {
@@ -255,6 +257,7 @@
         el("span.status", { text: mark }),
       );
       const file = ["write", "edit", "read"].includes(this.name) && this.status === "ok" && (this.args.path || this.args.file_path);
+      this.renderInline(file);
       if (OMP.preview) OMP.preview.noteArgs(this.args);
       if (file && OMP.preview && OMP.preview.kind(file) && OMP.preview.kind(file) !== "text") {
         this.head.insertBefore(el("button.tool-open.tool-preview", {
@@ -271,6 +274,21 @@
           onclick: (e) => { e.stopPropagation(); OMP.artifacts.open(art); },
         }), this.head.querySelector(".tool-dur"));
       }
+    }
+    renderInline(file) {
+      const images = this.result ? OMP.contentImages(this.result.content) : [];
+      const key = (file || "") + (images.length ? `#images:${images.length}` : "");
+      if (key === this.inlineKey) return;
+      this.inlineKey = key;
+      const preview = file && OMP.preview && OMP.preview.inline ? OMP.preview.inline(file) : null;
+      const nodes = [];
+      if (preview) nodes.push(preview);
+      else for (const [i, img] of images.entries()) {
+        nodes.push(el("div.chat-file-preview", { "data-kind": "image" },
+          el("img", { src: `data:${img.mimeType};base64,${img.data}`, alt: `Tool image ${i + 1}` })));
+      }
+      this.inline.hidden = nodes.length === 0;
+      this.inline.replaceChildren(...nodes);
     }
     renderBody() {
       const parts = argsView(this.name, this.args);

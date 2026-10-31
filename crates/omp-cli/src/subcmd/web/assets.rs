@@ -56,6 +56,16 @@ const FILES: &[(&str, &str, &str)] = &[
         include_str!("assets/composer.js"),
     ),
     (
+        "/assets/agents.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/agents.js"),
+    ),
+    (
+        "/assets/agents.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/agents.css"),
+    ),
+    (
         "/assets/appearance.js",
         "text/javascript; charset=utf-8",
         include_str!("assets/appearance.js"),

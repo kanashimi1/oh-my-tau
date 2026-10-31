@@ -62,7 +62,44 @@
   }
   OMP.rpc = rpc;
 
+  function setView(view) {
+    S.view = view === "maps" ? "maps" : "chat";
+    const maps = S.view === "maps";
+    $("#maps-view").hidden = !maps;
+    $("#transcript-wrap").hidden = maps;
+    $("#composer-wrap").hidden = maps;
+    document.body.classList.toggle("maps-active", maps);
+    if (OMP.maps) { if (maps) OMP.maps.show(S); else OMP.maps.hide(); }
+  }
+
+  // Ask the agent for its protocol capabilities; older detached agents reject
+  // the method, and the conservative legacy profile (same shape, protocol
+  // versions [1], getMessages.maxPageSize 256) is assumed instead — the
+  // session load proceeds either way.
+  async function getCapabilities() {
+    try {
+      return OMP.normalizeCapabilities(await rpc("get_capabilities"));
+    } catch {
+      return OMP.normalizeCapabilities(null);
+    }
+  }
+
+  function historyPageLimit() {
+    return Math.max(1, Math.min(S.caps?.limits?.getMessages?.maxPageSize || 256, 512));
+  }
+
+  // Public full-history semantics (export panel, session switching, e2e):
+  // every message. Backward-capable agents page from the newest offset down
+  // (bounded responses, and paging is allowed while streaming); legacy agents
+  // page forward on quiet sessions and take one get_messages snapshot while
+  // streaming.
   async function getMessages() {
+    if (S.caps?.features?.messagesBackwardPaging) {
+      const buffer = new OMP.HistoryBuffer(S.caps, { backward: true });
+      const pages = [];
+      while (!buffer.done) pages.push(await buffer.fetchPage((params) => rpc("get_messages_page", params)));
+      return [].concat(...pages.reverse());
+    }
     // Full history can contain many MiB of inline images. Keep such responses
     // out of the hub's broadcast queue whenever the snapshot is stable.
     if (S.state?.isStreaming) {
@@ -71,8 +108,10 @@
     }
     const messages = [];
     let cursor = null;
+    const limit = historyPageLimit();
     do {
-      const page = await rpc("get_messages_page", { limit: 256, ...(cursor ? { cursor } : {}) });
+      // The capabilities fallback keeps this at 256 for older detached agents.
+      const page = await rpc("get_messages_page", { limit, ...(cursor ? { cursor } : {}) });
       messages.push(...page.messages);
       cursor = page.nextCursor || null;
     } while (cursor);
@@ -123,13 +162,75 @@
     composer.setEnabled(true);
     send({ type: "set_ask_dialog", enabled: true });
     try {
-      S.state = await rpc("get_state");
-      const [messages, cmds] = await Promise.all([getMessages(), rpc("get_available_commands")]);
+      const [caps, state, cmds] = await Promise.all([
+        getCapabilities(),
+        rpc("get_state"),
+        rpc("get_available_commands"),
+      ]);
+      S.caps = caps;
+      S.state = state;
+      const streaming = !!state.isStreaming;
+      // Latest-first load for capable agents: one bounded backward page (works
+      // during streaming too) renders immediately, older pages fetch lazily.
+      // Legacy agents page forward (quiet) or take one full get_messages
+      // snapshot (streaming). Cached backward windows render instantly and are
+      // completed from a fresh cursor only when older history is requested.
+      let messages, backward = false, fetchOlder = null, cachedBackward = false;
+      const cacheKey = streaming ? null : sessionCache.key(S.agentId, state.sessionFile);
+      const cached = cacheKey ? sessionCache.get(cacheKey) : null;
+      if (cached) {
+        messages = cached;
+        backward = !!(caps.features && caps.features.messagesBackwardPaging);
+        cachedBackward = backward;
+      } else {
+        const loaded = await OMP.loadSessionHistory(rpc, caps);
+        messages = loaded.messages;
+        backward = loaded.backward;
+        fetchOlder = loaded.fetchOlder;
+        if (loaded.paged && !loaded.streaming) sessionCache.put(cacheKey, messages);
+      }
+      if (OMP.agentPanel) OMP.agentPanel.ingestMessages(messages);
       renderWidgets();
       updateHome();
       setCommands(cmds.commands);
-      transcript.loadMessages(messages);
-      setStreaming(!!S.state.isStreaming);
+      if (backward) {
+        // The latest bounded page is the whole fetch so far; older pages come
+        // from the agent only on upward scroll.
+        transcript.loadMessages(messages);
+        let loadedPrefix = messages;
+        const initialCachedCount = cachedBackward ? messages.length : 0;
+        let refreshed = null;
+        transcript.setOlderSource(async () => {
+          try {
+            let older;
+            if (cachedBackward) {
+              // A cached window has no reusable RPC closure. Refresh the latest
+              // cursor only on demand, skip pages already in the cache, then
+              // return the first genuinely older page (never duplicate it).
+              if (!refreshed) refreshed = await OMP.loadSessionHistory(rpc, caps);
+              let skipped = refreshed.messages.length;
+              do {
+                older = refreshed.fetchOlder ? await refreshed.fetchOlder() : null;
+                if (older) skipped += older.length;
+              } while (older && skipped <= initialCachedCount);
+            } else {
+              older = fetchOlder ? await fetchOlder() : null;
+            }
+            if (older && older.length) {
+              loadedPrefix = older.concat(loadedPrefix); // full prefix only
+              if (OMP.agentPanel) OMP.agentPanel.ingestMessages(loadedPrefix);
+              sessionCache.put(cacheKey, loadedPrefix);
+            }
+            return older;
+          } catch (e) {
+            transcript.addSystem("Failed to load older messages: " + e.message, "warn");
+            return null;
+          }
+        });
+      } else {
+        transcript.loadLatest(messages);
+      }
+      setStreaming(streaming);
       renderHeader();
       refreshStats();
     } catch (e) {

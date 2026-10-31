@@ -64,6 +64,34 @@ pub fn socket_path(id: &str) -> PathBuf {
     agents_dir().join(format!("{id}.sock"))
 }
 
+/// Per-agent bridge state (`state.json`), written by the web bridge and read by
+/// adoption so a restarting hub restores dialogs / run markers without scanning
+/// the (possibly multi-GB) log.
+pub fn state_path(id: &str) -> PathBuf {
+    agents_dir().join(id).join("state.json")
+}
+
+/// Load persisted bridge state; missing or corrupt files read as `None`.
+pub fn load_state<T: serde::de::DeserializeOwned>(id: &str) -> Option<T> {
+    let text = fs::read_to_string(state_path(id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Persist bridge state atomically (the per-agent directory is created on
+/// demand), so a hub crash cannot leave a half-written JSON document.
+pub fn save_state<T: serde::Serialize>(id: &str, state: &T) {
+    let dir = agents_dir().join(id);
+    if fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    if let Ok(text) = serde_json::to_string(state) {
+        let path = state_path(id);
+        let tmp = dir.join("state.json.tmp");
+        if fs::write(&tmp, text).is_ok() {
+            let _ = fs::rename(tmp, path);
+        }
+    }
+}
 fn registry_path() -> PathBuf {
     agents_dir().join("registry.json")
 }
@@ -191,6 +219,37 @@ pub fn unregister(id: &str) {
     }
 }
 
+/// Number of rotated logs kept per agent. `log` is the live one; completed runs
+/// are shifted to `log.1`, `log.2`, … as the child exits.
+const LOG_ROTATION_KEEP: usize = 3;
+
+/// Rotate a *completed* agent log (`log` → `log.1`, …, dropping anything past
+/// `LOG_ROTATION_KEEP`). Safe only when the child is dead (no live writer or
+/// tail); callers invoke it from the exit path, never for a running agent.
+pub fn rotate_log(id: &str) {
+    let dir = agents_dir().join(id);
+    for i in (1..LOG_ROTATION_KEEP).rev() {
+        let from = dir.join(format!("log.{i}"));
+        let to = dir.join(format!("log.{}", i + 1));
+        if from.exists() {
+            let _ = fs::rename(&from, &to);
+        }
+    }
+    let live = dir.join("log");
+    if live.exists() {
+        let _ = fs::rename(&live, dir.join("log.1"));
+    }
+    // Drop anything beyond the cap (e.g. from a larger rotation).
+    for i in (LOG_ROTATION_KEEP + 1)..LOG_ROTATION_KEEP + 8 {
+        let p = dir.join(format!("log.{i}"));
+        if p.exists() {
+            let _ = fs::remove_file(&p);
+        } else {
+            break;
+        }
+    }
+}
+
 /// Owning hub of this entry, when a different *live* hub still holds it. That
 /// hub may be mid-write to the child; a second writer would corrupt the
 /// session, so the entry must be left alone.
@@ -273,5 +332,26 @@ mod tests {
         assert!(text.contains(r#""approvalMode":"always-ask""#));
         let back: Entry = serde_json::from_str(&text).expect("round-trip");
         assert_eq!(back.approval_mode.as_deref(), Some("always-ask"));
+    }
+
+    /// Rotation only runs on a *completed* log (child dead): the live `log`
+    /// shifts to `log.1`, older runs shift up, and everything past the cap is
+    /// dropped — never touching a running writer/tail (those callers only
+    /// rotate after exit).
+    #[test]
+    fn rotate_log_shifts_and_caps_completed_logs() {
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        let dir = agents_dir().join("a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("log"), "live").unwrap();
+        std::fs::write(dir.join("log.1"), "old1").unwrap();
+        std::fs::write(dir.join("log.2"), "old2").unwrap();
+        std::fs::write(dir.join("log.3"), "old3").unwrap();
+        rotate_log("a");
+        assert_eq!(std::fs::read_to_string(dir.join("log.1")).unwrap(), "live");
+        assert_eq!(std::fs::read_to_string(dir.join("log.2")).unwrap(), "old1");
+        assert_eq!(std::fs::read_to_string(dir.join("log.3")).unwrap(), "old2");
+        assert!(!dir.join("log.4").exists(), "past-cap log kept");
     }
 }

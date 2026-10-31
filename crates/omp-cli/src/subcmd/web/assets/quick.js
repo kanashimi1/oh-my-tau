@@ -32,6 +32,9 @@
     shot: null, // {base64, url}
     models: [],
     built: false,
+    decoder: new OMP.RpcDeltaDecoder(),
+    pendingMessages: new Map(),
+    flushScheduled: false,
   };
 
   function isQuick() {
@@ -111,6 +114,8 @@
 
   function connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
+    S.decoder.reset();
+    S.pendingMessages.clear();
     const ws = new WebSocket(`${proto}://${location.host}/ws/${S.agentId}`);
     S.ws = ws;
     ws.onopen = () => { loadModels(); };
@@ -132,6 +137,8 @@
   }
 
   function onFrame(f) {
+    f = S.decoder.expand(f);
+    if (!f) return;
     if (f.type === "response" && f.id && S.pending.has(f.id)) {
       const p = S.pending.get(f.id);
       S.pending.delete(f.id);
@@ -155,9 +162,16 @@
         S.streaming = false;
         setButtons();
         return;
-      case "message_start": case "message_update": case "message_end": {
+      case "message_start": case "message_update": {
         if (!f.message || f.message.role !== "assistant") return;
-        if (f.type === "message_end" && f.message.errorMessage) OMP.toast(f.message.errorMessage, "error");
+        S.pendingMessages.set(f.messageId || "live", f.message);
+        scheduleMessageFlush();
+        return;
+      }
+      case "message_end": {
+        if (!f.message || f.message.role !== "assistant") return;
+        S.pendingMessages.delete(f.messageId || "live");
+        if (f.message.errorMessage) OMP.toast(f.message.errorMessage, "error");
         answerEl(f.messageId).replaceChildren(renderText(OMP.contentText(f.message.content)));
         return;
       }
@@ -171,6 +185,19 @@
     }
   }
 
+
+  function scheduleMessageFlush() {
+    if (S.flushScheduled) return;
+    S.flushScheduled = true;
+    requestAnimationFrame(() => {
+      S.flushScheduled = false;
+      const pending = [...S.pendingMessages];
+      S.pendingMessages.clear();
+      for (const [id, message] of pending) {
+        answerEl(id === "live" ? null : id).replaceChildren(renderText(OMP.contentText(message.content)));
+      }
+    });
+  }
   function renderText(text) {
     if (OMP.Markdown && OMP.Markdown.render) {
       const div = el("div.qa-md");

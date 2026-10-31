@@ -2,11 +2,172 @@
 //! projects (one per session dir), the sessions of one folder, and a
 //! directory browser for picking a new session's working directory.
 
+use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::UNIX_EPOCH;
 
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
+
+/// Metadata cache: scan results never re-read while a file/dir keeps its
+/// mtime+size; per-key single-flight so concurrent requests for the same
+/// project/cwd share one scan (the loser re-checks the cache after waiting).
+/// Cache entry: (mtime ms, size, payload).
+type Stamp<T> = (i64, u64, T);
+
+struct Cache {
+    files: AsyncMutex<HashMap<PathBuf, Stamp<Option<Value>>>>,
+    dirs: AsyncMutex<HashMap<PathBuf, Stamp<Vec<PathBuf>>>>,
+    flights: AsyncMutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    scans: std::sync::atomic::AtomicU64,
+}
+
+static CACHE: OnceLock<Cache> = OnceLock::new();
+
+fn cache() -> &'static Cache {
+    CACHE.get_or_init(|| Cache {
+        files: AsyncMutex::new(HashMap::new()),
+        dirs: AsyncMutex::new(HashMap::new()),
+        flights: AsyncMutex::new(HashMap::new()),
+        scans: std::sync::atomic::AtomicU64::new(0),
+    })
+}
+
+/// (mtime ms, size) of `path`, or `None` if it cannot be stated.
+fn stamp(path: &Path) -> Option<(i64, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    let ms = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    Some((ms, m.len()))
+}
+
+/// Run `f` under a single per-key flight: concurrent callers of the same key
+/// serialize, and the latecomer re-checks the cache inside `f` instead of
+/// rescanning.
+async fn with_flight<T>(key: String, f: impl std::future::Future<Output = T>) -> T {
+    let flight = {
+        let mut flights = cache().flights.lock().await;
+        Arc::clone(flights.entry(key).or_default())
+    };
+    let _guard = flight.lock().await;
+    f.await
+}
+
+/// Scan results of `paths`, re-reading only files whose mtime+size changed.
+/// All misses of one store/directory are scanned in ONE blocking-pool job:
+/// hundreds of tiny `spawn_blocking` calls cost far more than the JSONL reads.
+/// `None` results (unreadable files) are cached too, keyed by their stamp.
+async fn cached_scan_files(paths: &[PathBuf]) -> Vec<Option<Value>> {
+    let mut out = vec![None; paths.len()];
+    let mut misses = Vec::new();
+    {
+        let files = cache().files.lock().await;
+        for (i, path) in paths.iter().enumerate() {
+            let Some(st) = stamp(path) else { continue };
+            if let Some((m, s, v)) = files.get(path) {
+                if (*m, *s) == st {
+                    out[i].clone_from(v);
+                    continue;
+                }
+            }
+            misses.push((i, path.clone(), st));
+        }
+    }
+    if misses.is_empty() {
+        return out;
+    }
+    cache()
+        .scans
+        .fetch_add(misses.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    let scanned = tokio::task::spawn_blocking(move || {
+        misses
+            .into_iter()
+            .map(|(i, path, st)| {
+                let value = scan_file(&path);
+                (i, path, st, value)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    let mut files = cache().files.lock().await;
+    for (i, path, st, value) in scanned {
+        files.insert(path, (st.0, st.1, value.clone()));
+        out[i] = value;
+    }
+    out
+}
+
+/// `.jsonl` files of `dir` (newest first). The directory entry list is cached,
+/// but ordering is deliberately recomputed: appending to a session changes the
+/// file's mtime, not the directory's mtime.
+async fn cached_jsonl_files(dir: PathBuf) -> Vec<PathBuf> {
+    let stamp = stamp(&dir);
+    {
+        let dirs = cache().dirs.lock().await;
+        if let (Some((m, s, v)), Some(st)) = (dirs.get(&dir), stamp) {
+            if (*m, *s) == st {
+                let mut files = v.clone();
+                files.sort_by_key(|p| std::cmp::Reverse(mtime_ms(p)));
+                return files;
+            }
+        }
+    }
+    let list_dir = dir.clone();
+    let mut listed = tokio::task::spawn_blocking(move || jsonl_files(&list_dir))
+        .await
+        .ok()
+        .unwrap_or_default();
+    if let Some(st) = stamp {
+        cache()
+            .dirs
+            .lock()
+            .await
+            .insert(dir, (st.0, st.1, listed.clone()));
+    }
+    listed.sort_by_key(|p| std::cmp::Reverse(mtime_ms(p)));
+    listed
+}
+
+/// Sub-directories of `root` (project dirs), same dir-cache invalidation.
+async fn cached_subdirs(root: PathBuf) -> Vec<PathBuf> {
+    let stamp = stamp(&root);
+    {
+        let dirs = cache().dirs.lock().await;
+        if let (Some((m, s, v)), Some(st)) = (dirs.get(&root), stamp) {
+            if (*m, *s) == st {
+                return v.clone();
+            }
+        }
+    }
+    let list_root = root.clone();
+    let listed = tokio::task::spawn_blocking(move || {
+        std::fs::read_dir(&list_root)
+            .map(|rd| {
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    })
+    .await
+    .ok()
+    .unwrap_or_default();
+    if let Some(st) = stamp {
+        cache()
+            .dirs
+            .lock()
+            .await
+            .insert(root, (st.0, st.1, listed.clone()));
+    }
+    listed
+}
 
 /// Lines read per file looking for the title / first user prompt.
 const SCAN_LINES: usize = 60;
@@ -154,19 +315,43 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Sessions of `cwd` across the omp-rs store and TS omp's store, newest first.
-pub fn list_sessions(cwd: &Path) -> Value {
-    let mut rows: Vec<Value> = Vec::new();
+pub async fn list_sessions(cwd: &Path) -> Value {
     let stores = [
         (crate::persist::sessions_dir(cwd), "omt"),
         (crate::persist::ts_sessions_dir(cwd), "omp"),
     ];
+    sessions_in(&stores, cwd).await
+}
+
+/// Store dirs → session rows; the async core of [`list_sessions`] (testable
+/// with explicit dirs). Wrapped in a per-dirs single-flight: concurrent
+/// callers serialize and the latecomer re-checks the file/dir caches instead
+/// of rescanning. Blocking disk work runs on the blocking pool.
+async fn sessions_in(stores: &[(Option<PathBuf>, &'static str)], cwd: &Path) -> Value {
+    let dirs: Vec<PathBuf> = stores.iter().filter_map(|(d, _)| d.clone()).collect();
+    let key = format!(
+        "sessions:{}",
+        dirs.iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+            .join("|")
+    );
+    with_flight(key, scan_stores(stores, cwd)).await
+}
+
+async fn scan_stores(stores: &[(Option<PathBuf>, &'static str)], cwd: &Path) -> Value {
+    let mut rows: Vec<Value> = Vec::new();
     for (dir, store) in stores {
         let Some(dir) = dir else { continue };
-        for path in jsonl_files(&dir).into_iter().take(MAX_SESSIONS) {
-            if let Some(mut row) = scan_file(&path) {
-                row["store"] = json!(store);
-                rows.push(row);
-            }
+        let paths: Vec<PathBuf> = cached_jsonl_files(dir.clone())
+            .await
+            .into_iter()
+            .take(MAX_SESSIONS)
+            .collect();
+        let scanned = cached_scan_files(&paths).await;
+        for mut row in scanned.into_iter().flatten() {
+            row["store"] = json!(store);
+            rows.push(row);
         }
     }
     rows.sort_by_key(|r| std::cmp::Reverse(r["modifiedMs"].as_i64().unwrap_or(0)));
@@ -175,27 +360,34 @@ pub fn list_sessions(cwd: &Path) -> Value {
 
 /// Folders that have omp-rs sessions, newest activity first (cwd read from
 /// the newest session header, since the dir slug is lossy).
-pub fn list_projects() -> Value {
+pub async fn list_projects() -> Value {
     let Some(root) = home().map(|h| h.join(".omp-rs/sessions")) else {
         return json!({"projects": []});
     };
-    let Ok(rd) = std::fs::read_dir(&root) else {
-        return json!({"projects": []});
-    };
+    with_flight("projects".to_string(), projects_in(root)).await
+}
+
+/// Async core of [`list_projects`] over an explicit root (testable). Rows are
+/// rebuilt from cached dir listings and cached file scans on every call —
+/// no JSONL is re-read unless a file's mtime+size changed; only a cheap stat
+/// of each project's newest file (`modifiedMs`) stays uncached so appended
+/// sessions stay fresh.
+async fn projects_in(root: PathBuf) -> Value {
+    let dirs = cached_subdirs(root.clone()).await;
     let mut rows: Vec<Value> = Vec::new();
-    for entry in rd.flatten() {
-        let dir = entry.path();
-        if !dir.is_dir() {
-            continue;
-        }
-        let files = jsonl_files(&dir);
+    for dir in dirs {
+        let files = cached_jsonl_files(dir.clone()).await;
         let Some(newest) = files.first() else {
             continue;
         };
-        let cwd = files
-            .iter()
-            .take(5)
-            .find_map(|f| scan_file(f).and_then(|v| v["cwd"].as_str().map(str::to_owned)));
+        let mut cwd = None;
+        let candidates: Vec<PathBuf> = files.iter().take(5).cloned().collect();
+        for v in cached_scan_files(&candidates).await.into_iter().flatten() {
+            if let Some(c) = v["cwd"].as_str().map(str::to_owned) {
+                cwd = Some(c);
+                break;
+            }
+        }
         let Some(cwd) = cwd else { continue };
         rows.push(json!({
             "cwd": cwd,
@@ -268,4 +460,153 @@ pub fn rename_session(path: &Path, name: &str) -> Result<(), String> {
         .open(path)
         .map_err(|e| format!("{e}"))?;
     writeln!(f, "{line}").map_err(|e| format!("{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    /// Tests share the process-global cache and its scan counter, so run
+    /// them one at a time. Test entry points: the runtime macro blocks.
+    static TEST_GUARD: AsyncMutex<()> = AsyncMutex::const_new(());
+
+    fn write_session(path: &Path, title: &str) {
+        std::fs::write(
+            path,
+            format!(
+                "{{\"type\":\"session\",\"id\":\"s1\",\"cwd\":\"{}\"}}\n\
+                 {{\"type\":\"message\",\"message\":{{\"role\":\"user\",\"content\":\"hello\"}}}}\n",
+                path.parent().unwrap().display()
+            ),
+        )
+        .unwrap();
+        let _ = title;
+    }
+
+    fn stores(dir: &Path) -> Vec<(Option<PathBuf>, &'static str)> {
+        vec![(Some(dir.to_path_buf()), "omt")]
+    }
+
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    #[tokio::test(flavor = "multi_thread")]
+    async fn unchanged_file_is_not_rescanned() {
+        let _g = TEST_GUARD.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        write_session(&tmp.path().join("a.jsonl"), "t");
+        let before = cache().scans.load(Ordering::Relaxed);
+        let first = sessions_in(&stores(tmp.path()), tmp.path()).await;
+        let second = sessions_in(&stores(tmp.path()), tmp.path()).await;
+        let scanned = cache().scans.load(Ordering::Relaxed) - before;
+        assert_eq!(scanned, 1, "second request must hit the file cache");
+        assert_eq!(first, second);
+    }
+
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    #[tokio::test(flavor = "multi_thread")]
+    async fn changed_mtime_or_size_invalidates() {
+        let _g = TEST_GUARD.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.jsonl");
+        write_session(&file, "t");
+        sessions_in(&stores(tmp.path()), tmp.path()).await;
+        let before = cache().scans.load(Ordering::Relaxed);
+        // mtime change without size change: rewrite the same bytes (the
+        // original is two lines of known length).
+        let bytes = std::fs::read(&file).unwrap();
+        let mut same_len = bytes.clone();
+        same_len[0] = b' ';
+        std::fs::write(&file, &same_len).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap().len(), bytes.len());
+        drop(same_len);
+        std::fs::write(&file, bytes).unwrap();
+        sessions_in(&stores(tmp.path()), tmp.path()).await;
+        assert_eq!(
+            cache().scans.load(Ordering::Relaxed) - before,
+            1,
+            "mtime bump must invalidate"
+        );
+        // size change
+        let before = cache().scans.load(Ordering::Relaxed);
+        std::fs::write(
+            &file,
+            "{\"type\":\"session\",\"id\":\"s1\",\"cwd\":\"/x\"}\n",
+        )
+        .unwrap();
+        sessions_in(&stores(tmp.path()), tmp.path()).await;
+        assert_eq!(
+            cache().scans.load(Ordering::Relaxed) - before,
+            1,
+            "size change must invalidate"
+        );
+    }
+
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tail_rename_becomes_visible() {
+        let _g = TEST_GUARD.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a.jsonl");
+        write_session(&file, "t");
+        let before = sessions_in(&stores(tmp.path()), tmp.path()).await;
+        assert_ne!(before["sessions"][0]["title"], json!("renamed"));
+        // append a rename entry (what `rename_session` does); the file's
+        // mtime+size change must invalidate the cached scan.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap()
+            .write_all(b"{\"type\":\"session_info\",\"title\":\"renamed\"}\n")
+            .unwrap();
+        let after = sessions_in(&stores(tmp.path()), tmp.path()).await;
+        assert_eq!(after["sessions"][0]["title"], json!("renamed"));
+    }
+
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_callers_share_one_scan() {
+        let _g = TEST_GUARD.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        for n in 0..5 {
+            write_session(&tmp.path().join(format!("{n}.jsonl")), "t");
+        }
+        let stores = stores(tmp.path());
+        let before = cache().scans.load(Ordering::Relaxed);
+        let (a, b, c) = tokio::join!(
+            sessions_in(&stores, tmp.path()),
+            sessions_in(&stores, tmp.path()),
+            sessions_in(&stores, tmp.path()),
+        );
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(a["sessions"].as_array().unwrap().len(), 5);
+        assert_eq!(
+            cache().scans.load(Ordering::Relaxed) - before,
+            5,
+            "one scan per file"
+        );
+    }
+
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    #[tokio::test(flavor = "multi_thread")]
+    async fn append_to_older_file_refreshes_newest_order() {
+        let _g = TEST_GUARD.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let older = tmp.path().join("a.jsonl");
+        let newer = tmp.path().join("b.jsonl");
+        write_session(&older, "a");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_session(&newer, "b");
+        let first = sessions_in(&stores(tmp.path()), tmp.path()).await;
+        assert_eq!(first["sessions"][0]["path"], json!(newer.display().to_string()));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&older)
+            .unwrap()
+            .write_all(b"{\"type\":\"session_info\",\"title\":\"active again\"}\n")
+            .unwrap();
+        let second = sessions_in(&stores(tmp.path()), tmp.path()).await;
+        assert_eq!(second["sessions"][0]["path"], json!(older.display().to_string()));
+    }
 }

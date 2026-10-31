@@ -488,12 +488,13 @@ async fn route(hub: Arc<Hub>, req: Request<Incoming>) -> Response<Body> {
             }),
         ),
         (&Method::GET, "/api/projects") => {
-            json_response(StatusCode::OK, &sessions::list_projects())
+            json_response(StatusCode::OK, &sessions::list_projects().await)
         }
+        (&Method::GET, "/api/maps") => maps_json(),
         (&Method::GET, "/api/sessions") => {
             let cwd =
                 query_param(&req, "cwd").map_or_else(|| hub.default_cwd.clone(), PathBuf::from);
-            json_response(StatusCode::OK, &sessions::list_sessions(&cwd))
+            json_response(StatusCode::OK, &sessions::list_sessions(&cwd).await)
         }
         (&Method::POST, "/api/sessions/rename") => rename_session_route(req).await,
         (&Method::GET, "/api/fs") => json_response(
@@ -615,6 +616,7 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
         resume,
         model: text("model"),
         approval_mode,
+        role: text("role"),
     };
     match hub.spawn(spec).await {
         Ok(agent) => json_response(StatusCode::OK, &agent.info_json()),

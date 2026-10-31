@@ -680,12 +680,45 @@
     renderTabs();
   }
 
+  // Inline chat previews use the same authenticated host-file endpoint as the
+  // side panel, but do not open or move the panel. Media remains click-to-play;
+  // images and document canvases are visible immediately.
+  function inlinePreview(path) {
+    const kind = fileKind(path);
+    if (!["image", "video", "audio", "pdf", "office", "html"].includes(kind)) return null;
+    const src = previewUrl(path) + (kind === "html" ? "?embed=1" : "");
+    const box = el("div.chat-file-preview", { "data-kind": kind, "data-path": path });
+    box.append(el("div.chat-file-preview-name", { text: baseName(path), title: path }));
+    if (kind === "image") {
+      const img = el("img", { src, alt: baseName(path), loading: "lazy" });
+      img.addEventListener("load", () => galleryAdd({ path, src, title: baseName(path) }), { once: true });
+      box.append(img);
+    } else if (kind === "video") {
+      box.append(el("video", { src, controls: true, preload: "metadata" }));
+    } else if (kind === "audio") {
+      box.append(el("audio", { src, controls: true, preload: "metadata" }));
+    } else if (kind === "office") {
+      const loading = el("p.muted", { text: "Converting with Microsoft Office…" });
+      box.append(loading);
+      OMP.api("/api/preview/office?path=" + encodeURIComponent(path), { method: "POST" }).then((r) => {
+        const frame = el("iframe", { src: previewUrl(r.pdf), title: baseName(path), loading: "lazy" });
+        loading.replaceWith(frame);
+      }).catch((e) => { loading.textContent = `Preview unavailable: ${e.message || e}`; });
+    } else {
+      const frame = el("iframe", { src, title: baseName(path), loading: "lazy" });
+      if (kind === "html") frame.setAttribute("sandbox", "allow-scripts allow-forms allow-popups allow-modals allow-downloads");
+      box.append(frame);
+    }
+    return box;
+  }
+
   // ── public API ─────────────────────────────────────────────────────────
   /** Preview a file on the agent host (absolute, ~/ or C:\ path). */
   OMP.preview = {
     kind: fileKind,
     note,
     noteArgs,
+    inline: inlinePreview,
     /** Topbar button: close, reopen the last preview, or show the file list. */
     toggle() {
       if (OMP.artifacts.isOpen()) return OMP.artifacts.close();
