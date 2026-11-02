@@ -143,6 +143,10 @@ async fn run(
     signal: &AbortSignal,
     tap: Option<Arc<Mutex<String>>>,
 ) -> Result<(String, Option<i32>, Duration, Option<&'static str>)> {
+    // System-1 kill guard (see tools/kill_guard.rs): refuse before spawn.
+    if let Some(reason) = super::kill_guard::check(command) {
+        bail!("{reason}");
+    }
     let script = format!("exec 2>&1\n{command}");
     let started = Instant::now();
     let mut child = detached_bash()
@@ -603,6 +607,10 @@ async fn start_service(
     timeout_secs: f64,
     signal: &AbortSignal,
 ) -> Result<ServiceOutcome> {
+    // System-1 kill guard (see tools/kill_guard.rs): refuse before spawn.
+    if let Some(reason) = super::kill_guard::check(command) {
+        bail!("{reason}");
+    }
     let script = format!("exec 2>&1\n{command}");
     let mut child = detached_bash()
         .arg("-c")

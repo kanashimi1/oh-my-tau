@@ -211,3 +211,40 @@ fn display_and_prelude_helpers() {
     std::fs::remove_file(&file).ok();
     k.shutdown();
 }
+
+/// The runtime is pinned to an absolute path at start, so kernel respawns
+/// survive a host whose live `PATH` no longer carries Bun (desktop agents
+/// run for days; a rotated `PATH` made every respawn exit 127 inside
+/// `setsid` and cells failed with a raw `Broken pipe (os error 32)`).
+#[test]
+fn runtime_pinned_to_absolute_path() {
+    if !common::require_bun("runtime_pinned_to_absolute_path") {
+        return;
+    }
+    let k = kernel("abs-runtime");
+    let runtime = k.runtime();
+    assert!(
+        runtime.contains(std::path::MAIN_SEPARATOR),
+        "absolute: {runtime}"
+    );
+    assert!(std::path::Path::new(runtime).is_file(), "exists: {runtime}");
+    let result = k
+        .execute("1 + 1", Some(Duration::from_secs(30)))
+        .expect("cell runs");
+    assert_eq!(result.status, CellStatus::Ok);
+}
+
+/// An unresolvable runtime fails at `start` with a clear message instead of
+/// a `Broken pipe` on the first cell write.
+#[test]
+fn missing_runtime_fails_loudly_at_start() {
+    let dir = std::env::temp_dir().join(format!("omp-eval-js-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("cwd");
+    let Err(err) = JsKernel::start("omp-eval-no-such-runtime", &dir) else {
+        panic!("unresolvable runtime must fail at start")
+    };
+    assert!(
+        err.to_string().contains("not found"),
+        "clear message, got: {err}"
+    );
+}

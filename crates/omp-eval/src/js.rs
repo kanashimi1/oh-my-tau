@@ -58,6 +58,44 @@ pub fn default_runtime() -> &'static str {
     "bun"
 }
 
+/// Resolve a runtime name to an absolute executable path once, at kernel
+/// start. Kernel respawns exec the *stored* path, so they no longer depend
+/// on the host process's live `PATH`, which can be replaced at runtime
+/// (observed in a desktop agent: hours in, `PATH` lost `~/.bun/bin`, every
+/// `setsid --wait bun` respawn exited 127 and eval cells failed with a raw
+/// `Broken pipe (os error 32)`). Explicit paths are taken as-is.
+fn resolve_runtime(runtime: &str) -> io::Result<String> {
+    use std::path::{Path, PathBuf};
+    if runtime.contains('/') {
+        return Ok(runtime.to_owned());
+    }
+    let mut candidates: Vec<PathBuf> = std::env::var("PATH")
+        .map(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(runtime))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Ok(dir) = std::env::var("BUN_INSTALL") {
+        candidates.push(Path::new(&dir).join("bin").join(runtime));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(Path::new(&home).join(".bun").join("bin").join(runtime));
+    }
+    candidates
+        .iter()
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "JS runtime `{runtime}` not found (searched $PATH, $BUN_INSTALL/bin and ~/.bun/bin); install Bun or pass an absolute runtime path"
+                ),
+            )
+        })
+}
+
 /// A persistent JavaScript kernel: one Bun runner subprocess per kernel.
 /// Cells execute sequentially and share the global scope, so top-level
 /// bindings persist across `execute` calls like omp's retained worker.
@@ -75,15 +113,19 @@ impl JsKernel {
     /// # Errors
     /// Fails when the runtime cannot be spawned.
     pub fn start(runtime: &str, cwd: &std::path::Path) -> io::Result<Self> {
+        // Pin the runtime to an absolute path: a bare `bun` is re-resolved
+        // through the *live* `PATH` by every `setsid --wait bun` child, which
+        // breaks silently when that `PATH` changes under a long-lived host.
+        let runtime = resolve_runtime(runtime)?;
         Ok(Self {
             process: Mutex::new(Some(KernelProcess::spawn(
-                runtime,
+                &runtime,
                 &["-e", &runner_script()],
                 cwd,
                 &[],
             )?)),
             next_id: AtomicU64::new(1),
-            runtime: runtime.to_owned(),
+            runtime,
             cwd: cwd.to_path_buf(),
         })
     }
@@ -131,26 +173,56 @@ impl JsKernel {
         // (omp's session registry does the same on worker death).
         self.ensure_running()?;
         let seq = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let id;
-        {
+        // The runner can die between the liveness check and this write (a
+        // respawn whose exec failed exits in between): writing would then
+        // fail with EPIPE and surface as a raw `Broken pipe (os error 32)`.
+        // Mirror `RecvOutcome::Disconnected`: reap, respawn once, retry.
+        let mut id = None;
+        for attempt in 0..2 {
             let mut guard = self.process.lock();
-            let p = guard
-                .as_mut()
-                .ok_or_else(|| io::Error::other("JS kernel is not running"))?;
-            id = p.cell_id(seq);
-            let mut req = serde_json::json!({
-                "id": id,
-                "code": code,
-                "storeHistory": true,
-                "idleTimeout": opts.idle_timeout,
+            let write = guard.as_mut().map(|p| {
+                let cell = p.cell_id(seq);
+                let mut req = serde_json::json!({
+                    "id": cell,
+                    "code": code,
+                    "storeHistory": true,
+                    "idleTimeout": opts.idle_timeout,
+                });
+                if let Some(t) = opts.timeout {
+                    req["timeoutMs"] =
+                        serde_json::json!(u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
+                }
+                p.stdin
+                    .write_all(format!("{req}\n").as_bytes())
+                    .and_then(|()| p.stdin.flush())
+                    .map(|()| cell)
             });
-            if let Some(t) = opts.timeout {
-                req["timeoutMs"] =
-                    serde_json::json!(u64::try_from(t.as_millis()).unwrap_or(u64::MAX));
+            match write {
+                Some(Ok(cell)) => {
+                    id = Some(cell);
+                    break;
+                }
+                Some(Err(_e)) if attempt == 0 => {
+                    // Stale runner: reap and transparently respawn.
+                    drop(guard);
+                    if let Some(mut p) = self.process.lock().take() {
+                        p.kill_group();
+                        drop(p);
+                    }
+                    self.ensure_running()?;
+                }
+                Some(Err(e)) => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("JS runner died before executing the cell: {e}"),
+                    ));
+                }
+                None => return Err(io::Error::other("JS kernel is not running")),
             }
-            p.stdin.write_all(format!("{req}\n").as_bytes())?;
-            p.stdin.flush()?;
         }
+        let Some(id) = id else {
+            return Err(io::Error::other("JS kernel is not running"));
+        };
 
         let mut output = String::new();
         let mut displays = Vec::new();

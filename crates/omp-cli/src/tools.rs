@@ -18,6 +18,7 @@ pub(crate) mod eval_bridge;
 pub(crate) mod eval_journal;
 mod find;
 mod jobs;
+mod kill_guard;
 pub mod mcp;
 mod read;
 pub(crate) mod relevance;
