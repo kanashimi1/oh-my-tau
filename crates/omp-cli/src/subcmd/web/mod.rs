@@ -386,7 +386,8 @@ fn error(status: StatusCode, message: &str) -> Response<Body> {
 
 /// Path of the graph-map data file (`~/.config/omt/maps.json`).
 fn maps_path() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+    std::env::var_os("HOME")
+        .map_or_else(|| PathBuf::from("/"), PathBuf::from)
         .join(".config/omt/maps.json")
 }
 

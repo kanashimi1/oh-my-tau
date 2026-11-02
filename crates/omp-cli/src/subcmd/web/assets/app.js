@@ -129,11 +129,13 @@
     renderWidgets();
     renderQueue();
     composer.setStreaming(false);
-    composer.setEnabled(false);
+    // A real target disables the composer until its socket opens; the
+    // no-agent home screen keeps it live for the agent-less commands.
+    if (agentId) composer.setEnabled(false);
     $("#empty-state").hidden = !!agentId;
     renderSidebar();
     updateHome();
-    if (!agentId) { renderHeader(); renderStatus(); return; }
+    if (!agentId) { renderHeader(); renderStatus(); composer.setEnabled(true); return; }
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${agentId}`);
     S.ws = ws;
     ws.onopen = () => onOpen();
@@ -190,6 +192,8 @@
         if (loaded.paged && !loaded.streaming) sessionCache.put(cacheKey, messages);
       }
       if (OMP.agentPanel) OMP.agentPanel.ingestMessages(messages);
+      // Inline text completion also learns from this session's own prompts.
+      composer.setSessionPrompts(messages.map(userPromptText).filter((t) => t && t.trim()));
       renderWidgets();
       updateHome();
       setCommands(cmds.commands);
@@ -378,6 +382,8 @@
     try {
       const messages = await getMessages(); // full refetch, never the cache
       if (OMP.agentPanel) OMP.agentPanel.ingestMessages(messages);
+      // Inline text completion also learns from this session's own prompts.
+      composer.setSessionPrompts(messages.map(userPromptText).filter((t) => t && t.trim()));
       transcript.loadLatest(messages);
     } catch { /* ignore */ }
   }
@@ -396,12 +402,30 @@
   }
 
   // ── submit / abort ───────────────────────────────────────────────────────
+  // Commands that need no agent, offered on the home screen before any
+  // session is open (the terminal surface lists them there too).
+  const HOME_COMMANDS = new Set(["new", "resume", "hotkeys", "help"]);
+
+  /** Plain text of a user message (string content or text blocks). */
+  function userPromptText(m) {
+    if (!m || m.role !== "user") return "";
+    const c = m.content;
+    if (typeof c === "string") return c;
+    if (Array.isArray(c)) return c.filter((b) => b && b.type === "text").map((b) => b.text).join(" ");
+    return "";
+  }
+
   function submit(text, images, mode) {
+    const trimmed = text.trim();
     if (!S.agentId || S.dead) {
+      if (trimmed.startsWith("/") && !images.length) {
+        const name = trimmed.slice(1).split(/\s+/)[0];
+        if (!name.includes("/") && HOME_COMMANDS.has(name)
+          && localCommand(name, trimmed.slice(1 + name.length).trim())) return true;
+      }
       OMP.toast("Start or open a session first", "warning");
       return false;
     }
-    const trimmed = text.trim();
     if (trimmed.startsWith("/") && !images.length) {
       const name = trimmed.slice(1).split(/\s+/)[0];
       const args = trimmed.slice(1 + name.length).trim();
@@ -504,6 +528,11 @@
   for (const feature of [OMP.palette, OMP.tasks, OMP.changes, OMP.terminal, OMP.workspaces, OMP.quick]) {
     if (feature && typeof feature.init === "function") feature.init(OMP.app);
   }
+  // Home screen: the composer is live before any agent connects and offers
+  // the agent-less commands in autocomplete - the "/" hint shown there must
+  // not be a dead promise (terminal parity).
+  composer.setEnabled(true);
+  setCommands([]);
   updateHome(); // no agent yet: start on the centered home composer
   // Dock/undock whenever the transcript gains or loses content (history replay,
   // first live message, /new) instead of chasing every frame type.

@@ -303,8 +303,9 @@ button.wide { width: 100%; }
 #composer, .ta-hl { border: 1px solid var(--border-strong); border-radius: 10px; padding: 9px 12px; line-height: 1.45; font: inherit; letter-spacing: normal; }
 #composer { flex: 1; resize: none; background: var(--bg-inset); outline: none; max-height: 40vh; position: relative; z-index: 1; width: 100%; }
 .ta-hl { position: absolute; inset: 0; z-index: 0; margin: 0; overflow: hidden; white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; color: var(--fg); background: var(--bg-inset); pointer-events: none; display: none; border-color: transparent; }
-.ta-wrap.magic .ta-hl { display: block; }
-.ta-wrap.magic #composer { background: transparent; color: transparent; caret-color: var(--fg); }
+.ta-wrap.magic .ta-hl, .ta-wrap.tc .ta-hl { display: block; }
+.ta-wrap.magic #composer, .ta-wrap.tc #composer { background: transparent; color: transparent; caret-color: var(--fg); }
+.ta-hl .tc-ghost { color: var(--mut); }
 .ta-hl .kw { color: transparent; -webkit-background-clip: text; background-clip: text; background-size: 200% 100%; animation: kw-shimmer 3s linear infinite; font-weight: inherit; }
 @keyframes kw-shimmer { from { background-position: 0 0; } to { background-position: 200% 0; } }
 #composer:focus { border-color: var(--accent); }

@@ -140,7 +140,10 @@
     const pinned = OMP.sidebar.readPinned();
     const q = $("#session-filter").value.trim().toLowerCase();
     const current = s.agents.find((a) => a.id === s.agentId);
-    const openByAgent = new Set(s.agents.map((a) => a.sessionFile).filter(Boolean));
+    const anyOpen = new Set(s.agents.map((a) => a.sessionFile).filter(Boolean));
+    // A dead agent gets no row by default, so its file must fall back to the
+    // stored list — otherwise a finished session vanishes with its agent.
+    const aliveOpen = new Set(s.agents.filter((a) => a.alive !== false).map((a) => a.sessionFile).filter(Boolean));
 
     const rows = [];
 
@@ -161,15 +164,19 @@
       });
     }
 
-    // Default view: all live agents + five recent stopped sessions. Search
-    // deliberately scans the complete stored history; pinned/current sessions
-    // stay reachable even when they are older than the recent slice.
-    const stored = s.sessions.filter((r) => !openByAgent.has(r.path))
+    // Default view: all live agents + five recent stored sessions, with a
+    // "show all" expander for the rest. Search deliberately scans the
+    // complete stored history; pinned/current sessions stay reachable even
+    // when they are older than the recent slice.
+    const openSet = q ? anyOpen : aliveOpen;
+    const stored = s.sessions.filter((r) => !openSet.has(r.path))
       .sort((a, b) => (b.modifiedMs || 0) - (a.modifiedMs || 0));
-    const visibleStored = q ? stored : stored.filter((r, i) => i < 5 || pinned.has("s:" + r.path) || (current && current.sessionFile === r.path));
-    // Stored sessions (skipped when an agent already has the file open).
+    const showAll = !q && !!s.sessionsShowAll;
+    const visibleStored = q ? stored : stored.filter((r, i) => showAll || i < 5 || pinned.has("s:" + r.path) || (current && current.sessionFile === r.path));
+    const hiddenStored = q ? 0 : stored.length - visibleStored.length;
+    // Stored sessions (skipped when a rendered agent already has the file open).
     for (const r of visibleStored) {
-      if (openByAgent.has(r.path)) continue;
+      if (openSet.has(r.path)) continue;
       const key = "s:" + r.path;
       const title = r.title || r.preview || r.id;
       const preview = r.preview ? (r.title ? " · " + r.preview : r.preview) : "";
@@ -207,6 +214,13 @@
       const take = list.slice(0, Math.max(0, 300 - shown));
       frag.push(...take.map((r) => rowNode(s, r)));
       shown += take.length;
+    }
+    if (!q && (hiddenStored > 0 || (showAll && stored.length > 5))) {
+      frag.push(el("button.sess-more", {
+        text: showAll ? "Show recent only" : `Show all ${stored.length} sessions`,
+        title: showAll ? null : `${hiddenStored} older sessions are hidden`,
+        onclick: () => { s.sessionsShowAll = !showAll; renderSidebar(s); },
+      }));
     }
     if (!frag.length) {
       frag.push(el("div.sess-empty.muted.small", { text: s.project ? "No matching sessions" : "No sessions yet" }));
@@ -355,6 +369,7 @@
 
   function setProject(s, cwd) {
     s.project = cwd;
+    s.sessionsShowAll = false;
     localStorage.setItem("omp-web-project", cwd);
     window.dispatchEvent(new CustomEvent("omp:project", { detail: { cwd } }));
     loadSessions(s);

@@ -453,7 +453,7 @@ impl Agent {
             let _ = file.seek(std::io::SeekFrom::End(0)).await;
             #[cfg(target_os = "linux")]
             let log_events = (|| {
-                use nix::sys::inotify::{AddWatchFlags, Inotify, InitFlags};
+                use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify};
                 let inotify = Inotify::init(InitFlags::IN_NONBLOCK).ok()?;
                 inotify
                     .add_watch(
@@ -476,11 +476,8 @@ impl Agent {
                         }
                         #[cfg(target_os = "linux")]
                         if let Some(events) = &log_events {
-                            match tokio::time::timeout(
-                                Duration::from_millis(50),
-                                events.readable(),
-                            )
-                            .await
+                            match tokio::time::timeout(Duration::from_millis(50), events.readable())
+                                .await
                             {
                                 Ok(Ok(mut ready)) => {
                                     let _ = events.get_ref().0.read_events();

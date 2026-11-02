@@ -598,7 +598,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         write_session(&newer, "b");
         let first = sessions_in(&stores(tmp.path()), tmp.path()).await;
-        assert_eq!(first["sessions"][0]["path"], json!(newer.display().to_string()));
+        assert_eq!(
+            first["sessions"][0]["path"],
+            json!(newer.display().to_string())
+        );
         std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::OpenOptions::new()
             .append(true)
@@ -607,6 +610,9 @@ mod tests {
             .write_all(b"{\"type\":\"session_info\",\"title\":\"active again\"}\n")
             .unwrap();
         let second = sessions_in(&stores(tmp.path()), tmp.path()).await;
-        assert_eq!(second["sessions"][0]["path"], json!(older.display().to_string()));
+        assert_eq!(
+            second["sessions"][0]["path"],
+            json!(older.display().to_string())
+        );
     }
 }

@@ -12,6 +12,13 @@
 .ap-sub-tau .tau-aura { fill: #fff; opacity: .16; }
 .ap-sub-tau svg.tau-sprite { --tau-glow: transparent; }
 .ap-sub-tau .tau-body path[stroke] { stroke: rgba(255, 255, 255, .35); }
+/* The welcome-screen hero carries the same white mark (its drop-shadow halo
+   reads --tau-glow, which mount() sets inline, so that one needs !important). */
+.tau-hero .tau-mark { fill: #fff; }
+.tau-hero .tau-aura { fill: #fff; opacity: .16; }
+.tau-hero svg.tau-sprite { --tau-glow: rgba(255, 255, 255, .5); }
+.tau-hero .tau-body path[stroke] { stroke: rgba(255, 255, 255, .35); }
+.tau-hero { --tau-glow: rgba(255, 255, 255, .5) !important; }
 
 #sidebar { padding-bottom: 8px; }
 #new-session { flex: none; background: var(--fg); color: var(--bg); border-color: transparent; }
@@ -111,6 +118,12 @@
 .row-action svg { width: 13px; height: 13px; display: block; }
 
 .sess-empty { padding: 8px; }
+.sess-more {
+  display: block; width: calc(100% - 16px); margin: 4px 8px 6px; padding: 6px 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--fg-faint);
+  font: inherit; font-size: 11px; text-align: center; cursor: pointer;
+}
+.sess-more:hover { color: var(--fg); background: var(--bg-hover); }
 .pin-badge { font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--fg-faint); flex: none; }
 .session-row .needs-input.stuck { cursor: pointer; }
 .session-row .muted-run[title] { cursor: pointer; }

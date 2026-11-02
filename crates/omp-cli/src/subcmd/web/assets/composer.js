@@ -67,6 +67,8 @@
       this.images = [];
       this.streaming = false;
       this.ac = { open: false, items: [], sel: 0 };
+      this.tc = { tail: "" };       // inline text-completion ghost
+      this.sessionPrompts = [];     // user prompts of the open session
       try { this.history = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch { this.history = []; }
       this.histPos = -1;
       this.draft = "";
@@ -82,10 +84,10 @@
 
     bind() {
       const ta = this.ta;
-      ta.addEventListener("input", () => { this.autosize(); this.updateAc(); this.updateMode(); });
+      ta.addEventListener("input", () => { this.updateAc(); this.updateTc(); this.autosize(); this.updateMode(); });
       ta.addEventListener("keydown", (e) => this.onKey(e));
       ta.addEventListener("scroll", () => { this.hl.scrollTop = ta.scrollTop; });
-      ta.addEventListener("blur", () => setTimeout(() => this.closeAc(), 150));
+      ta.addEventListener("blur", () => setTimeout(() => { this.closeAc(); this.clearTc(); }, 150));
       ta.addEventListener("paste", (e) => {
         const files = [...(e.clipboardData?.items || [])].filter((i) => i.kind === "file").map((i) => i.getAsFile());
         if (files.length) { e.preventDefault(); files.forEach((f) => this.addFile(f)); }
@@ -224,6 +226,7 @@
     setCommands(list) { this.commands = Array.isArray(list) ? list : []; }
     setText(text) {
       this.ta.value = text || "";
+      this.updateTc();
       this.autosize();
       this.updateMode();
       this.ta.focus();
@@ -241,8 +244,46 @@
       const on = KW_RE.test(text);
       KW_RE.lastIndex = 0;
       this.ta.parentElement.classList.toggle("magic", on);
-      this.hl.innerHTML = on ? highlightHtml(text) : "";
+      // Ghost completion shows only while the caret sits at the end of the
+      // draft; any caret move or selection hides it.
+      const atEnd = this.ta.selectionStart === text.length && this.ta.selectionEnd === this.ta.selectionStart;
+      const ghost = atEnd ? this.tc.tail : "";
+      this.ta.parentElement.classList.toggle("tc", !!ghost);
+      if (!on && !ghost) { this.hl.innerHTML = ""; this.hl.scrollTop = this.ta.scrollTop; return; }
+      let html = on ? highlightHtml(text) : OMP.esc(text);
+      if (ghost) {
+        if (html.endsWith("\u200b")) html = html.slice(0, -1);
+        html += `<span class="tc-ghost">${OMP.esc(ghost)}</span>\u200b`;
+      }
+      this.hl.innerHTML = html;
       this.hl.scrollTop = this.ta.scrollTop;
+    }
+
+    // -- inline text completion (prompt history + this session's prompts) --
+    /** Session user prompts (app.js feeds them after the history loads). */
+    setSessionPrompts(list) { this.sessionPrompts = Array.isArray(list) ? list : []; }
+    /** Newest-first completion sources: this session first, then global history. */
+    completionSources() {
+      return (this.sessionPrompts || []).slice(-200).reverse()
+        .concat(this.history.slice(-200).reverse());
+    }
+    updateTc() {
+      const v = this.ta.value;
+      this.tc.tail = (!this.ac.open && !v.startsWith("/") && v.trim().length >= 2)
+        ? OMP.textComplete.match(v, this.completionSources())
+        : "";
+    }
+    acceptTc() {
+      const full = this.ta.value + this.tc.tail;
+      this.tc.tail = "";
+      this.setText(full);
+      this.updateTc();
+      this.highlight();
+    }
+    clearTc() {
+      if (!this.tc.tail) return;
+      this.tc.tail = "";
+      this.highlight();
     }
     updateMode() { this.ta.classList.toggle("bash", this.ta.value.startsWith("!")); }
 
@@ -323,6 +364,14 @@
 
     onKey(e) {
       if (e.isComposing) return;
+      // Inline ghost: Tab or Right at the end accepts, Escape dismisses,
+      // caret moves off the end cancel it.
+      if (this.tc.tail && this.ta.selectionStart === this.ta.value.length
+        && this.ta.selectionEnd === this.ta.selectionStart) {
+        if (e.key === "Tab" || e.key === "ArrowRight") { e.preventDefault(); this.acceptTc(); return; }
+        if (e.key === "Escape") { e.preventDefault(); this.clearTc(); return; }
+        if (e.key === "ArrowLeft" || e.key === "Home" || e.key === "PageUp") this.clearTc();
+      }
       if (this.ac.open) {
         if (e.key === "ArrowDown") { e.preventDefault(); this.moveAc(1); return; }
         if (e.key === "ArrowUp") { e.preventDefault(); this.moveAc(-1); return; }
@@ -417,4 +466,31 @@
   }
 
   OMP.Composer = Composer;
+
+  // Inline text completion (pure, unit-tested): the completion TAIL for the
+  // first candidate (sources are newest-first) that begins with the whole
+  // draft, case-insensitively. Slash drafts are the command autocomplete's
+  // domain; tails stop at the first newline (no surprise multi-line inserts).
+  OMP.textComplete = {
+    match(draft, candidates) {
+      const v = String(draft ?? "");
+      if (v.length < 2 || v.startsWith("/")) return "";
+      const vl = v.toLowerCase();
+      const seen = new Set();
+      for (const raw of candidates || []) {
+        if (typeof raw !== "string" || raw.length <= v.length) continue;
+        if (!raw.toLowerCase().startsWith(vl)) continue;
+        let tail = raw.slice(v.length);
+        const nl = tail.indexOf("\n");
+        if (nl === 0) continue;
+        if (nl > 0) tail = tail.slice(0, nl);
+        if (!tail.trim()) continue;
+        const key = (v + tail).toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        return tail;
+      }
+      return "";
+    },
+  };
 })(window.OMP);
