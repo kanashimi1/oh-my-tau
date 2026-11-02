@@ -805,7 +805,7 @@
   // anchors bare file names in inline code that follow it (`report.html`).
   const DIR_RE = /(?:^|[\s"'(`])((?:[A-Za-z]:[\\/]|~\/|\/)[^\s"'<>|*?`]*[\\/])(?=$|[\s"'<>)\],;:!?`])/g;
   const REL_RE = new RegExp(`^(?![A-Za-z]:|~|/)[\\w.-]+(?:/[\\w.-]+)*\\.(?:${Object.values(EXT).flat().join("|")})$`, "i");
-  function linkRelative(node, base) {
+  function linkRelative(node, base, root, shown) {
     const name = node.nodeValue.trim();
     const path = base + name;
     const a = el("a.file-link", { href: "#", title: `Preview ${path}`, "data-path": path, text: node.nodeValue });
@@ -813,11 +813,39 @@
     // Only keep the link when the file is really there (cached: streaming
     // re-renders the same reply many times).
     fileExists(path).then((ok) => {
-      if (ok) note(path);
+      if (ok) { note(path); if (shown) inlineMedia(a, root, shown); }
       else if (a.isConnected) a.replaceWith(document.createTextNode(a.textContent));
     });
   }
-  function linkify(root) {
+  // Inline media: images / video / audio mentioned by path (or ![](path)) render
+  // right under the block that mentions them, like tool-card previews. One
+  // preview per path per message, capped so a file list cannot flood the chat.
+  const INLINE_KINDS = new Set(["image", "video", "audio"]);
+  const MAX_INLINE = 8;
+  function topBlock(node, root) {
+    let n = node;
+    while (n && n.parentNode && n.parentNode !== root) n = n.parentNode;
+    return n && n.parentNode === root ? n : null;
+  }
+  function inlineMedia(link, root, shown) {
+    const path = link.dataset.path;
+    if (!path || shown.has(path) || shown.size >= MAX_INLINE || !INLINE_KINDS.has(fileKind(path))) return;
+    const block = topBlock(link, root);
+    if (!block) return;
+    shown.add(path);
+    const box = inlinePreview(path);
+    if (!box) return;
+    let strip = block.nextElementSibling;
+    if (!strip || !strip.classList || !strip.classList.contains("chat-media-strip")) {
+      strip = el("div.chat-media-strip");
+      block.after(strip);
+    }
+    strip.append(box);
+  }
+  function linkify(root, opts) {
+    // opts.media === false: the live streaming tail is re-rendered per token, so no embeds there.
+    const embed = !(opts && opts.media === false);
+    const shown = new Set(Array.from(root.querySelectorAll ? root.querySelectorAll(".chat-media-strip .chat-file-preview") : []).map((b) => b.dataset.path));
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode: (n) => (n.parentElement.closest("pre, a, button, .file-link") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
     });
@@ -829,7 +857,7 @@
       DIR_RE.lastIndex = 0;
       for (let d; (d = DIR_RE.exec(text));) base = d[1];
       if (base && node.parentElement.tagName === "CODE" && REL_RE.test(text.trim())) {
-        linkRelative(node, base);
+        linkRelative(node, base, root, embed ? shown : null);
         continue;
       }
       PATH_RE.lastIndex = 0;
@@ -851,9 +879,13 @@
       frag.append(text.slice(last));
       node.replaceWith(frag);
     }
+    // Markdown-made links (![alt](/abs/x.png)) and the links created above.
+    if (embed) for (const link of root.querySelectorAll("a.file-link")) inlineMedia(link, root, shown);
   }
   OMP.linkifyPaths = linkify;
   document.addEventListener("click", (e) => {
+    const shot = e.target.closest && e.target.closest(".chat-media-strip .chat-file-preview img");
+    if (shot) { OMP.preview.open(shot.closest(".chat-file-preview").dataset.path); return; }
     const link = e.target.closest && e.target.closest("a.file-link");
     if (!link) return;
     e.preventDefault();

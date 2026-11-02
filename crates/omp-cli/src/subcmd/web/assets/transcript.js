@@ -85,7 +85,7 @@
       this.stableSource = "";
       this.chunk = 0;
     }
-    link(node) { if (OMP.linkifyPaths) OMP.linkifyPaths(node); }
+    link(node, opts) { if (OMP.linkifyPaths) OMP.linkifyPaths(node, opts); }
     begin() {
       if (this.streaming) return;
       this.streaming = true;
@@ -128,7 +128,7 @@
       } else {
         this.tail.style.whiteSpace = "";
         this.tail.innerHTML = OMP.md(tail, `${this.scope}-tail`);
-        this.link(this.tail);
+        this.link(this.tail, { media: false });
       }
     }
   }

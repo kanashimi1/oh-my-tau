@@ -64,6 +64,11 @@
     const park = (html) => `\u0000${parked.push(html) - 1}\u0000`;
     let s = text.replace(/(`+)([\s\S]*?[^`])\1(?!`)/g, (_, _t, code) => park(`<code>${esc(code)}</code>`));
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (m, alt, url) => {
+      // Host files (/abs, ~/x, C:\x) become preview links; artifacts.js then shows them inline.
+      if (/^(?:\/(?!\/)|~\/|[A-Za-z]:[\\/])/.test(url.trim())) {
+        const p = url.trim();
+        return park(`<a class="file-link" href="#" title="Preview ${esc(p)}" data-path="${esc(p)}">${esc(alt || p)}</a>`);
+      }
       const u = safeUrl(url);
       return u ? park(`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(alt || u)}</a>`) : m;
     });
