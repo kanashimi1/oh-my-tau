@@ -549,6 +549,7 @@ impl Shared {
             st.block_since_ref_turns = f.2;
         }
         st.offload_reads = offload_reads(&messages, &off);
+        st.offload_match_pct = offload_match(&messages, &off);
         let (action, fresh) = pol.decide(&st);
         if action == crate::context_policy::Action::RlmOffload && fresh {
             if let Some((low, min_age)) = pol.batch_target() {
@@ -862,6 +863,43 @@ fn offload_reads(messages: &[AgentMessage], off: &[(usize, String)]) -> usize {
         })
         .count()
 }
+/// % of the newest user message's distinctive tokens that identify an offloaded block
+/// (the same `recall_tokens`/`is_distinctive`/df<=2 contract `recall_matches` scores with).
+fn offload_match(messages: &[AgentMessage], off: &[(usize, String)]) -> usize {
+    use std::collections::{HashMap, HashSet};
+    if off.is_empty() {
+        return 0;
+    }
+    let Some(&u) = user_turns(messages).last() else {
+        return 0;
+    };
+    let Some(q) = block_text(&messages[u]) else {
+        return 0;
+    };
+    let qt = recall_tokens(&q);
+    let qdist: HashSet<&String> = qt.iter().filter(|t| is_distinctive(t)).collect();
+    if qdist.is_empty() {
+        return 0;
+    }
+    let blocks: Vec<HashSet<String>> = off
+        .iter()
+        .map(|(i, _)| {
+            let (text, call) = recall_source(messages, *i);
+            recall_tokens(&format!("{}\n{text}", call.unwrap_or_default()))
+                .into_iter()
+                .collect()
+        })
+        .collect();
+    let df: HashMap<&String, usize> = qdist
+        .iter()
+        .map(|t| (*t, blocks.iter().filter(|b| b.contains(*t)).count()))
+        .collect();
+    let hit = qdist
+        .iter()
+        .filter(|t| matches!(df.get(*t), Some(n) if (1..=2).contains(n)))
+        .count();
+    100 * hit / qdist.len()
+}
 
 /// Write the block to the offload dir and return the one-line reference that replaces it.
 fn offload_block(m: &AgentMessage, idx: usize) -> Option<String> {
@@ -1026,6 +1064,7 @@ fn policy_state(messages: &[AgentMessage], table: &SlotTable) -> crate::context_
         block_since_ref_turns: 0,
         offloads_total: 0,
         offload_reads: 0,
+        offload_match_pct: 0,
         cache_hit_pct: (100 * cached)
             .checked_div(input)
             .map_or(0, |pct| usize::try_from(pct).unwrap_or(usize::MAX)),
@@ -1647,6 +1686,36 @@ mod tests {
             j2.starts_with(&j[..j.len() - 1]),
             "earlier wire is a prefix: cache-safe"
         );
+    }
+
+    #[test]
+    fn explicit_policy_recall_restores_large_matching_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = omp_settings::Settings::load_from(None, dir.path());
+        let env = |key: &str| match key {
+            "OMP_CONTEXT_POLICY" => Some("schedule".to_owned()),
+            "OMP_CONTEXT_POLICY_SCRIPT" => Some("0,0,2,3".to_owned()),
+            _ => None,
+        };
+        let pol = crate::context_policy::Policy::resolve(&settings, &env).unwrap().unwrap();
+        let sh = Shared::with_policy(Kind::Clm, lim(), Some(pol));
+        let file = format!("def spawn_gate(limit_42):\n{}", "x".repeat(30_000));
+        let mut h = vec![
+            user("brief"),
+            assistant_text("ACK"),
+            user(&file),
+            assistant_text("received"),
+            user("Which function was defined?"),
+        ];
+        std::env::set_var("OMP_CONTEXT_OFFLOAD_DIR", dir.path());
+        let offloaded = wire_json(&sh.wire(h.clone()));
+        assert!(offloaded.contains("[offloaded:"));
+        assert!(!offloaded.contains("def spawn_gate(limit_42)"));
+        h.push(assistant_text("unknown"));
+        h.push(user("Quote the first line for spawn_gate."));
+        let recalled = wire_json(&sh.wire(h));
+        assert!(recalled.contains("[recalled:"));
+        assert!(recalled.contains("def spawn_gate(limit_42)"));
     }
 
     #[test]

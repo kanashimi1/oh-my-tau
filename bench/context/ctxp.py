@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Context-policy experiment (Laya as controller for noop | clm_edit | rlm_offload).
+"""Context-policy experiment (Laya: noop | clm_edit | rlm_offload | rlm_recall).
 
 Every rollout = one scripted rpc session of STEPS steps (run.py's message script) with the host
 policy `schedule`/`rule`/`laya` (OMP_CONTEXT_POLICY*) deciding per user turn. Per-step records carry
@@ -32,7 +32,7 @@ STEPS = 12
 DECISION_POINTS = (3, 6, 9)
 WINDOW = 3
 MODEL = "zai/glm-5.3-flash"
-ACTIONS = {"noop": 0, "clm_edit": 1, "rlm_offload": 2}
+ACTIONS = {"noop": 0, "clm_edit": 1, "rlm_offload": 2, "rlm_recall": 3}
 NAMES = {v: k for k, v in ACTIONS.items()}
 
 

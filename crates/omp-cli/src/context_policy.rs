@@ -102,6 +102,9 @@ pub struct State {
     pub offloads_total: usize,
     /// Tool calls whose arguments open an offloaded block file.
     pub offload_reads: usize,
+    /// % of the newest user message's distinctive tokens that identify an offloaded block
+    /// (present in 1..=2 of them, like `recall_matches`; 0 when nothing is offloaded).
+    pub offload_match_pct: usize,
     pub cache_hit_pct: usize,
     /// Last 300 chars of the newest user message, whitespace-collapsed.
     pub excerpt: String,
@@ -122,6 +125,25 @@ impl State {
             self.step, self.history_tokens, self.slots_chars, self.slots_count, since, self.edits_total,
             self.largest_block_chars, self.block_age_turns, self.block_restated_pct, self.block_since_ref_turns,
             self.offloads_total, self.offload_reads, self.cache_hit_pct, self.excerpt
+        )
+    }
+
+    /// v2 state: render() plus `offload_match_pct` between `offload_reads` and `cache_hit_pct`.
+    /// The recall signal the offload index can compute but the raw excerpt does not expose;
+    /// selected by `OMP_CONTEXT_STATE_V2=1` so v1 checkpoints keep their exact input format.
+    #[must_use]
+    pub fn render_v2(&self) -> String {
+        let since = self
+            .steps_since_edit
+            .map_or_else(|| "none".to_owned(), |n| n.to_string());
+        format!(
+            "context controller\nstep: {}\nhistory_tokens: {}\nslots_chars: {} ({} slots)\nsteps_since_last_edit: {}\n\
+             edits_so_far: {}\nlargest_old_block_chars: {}\nblock_age_turns: {}\nblock_restated_pct: {}\n\
+             block_since_ref_turns: {}\noffloads_so_far: {}\noffload_reads: {}\noffload_match_pct: {}\ncache_hit_pct: {}\n\
+             next_instruction: {}",
+            self.step, self.history_tokens, self.slots_chars, self.slots_count, since, self.edits_total,
+            self.largest_block_chars, self.block_age_turns, self.block_restated_pct, self.block_since_ref_turns,
+            self.offloads_total, self.offload_reads, self.offload_match_pct, self.cache_hit_pct, self.excerpt
         )
     }
 }
@@ -170,6 +192,8 @@ pub struct Policy {
     /// Recall-on-miss budget: offloaded blocks matching the new user turn are re-inlined, at
     /// most this many chars per turn (0 = off).
     pub recall_chars: usize,
+    /// Render v2 controller states (adds `offload_match_pct`) for v2 checkpoints.
+    pub state_v2: bool,
     pub schedule: Vec<u8>,
     laya_paths: Option<LayaPaths>,
     laya: Mutex<Option<Result<omp_judge::policy::PolicyScorer, ()>>>,
@@ -199,6 +223,7 @@ impl Policy {
             rule_offload_high: 0,
             rule_offload_low: 0,
             recall_chars: 0,
+            state_v2: false,
             schedule: Vec::new(),
             laya_paths: None,
             laya: Mutex::new(None),
@@ -278,6 +303,10 @@ impl Policy {
             "context.policy.recallChars",
             p.recall_chars,
         );
+        p.state_v2 = matches!(
+            env("OMP_CONTEXT_STATE_V2").as_deref(),
+            Some("1" | "true" | "yes")
+        );
         p.schedule = env("OMP_CONTEXT_POLICY_SCRIPT")
             .map(|s| s.split(',').filter_map(|t| t.trim().parse().ok()).collect())
             .unwrap_or_default();
@@ -334,7 +363,12 @@ impl Policy {
         let Ok(scorer) = scorer else {
             return Action::ClmEdit;
         };
-        match scorer.probs(&st.render()) {
+        let state = if self.state_v2 {
+            st.render_v2()
+        } else {
+            st.render()
+        };
+        match scorer.probs(&state) {
             Ok(probs) => {
                 let best = probs
                     .iter()
@@ -410,7 +444,8 @@ impl Policy {
         self.memo.lock().insert(st.step, (action, edit));
         if let Some(path) = &self.log {
             let line = json!({"step": st.step, "policy": format!("{:?}", self.kind).to_lowercase(),
-                              "action": action.as_str(), "edit": edit, "state": st.render()});
+                              "action": action.as_str(), "edit": edit,
+                              "state": if self.state_v2 { st.render_v2() } else { st.render() }});
             if let Ok(mut f) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -556,6 +591,7 @@ mod tests {
             block_since_ref_turns: 2,
             offloads_total: 0,
             offload_reads: 1,
+            offload_match_pct: 40,
             cache_hit_pct: 91,
             excerpt: excerpt_of("a\n  b"),
         };
@@ -569,6 +605,22 @@ mod tests {
         let e = excerpt_of(&long);
         assert_eq!(e.chars().count(), 300);
         assert!(e.ends_with("END"));
+    }
+
+    #[test]
+    fn render_v2_adds_offload_match_pct_line() {
+        let mut s = State::default();
+        s.step = 2;
+        s.offloads_total = 1;
+        s.offload_reads = 3;
+        s.offload_match_pct = 75;
+        s.cache_hit_pct = 90;
+        s.excerpt = "read proj/mod_07.py".to_owned();
+        let r = s.render_v2();
+        assert!(r.contains("\noffload_reads: 3\noffload_match_pct: 75\ncache_hit_pct: 90\n"));
+        assert!(r.ends_with("next_instruction: read proj/mod_07.py"));
+        assert_eq!(s.render().matches('\n').count() + 1, 14, "v1 render unchanged");
+        assert_eq!(r.matches('\n').count() + 1, 15, "v2 adds exactly one line");
     }
 
     #[test]

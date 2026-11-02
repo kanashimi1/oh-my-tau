@@ -178,7 +178,7 @@ def cmd_oracle_scripts():
         sc = [0] * (STEPS + 1)
         for r in rows:
             if r["src"] == src:
-                sc[r["dp"]] = {"noop": 0, "clm_edit": 1, "rlm_offload": 2}[r["label"]]
+                sc[r["dp"]] = {"noop": 0, "clm_edit": 1, "rlm_offload": 2, "rlm_recall": 3}[r["label"]]
         out[src] = sc
     json.dump(out, open(os.path.join(OUT, "oracle_scripts.json"), "w"))
     print({s: "".join(map(str, v)) for s, v in out.items()})

@@ -32,7 +32,7 @@ H = 4
 MARGIN = 0.03
 POINTS = {"L1": [2, 6, 10, 14, 18, 22, 26, 30], "L2": [4, 9, 14, 19, 24, 29, 34]}
 STEPS = {"L1": 36, "L2": 40}
-ACTION_ID = {"noop": 0, "clm_edit": 1, "rlm_offload": 2}
+ACTION_ID = {"noop": 0, "clm_edit": 1, "rlm_offload": 2, "rlm_recall": 3}
 
 
 def _env(home, schedule):
