@@ -141,7 +141,9 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     // TS parity: confirm before discarding a captured plan (only when active).
     if args.trim().eq_ignore_ascii_case("off")
         && dialog::has_ui()
-        && lock_state().get(&rt.session_id()).is_some_and(|p| p.enabled)
+        && lock_state()
+            .get(&rt.session_id())
+            .is_some_and(|p| p.enabled)
         && dialog::confirm(
             rt,
             "Exit plan mode?",
@@ -181,18 +183,18 @@ async fn menu(rt: &Arc<Runtime>) -> Outcome {
     }
     choices.push(Choice::with("Status", "show the task and plan state"));
     choices.push(Choice::with(
-        if active { "Exit plan mode" } else { "Enter plan mode" },
+        if active {
+            "Exit plan mode"
+        } else {
+            "Enter plan mode"
+        },
         if active {
             "disable the read-only gate without executing the plan"
         } else {
             "enable the read-only gate; your next prompt plans"
         },
     ));
-    let title = if active {
-        "Plan mode: ON"
-    } else {
-        "Plan mode"
-    };
+    let title = if active { "Plan mode: ON" } else { "Plan mode" };
     let Some(index) = select_with(rt, title, &choices, SelectStyle::default()).await else {
         return handled();
     };

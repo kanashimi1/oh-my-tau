@@ -1,6 +1,6 @@
 //! Model, preset and fast/slow-mode slash commands.
 
-use super::{Handled, Outcome, Runtime, Value, json, output, usage};
+use super::{json, output, usage, Handled, Outcome, Runtime, Value};
 
 // =============================================================================
 // /modelpreset (config/model-presets.ts `runPresetsCommand`)

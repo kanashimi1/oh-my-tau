@@ -2114,7 +2114,9 @@ mod tests {
             capabilities_payload(crate::paging::MAX_LIMIT)["limits"]["getMessages"]
                 ["defaultPageSize"]
         );
-        let legacy = caps["limits"]["getMessages"]["maxPageSize"].as_u64().unwrap();
+        let legacy = caps["limits"]["getMessages"]["maxPageSize"]
+            .as_u64()
+            .unwrap();
         assert_eq!(legacy, LEGACY_MAX_GET_MESSAGES_PAGE_SIZE as u64);
         assert!(legacy <= crate::paging::MAX_LIMIT as u64);
         assert!(legacy >= 1);
@@ -2136,13 +2138,8 @@ mod tests {
             LEGACY_MAX_GET_MESSAGES_PAGE_SIZE
         );
         assert!(paged["nextCursor"].is_string());
-        let err = crate::paging::page(
-            &m,
-            &snap,
-            None,
-            Some(crate::paging::MAX_LIMIT + 1),
-        )
-        .unwrap_err();
+        let err =
+            crate::paging::page(&m, &snap, None, Some(crate::paging::MAX_LIMIT + 1)).unwrap_err();
         assert_eq!(err.code, None);
         assert!(err.message.contains("between 1 and 512"));
     }

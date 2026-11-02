@@ -125,7 +125,10 @@ fn save_entries(dir: &std::path::Path, entries: &[Entry]) -> std::io::Result<()>
             })
         })
         .collect();
-    std::fs::write(harness_file(dir), serde_json::to_string_pretty(&rows).unwrap_or_default())
+    std::fs::write(
+        harness_file(dir),
+        serde_json::to_string_pretty(&rows).unwrap_or_default(),
+    )
 }
 
 fn load_history(dir: &std::path::Path) -> Vec<HistoryRecord> {
@@ -337,7 +340,10 @@ fn apply_edits(entries: &mut Vec<Entry>, edits: &[Edit], now_ms: u64) -> Vec<Str
         match e.action.as_str() {
             "delete" => {
                 if let Some(pos) = entries.iter().position(|x| x.id == e.id) {
-                    lines.push(format!("  - [{}] #{} «{}» — {}", entries[pos].kind, e.id, entries[pos].title, e.reason));
+                    lines.push(format!(
+                        "  - [{}] #{} «{}» — {}",
+                        entries[pos].kind, e.id, entries[pos].title, e.reason
+                    ));
                     entries.remove(pos);
                 } else {
                     lines.push(format!("  ? skipped delete #{} — no such id", e.id));
@@ -353,7 +359,10 @@ fn apply_edits(entries: &mut Vec<Entry>, edits: &[Edit], now_ms: u64) -> Vec<Str
                         entry.content = e.content.clone();
                     }
                     entry.updated_ms = now_ms;
-                    lines.push(format!("  ~ [{}] #{} «{}» — {}", entry.kind, entry.id, entry.title, e.reason));
+                    lines.push(format!(
+                        "  ~ [{}] #{} «{}» — {}",
+                        entry.kind, entry.id, entry.title, e.reason
+                    ));
                 } else {
                     lines.push(format!("  ? skipped update #{} — no such id", e.id));
                 }
@@ -378,7 +387,10 @@ fn apply_edits(entries: &mut Vec<Entry>, edits: &[Edit], now_ms: u64) -> Vec<Str
                     content: e.content.clone(),
                     updated_ms: now_ms,
                 });
-                lines.push(format!("  + [{}] #{} «{}» — {}", e.kind, id, e.title, e.reason));
+                lines.push(format!(
+                    "  + [{}] #{} «{}» — {}",
+                    e.kind, id, e.title, e.reason
+                ));
             }
         }
     }
@@ -403,7 +415,8 @@ pub fn harness_block(cwd: &std::path::Path, agent: &std::path::Path) -> Option<S
     if project.is_empty() && global.is_empty() {
         return None;
     }
-    let mut block = String::from("## Supplemental harness (managed by /refine; do not edit by hand)\n");
+    let mut block =
+        String::from("## Supplemental harness (managed by /refine; do not edit by hand)\n");
     for (label, entries) in [("project", &project), ("global", &global)] {
         if entries.is_empty() {
             continue;
@@ -427,7 +440,15 @@ fn overview(entries: &[Entry]) -> String {
     }
     entries
         .iter()
-        .map(|e| format!("- #{} [{}] «{}»: {}", e.id, e.kind, e.title, cap(&e.content, 200)))
+        .map(|e| {
+            format!(
+                "- #{} [{}] «{}»: {}",
+                e.id,
+                e.kind,
+                e.title,
+                cap(&e.content, 200)
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -475,7 +496,12 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         }
         _ => {
             let instructions = args.trim();
-            run(rt, (!instructions.is_empty()).then_some(instructions), Scope::Project).await
+            run(
+                rt,
+                (!instructions.is_empty()).then_some(instructions),
+                Scope::Project,
+            )
+            .await
         }
     }
 }
@@ -501,7 +527,10 @@ async fn run(rt: &Arc<Runtime>, instructions: Option<&str>, scope: Scope) -> Out
         trajectory = format!("(older turns trimmed)\n{tail}");
     }
     if trajectory.trim().is_empty() {
-        output(rt, "refine: this session has no conversation to review yet.");
+        output(
+            rt,
+            "refine: this session has no conversation to review yet.",
+        );
         return handled();
     }
 
@@ -587,9 +616,7 @@ async fn run(rt: &Arc<Runtime>, instructions: Option<&str>, scope: Scope) -> Out
             .content
             .iter()
             .filter_map(|b| match b {
-                pa_types::ai::AssistantContentBlock::Text(t) => {
-                    Some(t.text.as_str().to_owned())
-                }
+                pa_types::ai::AssistantContentBlock::Text(t) => Some(t.text.as_str().to_owned()),
                 _ => None,
             })
             .collect::<String>(),
@@ -633,7 +660,11 @@ async fn run(rt: &Arc<Runtime>, instructions: Option<&str>, scope: Scope) -> Out
         );
         match crate::slash_extra::dialog::confirm(
             rt,
-            &format!("Apply {} refinement edits ({})?", proposal.edits.len(), scope.label()),
+            &format!(
+                "Apply {} refinement edits ({})?",
+                proposal.edits.len(),
+                scope.label()
+            ),
             &message,
         )
         .await
@@ -663,7 +694,10 @@ async fn run(rt: &Arc<Runtime>, instructions: Option<&str>, scope: Scope) -> Out
         prior: own.clone(),
     };
     if let Err(e) = append_history(&dir, &rec) {
-        output(rt, &format!("refine: applied, but the history record failed: {e}"));
+        output(
+            rt,
+            &format!("refine: applied, but the history record failed: {e}"),
+        );
     }
 
     // Mid-session effect: a hidden notice so the next turn sees the entries.
@@ -705,7 +739,13 @@ async fn list_cmd(rt: &Arc<Runtime>) -> Outcome {
         let mut text = String::from("harness entries:\n");
         for (label, entries) in [("project", &project), ("global", &global)] {
             for e in entries {
-                text.push_str(&format!("[{label}] #{} [{}] «{}»: {}\n", e.id, e.kind, e.title, cap(&e.content, 120)));
+                text.push_str(&format!(
+                    "[{label}] #{} [{}] «{}»: {}\n",
+                    e.id,
+                    e.kind,
+                    e.title,
+                    cap(&e.content, 120)
+                ));
             }
         }
         output(rt, text.trim_end());
@@ -721,7 +761,11 @@ async fn list_cmd(rt: &Arc<Runtime>) -> Outcome {
                 format!("#{} «{}»", e.id, e.title),
                 format!(
                     "[{}] [{}] {}",
-                    if scope == Scope::Project { "project" } else { "global" },
+                    if scope == Scope::Project {
+                        "project"
+                    } else {
+                        "global"
+                    },
                     e.kind,
                     cap(&e.content, 90)
                 ),
@@ -743,7 +787,10 @@ async fn list_cmd(rt: &Arc<Runtime>) -> Outcome {
     };
     let (scope, id) = choices[index].clone();
     let actions = ["Show content", "Delete entry", "Cancel"];
-    let action_labels: Vec<_> = actions.iter().map(|a| crate::slash_extra::dialog::Choice::new(*a)).collect();
+    let action_labels: Vec<_> = actions
+        .iter()
+        .map(|a| crate::slash_extra::dialog::Choice::new(*a))
+        .collect();
     let Some(action) = crate::slash_extra::dialog::select_with(
         rt,
         &format!("#{id}"),
@@ -771,7 +818,7 @@ async fn list_cmd(rt: &Arc<Runtime>) -> Outcome {
                     "The entry is removed from the harness; rollback via /refine rollback.",
                 )
                 .await
-                == Some(true)
+                    == Some(true)
             {
                 let prior = entries.clone();
                 entries.remove(pos);
@@ -789,7 +836,10 @@ async fn list_cmd(rt: &Arc<Runtime>) -> Outcome {
                     prior,
                 };
                 let _ = append_history(&dir, &rec);
-                output(rt, &format!("refine: deleted #{id} «{title}» from {}", scope.label()));
+                output(
+                    rt,
+                    &format!("refine: deleted #{id} «{title}» from {}", scope.label()),
+                );
             }
             handled()
         }
@@ -803,7 +853,13 @@ fn show_cmd(rt: &Arc<Runtime>, id: &str) -> Outcome {
             if e.id == id {
                 output(
                     rt,
-                    &format!("#{id} [{}] «{}» ({})\n\n{}", e.kind, e.title, scope.label(), e.content),
+                    &format!(
+                        "#{id} [{}] «{}» ({})\n\n{}",
+                        e.kind,
+                        e.title,
+                        scope.label(),
+                        e.content
+                    ),
                 );
                 return handled();
             }
@@ -862,7 +918,11 @@ fn rollback_cmd(rt: &Runtime, id: Option<&str>) -> Outcome {
                 ts_ms: now,
                 scope,
                 summary: format!("rollback of {} ({})", record.id, record.summary),
-                lines: vec![format!("  ↺ restored {} entries from before {}", record.prior.len(), record.id)],
+                lines: vec![format!(
+                    "  ↺ restored {} entries from before {}",
+                    record.prior.len(),
+                    record.id
+                )],
                 prior: current,
             },
         );

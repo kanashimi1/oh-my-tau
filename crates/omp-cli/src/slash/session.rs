@@ -1,8 +1,8 @@
 //! Session slash commands: `/pin`, `/move`, `/plugins`, `/handoff`.
 
 use super::{
-    Handled, HashSet, Outcome, Path, PathBuf, Runtime, Value, extension_commands, output,
-    subcommand, usage,
+    extension_commands, output, subcommand, usage, Handled, HashSet, Outcome, Path, PathBuf,
+    Runtime, Value,
 };
 
 // =============================================================================

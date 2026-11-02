@@ -122,31 +122,38 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
         messages: context_messages,
         tools: None,
     };
-    let (answer, answered) = match pa_ai::complete_simple(&live.model, &context, Some(options)).await {
-        Ok(response)
-            if !matches!(
-                response.stop_reason,
-                StopReason::Aborted | StopReason::Error
-            ) =>
-        {
-            let text: String = response
-                .content
-                .iter()
-                .filter_map(|b| match b {
-                    AssistantContentBlock::Text(t) => Some(t.text.as_str()),
-                    _ => None,
-                })
-                .collect();
-            let text = text.trim().to_string();
-            if text.is_empty() {
-                ("btw: the model returned an empty answer.".to_string(), false)
-            } else {
-                (text, true)
+    let (answer, answered) =
+        match pa_ai::complete_simple(&live.model, &context, Some(options)).await {
+            Ok(response)
+                if !matches!(
+                    response.stop_reason,
+                    StopReason::Aborted | StopReason::Error
+                ) =>
+            {
+                let text: String = response
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        AssistantContentBlock::Text(t) => Some(t.text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let text = text.trim().to_string();
+                if text.is_empty() {
+                    (
+                        "btw: the model returned an empty answer.".to_string(),
+                        false,
+                    )
+                } else {
+                    (text, true)
+                }
             }
-        }
-        Ok(_) => ("btw: the side question was aborted or failed.".to_string(), false),
-        Err(e) => (format!("btw: request failed: {e:?}"), false),
-    };
+            Ok(_) => (
+                "btw: the side question was aborted or failed.".to_string(),
+                false,
+            ),
+            Err(e) => (format!("btw: request failed: {e:?}"), false),
+        };
     if answered {
         let mut h = history().lock().unwrap_or_else(|e| e.into_inner());
         h.push(BtwEntry {

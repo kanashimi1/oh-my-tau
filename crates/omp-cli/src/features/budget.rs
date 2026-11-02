@@ -364,7 +364,10 @@ mod tests {
         assert_eq!(parse_action("status"), Ok(BudgetAction::Status));
         assert_eq!(parse_action("SHOW"), Ok(BudgetAction::Status));
         assert_eq!(parse_action("clear"), Ok(BudgetAction::Off));
-        assert_eq!(parse_action("200k"), Ok(BudgetAction::Set(Limit::Tokens(200_000))));
+        assert_eq!(
+            parse_action("200k"),
+            Ok(BudgetAction::Set(Limit::Tokens(200_000)))
+        );
         assert_eq!(parse_action("$3"), Ok(BudgetAction::Set(Limit::Cost(3.0))));
         assert!(parse_action("bogus").is_err());
     }

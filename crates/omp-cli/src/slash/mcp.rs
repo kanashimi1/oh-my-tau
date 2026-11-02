@@ -1,7 +1,7 @@
 //! `/mcp` slash command: MCP server management (ACP mode).
 
 use super::{
-    Handled, HashSet, Outcome, Path, PathBuf, Runtime, Value, json, output, subcommand, usage,
+    json, output, subcommand, usage, Handled, HashSet, Outcome, Path, PathBuf, Runtime, Value,
 };
 
 // =============================================================================
