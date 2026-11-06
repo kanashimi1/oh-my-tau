@@ -117,7 +117,9 @@
     }));
 
     return new Promise((resolve) => {
-      let mode = "select";
+      // One-gesture flow: a fresh capture (no pins/shapes yet) opens in pin
+      // mode; reopening an annotated image starts in select to avoid stray pins.
+      let mode = (att.pins?.length || att.annotations?.length) ? "select" : "pin";
       let selected = null; // {kind:"pin",index} | {kind:"shape",index}
       let zoom = 1, fit = 1, pan = { x: 0, y: 0 };
       let natW = 1, natH = 1;

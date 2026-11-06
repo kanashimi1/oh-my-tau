@@ -173,6 +173,9 @@ async fn cached_subdirs(root: PathBuf) -> Vec<PathBuf> {
 const SCAN_LINES: usize = 60;
 /// Sessions listed per store.
 const MAX_SESSIONS: usize = 300;
+/// Session rows returned by the explorer (empty-cwd) sweep, per project dir
+/// and for the merged list.
+const MAX_ALL_SESSIONS: usize = 2000;
 const PREVIEW_CHARS: usize = 160;
 
 fn home() -> Option<PathBuf> {
@@ -314,8 +317,14 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
     files.into_iter().map(|(_, p)| p).collect()
 }
 
-/// Sessions of `cwd` across the omp-rs store and TS omp's store, newest first.
+/// Sessions of `cwd` across the omp-rs store and TS omp's store, newest
+/// first. An empty `cwd` (`GET /api/sessions?cwd=`, the sidebar explorer's
+/// "every project" mode) sweeps both stores' project dirs instead and fills
+/// each row's `cwd` so the UI can group by project.
 pub async fn list_sessions(cwd: &Path) -> Value {
+    if cwd.as_os_str().is_empty() {
+        return list_all_sessions().await;
+    }
     let stores = [
         (crate::persist::sessions_dir(cwd), "omt"),
         (crate::persist::ts_sessions_dir(cwd), "omp"),
@@ -356,6 +365,57 @@ async fn scan_stores(stores: &[(Option<PathBuf>, &'static str)], cwd: &Path) -> 
     }
     rows.sort_by_key(|r| std::cmp::Reverse(r["modifiedMs"].as_i64().unwrap_or(0)));
     json!({"cwd": cwd.display().to_string(), "sessions": rows})
+}
+
+/// Store roots that hold one sub-directory per project: the omt slug dirs and
+/// TS omp's `sessionDirForCwd` dirs.
+fn store_roots() -> Vec<(PathBuf, &'static str)> {
+    let mut roots = Vec::new();
+    if let Some(home) = home() {
+        roots.push((home.join(".omp-rs/sessions"), "omt"));
+    }
+    roots.push((omp_stats::paths::sessions_dir(), "omp"));
+    roots
+}
+
+/// Every project's sessions across both stores, newest first — the empty-cwd
+/// mode of [`list_sessions`]. One single-flight for the whole sweep; the
+/// per-dir listings and file scans reuse the same caches as single-project
+/// listing, so an explorer refresh only stats and re-sorts.
+async fn list_all_sessions() -> Value {
+    with_flight("sessions:all".to_string(), all_sessions_in(store_roots())).await
+}
+
+/// Async core of [`list_all_sessions`] over explicit roots (testable).
+/// `cwd` per row comes from the session header; rows whose header omits it
+/// inherit the newest cwd found in their project dir, so grouping by project
+/// never loses them.
+async fn all_sessions_in(roots: Vec<(PathBuf, &'static str)>) -> Value {
+    let mut rows: Vec<Value> = Vec::new();
+    for (root, store) in roots {
+        for dir in cached_subdirs(root).await {
+            let paths: Vec<PathBuf> = cached_jsonl_files(dir.clone())
+                .await
+                .into_iter()
+                .take(MAX_ALL_SESSIONS)
+                .collect();
+            let scanned = cached_scan_files(&paths).await;
+            let dir_cwd = scanned
+                .iter()
+                .flatten()
+                .find_map(|r| r["cwd"].as_str().map(str::to_owned));
+            for mut row in scanned.into_iter().flatten() {
+                if row["cwd"].as_str().is_none() {
+                    row["cwd"] = json!(dir_cwd);
+                }
+                row["store"] = json!(store);
+                rows.push(row);
+            }
+        }
+    }
+    rows.sort_by_key(|r| std::cmp::Reverse(r["modifiedMs"].as_i64().unwrap_or(0)));
+    rows.truncate(MAX_ALL_SESSIONS);
+    json!({"sessions": rows})
 }
 
 /// Folders that have omp-rs sessions, newest activity first (cwd read from
@@ -614,5 +674,40 @@ mod tests {
             second["sessions"][0]["path"],
             json!(older.display().to_string())
         );
+    }
+
+    #[allow(clippy::disallowed_methods)] // test entry point: the runtime macro blocks on the body
+    #[tokio::test(flavor = "multi_thread")]
+    async fn all_projects_mode_scans_every_dir_and_fills_cwd() {
+        let _g = TEST_GUARD.lock().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let proj_a = tmp.path().join("proj-a");
+        let proj_b = tmp.path().join("proj-b");
+        std::fs::create_dir(&proj_a).unwrap();
+        std::fs::create_dir(&proj_b).unwrap();
+        write_session(&proj_a.join("a.jsonl"), "a");
+        write_session(&proj_b.join("b.jsonl"), "b");
+        // A header-less session: its row must still get the project cwd,
+        // inherited from the dir's newest headed session.
+        std::fs::write(
+            &proj_b.join("bare.jsonl"),
+            "{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+        )
+        .unwrap();
+        let all = all_sessions_in(vec![(tmp.path().to_path_buf(), "omt")]).await;
+        let rows = all["sessions"].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        let cwd_of = |suffix: &str| {
+            rows.iter()
+                .find(|r| r["path"].as_str().is_some_and(|s| s.ends_with(suffix)))
+                .unwrap()["cwd"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert_eq!(cwd_of("a.jsonl"), proj_a.display().to_string());
+        assert_eq!(cwd_of("b.jsonl"), proj_b.display().to_string());
+        assert_eq!(cwd_of("bare.jsonl"), proj_b.display().to_string());
+        assert!(rows.iter().all(|r| r["store"] == json!("omt")));
     }
 }

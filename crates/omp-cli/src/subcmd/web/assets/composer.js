@@ -306,7 +306,11 @@
       if (caption) att.caption = caption; // what the image shows (preview pins), sent with the pin notes
       this.images.push(att);
       this.renderAttachments();
-      if (annotate) this.annotate(att);
+      // One-gesture capture flow: the pin editor opens right away unless the
+      // user opted out (localStorage toggle; the chip click always opens it).
+      let autoAnnotate = true;
+      try { autoAnnotate = localStorage.getItem("omp-annotate-on-capture") !== "false"; } catch { /* storage unavailable */ }
+      if (annotate && autoAnnotate) this.annotate(att);
     }
     async annotate(att) {
       if (await OMP.annotate(att)) {
@@ -324,6 +328,7 @@
           onclick: () => this.annotate(img),
         }),
         img.pins?.length ? el("span.pin-badge", { text: String(img.pins.length), title: "Pins" }) : null,
+        el("button.annotate-btn", { text: "✎", title: "Annotate: add pins with comments", onclick: () => this.annotate(img) }),
         el("button", { text: "×", title: "Remove", onclick: () => { this.images.splice(i, 1); this.renderAttachments(); } })));
       const files = this.files.map((f, i) => el("div.attachment.file-chip" + (f.error ? ".failed" : f.path ? "" : ".uploading"), { title: f.error || f.path || "Uploading…" },
         el("span.file-icon", { text: f.error ? "!" : f.path ? "📄" : "⏳" }),

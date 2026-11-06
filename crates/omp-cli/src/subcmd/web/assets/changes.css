@@ -112,3 +112,21 @@
   .chg-col { border-right: 0; border-bottom: 1px solid var(--border); }
   .chg-actions { opacity: 1; }
 }
+
+/* review decisions: approved strike-through + pending badge on the topbar button */
+.chg-row.approved .chg-path { text-decoration: line-through; opacity: .55; }
+.changes-btn { position: relative; }
+.changes-btn[data-badge]::after {
+  content: attr(data-badge);
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--bg);
+  font: 700 10px/15px var(--mono);
+  text-align: center;
+}

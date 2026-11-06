@@ -151,6 +151,24 @@ fn repo_root(cwd: &Path) -> Result<PathBuf, String> {
     Ok(PathBuf::from(out))
 }
 
+/// Create a worktree for the repository containing `cwd`: path
+/// `<repo-parent>/<repo>-wt-<name>`, branch `omt/<name>` — the same layout
+/// the `/wt new` verb builds. Returns the worktree path so callers can run
+/// inside it; git failures are caller-facing errors.
+pub(crate) fn create_worktree(cwd: &Path, raw_name: &str) -> Result<PathBuf, String> {
+    let name = sanitize_name(raw_name)
+        .ok_or_else(|| format!("invalid worktree name '{raw_name}'"))?;
+    let root = repo_root(cwd)?;
+    let path = worktree_path(&root, &name)
+        .ok_or_else(|| format!("cannot compute worktree path for '{name}'."))?;
+    let branch = format!("{BRANCH_PREFIX}/{name}");
+    git(
+        &root,
+        &["worktree", "add", &path.display().to_string(), "-b", &branch],
+    )?;
+    Ok(path)
+}
+
 /// `/wt list` body from `git worktree list --porcelain`.
 fn list_worktrees(root: &Path) -> Result<String, String> {
     let raw = git(root, &["worktree", "list", "--porcelain"])?;

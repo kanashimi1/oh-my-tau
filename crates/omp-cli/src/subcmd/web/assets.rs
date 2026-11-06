@@ -56,6 +56,16 @@ const FILES: &[(&str, &str, &str)] = &[
         include_str!("assets/composer.js"),
     ),
     (
+        "/assets/panes.js",
+        "text/javascript; charset=utf-8",
+        include_str!("assets/panes.js"),
+    ),
+    (
+        "/assets/panes.css",
+        "text/css; charset=utf-8",
+        include_str!("assets/panes.css"),
+    ),
+    (
         "/assets/agents.js",
         "text/javascript; charset=utf-8",
         include_str!("assets/agents.js"),

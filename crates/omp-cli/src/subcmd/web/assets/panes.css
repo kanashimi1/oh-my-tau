@@ -1,0 +1,128 @@
+/* Tau — session panes (OMP.panes): tmux-style multi-session workspace.
+   Mounted by panes.js; body.panes-on shows the pane grid instead of #app. */
+
+/* ── pane workspace ─────────────────────────────────────────────────────── */
+#panes-root {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  flex-direction: column;
+  background: var(--bg);
+}
+body.panes-on #panes-root { display: flex; }
+body.panes-on #app { display: none; }
+body.panes-on #wallpaper { display: none; }
+
+.pane-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex: none;
+}
+.pane-new, .pane-flow, .pane-exit {
+  flex: none;
+  font: 600 12px var(--mono);
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.pane-new:hover, .pane-flow:hover { color: var(--accent); border-color: var(--accent-muted); }
+.pane-exit:hover { color: #ff5b62; border-color: #ff5b62; }
+
+.pane-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  padding: 4px 6px 4px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: 600 12px var(--mono);
+  cursor: pointer;
+}
+.pane-tab:hover { color: var(--fg); }
+.pane-tab.active {
+  color: var(--accent);
+  border-color: var(--accent-muted);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.pane-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-tab-x { color: var(--fg-faint); padding: 0 4px; border-radius: 6px; }
+.pane-tab-x:hover { color: #ff5b62; }
+
+.pane-grid {
+  flex: 1;
+  display: grid;
+  gap: 6px;
+  padding: 6px;
+  min-height: 0;
+  min-width: 0;
+}
+.pane-frame {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  min-width: 0;
+}
+.pane-frame.active { border-color: var(--accent-muted); }
+
+/* ── pane picker dialog ─────────────────────────────────────────────────── */
+.pane-picker { display: flex; flex-direction: column; gap: 14px; min-width: 320px; }
+.pane-sec { display: flex; flex-direction: column; gap: 6px; }
+.pane-sec-title {
+  font: 700 11px var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+}
+.pane-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+.pane-row:hover { border-color: var(--accent-muted); color: var(--accent); }
+.pane-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pane-pulse 1.6s ease-in-out infinite;
+}
+@keyframes pane-pulse { 50% { opacity: .35; } }
+.pane-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pane-row-title { font: 600 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-row-sub { font: 11px var(--mono); color: var(--fg-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pane-empty { color: var(--fg-faint); font: 12px var(--mono); padding: 4px 2px; }
+
+/* ── embedded pane app ("/?agent=<id>&pane=1" iframes) ──────────────────── */
+body.pane-embed #sidebar { display: none; }
+body.pane-embed #topbar { padding-top: 2px; padding-bottom: 2px; }
+body.pane-embed #wallpaper { display: none; }
+
+/* topbar toggle button */
+.panes-btn { position: relative; }

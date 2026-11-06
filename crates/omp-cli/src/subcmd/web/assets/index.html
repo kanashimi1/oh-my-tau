@@ -13,6 +13,7 @@
 <link rel="stylesheet" href="/assets/annotate.css">
 <link rel="stylesheet" href="/assets/artifacts.css">
 <link rel="stylesheet" href="/assets/stream.css">
+    <link rel="stylesheet" href="/assets/panes.css">
 <link rel="stylesheet" href="/assets/palette.css">
 <link rel="stylesheet" href="/assets/tasks.css">
 <link rel="stylesheet" href="/assets/changes.css">
@@ -33,10 +34,13 @@
     <div class="side-section grow">
       <div class="side-title">
         <span>Sessions</span>
-        <button class="link-btn" id="project-pick" title="Change folder">folder ▾</button>
+        <span class="side-title-btns">
+          <button class="link-btn" id="group-toggle" title="Grouped by date — switch to project groups" hidden>by date</button>
+          <button class="link-btn" id="project-pick" title="Change folder">folder ▾</button>
+        </span>
       </div>
       <div id="project-path" class="muted small ellipsis"></div>
-      <input id="session-filter" class="filter" placeholder="Search all sessions…" title="Live agents + 5 recent stored shown; expand or search for the rest" autocomplete="off">
+      <input id="session-filter" class="filter" placeholder="Search all sessions…" title="Search the live fleet and every project's stored history (title and preview)" autocomplete="off">
       <div id="session-list" class="list scroll"></div>
     </div>
     <div class="side-section">
@@ -155,7 +159,8 @@
 <script src="/assets/workspaces.js"></script>
 <script src="/assets/quick.js"></script>
 <script src="/assets/maps.js"></script>
-<script src="/assets/app.js"></script>
+<script src="/assets/panes.js"></script>
+    <script src="/assets/app.js"></script>
 <script src="/assets/desktop-bridge.js"></script>
 </body>
 </html>

@@ -117,6 +117,10 @@ pub struct Spawn {
     /// Requested agent role (`POST /api/agents {role}`): the child runs as the
     /// matching registered agent definition, not as a generic session.
     pub role: Option<String>,
+    /// `POST /api/agents {worktree:true}`: run the child in a fresh git
+    /// worktree (branch `omt/<slug>` of the role or id) instead of `cwd`.
+    /// A git failure falls back to plain `cwd` — the spawn still succeeds.
+    pub worktree: bool,
 }
 
 /// Roles the web UI offers for a new agent (`OMP.agentPanel`). `universal`
@@ -214,6 +218,9 @@ pub struct Agent {
     /// Requested role: the resolved agent definition name (`spawn`); adopted
     /// agents report none (the registry entry carries no role yet).
     role: Option<String>,
+    /// Git worktree the child runs in (`worktree:true` spawn); adopted
+    /// agents report none (the registry entry carries no worktree).
+    worktree: Option<PathBuf>,
     /// Client connection to the child's control socket (replaces the stdin pipe).
     control: tokio::sync::Mutex<Option<UnixStream>>,
     /// `Some` only for children we spawned ourselves; adopted children have no
@@ -254,8 +261,32 @@ impl Agent {
             .open(&log_path)
             .with_context(|| format!("open {}", log_path.display()))?;
 
+        // `worktree:true`: the child runs in a fresh git worktree (branch
+        // `omt/<slug>` of the requested role, else the id) via the `/wt new`
+        // helpers. A git failure downgrades to plain `cwd` so the spawn
+        // still succeeds.
+let (cwd, worktree) = if spec.worktree {
+            let slug = spec
+                .role
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .unwrap_or(&id);
+            let created = crate::features::worktree::create_worktree(&spec.cwd, slug)
+                .or_else(|_| crate::features::worktree::create_worktree(&spec.cwd, &id));
+            match created {
+                Ok(path) => (path.clone(), Some(path)),
+                Err(e) => {
+                    eprintln!("omt web: worktree spawn fell back to {}: {e}", spec.cwd.display());
+                    (spec.cwd.clone(), None)
+                }
+            }
+        } else {
+            (spec.cwd.clone(), None)
+        };
+
         let mut cmd = Command::new(exe);
-        cmd.arg("--mode").arg("rpc").arg("--cwd").arg(&spec.cwd);
+        cmd.arg("--mode").arg("rpc").arg("--cwd").arg(&cwd);
         if let Some(model) = spec.model.as_deref().filter(|m| !m.is_empty()) {
             cmd.arg("--model").arg(model);
         }
@@ -273,9 +304,9 @@ impl Agent {
                 let home = std::env::var_os("HOME")
                     .map(PathBuf::from)
                     .ok_or_else(|| anyhow!("HOME is not set; cannot resolve role {requested:?}"))?;
-                let Some(def) = resolve_role_in(&spec.cwd, &home, requested) else {
+                let Some(def) = resolve_role_in(&cwd, &home, requested) else {
                     let discovered: Vec<String> = {
-                        let mut names = omp_task::discovery::discover_project_agents(&spec.cwd)
+                        let mut names = omp_task::discovery::discover_project_agents(&cwd)
                             .agents
                             .iter()
                             .chain(
@@ -316,7 +347,7 @@ impl Agent {
             // and can be SIGTERM'd as a whole on DELETE.
             cmd.process_group(0);
         }
-        cmd.current_dir(&spec.cwd)
+        cmd.current_dir(&cwd)
             .env("OMP_RPC_SOCKET", &sock_path)
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone()?))
@@ -340,13 +371,14 @@ impl Agent {
         let (tx, _) = broadcast::channel(FRAME_QUEUE);
         let agent = Arc::new(Self {
             id: id.clone(),
-            cwd: spec.cwd.clone(),
+            cwd,
             started_ms: pa_agent::now_ms(),
             pid,
             pgid: group_id,
             adopted: false,
             approval_mode: spec.approval_mode.clone(),
             role,
+            worktree,
             control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(Some(child)),
             tx,
@@ -398,6 +430,7 @@ impl Agent {
             adopted: true,
             approval_mode: entry.approval_mode.clone(),
             role: None,
+            worktree: None,
             control: tokio::sync::Mutex::new(Some(control)),
             child: tokio::sync::Mutex::new(None),
             tx: broadcast::channel(FRAME_QUEUE).0,
@@ -611,6 +644,7 @@ impl Agent {
             "alive": self.is_alive(),
             "approvalMode": self.approval_mode,
             "role": self.role,
+            "worktree": self.worktree.as_ref().map(|p| p.display().to_string()),
             "sessionFile": s.session_file,
             "sessionId": s.session_id,
             "sessionName": s.session_name,
@@ -856,6 +890,7 @@ mod tests {
             adopted: false,
             approval_mode: None,
             role: None,
+            worktree: None,
             control: tokio::sync::Mutex::new(None),
             child: tokio::sync::Mutex::new(None),
             tx: broadcast::channel(FRAME_QUEUE).0,

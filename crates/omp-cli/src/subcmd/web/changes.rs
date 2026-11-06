@@ -4,10 +4,11 @@
 //! unified diff of one file (untracked files diff against the empty file).
 //! `POST /api/changes/checkpoint` — back up file bytes + metadata under the
 //! user's data directory (never inside the project) and return the id.
-//! `POST /api/changes/revert`     — ALWAYS creates a fresh restorable
-//! checkpoint of the current content first, then restores the file to its
-//! `HEAD` content (tracked) or removes it (untracked; the checkpoint keeps
-//! the bytes). Whole-repo checkout/reset is never used; git runs through
+//! `POST /api/changes/revert`     — batch-revert worktree changes for
+//! `{cwd, paths: [...]}`, answering `{reverted, refused, error}`: tracked
+//! modifications are reset to their index content (`git checkout --`),
+//! untracked paths (`??` in porcelain) are refused and named in the
+//! `error` text. Whole-repo checkout/reset is never used; git runs through
 //! argument arrays with all disk work in `spawn_blocking`.
 
 use std::io::Write as _;
@@ -125,6 +126,11 @@ fn changed_files(cwd: &Path) -> Result<Vec<Value>> {
                 _ => "changed".into(),
             }
         };
+        let mtime = std::fs::metadata(cwd.join(&path))
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
         out.push(json!({
             "path": path,
             "abs": cwd.join(&path),
@@ -132,6 +138,7 @@ fn changed_files(cwd: &Path) -> Result<Vec<Value>> {
             "status": label,
             "untracked": untracked,
             "staged": !untracked && x != ' ',
+            "mtimeMs": mtime,
         }));
     }
     Ok(out)
@@ -283,8 +290,8 @@ fn write_manifest(dir: &Path, manifest: &Value) -> Result<()> {
 }
 
 /// Snapshot one file's current bytes + metadata. Returns `(id, backup rel)`.
-/// Missing files produce a checkpoint that records absence (so a revert can
-/// still be undone by deleting what it restored).
+/// Missing files produce a checkpoint that records their absence, so the
+/// removed bytes stay recoverable.
 fn checkpoint_one(repo: &Path, rel: &str, abs: &Path, note: &str) -> Result<(String, Value)> {
     let id = new_checkpoint_id();
     let dir = backup_root()?.join(&id);
@@ -421,75 +428,44 @@ async fn revert(req: Request<Incoming>) -> Response<Body> {
     }
 }
 
+/// Revert a batch of paths. Tracked modifications are reset to their index
+/// content with `git checkout --`; untracked paths (`??` in porcelain
+/// status) have no committed content to fall back to and are refused instead,
+/// with the refused paths named in the response's `error` text.
 fn do_revert(body: &Value) -> Result<Value> {
     let cwd = body
         .get("cwd")
         .and_then(Value::as_str)
         .context("missing cwd")?;
     let repo = repo_root(Path::new(cwd)).context("not a git worktree")?;
-    match body
-        .get("path")
-        .and_then(Value::as_str)
-        .filter(|p| !p.is_empty())
-    {
-        Some(rel) => {
-            let (id, file) = revert_one(&repo, rel)?;
-            Ok(json!({"ok": true, "checkpoint": id, "files": [file]}))
+    let paths = body
+        .get("paths")
+        .and_then(Value::as_array)
+        .context("missing paths")?;
+    let mut reverted = Vec::new();
+    let mut refused = Vec::new();
+    for path in paths {
+        let rel = match path.as_str().filter(|p| !p.is_empty()) {
+            Some(rel) => rel,
+            None => continue,
+        };
+        if safe_join(&repo, rel).is_err() {
+            refused.push(rel.to_owned());
+            continue;
         }
-        None => {
-            let files = changed_files(&repo)?;
-            if files.is_empty() {
-                return Ok(json!({"ok": true, "checkpoint": Value::Null, "files": []}));
-            }
-            let mut ids = Vec::new();
-            let mut done = Vec::new();
-            for f in &files {
-                let rel = f.get("path").and_then(Value::as_str).context("bad entry")?;
-                let (id, file) = revert_one(&repo, rel)?;
-                ids.push(id);
-                done.push(file);
-            }
-            Ok(json!({"ok": true, "checkpoints": ids, "files": done}))
+        let status = git(&repo, &["status", "--porcelain", "--", rel])?;
+        if status.trim().is_empty() || status.starts_with("??") {
+            // Unknown to git or untracked: there is nothing to check out.
+            refused.push(rel.to_owned());
+            continue;
         }
+        git(&repo, &["checkout", "--", rel])?;
+        reverted.push(rel.to_owned());
     }
-}
-
-/// Revert one file, creating the restorable checkpoint FIRST so the revert
-/// itself can always be undone.
-fn revert_one(repo: &Path, rel: &str) -> Result<(String, Value)> {
-    let abs = safe_join(repo, rel)?;
-    let (undo_id, _entry) = checkpoint_one(repo, rel, &abs, "auto checkpoint before revert")?;
-
-    let head_exists = git(repo, &["cat-file", "-e", &format!("HEAD:{rel}")]).is_ok();
-    let result = if head_exists {
-        // Restore both index and worktree so staged and unstaged edits are
-        // actually rolled back. Git handles binary content byte-exactly.
-        git(
-            repo,
-            &[
-                "restore",
-                "--source=HEAD",
-                "--staged",
-                "--worktree",
-                "--",
-                rel,
-            ],
-        )?;
-        "restored"
+    let error = if refused.is_empty() {
+        Value::Null
     } else {
-        // Never in HEAD → added since; the checkpoint holds the bytes, so
-        // unstaging and removing the worktree file loses nothing restorable.
-        git(
-            repo,
-            &["rm", "--cached", "-f", "--ignore-unmatch", "--", rel],
-        )?;
-        if abs.is_file() {
-            std::fs::remove_file(&abs).with_context(|| format!("remove {}", abs.display()))?;
-        }
-        "removed"
+        json!(format!("refused paths: {}", refused.join(", ")))
     };
-    Ok((
-        undo_id.clone(),
-        json!({"path": rel, "result": result, "undoCheckpoint": undo_id}),
-    ))
+    Ok(json!({"reverted": reverted, "refused": refused, "error": error}))
 }

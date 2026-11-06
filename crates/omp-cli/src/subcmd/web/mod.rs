@@ -13,7 +13,7 @@
 //! - `GET /`, `/assets/*`: the embedded app.
 //! - `GET /api/info`, `/api/projects`, `/api/sessions?cwd=`, `/api/fs?path=`.
 //! - `GET /api/maps`: graph map data from `~/.config/omt/maps.json`.
-//! - `GET /api/agents`, `POST /api/agents {cwd, resume?, model?}`,
+//! - `GET /api/agents`, `POST /api/agents {cwd, resume?, model?, worktree?}`,
 //!   `DELETE /api/agents/<id>`.
 //! - `GET /api/export?session=<file>`: HTML export of a stored session.
 //! - `POST /api/transcribe?ext=&lang=` (raw audio): local dictation, see `stt.rs`.
@@ -618,6 +618,7 @@ async fn create_agent(hub: &Arc<Hub>, req: Request<Incoming>) -> Response<Body> 
         model: text("model"),
         approval_mode,
         role: text("role"),
+        worktree: body.get("worktree").and_then(Value::as_bool).unwrap_or(false),
     };
     match hub.spawn(spec).await {
         Ok(agent) => json_response(StatusCode::OK, &agent.info_json()),
@@ -811,16 +812,27 @@ fn websocket(hub: &Hub, req: Request<Incoming>, id: &str) -> Response<Body> {
     res
 }
 
-/// Pump one browser socket <-> one agent until either side ends.
+/// Server ping interval for browser sockets. Browsers answer with a pong at
+/// the network layer, so an otherwise idle socket (agent parked waiting for
+/// subagents) keeps traffic flowing and a half-open peer is noticed on send.
+const WS_PING_EVERY: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Pump one browser socket <-> one agent until either side ends. Every close
+/// is logged to stderr (journal) with its reason, age and frame counts.
 async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>) {
+    let started = std::time::Instant::now();
+    let (mut out_frames, mut in_frames, mut lagged_total) = (0u64, 0u64, 0u64);
+    eprintln!("omt web: ws open agent={}", agent.id);
     let mut rx = agent.subscribe();
     let (mut sink, mut stream) = ws.split();
     let hello = json!({"type": "web_attached", "agent": agent.info_json()});
     if sink.send(Message::text(hello.to_string())).await.is_err() {
+        eprintln!("omt web: ws close agent={} reason=hello send failed", agent.id);
         return;
     }
     for frame in agent.replay_frames() {
         if sink.send(Message::text(frame.to_string())).await.is_err() {
+            eprintln!("omt web: ws close agent={} reason=replay send failed", agent.id);
             return;
         }
     }
@@ -831,24 +843,36 @@ async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::U
             ))
             .await;
     }
-    loop {
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + WS_PING_EVERY, WS_PING_EVERY);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let reason: String = loop {
         tokio::select! {
             frame = rx.recv() => match frame {
                 Ok(line) => {
                     if sink.send(Message::text(line.to_string())).await.is_err() {
-                        break;
+                        break "send to browser failed".to_string();
                     }
+                    out_frames += 1;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    lagged_total += n;
                     let note = json!({"type": "web_lagged", "skipped": n});
                     if sink.send(Message::text(note.to_string())).await.is_err() {
-                        break;
+                        break "send to browser failed (lag note)".to_string();
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    break "agent event channel closed".to_string();
+                }
             },
+            _ = ping.tick() => {
+                if sink.send(Message::Ping(Default::default())).await.is_err() {
+                    break "ping send failed".to_string();
+                }
+            }
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
+                    in_frames += 1;
                     if let Err(e) = agent.send_line(text.as_str()).await {
                         let note = json!({"type": "web_error", "message": format!("agent stdin: {e}")});
                         let _ = sink.send(Message::text(note.to_string())).await;
@@ -857,11 +881,27 @@ async fn bridge(agent: Arc<Agent>, ws: WebSocketStream<TokioIo<hyper::upgrade::U
                 Some(Ok(Message::Ping(p))) => {
                     let _ = sink.send(Message::Pong(p)).await;
                 }
-                Some(Ok(Message::Close(_)) | Err(_)) | None => break,
+                Some(Ok(Message::Close(frame))) => {
+                    break match frame {
+                        Some(f) => format!("browser sent close code={} reason={:?}", u16::from(f.code), f.reason.as_str()),
+                        None => "browser sent close".to_string(),
+                    };
+                }
+                Some(Err(e)) => break format!("socket error: {e}"),
+                None => break "browser socket ended without close frame".to_string(),
                 Some(Ok(_)) => {}
             },
         }
-    }
+    };
+    eprintln!(
+        "omt web: ws close agent={} reason={} age={}s out={} in={} lagged={}",
+        agent.id,
+        reason,
+        started.elapsed().as_secs(),
+        out_frames,
+        in_frames,
+        lagged_total
+    );
 }
 
 #[cfg(test)]

@@ -23,10 +23,13 @@
 //
 // The role picker persists the selected role (localStorage) and
 // `creationOptions()` returns it for POST /api/agents; the backend resolves
-// it to a registered agent definition (see web/agent.rs).
+// it to a registered agent definition (see web/agent.rs). The worktree
+// checkbox persists `omp-worktree-default`; creationOptions adds
+// `worktree:true` so the backend runs the child in a fresh git worktree.
 (function (OMP) {
   const { el, $ } = OMP;
   const ROLE_KEY = "omp-agent-role";
+  const WORKTREE_KEY = "omp-worktree-default";
   const TODO_COLLAPSE_KEY = "omp-todo-collapsed";
   let todoCollapsed = false;
   try { todoCollapsed = localStorage.getItem(TODO_COLLAPSE_KEY) === "true"; } catch { /* storage unavailable */ }
@@ -380,9 +383,28 @@
         OMP.toast(`New sessions will run as “${select.value}”`, "info", 2500);
       },
     }, ...ROLES.map((r) => el("option", { value: r.id, selected: r.id === saved, title: r.title, text: r.label })));
-    return el("div.ap-role", null,
-      el("label.ap-role-label", { for: "agent-role", text: "New session role" }),
-      select);
+    let worktree = false;
+    try { worktree = localStorage.getItem(WORKTREE_KEY) === "true"; } catch { /* storage unavailable */ }
+    let box = el("input", {
+      type: "checkbox",
+      checked: worktree,
+      onchange: () => {
+        try { localStorage.setItem(WORKTREE_KEY, String(box.checked)); } catch { /* storage unavailable */ }
+        OMP.toast(box.checked
+          ? "New sessions will run in an isolated git worktree"
+          : "New sessions will run in the project directory", "info", 2500);
+      },
+    });
+    return el("div", null,
+      el("div.ap-role", null,
+        el("label.ap-role-label", { for: "agent-role", text: "New session role" }),
+        select),
+      el("div.ap-role", null,
+        box,
+        el("label", {
+          for: "agent-worktree",
+          title: "Run new sessions in a fresh git worktree (branch omt/<role>); falls back to the plain directory when git fails",
+        }, el("span.ap-role-label", { text: "isolated git worktree" }))));
   }
 
   // ── public interface ──────────────────────────────────────────────────────
@@ -427,8 +449,12 @@
     ingestMessages,
     /** Extra JSON fields for POST /api/agents (backend resolves `role`). */
     creationOptions() {
-      const role = localStorage.getItem(ROLE_KEY);
-      return role && role !== "universal" ? { role } : {};
+      let role = localStorage.getItem(ROLE_KEY);
+      let opts = role && role !== "universal" ? { role } : {};
+      let worktree = false;
+      try { worktree = localStorage.getItem(WORKTREE_KEY) === "true"; } catch { /* storage unavailable */ }
+      if (worktree) opts.worktree = true;
+      return opts;
     },
   };
 })(window.OMP);

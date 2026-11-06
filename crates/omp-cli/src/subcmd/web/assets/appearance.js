@@ -1,11 +1,17 @@
 "use strict";
 // Themes and wallpapers: the palette (`data-theme` on <html>), a fixed
 // wallpaper layer behind glass panels, dim/blur/glass sliders, and user
-// wallpapers uploaded to the server (`/api/wallpapers`). Persisted in
+// wallpapers uploaded to the server (`/api/wallpapers`). Also the activity
+// glyph (`data-glyph` on <body>) shown by the transcript. Persisted in
 // localStorage; applied before first paint by `OMP.appearance.apply()`.
 (function (OMP) {
   const { el } = OMP;
   const KEY = "omt-appearance";
+
+  // Transcript activity glyph: collapse markers and the running spinner
+  // take their shape from `data-glyph` on <body> (see stream.css).
+  const GLYPH_KEY = "omp-activity-glyph";
+  const GLYPHS = ["brain", "triangle", "minimal"];
 
   const W = (file, name) => ({ url: `/wallpapers/${file}`, name });
   const BUILTIN_WALLPAPERS = [
@@ -46,6 +52,15 @@
   let cfg = load();
   const save = () => localStorage.setItem(KEY, JSON.stringify(cfg));
 
+  function loadGlyph() {
+    try {
+      const saved = localStorage.getItem(GLYPH_KEY);
+      if (GLYPHS.includes(saved)) return saved;
+    } catch { /* storage can be unavailable in embedded previews */ }
+    return "brain";
+  }
+  let glyph = loadGlyph();
+
   /** Only same-origin wallpaper paths and http(s) URLs reach CSS. */
   function safeUrl(u) {
     if (typeof u !== "string" || !u) return "";
@@ -60,6 +75,7 @@
   function apply() {
     const root = document.documentElement;
     root.dataset.theme = cfg.theme;
+    document.body.dataset.glyph = glyph;
     const url = safeUrl(cfg.wallpaper);
     const layer = document.getElementById("wallpaper");
     if (layer) layer.style.backgroundImage = url ? cssUrl(url) : "";
@@ -72,6 +88,13 @@
   function set(patch) {
     Object.assign(cfg, patch);
     save();
+    apply();
+  }
+
+  function setGlyph(id) {
+    if (!GLYPHS.includes(id)) return;
+    glyph = id;
+    try { localStorage.setItem(GLYPH_KEY, id); } catch { /* non-persistent preview */ }
     apply();
   }
 
@@ -97,6 +120,7 @@
   async function open() {
     const themeGrid = el("div.ap-themes");
     const wallGrid = el("div.ap-walls");
+    const glyphGrid = el("div.ap-themes");
     const fileInput = el("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp,image/avif", multiple: true, hidden: true });
     let custom = await customWallpapers();
 
@@ -174,7 +198,22 @@
       );
       sliders.hidden = !cfg.wallpaper;
     }
-    function renderAll() { renderThemes(); renderWalls(); renderSliders(); }
+    function renderGlyphs() {
+      const labels = { brain: "Brain", triangle: "Triangle", minimal: "Minimal" };
+      const hints = { brain: "Brains on the markers (default)", triangle: "Classic arrows", minimal: "Plain dots" };
+      const swatch = {
+        brain: () => el("span", { style: "width:30px;height:24px;background:currentColor;-webkit-mask:var(--brain-glyph) center / contain no-repeat;mask:var(--brain-glyph) center / contain no-repeat" }),
+        triangle: () => el("span", { text: "\u25B8", style: "font-size:17px" }),
+        minimal: () => el("span", { style: "width:10px;height:10px;border-radius:50%;background:currentColor" }),
+      };
+      glyphGrid.replaceChildren(...GLYPHS.map((id) => el("button.ap-theme" + (glyph === id ? ".sel" : ""), {
+        title: hints[id],
+        onclick: () => { setGlyph(id); renderAll(); },
+      },
+      el("span.ap-preview", { style: "display:flex;align-items:center;justify-content:center;background:var(--bg-inset);color:var(--fg-muted)" }, swatch[id]()),
+      el("span.ap-name", { text: labels[id] }))));
+    }
+    function renderAll() { renderThemes(); renderWalls(); renderSliders(); renderGlyphs(); }
 
     fileInput.addEventListener("change", async () => {
       const added = await upload([...fileInput.files]);
@@ -186,6 +225,7 @@
 
     const body = el("div.ap", null,
       el("div.ap-title", { text: "Theme" }), themeGrid,
+      el("div.ap-title", { text: "Activity glyph" }), glyphGrid,
       el("div.ap-title", null, el("span", { text: "Wallpaper" }), el("span.faint.small", { text: "drop images here to add them" })), wallGrid,
       sliders, fileInput);
     if (OMP.desktop && OMP.desktop.available) body.append(desktopSection());
@@ -277,5 +317,5 @@
   }
 
   apply();
-  OMP.appearance = { apply, open, set, get: () => ({ ...cfg }), THEMES, BUILTIN_WALLPAPERS };
+  OMP.appearance = { apply, open, set, setGlyph, get: () => ({ ...cfg, glyph }), THEMES, BUILTIN_WALLPAPERS };
 })(window.OMP);

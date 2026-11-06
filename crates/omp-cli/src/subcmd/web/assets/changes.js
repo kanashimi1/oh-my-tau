@@ -146,10 +146,22 @@ window.OMP = window.OMP || {};
     const ok = await OMP.dialogs.confirmBox("Revert file",
       `Revert “${path}” (${kind})? A checkpoint of its current content is created first, so this can be undone.`).promise;
     if (!ok) return;
+    let undo = null;
     try {
-      const r = await api("/api/changes/revert", { method: "POST", body: { cwd: cwd(), path } });
-      const done = r.files && r.files[0];
-      OMP.toast(`Reverted ${path} (undo checkpoint ${r.checkpoint || (done && done.undoCheckpoint)})`, "success");
+      const c = await api("/api/changes/checkpoint", { method: "POST", body: { cwd: cwd(), path } });
+      undo = c.checkpoint || null;
+    } catch (e) {
+      OMP.toast("Checkpoint failed: " + (e.message || e), "error");
+    }
+    try {
+      const r = await api("/api/changes/revert", { method: "POST", body: { cwd: cwd(), paths: [path] } });
+      const refused = (r.refused || []).includes(path);
+      const done = (r.reverted || []).includes(path);
+      if (refused || !done) {
+        OMP.toast("Revert failed: " + (r.error || path + " refused (untracked or unchanged)"), "error");
+        return;
+      }
+      OMP.toast(`Reverted ${path}${undo ? ` (undo checkpoint ${undo})` : ""}`, "success");
       if (selected === path) selected = null;
       await refresh();
       if (diffEl) diffEl.replaceChildren(el("p.changes-state", { text: "Select a file to see its diff." }));
@@ -158,7 +170,31 @@ window.OMP = window.OMP || {};
     }
   }
 
-  // ── rendering ──────────────────────────────────────────────────────────────
+  // ── review decisions ──────────────────────────────────────────────────────
+  const DECISIONS_KEY = "omp-review-decisions";
+  function decisions() {
+    try { return JSON.parse(localStorage.getItem(DECISIONS_KEY)) || {}; } catch { return {}; }
+  }
+  function decisionKey(path) { return (cwd() || "") + "::" + path; }
+  function isApproved(path) { return decisions()[decisionKey(path)] === true; }
+  function setApproved(path, on) {
+    const d = decisions();
+    if (on) d[decisionKey(path)] = true; else delete d[decisionKey(path)];
+    try { localStorage.setItem(DECISIONS_KEY, JSON.stringify(d)); } catch { /* storage unavailable */ }
+  }
+  /** Pending-review counter on the topbar Changes button. */
+  function updateBadge() {
+    if (!btn) return;
+    const pending = files.filter((f) => !isApproved(f.path)).length;
+    if (pending > 0) {
+      btn.setAttribute("data-badge", String(pending));
+      btn.title = `Changes (git diff, checkpoints) — ${pending} to review`;
+    } else {
+      btn.removeAttribute("data-badge");
+      btn.title = "Changes (git diff, checkpoints)";
+    }
+  }
+// ── rendering ──────────────────────────────────────────────────────────────
   function markSelected() {
     if (!listEl) return;
     listEl.querySelectorAll(".chg-row").forEach((r) =>
@@ -171,20 +207,24 @@ window.OMP = window.OMP || {};
       listEl.replaceChildren(el("p.changes-state", { text: cwd() ? "No changes." : "No project folder." }));
       return;
     }
-    listEl.replaceChildren(...files.map((f) =>
-      el("button.chg-row", {
+    listEl.replaceChildren(...files.map((f) => {
+      const approved = isApproved(f.path);
+      return el("button.chg-row" + (approved ? " approved" : ""), {
         dataset: { path: f.path },
         onclick: () => showDiff(f.path),
       },
         el("span.chg-code." + statusClass(f), { text: f.code || "M", title: f.status }),
         el("span.chg-path", { text: f.path, title: f.abs || f.path }),
         el("span.chg-actions", { onclick: (e) => e.stopPropagation() },
+          el("button.chip", { text: approved ? "Unapprove" : "Approve", title: "Approve = reviewed, keep this change", onclick: () => { setApproved(f.path, !approved); renderList(); } }),
           el("button.chip", { text: "Open", title: "Open file", onclick: () => openFile(f.path) }),
           el("button.chip", { text: "Checkpoint", title: "Back up this file now", onclick: () => checkpointFile(f.path) }),
           el("button.chip.danger", { text: "Revert", title: "Revert to HEAD (with checkpoint)", onclick: () => revertFile(f.path) }),
         ),
-      )));
+      );
+    }));
     markSelected();
+    updateBadge();
   }
 
   function statusClass(f) {

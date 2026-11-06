@@ -1,8 +1,10 @@
 "use strict";
-// Sidebar helpers: Kimi-style date grouping + pinned sessions. Owner: sidebar slice.
+// Sidebar helpers: Kimi-style date grouping, pinned + archived sessions and
+// the search debounce. Owner: sidebar slice.
 // Shell rendering lives in shell.js; this file only provides the pure helpers.
 (function (OMP) {
   const PIN_KEY = "omp-web-pinned";
+  const ARCHIVE_KEY = "omp-archived-sessions";
 
   const GROUP_LABELS = {
     pinned: "Pinned",
@@ -53,5 +55,34 @@
     return set.has(key);
   }
 
-  OMP.sidebar = { dateGroup, GROUP_LABELS, GROUP_ORDER, readPinned, togglePinned };
+  // Archived sessions (soft-hidden rows): same persistence pattern as pins.
+  function readArchived() {
+    try {
+      const j = JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]");
+      return Array.isArray(j) ? new Set(j) : new Set();
+    } catch { return new Set(); }
+  }
+
+  function saveArchived(set) {
+    try { localStorage.setItem(ARCHIVE_KEY, JSON.stringify([...set])); } catch { /* quota */ }
+  }
+
+  // Toggle a row key in the archived set; returns the new archived state.
+  function toggleArchived(key) {
+    const set = readArchived();
+    if (set.has(key)) set.delete(key); else set.add(key);
+    saveArchived(set);
+    return set.has(key);
+  }
+
+  // Trailing-edge debounce: run `fn` once calls have stopped for `wait` ms.
+  function debounce(fn, wait) {
+    let t = null;
+    return (...args) => {
+      clearTimeout(t);
+      t = setTimeout(() => fn(...args), wait);
+    };
+  }
+
+  OMP.sidebar = { dateGroup, GROUP_LABELS, GROUP_ORDER, readPinned, togglePinned, readArchived, toggleArchived, debounce };
 })(window.OMP);

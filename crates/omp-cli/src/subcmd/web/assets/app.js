@@ -140,17 +140,22 @@
     S.ws = ws;
     ws.onopen = () => onOpen();
     ws.onmessage = (e) => {
+      S.lastFrameAt = Date.now();
       let frame;
       try { frame = JSON.parse(e.data); } catch { return; }
       onFrame(frame);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (S.ws !== ws) return;
       S.ws = null;
       composer.setEnabled(false);
       sessionCache.markAllDirty(); // frames may have been missed while detached
       if (!S.dead) {
-        transcript.addSystem("Connection lost. Reconnecting…", "warn");
+        const quiet = S.lastFrameAt ? Math.round((Date.now() - S.lastFrameAt) / 1000) : null;
+        const why = "code " + ev.code + (ev.reason ? " " + ev.reason : "") + (ev.wasClean ? "" : ", unclean")
+          + (quiet != null ? ", " + quiet + "s since last data" : "");
+        console.warn("agent websocket closed:", why, { agentId, at: new Date().toISOString() });
+        transcript.addSystem("Connection lost (" + why + "). Reconnecting…", "warn");
         setTimeout(async () => {
           await refreshAgents();
           if (S.agentId === agentId && S.agents.some((a) => a.id === agentId)) connect(agentId);
@@ -525,7 +530,23 @@
   OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand, getMessages, getCapabilities, sessionCache, setView };
   if (OMP.agentPanel && typeof OMP.agentPanel.init === "function") OMP.agentPanel.init(OMP.app);
   OMP.shellImpl.init(OMP.app);
-  for (const feature of [OMP.palette, OMP.tasks, OMP.changes, OMP.terminal, OMP.workspaces, OMP.quick]) {
+  // Pane boot: "/?agent=<id>&pane=1" is how the tmux-style pane manager
+  // (OMP.panes) embeds sessions — auto-attach to that agent and hide the
+  // chrome the pane host already provides.
+  {
+     q = new URLSearchParams(location.search);
+     wantAgent = q.get("agent");
+    if (q.get("pane") === "1") document.body.classList.add("pane-embed");
+    if (wantAgent) {
+      S.agentId = wantAgent;
+       attach = () => (S.agents.some((a) => a.id === wantAgent) ? (connect(wantAgent), true) : false);
+      if (!attach()) {
+         t0 = Date.now();
+         iv = setInterval(() => { if (attach() || Date.now() - t0 > 30000) clearInterval(iv); }, 1000);
+      }
+    }
+  }
+  for (const feature of [OMP.palette, OMP.tasks, OMP.changes, OMP.terminal, OMP.workspaces, OMP.quick, OMP.panes]) {
     if (feature && typeof feature.init === "function") feature.init(OMP.app);
   }
   // Home screen: the composer is live before any agent connects and offers

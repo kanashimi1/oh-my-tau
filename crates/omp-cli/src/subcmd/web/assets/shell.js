@@ -138,6 +138,7 @@
     $("#project-path").title = s.project;
 
     const pinned = OMP.sidebar.readPinned();
+    const archived = OMP.sidebar.readArchived();
     const q = $("#session-filter").value.trim().toLowerCase();
     const current = s.agents.find((a) => a.id === s.agentId);
     const anyOpen = new Set(s.agents.map((a) => a.sessionFile).filter(Boolean));
@@ -145,23 +146,33 @@
     // stored list — otherwise a finished session vanishes with its agent.
     const aliveOpen = new Set(s.agents.filter((a) => a.alive !== false).map((a) => a.sessionFile).filter(Boolean));
 
-    const rows = [];
+    // Explorer buckets: the live fleet on top, then pinned, then the stored
+    // history (date or project groups), then soft-hidden archived rows.
+    const liveRows = [], histRows = [], archivedRows = [];
 
-    // Running agents inline (live dot, needs-input/running chips).
+    // Running now: live agents (pulsing dot, needs-input/running chips).
+    // Dead agents fall back to their stored row unless a search names them.
     for (const a of s.agents) {
-      if (a.alive === false && !q) continue;
       const key = "a:" + a.id;
+      if (archived.has(key)) continue;
+      if (a.alive === false && !q) continue;
       const title = a.sessionName || basename(a.cwd);
-      const sub = `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}`;
+      // Worktree agents run in a fresh git worktree; the slug after the
+      // last `-wt-` names the `omt/<slug>` branch to merge back.
+      const wtSlug = a.worktree ? String(a.worktree).split("/").pop().replace(/^.*-wt-/, "") : null;
+      const sub = wtSlug
+        ? `${shortPath(a.worktree)} · merge: /wt merge ${wtSlug}${a.model ? " · " + a.model : ""}`
+        : `${shortPath(a.cwd)}${a.model ? " · " + a.model : ""}`;
       if (q && !`${title} ${sub} ${a.id}`.toLowerCase().includes(q)) continue;
-      rows.push({
+      const row = {
         key, kind: "agent", id: a.id, path: a.sessionFile || null, cwd: a.cwd,
         title, sub, ms: a.startedMs || Date.now(),
         active: a.id === s.agentId, pinned: pinned.has(key),
-        dot: a.streaming || a.runningTools ? "busy" : "live",
+        dot: a.streaming || a.runningTools ? "busy" : "live", pulse: a.alive !== false,
         status: a.needsInput ? "needs input" : a.runningTools ? "running" : a.streaming ? "working" : null,
         waitingMs: !a.streaming && a.awaitingTasksSinceMs ? Date.now() - a.awaitingTasksSinceMs : null,
-      });
+      };
+      (a.alive !== false ? liveRows : histRows).push(row);
     }
 
     // Default view: all live agents + five recent stored sessions, with a
@@ -174,43 +185,55 @@
     const showAll = !q && !!s.sessionsShowAll;
     const visibleStored = q ? stored : stored.filter((r, i) => showAll || i < 5 || pinned.has("s:" + r.path) || (current && current.sessionFile === r.path));
     const hiddenStored = q ? 0 : stored.length - visibleStored.length;
+    // With several projects loaded, flat rows carry their project so the
+    // date-grouped list still tells sessions apart.
+    const multiCwd = new Set(s.sessions.map((r) => r.cwd).filter(Boolean)).size > 1;
+    const byProject = s.groupByProject && multiCwd;
     // Stored sessions (skipped when a rendered agent already has the file open).
     for (const r of visibleStored) {
       if (openSet.has(r.path)) continue;
       const key = "s:" + r.path;
       const title = r.title || r.preview || r.id;
       const preview = r.preview ? (r.title ? " · " + r.preview : r.preview) : "";
-      const sub = `${OMP.timeAgo(r.modifiedMs)}${preview}`;
-      if (q && !`${title} ${r.preview || ""} ${r.id}`.toLowerCase().includes(q)) continue;
-      rows.push({
+      const proj = !byProject && multiCwd && r.cwd && r.cwd !== s.project ? shortPath(r.cwd) + " · " : "";
+      const sub = `${proj}${OMP.timeAgo(r.modifiedMs)}${preview}`;
+      if (q && !`${title} ${r.preview || ""} ${r.id} ${r.cwd || ""}`.toLowerCase().includes(q)) continue;
+      const row = {
         key, kind: "session", id: null, path: r.path, cwd: r.cwd || s.project,
         title, sub, ms: r.modifiedMs || 0,
         active: current && current.sessionFile === r.path, pinned: pinned.has(key),
         dot: null, status: r.store === "omp" ? "ts" : null,
-      });
+      };
+      (archived.has(key) ? archivedRows : histRows).push(row);
     }
+    for (const list of [liveRows, histRows, archivedRows]) list.sort((a, b) => b.ms - a.ms);
 
-    rows.sort((a, b) => b.ms - a.ms);
-
+    // History grouping: per project when the explorer spans projects and the
+    // user opted in, Kimi date buckets otherwise.
+    const pinnedRows = histRows.filter((r) => r.pinned);
+    const unpinned = histRows.filter((r) => !r.pinned);
     const groups = new Map();
-    const pinnedRows = [];
-    for (const row of rows) {
-      if (row.pinned) { pinnedRows.push(row); continue; }
-      const g = OMP.sidebar.dateGroup(row.ms);
+    for (const row of unpinned) {
+      const g = byProject ? (row.cwd || s.project) : OMP.sidebar.dateGroup(row.ms);
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(row);
     }
+    const order = byProject ? [...groups.keys()] : OMP.sidebar.GROUP_ORDER.filter((g) => groups.has(g));
 
     const frag = [];
+    if (liveRows.length) {
+      frag.push(groupHead("Running now", liveRows.length));
+      frag.push(...liveRows.map((r) => rowNode(s, r)));
+    }
     if (pinnedRows.length) {
       frag.push(groupHead("Pinned", pinnedRows.length));
       frag.push(...pinnedRows.slice(0, 300).map((r) => rowNode(s, r)));
     }
-    let shown = pinnedRows.length;
-    for (const g of OMP.sidebar.GROUP_ORDER) {
+    let shown = liveRows.length + pinnedRows.length;
+    for (const g of order) {
       const list = groups.get(g);
       if (!list || !list.length) continue;
-      frag.push(groupHead(OMP.sidebar.GROUP_LABELS[g], list.length));
+      frag.push(groupHead(byProject ? shortPath(g) : OMP.sidebar.GROUP_LABELS[g], list.length));
       const take = list.slice(0, Math.max(0, 300 - shown));
       frag.push(...take.map((r) => rowNode(s, r)));
       shown += take.length;
@@ -222,21 +245,41 @@
         onclick: () => { s.sessionsShowAll = !showAll; renderSidebar(s); },
       }));
     }
+    // Archived: collapsible group at the bottom; search always expands it so
+    // a soft-hidden session stays findable.
+    if (archivedRows.length) {
+      const open = s.archivedOpen || !!q;
+      frag.push(el("button.group-head.arch-head", {
+        title: open ? "Hide archived sessions" : "Show archived sessions",
+        onclick: () => {
+          s.archivedOpen = !open;
+          try { localStorage.setItem("omp-archived-open", String(s.archivedOpen)); } catch { /* storage unavailable */ }
+          renderSidebar(s);
+        },
+      }, el("span", { text: "Archived" }), el("span.count", { text: `${open ? "−" : "+"} ${archivedRows.length}` })));
+      if (open) frag.push(...archivedRows.map((r) => rowNode(s, r)));
+    }
     if (!frag.length) {
       frag.push(el("div.sess-empty.muted.small", { text: s.project ? "No matching sessions" : "No sessions yet" }));
     }
+    const groupBtn = $("#group-toggle");
+    groupBtn.hidden = !multiCwd;
+    groupBtn.textContent = byProject ? "by project" : "by date";
+    groupBtn.title = byProject ? "Grouped by project — switch to date groups" : "Grouped by date — switch to project groups";
     $("#session-list").replaceChildren(...frag);
     if (OMP.agentPanel) { OMP.agentPanel.renderLeft($("#agent-dock")); OMP.agentPanel.renderRight($("#subagents-dock")); }
   }
 
   const PIN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l-1 8 3 3H6l3-3z"/><line x1="12" y1="18" x2="12" y2="21"/></svg>';
   const NEWWIN_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>';
+  const FORK_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
+  const ARCHIVE_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>';
 
   const groupHead = (label, count) => el("div.group-head", null,
     el("span", { text: label }), el("span.count", { text: String(count) }));
 
   const rowNode = (s, row) => {
-    const dot = row.dot ? el("span.sess-dot." + row.dot, { title: row.dot === "busy" ? "working" : "running" })
+    const dot = row.dot ? el("span.sess-dot." + row.dot + (row.pulse ? ".pulse" : ""), { title: row.dot === "busy" ? "working" : "running" })
       : el("span.sess-dot", { title: "stored" });
     // Parked on background subagents: harmless for a few minutes, a likely
     // stuck child after that (the session never settles on its own).
@@ -252,6 +295,8 @@
       : row.status ? el("span.muted-run", { text: row.status }) : waitChip;
     const actions = el("span.sess-actions", null,
       el("button.row-action" + (row.pinned ? ".pinned" : ""), { title: row.pinned ? "Unpin" : "Pin", html: PIN_SVG, onclick: (e) => { e.stopPropagation(); togglePin(s, row); } }),
+      el("button.row-action", { title: "New session from this one", html: FORK_SVG, onclick: (e) => { e.stopPropagation(); forkFrom(s, row); } }),
+      el("button.row-action", { title: row.archived ? "Unarchive" : "Archive", html: ARCHIVE_SVG, onclick: (e) => { e.stopPropagation(); toggleArchive(s, row); } }),
       el("button.row-action", { title: "Open in new window", html: NEWWIN_SVG, onclick: (e) => { e.stopPropagation(); openInNewWindow(s, row); } }),
       el("button.row-action", { title: "More", text: "⋯", onclick: (e) => { e.stopPropagation(); rowMenu(e.currentTarget, s, row); } }));
     const main = el("div.main", null, dot,
@@ -266,6 +311,31 @@
   function togglePin(s, row) {
     const now = OMP.sidebar.togglePinned(row.key);
     OMP.toast(now ? "Pinned" : "Unpinned", "success");
+    renderSidebar(S());
+  }
+
+  // "New from": continue a session as a fresh agent without hijacking this
+  // tab — the stored resume flow for rows with a file, the attached agent's
+  // own fork rpc for the current session.
+  async function forkFrom(s, row) {
+    if (row.kind === "agent" && row.id === S().agentId && S().ws) {
+      try { await app.rpc("fork"); OMP.toast("Forked into a new session file", "success"); } catch (e) { return OMP.toast(e.message, "error"); }
+      s.state = await app.rpc("get_state").catch(() => s.state);
+      renderHeader(s);
+      refreshAgents(s);
+      loadSessions(s);
+      return;
+    }
+    if (!row.path) return OMP.toast("No session file to fork", "warning");
+    const a = await spawnQuiet({ cwd: row.cwd || s.project, resume: row.path });
+    if (a) OMP.toast("New session started from this one", "success");
+  }
+
+  // Soft-hide a row behind the collapsible "Archived" group (persisted in
+  // localStorage "omp-archived-sessions" via the sidebar helpers).
+  function toggleArchive(s, row) {
+    const now = OMP.sidebar.toggleArchived(row.key);
+    OMP.toast(now ? "Archived" : "Unarchived", "success");
     renderSidebar(S());
   }
 
@@ -322,6 +392,8 @@
       { label: "Rename…", run: () => renameRow(s, row) },
       { label: row.pinned ? "Unpin" : "Pin", run: () => togglePin(s, row) },
       "-",
+      { label: "New session from this one", run: () => forkFrom(s, row) },
+      { label: row.archived ? "Unarchive" : "Archive", run: () => toggleArchive(s, row) },
       { label: "Open in new window", run: () => openInNewWindow(s, row) },
       { label: "Open in terminal", run: () => openInTerminal(s, row) },
     ];
@@ -359,7 +431,9 @@
   async function loadSessions(s) {
     if (!s.project) return;
     try {
-      s.sessions = (await api("/api/sessions?cwd=" + encodeURIComponent(s.project))).sessions || [];
+      // Empty `cwd` = the explorer's cross-project history across both
+      // stores (see sessions.rs); rows carry their own `cwd`.
+      s.sessions = (await api("/api/sessions?cwd=")).sessions || [];
     } catch (e) {
       s.sessions = s.sessions || [];
       OMP.toast("Sessions: " + e.message, "error");
@@ -596,6 +670,9 @@
     // otherwise a safe no-op (app.js renders status only on events).
     setInterval(() => { if (app && S().agentId && (S().streaming || OMP.perf.last)) renderStatus(S()); }, 1000);
     const s = S();
+    // Explorer prefs survive restarts: history grouping, archived group state.
+    try { s.groupByProject = localStorage.getItem("omp-web-group-by") === "project"; } catch { /* storage unavailable */ }
+    try { s.archivedOpen = localStorage.getItem("omp-archived-open") === "true"; } catch { /* storage unavailable */ }
     $("#appearance-btn").onclick = () => OMP.appearance.open();
     const appEl = $("#app");
     const sidebarButton = $("#sidebar-toggle");
@@ -639,7 +716,14 @@
     $("#new-session").onclick = () => newSession(s, s.project);
     $("#maps-btn").onclick = () => { if (OMP.maps) OMP.maps.toggle(); };
     $("#project-pick").onclick = (e) => projectMenu(e.currentTarget, s);
-    $("#session-filter").oninput = () => renderSidebar(s);
+    // Debounced: the explorer holds the whole history, so re-rendering on
+    // every keystroke would be wasteful.
+    $("#session-filter").oninput = OMP.sidebar.debounce(() => renderSidebar(s), 150);
+    $("#group-toggle").onclick = () => {
+      s.groupByProject = !s.groupByProject;
+      try { localStorage.setItem("omp-web-group-by", s.groupByProject ? "project" : "date"); } catch { /* storage unavailable */ }
+      renderSidebar(s);
+    };
     // The stored list is a snapshot: re-scan when the user goes looking.
     window.addEventListener("focus", () => { loadSessions(s); refreshAgents(s); });
     $("#composer-model").onclick = () => modelPicker(s);
