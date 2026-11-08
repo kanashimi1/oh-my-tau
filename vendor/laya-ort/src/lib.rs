@@ -295,12 +295,26 @@ impl Judge {
         let max_len = cfg["max_len"].as_u64().unwrap_or(1024) as usize;
         let head_max_len = cfg["head_max_len"].as_u64().unwrap_or(192) as usize;
         let env = ort::init().with_name("laya-ort").build().map_err(ort_err)?;
-        let session = Session::builder(&env)
+        let mut session = Session::builder(&env)
             .map_err(ort_err)?
             .with_intra_threads(threads)
-            .map_err(ort_err)?
-            .commit_from_file(onnx_path)
             .map_err(ort_err)?;
+        // Opt-in memory experiments for the shared judge. Defaults remain identical to upstream ORT.
+        if std::env::var_os("OMP_CONTEXT_LAYA_DISABLE_PREPACKING").is_some() {
+            session = session.with_prepacking(false).map_err(ort_err)?;
+        }
+        if std::env::var_os("OMP_CONTEXT_LAYA_ENV_ALLOCATORS").is_some() {
+            session = session.with_env_allocators().map_err(ort_err)?;
+        }
+        if std::env::var_os("OMP_CONTEXT_LAYA_DISABLE_MEMORY_PATTERN").is_some() {
+            session = session.with_memory_pattern(false).map_err(ort_err)?;
+        }
+        if std::env::var_os("OMP_CONTEXT_LAYA_DISABLE_ARENA").is_some() {
+            session = session
+                .with_config_entry("session.enable_cpu_mem_arena", "0")
+                .map_err(ort_err)?;
+        }
+        let session = session.commit_from_file(onnx_path).map_err(ort_err)?;
         Ok(Self {
             env,
             session,
