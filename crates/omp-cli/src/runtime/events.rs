@@ -101,12 +101,6 @@ impl Runtime {
         }
         if let AgentEvent::AgentEnd { messages } = event {
             self.on_agent_end(frame, messages);
-            if !interactive {
-                // Free pages on the thread that produced the message/update values.
-                // The RPC writer also collects its own encoding transient pages;
-                // collecting only there leaves the agent thread's heaps retained.
-                crate::collect_retained_memory();
-            }
             return;
         }
         let mut frame = frame;

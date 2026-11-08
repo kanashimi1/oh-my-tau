@@ -29,6 +29,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bin", type=Path, default=REPO / "target/shared/release/omt")
     p.add_argument("--turns", type=int, default=50)
     p.add_argument("--payload-kb", type=int, default=4)
+    p.add_argument("--spike-kb", type=int, help="use a larger first-turn payload to test retained spikes")
     p.add_argument("--stream-chunk-bytes", type=int, default=16)
     p.add_argument("--vary-payload", action="store_true", help="vary each turn's size deterministically")
     p.add_argument("--out", type=Path, help="write all samples and the summary as JSON")
@@ -47,13 +48,13 @@ def main() -> int:
 
     def stream_script(model: str, messages: list[dict]):
         if model.removeprefix("mock/") == "stream":
-            size_kb = args.payload_kb
-            if args.vary_payload:
-                turn = next((
-                    int(m.get("content", "").removeprefix("turn "))
-                    for m in reversed(messages)
-                    if m.get("role") == "user" and str(m.get("content", "")).startswith("turn ")
-                ), 1)
+            turn = next((
+                int(m.get("content", "").removeprefix("turn "))
+                for m in reversed(messages)
+                if m.get("role") == "user" and str(m.get("content", "")).startswith("turn ")
+            ), 1)
+            size_kb = args.spike_kb if turn == 1 and args.spike_kb else args.payload_kb
+            if args.vary_payload and not (turn == 1 and args.spike_kb):
                 size_kb = max(1, args.payload_kb + ((turn * 37) % 17 - 8) * args.payload_kb // 8)
             size = size_kb * 1024
             step = args.stream_chunk_bytes
@@ -192,9 +193,11 @@ def main() -> int:
 
             first, last = points[1], points[-1]
             settled_growth = last["rssAnonKb"] - first["rssAnonKb"]
+            growth_from_start = last["rssAnonKb"] - points[0]["rssAnonKb"]
             summary = {
                 "turns": args.turns,
                 "payloadKbPerTurn": args.payload_kb,
+                "spikeKbFirstTurn": args.spike_kb,
                 "varyPayload": args.vary_payload,
                 "streamChunkBytes": args.stream_chunk_bytes,
                 "deltasPerTurn": (args.payload_kb * 1024 + args.stream_chunk_bytes - 1) // args.stream_chunk_bytes,
@@ -203,6 +206,9 @@ def main() -> int:
                 "settledRssAnonKb": last["rssAnonKb"],
                 "settledGrowthKb": settled_growth,
                 "settledGrowthKbPerTurn": round(settled_growth / (args.turns - 1), 2),
+                "startRssAnonKb": points[0]["rssAnonKb"],
+                "settledGrowthFromStartKb": growth_from_start,
+                "settledGrowthFromStartKbPerTurn": round(growth_from_start / args.turns, 2),
                 "maxPeakRssAnonKb": max(point["peakRssAnonKb"] for point in points[1:]),
             }
             result = {"summary": summary, "points": points}

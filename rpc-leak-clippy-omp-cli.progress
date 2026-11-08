@@ -1,0 +1,3 @@
+[ 132s]     = help: move the items to before the test module was defined
+[ 133s] error: could not compile `omp-cli` (bin "omt" test) due to 53 previous errors
+EXIT 101 2026-11-08T20:38:08Z

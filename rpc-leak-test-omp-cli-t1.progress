@@ -1,0 +1,3 @@
+[  69s] test tools::wait::tests::one_wait_delivers_a_whole_spawned_batch_together ... 
+[  70s] error: test failed, to rerun pass `-p omp-cli --bin omt`
+EXIT 101 2026-11-08T20:44:56Z
