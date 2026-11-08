@@ -99,6 +99,24 @@ impl Runtime {
         {
             self.publish_context_usage();
         }
+        // Free pages on the thread that produced the per-update message values.
+        // Every full-partial `message_update` frame clones the whole partial
+        // assistant message on this thread; the RPC writer frees those clones on
+        // another thread, and without a producer-side collect mimalloc keeps the
+        // worker's pages committed for the process lifetime. One 64 KiB reply in
+        // 4,096 deltas settled at 158.8 MiB anonymous RSS without this and
+        // 18.5 MiB with it. Collect per model turn (not only at run end): the
+        // 18 GB leak session ran 1,620 model turns inside few prompts, so
+        // run-end collection alone would still accumulate within a run. The
+        // interactive TUI renders on this thread and collects at exit.
+        if !interactive
+            && matches!(
+                event,
+                AgentEvent::AgentEnd { .. } | AgentEvent::TurnEnd { .. }
+            )
+        {
+            crate::collect_retained_memory();
+        }
         if let AgentEvent::AgentEnd { messages } = event {
             self.on_agent_end(frame, messages);
             return;
