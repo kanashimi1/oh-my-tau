@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--turns", type=int, default=50)
     p.add_argument("--payload-kb", type=int, default=4)
     p.add_argument("--stream-chunk-bytes", type=int, default=16)
+    p.add_argument("--vary-payload", action="store_true", help="vary each turn's size deterministically")
     p.add_argument("--out", type=Path, help="write all samples and the summary as JSON")
     p.add_argument(
         "--max-settled-growth-kb",
@@ -46,7 +47,15 @@ def main() -> int:
 
     def stream_script(model: str, messages: list[dict]):
         if model.removeprefix("mock/") == "stream":
-            size = args.payload_kb * 1024
+            size_kb = args.payload_kb
+            if args.vary_payload:
+                turn = next((
+                    int(m.get("content", "").removeprefix("turn "))
+                    for m in reversed(messages)
+                    if m.get("role") == "user" and str(m.get("content", "")).startswith("turn ")
+                ), 1)
+                size_kb = max(1, args.payload_kb + ((turn * 37) % 17 - 8) * args.payload_kb // 8)
+            size = size_kb * 1024
             step = args.stream_chunk_bytes
             parts = ["x" * min(step, size - i) for i in range(0, size, step)]
             return [{"role": "assistant", "content": parts[0]}] + [
@@ -186,6 +195,7 @@ def main() -> int:
             summary = {
                 "turns": args.turns,
                 "payloadKbPerTurn": args.payload_kb,
+                "varyPayload": args.vary_payload,
                 "streamChunkBytes": args.stream_chunk_bytes,
                 "deltasPerTurn": (args.payload_kb * 1024 + args.stream_chunk_bytes - 1) // args.stream_chunk_bytes,
                 "elapsedSeconds": round(time.monotonic() - started, 3),
