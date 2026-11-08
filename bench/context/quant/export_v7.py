@@ -24,6 +24,8 @@ def main() -> None:
     model, tok, cfg = load_checkpoint(str(args.ckpt))
     model.eval()
     model.head_checkpointing = False
+    torch.set_num_threads(2)
+    torch.set_num_interop_threads(1)
     rows = read_rows(args.data / "val.jsonl")
     items, skipped = items_from_rows(tok, rows[:1], cfg.get("max_len", 1024), cfg.get("head_max_len", 256))
     assert not skipped and len(items) == 1

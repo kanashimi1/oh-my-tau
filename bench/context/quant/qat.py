@@ -68,6 +68,7 @@ def main() -> None:
     ap.add_argument("--grad-accum", type=int, default=8)
     ap.add_argument("--encoder-lr", type=float, default=1e-5)
     ap.add_argument("--head-lr", type=float, default=1e-5)
+    ap.add_argument("--ce-weight", type=float, default=0.2, help="gold soft-CE weight; 0 is pure distillation")
     ap.add_argument("--seed", type=int, default=41873)
     args = ap.parse_args()
     if args.out.exists() and any(args.out.iterdir()):
@@ -138,7 +139,7 @@ def main() -> None:
         student_log_probs = torch.log_softmax(logits.masked_fill(~mask, -1e4), dim=-1)
         kd = -(teacher_probs * student_log_probs * mask).sum() / mask.sum()
         ce = soft_ce_loss(logits, target, mask)
-        loss = kd + 0.2 * ce
+        loss = kd + args.ce_weight * ce
         window = min(args.grad_accum, steps_per_epoch - (step // args.grad_accum) * args.grad_accum)
         (loss / window).backward()
         total_loss += float(loss.detach())
@@ -162,6 +163,7 @@ def main() -> None:
     save_checkpoint(student, tok, cfg, str(args.out))
     result = {"train_items": len(train), "val_items": len(val), "micro_batch": args.micro_batch,
               "grad_accum": args.grad_accum, "encoder_lr": args.encoder_lr, "head_lr": args.head_lr,
+              "ce_weight": args.ce_weight,
               "updates": updates, "mean_loss": total_loss / steps_per_epoch,
               "fake_quant_modules": len(quantized_modules), "validation": validation,
               "teacher_cache": str(args.teacher_cache)}
