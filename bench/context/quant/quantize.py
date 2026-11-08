@@ -62,24 +62,27 @@ def main() -> None:
     ap.add_argument("--quant-gather", action="store_true")
     ap.add_argument("--exclude-regex", action="append", default=[],
                     help="exclude a MatMul/Gemm/Gather when regex matches its name or initializer inputs")
+    ap.add_argument("--exclude-node", action="append", default=[], help="exact ONNX node name to keep unquantized")
     ap.add_argument("--percentile", type=float, default=0.0, help="static Percentile calibration, e.g. 99.9")
     args = ap.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
-    model = onnx.load(str(args.input))
-    model.graph.ClearField("value_info")  # stale inferred types break ORT quantization shape handling
-    excluded = []
-    for node in model.graph.node:
-        description = " ".join([node.name, *node.input])
-        if node.op_type in ("MatMul", "Gemm", "Gather") and any(
-                re.search(pattern, description) for pattern in args.exclude_regex):
-            if not node.name:
-                raise ValueError(f"cannot exclude unnamed node: {description}")
-            excluded.append(node.name)
+    model = None
+    excluded = list(args.exclude_node)
+    if args.exclude_regex:
+        model = onnx.load(str(args.input))
+        model.graph.ClearField("value_info")  # stale inferred types break ORT quantization shape handling
+        for node in model.graph.node:
+            description = " ".join([node.name, *node.input])
+            if node.op_type in ("MatMul", "Gemm", "Gather") and any(
+                    re.search(pattern, description) for pattern in args.exclude_regex):
+                if not node.name:
+                    raise ValueError(f"cannot exclude unnamed node: {description}")
+                excluded.append(node.name)
     op_types = ["MatMul", "Gemm"] + (["Gather"] if args.quant_gather else [])
-    common = dict(model_input=model, model_output=str(args.output), op_types_to_quantize=op_types,
-                  per_channel=True, reduce_range=False, weight_type=QuantType.QInt8,
-                  nodes_to_exclude=excluded, use_external_data_format=False)
+    common = dict(model_input=model if model is not None else str(args.input), model_output=str(args.output),
+                  op_types_to_quantize=op_types, per_channel=True, reduce_range=False, weight_type=QuantType.QInt8,
+                  nodes_to_exclude=excluded, use_external_data_format=True)
     print(f"QUANT start mode={args.mode} ops={op_types} excluded={len(excluded)}", flush=True)
     if args.mode == "dynamic":
         quantize_dynamic(**common, extra_options={"MatMulConstBOnly": True})

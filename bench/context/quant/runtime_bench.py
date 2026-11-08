@@ -73,7 +73,7 @@ def main() -> None:
                 sample = {"t": time.time() - started, **rss(own_pid)}
                 samples.append(sample)
                 cmdline = Path(f"/proc/{own_pid}/cmdline").read_bytes().split(b"\0")
-                if "--sock" in cmdline:
+                if b"--sock" in cmdline:
                     sock = Path(cmdline[cmdline.index(b"--sock") + 1].decode())
                     log = sock.with_suffix(".log")
                     if ready_rss is None and log.exists() and " ready in " in log.read_text():
@@ -93,8 +93,10 @@ def main() -> None:
         raise RuntimeError(f"judge-sessions failed ({proc.returncode}):\n{stdout}\n{stderr}")
     rows = [json.loads(x) for x in args.scores.read_text().splitlines() if x.strip()]
     latencies = [r["latency_ms"] for r in rows]
+    external = Path(str(args.onnx) + ".data")
+    model_bytes = args.onnx.stat().st_size + (external.stat().st_size if external.exists() else 0)
     result = {
-        "onnx": str(args.onnx), "onnx_bytes": args.onnx.stat().st_size, "daemon_pid": own_pid,
+        "onnx": str(args.onnx), "onnx_bytes": model_bytes, "daemon_pid": own_pid,
         "episodes": len(rows), "ready_rss": ready_rss,
         "peak_sampled_rss_kb": max((s["VmRSS"] for s in samples), default=None),
         "peak_hwm_rss_kb": max((s["VmHWM"] for s in samples), default=None),

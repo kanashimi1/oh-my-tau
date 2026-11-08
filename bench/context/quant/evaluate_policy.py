@@ -59,20 +59,26 @@ def main() -> None:
     temperature = float(cfg.get("temperature", [1.0])[0])
     if args.reference:
         ref = np.load(args.reference)
-        if not np.array_equal(labels, ref["labels"]):
-            raise ValueError("reference labels differ; use the same split and limit")
         reference_logits = ref["logits"]
+        reference_labels = ref["labels"]
+        if len(reference_labels) != len(labels) and args.limit:
+            reference_logits = reference_logits[:len(labels)]
+            reference_labels = reference_labels[:len(labels)]
+        if not np.array_equal(labels, reference_labels):
+            raise ValueError("reference labels differ; use the same split and limit")
         if reference_logits.shape != logits.shape:
             raise ValueError(f"reference shape {reference_logits.shape} != {logits.shape}")
     else:
         reference_logits = logits
+    external = Path(str(args.onnx) + ".data")
+    model_bytes = args.onnx.stat().st_size + (external.stat().st_size if external.exists() else 0)
     metrics = quality(logits, reference_logits, labels, temperature=temperature)
     from common import softmax
     reference_probs = softmax(reference_logits, temperature=temperature)
     noise = bootstrap_noise(reference_probs, labels)
     metrics.update({
         "split": args.split, "onnx": str(args.onnx), "reference": str(args.reference or args.onnx),
-        "temperature": temperature, "onnx_bytes": args.onnx.stat().st_size,
+        "temperature": temperature, "onnx_bytes": model_bytes,
         "mean_batch_item_latency_ms": float(np.mean(times) * 1000),
         "calibration_noise": noise,
         "nll_within_noise": bool(abs(metrics["candidate_nll"] - metrics["reference_nll"]) <= noise["nll_abs_delta_p95"]),
