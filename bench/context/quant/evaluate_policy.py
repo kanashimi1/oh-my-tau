@@ -37,6 +37,7 @@ def main() -> None:
     ap.add_argument("--split", default="test", choices=("train", "val", "test"))
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--reference", type=Path, help="npz from a prior --save-predictions run")
+    ap.add_argument("--predictions", type=Path, help="reuse logits instead of running ONNX inference")
     ap.add_argument("--save-predictions", type=Path)
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--batch-size", type=int, default=8)
@@ -49,8 +50,12 @@ def main() -> None:
         rows = rows[:args.limit]
     encoded = encode_rows(tok, cfg, rows)
     labels = targets(encoded)
-    logits, act_logits, times = onnx_predict(args.onnx, args.ckpt, encoded,
-                                             batch_size=args.batch_size, threads=args.threads)
+    if args.predictions:
+        saved = np.load(args.predictions)
+        logits, act_logits, times = saved["logits"], saved["act_logits"], saved["times"].tolist()
+    else:
+        logits, act_logits, times = onnx_predict(args.onnx, args.ckpt, encoded,
+                                                 batch_size=args.batch_size, threads=args.threads)
     temperature = float(cfg.get("temperature", [1.0])[0])
     if args.reference:
         ref = np.load(args.reference)
@@ -70,8 +75,8 @@ def main() -> None:
         "temperature": temperature, "onnx_bytes": args.onnx.stat().st_size,
         "mean_batch_item_latency_ms": float(np.mean(times) * 1000),
         "calibration_noise": noise,
-        "nll_within_noise": abs(metrics["candidate_nll"] - metrics["reference_nll"]) <= noise["nll_abs_delta_p95"],
-        "ece_within_noise": abs(metrics["candidate_ece"] - metrics["reference_ece"]) <= noise["ece_abs_delta_p95"],
+        "nll_within_noise": bool(abs(metrics["candidate_nll"] - metrics["reference_nll"]) <= noise["nll_abs_delta_p95"]),
+        "ece_within_noise": bool(abs(metrics["candidate_ece"] - metrics["reference_ece"]) <= noise["ece_abs_delta_p95"]),
     })
     metrics["passes_policy_gate"] = bool(metrics["argmax_agreement"] >= .995 and
                                             abs(metrics["macro_f1_delta_pp"]) <= .5 and

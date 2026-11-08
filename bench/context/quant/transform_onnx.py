@@ -50,13 +50,14 @@ def prune(args) -> None:
         raise ValueError(f"embedding has {embedding.dims[0]} rows, tokenizer needs {size}")
     original_rows = int(embedding.dims[0])
     weights = numpy_helper.to_array(embedding)
-    del model.graph.initializer[model.graph.initializer.index(embedding)]
-    model.graph.initializer.append(numpy_helper.from_array(weights[:size].copy(), embedding.name))
+    embedding_name = embedding.name
+    model.graph.initializer.remove(embedding)
+    model.graph.initializer.append(numpy_helper.from_array(weights[:size].copy(), embedding_name))
     # Preserve the original graph's embedding name and output semantics; only unreachable rows vanish.
     tokenizer_json = (args.ckpt / "tokenizer/tokenizer.json").read_bytes()
     save(model, args.output, {
         "transformation": "exact_vocab_prune", "source": str(args.input),
-        "embedding": embedding.name, "original_rows": original_rows, "kept_rows": size,
+        "embedding": embedding_name, "original_rows": original_rows, "kept_rows": size,
         "removed_rows": original_rows - size,
         "proof": "AutoTokenizer vocabulary and added-token IDs are exactly the contiguous range 0..len(tokenizer)-1",
         "tokenizer_sha256": hashlib.sha256(tokenizer_json).hexdigest(),
@@ -89,7 +90,10 @@ def fp16_weights(args) -> None:
                     node.input[i] = cast_name
         graph.initializer.remove(initializer)
         converted += 1
+    original_nodes = list(graph.node)
+    graph.ClearField("node")
     graph.node.extend(casts)
+    graph.node.extend(original_nodes)
     graph.ClearField("value_info")
     save(model, args.output, {"transformation": "fp16_initializer_storage_fp32_compute",
                               "source": str(args.input), "converted_initializers": converted})
@@ -99,21 +103,38 @@ def fp16_native(args) -> None:
     from onnxruntime.transformers.float16 import convert_float_to_float16
 
     model = load(args.input)
-    converted = convert_float_to_float16(model, keep_io_types=True, disable_shape_inference=True,
+    converted = convert_float_to_float16(model, keep_io_types=True, disable_shape_infer=True,
                                          op_block_list=args.block_op or None)
     save(converted, args.output, {"transformation": "native_fp16", "source": str(args.input),
                                   "keep_io_types": True, "op_block_list": args.block_op})
 
 
+def external_data(args) -> None:
+    """Store tensors in one external file so ORT can use file-backed external initializers."""
+    model = load(args.input)
+    if args.output.exists():
+        raise FileExistsError(args.output)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    location = args.output.name + ".data"
+    onnx.convert_model_to_external_data(model, all_tensors_to_one_file=True, location=location,
+                                        size_threshold=0, convert_attribute=False)
+    onnx.save_model(model, str(args.output), save_as_external_data=True, all_tensors_to_one_file=True,
+                    location=location, size_threshold=0)
+    args.output.with_suffix(".json").write_text(json.dumps({
+        "transformation": "external_data", "source": str(args.input), "location": location}, indent=2) + "\n")
+    print(f"SAVED {args.output} bytes={args.output.stat().st_size} data={location}", flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=("prune", "fp16-weights", "fp16-native"))
+    ap.add_argument("mode", choices=("prune", "fp16-weights", "fp16-native", "external"))
     ap.add_argument("--input", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--ckpt", type=Path, default=DEFAULT_CKPT)
     ap.add_argument("--block-op", action="append", help="fp16-native ONNX op type to keep in fp32")
     args = ap.parse_args()
-    {"prune": prune, "fp16-weights": fp16_weights, "fp16-native": fp16_native}[args.mode](args)
+    {"prune": prune, "fp16-weights": fp16_weights, "fp16-native": fp16_native,
+     "external": external_data}[args.mode](args)
 
 
 if __name__ == "__main__":
