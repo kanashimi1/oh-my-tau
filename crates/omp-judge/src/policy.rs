@@ -2,8 +2,6 @@
 //! over a controller-state text rendered by `omp-cli`'s `context_policy` module (and, byte-identically,
 //! by `bench/context/ctxp.py` when the training set is built).
 
-use std::path::Path;
-
 use anyhow::{Context, Result};
 use serde_json::Value;
 
@@ -12,9 +10,9 @@ use crate::scorer::ModelPaths;
 /// The single question every `ctx_policy` record carries (also read by the Python dataset builder).
 pub const QUESTIONS: &str = include_str!("policy_questions.json");
 
-/// Loaded policy head. Owns the ONNX session; not `Sync`.
+/// Loaded policy head. Talks to the shared judge daemon ([`crate::shared`]); not `Sync`.
 pub struct PolicyScorer {
-    judge: laya_ort::Judge,
+    judge: crate::shared::Client,
     questions: Value,
 }
 
@@ -22,12 +20,7 @@ impl PolicyScorer {
     /// # Errors
     /// Missing/invalid checkpoint or ONNX file.
     pub fn load(paths: &ModelPaths) -> Result<Self> {
-        let judge = laya_ort::Judge::load(
-            Path::new(&paths.ckpt),
-            Path::new(&paths.onnx),
-            paths.threads.max(1),
-        )
-        .with_context(|| {
+        let judge = crate::shared::Client::connect(paths).with_context(|| {
             format!(
                 "load laya policy (ckpt {}, onnx {})",
                 paths.ckpt.display(),

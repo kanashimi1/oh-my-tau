@@ -5,6 +5,7 @@
 //! * [`view`] — the judge input (port of `judge_view.view_sel`, byte-identical).
 //! * [`policy`] — context-policy head (`noop | clm_edit | rlm_offload | rlm_recall`) over the same ONNX runtime.
 //! * [`scorer`] — ONNX inference through `laya-ort`.
+//! * [`shared`] — one judge daemon per model shared by all `omt` processes (Unix socket).
 //! * [`shadow`] — env-gated background worker for the turn-end shadow hook.
 //! * [`offline`] — score historical session files with the same code.
 
@@ -14,4 +15,5 @@ pub mod policy;
 pub mod pyfmt;
 pub mod scorer;
 pub mod shadow;
+pub mod shared;
 pub mod view;

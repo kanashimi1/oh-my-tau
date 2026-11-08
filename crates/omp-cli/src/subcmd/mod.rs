@@ -12,6 +12,7 @@ pub mod gc;
 pub mod hub;
 pub mod hub_mcp;
 pub mod judge_sessions;
+pub mod laya_serve;
 pub mod login;
 pub mod models;
 pub mod review;
@@ -32,6 +33,7 @@ pub fn known(name: &str) -> bool {
             | "gc"
             | "export"
             | "judge-sessions"
+            | "laya-serve"
             | "login"
             | "logout"
             | "collab"
@@ -57,6 +59,7 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "gc" => gc::run(args),
         "export" => export::run(args),
         "judge-sessions" => judge_sessions::run(args),
+        "laya-serve" => laya_serve::run(args),
         "login" => login::run_login(args),
         "logout" => login::run_logout(args),
         "collab" => collab::run(args),
