@@ -23,6 +23,9 @@ __pycache__/
 # Run and benchmark artifacts
 runs/
 bench/results/
+rpc-leak-*.log
+rpc-leak-*.progress
+.omp-offload/
 bench/context/results/
 bench/context/RESULTS-*.md
 bench/rlm/results/

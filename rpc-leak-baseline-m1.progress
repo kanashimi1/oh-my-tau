@@ -1,3 +1,0 @@
-[   4s] == m1. one rpc session: per-process RSS/PSS breakdown, growth over 50 turns
-[   5s] wrote /home/kaneki/fleet-split/omt-wt/rpc-leak/bench/results/2026-11-08T16-49-09.md
-EXIT 0 2026-11-08T16:49:14Z

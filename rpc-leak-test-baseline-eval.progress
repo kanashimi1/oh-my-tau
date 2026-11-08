@@ -1,3 +1,0 @@
-[ 797s] test tools::eval::eval_tests::python_failed_cell_rolls_back_new_names ... 
-[ 798s] error: test failed, to rerun pass `-p omp-cli --bin omt`
-EXIT 101 2026-11-08T20:58:54Z
