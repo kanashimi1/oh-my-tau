@@ -57,20 +57,29 @@ def onnx_predict(onnx_path: Path, ckpt: Path, encoded: list[dict], batch_size: i
     opts.log_severity_level = 3
     session = ort.InferenceSession(str(onnx_path), sess_options=opts, providers=["CPUExecutionProvider"])
     tok = AutoTokenizer.from_pretrained(ckpt / "tokenizer")
-    all_logits, all_act, times = [], [], []
-    for start in range(0, len(encoded), batch_size):
-        chunk = encoded[start:start + batch_size]
+    # Runtime also batches by length. Besides matching that behavior, sorting avoids padding
+    # every short controller state to the longest state in an arbitrary dataset chunk.
+    order = sorted(range(len(encoded)), key=lambda i: len(encoded[i]["ids"]))
+    all_logits: list[np.ndarray | None] = [None] * len(encoded)
+    all_act: list[np.ndarray | None] = [None] * len(encoded)
+    times = [0.0] * len(encoded)
+    for start in range(0, len(order), batch_size):
+        indices = order[start:start + batch_size]
+        chunk = [encoded[i] for i in indices]
         batch = collate(chunk, tok.pad_token_id)
         before = time.perf_counter()
         logits, act = session.run(["logits", "act_logits"], batch)
         elapsed = time.perf_counter() - before
-        times.extend([elapsed / len(chunk)] * len(chunk))
-        all_logits.append(logits)
-        all_act.append(act)
+        for row, original in enumerate(indices):
+            all_logits[original] = logits[row]
+            all_act[original] = act[row]
+            times[original] = elapsed / len(chunk)
         if verbose and (start // batch_size) % 10 == 0:
-            print(f"onnx {start + len(chunk)}/{len(encoded)} {elapsed:.3f}s/batch", flush=True)
+            print(f"onnx {start + len(chunk)}/{len(encoded)} {elapsed:.3f}s/batch "
+                  f"length={batch['input_ids'].shape[1]}", flush=True)
+    assert all(x is not None for x in all_logits) and all(x is not None for x in all_act)
     # All policy examples have four options. Keep this evaluator deliberately specific to v7.
-    return np.concatenate(all_logits), np.concatenate(all_act), times
+    return np.stack(all_logits), np.stack(all_act), times
 
 
 def torch_predict(ckpt: Path, encoded: list[dict], batch_size: int = 8,
