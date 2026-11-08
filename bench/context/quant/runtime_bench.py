@@ -76,7 +76,7 @@ def main() -> None:
                 if b"--sock" in cmdline:
                     sock = Path(cmdline[cmdline.index(b"--sock") + 1].decode())
                     log = sock.with_suffix(".log")
-                    if ready_rss is None and log.exists() and " ready in " in log.read_text():
+                    if ready_rss is None and log.exists() and f"pid {own_pid} ready in " in log.read_text():
                         ready_rss = sample
             except FileNotFoundError:
                 pass
@@ -89,6 +89,10 @@ def main() -> None:
             os.kill(own_pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
+        for _ in range(50):
+            if not Path(f"/proc/{own_pid}").exists():
+                break
+            time.sleep(.1)
     if proc.returncode:
         raise RuntimeError(f"judge-sessions failed ({proc.returncode}):\n{stdout}\n{stderr}")
     rows = [json.loads(x) for x in args.scores.read_text().splitlines() if x.strip()]

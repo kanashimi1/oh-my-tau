@@ -13,6 +13,7 @@ import numpy as np
 import onnx
 from onnxruntime.quantization import (CalibrationDataReader, CalibrationMethod, QuantFormat, QuantType,
                                       quantize_dynamic, quantize_static)
+from onnxruntime.quantization.qdq_quantizer import QDQQuantizer
 from transformers import AutoTokenizer
 
 from common import DEFAULT_CKPT, DEFAULT_DATA, collate, encode_rows, read_rows
@@ -64,6 +65,7 @@ def main() -> None:
                     help="exclude a MatMul/Gemm/Gather when regex matches its name or initializer inputs")
     ap.add_argument("--exclude-node", action="append", default=[], help="exact ONNX node name to keep unquantized")
     ap.add_argument("--percentile", type=float, default=0.0, help="static Percentile calibration, e.g. 99.9")
+    ap.add_argument("--ranges", type=Path, help="precomputed static ranges from calibrate_static.py")
     args = ap.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
@@ -88,16 +90,29 @@ def main() -> None:
         quantize_dynamic(**common, extra_options={"MatMulConstBOnly": True})
         calibration = None
     else:
-        reader = StateCalibrationReader(args.ckpt, args.data, args.calibration_states, args.seed)
-        method = CalibrationMethod.Percentile if args.percentile else CalibrationMethod.MinMax
-        extra = {"CalibMovingAverage": True}
-        if args.percentile:
-            extra["CalibPercentile"] = args.percentile
-        quantize_static(**common, calibration_data_reader=reader, quant_format=QuantFormat.QDQ,
-                        activation_type=QuantType.QUInt8, calibrate_method=method,
-                        calibration_providers=["CPUExecutionProvider"], extra_options=extra)
-        calibration = {"states": len(reader.encoded), "seed": args.seed, "method": str(method),
-                       "percentile": args.percentile, "episode_ids": reader.episode_ids}
+        if args.ranges:
+            import pickle
+            if model is None:
+                model = onnx.load(str(args.input))
+            with args.ranges.open("rb") as f:
+                ranges = pickle.load(f)
+            quantizer = QDQQuantizer(model, True, False, QuantType.QInt8, QuantType.QUInt8, ranges,
+                                     None, excluded, op_types, extra_options=None)
+            quantized = quantizer.quantize_model()
+            onnx.save_model(quantized, str(args.output), save_as_external_data=True,
+                            all_tensors_to_one_file=True, location=args.output.name + ".data", size_threshold=0)
+            calibration = {"ranges": str(args.ranges)}
+        else:
+            reader = StateCalibrationReader(args.ckpt, args.data, args.calibration_states, args.seed)
+            method = CalibrationMethod.Percentile if args.percentile else CalibrationMethod.MinMax
+            extra = {"CalibMovingAverage": True}
+            if args.percentile:
+                extra["CalibPercentile"] = args.percentile
+            quantize_static(**common, calibration_data_reader=reader, quant_format=QuantFormat.QDQ,
+                            activation_type=QuantType.QUInt8, calibrate_method=method,
+                            calibration_providers=["CPUExecutionProvider"], extra_options=extra)
+            calibration = {"states": len(reader.encoded), "seed": args.seed, "method": str(method),
+                           "percentile": args.percentile, "episode_ids": reader.episode_ids}
     metadata = {"transformation": f"{args.mode}_int8", "source": str(args.input),
                 "per_channel": True, "weight_type": "QInt8", "activation_type": "QUInt8" if args.mode == "static" else None,
                 "op_types": op_types, "exclude_regex": args.exclude_regex, "excluded_nodes": excluded,
