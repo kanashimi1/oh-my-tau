@@ -1,0 +1,145 @@
+bench/run.ts:3:// All LLM traffic goes to bench/mock-server.ts (no network).
+bench/run.ts:43:// --only mem: memory scenarios m1 (per-session breakdown), m2 (N-session fleet
+bench/run.ts:44:// RSS/PSS), m3 (resume RSS+wall). Usage: bun bench/run.ts --quick --only mem
+bench/run.ts:45:if (args.includes("--only") && args[args.indexOf("--only") + 1] === "mem") {
+bench/run.ts:70:      "  mock:",
+bench/run.ts:72:      "    apiKey: mock-key-not-a-secret",
+bench/run.ts:76:      "        name: mock text",
+bench/run.ts:80:      "        name: mock 5-tool turn",
+bench/run.ts:85:        `        name: mock bench ${t}`,
+bench/run.ts:122:/** The 5 largest real session files, copied read-only into the temp agent dir. */
+bench/run.ts:154:// ---------- mock provider lifecycle ----------
+bench/run.ts:156:let mockProc: Subprocess | null = null;
+bench/run.ts:157:let mockLog = "";
+bench/run.ts:161:  mockLog = join(BENCH_DIR, "tmp", `mock-${NOW}-${logSuffix}.jsonl`);
+bench/run.ts:162:  mockProc = Bun.spawn(["bun", join(BENCH_DIR, "mock-server.ts")], {
+bench/run.ts:167:      MOCK_LOG: mockLog,
+bench/run.ts:168:      MOCK_READ_FILE: join(REPO_ROOT, "crates/omp-cli/src/rpc.rs"),
+bench/run.ts:177:  // (e.g. a stale mock from an earlier run) answers with a different mock_log: fail loudly
+bench/run.ts:183:        const body = (await res.json()) as { mock_log?: string };
+bench/run.ts:184:        if (body.mock_log === mockLog) return;
+bench/run.ts:185:        throw new Error(`port ${MOCK_PORT} is held by a foreign mock (log ${body.mock_log ?? "?"}); kill it and rerun`);
+bench/run.ts:188:      if (e instanceof Error && e.message.includes("foreign mock")) throw e;
+bench/run.ts:191:    if (mockProc?.exitCode !== null && mockProc?.exitCode !== undefined) {
+bench/run.ts:192:      throw new Error(`mock provider exited with code ${mockProc.exitCode} (port ${MOCK_PORT} busy?)`);
+bench/run.ts:196:  throw new Error("mock provider did not start");
+bench/run.ts:200:  if (mockProc) {
+bench/run.ts:202:      mockProc.kill("SIGKILL");
+bench/run.ts:206:    mockProc = null;
+bench/run.ts:218:  if (!existsSync(mockLog)) return [];
+bench/run.ts:219:  return readFileSync(mockLog, "utf8")
+bench/run.ts:271:  return [bin.path, "run the benchmark", "-p", "--model", `mock/${model}`, "--max-time", "120", ...extra];
+bench/run.ts:279:  opts: { cwd?: string; rss?: boolean } = {},
+bench/run.ts:280:): Promise<{ runs: Stats; rssPeakKb?: Stats; samples: number[]; rssSamples: number[] }> {
+bench/run.ts:282:  const rssSamples: number[] = [];
+bench/run.ts:284:    const r = await runTimed(makeCmd(), { cwd: opts.cwd ?? WORKDIR, env, rssSampling: opts.rss });
+bench/run.ts:287:    if (opts.rss) rssSamples.push(r.peakRssKb);
+bench/run.ts:289:  return { runs: stats(samples), rssPeakKb: rssSamples.length ? stats(rssSamples) : undefined, samples, rssSamples };
+bench/run.ts:303:  const title = "1. cold start to ready (-p and rpc), with/without extensions";
+bench/run.ts:310:    for (const mode of ["print", "rpc"] as const) {
+bench/run.ts:330:                [bin.path, "--mode", "rpc", "--model", "mock/text"],
+bench/run.ts:353:  const title = "2. RSS peak/steady: 1 session, N=1/4/16 parallel rpc sessions";
+bench/run.ts:374:              RpcClient.start([bin.path, "--mode", "rpc", "--model", "mock/toolturn"], {
+bench/run.ts:381:          const idle = await Promise.all(clients.map((c) => c.rssNow()));
+bench/run.ts:416:  const title = "3. per-turn overhead: scripted 5-tool-call turn (mock, latency 0)";
+bench/run.ts:434:        const client = await RpcClient.start([bin.path, "--mode", "rpc", "--model", "mock/toolturn"], {
+bench/run.ts:449:        extra: { dispatchGapMs: g, note: "gap = mock resp_end -> next LLM req (dispatch + tool exec + hook overhead)" },
+bench/run.ts:461:  const title = "4. tool microbenchmarks (read/grep/glob/find/edit/bash) on a large repo";
+bench/run.ts:483:          const client = await RpcClient.start([bin.path, "--mode", "rpc", "--model", `mock/bench-${tool}`], {
+bench/run.ts:508:  const title = "5. session load/resume of the 5 largest real session files (read-only copies)";
+bench/run.ts:594:            [bin.path, "--mode", "rpc", "--model", "mock/toolturn", ...(withExt ? [] : ["--no-extensions"])] as string[],
+bench/run.ts:670:      if (done) throw new Error("rpc process closed stdout");
+bench/run.ts:677:   * the response otherwise), like lib.ts RpcClient. Returns the wall time from
+bench/run.ts:747: * warm-up turns both run the same toolturn N times, interleaved (turn i on
+bench/run.ts:761:    `warm, paired (s6w): ${WARM} warm-up + ${TURNS} measured turns per process, interleaved, fresh session per turn; delta = median of per-turn (ext − no-ext)`,
+bench/run.ts:765:    "| bin | no-ext turn median ms | ext turn median ms | paired delta median ms (IQR) | rpc events/turn (message_update) | ext-host emits/turn | per-event delta ms |",
+bench/run.ts:780:      "rpc",
+bench/run.ts:782:      "mock/toolturn",
+bench/run.ts:854:      const rpcEvents = Object.entries(eventsExt)
+bench/run.ts:859:      const denom = extEmitsPerTurn ?? rpcEvents;
+bench/run.ts:871:          turns: TURNS,
+bench/run.ts:876:          rpcEventsPerTurn: rpcEvents,
+bench/run.ts:877:          rpcEventsByType: eventsExt,
+bench/run.ts:880:          perEventDenominator: extEmitsPerTurn !== null ? "extEmitsPerTurn" : "rpcEventsPerTurn",
+bench/run.ts:884:        `| ${bin.name} | ${sNo.median.toFixed(1)} | ${sExt.median.toFixed(1)} | ${deltaMed.toFixed(1)} (${quantile(paired, 0.25).toFixed(1)}–${quantile(paired, 0.75).toFixed(1)}) | ${rpcEvents} (${msgUpdates}) | ${extEmitsPerTurn ?? "-"} | ${Number.isFinite(perEvent) ? perEvent.toFixed(3) : "-"} |`,
+bench/run.ts:886:      if (!resetOk) mdLines.push(`| ${bin.name} | note: new_session failed; turns did not start from an empty session | | | | | |`);
+bench/run.ts:899:  const title = "7. throughput: N concurrent rpc sessions running the toolturn";
+bench/run.ts:902:  mdLines.push("| bin | N | wall median ms | turns/sec |");
+bench/run.ts:919:              RpcClient.start([bin.path, "--mode", "rpc", "--model", "mock/toolturn"], {
+bench/run.ts:932:        record(`s7-n${n}`, bin.name, { ok: true, runs: s, extra: { turnsPerSec: n / (s.median / 1000) } });
+bench/run.ts:944:// ---------- memory scenarios (m1-m3) ----------
+bench/run.ts:946:/** Aggregate a role-grouped breakdown: sum rss/pss per role. */
+bench/run.ts:947:function roleSums(bd: { procs: { role: string; rssKb: number; pssKb: number }[] }): Record<string, { rssKb: number; pssKb: number }> {
+bench/run.ts:948:  const out: Record<string, { rssKb: number; pssKb: number }> = {};
+bench/run.ts:950:    const e = (out[pr.role] ??= { rssKb: 0, pssKb: 0 });
+bench/run.ts:951:    e.rssKb += pr.rssKb;
+bench/run.ts:958:  rssKb: number;
+bench/run.ts:965:  let rss = 0;
+bench/run.ts:968:    rss += await treeRssKb(pid);
+bench/run.ts:971:  return { rssKb: rss, pssKb: pss };
+bench/run.ts:976:  const title = "m1. one rpc session: per-process RSS/PSS breakdown, growth over 50 turns";
+bench/run.ts:993:      const client = await RpcClient.start([bin.path, "--mode", "rpc", "--model", "mock/toolturn"], {
+bench/run.ts:998:      const points: { turn: number; roles: Record<string, { rssKb: number; pssKb: number }>; rssKb: number; pssKb: number }[] = [];
+bench/run.ts:1003:        points.push({ turn, roles, rssKb: bd.totalRssKb, pssKb: bd.totalPssKb });
+bench/run.ts:1004:        const fmt = (r: string): string => (roles[r] ? roles[r].rssKb.toFixed(0) : "0");
+bench/run.ts:1031:  const title = "m2. fleet RSS/PSS for N=1/8/32 concurrent rpc sessions, with/without extensions";
+bench/run.ts:1052:              RpcClient.start([bin.path, "--mode", "rpc", "--model", "mock/toolturn", ...extraArgs], {
+bench/run.ts:1062:          let sample: TreeSample = { rssKb: 0, pssKb: 0 };
+bench/run.ts:1066:            sample = { rssKb: Math.max(sample.rssKb, cur.rssKb), pssKb: Math.max(sample.pssKb, cur.pssKb) };
+bench/run.ts:1072:            extra: { sessions: n, extensions: withExt, rssKb: sample.rssKb, pssKb: sample.pssKb, pssPerSessionKb: sample.pssKb / n, settleWallS: wallS },
+bench/run.ts:1074:          mdLines.push(`| ${bin.name} | ${n} | ${withExt ? "yes" : "no"} | ${sample.rssKb} | ${sample.pssKb} | ${(sample.pssKb / n).toFixed(0)} |`);
+bench/run.ts:1087:  const title = "m3. RSS + wall time resuming the 5 largest real session files (read-only copies)";
+bench/run.ts:1110:      const perFile: { sizeMb: number; wallMs: number; rssPeakKb: number; pssKb: number }[] = [];
+bench/run.ts:1115:          { cwd: home.root, env: home.env, timeoutMs: 300_000, rssSampling: true },
+bench/run.ts:1120:        perFile.push({ sizeMb, wallMs: r.ms, rssPeakKb: r.peakRssKb, pssKb: 0 });
+bench/run.ts:1162:      mock: { port: MOCK_PORT, latencyMs: 0 },
+bench/run.ts:1169:      `mode: ${QUICK ? "quick (smoke)" : "full"}; repeats: ${REPEATS}; workdir: ${WORKDIR}; mock provider latency 0ms`,
+bench/mock-server.ts:10://   mock/text       -> single short text reply
+bench/mock-server.ts:11://   mock/toolturn   -> thinking + 5x read tool_calls, then final text after tool results
+bench/mock-server.ts:12://   mock/bench-<t>  -> thinking + 1x tool_call(<t>), then final text (t in read|grep|glob|find|edit|bash)
+bench/mock-server.ts:18://   MOCK_READ_FILE   file read by read/edit scripts (default: this repo's rpc.rs)
+bench/mock-server.ts:26:const READ_FILE = process.env.MOCK_READ_FILE ?? `${REPO_ROOT}/crates/omp-cli/src/rpc.rs`;
+bench/mock-server.ts:66:  const model = rawModel.replace(/^mock\//, "");
+bench/mock-server.ts:125:        // identity: the harness checks this to make sure it is talking to the mock it just spawned
+bench/mock-server.ts:126:        mock_log: process.env.MOCK_LOG ?? "",
+bench/mock-server.ts:127:        data: ids.map((id) => ({ id: `mock/${id}`, object: "model", created: 0, owned_by: "mock" })),
+bench/mock-server.ts:132:      const model: string = body.model ?? "mock/text";
+bench/mock-server.ts:187:console.log(`mock provider on 127.0.0.1:${PORT} latency=${LATENCY}ms log=${LOG || "-"}`);
+bench/lib.ts:23: * group until exit. Returns wall time, exit code and peak tree RSS (KB). */
+bench/lib.ts:26:  opts: { cwd: string; env: BenchEnv; timeoutMs?: number; rssSampling?: boolean },
+bench/lib.ts:50:  const rssLoop = async () => {
+bench/lib.ts:51:    if (!opts.rssSampling || !proc.pid) return;
+bench/lib.ts:82:    rssLoop(),
+bench/lib.ts:86:  if (opts.rssSampling && proc.pid) {
+bench/lib.ts:180:  rssKb: number;
+bench/lib.ts:210:          rssKb: rssKbOf(p),
+bench/lib.ts:221:    totalRssKb: procs.reduce((a, b) => a + b.rssKb, 0),
+bench/lib.ts:226:function rssKbOf(pid: number): number {
+bench/lib.ts:264:  for (const p of matched) total += rssKbOf(p);
+bench/lib.ts:293:/** Newline-delimited-JSON RPC client over stdio (omp --mode rpc protocol v1). */
+bench/lib.ts:350:      if (done) throw new Error("rpc process closed stdout");
+bench/lib.ts:355:  /** Send a request; returns the matching response frame (or the request id frame). */
+bench/lib.ts:380:    // with omp-rs + extensions after a few dozen turns) and the outer kill
+bench/lib.ts:412:  async rssNow(): Promise<number> {
+
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/asyncio/base_events.py", line 687, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "<cell>", line 4, in <module>
+  File "<cell>", line 491, in __call__
+  File "/usr/lib/python3.12/asyncio/threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/thread.py", line 58, in run
+    result = self.fn(*self.args, **self.kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<cell>", line 418, in _bridge_call
+OmpHostError: Path '/home/kaneki/fleet-split/omt-wt/rpc-leak/bench/results/2026-10-13T01-49-39.md' not found
+[omp-txn] rolled back: cwd (in-place mutations of shared objects were not undone)
