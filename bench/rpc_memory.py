@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--turns", type=int, default=50)
     p.add_argument("--payload-kb", type=int, default=4)
     p.add_argument("--spike-kb", type=int, help="use a larger first-turn payload to test retained spikes")
+    p.add_argument(
+        "--tool-turns",
+        type=int,
+        default=0,
+        help="model turns per prompt that stream text, then call eval; 0 = plain streaming",
+    )
     p.add_argument("--stream-chunk-bytes", type=int, default=16)
     p.add_argument("--vary-payload", action="store_true", help="vary each turn's size deterministically")
     p.add_argument("--out", type=Path, help="write all samples and the summary as JSON")
@@ -53,6 +59,36 @@ def main() -> int:
                 for m in reversed(messages)
                 if m.get("role") == "user" and str(m.get("content", "")).startswith("turn ")
             ), 1)
+            # Model turns already taken inside THIS prompt: the mock sees the
+            # full wire history, so count assistant tool_calls after the last
+            # real user message (openai wire: tool results carry role "tool").
+            last_user = max(
+                (i for i, m in enumerate(messages) if m.get("role") == "user"),
+                default=-1,
+            )
+            loop_turns = sum(
+                1
+                for m in messages[last_user + 1 :]
+                if m.get("role") == "assistant" and m.get("tool_calls")
+            )
+            if args.tool_turns and loop_turns < args.tool_turns - 1:
+                # One tool-loop model turn: streamed thinking-sized text plus a
+                # cheap eval tool call; the result feeds the next turn.
+                size = 8 * 1024
+                step = args.stream_chunk_bytes
+                parts = ["x" * min(step, size - i) for i in range(0, size, step)]
+                call = {
+                    "index": 0,
+                    "id": f"call_{turn}_{loop_turns}",
+                    "type": "function",
+                    "function": {"name": "eval", "arguments": json.dumps({"language": "py", "code": "1"})},
+                }
+                return (
+                    [{"role": "assistant", "content": parts[0], "tool_calls": [call]}]
+                    + [{"content": part} for part in parts[1:]]
+                    + [{"content": ""}],
+                    "tool_calls",
+                )
             size_kb = args.spike_kb if turn == 1 and args.spike_kb else args.payload_kb
             if args.vary_payload and not (turn == 1 and args.spike_kb):
                 size_kb = max(1, args.payload_kb + ((turn * 37) % 17 - 8) * args.payload_kb // 8)
@@ -198,6 +234,7 @@ def main() -> int:
                 "turns": args.turns,
                 "payloadKbPerTurn": args.payload_kb,
                 "spikeKbFirstTurn": args.spike_kb,
+                "toolTurnsPerPrompt": args.tool_turns,
                 "varyPayload": args.vary_payload,
                 "streamChunkBytes": args.stream_chunk_bytes,
                 "deltasPerTurn": (args.payload_kb * 1024 + args.stream_chunk_bytes - 1) // args.stream_chunk_bytes,
