@@ -68,15 +68,15 @@ pub fn artifacts_dirs(ctx: &crate::UrlCtx) -> Vec<PathBuf> {
     };
     add(ctx.artifacts_dir());
     add(crate::global_session_file().and_then(|f| crate::artifacts_directory_for(&f)));
-    add(EXTRA_ARTIFACTS_DIR.read().expect("lock").clone());
+    add(EXTRA_ARTIFACTS_DIR.read().clone());
     dirs
 }
 
-static EXTRA_ARTIFACTS_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+static EXTRA_ARTIFACTS_DIR: parking_lot::RwLock<Option<PathBuf>> = parking_lot::RwLock::new(None);
 
 /// Register an extra artifacts dir (TS `registerArtifactsDir`).
 pub fn register_artifacts_dir(dir: Option<PathBuf>) {
-    *EXTRA_ARTIFACTS_DIR.write().expect("lock") = dir;
+    *EXTRA_ARTIFACTS_DIR.write() = dir;
 }
 
 /// Recursively scan artifacts dirs for `<id>.jsonl` transcripts (TS

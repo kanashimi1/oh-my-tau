@@ -250,7 +250,10 @@ pub async fn fork(rt: &Arc<Runtime>, entry_id: Option<&str>) -> CmdResult {
 /// `summarize` is the model call used for that (the runtime's compaction summarizer);
 /// required exactly when `options.summarize` is set, like TS requires a model.
 #[allow(dead_code)] // host-request entry point (omp parity), wired with the rpc surface
-#[allow(clippy::too_many_lines)] // host-request flow: fork + optional branch summary + context rebuild
+#[allow(clippy::too_many_lines)]
+// host-request flow: fork + optional branch summary + context rebuild
+// invariant: summarize is Some in this branch (checked above).
+#[allow(clippy::expect_used)]
 pub async fn navigate_tree(
     rt: &Arc<Runtime>,
     target: &str,
@@ -327,41 +330,35 @@ pub async fn navigate_tree(
     if wants_summary && summary_result.is_none() && summarize.is_none() {
         return Err(err("No model available for summarization"));
     }
-    if wants_summary && summary_result.is_none() {
-        if !abandoned.is_empty() {
-            let request = omp_compact::SummaryRequest {
-                kind: omp_compact::SummaryKind::BranchSummary,
-                context: omp_compact::summary::build_context(
-                    &abandoned_text(&abandoned),
-                    pa_agent::now_ms().cast_unsigned(),
-                ),
-                max_tokens: 1024,
-            };
-            let assistant = (summarize.expect("checked above"))(request)
-                .await
-                .map_err(|e| err(format!("branch summary failed: {e:#}")))?;
-            let text = assistant
-                .content
-                .iter()
-                .filter_map(|c| match c {
-                    pa_types::ai::AssistantContentBlock::Text(t) => Some(t.text.clone()),
-                    _ => None,
-                })
-                .collect::<String>();
-            summary_result = Some((text, json!({"readFiles": [], "modifiedFiles": []})));
-        }
+    if wants_summary && summary_result.is_none() && !abandoned.is_empty() {
+        let request = omp_compact::SummaryRequest {
+            kind: omp_compact::SummaryKind::BranchSummary,
+            context: omp_compact::summary::build_context(
+                &abandoned_text(&abandoned),
+                pa_agent::now_ms().cast_unsigned(),
+            ),
+            max_tokens: 1024,
+        };
+        let assistant = (summarize.expect("checked above"))(request)
+            .await
+            .map_err(|e| err(format!("branch summary failed: {e:#}")))?;
+        let text = assistant
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                pa_types::ai::AssistantContentBlock::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect::<String>();
+        summary_result = Some((text, json!({"readFiles": [], "modifiedFiles": []})));
     }
 
     // Commit: either a durable branch_summary entry at the target, or an in-memory leaf
     // move (TS `branch()`; the next append chains onto the target, which is how the loader
     // reconstructs the branch after a restart too).
     let summary_entry = if let Some((text, details)) = &summary_result {
-        let id = rt.append_branch_summary(
-            new_leaf.as_deref(),
-            text,
-            Some(details.clone()),
-            None,
-        )?;
+        let id =
+            rt.append_branch_summary(new_leaf.as_deref(), text, Some(details.clone()), None)?;
         Some(json!({
             "type": "branch_summary",
             "id": id,

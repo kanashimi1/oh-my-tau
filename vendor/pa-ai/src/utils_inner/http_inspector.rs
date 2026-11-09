@@ -4,6 +4,9 @@
 //! for 400/413 rejections a sanitized dump of the raw request under
 //! `<logs>/http-400-requests/` referenced by a `raw-http-request=<path>` line.
 
+// invariant: literal regexes; a compile failure is a programming error caught by tests.
+#![allow(clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
@@ -17,7 +20,7 @@ use crate::utils_inner::stream_failure::ProviderError;
 const RAW_HTTP_REQUEST_LINE: &str = "raw-http-request=";
 const RAW_HTTP_REQUEST_SAVE_FAILED_LINE: &str = "raw-http-request-save-failed=";
 const HTTP_DUMP_DIR_NAME: &str = "http-400-requests";
-const HTTP_DUMP_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const HTTP_DUMP_MAX_AGE: Duration = Duration::from_hours(168);
 const HTTP_DUMP_MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 static SENSITIVE_HEADER: LazyLock<Regex> = LazyLock::new(|| {
@@ -280,8 +283,11 @@ fn prune_http_request_dumps(dir: &Path, keep: &str) {
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
             let meta = entry.metadata().ok()?;
-            (name.ends_with(".json") && meta.is_file())
-                .then(|| (name, meta.modified().unwrap_or(now), meta.len()))
+            (name
+                .rsplit_once('.')
+                .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("json"))
+                && meta.is_file())
+            .then(|| (name, meta.modified().unwrap_or(now), meta.len()))
         })
         .collect();
     dumps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));

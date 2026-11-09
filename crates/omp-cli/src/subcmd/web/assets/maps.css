@@ -1,0 +1,628 @@
+/* maps.css — вкладка «Карты» (data-terminal поверх переменных app.css).
+   Цвет — только на маркерах данных; выбор отмечается 1px акцент-линией;
+   цифры — tabular-nums; никаких градиентов и теней, кроме плавающих панелей. */
+
+/* ---------- Корень вида ---------- */
+.maps,
+#maps-view.maps {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--sans);
+}
+
+#maps-view[hidden] { display: none; }
+
+/* ---------- Тулбар (44px) ---------- */
+.maps-toolbar,
+#maps-toolbar {
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 14px;
+  flex-wrap: wrap;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  min-height: 44px;
+}
+
+/* Вкладки и переключатель лейаута: выбранная — только 1px акцент-линия
+   снизу, ровно по ширине подписи (padding по горизонтали = 0). */
+.maps-mode,
+.maps-layout {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  height: 100%;
+}
+
+.maps-mode .tab,
+.maps-layout .seg {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 10px 2px;
+  cursor: pointer;
+}
+
+.maps-mode .tab[aria-selected="true"],
+.maps-mode .tab.active,
+.maps-layout .seg[aria-pressed="true"],
+.maps-layout .seg.active,
+.maps-tool.active {
+  border-bottom: 1px solid var(--accent);
+  color: var(--fg);
+}
+
+.maps-mode .tab:hover,
+.maps-layout .seg:hover {
+  color: var(--fg);
+}
+
+/* ---------- Фильтры ---------- */
+.maps-filters {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.maps-filter,
+.filter {
+  height: 28px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 0 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.maps-filter:focus,
+.filter:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ---------- Чипы (плоские, только контур) ---------- */
+.maps-chips {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.maps-chips .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-inset);
+  font-size: 11px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  box-shadow: none;
+}
+
+.maps-chips .chip.active,
+.maps-chips .chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--fg);
+}
+
+/* точка-свотч цвета кластера перед подписью */
+.maps-chips .chip .dot,
+.maps-chips .chip.on::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: 0 0 6px;
+  background: currentColor;
+}
+
+/* ---------- Счётчик ---------- */
+.maps-counts {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+/* ---------- Разделитель канвас/панель ---------- */
+.maps-split,
+#maps-split {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  display: flex;
+}
+
+/* ---------- Канвас ---------- */
+.maps-canvas,
+#maps-canvas {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.maps-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ---------- SVG-граф: узлы и рёбра ---------- */
+.maps-node,
+.maps-node-label circle {
+  fill: var(--fg-muted);
+  stroke: none;
+  cursor: pointer;
+  transition: opacity .12s linear;
+}
+
+/* 5 приглушённых хью кластеров (только маркеры данных) */
+.maps-hue-1 { fill: var(--accent); }
+.maps-hue-2 { fill: var(--accent-2); }
+.maps-hue-3 { fill: var(--ok); }
+.maps-hue-4 { fill: var(--warn); }
+.maps-hue-5 { fill: var(--kw); }
+
+/* выделение — единственный акцент */
+.maps-node.selected,
+.maps-node.sel {
+  stroke: var(--accent);
+  stroke-width: 1px;
+  fill: var(--accent);
+}
+
+.maps-edge {
+  stroke: var(--border-strong, var(--border));
+  stroke-width: 1px;
+  fill: none;
+  pointer-events: none;
+  transition: opacity .12s linear;
+}
+
+.maps-edge:hover,
+.maps-edge.hot {
+  stroke: var(--accent);
+}
+
+.maps-node.dim { opacity: .12; }
+.maps-edge.dim { opacity: .05; }
+
+.maps-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2px;
+}
+
+.maps-cluster {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1px;
+}
+
+.maps-label,
+.maps-node-label text {
+  fill: var(--fg-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.maps-node.selected ~ .maps-label,
+.maps-label.sel {
+  fill: var(--fg);
+}
+
+/* ---------- Состояния (loading / empty / error) ---------- */
+.maps-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 16px;
+  pointer-events: none;
+  background: transparent;
+}
+
+.maps-state > * { pointer-events: auto; }
+
+.maps-state .btn,
+.maps-state button {
+  height: 28px;
+  padding: 0 12px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.maps-state .btn:hover,
+.maps-state button:hover {
+  border-color: var(--accent);
+}
+
+/* loading: плоские серые бары реального размера, без шиммера */
+.maps-loading .bar {
+  height: 10px;
+  border-radius: 2px;
+  background: var(--bg-inset);
+  animation: none;
+}
+
+/* ---------- Панель деталей ---------- */
+.maps-detail,
+#maps-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 320px;
+  background: var(--bg-overlay);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  z-index: 10;
+  font-size: 13px;
+  color: var(--fg);
+  padding: 12px 14px;
+}
+
+.maps-detail h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ---------- Таблица в деталях ---------- */
+.maps-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.maps-row {
+  border-top: 1px solid var(--border);
+}
+
+.maps-cell {
+  padding: 4px 6px;
+  vertical-align: top;
+}
+
+.maps-num {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  text-align: right;
+  color: var(--fg-muted);
+}
+
+/* ---------- Легенда ---------- */
+.maps-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  z-index: 5;
+}
+
+.maps-legend .swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+/* ---------- Диаграмма (блок-схема) ---------- */
+.diagram,
+.diagram-grid {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  gap: 14px;
+  padding: 14px;
+  align-content: start;
+}
+
+.diagram-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.diagram-block {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.diagram-block .label {
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.diagram-block .size {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+}
+
+.diagram-block ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.diagram-block li {
+  padding: 2px 0;
+  border-top: 1px solid var(--border);
+}
+
+.diagram-arrow {
+  fill: none;
+  stroke: var(--fg-muted);
+  marker-end: url(#maps-arrowhead);
+}
+
+.diagram-arrow-label,
+.diagram-edge-label {
+  fill: var(--fg-muted);
+  font-size: 11px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Focus ---------- */
+.maps .tab:focus-visible,
+.maps .seg:focus-visible,
+.maps .chip:focus-visible,
+.maps .filter:focus-visible,
+.maps .btn:focus-visible,
+.maps button:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* ---------- Мобильная сетка (390) ---------- */
+@media (max-width: 640px) {
+  .maps-toolbar,
+  #maps-toolbar {
+    flex: 0 0 auto;
+    height: auto;
+    min-height: 44px;
+    padding: 4px 10px;
+    row-gap: 2px;
+  }
+
+  .maps-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    max-width: 100%;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .maps-chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .maps-counts {
+    margin-left: 0;
+  }
+
+  .maps-detail,
+  #maps-panel {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 46vh;
+    border-top: 1px solid var(--border);
+    border-left: none;
+  }
+}
+
+/* ---------- reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .maps *,
+  .maps-node,
+  .maps-edge {
+    transition: none !important;
+    animation: none !important;
+  }
+
+  .maps-detail,
+  #maps-panel {
+    transition: none !important;
+  }
+}
+
+/* ---------- Диаграмма (§5): HTML-слой блоков поверх канваса ---------- */
+/* Слой скроллится (не зумится): absolute внутри #maps-canvas. */
+.maps-diagram {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 18px;
+  z-index: 5;
+}
+
+/* Стрелки между блоками: в координатах контента, едут вместе со скроллом. */
+.maps-dedges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 1;
+}
+.maps-darrow {
+  fill: none;
+  stroke: var(--fg-muted);
+  stroke-opacity: .5;
+}
+.maps-darrow-label {
+  fill: var(--fg-muted);
+  font-size: 10px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Сетка: карточки кластеров (code) или колонки доменов (kg). */
+.maps-dgrid {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  align-items: flex-start;
+  align-content: flex-start;
+  z-index: 2;
+}
+
+.maps-dcol {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 240px;
+  flex: 0 0 auto;
+}
+.maps-dcol-title {
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding: 0 2px;
+}
+
+/* Блок кластера/типа: карточка без теней, хью — только точка-маркер. */
+.maps-dblock {
+  width: 240px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.maps-dhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.maps-dlabel {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.maps-dlabel::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+.maps-hue-1 .maps-dlabel::before { background: var(--accent); }
+.maps-hue-2 .maps-dlabel::before { background: var(--accent-2); }
+.maps-hue-3 .maps-dlabel::before { background: var(--ok); }
+.maps-hue-4 .maps-dlabel::before { background: var(--warn); }
+.maps-hue-5 .maps-dlabel::before { background: var(--kw); }
+.maps-dsize {
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.maps-dfile {
+  padding: 5px 10px 5px 24px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: default;
+}
+.maps-dfile:hover { color: var(--fg); }
+
+/* ---------- omp-rs: интеграция в сайдбар десктопа ---------- */
+.side-link {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 12px;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.side-link:hover { background: var(--bg-raised); border-color: var(--fg-muted); }
+.side-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* В режиме карт правая панель активностей уступает ширину. */
+body.maps-active #subagents-sidebar { display: none; }

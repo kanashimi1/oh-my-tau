@@ -724,7 +724,6 @@ impl SettingsOverlay {
                 .and_then(|v| v.as_str().map(str::to_owned))
         };
         match row.def.condition {
-            "" => true,
             "macOS" => cfg!(target_os = "macos"),
             "hasImageProtocol" => self.image_protocol,
             // Native (Tern) rendering is not part of the terminal client.
@@ -738,9 +737,9 @@ impl SettingsOverlay {
             "usageAwareFallbackEnabled" => flag("retry.usageAwareFallback"),
             "planModeEnabled" => flag("plan.enabled"),
             "planAutosaveEnabled" => flag("plan.enabled") && flag("plan.autosave"),
-            // The panel only ever edits the global layer; provenance of the
-            // value is not tracked here, so the row is always offered.
-            "contextFilesExtraNotProject" => true,
+            // Every other condition (including `contextFilesExtraNotProject`:
+            // the panel only edits the global layer, so provenance is not
+            // tracked here) leaves the row offered.
             _ => true,
         }
     }
@@ -783,8 +782,8 @@ impl SettingsOverlay {
 
     /// The tab switch: `dir` +1/-1 wraps (TS tab bar).
     fn switch_tab(&mut self, dir: isize) {
-        let len = Tab::ALL.len() as isize;
-        self.tab = ((self.tab as isize + dir).rem_euclid(len)) as usize;
+        let len = Tab::ALL.len().cast_signed();
+        self.tab = ((self.tab.cast_signed() + dir).rem_euclid(len)) as usize;
         // Land the selection on the first row of the new tab.
         if let Some(pos) = self.first_shown(Tab::ALL[self.tab], None) {
             self.selected = pos;
@@ -804,7 +803,9 @@ impl SettingsOverlay {
             .iter()
             .position(|idx| *idx == self.selected)
             .map_or(0, |pos| {
-                (pos as isize + delta).rem_euclid(in_tab.len() as isize) as usize
+                (pos.cast_signed() + delta)
+                    .rem_euclid(in_tab.len().cast_signed())
+                    .cast_unsigned()
             });
         self.selected = in_tab[pos];
     }
@@ -818,8 +819,9 @@ impl SettingsOverlay {
         let Some(pos) = in_tab.iter().position(|idx| *idx == self.selected) else {
             return;
         };
-        let next = (pos as isize + isize::from(delta)).clamp(0, in_tab.len() as isize - 1);
-        self.selected = in_tab[next as usize];
+        let next =
+            (pos.cast_signed() + isize::from(delta)).clamp(0, in_tab.len().cast_signed() - 1);
+        self.selected = in_tab[next.cast_unsigned()];
     }
 
     /// Sections (group names) of the active tab that have at least one row.
@@ -849,7 +851,9 @@ impl SettingsOverlay {
             .iter()
             .position(|name| *name == current)
             .unwrap_or(0);
-        let next = sections[(pos as isize + dir).rem_euclid(sections.len() as isize) as usize];
+        let next = sections[(pos.cast_signed() + dir)
+            .rem_euclid(sections.len().cast_signed())
+            .cast_unsigned()];
         if let Some(idx) = self.first_shown(tab, Some(next)) {
             self.selected = idx;
         }
@@ -1056,21 +1060,20 @@ impl SettingsOverlay {
                 }
             }
         } else if r.is_number() {
-            match buf
+            if let Some(n) = buf
                 .trim()
                 .parse::<f64>()
                 .ok()
                 .and_then(serde_json::Number::from_f64)
             {
-                Some(n) => Value::Number(n),
-                None => {
-                    self.menu = Some(Menu::Text {
-                        row,
-                        buf,
-                        error: Some("Not a number".into()),
-                    });
-                    return;
-                }
+                Value::Number(n)
+            } else {
+                self.menu = Some(Menu::Text {
+                    row,
+                    buf,
+                    error: Some("Not a number".into()),
+                });
+                return;
             }
         } else {
             Value::String(buf)
@@ -1118,7 +1121,9 @@ impl SettingsOverlay {
                     if len == 0 {
                         0
                     } else {
-                        (cur as isize + delta).rem_euclid(len as isize) as usize
+                        (cur.cast_signed() + delta)
+                            .rem_euclid(len.cast_signed())
+                            .cast_unsigned()
                     }
                 };
                 match key.code {
@@ -1254,7 +1259,9 @@ impl SettingsOverlay {
             .iter()
             .position(|idx| *idx == search.selected)
             .unwrap_or(0);
-        let next = (pos as isize + delta).rem_euclid(rows.len() as isize) as usize;
+        let next = (pos.cast_signed() + delta)
+            .rem_euclid(rows.len().cast_signed())
+            .cast_unsigned();
         search.selected = rows[next];
     }
 
@@ -1292,7 +1299,9 @@ impl SettingsOverlay {
             .iter()
             .rposition(|idx| *idx <= search.selected)
             .unwrap_or(0);
-        let next = groups[(current as isize + dir).rem_euclid(groups.len() as isize) as usize];
+        let next = groups[(current.cast_signed() + dir)
+            .rem_euclid(groups.len().cast_signed())
+            .cast_unsigned()];
         if let Some(pos) = search.results[next..]
             .iter()
             .position(|dr| matches!(dr, DispRow::Row(_)))
@@ -1304,7 +1313,12 @@ impl SettingsOverlay {
     /// Paint the open value field over the list area `[top, bottom)` and
     /// return the next free row (TS `SelectFormField` / `TextFormField` /
     /// `MultiSelectSubmenu` rendering inside the overlay card).
-    #[allow(clippy::too_many_arguments)]
+    // A dispatcher over the field kinds; u16 casts are terminal geometry.
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::cast_possible_truncation
+    )]
     fn render_menu(
         &self,
         frame: &mut Frame<'_>,
@@ -1442,8 +1456,7 @@ impl SettingsOverlay {
         lines.push((Line::from(Span::styled(format!("  {hint}"), dim)), None));
 
         map.menu.clear();
-        let mut y = top;
-        for (line, opt) in lines {
+        for (y, (line, opt)) in (top..).zip(lines) {
             if y >= bottom {
                 break;
             }
@@ -1459,7 +1472,6 @@ impl SettingsOverlay {
                     height: 1,
                 },
             );
-            y += 1;
         }
         bottom
     }
@@ -1540,6 +1552,8 @@ impl SettingsOverlay {
     /// Render the live status-line preview into a single text line (TS
     /// `getStatusLinePreview`). A synthetic status demonstrates the preset:
     /// omp-rs has no host callback, so the model/cwd/session stand in.
+    // Test-backend width is bounded by the u16 ratatui buffer.
+    #[allow(clippy::cast_possible_truncation)]
     fn status_preview(&self, theme: &Theme, width: usize) -> Option<String> {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1640,6 +1654,10 @@ impl SettingsOverlay {
 }
 
 impl Component for SettingsOverlay {
+    // One render pass covers card, tab bar, sections, rows and open fields,
+    // and the u16 casts are terminal geometry (ratatui buffers are u16-sized,
+    // so every coordinate is bounded).
+    #[allow(clippy::too_many_lines, clippy::cast_possible_truncation)]
     fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         // Fullscreen: the host hands us the whole alternate-screen frame.
         frame.render_widget(Clear, area);
@@ -2025,14 +2043,17 @@ impl Component for SettingsOverlay {
             // max(1, min(h*h/len, h)) positioned over the scroll travel, track
             // `│` on every other row.
             if overflow && height > 1 {
-                let size = ((height * height) / list.len()).clamp(1, height);
+                // `overflow` implies `list.len() > height > 0`, so the
+                // division cannot fail; checked_div keeps that invariant local.
+                let size = (height * height)
+                    .checked_div(list.len())
+                    .unwrap_or(0)
+                    .clamp(1, height);
                 let travel = height - size;
                 let max_offset = list.len() - height;
-                let thumb_start = if max_offset == 0 {
-                    0
-                } else {
-                    (start.saturating_mul(travel) + max_offset / 2) / max_offset
-                };
+                let thumb_start = (start.saturating_mul(travel) + max_offset / 2)
+                    .checked_div(max_offset)
+                    .unwrap_or(0);
                 for (r, line) in pane_lines.iter_mut().enumerate() {
                     let used: usize = line.spans.iter().map(|span| span.content.len()).sum();
                     let pad = (row_width as usize).saturating_sub(used);
@@ -2236,10 +2257,9 @@ impl Component for SettingsOverlay {
 
         match key.code {
             // `?` bubbles to the host's global help toggle (help may stack
-            // over any overlay, per the TS overlay manager).
-            KeyCode::Char('?') => EventOutcome::Ignored,
-            // Esc closes the overlay (the host pops when we ignore it).
-            KeyCode::Esc => EventOutcome::Ignored,
+            // over any overlay, per the TS overlay manager) and Esc closes
+            // the overlay (the host pops when we ignore it).
+            KeyCode::Char('?') | KeyCode::Esc => EventOutcome::Ignored,
             KeyCode::Tab | KeyCode::BackTab => {
                 let dir: isize = if key.code == KeyCode::Tab { 1 } else { -1 };
                 if self.tab_sections(Tab::ALL[self.tab]).len() >= 2 {
@@ -2435,7 +2455,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     for source in text.split('\n') {
         let mut line = String::new();
         for word in source.split_whitespace() {
-            let need = word.len() + if line.is_empty() { 0 } else { 1 };
+            let need = word.len() + usize::from(!line.is_empty());
             if !line.is_empty() && line.len() + need > width {
                 out.push(std::mem::take(&mut line));
             }
@@ -2779,6 +2799,8 @@ mod tests {
             .position(|hit| matches!(hit, Some(idx) if *idx == target))
             .expect("target row rendered");
         let col = map.sidebar_col + 4;
+        // Row index into a rendered frame: bounded by the u16 buffer height.
+        #[allow(clippy::cast_possible_truncation)]
         let row = map.content.0 + line as u16;
         // First click selects the row.
         click(&mut overlay, col, row);

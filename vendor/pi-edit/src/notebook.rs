@@ -4,6 +4,11 @@
 //!
 //! Port of `packages/coding-agent/src/edit/notebook.ts`.
 
+// invariant: the regexes below are literals verified by tests; the JSON-number
+// rendering expects rely on serde_json guaranteeing finite numbers and on
+// try_from conversions guarded by the checked ranges right above them.
+#![allow(clippy::expect_used)]
+
 use std::{collections::HashSet, fmt::Write as _, path::Path, sync::LazyLock};
 
 use regex::Regex;

@@ -17,7 +17,8 @@
 mod tests;
 mod watch;
 
-use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::{mpsc, Arc, LazyLock};
 use std::time::Duration;
 
 use tokio::sync::broadcast;
@@ -186,9 +187,7 @@ impl StatsLive {
 
 impl Inner {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock()
     }
 
     fn emit(&self, st: &mut State) {

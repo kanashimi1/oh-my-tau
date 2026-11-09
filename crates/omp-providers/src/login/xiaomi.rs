@@ -151,6 +151,7 @@ pub(crate) async fn validate_xiaomi_api_key(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: `#[tokio::test]` drives a throwaway runtime
 mod tests {
     use super::*;
     use std::future::Future;

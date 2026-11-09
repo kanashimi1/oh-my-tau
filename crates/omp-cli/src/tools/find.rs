@@ -286,7 +286,9 @@ pub fn find_with_cancel(
         out,
         "listed {listed} · judged 0 · read {files_read} files ({}) · 0 requests · 0 tokens · $0.0000 · {} wall / 0:00 api",
         format_bytes(file_bytes),
-        super::jobs::format_duration(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)),
+        super::jobs::format_duration(
+            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        ),
     );
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let hit_values: Vec<serde_json::Value> = hits

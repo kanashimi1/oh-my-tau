@@ -112,9 +112,8 @@ pub enum SessionScope {
 #[must_use]
 pub fn scan_session_dir(dir: &Path) -> Vec<SessionSummary> {
     let mut out = Vec::new();
-    let read_dir = match fs::read_dir(dir) {
-        Ok(d) => d,
-        Err(_) => return out,
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return out;
     };
     for entry in read_dir.flatten() {
         let path = entry.path();
@@ -125,7 +124,7 @@ pub fn scan_session_dir(dir: &Path) -> Vec<SessionSummary> {
             out.push(summary);
         }
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|s| std::cmp::Reverse(s.modified));
     out
 }
 
@@ -157,11 +156,11 @@ fn scan_session_file(path: &Path) -> Option<SessionSummary> {
                     .get("id")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned);
-                cwd = value
+                value
                     .get("cwd")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
-                    .to_owned();
+                    .clone_into(&mut cwd);
             }
             _ => {}
         }
@@ -237,13 +236,13 @@ fn relative_time(t: SystemTime) -> String {
         "just now".into()
     } else if age < Duration::from_secs(90) {
         "1m ago".into()
-    } else if age < Duration::from_secs(3600) {
+    } else if age < Duration::from_hours(1) {
         format!("{}m ago", age.as_secs() / 60)
-    } else if age < Duration::from_secs(5400) {
+    } else if age < Duration::from_mins(90) {
         "1h ago".into()
-    } else if age < Duration::from_secs(86_400) {
+    } else if age < Duration::from_hours(24) {
         format!("{}h ago", age.as_secs() / 3600)
-    } else if age < Duration::from_secs(1_209_600) {
+    } else if age < Duration::from_hours(336) {
         format!("{}d ago", age.as_secs() / 86_400)
     } else {
         format!("{}w ago", age.as_secs() / 1_209_600)
@@ -253,7 +252,7 @@ fn relative_time(t: SystemTime) -> String {
 /// Calendar date `YYYY-MM-DD` for a unix time (civil-from-days, no chrono).
 #[cfg(test)]
 fn civil_date(secs: u64) -> String {
-    let days = (secs / 86_400) as i64;
+    let days = (secs / 86_400).cast_signed();
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
@@ -267,7 +266,9 @@ fn civil_date(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// The session picker overlay (`SessionSelectorComponent`).
+/// The session picker overlay (`SessionSelectorComponent`). The flags are
+/// distinct picker options, not one state.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone)]
 pub struct SessionPicker {
     folders: Vec<SessionSource>,
@@ -290,9 +291,10 @@ pub struct SessionPicker {
     pub allow_global_scope: bool,
 }
 
+#[allow(clippy::missing_fields_in_debug)] // hand-written to skip noisy fields
 impl std::fmt::Debug for SessionPicker {
-    // Hand-written to skip noisy fields if needed later; keeps derive on
-    // SessionSummary useful in tests.
+    // Skips the derived-noise fields; keeps derive on SessionSummary useful
+    // in tests.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionPicker")
             .field("scope", &self.scope)
@@ -357,7 +359,7 @@ impl SessionPicker {
 
     /// Window title for the standalone picker (TS `options.title`).
     pub fn set_title(&mut self, title: &str) {
-        self.standalone_title = title.to_owned();
+        title.clone_into(&mut self.standalone_title);
     }
 
     /// The picker resolution, if the user confirmed or cancelled.
@@ -390,7 +392,7 @@ impl SessionPicker {
             SessionScope::AllProjects => &self.all_dirs,
         };
         self.sessions = dirs.iter().flat_map(scan_source).collect();
-        self.sessions.sort_by(|a, b| b.modified.cmp(&a.modified));
+        self.sessions.sort_by_key(|s| std::cmp::Reverse(s.modified));
         self.refilter();
     }
 
@@ -502,13 +504,15 @@ impl SessionPicker {
         if self.filtered.is_empty() {
             return;
         }
-        let len = self.filtered.len() as isize;
-        self.selected = (self.selected as isize + delta).clamp(0, len - 1) as usize;
+        let len = self.filtered.len().cast_signed();
+        self.selected = (self.selected.cast_signed() + delta)
+            .clamp(0, len - 1)
+            .cast_unsigned();
     }
 
     /// The scope-toggle label in the footer hint (TS: `<all projects|current folder>`).
-    fn scope_hint(&self) -> &'static str {
-        match self.scope {
+    fn scope_hint(scope: SessionScope) -> &'static str {
+        match scope {
             SessionScope::CurrentFolder => "all projects",
             SessionScope::AllProjects => "current folder",
         }
@@ -518,7 +522,7 @@ impl SessionPicker {
 impl SessionPicker {
     /// One rendered row: `title  <relative time>  <cwd dim>` (TS row shape),
     /// plus a `[tag]` for sessions from a non-native store.
-    fn row_spans<'a>(&self, s: &'a SessionSummary, theme: &Theme) -> Vec<Span<'a>> {
+    fn row_spans<'a>(s: &'a SessionSummary, theme: &Theme) -> Vec<Span<'a>> {
         let muted = Style::default().fg(theme.color("text_muted"));
         let mut spans = vec![
             Span::styled(s.display_title().to_owned(), Style::default()),
@@ -550,7 +554,7 @@ impl SessionPicker {
         if self.allow_global_scope {
             spans.extend([
                 Span::styled("tab", key),
-                Span::styled(format!(" {} · ", self.scope_hint()), dim),
+                Span::styled(format!(" {} · ", Self::scope_hint(self.scope)), dim),
             ]);
         }
         spans.extend([Span::styled("esc", key), Span::styled(" cancel]", dim)]);
@@ -591,11 +595,11 @@ impl Component for SessionPicker {
             KeyCode::Up => self.move_selection(-1),
             KeyCode::Down => self.move_selection(1),
             KeyCode::PageUp => {
-                let h = self.list_height.max(1) as isize;
+                let h = self.list_height.max(1).cast_signed();
                 self.move_selection(-h);
             }
             KeyCode::PageDown => {
-                let h = self.list_height.max(1) as isize;
+                let h = self.list_height.max(1).cast_signed();
                 self.move_selection(h);
             }
             KeyCode::Home => self.selected = 0,
@@ -628,6 +632,9 @@ impl Component for SessionPicker {
         EventOutcome::Consumed
     }
 
+    // Popup chrome, rows, footer and delete-confirm are one render pass
+    // sharing the layout metrics.
+    #[allow(clippy::too_many_lines)]
     fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         let popup = if self.standalone {
             area
@@ -683,10 +690,10 @@ impl Component for SessionPicker {
 
         if self.confirm_delete {
             // Two-step confirm replaces the list in the same slot (TS 1346).
-            let label = self
-                .selected_session()
-                .map(|s| format!("Delete session \"{}\"?", s.display_title()))
-                .unwrap_or_else(|| "Delete session?".into());
+            let label = self.selected_session().map_or_else(
+                || "Delete session?".into(),
+                |s| format!("Delete session \"{}\"?", s.display_title()),
+            );
             let line = Line::from(vec![
                 Span::styled(label, Style::default().fg(theme.color("warning"))),
                 Span::raw("  "),
@@ -733,7 +740,7 @@ impl Component for SessionPicker {
                 .skip(offset)
                 .take(height)
                 .map(|(row, &i)| {
-                    let item = ListItem::new(Line::from(self.row_spans(&self.sessions[i], theme)));
+                    let item = ListItem::new(Line::from(Self::row_spans(&self.sessions[i], theme)));
                     if row == self.selected {
                         item.style(selected_style)
                     } else {
@@ -754,6 +761,7 @@ impl Component for SessionPicker {
 /// Owns the terminal lifecycle the way TS `runStandaloneTui` does: raw mode +
 /// alternate screen for the picker's lifetime, restored on drop (including
 /// panics); Ctrl+C resolves `None` like the TS `process.exit(0)` path.
+#[must_use]
 pub fn select_session_standalone(sources: &[SessionSource], title: &str) -> Option<PathBuf> {
     use crossterm::event::{self, Event};
     use crossterm::terminal::{
@@ -841,7 +849,7 @@ mod tests {
     /// (appending alone can land in the same mtime tick under load).
     fn bump_mtime(path: &Path) {
         let f = fs::OpenOptions::new().append(true).open(path).unwrap();
-        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        let later = std::time::SystemTime::now() + std::time::Duration::from_mins(1);
         f.set_modified(later).unwrap();
     }
 
@@ -1139,9 +1147,9 @@ mod tests {
     fn relative_time_buckets() {
         let now = SystemTime::now();
         assert_eq!(relative_time(now), "just now");
-        assert_eq!(relative_time(now - Duration::from_secs(120)), "2m ago");
-        assert_eq!(relative_time(now - Duration::from_secs(7200)), "2h ago");
-        assert_eq!(relative_time(now - Duration::from_secs(172_800)), "2d ago");
+        assert_eq!(relative_time(now - Duration::from_mins(2)), "2m ago");
+        assert_eq!(relative_time(now - Duration::from_hours(2)), "2h ago");
+        assert_eq!(relative_time(now - Duration::from_hours(48)), "2d ago");
     }
 
     #[test]

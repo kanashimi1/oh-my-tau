@@ -1,7 +1,7 @@
 //! `lsp`: symbol-aware code intelligence from language servers. Port of omp
 //! `lsp/tool.ts` (`v18.6.1`): diagnostics, definition/references/hover/symbols,
 //! rename + `rename_file`, code actions, capabilities, status, reload, raw
-//! request. The machinery lives in the `omp-lsp` crate.
+//! request, `slice`. The machinery lives in the `omp-lsp` crate.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -14,16 +14,17 @@ use omp_lsp::Cancel;
 use pa_agent::abort::{is_abort_error, AbortSignal};
 use pa_agent::types::{AgentTool, AgentToolResult, AgentToolUpdateCallback};
 use pa_agent::BoxFut;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::Env;
 
-/// omp `prompts/tools/lsp.md`, byte-identical.
+/// omp `prompts/tools/lsp.md`, `v18.6.1` + omp-rs extensions (slice).
 pub const DESCRIPTION: &str = r#"Symbol-aware code intelligence from language servers — navigation, refactors, and diagnostics where text tools miss callsites.
 
 <operations>
 - Position-based: `file` + `line` + `symbol` (substring; `#N` for Nth match). `line` is 1-indexed.
+- `slice` — symbol contract + callers in one round trip (definition, hover, references).
 - `rename` — applies by default; `apply: false` previews. Project-aware lookups ERROR without `symbol` — no silent fallback on missing/ambiguous matches.
 - `code_actions` — lists by default; apply ONE with `apply: true` + `query` (title substring or index).
 - `rename_file` — moves file AND rewrites all imports/references; applies by default.
@@ -44,7 +45,7 @@ pub const DESCRIPTION: &str = r#"Symbol-aware code intelligence from language se
 #[must_use]
 pub fn schema() -> Value {
     json!({"type":"object","properties":{
-        "action":{"enum":["diagnostics","definition","references","hover","symbols","rename","rename_file","code_actions","type_definition","implementation","status","reload","capabilities","request"],"type":"string"},
+        "action":{"enum":["diagnostics","definition","references","hover","symbols","rename","rename_file","code_actions","type_definition","implementation","status","reload","capabilities","request","slice"],"type":"string"},
         "file":{"type":"string"},
         "line":{"type":"number"},
         "symbol":{"type":"string"},
@@ -110,6 +111,12 @@ impl AgentTool for LspTool {
     }
     fn label(&self) -> &'static str {
         "LSP"
+    }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        self.env.set_a2a_owner(owner.clone());
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.env.a2a_owner()
     }
     fn execute(
         self: Arc<Self>,
@@ -297,10 +304,10 @@ impl LspTool {
                             abort_err()
                         } else {
                             anyhow!(message)
-                        })
+                        });
                     }
                     Err(e) => {
-                        sections.push(format!("{server_name}: failed to start ({})", e.message))
+                        sections.push(format!("{server_name}: failed to start ({})", e.message));
                     }
                 }
             }
@@ -355,6 +362,20 @@ impl LspTool {
 
         if action == "reload" {
             omp_lsp::client::clear_initialization_failure(&server_config, cwd);
+        }
+        if action == "slice" {
+            return self
+                .action_slice(
+                    params,
+                    cwd,
+                    &resolved_file,
+                    &server_name,
+                    &server_config,
+                    cancel,
+                    timeout_secs,
+                )
+                .await
+                .map_err(|e| map_action_error(e, action, &server_name, signal));
         }
 
         match self
@@ -434,7 +455,7 @@ impl LspTool {
                 return Ok(text_result(
                     format!("Error: {e}"),
                     json!({"action": action, "success": false, "request": params.request_json()}),
-                ))
+                ));
             }
         };
         if targets.is_empty() {
@@ -746,6 +767,7 @@ impl LspTool {
     }
 
     /// `symbols` with `file:"*"` — workspace-wide symbol search.
+    #[allow(clippy::too_many_lines)] // one LSP request: query, fan-out over clients, merge, render
     async fn action_workspace_symbols(
         self: &Arc<Self>,
         params: &Params,
@@ -989,6 +1011,10 @@ fn collect_workspace_files(cwd: &Path, file_types: &[String], max: usize) -> Vec
 
 impl LspTool {
     /// `request` — raw JSON-RPC method passthrough.
+    #[allow(clippy::too_many_lines)]
+    // one passthrough: validate, dispatch to the client, shape the reply
+    // invariant: all.is_empty() returned early above, so into_iter().next() is Some.
+    #[allow(clippy::expect_used, clippy::unwrap_used)]
     async fn action_request(
         self: &Arc<Self>,
         params: &Params,
@@ -1029,7 +1055,7 @@ impl LspTool {
                         json!({"action": action, "success": false, "request": params.request_json()}),
                     ));
                 }
-                let (n, c) = all.into_iter().next().unwrap();
+                let (n, c) = all.into_iter().next().expect("is_empty checked above");
                 chosen_name = n;
                 chosen_config = c;
             }
@@ -1084,7 +1110,7 @@ impl LspTool {
                 return Ok(text_result(
                     format!("LSP error: {}", e.message),
                     json!({"action": action, "serverName": chosen_name, "success": false, "request": params.request_json()}),
-                ))
+                ));
             }
         };
         if let Some(target) = &resolved_target {
@@ -1198,7 +1224,9 @@ impl LspTool {
             ))
         };
         let (Some(file), Some(new_name)) = (&params.file, &params.new_name) else {
-            return err("Error: rename_file requires both `file` (source path) and `new_name` (destination path)");
+            return err(
+                "Error: rename_file requires both `file` (source path) and `new_name` (destination path)",
+            );
         };
         let source = omp_lsp::utils::resolve_to_cwd(file, cwd);
         let dest = omp_lsp::utils::resolve_to_cwd(new_name, cwd);
@@ -1217,7 +1245,7 @@ impl LspTool {
                 return err(&format!(
                     "Error: cannot read source path {}: {e}",
                     source.display()
-                ))
+                ));
             }
         };
         match tokio::fs::symlink_metadata(&dest).await {
@@ -1225,14 +1253,14 @@ impl LspTool {
                 return err(&format!(
                     "Error: destination already exists: {}",
                     dest.display()
-                ))
+                ));
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
                 return err(&format!(
                     "Error: cannot read destination path {}: {e}",
                     dest.display()
-                ))
+                ));
             }
         }
 
@@ -1248,7 +1276,7 @@ impl LspTool {
                 return err(&format!(
                     "Error: cannot read source path {}: {e}",
                     source.display()
-                ))
+                ));
             }
         };
         if exceeded {
@@ -1606,6 +1634,150 @@ fn format_workspace_edit_lines(edit: &omp_lsp::types::WorkspaceEdit, cwd: &Path)
 }
 
 impl LspTool {
+    /// `slice`: one round trip to a running server collecting the symbol contract
+    /// (definition, type definition, hover) and call-site references.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)] // one round-trip slice report builder
+    async fn action_slice(
+        self: &Arc<Self>,
+        params: &Params,
+        cwd: &Path,
+        target_file: &Path,
+        server_name: &str,
+        server_config: &omp_lsp::types::ServerConfig,
+        cancel: &DeadlineCancel<'_>,
+        _timeout_secs: u64,
+    ) -> Result<AgentToolResult> {
+        use omp_lsp::diagnostics as diag;
+
+        // No cold start: reuse only an already-running client.
+        let Some(client) =
+            omp_lsp::client::get_active_or_pending_client(server_config, cwd, Some(cancel)).await
+        else {
+            let rel = omp_lsp::utils::format_path_relative_to_cwd(target_file, cwd);
+            return Ok(text_result(
+                format!(
+                    "slice requires a running language server for {rel}; run `lsp diagnostics` first"
+                ),
+                json!({"action": "slice", "success": false, "request": params.request_json()}),
+            ));
+        };
+        client.refresh_file(target_file).await;
+
+        let uri = omp_lsp::utils::file_to_uri(target_file);
+        let resolved_line = params.line.unwrap_or(1);
+        let resolved_character = omp_lsp::utils::resolve_symbol_column(
+            target_file,
+            resolved_line as usize,
+            params.symbol.as_deref(),
+        )
+        .await?;
+        let position = json!({ "line": resolved_line - 1, "character": resolved_character });
+
+        let symbol = params.symbol.clone().unwrap_or_default();
+
+        let def_params = json!({ "textDocument": { "uri": uri }, "position": position.clone() });
+        let type_def_params =
+            json!({ "textDocument": { "uri": uri }, "position": position.clone() });
+        let hover_params = json!({ "textDocument": { "uri": uri }, "position": position.clone() });
+        let refs_params = json!({
+            "textDocument": { "uri": uri },
+            "position": position,
+            "context": { "includeDeclaration": false }
+        });
+
+        let (definition, type_definition, hover, references) = tokio::join!(
+            client.send_request("textDocument/definition", def_params, Some(cancel), None),
+            client.send_request(
+                "textDocument/typeDefinition",
+                type_def_params,
+                Some(cancel),
+                None
+            ),
+            client.send_request("textDocument/hover", hover_params, Some(cancel), None),
+            client.send_request("textDocument/references", refs_params, Some(cancel), None),
+        );
+
+        if cancel.is_cancelled() {
+            return Err(pa_agent::abort::aborted_error());
+        }
+
+        let def_locations = definition
+            .ok()
+            .map(|r| diag::normalize_location_result(&r))
+            .unwrap_or_default();
+        let type_locations = type_definition
+            .ok()
+            .map(|r| diag::normalize_location_result(&r))
+            .unwrap_or_default();
+        let hover_text = hover
+            .ok()
+            .and_then(|r| serde_json::from_value::<omp_lsp::types::Hover>(r).ok())
+            .map(|h| clean_hover_text(&omp_lsp::utils::extract_hover_text(&h.contents)))
+            .unwrap_or_default();
+        let ref_locations: Vec<omp_lsp::types::Location> = references
+            .ok()
+            .and_then(|r| r.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| serde_json::from_value(v.clone()).ok())
+            .collect();
+
+        let mut definitions: Vec<(String, u32, String)> = Vec::new();
+        for loc in def_locations.iter().chain(type_locations.iter()) {
+            let path = omp_lsp::utils::format_path_relative_to_cwd(
+                &omp_lsp::utils::uri_to_file(&loc.uri),
+                cwd,
+            );
+            let line = loc.range.start.line + 1;
+            let src = omp_lsp::utils::uri_to_file(&loc.uri);
+            let sig = truncate_line(
+                &read_source_line(&src, line as usize)
+                    .await
+                    .unwrap_or_default(),
+                SLICE_CONTEXT_MAX_CHARS,
+            );
+            definitions.push((path, line, sig));
+        }
+
+        let mut callers: Vec<(String, u32, u32, String)> = Vec::new();
+        for loc in &ref_locations {
+            let path = omp_lsp::utils::format_path_relative_to_cwd(
+                &omp_lsp::utils::uri_to_file(&loc.uri),
+                cwd,
+            );
+            let line = loc.range.start.line + 1;
+            let col = loc.range.start.character + 1;
+            let src = omp_lsp::utils::uri_to_file(&loc.uri);
+            let ctx = truncate_line(
+                &read_source_line(&src, line as usize)
+                    .await
+                    .unwrap_or_default(),
+                SLICE_CONTEXT_MAX_CHARS,
+            );
+            callers.push((path, line, col, ctx));
+        }
+
+        let output = build_slice_report(&symbol, server_name, &definitions, &hover_text, &callers);
+
+        let def_locs: Vec<SliceLoc> = def_locations
+            .iter()
+            .chain(type_locations.iter())
+            .map(|l| slice_loc(l, cwd))
+            .collect();
+        let caller_locs: Vec<SliceLoc> = ref_locations.iter().map(|l| slice_loc(l, cwd)).collect();
+
+        let details = json!({
+            "action": "slice",
+            "serverName": server_name,
+            "definition": def_locs,
+            "hover": hover_text,
+            "callers": caller_locs,
+            "success": true,
+            "request": params.request_json(),
+        });
+        Ok(text_result(output, details))
+    }
     /// File-based actions: `definition`/`type_definition`/`implementation`/`references`/
     /// `hover`/`symbols`/`rename`/`code_actions`/`reload`.
     #[allow(clippy::too_many_arguments)]
@@ -2101,6 +2273,80 @@ impl LspTool {
     }
 }
 
+const SLICE_CONTEXT_MAX_CHARS: usize = 120;
+
+/// Trim one source line to at most `max` characters, with an ellipsis tail.
+fn truncate_line(line: &str, max: usize) -> String {
+    let line = line.trim();
+    let count = line.chars().count();
+    if count <= max {
+        return line.to_string();
+    }
+    let mut out: String = line.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// Read the 1-indexed `line` of `path` as a raw string, if available.
+async fn read_source_line(path: &Path, line: usize) -> Option<String> {
+    let text = tokio::fs::read_to_string(path).await.ok()?;
+    text.split('\n')
+        .nth(line.saturating_sub(1))
+        .map(str::to_string)
+}
+
+/// Strip markdown code-fence markers from hover text (keeps the inner code).
+fn clean_hover_text(text: &str) -> String {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with("```"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[derive(Serialize)]
+struct SliceLoc {
+    path: String,
+    line: u32,
+    col: u32,
+}
+
+fn slice_loc(loc: &omp_lsp::types::Location, cwd: &Path) -> SliceLoc {
+    SliceLoc {
+        path: omp_lsp::utils::format_path_relative_to_cwd(
+            &omp_lsp::utils::uri_to_file(&loc.uri),
+            cwd,
+        ),
+        line: loc.range.start.line + 1,
+        col: loc.range.start.character + 1,
+    }
+}
+
+/// Assemble the text report for `slice`. Pure and stable so the DEF/CALLERS
+/// line formats can be unit-tested against server fixtures.
+fn build_slice_report(
+    symbol: &str,
+    server_name: &str,
+    definitions: &[(String, u32, String)],
+    hover: &str,
+    callers: &[(String, u32, u32, String)],
+) -> String {
+    let mut out = vec![format!("slice {symbol} (server: {server_name})")];
+    for (path, line, sig) in definitions {
+        out.push(format!("DEF  {path}:{line}  {sig}"));
+    }
+    if !hover.trim().is_empty() {
+        let mut lines = hover.lines();
+        if let Some(first) = lines.next() {
+            out.push(format!("HOVER  {first}"));
+        }
+        out.extend(lines.map(|l| format!("  {l}")));
+    }
+    out.push(format!("CALLERS ({})", callers.len()));
+    for (path, line, col, ctx) in callers {
+        out.push(format!("  {path}:{line}:{col}  {ctx}"));
+    }
+    out.join("\n")
+}
 fn symbol_icon(kind: u32) -> &'static str {
     match kind {
         1 => omp_lsp::utils::ICON_FILE,
@@ -2149,4 +2395,92 @@ fn format_code_action_line(action: &Value, index: usize) -> String {
         .and_then(|d| d.get("reason"))
         .and_then(Value::as_str);
     omp_lsp::utils::format_code_action(title, Some(kind), preferred, disabled, index)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fmt_loc(uri: &str, cwd: &Path) -> String {
+        omp_lsp::utils::format_path_relative_to_cwd(&omp_lsp::utils::uri_to_file(uri), cwd)
+    }
+
+    #[test]
+    fn slice_report_def_and_callers_line_format_is_stable() {
+        let cwd = Path::new("/repo");
+
+        // textDocument/definition response fixture.
+        let def_response = json!([{
+            "uri": "file:///repo/src/lib.rs",
+            "range": { "start": { "line": 11, "character": 4 }, "end": { "line": 11, "character": 24 } }
+        }]);
+        let def_locs = omp_lsp::diagnostics::normalize_location_result(&def_response);
+        assert_eq!(def_locs.len(), 1);
+
+        // textDocument/references response fixture.
+        let refs_response = json!([
+            {
+                "uri": "file:///repo/src/main.rs",
+                "range": { "start": { "line": 43, "character": 14 }, "end": { "line": 43, "character": 17 } }
+            },
+            {
+                "uri": "file:///repo/src/lib.rs",
+                "range": { "start": { "line": 50, "character": 9 }, "end": { "line": 50, "character": 12 } }
+            }
+        ]);
+        let ref_locs: Vec<omp_lsp::types::Location> = refs_response
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| serde_json::from_value(v.clone()).unwrap())
+            .collect();
+
+        let definitions: Vec<(String, u32, String)> = def_locs
+            .iter()
+            .map(|l| {
+                (
+                    fmt_loc(&l.uri, cwd),
+                    l.range.start.line + 1,
+                    "pub fn foo(x: Bar) -> Baz".to_string(),
+                )
+            })
+            .collect();
+        let callers: Vec<(String, u32, u32, String)> = ref_locs
+            .iter()
+            .map(|l| {
+                (
+                    fmt_loc(&l.uri, cwd),
+                    l.range.start.line + 1,
+                    l.range.start.character + 1,
+                    "foo(a, b)".to_string(),
+                )
+            })
+            .collect();
+
+        let report = build_slice_report(
+            "foo",
+            "rust-analyzer",
+            &definitions,
+            "Returns the answer.",
+            &callers,
+        );
+
+        let expected = concat!(
+            "slice foo (server: rust-analyzer)\n",
+            "DEF  src/lib.rs:12  pub fn foo(x: Bar) -> Baz\n",
+            "HOVER  Returns the answer.\n",
+            "CALLERS (2)\n",
+            "  src/main.rs:44:15  foo(a, b)\n",
+            "  src/lib.rs:51:10  foo(a, b)",
+        );
+        assert_eq!(report, expected);
+    }
+
+    #[test]
+    fn slice_report_empty_references_counts_callers_as_zero() {
+        let report = build_slice_report("foo", "rust-analyzer", &[], "", &[]);
+        assert_eq!(
+            report,
+            concat!("slice foo (server: rust-analyzer)\n", "CALLERS (0)")
+        );
+    }
 }

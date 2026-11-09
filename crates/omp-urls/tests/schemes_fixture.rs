@@ -1,5 +1,6 @@
 //! Fixture tests: each scheme's read matches TS behavior on a fake session
 //! store (`<session>.jsonl` + sibling artifacts dir), per internal-urls parity.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::PathBuf;
 

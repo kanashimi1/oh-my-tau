@@ -175,6 +175,8 @@ async fn login_oauth_code(
     exchange(http, client_id, redirect_uri, &code, verifier).await
 }
 
+// invariant: AUTHORIZE_URL is a static, well-formed URL.
+#[allow(clippy::expect_used)]
 fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state: &str) -> String {
     let mut url = reqwest::Url::parse(AUTHORIZE_URL).expect("static authorize url parses");
     for (name, value) in [

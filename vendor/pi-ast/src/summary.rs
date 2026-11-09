@@ -886,6 +886,8 @@ fn normalize_spans(mut spans: Vec<LineSpan>, total_lines: u32) -> Vec<LineSpan> 
     merged
 }
 
+// invariant: current_kind is Some whenever current_lines is non-empty.
+#[allow(clippy::expect_used)]
 fn build_segments(source: &str, total_lines: u32, spans: &[LineSpan]) -> Vec<SummarySegment> {
     if total_lines == 0 {
         return Vec::new();

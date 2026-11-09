@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration tests for the `omp-auth-broker serve` Rust daemon.
 //!
 //! Each test spins up the compiled binary against an isolated `agent/` dir on a
@@ -8,6 +9,7 @@
 //! always set so the daemon never touches `~/.omp`. Egress proxy env vars are
 //! pinned to a dead proxy with `NO_PROXY` for loopback so the mock token server
 //! is reached directly.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};

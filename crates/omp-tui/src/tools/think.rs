@@ -96,7 +96,11 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer();
         assert!(buffer.content().iter().any(|c| c.symbol() == "p"));
-        let text: String = buffer.content().iter().map(|c| c.symbol()).collect();
+        let text: String = buffer
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(text.contains("pondering"));
     }
 

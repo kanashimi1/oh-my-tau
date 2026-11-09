@@ -1,5 +1,5 @@
 //! Unit tests for the eval tool loop: the pre-port parity tests plus the
-//! new loop behavior (default timeout, cancel, is_error, per-language reset,
+//! new loop behavior (default timeout, cancel, `is_error`, per-language reset,
 //! output cap, kernel-loss notice, bridge-backed helpers).
 
 use super::*;
@@ -50,14 +50,13 @@ fn bun_on_path() -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| is_executable(dir.join("bun")))
+    std::env::split_paths(&path).any(|dir| is_executable(&dir.join("bun")))
 }
 
 #[cfg(unix)]
-fn is_executable(path: std::path::PathBuf) -> bool {
+fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
-    std::fs::metadata(&path)
-        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
@@ -84,7 +83,7 @@ fn timeout_defaults_to_30s_zero_disables_and_clamps() {
     );
     assert_eq!(
         resolve_timeout(&json!({"timeout": 1e9})),
-        Some(Duration::from_secs(3600))
+        Some(Duration::from_hours(1))
     );
 }
 

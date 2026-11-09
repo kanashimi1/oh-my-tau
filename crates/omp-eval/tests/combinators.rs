@@ -1,7 +1,8 @@
-//! λ-RLM combinators + SERA rubrics (prelude_combinators.py) against a scripted host:
+//! λ-RLM combinators + SERA rubrics (`prelude_combinators.py`) against a scripted host:
 //! types checked at call time, termination, budget bounds, rubric-before-spawn order.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use omp_eval::js::{default_runtime, JsKernel};
 use omp_eval::{CellStatus, ExecOptions, HostBridge, PythonKernel};
@@ -17,12 +18,7 @@ struct Host {
 
 impl Host {
     fn ops(&self) -> Vec<String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(o, _)| o.clone())
-            .collect()
+        self.calls.lock().iter().map(|(o, _)| o.clone()).collect()
     }
     fn count(&self, op: &str) -> usize {
         self.ops().iter().filter(|o| *o == op).count()
@@ -30,11 +26,11 @@ impl Host {
 }
 
 impl HostBridge for Host {
+    // Plan math uses compact single-letter names mirroring the spec (n, w, tau, k, d);
+    // depth d is < 64 by construction.
+    #[allow(clippy::many_single_char_names, clippy::cast_possible_truncation)]
     fn call(&self, op: &str, args: Value) -> Result<Value, String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push((op.to_string(), args.clone()));
+        self.calls.lock().push((op.to_string(), args.clone()));
         match op {
             "__llm_query__" => {
                 let p = args["prompt"].as_str().unwrap_or("");
@@ -58,9 +54,10 @@ impl HostBridge for Host {
                 };
                 Ok(json!({"text": text}))
             }
-            "__lam_plan__" => match self.plan.lock().unwrap().clone() {
-                Some(r) => r,
-                None => {
+            "__lam_plan__" => {
+                if let Some(r) = self.plan.lock().clone() {
+                    r
+                } else {
                     let n = args["n"].as_u64().unwrap();
                     let w = args["window"].as_u64().unwrap();
                     let tau = args.get("tau").and_then(Value::as_u64).unwrap_or(w).min(w);
@@ -85,7 +82,7 @@ impl HostBridge for Host {
                         json!({"n": n, "tau": tau, "k": k, "depth": d, "max_leaves": leaves, "max_calls": leaves + extra, "direct": false}),
                     )
                 }
-            },
+            }
             "__rubric_freeze__" => Ok(json!({"id": "rb-test", "criteria": [], "frozen_ms": 1})),
             "__rubric_score__" => {
                 // Stand-in for the host op: score by output text and echo the verified outcome.
@@ -229,7 +226,7 @@ print(r.plan["depth"], r.calls <= r.plan["max_calls"])
     assert!(out.starts_with("6 True"), "{out}");
 
     // A host plan that does not cover the input (depth 0 for a big input) is caught, not looped.
-    *h.plan.lock().unwrap() = Some(Ok(
+    *h.plan.lock() = Some(Ok(
         json!({"n": 5000, "tau": 10, "k": 2, "depth": 0, "max_leaves": 1, "max_calls": 99, "direct": false}),
     ));
     let before = h.count("__llm_query__");
@@ -253,7 +250,7 @@ print(r.plan["depth"], r.calls <= r.plan["max_calls"])
 fn budget_is_enforced_before_and_during_a_run() {
     let (k, h) = (kernel("budget"), Host::default());
     // Planner refusal (shared-ledger budget too small) surfaces with zero model calls.
-    *h.plan.lock().unwrap() = Some(Err(
+    *h.plan.lock() = Some(Err(
         "lam: plan needs up to 10 model calls but only 3 remain".into(),
     ));
     let out = run(
@@ -265,7 +262,7 @@ fn budget_is_enforced_before_and_during_a_run() {
     assert_eq!(h.count("__llm_query__"), 0);
 
     // A plan whose declared bound is smaller than what Φ needs trips LamBudgetError mid-run.
-    *h.plan.lock().unwrap() = Some(Ok(
+    *h.plan.lock() = Some(Ok(
         json!({"n": 5000, "tau": 500, "k": 10, "depth": 1, "max_leaves": 10, "max_calls": 4, "direct": false}),
     ));
     let out = run(
@@ -290,7 +287,7 @@ fn rubric_is_frozen_before_the_child_and_default_path_is_untouched() {
     let (k, h) = (kernel("rubric"), Host::default());
     run(&k, &h, "a = llm_query('plain')");
     {
-        let calls = h.calls.lock().unwrap();
+        let calls = h.calls.lock();
         assert_eq!(calls.len(), 1);
         assert_eq!(
             calls[0].1,
@@ -298,7 +295,7 @@ fn rubric_is_frozen_before_the_child_and_default_path_is_untouched() {
             "no-rubric path must be byte-identical"
         );
     }
-    h.calls.lock().unwrap().clear();
+    h.calls.lock().clear();
     let out = run(
         &k,
         &h,
@@ -382,7 +379,7 @@ const r = await lam_rlm("word ".repeat(2000), "count", { task: "classify", windo
 "#,
     );
     assert!(out.contains("1 10 10 10 classify"), "{out}");
-    h.calls.lock().unwrap().clear();
+    h.calls.lock().clear();
     let out = exec(
         r#"
 const r = await llm_query("solve", { rubric: [{ criterion: "correct", weight: 2 }], n: 3, verify: t => t === "good" });

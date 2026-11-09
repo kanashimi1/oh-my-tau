@@ -488,6 +488,8 @@ async fn handle_connection(
 /// Build the single response frame for one request line. Wire error strings
 /// are the TS fixed vocabulary; every failure path returns before any URL or
 /// source error can leak into the envelope.
+// invariant: respond() only serializes in-memory serde_json::Value payloads, which cannot fail.
+#[allow(clippy::expect_used)]
 fn process_request(
     line: &str,
     token: &str,
@@ -752,7 +754,7 @@ pub struct CollabHostPublication {
     endpoint: String,
     meta_path: PathBuf,
     accept_task: JoinHandle<()>,
-    conns: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>>,
+    conns: Arc<parking_lot::Mutex<Vec<JoinHandle<()>>>>,
     closed: AtomicBool,
 }
 
@@ -780,7 +782,7 @@ impl CollabHostPublication {
             return;
         }
         self.accept_task.abort();
-        if let Ok(mut live) = self.conns.try_lock() {
+        if let Some(mut live) = self.conns.try_lock() {
             for handle in live.drain(..) {
                 handle.abort();
             }
@@ -822,6 +824,8 @@ impl Drop for CollabHostPublication {
 /// # Panics
 /// Only if `serde_json` cannot serialize the metadata record, which is
 /// statically impossible (all fields are strings and integers).
+// invariant: registry metadata is a plain data struct, serde_json cannot fail to serialize it.
+#[allow(clippy::expect_used)]
 #[cfg(unix)]
 fn publish_collab_host_unix(
     source: Arc<dyn CollabHostRegistrySource>,
@@ -900,7 +904,7 @@ fn publish_collab_host_unix(
     }
 
     let token = Arc::new(token);
-    let conns: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>> = Arc::default();
+    let conns: Arc<parking_lot::Mutex<Vec<JoinHandle<()>>>> = Arc::default();
     let accept_task = tokio::spawn(accept_loop(listener, token, source, Arc::clone(&conns)));
 
     Ok(CollabHostPublication {
@@ -914,6 +918,9 @@ fn publish_collab_host_unix(
 
 /// Publish a live Collab host to the local registry (see
 /// [`publish_collab_host_unix`]). Unix-domain-socket IPC only.
+///
+/// # Errors
+/// Registry directory, socket bind or metadata write failure.
 #[cfg(unix)]
 pub fn publish_collab_host(
     source: Arc<dyn CollabHostRegistrySource>,
@@ -942,7 +949,7 @@ async fn accept_loop(
     listener: UnixListener,
     token: Arc<String>,
     source: Arc<dyn CollabHostRegistrySource>,
-    conns: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>>,
+    conns: Arc<parking_lot::Mutex<Vec<JoinHandle<()>>>>,
 ) {
     loop {
         match listener.accept().await {
@@ -952,7 +959,7 @@ async fn accept_loop(
                     Arc::clone(&token),
                     Arc::clone(&source),
                 ));
-                let mut live = conns.lock().await;
+                let mut live = conns.lock();
                 live.retain(|handle| !handle.is_finished());
                 live.push(handle);
             }
@@ -992,6 +999,8 @@ async fn query(
 }
 
 #[cfg(unix)]
+// invariant: frame is a serde_json object built in-memory, serialization cannot fail.
+#[allow(clippy::expect_used)]
 async fn query_once(meta: &CollabHostRecord, request: serde_json::Value) -> QueryResult {
     let mut stream = match tokio::net::UnixStream::connect(&meta.endpoint).await {
         Ok(stream) => stream,
@@ -1322,6 +1331,7 @@ pub async fn resolve_collab_host_link(
 }
 
 #[cfg(all(test, unix))]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use std::collections::{HashMap, HashSet};
 
@@ -1336,7 +1346,7 @@ mod tests {
     /// In-memory [`CollabHostRegistrySource`] standing in for a live host
     /// (host.ts is T3's; the registry only sees this trait).
     struct StubSource {
-        state: std::sync::Mutex<StubState>,
+        state: parking_lot::Mutex<StubState>,
     }
 
     struct StubState {
@@ -1350,7 +1360,7 @@ mod tests {
     impl StubSource {
         fn new(snapshot: CollabHostSnapshot) -> Self {
             Self {
-                state: std::sync::Mutex::new(StubState {
+                state: parking_lot::Mutex::new(StubState {
                     snapshot,
                     fail_snapshot: false,
                     fail_link: false,
@@ -1361,38 +1371,30 @@ mod tests {
         }
 
         fn with_link(self, access: CollabAccess, url: &str) -> Self {
-            self.state
-                .lock()
-                .expect("stub lock")
-                .links
-                .insert(access, url.to_owned());
+            self.state.lock().links.insert(access, url.to_owned());
             self
         }
 
         fn set_access(&self, access: CollabAccess) {
-            self.state.lock().expect("stub lock").snapshot.access = access;
+            self.state.lock().snapshot.access = access;
         }
 
         fn unpublish(&self, access: CollabAccess) {
-            self.state
-                .lock()
-                .expect("stub lock")
-                .unpublished
-                .insert(access);
+            self.state.lock().unpublished.insert(access);
         }
 
         fn fail_snapshot(&self, on: bool) {
-            self.state.lock().expect("stub lock").fail_snapshot = on;
+            self.state.lock().fail_snapshot = on;
         }
 
         fn fail_link(&self, on: bool) {
-            self.state.lock().expect("stub lock").fail_link = on;
+            self.state.lock().fail_link = on;
         }
     }
 
     impl CollabHostRegistrySource for StubSource {
         fn snapshot(&self) -> anyhow::Result<CollabHostSnapshot> {
-            let state = self.state.lock().expect("stub lock");
+            let state = self.state.lock();
             if state.fail_snapshot {
                 anyhow::bail!("host cannot vouch for its session");
             }
@@ -1400,7 +1402,7 @@ mod tests {
         }
 
         fn link(&self, access: CollabAccess) -> anyhow::Result<Option<String>> {
-            let state = self.state.lock().expect("stub lock");
+            let state = self.state.lock();
             if state.fail_link {
                 anyhow::bail!("url builder unavailable");
             }
@@ -2589,8 +2591,8 @@ mod tests {
     #[test]
     fn collab_hosts_runtime_dir_honours_env() {
         // Guarded by a process-wide lock: only this test mutates env.
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        static ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+        let _guard = ENV_LOCK.lock();
         let tmp = tempfile::tempdir().expect("tempdir");
         let saved_home = std::env::var_os("HOME");
         let saved_config = std::env::var_os("PI_CONFIG_DIR");

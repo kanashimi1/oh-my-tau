@@ -12,7 +12,7 @@ mod ingest;
 pub(crate) mod rows;
 mod schema;
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use anyhow::{Context as _, Result};
 use rusqlite::Connection;
@@ -23,8 +23,8 @@ pub use schema::*;
 
 static DB: Mutex<Option<Connection>> = Mutex::new(None);
 
-fn lock() -> std::sync::MutexGuard<'static, Option<Connection>> {
-    DB.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+fn lock() -> parking_lot::MutexGuard<'static, Option<Connection>> {
+    DB.lock()
 }
 
 /// TS `initDb`: open `~/.omp/stats.db` once, set the pragmas, create/migrate

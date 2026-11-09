@@ -36,13 +36,14 @@
 
 #![allow(clippy::missing_errors_doc)] // single io::Error failure mode; per-call docs add noise
 
+use parking_lot::Mutex;
 use std::io::{self, BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
@@ -412,6 +413,8 @@ pub(crate) struct KernelProcess {
 
 impl KernelProcess {
     /// Spawn `program args…` speaking the NDJSON kernel protocol on stdio.
+    // invariant: stdout/stdin are piped on the command above, so take() always yields Some.
+    #[allow(clippy::expect_used)]
     pub(crate) fn spawn(
         program: &str,
         args: &[&str],
@@ -428,18 +431,15 @@ impl KernelProcess {
         let setsid = ["/usr/bin/setsid", "/bin/setsid"]
             .into_iter()
             .find(|p| std::path::Path::new(p).is_file());
-        let mut command = match setsid {
-            Some(setsid) => {
-                let mut c = Command::new(setsid);
-                c.arg("--wait").arg(program);
-                c
-            }
-            None => {
-                let mut c = Command::new(program);
-                #[cfg(unix)]
-                c.process_group(0);
-                c
-            }
+        let mut command = if let Some(setsid) = setsid {
+            let mut c = Command::new(setsid);
+            c.arg("--wait").arg(program);
+            c
+        } else {
+            let mut c = Command::new(program);
+            #[cfg(unix)]
+            c.process_group(0);
+            c
         };
         let mut child = command
             .args(args)
@@ -479,8 +479,12 @@ impl KernelProcess {
         // request, then escalate to killing the whole process group.
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
-            if self.child.try_wait().expect("try_wait").is_some() {
-                return;
+            // An OS error polling the child is unrecoverable here; fall
+            // through to the kill escalation below rather than panic.
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(_) => break,
             }
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -614,13 +618,9 @@ impl PythonKernel {
     ///
     /// # Errors
     /// See [`PythonKernel::start`].
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned (another thread panicked while
-    /// holding it).
     pub fn restart(&self) -> io::Result<()> {
         {
-            let mut guard = self.process.lock().expect("kernel lock");
+            let mut guard = self.process.lock();
             if let Some(p) = guard.as_mut() {
                 p.settle_exit();
             }
@@ -666,12 +666,16 @@ impl PythonKernel {
     ///
     /// # Errors
     /// Fails on broken kernel I/O.
+    // By value to match the other kernels' `execute_with`; the options are only read.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn execute_with(&self, code: &str, opts: ExecOptions<'_>) -> io::Result<CellResult> {
         self.execute_opts(code, &opts, false)
     }
 
     // Mirrors the omp host cell-execution flow step by step; splitting would obscure that parity.
     #[allow(clippy::too_many_lines)]
+    // invariant: req is a serde_json! object literal, so as_object_mut is Some.
+    #[allow(clippy::expect_used)]
     fn execute_opts(
         &self,
         code: &str,
@@ -681,7 +685,7 @@ impl PythonKernel {
         let seq = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id;
         {
-            let mut guard = self.process.lock().expect("kernel lock");
+            let mut guard = self.process.lock();
             let p = guard
                 .as_mut()
                 .ok_or_else(|| io::Error::other("Python kernel is not running"))?;
@@ -763,7 +767,7 @@ impl PythonKernel {
                                     "error": "host bridge unavailable",
                                 }),
                             };
-                            let mut guard = self.process.lock().expect("kernel lock");
+                            let mut guard = self.process.lock();
                             if let Some(p) = guard.as_mut() {
                                 let _ = p.stdin.write_all(format!("{reply}\n").as_bytes());
                                 let _ = p.stdin.flush();
@@ -842,7 +846,7 @@ impl PythonKernel {
                     // cell. The interrupt (like the timeout's) lands as
                     // KeyboardInterrupt("Execution interrupted"); reuse the
                     // escalation window to let the runner settle.
-                    if let Some(p) = self.process.lock().expect("kernel lock").as_mut() {
+                    if let Some(p) = self.process.lock().as_mut() {
                         #[cfg(unix)]
                         if let Ok(pid) = i32::try_from(p.child.id()) {
                             let _ = nix::sys::signal::kill(
@@ -900,7 +904,7 @@ impl PythonKernel {
         };
         loop {
             let outcome = {
-                let mut guard = self.process.lock().expect("kernel lock");
+                let mut guard = self.process.lock();
                 let Some(p) = guard.as_mut() else {
                     return Err(RecvOutcome::Disconnected);
                 };
@@ -946,37 +950,29 @@ impl PythonKernel {
     }
 
     /// Graceful shutdown: protocol `exit`, wait, escalate on refusal.
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned.
     pub fn shutdown(&self) {
-        let mut guard = self.process.lock().expect("kernel lock");
+        let mut guard = self.process.lock();
         if let Some(mut p) = guard.take() {
             p.settle_exit();
         }
     }
 
     /// True while the runner subprocess is alive.
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned.
     #[must_use]
     pub fn is_alive(&self) -> bool {
-        let mut guard = self.process.lock().expect("kernel lock");
+        let mut guard = self.process.lock();
         match guard.as_mut() {
-            Some(p) => p.child.try_wait().expect("try_wait").is_none(),
+            // An unrecoverable OS status report is treated as "not alive".
+            Some(p) => matches!(p.child.try_wait(), Ok(None)),
             None => false,
         }
     }
 
     /// Runner process id while the kernel is running, else `None`
     /// (introspection/test aid).
-    ///
-    /// # Panics
-    /// Panics if the kernel mutex is poisoned.
     #[must_use]
     pub fn pid(&self) -> Option<u32> {
-        let guard = self.process.lock().expect("kernel lock");
+        let guard = self.process.lock();
         guard.as_ref().map(|p| p.child.id())
     }
 
@@ -1024,16 +1020,13 @@ impl KernelRegistry {
     ///
     /// # Errors
     /// See [`PythonKernel::start`].
-    ///
-    /// # Panics
-    /// Panics if the registry mutex is poisoned.
     pub fn get_or_start(
         &self,
         cwd: &std::path::Path,
         interpreter: Option<&str>,
     ) -> io::Result<Arc<PythonKernel>> {
         let key = cwd.to_string_lossy().into_owned();
-        let mut kernels = self.kernels.lock().expect("registry lock");
+        let mut kernels = self.kernels.lock();
         if let Some(k) = kernels.get(&key) {
             if k.is_alive() {
                 return Ok(Arc::clone(k));

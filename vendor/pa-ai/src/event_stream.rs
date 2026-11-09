@@ -130,7 +130,10 @@ struct Shared {
 
 impl Shared {
     fn push(&self, event: AssistantMessageEvent) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.done {
             return;
         }
@@ -147,7 +150,10 @@ impl Shared {
     }
 
     fn end(&self, result: Option<AssistantMessage>) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.done = true;
         if let Some(result) = result {
             state.resolve(result);
@@ -175,7 +181,11 @@ impl AssistantMessageEventWriter {
     }
 
     pub fn is_done(&self) -> bool {
-        self.shared.state.lock().unwrap().done
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .done
     }
 }
 
@@ -215,14 +225,16 @@ impl AssistantMessageEventStream {
 
     /// Poll for the next queued event, or `None` once the stream terminated.
     ///
-    /// # Panics
-    ///
-    /// Panics if the shared-state `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn poll_next_event(
         &mut self,
         cx: &mut TaskContext<'_>,
     ) -> Poll<Option<AssistantMessageEvent>> {
-        let mut state = self.shared.state.lock().unwrap();
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(event) = state.queue.pop_front() {
             return Poll::Ready(Some(event));
         }
@@ -235,19 +247,25 @@ impl AssistantMessageEventStream {
 
     /// Await the final assistant message carried by the terminal event.
     ///
-    /// # Panics
-    ///
-    /// Panics if the shared-state `Mutex` is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     ///
     /// A stream terminated without a resolved message (`end(None)`) never resolves: this future
     /// hangs.
+    // invariant: waiters are resolved by `end`/`push` before their senders drop,
+    // so the resolved slot is always populated when the channel closes.
+    #[allow(clippy::expect_used)]
+    #[allow(clippy::missing_panics_doc)]
     pub async fn result(self) -> AssistantMessage {
         if let Some(message) = self.try_result() {
             return message;
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
         {
-            let mut state = self.shared.state.lock().unwrap();
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(message) = &state.resolved {
                 return message.clone();
             }
@@ -264,7 +282,12 @@ impl AssistantMessageEventStream {
     }
 
     fn try_result(&self) -> Option<AssistantMessage> {
-        self.shared.state.lock().unwrap().resolved.clone()
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .resolved
+            .clone()
     }
 }
 

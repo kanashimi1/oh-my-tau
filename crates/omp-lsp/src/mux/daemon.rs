@@ -64,6 +64,8 @@ impl AsyncRead for MuxReader {
     }
 }
 
+// invariant: serializing an in-memory serde_json::Value cannot fail.
+#[allow(clippy::expect_used)]
 fn frame(message: &Value) -> Vec<u8> {
     let body = serde_json::to_string(message).expect("serialize mux frame");
     format!("Content-Length: {}\r\n\r\n{body}", body.len()).into_bytes()
@@ -159,6 +161,8 @@ async fn request_on_socket(
 }
 
 /// Dial and handshake one server link; fails on any error (omp `dialMuxServer`).
+// invariant: serializing in-memory connect params cannot fail.
+#[allow(clippy::expect_used)]
 async fn dial_mux_server(
     endpoint: &Path,
     params: &MuxConnectParams,

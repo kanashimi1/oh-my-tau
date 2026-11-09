@@ -15,14 +15,21 @@
 
 use std::path::PathBuf;
 
+// Build script: every failure here is unrecoverable for the build itself, so
+// the expect messages name the missing input rather than papering over it.
+#[allow(clippy::expect_used)]
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let manifest =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     // A local oh-my-pi checkout (`vendor-src/`, not in git) wins so a TS bump is picked up;
     // a clean clone builds from the in-repo snapshot (same rules.json pa-ai vendors).
     let ts = manifest.join("../../vendor-src/oh-my-pi/packages");
     let (rules_path, pkg_path) = if ts.join("catalog/src/compat/rules.json").is_file() {
-        (ts.join("catalog/src/compat/rules.json"), ts.join("coding-agent/package.json"))
+        (
+            ts.join("catalog/src/compat/rules.json"),
+            ts.join("coding-agent/package.json"),
+        )
     } else {
         (
             manifest.join("../../vendor/pa-ai/data/compat/rules.json"),
@@ -64,11 +71,11 @@ fn base36(mut v: u64) -> String {
     if v == 0 {
         return "0".to_owned();
     }
-    let mut out = Vec::new();
+    let mut out = String::new();
     while v > 0 {
-        out.push(DIGITS[usize::try_from(v % 36).expect("fits")]);
+        // v % 36 is always < 36, so the index and the u8->char cast are exact.
+        out.push(char::from(DIGITS[(v % 36) as usize]));
         v /= 36;
     }
-    out.reverse();
-    String::from_utf8(out).expect("ascii")
+    out.chars().rev().collect()
 }

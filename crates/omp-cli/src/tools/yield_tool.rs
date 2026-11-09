@@ -62,12 +62,14 @@ fn parse_yield_error(value: Option<&Value>) -> Result<Option<String>> {
 }
 
 /// omp `parseYieldType`: `null` (strict-mode omitted optional) is absent.
+// invariant: the match arms above guarantee value is the matched Some variant.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn parse_yield_type(value: Option<&Value>) -> Result<Option<Value>> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(_)) => Ok(Some(value.unwrap().clone())),
+        Some(Value::String(_)) => Ok(Some(value.expect("matched variant").clone())),
         Some(Value::Array(items)) if !items.is_empty() && items.iter().all(Value::is_string) => {
-            Ok(Some(value.unwrap().clone()))
+            Ok(Some(value.expect("all-string array matched above").clone()))
         }
         Some(_) => Err(anyhow!(
             "type must be a string or non-empty array of strings"
@@ -79,7 +81,7 @@ fn parse_yield_type(value: Option<&Value>) -> Result<Option<Value>> {
 pub struct YieldTool {
     schema: Value,
     /// Consecutive untyped empty-result submissions (omp `#emptyResultFailures`).
-    empty_result_failures: std::sync::Mutex<u32>,
+    empty_result_failures: parking_lot::Mutex<u32>,
 }
 
 /// The hidden `yield` tool (omp `HIDDEN_TOOLS.yield`).
@@ -87,7 +89,7 @@ pub struct YieldTool {
 pub fn tool() -> Arc<dyn AgentTool> {
     Arc::new(YieldTool {
         schema: schema(),
-        empty_result_failures: std::sync::Mutex::new(0),
+        empty_result_failures: parking_lot::Mutex::new(0),
     })
 }
 
@@ -135,10 +137,7 @@ impl YieldTool {
             return Err(anyhow!("yield cannot contain both data and error"));
         }
         if error_message.is_none() && data.is_none() && yield_type.is_none() {
-            let mut failures = self
-                .empty_result_failures
-                .lock()
-                .expect("yield retry counter poisoned");
+            let mut failures = self.empty_result_failures.lock();
             *failures += 1;
             if *failures > MAX_EMPTY_RESULT_RETRIES {
                 let attempt_count = *failures;
@@ -153,10 +152,7 @@ impl YieldTool {
                 "yield must contain either `data` or `error`. {YIELD_FORMAT_HINT} Empty untyped result retries remaining before abort: {remaining}."
             ));
         }
-        *self
-            .empty_result_failures
-            .lock()
-            .expect("yield retry counter poisoned") = 0;
+        *self.empty_result_failures.lock() = 0;
 
         if let Some(error) = error_message {
             Ok(aborted_result(&error, yield_type))
@@ -214,7 +210,7 @@ mod tests {
         YieldTool::run(
             Arc::new(YieldTool {
                 schema: schema(),
-                empty_result_failures: std::sync::Mutex::new(0),
+                empty_result_failures: parking_lot::Mutex::new(0),
             }),
             params,
         )
@@ -290,7 +286,7 @@ mod tests {
     fn empty_result_ladder() {
         let tool = Arc::new(YieldTool {
             schema: schema(),
-            empty_result_failures: std::sync::Mutex::new(0),
+            empty_result_failures: parking_lot::Mutex::new(0),
         });
         for remaining in (0..3).rev() {
             let e = YieldTool::run(tool.clone(), json!({})).unwrap_err();

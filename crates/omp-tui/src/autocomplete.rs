@@ -46,6 +46,8 @@ pub fn fuzzy_score(needle: &str, haystack: &str) -> i64 {
     }
     // Lower fuzzy score = better match = higher rank score.
     let rank = 1_000_000.0 - m.score.clamp(-100_000.0, 100_000.0) * 1000.0;
+    // Scores are clamped far below i64 range; rank is monotonic in the score.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     i64::max(1, rank as i64)
 }
 
@@ -664,7 +666,7 @@ fn build_slash_command_completions(
     }
     // Stable sort: equal scores keep registry order (TS falls back to usage
     // counts, which we do not track yet).
-    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows.sort_by_key(|row| std::cmp::Reverse(row.1));
     rows.into_iter().map(|(item, _)| item).collect()
 }
 
@@ -720,7 +722,7 @@ enum FileKind {
     Directory,
 }
 
-const DIR_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(2000);
+const DIR_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl DirCache {
     fn read_dir(&mut self, dir: &Path) -> Option<&Vec<(String, FileKind)>> {
@@ -753,12 +755,7 @@ impl DirCache {
         if self.entries.len() >= 100 {
             // Prune the 50 oldest (TS cache eviction).
             let mut keys: Vec<PathBuf> = self.entries.keys().cloned().collect();
-            keys.sort_by_key(|k| {
-                self.entries
-                    .get(k)
-                    .map(|(at, _)| *at)
-                    .unwrap_or_else(Instant::now)
-            });
+            keys.sort_by_key(|k| self.entries.get(k).map_or_else(Instant::now, |(at, _)| *at));
             for key in keys.into_iter().take(50) {
                 self.entries.remove(&key);
             }
@@ -837,13 +834,13 @@ fn is_outside_cwd(base_path: &Path, raw_prefix: &str) -> bool {
 }
 
 /// Scoped fuzzy query: `@src/uti` searches `src/` for `uti` (TS
-/// `#resolveScopedFuzzyQuery`). Returns (base_dir, query, display_base).
+/// `#resolveScopedFuzzyQuery`). Returns (`base_dir`, query, `display_base`).
 fn resolve_scoped_fuzzy_query(
     base_path: &Path,
     raw_query: &str,
 ) -> Option<(PathBuf, String, String)> {
     let slash_index = raw_query.rfind('/')?;
-    let display_base = &raw_query[..slash_index + 1];
+    let display_base = &raw_query[..=slash_index];
     let query = &raw_query[slash_index + 1..];
     let base_dir = if let Some(rest) = display_base.strip_prefix("~/") {
         let _ = rest;
@@ -872,7 +869,9 @@ fn posix_basename(path: &str) -> &str {
 }
 
 /// Immediate-directory prefix listing for a path token (TS
-/// `#getFileSuggestions`).
+/// `#getFileSuggestions`). One walk over the cached dir entries; splitting
+/// the branch-per-token-shape would obscure the TS parity.
+#[allow(clippy::too_many_lines)]
 fn get_file_suggestions(
     base_path: &Path,
     dir_cache: &mut DirCache,
@@ -952,11 +951,9 @@ fn get_file_suggestions(
                     format!("~/{home_dir}/{name}")
                 }
             } else if display_prefix.starts_with('/') {
-                let dir = match display_prefix.rfind('/') {
-                    Some(0) => "",
-                    Some(i) => &display_prefix[..i],
-                    None => "",
-                };
+                let dir = display_prefix
+                    .rfind('/')
+                    .map_or("", |i| &display_prefix[..i]);
                 if dir.is_empty() {
                     format!("/{name}")
                 } else {
@@ -1011,7 +1008,7 @@ fn get_file_suggestions(
 
 /// Recursive fuzzy file walk inside the project (TS
 /// `#getFuzzyFileSuggestions`, replacing the native `fuzzyFind` with a
-/// bounded std::fs walk). Honors the TS contract: hidden + `.git` skipped
+/// bounded `std::fs` walk). Honors the TS contract: hidden + `.git` skipped
 /// (unless the query's last segment starts with `.`), results filtered by
 /// `subsequenceMatch`, capped at `FUZZY_MAX_RESULTS`.
 fn get_fuzzy_file_suggestions(
@@ -1034,7 +1031,7 @@ fn get_fuzzy_file_suggestions(
 
     let mut matches: Vec<(String, bool)> = Vec::new();
     let mut visited = 0usize;
-    let mut stack: Vec<(PathBuf, String)> = vec![(search_path.clone(), String::new())];
+    let mut stack: Vec<(PathBuf, String)> = vec![(search_path, String::new())];
     while let Some((dir, rel)) = stack.pop() {
         if visited >= FUZZY_WALK_ENTRY_CAP || matches.len() >= FUZZY_WALK_ENTRY_CAP {
             break;
@@ -1422,7 +1419,7 @@ impl Autocomplete {
         let current_line = lines.get(cursor_line).map_or("", String::as_str);
         let text_before_cursor = &current_line[..cursor_col.min(current_line.len())];
         let trimmed = text_before_cursor.trim();
-        !(trimmed.starts_with('/') && !trimmed.contains(' '))
+        !trimmed.starts_with('/') || trimmed.contains(' ')
     }
 
     /// Sync slash completion for the Enter race (TS
@@ -1518,7 +1515,7 @@ impl Autocomplete {
         let is_path_item = item.value.starts_with('/') || item.value.starts_with('"');
         if !is_path_item && find_leading_slash_command_start(prefix).is_some() {
             let Some(slash) = leading_slash_start else {
-                return self.apply_path_tail(
+                return Self::apply_path_tail(
                     lines,
                     cursor_line,
                     current_line,
@@ -1554,7 +1551,7 @@ impl Autocomplete {
             }
         }
 
-        self.apply_path_tail(
+        Self::apply_path_tail(
             lines,
             cursor_line,
             current_line,
@@ -1567,8 +1564,10 @@ impl Autocomplete {
 
     /// Shared tail of [`Self::apply_completion`]: file-attachment and plain
     /// path/argument replacement.
+    // One replacement routine shared by the file-attachment and plain-path
+    // callers; the token spans keep it at eight arguments.
+    #[allow(clippy::too_many_arguments)]
     fn apply_path_tail(
-        &self,
         lines: &[String],
         cursor_line: usize,
         current_line: &str,
@@ -1615,18 +1614,18 @@ impl Autocomplete {
         self.open.then(|| self.items.get(self.selected)).flatten()
     }
 
-    /// Move the selection by `delta` rows (wrapping like the TS SelectList).
+    /// Move the selection by `delta` rows (wrapping like the TS `SelectList`).
     fn move_selection(&mut self, delta: isize) {
         if self.items.is_empty() {
             return;
         }
-        let len = self.items.len() as isize;
-        self.selected = (((self.selected as isize + delta) % len + len) % len) as usize;
+        let len = self.items.len().cast_signed();
+        self.selected = ((self.selected.cast_signed() + delta).rem_euclid(len)).cast_unsigned();
     }
 
     /// Page the selection by `pages` popup windows.
     fn page_selection(&mut self, pages: isize) {
-        let page = self.max_visible.max(1) as isize;
+        let page = self.max_visible.max(1).cast_signed();
         self.move_selection(pages * page);
     }
 }
@@ -1640,6 +1639,8 @@ impl Component for Autocomplete {
         // Keep the footer hint row: never show more rows than fit above it.
         let fit = usize::from(area.height.saturating_sub(1)).max(1);
         let visible = self.max_visible.min(self.items.len()).min(fit);
+        // Popup height is capped by the frame area, so `visible` fits u16.
+        #[allow(clippy::cast_possible_truncation)]
         let height = u16::min(area.height, visible as u16 + 1);
         let popup = Rect {
             x: area.x,
@@ -1676,7 +1677,7 @@ impl Component for Autocomplete {
                 let budget = width.saturating_sub(used + 8);
                 if budget > 4 {
                     spans.push(Span::styled(
-                        format!("  {}", truncate_to(&detail.to_string(), budget)),
+                        format!("  {}", truncate_to(detail, budget)),
                         Style::default().fg(muted),
                     ));
                 }
@@ -2032,7 +2033,10 @@ mod tests {
         a.handle_key(KeyEvent::from(KeyCode::Up));
         assert_eq!(a.selected, n - 1);
         a.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        let expected = ((n as isize - 1 + a.max_visible as isize).rem_euclid(n as isize)) as usize;
+        #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+        let expected = (n.cast_signed() - 1 + a.max_visible.cast_signed())
+            .rem_euclid(n.cast_signed())
+            .cast_unsigned();
         assert_eq!(a.selected, expected);
 
         a.handle_key(KeyEvent::from(KeyCode::Enter));

@@ -2,10 +2,10 @@
 //! stub whose `load` fails cleanly (builds without prebuilt ONNX Runtime, e.g. musl).
 
 #[cfg(feature = "onnx")]
-pub use laya_ort::Judge;
+pub use laya_ort::{Judge, QuestionProbs};
 
 #[cfg(not(feature = "onnx"))]
-pub use stub::Judge;
+pub use stub::{Judge, QuestionProbs};
 
 #[cfg(not(feature = "onnx"))]
 mod stub {

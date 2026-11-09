@@ -21,6 +21,7 @@ fn parse_component(value: &str) -> Option<u32> {
 }
 
 /// Explicit revision literal: one to three components separated by `.` or `-`.
+#[must_use]
 pub fn parse_revision(value: &str) -> Option<Revision> {
     let mut out = [0u32; 3];
     let mut count = 0;
@@ -68,10 +69,12 @@ pub fn parse_revision_prefix(value: &str) -> Option<Revision> {
     Some(out)
 }
 
+#[must_use]
 pub fn compare_revision(a: &Revision, b: &Revision) -> std::cmp::Ordering {
     a.cmp(b)
 }
 
+#[must_use]
 pub fn format_revision(r: &Revision) -> String {
     format!("{}.{}.{}", r[0], r[1], r[2])
 }
@@ -92,6 +95,7 @@ pub struct RevisionTerm {
 }
 
 impl RevisionOp {
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             ">=" => Self::Gte,
@@ -104,6 +108,7 @@ impl RevisionOp {
     }
 }
 
+#[must_use]
 pub fn revision_satisfies(revision: &Revision, terms: &[RevisionTerm]) -> bool {
     use std::cmp::Ordering::{Equal, Greater, Less};
     terms.iter().all(|t| {

@@ -148,6 +148,11 @@ pub fn is_transient(status: Option<u16>, message: &str) -> bool {
         return true;
     }
     let m = message.to_ascii_lowercase();
+    // The response headers arrived (status is the 2xx of the stream) but the body read died
+    // mid-stream (reset, truncated chunked/gzip frame): a transport failure, so retry it.
+    if m.contains("failed to read provider response body") {
+        return true;
+    }
     status.is_none()
         && [
             "connection error",
@@ -359,7 +364,7 @@ impl AccountRotation {
         }
         window
             .into_iter()
-            .find(|c| !burned.contains(&c.id) && !(cooldown_active && cooling.contains(&c.id)))
+            .find(|c| !burned.contains(&c.id) && (!cooldown_active || !cooling.contains(&c.id)))
     }
 
     /// `alternate` just took over `model` (switch applied): it becomes the serving account
@@ -389,6 +394,7 @@ impl AccountRotation {
     /// The provider's cooldown expired: rotation may retry the cooled alternates once —
     /// clear the cooling set (the burned set keeps them out of the next cycle).
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     pub fn clear_cooldown(&mut self, provider: &str, model: &str) {
         if let Some(v) = self.cooling.get_mut(&Self::slot(provider, model)) {
             v.clear();
@@ -396,6 +402,7 @@ impl AccountRotation {
     }
 
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     fn burned_of(&self, provider: &str, model: &str) -> Vec<i64> {
         self.burned
             .get(&Self::slot(provider, model))
@@ -451,6 +458,7 @@ impl TurnRecovery {
 
     /// Whether `selector` is on a cooldown at `now_ms`.
     #[cfg(test)]
+    #[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
     #[must_use]
     pub fn is_cooling(&self, selector: &str, now_ms: u64) -> bool {
         self.state.is_suppressed(selector, now_ms)
@@ -730,8 +738,17 @@ impl TurnRecovery {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
+
+    #[test]
+    fn mid_stream_body_read_failure_is_transient() {
+        let msg = "Failed to read provider response body: error decoding response body";
+        assert!(is_transient(Some(200), msg));
+        assert!(is_transient(None, msg));
+        assert!(!is_transient(Some(400), "invalid request"));
+    }
 
     fn failed(msg: &str) -> FailedTurn {
         FailedTurn {
@@ -885,7 +902,7 @@ mod tests {
         assert_eq!(first.id, 11);
         rot.promote("p", "m", first.id);
         rot.burn("p", "m", 10);
-        pool.current = first.clone();
+        pool.current = first;
         assert_eq!(rot.burned_of("p", "m"), vec![10]);
 
         // 11 serves now (serving): 12 is the only unburned alternate.
@@ -1060,7 +1077,7 @@ mod tests {
 
     // ------------------------------------------------------- saga through the runtime
 
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
     use std::time::Duration;
 
     use omp_providers::ThinkingSource;
@@ -1139,7 +1156,7 @@ mod tests {
         let models_seen = std::sync::Arc::new(Mutex::new(Vec::new()));
         let seen = models_seen.clone();
         let stream_fn: StreamFn = std::sync::Arc::new(move |m, c, o| {
-            seen.lock().unwrap().push(m.id.clone());
+            seen.lock().push(m.id.clone());
             inner(m, c, o)
         });
         let agent = Agent::new(AgentOptions {
@@ -1158,7 +1175,7 @@ mod tests {
             .await
             .expect("session");
         let session_file = persist.path();
-        let target = std::sync::Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+        let target = std::sync::Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
             api_key: Some("test-key".into()),
             model: primary,
             service_tier: None,
@@ -1297,7 +1314,7 @@ mod tests {
         assert_eq!(ends[1]["isTerminal"], true);
         assert_eq!(get("prompt_result")["status"], "completed");
         assert_eq!(
-            *h.models_seen.lock().unwrap(),
+            *h.models_seen.lock(),
             ["a", "b"],
             "second attempt ran on the fallback model"
         );
@@ -1364,7 +1381,7 @@ mod tests {
                 .unwrap()["attempt"],
             2
         );
-        assert_eq!(*h.models_seen.lock().unwrap(), ["a", "a", "a"]);
+        assert_eq!(*h.models_seen.lock(), ["a", "a", "a"]);
         assert!(!frames.iter().any(|f| f["type"] == "model_changed"));
         let users: Vec<_> = frames
             .iter()
@@ -1982,7 +1999,7 @@ mod tests {
             else {
                 panic!("assistant message")
             };
-            a.stop_reason.clone()
+            a.stop_reason
         };
         let msgs = h.rt.agent.state().await.messages;
         assert_ne!(
@@ -2005,6 +2022,81 @@ mod tests {
             pa_agent::types::StopReason::Aborted,
             "next prompt not aborted"
         );
+    }
+
+    /// A detached child's log (`--mode rpc` stdout tailed and replayed by the
+    /// hub) grows O(reply) instead of O(reply²): `message_update` deltas, while
+    /// the hub's expansion yields byte-identical full frames.
+    #[tokio::test]
+    async fn detached_log_compacts_message_updates() {
+        let reply = (0..2000).fold(String::new(), |mut s, i| {
+            use std::fmt::Write as _;
+            let _ = write!(s, "word{i} ");
+            s
+        });
+        let mut h = harness(&[Ok(reply.as_str())], cfg(&["p/a"])).await;
+        h.rt.prompt(None, "hello", None, Vec::new())
+            .await
+            .expect("prompt");
+        let mut frames = Vec::new();
+        loop {
+            let f = tokio::time::timeout(Duration::from_secs(30), h.rx.recv())
+                .await
+                .expect("frame in time")
+                .expect("open");
+            let end = f["type"] == "agent_end";
+            frames.push(f);
+            if end {
+                break;
+            }
+        }
+        let updates = frames
+            .iter()
+            .filter(|f| f["type"] == "message_update")
+            .count();
+        assert!(updates > 1000, "streamed in {updates} updates");
+        let plain = crate::rpc::encode_log(&frames, false);
+        let compact = crate::rpc::encode_log(&frames, true);
+        let bytes = |lines: &[String]| lines.iter().map(|l| l.len() + 1).sum::<usize>();
+        let (before, after) = (bytes(&plain), bytes(&compact));
+        eprintln!(
+            "reply {}B, {updates} message_update frames: log {before}B before, {after}B after",
+            reply.len()
+        );
+        // Linear: a fixed envelope per update plus the text, not the whole reply each time.
+        assert!(
+            after < 4 * reply.len() + 400 * updates,
+            "log {after}B for a {}B reply",
+            reply.len()
+        );
+        assert!(after * 50 < before, "{after}B vs {before}B");
+
+        // The hub's expansion (as in `Agent::on_child_line`) restores every frame.
+        let mut hub = crate::rpc::UpdateExpander::default();
+        let expanded: Vec<String> = compact
+            .iter()
+            .map(|line| {
+                let frame: Value = serde_json::from_str(line).expect("json line");
+                match hub.expand(line, &frame) {
+                    crate::rpc::Expansion::Unchanged => line.clone(),
+                    crate::rpc::Expansion::Expanded(full) => full,
+                    crate::rpc::Expansion::Unsynced => panic!("unsynced at {line}"),
+                }
+            })
+            .collect();
+        assert_eq!(expanded.len(), plain.len());
+        for (got, want) in expanded.iter().zip(&plain) {
+            assert_eq!(got, want);
+        }
+        let last: Value = serde_json::from_str(
+            expanded
+                .iter()
+                .rev()
+                .find(|l| l.contains("\"message_update\""))
+                .expect("update"),
+        )
+        .expect("json");
+        assert_eq!(last["message"]["content"][0]["text"], json!(reply));
     }
 
     /// Read frames until `pred` matches (30 s guard).

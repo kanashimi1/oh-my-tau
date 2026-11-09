@@ -860,12 +860,14 @@ mod tests {
         );
     }
 
+    #[allow(clippy::cast_precision_loss, clippy::float_cmp)] // jitter is an intentionally exact-inequality float check on u64-backed delays
     #[test]
     fn backoff_bounds_and_caps() {
         for attempt in 0..12u32 {
             let low = backoff_delay_ms(attempt, 1_000, 30_000, 0.0);
             let high = backoff_delay_ms(attempt, 1_000, 30_000, 0.999_999);
-            let base = (1_000_f64 * 2.0f64.powi(attempt as i32)).min(30_000.0);
+            let base =
+                (1_000_f64 * 2.0f64.powi(i32::try_from(attempt).unwrap_or(i32::MAX))).min(30_000.0);
             assert!(low as f64 >= base * 0.75 - 1.0, "attempt {attempt}: {low}");
             assert!(
                 high as f64 <= base * 1.25 + 1.0,
@@ -951,6 +953,8 @@ mod tests {
         );
     }
 
+    // Exact inequality is the point: we are asserting the two seeds diverge.
+    #[allow(clippy::float_cmp)]
     #[test]
     fn jitter_is_in_range_and_seeded_differently() {
         let mut a = initial_rng_state();

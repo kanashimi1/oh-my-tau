@@ -52,6 +52,12 @@ pub struct TaskItem {
     pub schema_mode: SchemaMode,
     /// Tool allow-list override for this spawn.
     pub tools: Option<Vec<String>>,
+    /// `worktree: true`: run the child in a fresh `git worktree` on branch
+    /// `agent/<id>` from the parent's HEAD (only valid when the parent's
+    /// cwd is a git checkout). Unset inherits the agent definition's
+    /// `worktree` frontmatter, then the batch default.
+    #[serde(default)]
+    pub worktree: Option<bool>,
 }
 
 fn default_agent() -> String {

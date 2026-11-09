@@ -14,6 +14,9 @@
 //! reports the kernel's Landlock ABI; on a kernel without Landlock the sandbox
 //! warns and runs unsandboxed.
 
+// Ported from the omt lineage: the tool-spawn confinement gate is wired in the omt lineage; omp-rs spawn integration pending.
+#![allow(dead_code)]
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

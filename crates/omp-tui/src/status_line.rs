@@ -599,7 +599,9 @@ impl Component for StatusLine {
 
 /// The full layout pass: resolve segments, run the overflow algorithm
 /// (§5.3), paint the groups and join them with the gauge (§5.4). The right
-/// group is flush right; the gauge (plus padding) fills the gap.
+/// group is flush right; the gauge (plus padding) fills the gap. The
+/// overflow algorithm is one pass by design (§5.3).
+#[allow(clippy::too_many_lines)]
 fn layout(
     ctx: &Ctx<'_>,
     theme: &Theme,

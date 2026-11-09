@@ -26,9 +26,10 @@
 //! `OMP_RLM_MAX_CALLS` (default 64), `OMP_RLM_MAX_TOKENS` (default 2 000 000,
 //! input + output summed over all sub-calls). `/rlm` resets the ledger.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
 use std::time::Instant;
 
 use pa_agent::abort::AbortSignal;
@@ -43,6 +44,7 @@ pub const DEFAULT_MODEL: &str = "smol";
 
 /// Hard limits for one RLM session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_field_names)] // the `max_` prefix names each budget kind, as in the TS limit names
 pub struct Limits {
     pub max_depth: u64,
     pub max_calls: u64,
@@ -64,7 +66,7 @@ static OVERRIDE: Mutex<[Option<u64>; 3]> = Mutex::new([None; 3]);
 
 /// Install (or clear) the `/rlm` flag overrides.
 pub fn set_override(depth: Option<u64>, calls: Option<u64>, tokens: Option<u64>) {
-    *OVERRIDE.lock().expect("rlm override") = [depth, calls, tokens];
+    *OVERRIDE.lock() = [depth, calls, tokens];
 }
 
 impl Limits {
@@ -79,7 +81,7 @@ impl Limits {
                 .unwrap_or(default)
         };
         let d = Self::default();
-        let o = *OVERRIDE.lock().expect("rlm override");
+        let o = *OVERRIDE.lock();
         Self {
             max_depth: o[0].unwrap_or_else(|| get("OMP_RLM_MAX_DEPTH", d.max_depth)),
             max_calls: o[1].unwrap_or_else(|| get("OMP_RLM_MAX_CALLS", d.max_calls)),
@@ -205,7 +207,7 @@ impl Session {
     /// Forget memo, counters and log (a fresh `/rlm` run); the stored
     /// `context` is kept for the caller to replace.
     pub fn reset(&self) {
-        let mut ledger = self.ledger.lock().expect("rlm ledger");
+        let mut ledger = self.ledger.lock();
         let context = ledger.context.take();
         *ledger = Ledger {
             context,
@@ -214,18 +216,19 @@ impl Session {
     }
 
     pub fn set_context(&self, context: Option<String>) {
-        self.ledger.lock().expect("rlm ledger").context = context;
+        self.ledger.lock().context = context;
     }
 
     #[must_use]
     pub fn context(&self) -> Option<String> {
-        self.ledger.lock().expect("rlm ledger").context.clone()
+        self.ledger.lock().context.clone()
     }
 
     /// Ledger snapshot: totals, limits and the per-call log.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)] // selection and agreement counts are small; exact in f64
     pub fn stats(&self, limits: Limits) -> Value {
-        let ledger = self.ledger.lock().expect("rlm ledger");
+        let ledger = self.ledger.lock();
         json!({
             "calls": ledger.calls,
             "memo_hits": ledger.memo_hits,
@@ -265,6 +268,7 @@ impl Session {
     /// # Errors
     /// Invalid arguments, an exceeded depth/call/token budget, or the
     /// backend's failure.
+    #[allow(clippy::too_many_lines)] // one RLM query: budget checks, sampling, selection, reply shaping
     pub async fn query(
         &self,
         backend: &dyn Backend,
@@ -335,7 +339,7 @@ impl Session {
             None | Some(Value::Null) => None,
             Some(Value::String(s)) => Some(Select::parse(s)?),
             Some(_) => {
-                return Err("llm_query: select must be 'consistency' or 'uncertainty'".into())
+                return Err("llm_query: select must be 'consistency' or 'uncertainty'".into());
             }
         };
         if k == 1 && select.is_none() {
@@ -352,7 +356,7 @@ impl Session {
                     signal,
                 )
                 .await?;
-            let ledger = self.ledger.lock().expect("rlm ledger");
+            let ledger = self.ledger.lock();
             return Ok(reply(&call.text, &call.record, &ledger));
         }
         let select = select.unwrap_or(Select::Consistency);
@@ -360,7 +364,7 @@ impl Session {
             None | Some(Value::Null) => OnLow::Return,
             Some(Value::String(s)) => OnLow::parse(s)?,
             Some(_) => {
-                return Err("llm_query: on_low must be 'expand', 'escalate' or 'return'".into())
+                return Err("llm_query: on_low must be 'expand', 'escalate' or 'return'".into());
             }
         };
         let low = args
@@ -398,6 +402,7 @@ impl Session {
     /// just shrinks `k`. Low agreement (`< low`) applies `on_low`: `expand`
     /// draws `k` more samples and reselects, `escalate` asks `escalate_model`
     /// once and returns that, `return` flags it and returns the selection.
+    #[allow(clippy::too_many_lines)] // one sampled round: draw, group, select, expand or escalate, reply
     async fn query_sampled(
         &self,
         backend: &dyn Backend,
@@ -462,7 +467,7 @@ impl Session {
                             .await
                         {
                             Ok(call) => {
-                                cands.push(Candidate::from_call(&call, plan.select, sample))
+                                cands.push(Candidate::from_call(&call, plan.select, sample));
                             }
                             Err(_) => break,
                         }
@@ -505,7 +510,7 @@ impl Session {
             .map(|c| c.output_tokens)
             .sum();
         let all_cached = cands.iter().chain(escalated.iter()).all(|c| c.cached);
-        let mut ledger = self.ledger.lock().expect("rlm ledger");
+        let mut ledger = self.ledger.lock();
         ledger.selections += 1;
         ledger.agreement_sum += sel.agreement;
         ledger.low_agreement += u64::from(low_flag);
@@ -580,7 +585,7 @@ impl Session {
         let estimate = estimate_tokens(full.len());
         let started = Instant::now();
         {
-            let mut ledger = self.ledger.lock().expect("rlm ledger");
+            let mut ledger = self.ledger.lock();
             if let Some(text) = ledger.memo.get(&key).cloned() {
                 ledger.memo_hits += 1;
                 let record = CallRecord {
@@ -623,7 +628,7 @@ impl Session {
         }
 
         let result = backend.complete(model, &full, signal).await;
-        let mut ledger = self.ledger.lock().expect("rlm ledger");
+        let mut ledger = self.ledger.lock();
         ledger.reserved = ledger.reserved.saturating_sub(estimate);
         let (text, mut usage, model_info) = result.map_err(|e| format!("llm_query: {e}"))?;
         if usage.input == 0 && usage.output == 0 && usage.cache_read == 0 && usage.cache_write == 0
@@ -642,7 +647,7 @@ impl Session {
             model: model.to_string(),
             resolved_model: format!("{}/{}", model_info.provider, model_info.id),
             api: model_info.api.clone(),
-            provider: model_info.provider.clone(),
+            provider: model_info.provider,
             depth,
             cached: false,
             input_tokens: input,
@@ -760,6 +765,7 @@ struct Candidate {
 }
 
 impl Candidate {
+    #[allow(clippy::cast_precision_loss)] // token estimates are small counts; exact in f64
     fn from_call(call: &Called, select: Select, sample: u64) -> Self {
         let (answer, confidence) = match select {
             Select::Consistency => (call.text.trim().to_string(), None),
@@ -835,6 +841,10 @@ struct Selection {
 /// holding the earliest candidate), then within it the earliest candidate
 /// (`consistency`) or the max joint score `VC·Len` (`uncertainty`; it also breaks
 /// plurality size ties).
+#[allow(clippy::cast_precision_loss)]
+// candidate counts are tiny; exact in f64
+// invariant: fold over a non-empty candidate list always yields Some.
+#[allow(clippy::expect_used)]
 fn select_candidate(cands: &[Candidate], select: Select) -> Selection {
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for (i, c) in cands.iter().enumerate() {
@@ -913,15 +923,17 @@ fn append_json_log(line: &Value) {
     }
 }
 
+/// Shareable session-entry callback: `(kind, payload)` for one `model_usage` entry.
+type EntrySink = std::sync::Arc<dyn Fn(&str, Value) + Send + Sync>;
+
 /// Session-entry sink installed by the runtime ([`set_entry_sink`]): one
 /// `model_usage` entry per provider call, so `omp stats` / bench can count
 /// sub-call tokens straight from the session file.
-static ENTRY_SINK: LazyLock<
-    parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str, Value) + Send + Sync>>>,
-> = LazyLock::new(|| parking_lot::RwLock::new(None));
+static ENTRY_SINK: LazyLock<parking_lot::RwLock<Option<EntrySink>>> =
+    LazyLock::new(|| parking_lot::RwLock::new(None));
 
 /// Install (or clear) the sink that records sub-call accounting in the session.
-pub fn set_entry_sink(sink: Option<std::sync::Arc<dyn Fn(&str, Value) + Send + Sync>>) {
+pub fn set_entry_sink(sink: Option<EntrySink>) {
     *ENTRY_SINK.write() = sink;
 }
 
@@ -950,12 +962,16 @@ fn append_session_entry(record: &CallRecord, usage: &Usage) {
 pub static SESSION: LazyLock<Session> = LazyLock::new(Session::default);
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 pub(crate) static TEST_BACKEND: Mutex<Option<std::sync::Arc<dyn Backend>>> = Mutex::new(None);
 
 /// `__llm_query__` host op.
 pub async fn llm_query_op(args: &Value, ctx: &OpCtx) -> Result<Value, String> {
+    // Clone out first: a guard in the `if let` scrutinee would live across the await.
     #[cfg(test)]
-    if let Some(backend) = TEST_BACKEND.lock().expect("test backend").clone() {
+    let test_backend = TEST_BACKEND.lock().clone();
+    #[cfg(test)]
+    if let Some(backend) = test_backend {
         return SESSION
             .query(backend.as_ref(), Limits::effective(), args, &ctx.signal)
             .await;
@@ -972,8 +988,8 @@ pub fn stats_snapshot() -> Value {
 }
 
 /// `__rlm_context__` host op: the context `/rlm` loaded (null when none).
-pub fn context_op() -> Result<Value, String> {
-    Ok(SESSION.context().map_or(Value::Null, Value::String))
+pub fn context_op() -> Value {
+    SESSION.context().map_or(Value::Null, Value::String)
 }
 
 // ---------------------------------------------------------------------------
@@ -1075,7 +1091,7 @@ pub async fn load_context_cell(cwd: &std::path::Path) -> Result<(), String> {
             .iter()
             .filter_map(|c| match c {
                 pa_agent::types::ToolResultContent::Text(t) => Some(t.text.as_str()),
-                _ => None,
+                pa_agent::types::ToolResultContent::Image(_) => None,
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -1100,6 +1116,7 @@ When done, reply with the final answer in plain text.\n\nQuestion: {question}",
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1131,7 +1148,7 @@ mod tests {
             "id": "mock-1", "name": "Mock", "api": "mock-api", "provider": "mock",
             "baseUrl": "http://localhost", "reasoning": false, "input": ["text"],
             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            "contextWindow": 128000, "maxTokens": 4096,
+            "contextWindow": 128_000, "maxTokens": 4096,
         }))
         .expect("mock model")
     }
@@ -1308,8 +1325,8 @@ mod tests {
 
     #[tokio::test]
     async fn session_accounting_records_model_usage_entries() {
-        let _guard = TEST_GUARD.lock().await;
         use std::sync::Arc;
+        let _guard = TEST_GUARD.lock().await;
         let entries: Arc<parking_lot::Mutex<Vec<(String, Value)>>> =
             Arc::new(parking_lot::Mutex::new(Vec::new()));
         let collected = Arc::clone(&entries);
@@ -1375,10 +1392,12 @@ mod tests {
     }
 
     /// Scripted provider: reply `n` is `script(model, n)`; records every prompt.
+    type ReplyFn = Box<dyn Fn(&str, u64) -> String + Send + Sync>;
+
     struct Script {
         calls: AtomicU64,
         prompts: Mutex<Vec<String>>,
-        script: Box<dyn Fn(&str, u64) -> String + Send + Sync>,
+        respond: ReplyFn,
     }
 
     impl Script {
@@ -1386,7 +1405,7 @@ mod tests {
             Self {
                 calls: AtomicU64::new(0),
                 prompts: Mutex::new(Vec::new()),
-                script: Box::new(script),
+                respond: Box::new(script),
             }
         }
     }
@@ -1400,8 +1419,8 @@ mod tests {
         ) -> BoxFut<'a, Result<(String, Usage, Model), String>> {
             Box::pin(async move {
                 let n = self.calls.fetch_add(1, Ordering::SeqCst);
-                self.prompts.lock().unwrap().push(prompt.to_string());
-                let text = (self.script)(model, n);
+                self.prompts.lock().push(prompt.to_string());
+                let text = (self.respond)(model, n);
                 let usage = Usage {
                     input: 10,
                     output: 5,
@@ -1413,7 +1432,7 @@ mod tests {
         }
     }
 
-    fn ks(prompt: &str, k: u64, extra: Value) -> Value {
+    fn ks(prompt: &str, k: u64, extra: &Value) -> Value {
         let mut args = json!({"prompt": prompt, "k": k});
         for (key, v) in extra.as_object().unwrap() {
             args[key] = v.clone();
@@ -1437,7 +1456,7 @@ mod tests {
         args["frame"] = json!("only");
         args["pointers"] = json!(["/tmp/a.txt", "memo#3"]);
         session.query(&backend, lim, &args, &sig).await.unwrap();
-        let prompts = backend.prompts.lock().unwrap().clone();
+        let prompts = backend.prompts.lock().clone();
         assert_eq!(prompts[0], "<context>\nchunk\n</context>\n\nQ?");
         assert_eq!(
             prompts[1],
@@ -1457,12 +1476,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // test index: the call counter is tiny
     async fn consistency_picks_plurality_and_replays_from_memo() {
         let _guard = TEST_GUARD.lock().await;
         let (session, sig) = (Session::default(), AbortSignal::never());
         let backend = Script::new(|_, n| ["Paris", "paris.", "London"][n as usize % 3].to_string());
         let lim = limits(2, 10, 1_000_000);
-        let args = ks("capital?", 3, json!({"select": "consistency"}));
+        let args = ks("capital?", 3, &json!({"select": "consistency"}));
         let r = session.query(&backend, lim, &args, &sig).await.unwrap();
         assert_eq!(r["text"], "Paris");
         assert_eq!(r["k"], 3);
@@ -1490,6 +1510,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // test index: the call counter is tiny
     async fn uncertainty_selects_by_confidence_times_length_within_plurality() {
         let _guard = TEST_GUARD.lock().await;
         let (session, sig) = (Session::default(), AbortSignal::never());
@@ -1502,7 +1523,7 @@ mod tests {
         // The long 99%-confident sample has s = ln(.99)*~105 ≈ -1.1; the short 60% one
         // s = ln(.6)*~6 ≈ -3.1 -> the long one wins; the lone 100% "7" is outvoted.
         let backend = Script::new(move |_, n| replies[n as usize % 3].clone());
-        let args = ks("answer?", 3, json!({"select": "uncertainty"}));
+        let args = ks("answer?", 3, &json!({"select": "uncertainty"}));
         let r = session
             .query(&backend, limits(2, 10, 1_000_000), &args, &sig)
             .await
@@ -1515,10 +1536,11 @@ mod tests {
             r["candidates"][1]["score"].as_f64().unwrap()
                 > r["candidates"][0]["score"].as_f64().unwrap()
         );
-        assert!(backend.prompts.lock().unwrap()[0].contains("\"confidence\""));
+        assert!(backend.prompts.lock()[0].contains("\"confidence\""));
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss)] // test token counts are small; exact in f64
     fn uncertainty_score_prefers_confident_and_short_inside_the_plurality_group() {
         let mk = |answer: &str, conf: f64, tokens: u64| Candidate {
             sample: 0,
@@ -1540,10 +1562,11 @@ mod tests {
         assert_eq!(select_candidate(&tie, Select::Consistency).index, 0);
         let (answer, conf) = split_confidence("Paris\n{\"confidence\": 85}");
         assert_eq!((answer.as_str(), conf), ("Paris", 85.0));
-        assert_eq!(split_confidence("no conf").1, 50.0);
+        assert!((split_confidence("no conf").1 - 50.0).abs() < 1e-9);
     }
 
     #[tokio::test]
+    #[allow(clippy::cast_possible_truncation)] // test index: the call counter is tiny
     async fn low_agreement_expand_and_escalate() {
         let _guard = TEST_GUARD.lock().await;
         let sig = AbortSignal::never();
@@ -1552,7 +1575,7 @@ mod tests {
         let session = Session::default();
         let backend =
             Script::new(|_, n| ["a", "b", "c", "a", "a", "b"][n as usize % 6].to_string());
-        let args = ks("q", 3, json!({"on_low": "expand"}));
+        let args = ks("q", 3, &json!({"on_low": "expand"}));
         let r = session.query(&backend, lim, &args, &sig).await.unwrap();
         assert_eq!(
             (
@@ -1575,7 +1598,7 @@ mod tests {
         let args = ks(
             "q",
             3,
-            json!({"on_low": "escalate", "escalate_model": "big"}),
+            &json!({"on_low": "escalate", "escalate_model": "big"}),
         );
         let r = session.query(&backend, lim, &args, &sig).await.unwrap();
         assert_eq!(r["text"], "BIG");
@@ -1588,7 +1611,7 @@ mod tests {
             .query(
                 &backend,
                 lim,
-                &ks("q", 3, json!({"on_low": "return"})),
+                &ks("q", 3, &json!({"on_low": "return"})),
                 &sig,
             )
             .await
@@ -1611,7 +1634,7 @@ mod tests {
             .query(
                 &backend,
                 limits(2, 2, 1_000_000),
-                &ks("q", 3, json!({})),
+                &ks("q", 3, &json!({})),
                 &sig,
             )
             .await
@@ -1624,7 +1647,7 @@ mod tests {
             .query(
                 &backend,
                 limits(2, 2, 1_000_000),
-                &ks("other", 3, json!({})),
+                &ks("other", 3, &json!({})),
                 &sig,
             )
             .await
@@ -1634,7 +1657,7 @@ mod tests {
             .query(
                 &backend,
                 limits(2, 9, 1_000_000),
-                &ks("q", 99, json!({})),
+                &ks("q", 99, &json!({})),
                 &sig,
             )
             .await

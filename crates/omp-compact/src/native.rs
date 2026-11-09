@@ -426,15 +426,21 @@ pub fn to_plain_text(text: &str) -> String {
         .replace(NEWLINE_GLYPH, "\n")
 }
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 static ELIDED_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\s*\[(?:…|\.{3})[0-9]+ch elided(?:…|\.{3})\]\s*").expect("static regex")
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 static CANONICAL_BASE64: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:[0-9A-Za-z+/]{4})*(?:[0-9A-Za-z+/]{4}|[0-9A-Za-z+/]{3}=|[0-9A-Za-z+/]{2}==)$")
         .expect("static regex")
 });
 
+// invariant: the pattern is composed from fixed regex fragments and always compiles.
+#[allow(clippy::expect_used)]
 static DATA_URL_ATOM: LazyLock<Regex> = LazyLock::new(|| {
     let media_token = r"[0-9A-Za-z_!#$%&'*+.^|~-]+";
     Regex::new(&format!(
@@ -510,6 +516,8 @@ fn adjacent_markdown_opener_start(text: &str, data_index: usize, cursor: usize) 
 type MatchedDataUrl<'a> = (usize, usize, Option<&'a str>, String, Option<String>);
 
 #[must_use]
+// invariant: captures_iter() matches always have group 0.
+#[allow(clippy::expect_used)]
 pub fn elide_data_urls(text: &str, archive_context: bool) -> String {
     if !text.to_lowercase().contains(";base64,") {
         return text.to_owned();

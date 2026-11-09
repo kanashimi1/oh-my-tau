@@ -59,8 +59,10 @@ mod tests {
     use serde_json::json;
 
     fn call_with(jobs: Value) -> Value {
-        json!({"name": "jobs", "arguments": {},
-            "result": {"content": [], "details": {"jobs": jobs}}})
+        let mut call = json!({"name": "jobs", "arguments": {},
+            "result": {"content": []}});
+        call["result"]["details"]["jobs"] = jobs;
+        call
     }
 
     #[test]
@@ -81,7 +83,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains("no jobs"));
     }
@@ -102,7 +104,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains("2 jobs"));
         assert!(text.contains("1 done"));

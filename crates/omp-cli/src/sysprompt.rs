@@ -4,6 +4,11 @@
 //! context discovery (`AGENTS.md`/`CLAUDE.md` walk-up), skills listing, the
 //! tool inventory section, and the workstation environment block.
 //!
+//! The shipped prompts carry the eval methodology: prefer one eval transaction
+//! over N tool-call turns — a single `eval` cell does
+//! read → decide → patch → validate and returns only the final diff
+//! plus pass/fail status (also in the `eval` DESCRIPTION).
+//!
 //! Rendering uses a small Handlebars-subset interpreter that covers exactly
 //! the helpers omp's bundled templates use (`if`, `unless`, `each`, `list`,
 //! `ifAny`, `has`, `when`, `includes`, `not`, `else`). The templates ship in
@@ -27,6 +32,12 @@ fn home_dir() -> PathBuf {
 /// omp's agent dir (`getAgentDir()` for the default profile).
 fn agent_dir() -> PathBuf {
     home_dir().join(".omp/agent")
+}
+
+/// Public agent-dir accessor for runtime feature stores (`/refine` global).
+#[must_use]
+pub fn agent_dir_pub() -> PathBuf {
+    agent_dir()
 }
 
 /// Settings the prompt renders from.
@@ -1044,6 +1055,10 @@ pub fn build_with(
     if !project.is_empty() {
         blocks.push(project);
     }
+    // Supplemental harness entries (`/refine`): project then global stores.
+    if let Some(harness) = crate::features::refine::harness_block(cwd, agent) {
+        blocks.push(harness);
+    }
     Built { blocks, tool_names }
 }
 
@@ -1086,6 +1101,32 @@ mod tests {
             Override::Text(t) => assert_eq!(t, "user prompt"),
             Override::Template(_) => panic!("expected text override, got template"),
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Harness entries from `<cwd>/.omp/harness` ride the prompt as a block.
+    #[test]
+    fn refine_harness_block_rides_prompt() {
+        let root = tempdir("harness");
+        let proj = root.join("proj");
+        let agent = root.join("agent");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::create_dir_all(&agent).unwrap();
+        // No store yet: no block.
+        let built = build_with(&proj, &root, &agent, &Options::default(), &[]);
+        assert!(!built.blocks.join("\n\n").contains("Supplemental harness"));
+        // With a project entry: the block appears after the base/project blocks.
+        let store = proj.join(".omp/harness");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(
+            store.join("harness.json"),
+            r#"[{"id":"m1","kind":"memory","title":"prefers terse answers","content":"keep replies short","updated_ms":1}]"#,
+        )
+        .unwrap();
+        let built = build_with(&proj, &root, &agent, &Options::default(), &[]);
+        let prompt = built.blocks.join("\n\n");
+        assert!(prompt.contains("Supplemental harness"), "block missing");
+        assert!(prompt.contains("prefers terse answers"), "entry missing");
         let _ = std::fs::remove_dir_all(&root);
     }
 

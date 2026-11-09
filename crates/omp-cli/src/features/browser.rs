@@ -347,6 +347,25 @@ async fn browser_screenshot(port: u16) -> Result<String> {
 
 /// Slash-command entry point for `/browser`.
 pub async fn command(rt: &std::sync::Arc<Runtime>, args: &str) -> Outcome {
+    command_inner(rt, args).await
+}
+
+async fn command_inner(rt: &std::sync::Arc<Runtime>, args: &str) -> Outcome {
+    // UI surfaces: bare `/browser open` asks for the URL instead of usage text.
+    if args.trim().eq_ignore_ascii_case("open") && crate::slash_extra::dialog::has_ui() {
+        let Some(url) = crate::slash_extra::dialog::input(rt, "Open URL", Some("https://…"))
+            .await
+            .and_then(|u| {
+                let u = u.trim().to_string();
+                (!u.is_empty()).then_some(u)
+            })
+        else {
+            return Outcome::Handled {
+                agent_invoked: false,
+            };
+        };
+        return Box::pin(command_inner(rt, &format!("open {url}"))).await;
+    }
     let out = match run_browser(args).await {
         Ok(text) | Err(text) => text,
     };

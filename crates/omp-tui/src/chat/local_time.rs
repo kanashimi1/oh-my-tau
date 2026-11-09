@@ -1,5 +1,5 @@
 //! Local wall-clock formatting without `unsafe` libc calls: the UTC offset
-//! comes from the system tz database (`$TZ`, else `/etc/localtime`, TZif
+//! comes from the system tz database (`$TZ`, else `/etc/localtime`, `TZif`
 //! format), the way JS `Date#getHours()` resolves it. Used by the usage row's
 //! `YYYY-MM-DD HH:MM:SS` stamp (TS `formatUsageTimestamp`).
 
@@ -44,7 +44,7 @@ struct Zone {
     transitions: Vec<(i64, i64)>,
     /// Offset before the first transition / when no data.
     initial: i64,
-    /// Offset after the last transition (TZif footer std offset when the
+    /// Offset after the last transition (`TZif` footer std offset when the
     /// footer has no DST rule, else the last transition's offset).
     after_last: Option<i64>,
 }
@@ -82,7 +82,7 @@ fn load_zone() -> Option<Zone> {
     parse_tzif(&std::fs::read(path).ok()?)
 }
 
-/// Parse a TZif file (RFC 8536): the 64-bit block for v2+, else v1.
+/// Parse a `TZif` file (RFC 8536): the 64-bit block for v2+, else v1.
 fn parse_tzif(data: &[u8]) -> Option<Zone> {
     if data.get(..4)? != b"TZif" {
         return None;
@@ -100,7 +100,7 @@ fn parse_tzif(data: &[u8]) -> Option<Zone> {
     block(data, 44, &header, 4)
 }
 
-/// TZif header counts `(isutcnt, isstdcnt, leapcnt, timecnt, typecnt, charcnt)`.
+/// `TZif` header counts `(isutcnt, isstdcnt, leapcnt, timecnt, typecnt, charcnt)`.
 type Counts = [usize; 6];
 
 fn header_at(data: &[u8], at: usize, time_size: usize) -> Option<(Counts, usize)> {

@@ -1,7 +1,9 @@
+#![allow(clippy::disallowed_methods)] // vendored third-party tests: the sync-bridge rule applies to omp-rs first-party crates only
 //! Scripted-loop verifier tests for the agent crate: each test replays a
 //! scripted tool-call conversation through the loop via [`ScriptedProvider`],
 //! checking normal turns, parallel tool calls, tool errors, mid-turn failures
 //! with retry, abort, and max-iteration stops.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -14,9 +16,9 @@ use pa_agent::scripted::ScriptedProvider;
 use pa_agent::stream::AssistantMessageEvent;
 use pa_agent::types::{
     AfterToolCallResult, AgentContext, AgentEvent, AgentMessage, AgentTool, AgentToolResult,
-    AgentToolUpdateCallback, AssistantContent, AssistantMessage, BeforeToolCallResult, Message,
-    Model, StopReason, TextContent, ToolExecutionMode, ToolResultContent, ToolResultMessage,
-    UserContent,
+    AgentToolUpdateCallback, AssistantContent, AssistantMessage, AssistantMeta,
+    BeforeToolCallResult, Message, Model, StopReason, TextContent, ToolExecutionMode,
+    ToolResultContent, ToolResultMessage, UserContent,
 };
 
 fn test_model() -> Model {
@@ -658,6 +660,92 @@ async fn steering_message_injects_before_next_turn() {
 }
 
 #[tokio::test]
+async fn steering_during_a_tool_reaches_the_immediately_following_request() {
+    let echo = EchoTool::with_options("echo", 120, false);
+    let (agent, provider, _events) = scripted_agent(vec![echo.clone()]).await;
+    let user_ends = Arc::new(Mutex::new(Vec::<String>::new()));
+    agent
+        .subscribe({
+            let user_ends = Arc::clone(&user_ends);
+            move |event, _signal| {
+                let user_ends = Arc::clone(&user_ends);
+                Box::pin(async move {
+                    if let AgentEvent::MessageEnd {
+                        message: AgentMessage::Standard(Message::User(user)),
+                    } = event
+                    {
+                        if let UserContent::Text(text) = user.content {
+                            user_ends.lock().unwrap().push(text);
+                        }
+                    }
+                    Ok(())
+                })
+            }
+        })
+        .await;
+    provider.push_tool_call_turn(
+        None,
+        vec![("call-1", "echo", serde_json::json!({ "text": "a" }))],
+    );
+    // This would previously run without the steer, leaving it queued until a
+    // third request (or indefinitely if this turn needed no more tools).
+    provider.push_tool_call_turn(
+        None,
+        vec![("call-2", "echo", serde_json::json!({ "text": "b" }))],
+    );
+    provider.push_text_turn("finished");
+
+    let prompt_task = tokio::spawn({
+        let agent = agent.clone();
+        async move { agent.prompt("start").await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    agent.steer(AgentMessage::user("steered"));
+    prompt_task.await.unwrap().unwrap();
+    agent.wait_for_idle().await;
+
+    let calls = provider.calls();
+    assert_eq!(calls.len(), 3);
+    let second_request_text: Vec<&str> = calls[1]
+        .messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::User(u) => match &u.content {
+                UserContent::Text(t) => Some(t.as_str()),
+                UserContent::Parts(_) => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert!(second_request_text.contains(&"steered"));
+    assert_eq!(
+        user_ends
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|text| text.as_str() == "steered")
+            .count(),
+        1,
+        "the steer must emit one user MessageEnd, not one per turn"
+    );
+    let state = agent.state().await;
+    let result = state
+        .messages
+        .iter()
+        .position(|m| matches!(m, AgentMessage::Standard(Message::ToolResult(_))))
+        .unwrap();
+    let steer = state
+        .messages
+        .iter()
+        .position(|m| matches!(m, AgentMessage::Standard(Message::User(u)) if matches!(&u.content, UserContent::Text(t) if t == "steered")))
+        .unwrap();
+    assert!(
+        result < steer,
+        "tool result must precede the steered message"
+    );
+}
+
+#[tokio::test]
 async fn terminate_tool_result_stops_the_run() {
     let (agent, provider, _events) = scripted_agent(vec![Arc::new(TerminatingTool)]).await;
     provider.push_tool_call_turn(None, vec![("call-1", "stop_tool", serde_json::json!({}))]);
@@ -710,7 +798,7 @@ fn scripted_event_shapes_round_trip_through_the_event_enum() {
         error_status: None,
         error_message: None,
         timestamp: 0,
-        meta: Default::default(),
+        meta: AssistantMeta::default(),
     };
     let event = AssistantMessageEvent::TextDelta {
         content_index: 0,

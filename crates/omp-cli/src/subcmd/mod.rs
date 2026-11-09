@@ -4,6 +4,7 @@
 //! models|stats|config|gc` CLI surface and the `omp --export <file>` launch
 //! flag.
 
+pub mod agent_merge;
 pub mod collab;
 pub mod config;
 /// `omt daemon` needs Unix sockets; not built on Windows.
@@ -11,9 +12,13 @@ pub mod config;
 pub mod daemon;
 pub mod export;
 pub mod gc;
+pub mod hub;
+pub mod hub_mcp;
 pub mod judge_sessions;
+pub mod laya_serve;
 pub mod login;
 pub mod models;
+pub mod review;
 pub mod serve_collab;
 pub mod stats;
 pub mod stats_judge;
@@ -31,11 +36,16 @@ pub fn known(name: &str) -> bool {
             | "gc"
             | "export"
             | "judge-sessions"
+            | "laya-serve"
             | "login"
             | "logout"
             | "collab"
             | "serve-collab"
             | "web"
+            | "hub"
+            | "agent-merge"
+            | "review"
+            | "attach"
     );
     #[cfg(unix)]
     let known = known || name == "daemon";
@@ -55,11 +65,16 @@ pub fn run(name: &str, args: &[String]) -> anyhow::Result<i32> {
         "gc" => gc::run(args),
         "export" => export::run(args),
         "judge-sessions" => judge_sessions::run(args),
+        "laya-serve" => laya_serve::run(args),
         "login" => login::run_login(args),
         "logout" => login::run_logout(args),
         "collab" => collab::run(args),
         "serve-collab" => serve_collab::run(args),
         "web" => web::run(args),
+        "hub" => hub::run(args),
+        "agent-merge" => agent_merge::run(args),
+        "review" => review::run(args),
+        "attach" => crate::attach::run(args),
         #[cfg(unix)]
         "daemon" => daemon::run(args),
         _ => anyhow::bail!("unknown subcommand: {name}"),

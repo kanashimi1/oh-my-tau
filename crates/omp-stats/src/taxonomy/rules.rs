@@ -201,6 +201,8 @@ pub struct Rules {
 }
 
 /// The embedded compiled rule tree (parsed once per process).
+// invariant: rules.json is bundled via include_str! and deserializes into Rules.
+#[allow(clippy::expect_used)]
 pub static RULES: std::sync::LazyLock<Rules> = std::sync::LazyLock::new(|| {
     let raw = include_str!("../../data/rules.json");
     serde_json::from_str(raw).expect("rules.json must deserialize")

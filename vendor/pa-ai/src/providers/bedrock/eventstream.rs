@@ -25,6 +25,8 @@ pub struct EventStreamDecoder {
 }
 
 /// CRC-32 (IEEE, reflected 0xEDB88320) used by the event-stream framing.
+// invariant: table indices are 0..=255 and always fit u32.
+#[allow(clippy::expect_used)]
 fn crc32(bytes: &[u8]) -> u32 {
     let mut table = [0u32; 256];
     for (i, entry) in table.iter_mut().enumerate() {

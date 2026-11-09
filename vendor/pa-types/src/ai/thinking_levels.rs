@@ -23,6 +23,8 @@ pub const SUPPORTED_THINKING_LEVELS: [ModelThinkingLevel; 7] = EXTENDED_THINKING
 ///
 /// Panics if `level` is not one of the variants listed in [`EXTENDED_THINKING_LEVELS`].
 #[must_use]
+// invariant: `level` is a variant of the same enum listed in EXTENDED_THINKING_LEVELS.
+#[allow(clippy::expect_used)]
 pub fn thinking_level_index(level: ModelThinkingLevel) -> usize {
     EXTENDED_THINKING_LEVELS
         .iter()

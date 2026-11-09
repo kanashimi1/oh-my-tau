@@ -27,6 +27,7 @@ tracing.workspace = true
 notify = "8"
 # trace: transparent gunzip of gc-compressed session transcripts
 flate2 = "1"
+parking_lot = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
@@ -54,3 +55,10 @@ gain = ["db", "rollup"]
 frustration = ["db_query", "rollup", "taxonomy"]
 live = ["aggregator"]
 server = ["gain", "frustration", "live", "trace", "port_conflict"]
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+# Lock convention: see the workspace root manifest.
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"

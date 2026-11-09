@@ -15,10 +15,12 @@
 pub mod agent;
 pub mod discovery;
 pub mod envelope;
+pub mod notes;
 pub mod params;
 pub mod rubric;
 pub mod runner;
 pub mod schema;
+pub mod worktree;
 
 pub use agent::{parse_agent, AgentDefinition, AgentParseError, ParsedAgentFields, ThinkingLevel};
 pub use discovery::{
@@ -26,6 +28,7 @@ pub use discovery::{
     DiscoveryResult,
 };
 pub use envelope::{format_task_result, TaskResultEnvelope};
+pub use notes::{ReviewNote, Verdict, REVIEW_NOTES_REF};
 pub use params::{SchemaMode, TaskItem, TaskParams};
 pub use runner::{
     current_task_depth, max_recursion_depth, recursion_gate, recursion_gate_at, ChildMode,

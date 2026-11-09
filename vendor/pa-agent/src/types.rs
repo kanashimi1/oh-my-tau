@@ -386,6 +386,8 @@ impl ToolResultContent {
     }
 }
 
+// Variants mirror the session-log wire schema; boxing would change serde output.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "camelCase")]
 pub enum Message {
@@ -576,12 +578,26 @@ pub trait AgentTool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> &serde_json::Value;
+    /// Explicit host capability: execution cannot mutate state. Conservative
+    /// by default; used to overlap safe tools with the assistant stream tail.
+    fn is_read_only(&self) -> bool {
+        false
+    }
     fn label(&self) -> &str {
         self.name()
     }
     /// Optional compatibility shim for raw tool-call arguments before schema
     /// validation. Return `None` to keep the arguments unchanged.
     fn prepare_arguments(&self, _args: &serde_json::Value) -> Option<serde_json::Value> {
+        None
+    }
+    /// Host hook: stamp the session-scoped a2a owner token into the tool's
+    /// environment, when it carries one (default no-op). Lets a runtime
+    /// label its live tools without knowing concrete tool types.
+    fn set_a2a_owner(&self, _owner: &std::sync::Arc<str>) {}
+    /// The a2a owner token stamped via [`AgentTool::set_a2a_owner`], when the
+    /// tool carries one (default `None`).
+    fn a2a_owner(&self) -> Option<std::sync::Arc<str>> {
         None
     }
     /// Execute the tool call. Return `Err` on failure instead of encoding
@@ -631,6 +647,7 @@ impl ContextMessages {
     }
 
     /// Messages in order.
+    #[must_use]
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &AgentMessage> + '_ {
         self.segments
             .iter()
@@ -694,6 +711,9 @@ impl ContextMessages {
 
     /// The whole transcript as one mutable vector. Collapses into a single owned run:
     /// free when nothing else shares the segments, a copy of the shared ones otherwise.
+    ///
+    /// # Panics
+    /// If the single-segment `Arc` is poisoned between the length check and the pop.
     pub fn make_contiguous(&mut self) -> &mut Vec<AgentMessage> {
         if !(self.segments.is_empty()
             || (self.segments.len() == 1
@@ -703,6 +723,8 @@ impl ContextMessages {
             let all = std::mem::take(self).into_vec();
             self.tail = all;
         } else if self.segments.len() == 1 {
+            // invariant: len == 1 was checked above, so pop always yields a segment.
+            #[allow(clippy::expect_used)]
             let only = self.segments.pop().expect("one segment");
             self.tail = Arc::try_unwrap(only).unwrap_or_else(|shared| (*shared).clone());
         }
@@ -864,30 +886,29 @@ mod context_messages_tests {
         // Shared, not copied: both point at the same frozen segment.
         assert!(Arc::ptr_eq(&state.segments[0], &snap.segments[0]));
         state.push(AgentMessage::user("state-only"));
-        snap.push(AgentMessage::user("loop-only"));
+        let loop_only = AgentMessage::user("loop-only");
+        snap.push(loop_only.clone());
         assert_eq!(state.len(), 3);
         assert_eq!(snap.len(), 3);
         assert_ne!(texts(&state), texts(&snap));
         assert_eq!(
             format!("{:?}", snap.last().unwrap()),
-            format!("{:?}", AgentMessage::user("loop-only"))
+            format!("{loop_only:?}")
         );
     }
 
     #[test]
     fn last_mut_on_shared_segment_copies_on_write() {
-        let mut a: ContextMessages = vec![AgentMessage::user("x")].into();
+        // Build each message once: `user()` stamps the current time, so a
+        // second construction differs whenever the clock ticks in between.
+        let x = AgentMessage::user("x");
+        let y = AgentMessage::user("y");
+        let mut a: ContextMessages = vec![x.clone()].into();
         a.freeze();
         let b = a.clone();
-        *a.last_mut().unwrap() = AgentMessage::user("y");
-        assert_eq!(
-            format!("{:?}", b.last().unwrap()),
-            format!("{:?}", AgentMessage::user("x"))
-        );
-        assert_eq!(
-            format!("{:?}", a.last().unwrap()),
-            format!("{:?}", AgentMessage::user("y"))
-        );
+        *a.last_mut().unwrap() = y.clone();
+        assert_eq!(format!("{:?}", b.last().unwrap()), format!("{x:?}"));
+        assert_eq!(format!("{:?}", a.last().unwrap()), format!("{y:?}"));
     }
 
     #[test]

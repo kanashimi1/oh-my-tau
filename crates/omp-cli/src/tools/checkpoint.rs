@@ -254,7 +254,9 @@ impl AgentTool for RewindTool {
         Box::pin(async move {
             if self.state.checkpoint_state().is_none() {
                 if self.state.last_completed_rewind().is_some() {
-                    bail!("Checkpoint already completed; continue from the retained rewind report instead of calling rewind again.");
+                    bail!(
+                        "Checkpoint already completed; continue from the retained rewind report instead of calling rewind again."
+                    );
                 }
                 bail!("No active checkpoint. Create a checkpoint before calling rewind.");
             }
@@ -294,6 +296,7 @@ pub fn rewind_tool() -> Arc<dyn AgentTool> {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 

@@ -1,6 +1,7 @@
 //! Agent loop for Prime Agent: the loop works with [`types::AgentMessage`]
 //! throughout and converts to LLM-bound [`types::Message`] values only at
 //! the model call boundary.
+#![allow(clippy::disallowed_methods)] // vendored third-party code: the sync-bridge rule applies to omp-rs first-party crates only
 
 pub mod abort;
 pub mod agent;
@@ -24,6 +25,9 @@ pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// Panics if the epoch timestamp exceeds i64 milliseconds — beyond year 292 million.
 #[must_use]
+// invariant: epoch millis fit in i64 until ~year 292 million; clamping the
+// map_or arm already handles pre-epoch clocks.
+#[allow(clippy::expect_used)]
 pub fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| {
         i64::try_from(d.as_millis()).expect("millis since epoch fit in i64")

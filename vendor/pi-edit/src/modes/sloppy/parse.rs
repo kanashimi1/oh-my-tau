@@ -2,6 +2,11 @@
 //! [`super::types::Operation`]s, including every parse-time recovery.
 //! Port of `packages/coding-agent/src/edit/sloppy.ts` lines 1–1650.
 
+// invariant: marker scans below run on already-validated patterns (finds of
+// markers known to be present), literal regexes verified by tests, and
+// serializations of in-memory strings that cannot fail.
+#![allow(clippy::expect_used)]
+
 use std::{
     collections::{HashMap, HashSet},
     sync::LazyLock,
@@ -278,7 +283,10 @@ fn flush_compiled(
             ir: Vec::new(),
         });
     }
-    let ir = &mut sections.last_mut().expect("section exists").ir;
+    let ir = &mut match sections.last_mut() {
+        Some(section) => &mut section.ir,
+        None => return,
+    };
     ir.push(format!("{OPENER}{}", if all { "*" } else { "" }));
     if let Some(RewriteBody {
         lines,
@@ -1521,6 +1529,8 @@ pub fn create_operation(
     }
 }
 
+// One slot per pipeline stage.
+#[allow(clippy::too_many_arguments)]
 fn finish_operation(
     lines: &[String],
     end_index: usize,
@@ -1614,6 +1624,7 @@ fn finish_operation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finish_pattern(
     lines: &[String],
     end_index: usize,

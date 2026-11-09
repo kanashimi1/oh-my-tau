@@ -410,10 +410,9 @@ async fn run_websocket_attempt(
     // continuation still works via connection-scoped previous_response_id state.
     let full_body = body;
     let continuation = if use_cached_context && connection.cached {
-        take_continuation_for(
-            session_id.expect("cached connections are session-scoped"),
-            connection.connection_id,
-        )
+        session_id
+            .map(|session_id| take_continuation_for(session_id, connection.connection_id))
+            .unwrap_or_default()
     } else {
         None
     };

@@ -12,8 +12,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use serde_json::{json, Value};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 
 use crate::errors::{Failure, JsonRpcError, McpError, McpTransportError, TransportKind};
 use crate::timeout::is_timeout_enabled;
@@ -35,6 +36,12 @@ pub trait McpTransport: Send {
     /// Record the protocol version negotiated by `initialize`; HTTP sends it
     /// as the `MCP-Protocol-Version` header afterwards (default: no-op).
     fn set_protocol_version(&mut self, _version: &str) {}
+    /// Broadcast sink the transport publishes `notifications/progress`
+    /// updates to. `None` when the transport has no server→client
+    /// notification channel (the HTTP port only listens during requests).
+    fn progress_sink(&self) -> Option<tokio::sync::broadcast::Sender<McpProgress>> {
+        None
+    }
 }
 
 /// Default answer for server→client requests, port of `defaultRequestHandler`.
@@ -98,6 +105,35 @@ pub type RequestHandler =
 /// Callback invoked for server→client notifications.
 pub type NotificationCallback = Arc<dyn Fn(&str, Value) + Send + Sync>;
 
+/// One `notifications/progress` payload from the server (MCP spec:
+/// `progress`, optional `total` and `message`, keyed by the `progressToken`
+/// the client put in the request `_meta`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpProgress {
+    /// The `progressToken` this update belongs to (the request id we sent).
+    pub token: Value,
+    pub progress: Option<f64>,
+    pub total: Option<f64>,
+    pub message: Option<String>,
+}
+
+impl McpProgress {
+    /// Parse a `notifications/progress` params payload; `None` when the
+    /// notification carries no `progressToken` (cannot be matched to a call).
+    pub fn from_params(params: &Value) -> Option<Self> {
+        let token = params.get("progressToken")?.clone();
+        Some(Self {
+            token,
+            progress: params.get("progress").and_then(Value::as_f64),
+            total: params.get("total").and_then(Value::as_f64),
+            message: params
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        })
+    }
+}
+
 /// Sink used to send JSON-RPC responses back to the server.
 pub type RespondCallback = Arc<dyn Fn(Value) + Send + Sync>;
 
@@ -160,7 +196,7 @@ pub async fn dispatch_message(
         )),
         None => Ok(obj.get("result").cloned().unwrap_or(Value::Null)),
     };
-    let mut guard = pending.lock().await;
+    let mut guard = pending.lock();
     if let Some(tx) = guard.map.remove(&key) {
         let _ = tx.send(result);
     }

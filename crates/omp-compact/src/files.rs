@@ -23,6 +23,8 @@ fn range_chunk() -> &'static str {
     r"L?\d+(?:(?:[-+]|\.\.)L?\d+|-|\.\.)?"
 }
 
+// invariant: fixed regex literals composed from fixed fragments always compile.
+#[allow(clippy::expect_used)]
 fn selector_regexes() -> &'static (Regex, Regex, Regex) {
     static CELL: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
     CELL.get_or_init(|| {
@@ -70,6 +72,8 @@ pub fn strip_read_selector(path: &str) -> String {
 
 /// `isUrlSchemePath`: `scheme://` URLs are not re-groundable files.
 #[must_use]
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 pub fn is_url_scheme_path(path: &str) -> bool {
     static CELL: OnceLock<Regex> = OnceLock::new();
     CELL.get_or_init(|| Regex::new("(?i)[a-z][a-z0-9+.-]*://").expect("url regex"))
@@ -253,6 +257,8 @@ pub fn format_file_operations(
     crate::prompts::format(&format!("<files>\n{files}\n</files>"))
 }
 
+// invariant: fixed regex literals always compile.
+#[allow(clippy::expect_used)]
 fn strip_file_operation_tags(summary: &str) -> String {
     static CELL: OnceLock<[Regex; 3]> = OnceLock::new();
     let res = CELL.get_or_init(|| {

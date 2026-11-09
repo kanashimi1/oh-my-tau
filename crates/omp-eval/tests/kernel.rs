@@ -1,4 +1,5 @@
 //! Integration tests: persistent state, timeout interrupt, omp error framing.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};

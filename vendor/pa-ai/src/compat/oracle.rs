@@ -17,7 +17,10 @@ fn oracle_file(name: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("OMP_COMPAT_ORACLE_DIR")
         .map(std::path::PathBuf::from)
         .into_iter()
-        .chain([repo.join("target/compat-oracle"), repo.join("runs/omp-rust/compat-oracle")])
+        .chain([
+            repo.join("target/compat-oracle"),
+            repo.join("runs/omp-rust/compat-oracle"),
+        ])
         .map(|dir| dir.join(name))
         .find(|path| path.is_file())
 }
@@ -85,7 +88,7 @@ fn resolver_matches_ts_for_every_catalog_and_cache_row() {
         match (case.get("error").and_then(Value::as_str), rust) {
             (Some(_), Err(_)) => {}
             (Some(e), Ok(_)) => {
-                mismatches.push(format!("{label}: TS threw ({e}) but Rust resolved"))
+                mismatches.push(format!("{label}: TS threw ({e}) but Rust resolved"));
             }
             (None, Err(e)) => mismatches.push(format!("{label}: Rust error {e}")),
             (None, Ok(r)) => {

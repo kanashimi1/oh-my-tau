@@ -983,6 +983,8 @@ pub struct SessionTypedEntry {
 }
 
 /// Union of session log entries.
+// Variants mirror the on-disk log schemas; boxing would change the serde wire shape.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SessionEntry {

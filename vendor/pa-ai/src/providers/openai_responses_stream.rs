@@ -205,6 +205,8 @@ impl<'a> ResponsesStreamProcessor<'a> {
             "response.reasoning_summary_part.added" => {
                 if let Some(slot) = self.current_slot(output_index) {
                     if slot.item.get("type").and_then(|v| v.as_str()) == Some("reasoning") {
+                        // invariant: slots only ever store JSON objects.
+                        #[allow(clippy::expect_used)]
                         let summary = slot
                             .item
                             .as_object_mut()
@@ -237,8 +239,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                             if let Some(last_part) = last_part {
                                 if let Some(Value::String(text)) = last_part
                                     .as_object_mut()
-                                    .expect("part is an object")
-                                    .get_mut("text")
+                                    .and_then(|part| part.get_mut("text"))
                                 {
                                     text.push_str(delta);
                                     append = true;
@@ -267,6 +268,8 @@ impl<'a> ResponsesStreamProcessor<'a> {
                 if let Some(content_index) = content_index {
                     if self.block_kind(content_index) == Some("thinking") {
                         if let Some(slot) = self.current_slot(output_index) {
+                            // invariant: slots only ever store JSON objects.
+                            #[allow(clippy::expect_used)]
                             let summary = slot
                                 .item
                                 .as_object_mut()
@@ -327,6 +330,8 @@ impl<'a> ResponsesStreamProcessor<'a> {
                             .and_then(|value| value.as_str())
                             .unwrap_or("");
                         if part_type == "output_text" || part_type == "refusal" {
+                            // invariant: slots only ever store JSON objects.
+                            #[allow(clippy::expect_used)]
                             let content = slot
                                 .item
                                 .as_object_mut()

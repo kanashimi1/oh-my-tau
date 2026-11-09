@@ -1,18 +1,54 @@
-name: CI
+name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
 jobs:
+  fmt:
+    # Advisory: a few vendored files predate the fmt gate.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    # Advisory: pre-existing pedantic lint debt in web/rpc/refine modules.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The pedantic workspace lints in Cargo.toml are warn-level; -D warnings
+      # is what makes them a gate.
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      # Golden/TS-parity suites (tests-golden/, tests-tools/) need bun and a
+      # vendor-src checkout and are not part of this job.
+      - run: cargo test --workspace --locked
 
   build:
     strategy:

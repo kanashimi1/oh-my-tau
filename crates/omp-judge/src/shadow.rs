@@ -50,12 +50,13 @@ impl Config {
         if let Some(t) = get("OMP_LAYA_THREADS").and_then(|t| t.parse().ok()) {
             paths.threads = t;
         }
-        let out = get("OMP_LAYA_JUDGE_OUT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
+        let out = get("OMP_LAYA_JUDGE_OUT").map_or_else(
+            || {
                 PathBuf::from(get("HOME").unwrap_or_else(|| ".".into()))
                     .join(".omp/agent/laya_judge.jsonl")
-            });
+            },
+            PathBuf::from,
+        );
         Some(Self {
             out,
             paths,
@@ -157,6 +158,7 @@ impl ShadowJudge {
 
     /// Enqueue a turn without ever blocking. Returns `false` when it was dropped (queue full
     /// or worker gone).
+    #[must_use]
     pub fn submit(&self, job: Job) -> bool {
         let Some(tx) = &self.tx else { return false };
         match tx.try_send(job) {
@@ -187,6 +189,7 @@ impl ShadowJudge {
     }
 
     /// Close the queue and wait for the worker to drain it.
+    #[must_use]
     pub fn shutdown(mut self) -> Stats {
         self.tx = None;
         if let Some(h) = self.handle.take() {
@@ -291,6 +294,7 @@ pub fn global() -> Option<&'static ShadowJudge> {
 }
 
 /// Cheap check for the hook site, so disabled runs build nothing.
+#[must_use]
 pub fn enabled() -> bool {
     global().is_some()
 }

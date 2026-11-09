@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;

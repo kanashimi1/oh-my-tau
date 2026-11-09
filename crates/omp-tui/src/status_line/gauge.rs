@@ -85,6 +85,9 @@ fn dimmed(color: Color) -> Color {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let d = max - min;
+    // Channel maxima are exact normalized copies of r/g/b, so the
+    // comparisons are exact by construction.
+    #[allow(clippy::float_cmp)]
     let h = if d == 0.0 {
         0.0
     } else if max == r {
@@ -170,6 +173,12 @@ pub fn render(input: &GaugeInput, width: usize, theme: &crate::theme::Theme) -> 
         }
     }
 
+    // Gauge widths are frame-sized, far below f64 precision.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
     let used_count = scale.min(((clamped / 100.0 * scale as f64).round() as usize).max(1));
 
     let mut spec_idx: Option<usize> = None;

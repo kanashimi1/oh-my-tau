@@ -6,7 +6,8 @@
 //! UI (`select(prompt, ["Approve", "Deny"])`: a TUI dialog or an rpc `extension_ui_request`
 //! frame) and emits `tool_approval_resolved`. Without a UI the call fails closed.
 
-use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak};
+use parking_lot::Mutex;
+use std::sync::{Arc, LazyLock, OnceLock, Weak};
 
 use omp_ext::lifecycle::ApprovalMode;
 use pa_agent::abort::AbortSignal;
@@ -259,7 +260,6 @@ fn write_tier(input: &str) -> Decision {
         return Decision::tier(Tier::Write);
     };
     match scheme.as_str() {
-        "vault" | "cfg" | "conflict" => Decision::tier(Tier::Write),
         "agent" | "local" => Decision::tier(Tier::Read),
         "proc" | "ssh" | "xd" => Decision::tier(Tier::Exec),
         "artifact" | "mcp" | "issue" | "pr" | "omp" | "history" | "rule" | "security" | "skill"
@@ -269,6 +269,7 @@ fn write_tier(input: &str) -> Decision {
             false,
             Some(format!("{scheme}:// URLs are read-only")),
         ),
+        // `vault`/`cfg`/`conflict` and unregistered schemes all share the write tier.
         _ => Decision::tier(Tier::Write),
     }
 }
@@ -292,7 +293,7 @@ fn path_list(args: &Value) -> Vec<String> {
         match args.get(key) {
             Some(Value::String(s)) => out.push(s.clone()),
             Some(Value::Array(a)) => {
-                out.extend(a.iter().filter_map(Value::as_str).map(str::to_owned))
+                out.extend(a.iter().filter_map(Value::as_str).map(str::to_owned));
             }
             _ => {}
         }
@@ -301,7 +302,7 @@ fn path_list(args: &Value) -> Vec<String> {
 }
 
 /// Paths an `edit` payload writes: the `path` argument, per-edit paths, and hashline /
-/// apply_patch section headers of the `input` payload (plus move destinations).
+/// `apply_patch` section headers of the `input` payload (plus move destinations).
 fn edit_targets(args: &Value) -> Vec<String> {
     let mut targets = Vec::new();
     if let Some(p) = str_arg(args, "path") {
@@ -354,6 +355,8 @@ const LSP_READONLY_ACTIONS: &[&str] = &[
 ];
 
 /// Critical bash shapes (TS `CRITICAL_BASH_PATTERNS`).
+// invariant: CRITICAL_BASH holds fixed regex literals that always compile.
+#[allow(clippy::expect_used)]
 static CRITICAL_BASH: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
         r"(?i)\brm\s+(?:-\S+\s+)*(?:-[a-z]*[rRfF][a-z]*|--recursive|--force)\s+(?:-\S+\s+)*/",
@@ -383,6 +386,8 @@ static CRITICAL_BASH: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 static REINTERPRETED_ARG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|[ \t])(?:-[^-]*[ce]|--(?:command|eval))(?:[= \t]|$)").expect("regex")
 });
@@ -448,11 +453,6 @@ fn has_shell_control(command: &str) -> bool {
 
 /// TS `tokenizeShellSegments`, each segment's words joined by a space.
 fn bash_segments(command: &str) -> Vec<String> {
-    let chars: Vec<char> = command.chars().collect();
-    let mut segments: Vec<Vec<String>> = Vec::new();
-    let mut current: Vec<String> = Vec::new();
-    let mut buffer = String::new();
-    let (mut in_single, mut in_double) = (false, false);
     fn push_buffer(buffer: &mut String, current: &mut Vec<String>) {
         if !buffer.is_empty() {
             current.push(std::mem::take(buffer));
@@ -468,6 +468,11 @@ fn bash_segments(command: &str) -> Vec<String> {
             segments.push(std::mem::take(current));
         }
     }
+    let chars: Vec<char> = command.chars().collect();
+    let mut segments: Vec<Vec<String>> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    let mut buffer = String::new();
+    let (mut in_single, mut in_double) = (false, false);
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
@@ -506,7 +511,7 @@ fn bash_segments(command: &str) -> Vec<String> {
             }
             ' ' | '\t' => push_buffer(&mut buffer, &mut current),
             '\n' | ';' | '&' | '|' | '(' | ')' => {
-                push_segment(&mut buffer, &mut current, &mut segments)
+                push_segment(&mut buffer, &mut current, &mut segments);
             }
             _ => buffer.push(ch),
         }
@@ -862,21 +867,29 @@ impl Gate {
         GATE.get().cloned()
     }
 
+    /// Test-only gate (never installed): lets tests wrap tools exactly like
+    /// production `wrap_tools` without claiming the process-global install.
+    #[cfg(test)]
+    pub(crate) fn for_test(cwd: &std::path::Path) -> Arc<Self> {
+        Arc::new(Self {
+            mode_override: None,
+            auto_approve: true,
+            cwd: cwd.to_path_buf(),
+            ext: None,
+            binding: Mutex::new(Binding::default()),
+            refused: Mutex::new(std::collections::HashSet::new()),
+        })
+    }
+
     /// Whether the gate refused call `id` (consumed once).
     #[must_use]
     pub fn take_refused(&self, id: &str) -> bool {
-        self.refused
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(id)
+        self.refused.lock().remove(id)
     }
 
     /// Bind the live runtime and whether the session has a UI (TS `hasUI()`).
     pub fn bind(&self, rt: &Arc<Runtime>, has_ui: bool) {
-        let mut b = self
-            .binding
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut b = self.binding.lock();
         b.rt = Some(Arc::downgrade(rt));
         b.has_ui = has_ui;
     }
@@ -921,10 +934,7 @@ impl Gate {
             return Ok(());
         }
         let (rt, has_ui) = {
-            let b = self
-                .binding
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let b = self.binding.lock();
             (b.rt.as_ref().and_then(Weak::upgrade), b.has_ui)
         };
         let session_id = rt.as_ref().map(|r| r.session_id()).unwrap_or_default();
@@ -1015,6 +1025,12 @@ impl AgentTool for GatedTool {
     fn name(&self) -> &str {
         self.inner.name()
     }
+    fn set_a2a_owner(&self, owner: &std::sync::Arc<str>) {
+        self.inner.set_a2a_owner(owner);
+    }
+    fn a2a_owner(&self) -> Option<std::sync::Arc<str>> {
+        self.inner.a2a_owner()
+    }
     fn description(&self) -> &str {
         self.inner.description()
     }
@@ -1030,6 +1046,9 @@ impl AgentTool for GatedTool {
     fn execution_mode(&self) -> Option<pa_agent::types::ToolExecutionMode> {
         self.inner.execution_mode()
     }
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
     fn execute(
         self: Arc<Self>,
         tool_call_id: String,
@@ -1043,11 +1062,7 @@ impl AgentTool for GatedTool {
                 .check(self.inner.name(), &tool_call_id, &params, &signal)
                 .await
             {
-                self.gate
-                    .refused
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .insert(tool_call_id);
+                self.gate.refused.lock().insert(tool_call_id);
                 return Err(anyhow::Error::msg(message));
             }
             self.inner

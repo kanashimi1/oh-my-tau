@@ -193,9 +193,10 @@ impl ModelStream for AuthRetryStream {
 ///
 /// # Panics
 ///
-/// Panics at stream time if the provider target lock is poisoned, or if the
-/// target slot was never set before the first stream.
-pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>>>) -> StreamFn {
+/// Panics at stream time if the target slot was never set before the first stream.
+// invariant: the target slot is set before the first stream (documented contract of this fn).
+#[allow(clippy::expect_used)]
+pub fn switchable_stream_fn(target: Arc<parking_lot::RwLock<Option<ProviderTarget>>>) -> StreamFn {
     Arc::new(
         move |_requested: AgentModel, context: LlmContext, options: StreamRequestOptions| {
             let ProviderTarget {
@@ -206,7 +207,6 @@ pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>
                 credential_id,
             } = target
                 .read()
-                .expect("provider target lock")
                 .clone()
                 .expect("provider target set before the first stream");
             Box::pin(async move {
@@ -316,6 +316,22 @@ fn chain_payload_hooks(
     }
 }
 
+/// The `x-opencode-session` value: the agent session id, else one id per process.
+fn opencode_session_id(session_id: Option<&str>) -> String {
+    static PROCESS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    match session_id.filter(|s| !s.is_empty()) {
+        Some(s) => s.to_owned(),
+        None => PROCESS
+            .get_or_init(|| {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_nanos());
+                format!("omt-{}-{nanos:x}", std::process::id())
+            })
+            .clone(),
+    }
+}
+
 /// Stream one completion against `model` with `api_key` and the auth-resolved
 /// request `headers`: the per-request tail the switchable seams and the CLI's
 /// route-authoritative variant share.
@@ -383,6 +399,14 @@ pub fn stream_once(
                         .get_or_insert_with(std::collections::BTreeMap::new)
                         .extend(request_headers);
                 }
+                // opencode-go routes only requests that carry `x-opencode-session` (400
+                // MissingSessionID otherwise); a configured/compaction value wins.
+                if model.provider == "opencode-go" {
+                    merged
+                        .get_or_insert_with(std::collections::BTreeMap::new)
+                        .entry("x-opencode-session".to_owned())
+                        .or_insert_with(|| opencode_session_id(options.session_id.as_deref()));
+                }
                 merged.map(|headers| headers.into_iter().collect())
             },
             metadata: None,
@@ -420,7 +444,7 @@ pub fn stream_once(
 /// their model once, so the slot never changes).
 #[must_use]
 pub fn real_stream_fn(api_key: Option<String>, model: Model) -> StreamFn {
-    switchable_stream_fn(Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
+    switchable_stream_fn(Arc::new(parking_lot::RwLock::new(Some(ProviderTarget {
         api_key,
         model,
         service_tier: None,
@@ -437,6 +461,8 @@ pub fn real_stream_fn(api_key: Option<String>, model: Model) -> StreamFn {
 /// Panics when an assistant message cannot round-trip across the two
 /// crates' wire shapes (a structural shape-mismatch bug).
 #[must_use]
+// invariant: pa_types and pa_agent wire shapes are kept structurally identical (see json_round_trip docs).
+#[allow(clippy::expect_used)]
 pub fn convert_stream_event(
     event: &pa_types::ai::AssistantMessageEvent,
 ) -> Option<pa_agent::stream::AssistantMessageEvent> {
@@ -586,6 +612,7 @@ impl ModelStream for PumpedStream {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod auth_retry_tests {
     use super::*;
     use pa_agent::stream::{event_stream, AssistantMessageEvent as E};

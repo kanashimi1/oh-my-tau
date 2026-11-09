@@ -70,6 +70,8 @@ async fn custom_base_url(
     Ok(trimmed)
 }
 
+// invariant: the descriptor is an inline literal with the `Validate` field set; it always deserializes.
+#[allow(clippy::expect_used)]
 fn validate_build(kind: &str, label: &str, base_url: &str, model: Option<&str>) -> Validate {
     serde_json::from_value(json!({
         "kind": kind,
@@ -162,7 +164,9 @@ fn serialize_token_plan(token: &str, cookie: &str, base_url: Option<&str>) -> St
         return token.to_string();
     }
     let mut payload = json!({ "token": token });
-    let object = payload.as_object_mut().expect("object literal");
+    let Some(object) = payload.as_object_mut() else {
+        return token.to_string();
+    };
     if !cookie.is_empty() {
         object.insert("cookie".into(), Value::String(cookie.to_string()));
     }

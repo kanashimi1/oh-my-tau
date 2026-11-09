@@ -111,8 +111,7 @@ async fn run_stream(
         .or_else(|| get_env_api_key(&model.provider))
         .unwrap_or_default();
     let view = crate::compat::ModelView::of(model);
-    let mut params = build_body(model, &view, context, &options, &Flavor::OpenAi)
-        .map_err(ProviderError::Message)?;
+    let mut params = build_body(model, &view, context, &options, &Flavor::OpenAi);
     if let Some(on_payload) = &options.base.on_payload {
         if let Some(next) = on_payload(params.clone(), model) {
             params = next;
@@ -130,8 +129,8 @@ async fn run_stream(
     let body = params.to_string();
     // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
     let request_dump = RawHttpRequestDump {
-        provider: model.provider.to_string(),
-        api: model.api.to_string(),
+        provider: model.provider.clone(),
+        api: model.api.clone(),
         model: model.id.clone(),
         method: "POST".to_owned(),
         url: url.clone(),

@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -428,12 +430,59 @@ async fn tools_and_commands() {
 
 /// `skipExtensions` leaves the named extension's handlers out of that one
 /// emit; the others still run, and the next emit without it runs everything.
+/// A handler that edits the message clone in place and returns nothing
+/// changes the context (Pi semantics); a handler that only reads does not.
+#[tokio::test]
+async fn context_in_place_edits_travel_back() {
+    use pa_agent::types::AgentMessage;
+    if common::bun_missing("context_in_place_edits_travel_back") {
+        return;
+    }
+    let host = ExtHost::spawn(&config()).await.unwrap();
+    let r = host
+        .load(
+            Some(&[fixture("context-inplace.ts")]),
+            None,
+            "/tmp",
+            Some(json!({"sessionId": "s1"})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.loaded.len(), 1, "{r:?}");
+    let out = hooks::context_owned(&host, vec![AgentMessage::user("a long tool output")], None)
+        .await
+        .unwrap();
+    let v = serde_json::to_value(&out[0]).unwrap();
+    assert_eq!(v["content"][0]["text"], json!("packed"), "{v}");
+    host.shutdown().await.unwrap();
+
+    // Read-only handler (fixture.ts): the list comes back untouched.
+    let host = ExtHost::spawn(&config()).await.unwrap();
+    host.load(
+        Some(&[fixture("fixture.ts")]),
+        None,
+        "/tmp",
+        Some(json!({"sessionId": "s1"})),
+    )
+    .await
+    .unwrap();
+    let msgs = vec![AgentMessage::user("hi")];
+    let out = hooks::context_owned(&host, msgs.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&out).unwrap(),
+        serde_json::to_value(&msgs).unwrap()
+    );
+    host.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn context_emit_skips_listed_extensions() {
+    use pa_agent::types::AgentMessage;
     if common::bun_missing("context_emit_skips_listed_extensions") {
         return;
     }
-    use pa_agent::types::AgentMessage;
     let host = ExtHost::spawn(&config()).await.unwrap();
     let r = host
         .load(
@@ -475,10 +524,10 @@ async fn context_emit_skips_listed_extensions() {
 
 #[tokio::test]
 async fn hook_points_map_to_pa_agent() {
+    use pa_agent::abort::AbortSignal;
     if common::bun_missing("hook_points_map_to_pa_agent") {
         return;
     }
-    use pa_agent::abort::AbortSignal;
     let (host, _rx) = loaded().await;
     let hooks = ExtHooks::new(host.clone());
     let msgs = vec![]; // empty list round-trips through the typed hook
@@ -523,13 +572,14 @@ impl pa_agent::types::AgentTool for BashTool {
 
 #[tokio::test]
 async fn ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop() {
-    if common::bun_missing("ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop") {
-        return;
-    }
     use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
     use pa_agent::scripted::ScriptedProvider;
     use pa_agent::types::{AgentMessage, Message, ToolResultContent, UsageCost};
-
+    if common::bun_missing(
+        "ext_hooks_rewrite_input_and_deliver_additional_context_through_the_loop",
+    ) {
+        return;
+    }
     let (host, _rx) = loaded().await;
     let hooks = ExtHooks::new(host.clone());
     let model = pa_agent::types::Model {
@@ -852,6 +902,45 @@ export default function (pi: any): void {
         child["content"][0]["text"],
         format!("m|/tmp/fx-home-big|{}", work.display()),
         "extension child processes inherit the session env and cwd"
+    );
+    host.shutdown().await.unwrap();
+}
+
+/// `before_agent_start` gates every prompt, so its handlers must overlap: the
+/// emit costs the slowest handler, not their sum, and the injected messages
+/// still come back in registration order.
+#[tokio::test]
+async fn before_agent_start_handlers_run_concurrently_in_order() {
+    if common::bun_missing("before_agent_start_handlers_run_concurrently_in_order") {
+        return;
+    }
+    let mut cfg = config();
+    cfg.handler_timeout_ms = Some(5_000);
+    let host = ExtHost::spawn(&cfg).await.unwrap();
+    let r = host
+        .load(Some(&[fixture("slow_start.ts")]), None, "/tmp", None)
+        .await
+        .unwrap();
+    assert_eq!(r.loaded.len(), 1, "{r:?}");
+    let t0 = std::time::Instant::now();
+    let r = host
+        .emit(
+            json!({"type":"before_agent_start","prompt":"p","systemPrompt":["sys"]}),
+            None,
+        )
+        .await
+        .unwrap();
+    let elapsed = t0.elapsed();
+    let contents: Vec<&str> = r.result["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(contents, ["first", "second"]);
+    assert!(
+        elapsed < Duration::from_millis(420),
+        "handlers ran serially: {elapsed:?}"
     );
     host.shutdown().await.unwrap();
 }

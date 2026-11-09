@@ -10,9 +10,10 @@
 //! Servers are then filtered to those whose root markers exist in the cwd and
 //! whose binary resolves (project-local bin dirs first, then `$PATH`).
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use serde_json::Value;
 use tracing::warn;
@@ -188,7 +189,7 @@ fn merge_servers(
         if let Some(cfg) = normalize_server_config(name, &candidate) {
             merged.insert(name.clone(), cfg);
         } else {
-            warn!("Ignoring invalid LSP overrides (keeping previous config): {name}")
+            warn!("Ignoring invalid LSP overrides (keeping previous config): {name}");
         }
     }
     merged
@@ -516,24 +517,21 @@ fn cache() -> &'static Mutex<HashMap<PathBuf, Arc<LspConfig>>> {
 #[must_use]
 pub fn get_config(cwd: &Path) -> Arc<LspConfig> {
     let key = crate::utils::normalize_path(cwd);
-    if let Ok(guard) = cache().lock() {
+    {
+        let guard = cache().lock();
         if let Some(cfg) = guard.get(&key) {
             return Arc::clone(cfg);
         }
     }
     let cfg = Arc::new(load_config(cwd));
-    if let Ok(mut guard) = cache().lock() {
-        guard.insert(key, Arc::clone(&cfg));
-    }
+    cache().lock().insert(key, Arc::clone(&cfg));
     Arc::clone(&cfg)
 }
 
 /// Drop the cached config for `cwd` (omp `reload *`).
 pub fn invalidate_config(cwd: &Path) {
     let key = crate::utils::normalize_path(cwd);
-    if let Ok(mut guard) = cache().lock() {
-        guard.remove(&key);
-    }
+    cache().lock().remove(&key);
 }
 
 // =============================================================================

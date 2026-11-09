@@ -160,7 +160,7 @@ pub fn run(args: &[String]) -> Result<i32> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "-o" | "--output" => {
-                output = Some(PathBuf::from(it.next().context("--output needs a value")?))
+                output = Some(PathBuf::from(it.next().context("--output needs a value")?));
             }
             other if other.starts_with("--output=") => output = Some(PathBuf::from(&other[9..])),
             other if other.starts_with('-') => anyhow::bail!("unknown flag: {other}"),

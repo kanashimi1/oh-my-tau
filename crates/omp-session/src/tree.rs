@@ -107,6 +107,8 @@ pub fn build_tree(entries: &[Value]) -> Vec<TreeNode> {
         }
     }
 
+    // invariant: every id reachable via the children map was inserted into nodes during indexing.
+    #[allow(clippy::expect_used)]
     fn sort_level(
         nodes: &mut HashMap<&str, TreeNode>,
         children: &HashMap<&str, Vec<&str>>,

@@ -182,8 +182,8 @@ fn kitty_probe_opt_out() -> bool {
     std::env::var_os("OMP_TUI_KITTY_KEYS").is_some_and(|v| v == "0")
 }
 
-/// ConPTY hosting (TS `terminal.ts` `isConPTYHosted`): win32 always hosts
-/// through ConPTY, and under WSL stdout crosses into ConPTY at the `wslhost`
+/// `ConPTY` hosting (TS `terminal.ts` `isConPTYHosted`): win32 always hosts
+/// through `ConPTY`, and under WSL stdout crosses into `ConPTY` at the `wslhost`
 /// boundary. Deliberate superset of TS `isWsl` (which checks only
 /// `WSL_DISTRO_NAME`/`WSL_INTEROP`): herdr runs as a systemd user service
 /// where those are absent, so the `/proc/sys/kernel/osrelease` "microsoft"
@@ -193,8 +193,8 @@ fn is_conpty_hosted() -> bool {
 }
 
 /// Kitty push level for a confirmed-kitty terminal (TS reply handler):
-/// ConPTY drops Shift+letter when flag 4 (report alternate keys) is on, so
-/// ConPTY hosts push disambiguate-only (preserving event-type reporting, flag
+/// `ConPTY` drops Shift+letter when flag 4 (report alternate keys) is on, so
+/// `ConPTY` hosts push disambiguate-only (preserving event-type reporting, flag
 /// 2, if a parent enabled it); otherwise disambiguate + alternate keys
 /// (event-type reporting only when inherited, TS `>5u`/`>7u`).
 fn kitty_push_flags(
@@ -353,7 +353,9 @@ impl Backend for ShellBackend {
 
 /// The inline rendering shell. Concrete on a real terminal via
 /// [`Shell::enter`]; testable with ratatui's `TestBackend` through
-/// [`Shell::new_for_backend`].
+/// [`Shell::new_for_backend`]. The booleans are independent shell modes,
+/// not one state machine.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Shell<B: Backend, R: RawOut> {
     term: Terminal<B>,
     raw: R,
@@ -453,35 +455,6 @@ impl Shell<ShellBackend, io::Stdout> {
         })
     }
 
-    /// Paint one frame of a full-screen overlay on the alternate screen
-    /// (TS `#renderAltFrame`). The first call of a lifecycle enters the alt
-    /// buffer (see [`Self::enter_alt`]); later calls diff against the
-    /// previous alt frame. The inline viewport's diff state over the normal
-    /// buffer stays frozen until [`Self::leave_alt`]. The frame's area is the
-    /// whole terminal at origin (0,0), so overlay rows map 1:1 onto SGR
-    /// mouse rows.
-    ///
-    /// # Errors
-    ///
-    /// Fails if the alt-screen entry or paint writes fail.
-    pub fn draw_fullscreen(
-        &mut self,
-        draw: impl FnOnce(&mut ratatui::Frame<'_>),
-    ) -> io::Result<()> {
-        self.enter_alt()?;
-        if self.alt_term.is_none() {
-            self.alt_term = Some(Terminal::new(ShellBackend::new())?);
-        }
-        self.paint_begin()?;
-        let result = match self.alt_term.as_mut() {
-            Some(alt) => alt.draw(draw).map(|_| ()),
-            None => Ok(()),
-        };
-        self.raw.raw(HIDE_CURSOR)?;
-        self.paint_end()?;
-        result
-    }
-
     /// Restore the terminal: leave any fullscreen borrow, pop kitty /
     /// modifyOtherKeys, bracketed paste off, DECCKM normal, show cursor,
     /// raw mode off. Idempotent; safe on panic via the controller's hook.
@@ -529,9 +502,9 @@ impl Shell<ShellBackend, io::Stdout> {
 }
 
 impl<B: Backend, R: RawOut> Shell<B, R> {
-    /// Test/support constructor over an arbitrary backend.
-    #[cfg(test)]
-    fn new_for_backend(term: Terminal<B>, raw: R, live_height: u16, sync: bool) -> Self {
+    /// Test/harness constructor over an arbitrary backend; public so
+    /// integration tests can build a `Shell` on ratatui's `TestBackend`.
+    pub fn new_for_backend(term: Terminal<B>, raw: R, live_height: u16, sync: bool) -> Self {
         Self {
             screen: Rect::from((Position::ORIGIN, term.size().unwrap_or(Size::new(80, 24)))),
             term,
@@ -545,6 +518,34 @@ impl<B: Backend, R: RawOut> Shell<B, R> {
             pending_resize: false,
             mouse: false,
         }
+    }
+    /// Paint one frame of a full-screen overlay on the alternate screen
+    /// (TS `#renderAltFrame`). The first call of a lifecycle enters the alt
+    /// buffer (see [`Self::enter_alt`]); later calls diff against the
+    /// previous alt frame. The inline viewport's diff state over the normal
+    /// buffer stays frozen until [`Self::leave_alt`]. The frame's area is the
+    /// whole terminal at origin (0,0), so overlay rows map 1:1 onto SGR
+    /// mouse rows.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the alt-screen entry or paint writes fail.
+    pub fn draw_fullscreen(
+        &mut self,
+        draw: impl FnOnce(&mut ratatui::Frame<'_>),
+    ) -> io::Result<()> {
+        self.enter_alt()?;
+        if self.alt_term.is_none() {
+            self.alt_term = Some(Terminal::new(ShellBackend::new())?);
+        }
+        self.paint_begin()?;
+        let result = match self.alt_term.as_mut() {
+            Some(alt) => alt.draw(draw).map(|_| ()),
+            None => Ok(()),
+        };
+        self.raw.raw(HIDE_CURSOR)?;
+        self.paint_end()?;
+        result
     }
 
     /// Whether a full-screen overlay currently holds the alternate screen.

@@ -201,10 +201,13 @@ fn parse(lines: &[Line<'static>]) -> Parsed {
     Parsed { header, body }
 }
 
+/// One rendered header/body run of styled cells.
+type CellRun = Vec<(char, Style)>;
+
 /// Split a family header into `(title, description)` cells: drops the
 /// leading status/tool icon and the `Title:` colon.
-fn split_header(cells: &[(char, Style)]) -> (Vec<(char, Style)>, Vec<(char, Style)>) {
-    let mut cells: Vec<(char, Style)> = cells.to_vec();
+fn split_header(cells: &[(char, Style)]) -> (CellRun, CellRun) {
+    let mut cells: CellRun = cells.to_vec();
     // Leading icon: one non-alphanumeric glyph (or `$`) followed by a space.
     let icon_len = cells.iter().take_while(|(c, _)| *c != ' ').count();
     let icon_is_glyph = icon_len > 0
@@ -219,21 +222,18 @@ fn split_header(cells: &[(char, Style)]) -> (Vec<(char, Style)>, Vec<(char, Styl
         .take(32)
         .position(|(c, _)| *c == ':')
         .filter(|&i| i > 0 && cells.get(i + 1).is_none_or(|(c, _)| *c == ' '));
-    match colon {
-        Some(i) => {
-            let title = cells[..i].to_vec();
-            let desc = trim_cells(cells[i + 1..].to_vec());
-            (title, desc)
-        }
-        None => {
-            let end = cells
-                .iter()
-                .position(|(c, _)| *c == ' ')
-                .unwrap_or(cells.len());
-            let title = cells[..end].to_vec();
-            let desc = trim_cells(cells[end..].to_vec());
-            (title, desc)
-        }
+    if let Some(i) = colon {
+        let title = cells[..i].to_vec();
+        let desc = trim_cells(cells[i + 1..].to_vec());
+        (title, desc)
+    } else {
+        let end = cells
+            .iter()
+            .position(|(c, _)| *c == ' ')
+            .unwrap_or(cells.len());
+        let title = cells[..end].to_vec();
+        let desc = trim_cells(cells[end..].to_vec());
+        (title, desc)
     }
 }
 
@@ -358,8 +358,10 @@ pub fn header_parts(lines: &[Line<'static>]) -> (String, Vec<Span<'static>>) {
 /// Rewrite a family render into rail form.
 ///
 /// `fallback_title` names the tool when the family drew no header (the bash
-/// card's top bar is empty; its `$ command` row is promoted instead).
+/// card's top bar is empty; its `$ command` row is promoted instead). One
+/// pass over the rows for restyle + expansion.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn restyle(
     lines: &[Line<'static>],
     status: RailStatus,
@@ -399,10 +401,7 @@ pub fn restyle(
         if s.starts_with('⟦') && s.ends_with('⟧') && (s.contains("Wall:") || s.contains("Timeout:"))
         {
             if let Some(rest) = s.split("Wall: ").nth(1) {
-                wall = rest
-                    .split(|c| c == ' ' || c == '|' || c == '⟧')
-                    .next()
-                    .map(str::to_owned);
+                wall = rest.split([' ', '|', '⟧']).next().map(str::to_owned);
             }
             return false;
         }
@@ -498,7 +497,7 @@ mod tests {
     fn framed_card_becomes_rail() {
         let t = theme();
         let card = crate::tools::frame::framed_card(
-            Some(Line::from("✎ Write: ◦ a.txt · 2 lines")),
+            Some(&Line::from("✎ Write: ◦ a.txt · 2 lines")),
             vec![crate::tools::frame::CardSection::plain(vec![
                 Line::from("1 alpha"),
                 Line::from("2 beta"),

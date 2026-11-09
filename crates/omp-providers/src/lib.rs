@@ -201,7 +201,9 @@ pub fn resolve_in(dir: &AgentDir, model_ref: &str) -> Result<ResolvedModel> {
                 // TS `getOAuthApiKey` structured format: the Cloud Code Assist providers parse
                 // the OAuth row payload as JSON and need `projectId`/`token` from it (`_Kn` in
                 // the TS bundle) — the bare access token alone yields `project: ""` and a 404.
-                let key = if provider.as_str() == "google-gemini-cli" || provider.as_str() == "google-antigravity" {
+                let key = if provider.as_str() == "google-gemini-cli"
+                    || provider.as_str() == "google-antigravity"
+                {
                     auth::structured_key(dir, &provider).unwrap_or(key)
                 } else {
                     key
@@ -487,6 +489,8 @@ fn base_url_for(provider: &str) -> Option<&'static str> {
     })
 }
 
+// invariant: pcfg is Some because the and_then chain above only runs when it is.
+#[allow(clippy::expect_used)]
 fn find_model(
     dir: &Path,
     cfg: &Config,
@@ -946,6 +950,7 @@ pub fn auth_details(dir: &AgentDir, provider: &str) -> AuthDetails {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     /// Async resolution never parks the executor: two concurrent `!command`
     /// values (0.4 s each) finish well under 0.8 s even on a single-threaded

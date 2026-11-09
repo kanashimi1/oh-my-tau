@@ -10,10 +10,10 @@
 //! the exact prefix snapshot stored at the previous request (deep equality). A miss (different
 //! key, shorter/compacted history, or a mutated prefix) falls back to the full conversion and
 //! replaces the slot, so the cache can never emit stale bytes.
-//!
-//! Disabled (`OMP_RS_WIRE_FRAG_CACHE=0`), or bypassed per request for formats the cache cannot
-//! serve: Anthropic `cache_control` (mutates the last message), named `ToolChoice::Function`
-//! (narrows the tools array), and requests carrying a payload hook (handled by the caller).
+// Disabled (`OMP_RS_WIRE_FRAG_CACHE=0`), or bypassed per request for formats the cache cannot
+// serve: Anthropic `cache_control` (mutates the last message) and named `ToolChoice::Function`
+// (narrows the tools array). Payload hooks run after this pre-hook body is built, so they do not
+// disable prefix reuse.
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -49,6 +49,8 @@ struct MsgsFrag {
     last_role: Option<&'static str>,
 }
 
+// Mirrors the TS wire-cache entry: tools may be absent, explicitly omitted, or present.
+#[allow(clippy::type_complexity, clippy::option_option)] // three-state tools field mirrors the TS cache key
 struct WireFragCache {
     key: CacheKey,
     /// `None` when the request carried no tools (fragment not cached; converted per request).
@@ -120,6 +122,7 @@ fn wire_relevant_eq(a: &Message, b: &Message) -> bool {
 }
 
 /// [`build_params`] with the per-session fragment cache; returns byte-identical params.
+#[allow(clippy::too_many_lines)] // cache hit / miss paths kept together for byte-parity guarantees
 pub(crate) fn build_params_cached<'a>(
     model: &Model,
     context: &'a Context,
@@ -129,9 +132,11 @@ pub(crate) fn build_params_cached<'a>(
     cache_retention: CacheRetention,
 ) -> Wire<'a> {
     let opts = options.cloned().unwrap_or_default();
-    let reasoning = opts.reasoning_effort.map(|level| level.wire_name());
+    let reasoning = opts
+        .reasoning_effort
+        .map(pa_types::ai::ModelThinkingLevel::wire_name);
     let disable_reasoning = opts.reasoning_enabled == Some(false);
-    let tool_choice = opts.tool_choice.clone();
+    let tool_choice = opts.tool_choice;
 
     let cacheable = enabled()
         && compat.cache_control_format.as_deref() != Some("anthropic")
@@ -157,7 +162,9 @@ pub(crate) fn build_params_cached<'a>(
         tool_choice: tool_choice.clone(),
     };
     let hit = {
-        let cache = CACHE.lock().expect("wire frag cache");
+        let cache = CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.slots.iter().find_map(|cached| {
             let key = &cached.key;
             if key.model != *model
@@ -189,8 +196,12 @@ pub(crate) fn build_params_cached<'a>(
         })
     };
 
-    match hit {
-        Some((tools_frag, prefix, count, last_role)) => build_params_streaming(
+    if let Some((tools_frag, prefix, count, last_role)) = hit {
+        let tools_in = match tools_frag {
+            Some(raw) => ToolsInput::Raw(raw),
+            None => ToolsInput::Convert,
+        };
+        build_params_streaming(
             model,
             context,
             transformed,
@@ -202,63 +213,63 @@ pub(crate) fn build_params_cached<'a>(
                 count,
                 last_role,
             },
-            match tools_frag {
-                Some(raw) => ToolsInput::Raw(raw),
-                None => ToolsInput::Convert,
-            },
+            &tools_in,
             None,
-        ),
-        None => {
-            let mut frags = BuiltFrags {
-                // Placeholders until the conversion below fills them; "[]" is always valid JSON.
-                messages: RawValue::from_string("[]".to_string())
-                    .map(Arc::<serde_json::value::RawValue>::from)
-                    .expect("valid JSON"),
-                msg_count: 0,
-                last_role: None,
-                tools: None,
-            };
-            let wire = build_params_streaming(
-                model,
-                context,
-                transformed,
-                options,
-                compat,
-                cache_retention,
-                MsgsInput::Convert,
-                ToolsInput::Convert,
-                Some(&mut frags),
-            );
-            let entry = WireFragCache {
-                key,
-                // The tools fragment is only valid while the tools option set is the cached one;
-                // a `None` tools context converts cheaply, so it is never cached.
-                tools: if context
-                    .tools
-                    .as_deref()
-                    .is_some_and(|tools| !tools.is_empty())
-                {
-                    Some(frags.tools)
-                } else {
-                    None
-                },
-                messages: MsgsFrag {
-                    prefix: frags.messages,
-                    transformed_prefix: transformed[..frags.msg_count].to_vec(),
-                    count: frags.msg_count,
-                    last_role: frags.last_role,
-                },
-            };
-            let mut cache = CACHE.lock().expect("wire frag cache");
-            if cache.slots.len() < SLOTS {
-                cache.slots.push(entry);
+        )
+    } else {
+        let mut frags = BuiltFrags {
+            // Placeholders until the conversion below fills them; "[]" is always
+            // valid JSON, so from_string cannot fail.
+            messages: RawValue::from_string("[]".to_string()).map_or_else(
+                |error| unreachable!("literal JSON: {error}"),
+                Arc::<serde_json::value::RawValue>::from,
+            ),
+            msg_count: 0,
+            last_role: None,
+            tools: None,
+        };
+        let wire = build_params_streaming(
+            model,
+            context,
+            transformed,
+            options,
+            compat,
+            cache_retention,
+            MsgsInput::Convert,
+            &ToolsInput::Convert,
+            Some(&mut frags),
+        );
+        let entry = WireFragCache {
+            key,
+            // The tools fragment is only valid while the tools option set is the cached one;
+            // a `None` tools context converts cheaply, so it is never cached.
+            tools: if context
+                .tools
+                .as_deref()
+                .is_some_and(|tools| !tools.is_empty())
+            {
+                Some(frags.tools)
             } else {
-                let next = cache.next;
-                cache.slots[next] = entry;
-                cache.next = (next + 1) % SLOTS;
-            }
-            wire
+                None
+            },
+            messages: MsgsFrag {
+                prefix: frags.messages,
+                transformed_prefix: transformed[..frags.msg_count].to_vec(),
+                count: frags.msg_count,
+                last_role: frags.last_role,
+            },
+        };
+        let mut cache = CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.slots.len() < SLOTS {
+            cache.slots.push(entry);
+        } else {
+            let next = cache.next;
+            cache.slots[next] = entry;
+            cache.next = (next + 1) % SLOTS;
         }
+        wire
     }
 }
 
@@ -288,13 +299,15 @@ mod tests {
 
     fn options_of(case: &Value) -> OpenAICompletionsOptions {
         let o = &case["options"];
-        let mut base = StreamOptions::default();
-        base.max_tokens = o.get("maxTokens").and_then(Value::as_u64);
-        base.temperature = o.get("temperature").and_then(Value::as_f64);
-        base.session_id = o
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let base = StreamOptions {
+            max_tokens: o.get("maxTokens").and_then(Value::as_u64),
+            temperature: o.get("temperature").and_then(Value::as_f64),
+            session_id: o
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            ..StreamOptions::default()
+        };
         let mut opts = OpenAICompletionsOptions::from_base(base);
         opts.reasoning_effort = o
             .get("reasoning")
@@ -357,9 +370,9 @@ mod tests {
     /// `to_value` tree a payload hook would see.
     #[test]
     fn cached_body_matches_uncached_for_every_oracle_case() {
-        let text = match std::fs::read_to_string(BODIES) {
-            Ok(text) => text,
-            Err(_) => return, // oracle file not generated here; body_parity_tests covers it
+        // Oracle file not generated here; body_parity_tests covers it.
+        let Ok(text) = std::fs::read_to_string(BODIES) else {
+            return;
         };
         let mut total = 0usize;
         for line in text.lines().filter(|l| !l.is_empty()) {
@@ -436,9 +449,8 @@ mod tests {
     /// still has to equal the uncached body after every change.
     #[test]
     fn cached_body_tracks_key_changes() {
-        let text = match std::fs::read_to_string(BODIES) {
-            Ok(text) => text,
-            Err(_) => return,
+        let Ok(text) = std::fs::read_to_string(BODIES) else {
+            return;
         };
         let line = text.lines().find(|l| !l.is_empty()).expect("a case");
         let case: Value = serde_json::from_str(line).expect("case parses");
@@ -453,7 +465,7 @@ mod tests {
             uncached_body(&model, &base, Some(&options))
         );
 
-        let mut changed = base.clone();
+        let mut changed = base;
         changed.system_prompt = Some("a different system prompt".to_string());
         assert_eq!(
             cached_body(&model, &changed, Some(&options)),

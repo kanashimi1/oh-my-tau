@@ -3,6 +3,7 @@
 mod adapter;
 mod agent;
 mod approval;
+mod attach;
 mod cli;
 mod compact;
 mod context;
@@ -22,6 +23,7 @@ mod rpc;
 mod runtime;
 mod slash_extra;
 pub mod subcmd;
+mod sync_bridge;
 mod sysprompt;
 mod title;
 mod tools;
@@ -39,6 +41,13 @@ use cli::{Args, Resume};
 // wire-context transients committed (~0.15 MB/turn growth, Tails report) — open.
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Return retained per-turn transient segments to the OS. Purge delay and
+/// generic collection bound steady-state churn, but do not force partially
+/// cached heaps to release their free pages at a turn boundary.
+pub(crate) fn collect_retained_memory() {
+    pa_types::memory_release::collect_mimalloc();
+}
 
 const HELP: &str = r"usage: omt [--mode text|json|rpc] [-p|--print] [--model provider/id[:thinking]]
        [--provider <name>] [--api-key <key>] [--smol <m>] [--slow <m>] [--plan <m>]
@@ -131,6 +140,7 @@ fn resolve_session(dir: &Path, value: &str) -> Option<PathBuf> {
 /// `--session-dir`): ids/the picker also search it; `--continue` stays on the
 /// omp-rs store.
 /// `--session` value naming a session file rather than an id prefix.
+#[allow(clippy::case_sensitive_file_extension_comparisons)] // exact `.jsonl` suffix; dot-only names count too
 fn is_session_path(value: &str) -> bool {
     value.contains(std::path::MAIN_SEPARATOR) || value.ends_with(".jsonl")
 }
@@ -246,6 +256,24 @@ fn ensure_mimalloc_env() {
 }
 
 #[allow(clippy::too_many_lines)] // sequential startup guard clauses; mirrors omp's main flow
+/// Path to re-launch this binary for child processes (subagents, eval agents).
+///
+/// After an in-place rebuild (`cargo build` replaces the file) Linux reports
+/// `current_exe()` as `<path> (deleted)`, and spawning that fails, so every
+/// subagent of a long-running session died with "No such file or directory".
+/// The rebuilt binary at the original path is the right one to run.
+pub(crate) fn respawn_exe() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omt"));
+    strip_deleted_suffix(&exe).unwrap_or(exe)
+}
+
+fn strip_deleted_suffix(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let live = exe.to_str()?.strip_suffix(" (deleted)")?;
+    let live = std::path::PathBuf::from(live);
+    live.is_file().then_some(live)
+}
+
+#[allow(clippy::disallowed_methods)] // entry point: sync main drives the process runtime
 fn main() -> Result<()> {
     // Sandbox self-relaunch: `omt` acts as its own confinement launcher
     // (`omt __sandbox-exec ...`, features/sandbox.rs). This must run before
@@ -256,6 +284,8 @@ fn main() -> Result<()> {
         let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
         omp_sandbox::exec_confined(&argv);
     }
+    // Before any thread exists: removing an env var is not thread-safe.
+    rpc::take_detached_socket_env();
     // The rpc/print loop is strictly sequential; a multi-thread runtime costs
     // ~20-30 ms CPU/turn in scheduler overhead (measured, RPC12 team run).
     // Run those modes on a current-thread runtime; interactive TUI keeps the
@@ -274,10 +304,21 @@ fn main() -> Result<()> {
             .enable_all()
             .build()
     }
-    .expect("tokio runtime");
-    rt.block_on(async_main())
+    .unwrap_or_else(|error| {
+        eprintln!("failed to start the tokio runtime: {error}");
+        std::process::exit(1);
+    });
+    let result = rt.block_on(async_main());
+    // Print/rpc runtimes are intentionally leaked (the process is about to
+    // exit; Runtime::drop never runs), so hub auto-claims are released here
+    // for every normal return — driven by a final block_on so the endpoint
+    // task makes progress even on the current-thread rpc/print runtime;
+    // exit() carries the sync hook for error paths.
+    rt.block_on(tools::a2a::shutdown_all_hub_endpoints_async());
+    result
 }
 
+#[allow(clippy::too_many_lines)] // sequential startup and mode dispatch; mirrors omp's main flow
 async fn async_main() -> Result<()> {
     ensure_mimalloc_env();
     let mut args = parse_args()?;
@@ -329,9 +370,7 @@ async fn async_main() -> Result<()> {
         bail!("omt: --mode {mode} is not supported (no {mode} subsystem)");
     }
     if !args.config.is_empty() || !args.add_dir.is_empty() {
-        eprintln!(
-            "omt: --config/--add-dir parsed but their subsystems are not in omt; ignored"
-        );
+        eprintln!("omt: --config/--add-dir parsed but their subsystems are not in omt; ignored");
     }
 
     let mut cwd = match args.cwd {
@@ -343,9 +382,7 @@ async fn async_main() -> Result<()> {
     if !args.allow_home {
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
             if cwd == home.canonicalize().unwrap_or(home) {
-                eprintln!(
-                    "omt: started in ~; switching to a temp dir (pass --allow-home to stay)"
-                );
+                eprintln!("omt: started in ~; switching to a temp dir (pass --allow-home to stay)");
                 cwd = std::env::temp_dir();
             }
         }
@@ -487,7 +524,8 @@ async fn async_main() -> Result<()> {
         extensions.as_ref(),
         &sp_opts,
         context_strategy,
-    )?;
+    )
+    .await?;
     // eval's in-cell bridge: `tool.<name>` dispatches to the session's tools, and
     // completion()/judge() need the live provider target.
     crate::tools::eval_bridge::set_session_tools(agent.tools().await);
@@ -580,6 +618,18 @@ async fn async_main() -> Result<()> {
         && std::io::IsTerminal::is_terminal(&std::io::stdout())
     {
         let persistence = session.map_err(|e| anyhow::anyhow!("session file: {e:#}"))?;
+        // A session the web/desktop hub already runs is joined, not opened a
+        // second time (one writer per session file).
+        if let Some(path) = &resume_target {
+            if let Some(id) = attach::agent_for_session(path).await {
+                persistence.discard_pristine();
+                if let Some(e) = &extensions {
+                    e.shutdown().await;
+                }
+                return attach::attach(&id).await;
+            }
+        }
+        let tui_cwd = cwd.clone();
         let result = tui::run(
             agent,
             target,
@@ -591,6 +641,12 @@ async fn async_main() -> Result<()> {
         .await;
         if let Some(e) = &extensions {
             e.shutdown().await;
+        }
+        // `/desktop`: the TUI released the session; move it to the hub and
+        // continue as `omt attach` in this terminal.
+        if let Some(path) = tui::take_handoff() {
+            result?;
+            return attach::handoff(&path, &tui_cwd).await;
         }
         return result;
     }
@@ -704,6 +760,7 @@ fn last_thinking(messages: &[pa_agent::types::AgentMessage]) -> Option<String> {
 /// TS `postmortem.register("lsp-shutdown", …)`: the LSP client registry is a
 /// process static (it never drops), so `shutdown_all` must run explicitly on
 /// every exit path instead of relying on `kill_on_drop`.
+#[allow(clippy::disallowed_methods)] // exit path: block_on runs via block_in_place or a fresh runtime off the executor
 fn shutdown_lsp() {
     // Exit paths run inside the main tokio runtime: parking the worker via
     // `block_in_place` and driving the shutdown on the entered runtime (a
@@ -736,18 +793,21 @@ fn exit(code: i32) -> ! {
     if let Some(h) = herdr::global() {
         h.release_blocking();
     }
+    // A2A hub: exit() also bypasses the per-runtime endpoint shutdown —
+    // release this process's auto-claims (bounded, no-op without endpoints).
+    tools::a2a::shutdown_all_hub_endpoints();
     shutdown_lsp();
     std::process::exit(code);
 }
 
-/// Print-mode run: extension lifecycle hook points, optional session resume
-/// (`--resume`/`--continue`/`--fork`), then the single prompt.
-#[allow(clippy::too_many_arguments)] // print-mode run context; mirrors omp's runPrint signature
 /// Set when print mode answered a handled slash command with its output
 /// (no model turn ran, so "no assistant response" is not an error).
 static PRINTED_COMMAND_OUTPUT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Print-mode run: extension lifecycle hook points, optional session resume
+/// (`--resume`/`--continue`/`--fork`), then the single prompt.
+#[allow(clippy::too_many_arguments)] // print-mode run context; mirrors omp's runPrint signature
 async fn run_print(
     agent: pa_agent::agent::Agent,
     target: agent::Target,
@@ -859,6 +919,20 @@ async fn run_print(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn respawn_exe_strips_deleted_suffix_when_rebuilt_binary_exists() {
+        let dir = std::env::temp_dir().join(format!("omt-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let live = dir.join("omt");
+        std::fs::write(&live, b"").unwrap();
+        let deleted = std::path::PathBuf::from(format!("{} (deleted)", live.display()));
+        assert_eq!(super::strip_deleted_suffix(&deleted), Some(live.clone()));
+        assert_eq!(super::strip_deleted_suffix(&live), None);
+        std::fs::remove_file(&live).unwrap();
+        assert_eq!(super::strip_deleted_suffix(&deleted), None);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
     /// Review #2: the exit helper's shutdown leg must complete cleanly with an
     /// empty registry (a no-op, but proves the runtime dance is sound).
     #[test]

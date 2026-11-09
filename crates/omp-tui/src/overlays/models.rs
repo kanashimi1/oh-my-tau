@@ -551,7 +551,7 @@ impl ModelPicker {
     /// persisted role assignments and select the current model.
     pub fn on_open(&mut self) {
         self.query.clear();
-        self.active = "all".to_owned();
+        "all".clone_into(&mut self.active);
         self.focus_list = false;
         self.kind_tab = 0;
         self.assigning = None;
@@ -802,7 +802,7 @@ impl ModelPicker {
 
     fn set_active(&mut self, id: &str) {
         if self.active != id {
-            self.active = id.to_owned();
+            id.clone_into(&mut self.active);
             self.selected = 0;
             self.list_start.set(0);
             self.list_follow.set(true);
@@ -812,14 +812,15 @@ impl ModelPicker {
 
     fn move_sidebar(&mut self, delta: isize) {
         let entries = self.entries();
-        let n = entries.len() as isize;
+        let n = entries.len().cast_signed();
         let mut idx = entries
             .iter()
             .position(|e| e.id == self.active)
-            .unwrap_or(0) as isize;
+            .unwrap_or(0)
+            .cast_signed();
         for _ in 0..n {
             idx = (idx + delta).rem_euclid(n);
-            let e = &entries[idx as usize];
+            let e = &entries[idx.cast_unsigned()];
             if e.kind != EntryKind::Separator {
                 if e.kind == EntryKind::Roles {
                     self.assigning = None;
@@ -833,11 +834,11 @@ impl ModelPicker {
 
     fn move_selection(&mut self, delta: isize, wrap: bool) {
         let rows = self.rows();
-        let n = rows.len() as isize;
+        let n = rows.len().cast_signed();
         if n == 0 {
             return;
         }
-        let mut idx = self.selected.min(rows.len() - 1) as isize;
+        let mut idx = self.selected.min(rows.len() - 1).cast_signed();
         let step = delta.signum();
         let mut remaining = delta.abs();
         while remaining > 0 {
@@ -851,15 +852,15 @@ impl ModelPicker {
                 break;
             }
             idx = next;
-            if rows[idx as usize] != Row::Separator {
+            if rows[idx.cast_unsigned()] != Row::Separator {
                 remaining -= 1;
             }
         }
         // Never rest on a separator.
-        if rows[idx as usize] == Row::Separator {
+        if rows[idx.cast_unsigned()] == Row::Separator {
             idx = (idx + 1).min(n - 1);
         }
-        self.selected = idx as usize;
+        self.selected = idx.cast_unsigned();
         self.list_follow.set(true);
     }
 
@@ -1019,24 +1020,24 @@ impl ModelPicker {
                     ..
                 },
                 ChipAction::Level(level),
-            ) => {
-                if level != initial {
-                    self.role_map
-                        .insert(role.clone(), format!("{}:{level}", model.selector()));
-                    if role == "default" {
-                        self.pending.push(Action::SetThinkingLevel(level.clone()));
-                        self.current_level = level;
-                    }
-                    self.emit_roles();
+            ) if level != initial => {
+                self.role_map
+                    .insert(role.clone(), format!("{}:{level}", model.selector()));
+                if role == "default" {
+                    self.pending.push(Action::SetThinkingLevel(level.clone()));
+                    self.current_level = level;
                 }
+                self.emit_roles();
             }
             _ => {}
         }
     }
 
     fn move_kind_tab(&mut self, delta: isize) {
-        let n = KIND_TABS.len() as isize;
-        self.kind_tab = (self.kind_tab as isize + delta).rem_euclid(n) as usize;
+        let n = KIND_TABS.len().cast_signed();
+        self.kind_tab = (self.kind_tab.cast_signed() + delta)
+            .rem_euclid(n)
+            .cast_unsigned();
         self.selected = 0;
         self.list_start.set(0);
     }
@@ -1064,6 +1065,9 @@ impl ModelPicker {
     }
 
     /// Handle one key event; queues `Action`s on assignment.
+    // A key dispatcher over the picker's modes; kept as one match for
+    // readability.
+    #[allow(clippy::too_many_lines)]
     pub fn handle_key(&mut self, key: KeyEvent) -> EventOutcome {
         let code = key.code;
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -1171,15 +1175,15 @@ impl ModelPicker {
 
         let page = {
             let l = self.layout.borrow();
-            l.list_n.max(1) as isize
+            l.list_n.max(1).cast_signed()
         };
         match code {
             KeyCode::Up => self.move_selection(-1, true),
             KeyCode::Down => self.move_selection(1, true),
             KeyCode::PageUp => self.move_selection(-page, false),
             KeyCode::PageDown => self.move_selection(page, false),
-            KeyCode::Home => self.move_selection(-(self.rows().len() as isize), false),
-            KeyCode::End => self.move_selection(self.rows().len() as isize, false),
+            KeyCode::Home => self.move_selection(-self.rows().len().cast_signed(), false),
+            KeyCode::End => self.move_selection(self.rows().len().cast_signed(), false),
             KeyCode::Enter => {
                 if let Some(m) = self.selected_model() {
                     self.activate_model(m);
@@ -1249,14 +1253,16 @@ impl ModelPicker {
         if let Some(dir) = ev.wheel {
             if over_sidebar {
                 let max = self.entries().len().saturating_sub(l.content_rows as usize);
-                let cur = self.sidebar_scroll.get() as isize + isize::from(dir);
-                self.sidebar_scroll.set(cur.clamp(0, max as isize) as usize);
+                let cur = self.sidebar_scroll.get().cast_signed() + isize::from(dir);
+                self.sidebar_scroll
+                    .set(cur.clamp(0, max.cast_signed()).cast_unsigned());
                 self.sidebar_follow.set(false);
             } else if over_body && !l.roles_view {
                 let total = self.rows().len();
                 let max = total.saturating_sub(l.list_n.max(1));
-                let cur = self.list_start.get() as isize + isize::from(dir);
-                self.list_start.set(cur.clamp(0, max as isize) as usize);
+                let cur = self.list_start.get().cast_signed() + isize::from(dir);
+                self.list_start
+                    .set(cur.clamp(0, max.cast_signed()).cast_unsigned());
                 self.list_follow.set(false);
             }
             return EventOutcome::Consumed;
@@ -1464,7 +1470,7 @@ impl ModelPicker {
         line
     }
 
-    fn thinking_glyph(&self, level: &str, theme: &Theme) -> Option<String> {
+    fn thinking_glyph(level: &str, theme: &Theme) -> Option<String> {
         match level {
             "inherit" | "auto" => None,
             "off" => Some(theme.symbol("status.disabled").to_owned()),
@@ -1509,7 +1515,10 @@ impl ModelPicker {
                 let level = self
                     .role_level(role)
                     .or_else(|| (role == "default").then(|| self.default_level.clone()));
-                if let Some(glyph) = level.as_deref().and_then(|l| self.thinking_glyph(l, theme)) {
+                if let Some(glyph) = level
+                    .as_deref()
+                    .and_then(|l| Self::thinking_glyph(l, theme))
+                {
                     chips.push(sp(format!(" {glyph}"), st.dim));
                 }
             } else {
@@ -1519,7 +1528,9 @@ impl ModelPicker {
         [line1, truncate_spans(chips, bw)]
     }
 
-    #[allow(clippy::too_many_lines)]
+    // Sidebar/detail painter with one slot per pane; splitting it would
+    // scatter the layout math it shares.
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     fn browser_lines(
         &self,
         st: &St,
@@ -1740,13 +1751,7 @@ impl ModelPicker {
         ]
     }
 
-    fn strip_footer(
-        &self,
-        st: &St,
-        strip: &Strip,
-        fw: usize,
-        layout: &mut Layout,
-    ) -> Vec<Span<'static>> {
+    fn strip_footer(st: &St, strip: &Strip, fw: usize, layout: &mut Layout) -> Vec<Span<'static>> {
         let mut prefix: Vec<Span<'static>> = match strip {
             Strip::Role { model, .. } => vec![sp(model.id.clone(), st.accent), sp(" →", st.dim)],
             Strip::Thinking { model, role, .. } => vec![
@@ -1970,7 +1975,7 @@ impl Component for ModelPicker {
 
         // Footer.
         let footer = if let Some(strip) = &self.strip {
-            self.strip_footer(&st, strip, total_w.saturating_sub(4), &mut layout)
+            Self::strip_footer(&st, strip, total_w.saturating_sub(4), &mut layout)
         } else {
             layout.chips.clear();
             truncate_spans(
@@ -2076,9 +2081,10 @@ mod tests {
     }
 
     fn picker() -> ModelPicker {
-        let mut p = ModelPicker::default();
-        p.models = catalog();
-        p
+        ModelPicker {
+            models: catalog(),
+            ..ModelPicker::default()
+        }
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -2254,10 +2260,12 @@ mod tests {
 
     #[test]
     fn wheel_scrolls_list_window() {
-        let mut p = ModelPicker::default();
-        p.models = (0..100)
-            .map(|i| ModelEntry::new("p", &format!("m{i:03}"), Some(1000)))
-            .collect();
+        let mut p = ModelPicker {
+            models: (0..100)
+                .map(|i| ModelEntry::new("p", &format!("m{i:03}"), Some(1000)))
+                .collect(),
+            ..ModelPicker::default()
+        };
         p.on_open();
         let _ = draw(&p, 120, 40);
         let l = p.layout.borrow().clone();

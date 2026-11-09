@@ -537,7 +537,8 @@ pub fn stream_failure_message(info: &StreamFailureInfo, detail: Option<&str>) ->
 ///
 /// # Panics
 ///
-/// Panics only if one of the built-in regex patterns fails to compile (static literals).
+// invariant: the built-in patterns are literal regexes verified by tests.
+#[allow(clippy::expect_used)]
 #[must_use]
 pub fn classify_stream_failure(
     provider_error_type: Option<&str>,
@@ -711,7 +712,9 @@ fn extract_parts_from_http(error: &ProviderHttpError) -> ExtractedParts {
             let mut node = &parsed;
             if let Some(nested) = node.get("error") {
                 if nested.is_object() && nested.get("error").is_some() {
-                    node = nested.get("error").unwrap();
+                    if let Some(inner) = nested.get("error") {
+                        node = inner;
+                    }
                 }
                 if nested.is_object() {
                     node = nested;

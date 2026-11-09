@@ -6,6 +6,7 @@
 //! empty output = failure, a failure is not retried for 30 s, a success is cached
 //! for the process lifetime.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Read;
 #[cfg(unix)]
@@ -14,7 +15,7 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, LazyLock, Mutex};
+use std::sync::{Arc, Condvar, LazyLock};
 use std::time::{Duration, Instant};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,7 +36,8 @@ struct State {
 
 #[derive(Default)]
 struct InFlight {
-    done: Mutex<bool>,
+    /// std, not parking_lot: paired with `cv`, and `Condvar` waits need std's guard.
+    done: std::sync::Mutex<bool>,
     cv: Condvar,
 }
 
@@ -64,9 +66,7 @@ pub fn resolve_config_value(raw: &str) -> Option<String> {
     let command = raw[1..].trim().to_string();
     // Fast paths under a brief lock; never held across a run.
     {
-        let st = STATE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st = STATE.lock();
         if let Some(v) = st.ok.get(&command) {
             return Some(v.clone());
         }
@@ -82,9 +82,7 @@ pub fn resolve_config_value(raw: &str) -> Option<String> {
     // slot; the thread whose slot is still registered runs the command, the
     // rest wait for it and read the cache.
     let (slot, is_leader) = {
-        let mut st = STATE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut st = STATE.lock();
         if let Some(v) = st.ok.get(&command) {
             return Some(v.clone());
         }
@@ -98,26 +96,21 @@ pub fn resolve_config_value(raw: &str) -> Option<String> {
         }
     };
     if !is_leader {
-        let done = slot
+        let mut done = slot
             .done
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut done = done;
         while !*done {
             done = slot
                 .cv
                 .wait(done)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        let st = STATE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st = STATE.lock();
         return st.ok.get(&command).cloned();
     }
     let result = run(&command, TIMEOUT);
-    let mut st = STATE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut st = STATE.lock();
     st.in_flight.remove(&command);
     if let Some(v) = &result {
         st.failed_until.remove(&command);
@@ -156,9 +149,7 @@ pub fn invalidate(raw: &str) {
         return;
     }
     let command = raw[1..].trim();
-    let mut st = STATE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut st = STATE.lock();
     st.ok.remove(command);
     st.failed_until.remove(command);
 }
@@ -224,10 +215,7 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
                 loop {
                     match out.read(&mut chunk) {
                         Ok(0) => break,
-                        Ok(n) => buf
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .extend_from_slice(&chunk[..n]),
+                        Ok(n) => buf.lock().extend_from_slice(&chunk[..n]),
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             if stop.load(std::sync::atomic::Ordering::Relaxed) {
                                 break;
@@ -263,12 +251,7 @@ fn run(command: &str, timeout: Duration) -> Option<String> {
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         let _ = done_rx.recv_timeout(READ_GRACE);
     }
-    let text = String::from_utf8_lossy(
-        &buf.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
-    .trim()
-    .to_string();
+    let text = String::from_utf8_lossy(&buf.lock()).trim().to_string();
     if !status?.success() || text.is_empty() {
         return None;
     }

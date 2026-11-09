@@ -1,4 +1,6 @@
 //! Snapshot-tag mismatch diagnostics.
+// invariant: literal regex verified by tests.
+#![allow(clippy::expect_used)]
 
 use std::sync::LazyLock;
 

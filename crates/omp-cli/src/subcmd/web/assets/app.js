@@ -32,11 +32,17 @@
     queue: { steering: [], followUp: [] },
     dead: null,
     bashRunning: 0,
+    view: "chat",
   };
 
   const transcript = new OMP.Transcript($("#transcript"), $("#transcript-wrap"));
   const composer = new OMP.Composer({ onSubmit: submit, onAbort: abort });
-  OMP.dialogs.afterClose = () => composer.focus();
+  OMP.dialogs.afterClose = () => { composer.focus(); renderStatus(); };
+
+  // Bounded cache of loaded session histories (see OMP.SessionHistoryCache).
+  // Any live frame that can mutate history marks every entry dirty, so a
+  // cached snapshot is only ever reused when the session is provably quiet.
+  const sessionCache = new OMP.SessionHistoryCache();
 
   // ── rpc ──────────────────────────────────────────────────────────────────
   function send(frame) {
@@ -56,36 +62,100 @@
   }
   OMP.rpc = rpc;
 
+  function setView(view) {
+    S.view = view === "maps" ? "maps" : "chat";
+    const maps = S.view === "maps";
+    $("#maps-view").hidden = !maps;
+    $("#transcript-wrap").hidden = maps;
+    $("#composer-wrap").hidden = maps;
+    document.body.classList.toggle("maps-active", maps);
+    if (OMP.maps) { if (maps) OMP.maps.show(S); else OMP.maps.hide(); }
+  }
+
+  // Ask the agent for its protocol capabilities; older detached agents reject
+  // the method, and the conservative legacy profile (same shape, protocol
+  // versions [1], getMessages.maxPageSize 256) is assumed instead — the
+  // session load proceeds either way.
+  async function getCapabilities() {
+    try {
+      return OMP.normalizeCapabilities(await rpc("get_capabilities"));
+    } catch {
+      return OMP.normalizeCapabilities(null);
+    }
+  }
+
+  function historyPageLimit() {
+    return Math.max(1, Math.min(S.caps?.limits?.getMessages?.maxPageSize || 256, 512));
+  }
+
+  // Public full-history semantics (export panel, session switching, e2e):
+  // every message. Backward-capable agents page from the newest offset down
+  // (bounded responses, and paging is allowed while streaming); legacy agents
+  // page forward on quiet sessions and take one get_messages snapshot while
+  // streaming.
+  async function getMessages() {
+    if (S.caps?.features?.messagesBackwardPaging) {
+      const buffer = new OMP.HistoryBuffer(S.caps, { backward: true });
+      const pages = [];
+      while (!buffer.done) pages.push(await buffer.fetchPage((params) => rpc("get_messages_page", params)));
+      return [].concat(...pages.reverse());
+    }
+    // Full history can contain many MiB of inline images. Keep such responses
+    // out of the hub's broadcast queue whenever the snapshot is stable.
+    if (S.state?.isStreaming) {
+      const response = await rpc("get_messages");
+      return response.messages;
+    }
+    const messages = [];
+    let cursor = null;
+    const limit = historyPageLimit();
+    do {
+      // The capabilities fallback keeps this at 256 for older detached agents.
+      const page = await rpc("get_messages_page", { limit, ...(cursor ? { cursor } : {}) });
+      messages.push(...page.messages);
+      cursor = page.nextCursor || null;
+    } while (cursor);
+    return messages;
+  }
   function connect(agentId) {
     if (S.ws) { S.ws.onclose = null; S.ws.close(); }
     for (const p of S.pending.values()) p.reject(new Error("disconnected"));
     S.pending.clear();
     OMP.dialogs.clear();
     transcript.reset();
-    Object.assign(S, { agentId, agentInfo: null, state: null, stats: null, streaming: false, dead: null, queue: { steering: [], followUp: [] } });
+    Object.assign(S, { agentId, agentInfo: null, state: null, stats: null, streaming: false, dead: null, toolsRunning: 0, errorUntil: 0, queue: { steering: [], followUp: [] } });
     S.status.clear();
     S.widgets.clear();
     renderWidgets();
     renderQueue();
     composer.setStreaming(false);
-    composer.setEnabled(false);
+    // A real target disables the composer until its socket opens; the
+    // no-agent home screen keeps it live for the agent-less commands.
+    if (agentId) composer.setEnabled(false);
     $("#empty-state").hidden = !!agentId;
     renderSidebar();
-    if (!agentId) { renderHeader(); renderStatus(); return; }
+    updateHome();
+    if (!agentId) { renderHeader(); renderStatus(); composer.setEnabled(true); return; }
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/${agentId}`);
     S.ws = ws;
     ws.onopen = () => onOpen();
     ws.onmessage = (e) => {
+      S.lastFrameAt = Date.now();
       let frame;
       try { frame = JSON.parse(e.data); } catch { return; }
       onFrame(frame);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (S.ws !== ws) return;
       S.ws = null;
       composer.setEnabled(false);
+      sessionCache.markAllDirty(); // frames may have been missed while detached
       if (!S.dead) {
-        transcript.addSystem("Connection lost. Reconnecting…", "warn");
+        const quiet = S.lastFrameAt ? Math.round((Date.now() - S.lastFrameAt) / 1000) : null;
+        const why = "code " + ev.code + (ev.reason ? " " + ev.reason : "") + (ev.wasClean ? "" : ", unclean")
+          + (quiet != null ? ", " + quiet + "s since last data" : "");
+        console.warn("agent websocket closed:", why, { agentId, at: new Date().toISOString() });
+        transcript.addSystem("Connection lost (" + why + "). Reconnecting…", "warn");
         setTimeout(async () => {
           await refreshAgents();
           if (S.agentId === agentId && S.agents.some((a) => a.id === agentId)) connect(agentId);
@@ -99,12 +169,77 @@
     composer.setEnabled(true);
     send({ type: "set_ask_dialog", enabled: true });
     try {
-      const [state, msgs, cmds] = await Promise.all([rpc("get_state"), rpc("get_messages"), rpc("get_available_commands")]);
+      const [caps, state, cmds] = await Promise.all([
+        getCapabilities(),
+        rpc("get_state"),
+        rpc("get_available_commands"),
+      ]);
+      S.caps = caps;
       S.state = state;
+      const streaming = !!state.isStreaming;
+      // Latest-first load for capable agents: one bounded backward page (works
+      // during streaming too) renders immediately, older pages fetch lazily.
+      // Legacy agents page forward (quiet) or take one full get_messages
+      // snapshot (streaming). Cached backward windows render instantly and are
+      // completed from a fresh cursor only when older history is requested.
+      let messages, backward = false, fetchOlder = null, cachedBackward = false;
+      const cacheKey = streaming ? null : sessionCache.key(S.agentId, state.sessionFile);
+      const cached = cacheKey ? sessionCache.get(cacheKey) : null;
+      if (cached) {
+        messages = cached;
+        backward = !!(caps.features && caps.features.messagesBackwardPaging);
+        cachedBackward = backward;
+      } else {
+        const loaded = await OMP.loadSessionHistory(rpc, caps);
+        messages = loaded.messages;
+        backward = loaded.backward;
+        fetchOlder = loaded.fetchOlder;
+        if (loaded.paged && !loaded.streaming) sessionCache.put(cacheKey, messages);
+      }
+      if (OMP.agentPanel) OMP.agentPanel.ingestMessages(messages);
+      // Inline text completion also learns from this session's own prompts.
+      composer.setSessionPrompts(messages.map(userPromptText).filter((t) => t && t.trim()));
       renderWidgets();
+      updateHome();
       setCommands(cmds.commands);
-      transcript.loadMessages(msgs.messages);
-      setStreaming(!!state.isStreaming);
+      if (backward) {
+        // The latest bounded page is the whole fetch so far; older pages come
+        // from the agent only on upward scroll.
+        transcript.loadMessages(messages);
+        let loadedPrefix = messages;
+        const initialCachedCount = cachedBackward ? messages.length : 0;
+        let refreshed = null;
+        transcript.setOlderSource(async () => {
+          try {
+            let older;
+            if (cachedBackward) {
+              // A cached window has no reusable RPC closure. Refresh the latest
+              // cursor only on demand, skip pages already in the cache, then
+              // return the first genuinely older page (never duplicate it).
+              if (!refreshed) refreshed = await OMP.loadSessionHistory(rpc, caps);
+              let skipped = refreshed.messages.length;
+              do {
+                older = refreshed.fetchOlder ? await refreshed.fetchOlder() : null;
+                if (older) skipped += older.length;
+              } while (older && skipped <= initialCachedCount);
+            } else {
+              older = fetchOlder ? await fetchOlder() : null;
+            }
+            if (older && older.length) {
+              loadedPrefix = older.concat(loadedPrefix); // full prefix only
+              if (OMP.agentPanel) OMP.agentPanel.ingestMessages(loadedPrefix);
+              sessionCache.put(cacheKey, loadedPrefix);
+            }
+            return older;
+          } catch (e) {
+            transcript.addSystem("Failed to load older messages: " + e.message, "warn");
+            return null;
+          }
+        });
+      } else {
+        transcript.loadLatest(messages);
+      }
+      setStreaming(streaming);
       renderHeader();
       refreshStats();
     } catch (e) {
@@ -117,6 +252,7 @@
     renderHeader();
     renderStatus();
     renderWidgets();
+    updateHome();
   }
   async function refreshStats() {
     try { S.stats = await rpc("get_session_stats"); } catch { /* older agent */ }
@@ -131,6 +267,7 @@
 
   function setStreaming(on) {
     if (on && !S.streaming) S.runStart = Date.now();
+    if (!on) S.toolsRunning = 0;
     S.streaming = on;
     composer.setStreaming(on);
     renderStatus();
@@ -141,6 +278,9 @@
   }
 
   function onFrame(f) {
+    // Public frame bus: feature modules (artifacts, desktop bridge, …) observe
+    // agent frames here instead of patching this switch.
+    window.dispatchEvent(new CustomEvent("omp:frame", { detail: { agentId: S.agentId, frame: f } }));
     if (f.type === "response" && f.id && S.pending.has(f.id)) {
       const p = S.pending.get(f.id);
       S.pending.delete(f.id);
@@ -164,18 +304,20 @@
         OMP.copyText(f.text || "").then((ok) => OMP.toast(ok ? "Copied to clipboard" : "Clipboard unavailable", ok ? "success" : "error"));
         return;
       case "available_commands_update": return setCommands(f.commands);
-      case "agent_start": setStreaming(true); return;
-      case "agent_end": setStreaming(false); refreshStats(); refreshAgents(); loadSessions(); return;
+      case "agent_start": sessionCache.markAllDirty(); setStreaming(true); return;
+      case "agent_end": setStreaming(false); refreshStats(); refreshAgents(); loadSessions(); updateHome(); return;
       case "session_settled": case "agent_settled": setStreaming(false); return;
       case "turn_end": refreshStats(); refreshState(); return;
       case "queue_update":
         S.queue = { steering: f.steering || [], followUp: f.followUp || [] };
         return renderQueue();
       case "session_loaded":
-        transcript.loadMessages(f.messages);
+        sessionCache.markAllDirty();
+        transcript.loadLatest(f.messages);
         refreshState(); refreshStats(); refreshAgents();
         return;
       case "session_reset":
+        sessionCache.markAllDirty();
         transcript.reset();
         refreshState(); refreshStats(); refreshAgents();
         return;
@@ -185,16 +327,44 @@
         return;
       case "prompt_result":
         if (f.status === "failed" && f.error) transcript.addSystem(f.error, "error");
+        if (f.status === "failed" || f.status === "error") flagError();
         return;
+      case "tool_execution_start": case "tool_execution_end":
+        S.toolsRunning = Math.max(0, (S.toolsRunning || 0) + (f.type === "tool_execution_start" ? 1 : -1));
+        renderStatus();
+        return transcript.onEvent(f);
+      case "message_start": case "message_end":
+        sessionCache.markAllDirty();
+        return transcript.onEvent(f);
+      case "auto_compaction_end":
+        sessionCache.markAllDirty();
+        return transcript.onEvent(f);
       default:
         transcript.onEvent(f);
     }
   }
 
+  // Tau shows the error face for a few seconds after a failed prompt.
+  function flagError() {
+    S.errorUntil = Date.now() + 5000;
+    renderStatus();
+    setTimeout(renderStatus, 5100);
+  }
+
   function uiRequest(f) {
     const m = f.method;
-    if (DIALOG_METHODS.has(m)) return OMP.dialogs.request(f, answerDialog);
-    if (m === "cancelDialog") return OMP.dialogs.cancel((f.params && f.params.id) || f.targetId || f.id);
+    if (DIALOG_METHODS.has(m)) {
+      const pending = OMP.dialogs.request(f, answerDialog);
+      refreshAgents(); // roster "needs input" chip now, not on the next 5s tick
+      renderStatus();
+      return pending;
+    }
+    if (m === "cancelDialog") {
+      OMP.dialogs.cancel((f.params && f.params.id) || f.targetId || f.id);
+      refreshAgents();
+      renderStatus();
+      return;
+    }
     if (m === "notify" || m === "ui_notify") return OMP.toast(f.message || f.text || "", f.notifyType || f.level || "info");
     if (m === "setStatus" || m === "set_status") {
       const key = f.statusKey || f.key || "ext";
@@ -215,8 +385,11 @@
 
   async function resync() {
     try {
-      const msgs = await rpc("get_messages");
-      transcript.loadMessages(msgs.messages);
+      const messages = await getMessages(); // full refetch, never the cache
+      if (OMP.agentPanel) OMP.agentPanel.ingestMessages(messages);
+      // Inline text completion also learns from this session's own prompts.
+      composer.setSessionPrompts(messages.map(userPromptText).filter((t) => t && t.trim()));
+      transcript.loadLatest(messages);
     } catch { /* ignore */ }
   }
 
@@ -234,12 +407,30 @@
   }
 
   // ── submit / abort ───────────────────────────────────────────────────────
+  // Commands that need no agent, offered on the home screen before any
+  // session is open (the terminal surface lists them there too).
+  const HOME_COMMANDS = new Set(["new", "resume", "hotkeys", "help"]);
+
+  /** Plain text of a user message (string content or text blocks). */
+  function userPromptText(m) {
+    if (!m || m.role !== "user") return "";
+    const c = m.content;
+    if (typeof c === "string") return c;
+    if (Array.isArray(c)) return c.filter((b) => b && b.type === "text").map((b) => b.text).join(" ");
+    return "";
+  }
+
   function submit(text, images, mode) {
+    const trimmed = text.trim();
     if (!S.agentId || S.dead) {
+      if (trimmed.startsWith("/") && !images.length) {
+        const name = trimmed.slice(1).split(/\s+/)[0];
+        if (!name.includes("/") && HOME_COMMANDS.has(name)
+          && localCommand(name, trimmed.slice(1 + name.length).trim())) return true;
+      }
       OMP.toast("Start or open a session first", "warning");
       return false;
     }
-    const trimmed = text.trim();
     if (trimmed.startsWith("/") && !images.length) {
       const name = trimmed.slice(1).split(/\s+/)[0];
       const args = trimmed.slice(1 + name.length).trim();
@@ -318,6 +509,13 @@
   function renderSidebar() { OMP.shellImpl.renderSidebar(S); }
   function renderQueue() { OMP.shellImpl.renderQueue(S); }
   function renderWidgets() { OMP.shellImpl.renderWidgets(S); }
+  // Kimi-style home/empty state: center the composer until a session has
+  // messages, then dock it at the bottom (see #app.home rules in composer.css).
+  function updateHome() {
+    const transcriptEl = $("#transcript");
+    const hasAny = !!S.agentId && ((transcriptEl && transcriptEl.childElementCount > 0) || (S.state && (S.state.userMessages || 0) > 0));
+    $("#app").classList.toggle("home", !hasAny);
+  }
   function refreshAgents() { return OMP.shellImpl.refreshAgents(S); }
   function loadSessions() { return OMP.shellImpl.loadSessions(S); }
   function openSession(row) { return OMP.shellImpl.openSession(S, row); }
@@ -329,6 +527,35 @@
   function thinkingPicker() { return OMP.shellImpl.thinkingPicker(S); }
   function exportHtml() { return OMP.shellImpl.exportHtml(S); }
 
-  OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand };
+  OMP.app = { S, rpc, send, connect, abort, transcript, composer, currentCwd, setCommands, localCommand, getMessages, getCapabilities, sessionCache, setView };
+  if (OMP.agentPanel && typeof OMP.agentPanel.init === "function") OMP.agentPanel.init(OMP.app);
   OMP.shellImpl.init(OMP.app);
+  // Pane boot: "/?agent=<id>&pane=1" is how the tmux-style pane manager
+  // (OMP.panes) embeds sessions — auto-attach to that agent and hide the
+  // chrome the pane host already provides.
+  {
+     q = new URLSearchParams(location.search);
+     wantAgent = q.get("agent");
+    if (q.get("pane") === "1") document.body.classList.add("pane-embed");
+    if (wantAgent) {
+      S.agentId = wantAgent;
+       attach = () => (S.agents.some((a) => a.id === wantAgent) ? (connect(wantAgent), true) : false);
+      if (!attach()) {
+         t0 = Date.now();
+         iv = setInterval(() => { if (attach() || Date.now() - t0 > 30000) clearInterval(iv); }, 1000);
+      }
+    }
+  }
+  for (const feature of [OMP.palette, OMP.tasks, OMP.changes, OMP.terminal, OMP.workspaces, OMP.quick, OMP.panes]) {
+    if (feature && typeof feature.init === "function") feature.init(OMP.app);
+  }
+  // Home screen: the composer is live before any agent connects and offers
+  // the agent-less commands in autocomplete - the "/" hint shown there must
+  // not be a dead promise (terminal parity).
+  composer.setEnabled(true);
+  setCommands([]);
+  updateHome(); // no agent yet: start on the centered home composer
+  // Dock/undock whenever the transcript gains or loses content (history replay,
+  // first live message, /new) instead of chasing every frame type.
+  new MutationObserver(updateHome).observe($("#transcript"), { childList: true });
 })(window.OMP);

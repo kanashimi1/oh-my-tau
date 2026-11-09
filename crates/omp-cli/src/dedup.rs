@@ -122,11 +122,11 @@ fn dedup_tool_results_with(
             continue;
         };
         let text = text_of(&tr.content);
-        let elig = text
+        let eligible_len = text
             .as_ref()
-            .is_some_and(|t| !tr.is_error && t.len() >= MIN_DEDUP_BYTES);
-        if elig {
-            let bytes = text.as_ref().unwrap().len();
+            .map(String::len)
+            .filter(|len| !tr.is_error && *len >= MIN_DEDUP_BYTES);
+        if let Some(bytes) = eligible_len {
             texts_owned.push(text);
             call_ids.push(tr.tool_call_id.clone());
             byte_counts.push(bytes);
@@ -135,7 +135,7 @@ fn dedup_tool_results_with(
             call_ids.push(String::new());
             byte_counts.push(0);
         }
-        eligible[i] = elig;
+        eligible[i] = eligible_len.is_some();
     }
 
     let texts: Vec<Option<&str>> = texts_owned.iter().map(|t| t.as_deref()).collect();
@@ -173,12 +173,11 @@ pub fn dedup_tool_results(messages: Vec<AgentMessage>) -> Vec<AgentMessage> {
 /// `OMP_RS_DEDUP_TOOL_RESULTS=0`/`=false`.
 #[must_use]
 pub fn dedup_active() -> bool {
-    match std::env::var("OMP_RS_DEDUP_TOOL_RESULTS") {
-        Ok(v) => v == "1" || v.eq_ignore_ascii_case("true"),
-        Err(_) => {
-            use std::io::IsTerminal;
-            !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
-        }
+    if let Ok(v) = std::env::var("OMP_RS_DEDUP_TOOL_RESULTS") {
+        v == "1" || v.eq_ignore_ascii_case("true")
+    } else {
+        use std::io::IsTerminal;
+        !std::io::stdin().is_terminal() && !std::io::stderr().is_terminal()
     }
 }
 
@@ -291,7 +290,7 @@ mod tests {
         // Cache contract: appending a message may only append wire bytes —
         // never change what an earlier request already sent.
         let big = "z".repeat(600);
-        let history = vec![
+        let history = [
             tool_result("call_a", &big),
             tool_result("call_b", "small"),
             tool_result("call_c", &big),

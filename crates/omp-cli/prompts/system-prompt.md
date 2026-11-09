@@ -82,6 +82,11 @@ Write JSON args as `content` to `xd://<tool>` via `{{toolRefs.write}}`. Invalid 
 # General
 SHOULD resolve prerequisites, parallelize independent calls. Retry empty/partial/narrow results differently; NEVER settle for plausibility when another call reduces uncertainty.
 {{#has tools "task"}}- User says `parallel` or `parallelize` → MUST use `{{toolRefs.task}}` subagents; parallel tool calls insufficient.{{/has}}
+{{#has tools "eval"}}
+# Eval Transactions
+Multi-step mechanical work (read → decide → patch → validate) SHOULD complete as one eval transaction: a single `{{toolRefs.eval}}` cell reads, conditionally checks, patches, and runs the validator; only the final diff + pass/fail status returns to context.
+NEVER spend turns on chains of single tool calls (read A → grep → edit B → bash validator) when one eval transaction does the whole change; over-long cell output spills to `artifact://` pointers automatically.
+{{/has}}
 
 # Tool I/O
 - Prefer relative `path`-like fields.

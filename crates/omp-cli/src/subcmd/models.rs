@@ -65,7 +65,7 @@ pub fn run(args: &[String]) -> Result<i32> {
                 match (&r.note, r.discovered.is_empty()) {
                     (Some(note), _) => eprintln!("omt: {}: {note}", r.provider),
                     (None, true) => {
-                        eprintln!("omt: {}: no new models ({} cached)", r.provider, r.total)
+                        eprintln!("omt: {}: no new models ({} cached)", r.provider, r.total);
                     }
                     (None, false) => eprintln!(
                         "omt: {}: +{} ({})",
@@ -155,11 +155,6 @@ fn bundled_catalog() -> Vec<(String, Value)> {
 /// tagged with provider availability — the TS `ModelRegistry.getAll`/`getAvailable` pair.
 #[must_use]
 pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
-    let yml_path = dir.0.join("models.yml");
-    let mut available = available_providers(&yml_path, &dir.0.join("agent.db"));
-    available.extend(KEYLESS_PROVIDERS.iter().map(|p| (*p).to_owned()));
-    let mut map: BTreeMap<(String, String), ListedModel> = BTreeMap::new();
-    let mut meta: BTreeMap<(String, String), (String, Option<i64>)> = BTreeMap::new();
     type Meta = BTreeMap<(String, String), (String, Option<i64>)>;
     fn put(
         provider: &str,
@@ -171,7 +166,7 @@ pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
             return;
         };
         if model.provider.is_empty() {
-            model.provider = provider.to_owned();
+            provider.clone_into(&mut model.provider);
         }
         let key = (model.provider.clone(), model.id.clone());
         let kind = entry
@@ -191,6 +186,11 @@ pub fn browser_models(dir: &omp_providers::AgentDir) -> Vec<BrowserModel> {
             },
         );
     }
+    let yml_path = dir.0.join("models.yml");
+    let mut available = available_providers(&yml_path, &dir.0.join("agent.db"));
+    available.extend(KEYLESS_PROVIDERS.iter().map(|p| (*p).to_owned()));
+    let mut map: BTreeMap<(String, String), ListedModel> = BTreeMap::new();
+    let mut meta: BTreeMap<(String, String), (String, Option<i64>)> = BTreeMap::new();
     for (provider, entry) in bundled_catalog() {
         put(&provider, &entry, &mut map, &mut meta);
     }

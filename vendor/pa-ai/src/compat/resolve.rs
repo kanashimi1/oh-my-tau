@@ -66,6 +66,7 @@ pub struct ResolvedModelPolicy {
 }
 
 impl ResolvedModelPolicy {
+    #[must_use]
     pub fn to_json(&self) -> Value {
         let mut m = Map::new();
         m.insert("identity".into(), self.identity.to_json());
@@ -316,6 +317,7 @@ fn compat_reasoning(spec: &ModelSpec, axes: &ResolvedAxes) -> bool {
     axes.reasoning && read_rule_thinking(axes).upgrade_neutral == Some(true)
 }
 
+#[allow(clippy::struct_excessive_bools)] // one detection flag per provider/host trait, mirroring the TS detector
 struct OpenAIDetection {
     is_cline_pass: bool,
     is_zai: bool,
@@ -480,15 +482,13 @@ fn detect_openai_compat(
         && (u("zai") || u("zhipu") || u("opencode"))
     {
         Some(GLM_CODING_PLAN_STREAM_IDLE_TIMEOUT_MS)
-    } else if facts.is("mimo") && u("xiaomi") {
-        Some(300_000)
-    } else if reasoning_capable
-        && facts.is("kimi")
-        && (facts.family(&["k3"]) || facts.family(&["k2.7-code"]))
-        && u("moonshotNative")
+    } else if (facts.is("mimo") && u("xiaomi"))
+        || (reasoning_capable
+            && facts.is("kimi")
+            && (facts.family(&["k3"]) || facts.family(&["k2.7-code"]))
+            && u("moonshotNative"))
+        || (reasoning_capable && facts.is("deepseek") && u("deepseekDirect"))
     {
-        Some(300_000)
-    } else if reasoning_capable && facts.is("deepseek") && u("deepseekDirect") {
         Some(300_000)
     } else if d.is_local_serving_backend {
         Some(LOCAL_OPENAI_COMPAT_STREAM_IDLE_TIMEOUT_MS)
@@ -554,9 +554,9 @@ fn detect_openai_compat(
     );
     r.d(
         "supportsForcedToolChoice",
-        !d.requires_enabled_thinking
-            && !(d.is_opencode_host && d.is_deepseek_reasoning)
-            && !(d.is_cline_pass && is_qwen),
+        !(d.requires_enabled_thinking
+            || (d.is_opencode_host && d.is_deepseek_reasoning)
+            || (d.is_cline_pass && is_qwen)),
     );
     r.d("supportsNamedToolChoice", true);
     r.d(
@@ -963,10 +963,7 @@ fn resolve_openai_responses_policy(
     r.d("reasoningContentField", "reasoning_content");
     r.d(
         "requiresReasoningContentForToolCalls",
-        (facts.is("kimi")
-            || (is_deepseek_family && reasoning_capable)
-            || (is_open_router && reasoning_capable))
-            && reasoning_capable,
+        reasoning_capable && (facts.is("kimi") || is_deepseek_family || is_open_router),
     );
     r.d(
         "requiresReasoningContentForAllAssistantTurns",
@@ -1583,6 +1580,9 @@ fn build_resolve_target(spec: &ModelSpec, identity: &Identity, provider_type: &s
 }
 
 /// Catalog-data axis assignments for one model spec.
+///
+/// # Errors
+/// When the model spec fails classification or the cascade rules overlap ambiguously.
 pub fn resolve_catalog_axes(spec: &ModelSpec) -> Result<Map<String, Value>, ResolveError> {
     let identity = classify_model(rules(), &spec.provider, &spec.id, spec.lenient)?;
     let provider_type = spec
@@ -1598,6 +1598,9 @@ pub fn resolve_catalog_axes(spec: &ModelSpec) -> Result<Map<String, Value>, Reso
 
 /// Resolve the full policy surface for one model spec: structured identity, complete compat
 /// record, thinking metadata, catalog-data corrections and request policy.
+///
+/// # Errors
+/// When the model spec fails classification or the cascade rules overlap ambiguously.
 pub fn resolve_model_policy(
     spec: &ModelSpec,
     upstream: Option<&str>,

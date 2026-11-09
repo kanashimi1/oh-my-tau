@@ -3,10 +3,10 @@
 //! prefilter, `normalizeGeneratedTitle` caps and casing reconciliation) plus the
 //! terminal title write (`\x1b]0;…\x07`, `π: <label>` shape).
 
+use parking_lot::Mutex;
 use std::collections::{BTreeMap, HashSet};
 use std::io::Write;
 use std::path::Path;
-use std::sync::Mutex;
 
 use pa_types::ai::{
     AssistantContentBlock, Context, Message, Model, StopReason, UserContent, UserMessage,
@@ -28,10 +28,14 @@ pub const NO_TITLE_SENTINEL: &str = "none";
 /// OS UI font, which has no nerd-font PUA coverage (TS `DEFAULT_TERMINAL_TITLE`).
 pub const DEFAULT_TERMINAL_TITLE: &str = "π";
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static MARKER_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(?is)<title>([\s\S]*?)</title>|<title\s*/>|<title>\s*$").unwrap()
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static THINKING_TAG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
         r"(?is)<(?:think|thinking|reasoning)>\s*[\s\S]*?</(?:think|thinking|reasoning)>",
@@ -39,10 +43,14 @@ static THINKING_TAG_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
     .unwrap()
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static THINKING_FENCE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(?is)```(?:thinking|reasoning)\b[\s\S]*?```").unwrap()
 });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static LEADING_THINKING_TAG_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| {
         regex::Regex::new(
@@ -51,11 +59,15 @@ static LEADING_THINKING_TAG_RE: std::sync::LazyLock<regex::Regex> =
         .unwrap()
     });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static LEADING_THINKING_FENCE_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?is)^\s*```(?:thinking|reasoning)\b[\s\S]*?```\s*").unwrap()
     });
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static PROSE_THINKING_PREAMBLE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(
     || {
         regex::Regex::new(
@@ -65,12 +77,18 @@ static PROSE_THINKING_PREAMBLE_RE: std::sync::LazyLock<regex::Regex> = std::sync
     },
 );
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static TITLE_TAG_FRAGMENT_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)</?title>").unwrap());
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static WORD_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r"[\p{L}\p{N}]+").unwrap());
 
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static QUOTED_TITLE_RE: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| regex::Regex::new(r#""title"\s*:\s*("(?:[^"\\]|\\.)*")"#).unwrap());
 
@@ -229,6 +247,8 @@ pub fn normalize_generated_title(value: Option<&str>, source_text: Option<&str>)
 /// casing (`TinyVMM`), restore ALL-CAPS acronyms from title-cased artifacts
 /// (`Cnpg` → `CNPG`, unless the source is shouty), flatten stray camelCase
 /// artifacts (`dAemon` → `daemon`), leave the rest.
+// invariant: replace_all callbacks always receive group 0.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 fn reconcile_title_casing(title: &str, source_text: &str) -> String {
     let mut verbatim: HashSet<&str> = HashSet::new();
     let mut distinctive: BTreeMap<String, String> = BTreeMap::new();
@@ -249,7 +269,7 @@ fn reconcile_title_casing(title: &str, source_text: &str) -> String {
     }
     WORD_RE
         .replace_all(title, |caps: &regex::Captures| {
-            let token = caps.get(0).unwrap().as_str();
+            let token = caps.get(0).expect("group 0 in every match").as_str();
             if verbatim.contains(token) {
                 return token.to_string();
             }
@@ -362,6 +382,8 @@ fn strip_thinking_markup(text: &str) -> String {
 /// Remaining thinking-open markers after complete envelopes are stripped: any
 /// match swallows everything to the end (TS `StreamMarkupHealing` on the
 /// complete-text path), so a marker after one is not visible.
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 static THINKING_OPEN_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"(?is)<(?:think|thinking|reasoning)>|```(?:thinking|reasoning)\b").unwrap()
 });
@@ -382,10 +404,12 @@ fn is_visible_marker(text: &str, marker_index: usize) -> bool {
 /// stripping only known leading leaked thinking envelopes plus stray title tags
 /// (TS `extractGeneratedTitle`). Returns the unwrapped candidate (possibly empty).
 #[must_use]
+// invariant: captures_at matches always have group 0.
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 pub fn extract_generated_title(text: &str) -> String {
     let mut at = 0;
     while let Some(caps) = MARKER_RE.captures_at(text, at) {
-        let m = caps.get(0).unwrap();
+        let m = caps.get(0).expect("group 0 in every match");
         if is_visible_marker(text, m.start()) {
             let content = caps.get(1).map_or("", |g| g.as_str()).trim();
             return unwrap_json_title(content);
@@ -575,9 +599,7 @@ pub fn set_terminal_title(title: &str) {
     }
     let next = sanitize_terminal_title_part(Some(title))
         .unwrap_or_else(|| DEFAULT_TERMINAL_TITLE.to_string());
-    let mut last = LAST_TERMINAL_TITLE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut last = LAST_TERMINAL_TITLE.lock();
     if last.as_deref() == Some(next.as_str()) {
         return;
     }

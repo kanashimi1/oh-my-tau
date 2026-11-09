@@ -1,6 +1,8 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! Integration tests for the controllable-runner review findings
 //! (ReviewEvalAgents 1-4 + the process-group security finding) with fake
 //! `--mode rpc` / `-p` shell children.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -11,7 +13,7 @@ use omp_task::{ChildMode, RunPhase, RunStatus, TaskRunner, TaskSpec};
 
 /// The Finishing-deadline knob is process-global env; every RPC test in this
 /// file takes the lock and sets an explicit value so they cannot interfere.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn set_finishing_deadline(ms: &str) {
     std::env::set_var("OMP_TASK_TEST_FINISHING_DEADLINE_MS", ms);
@@ -40,6 +42,8 @@ fn spec(prompt: &str, cwd: &Path) -> TaskSpec {
         tools: None,
         depth: 0,
         extra_args: Vec::new(),
+        env: Vec::new(),
+        worktree: false,
     }
 }
 
@@ -59,9 +63,7 @@ async fn wait_phase(control: &omp_task::RunControl, phase: RunPhase) {
 /// run that settles first makes a late `cancel()` return `false`.
 #[tokio::test]
 async fn cancel_in_the_post_loop_window_is_consistent() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     // Answers everything and exits, but a detached grandchild holds stderr
@@ -118,9 +120,7 @@ exit 0"#,
 /// Completed even though a detached grandchild holds stderr (bounded join).
 #[tokio::test]
 async fn completed_run_with_detached_stderr_holder_settles() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -156,9 +156,7 @@ exit 0"#,
 /// run must settle failed — no hang, permit released.
 #[tokio::test]
 async fn finishing_phase_deadline_kills_hanging_child() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("400");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -190,9 +188,7 @@ sleep 30"#,
 /// receipt reports failure instead of a silently dropped message.
 #[tokio::test]
 async fn steer_receipt_reports_finishing_failure() {
-    let _env = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _env = ENV_LOCK.lock().await;
     set_finishing_deadline("15000");
     let dir = tempfile::tempdir().unwrap();
     let bin = fake_binary(
@@ -278,4 +274,42 @@ async fn child_gets_depth_env_and_extra_args() {
         "got {:?}",
         out.output
     );
+}
+
+/// `spec.env` reaches the child, and a bus env inherited from *this* process
+/// (a grandparent's bus) never leaks into a child that was not given its own.
+#[tokio::test]
+async fn child_gets_spec_env_and_never_inherits_a_stale_bus() {
+    let _guard = ENV_LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = fake_binary(
+        dir.path(),
+        r#"echo "sock=${OMP_A2A_SOCK:-none} self=${OMP_A2A_SELF:-none} extra=${MY_EXTRA:-none}""#,
+    );
+    let runner = TaskRunner::new(&bin, 2);
+    std::env::set_var("OMP_A2A_SOCK", "/stale/grandparent.sock");
+    std::env::set_var("OMP_A2A_SELF", "stale-self");
+
+    let plain = runner
+        .start(spec("p", dir.path()), ChildMode::Print)
+        .1
+        .await;
+    assert_eq!(plain.output.trim(), "sock=none self=none extra=none");
+
+    let mut wired = spec("w", dir.path());
+    wired.env = vec![
+        (
+            omp_task::runner::A2A_SOCK_ENV.to_string(),
+            "/run/bus.sock".to_string(),
+        ),
+        (
+            omp_task::runner::A2A_SELF_ENV.to_string(),
+            "kid-1".to_string(),
+        ),
+        ("MY_EXTRA".to_string(), "1".to_string()),
+    ];
+    let out = runner.start(wired, ChildMode::Print).1.await;
+    std::env::remove_var("OMP_A2A_SOCK");
+    std::env::remove_var("OMP_A2A_SELF");
+    assert_eq!(out.output.trim(), "sock=/run/bus.sock self=kid-1 extra=1");
 }

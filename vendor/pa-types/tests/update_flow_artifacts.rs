@@ -1,6 +1,7 @@
 //! Round-trip and cross-check tests for the update-flow artifact schemas: the golden roster
 //! example,
 //! the intent/status/marker artifacts, and the watchdog/transition tables.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // test code: a failed step should fail the test loudly
 
 use std::path::Path;
 

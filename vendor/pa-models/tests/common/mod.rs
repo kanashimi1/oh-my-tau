@@ -1,6 +1,8 @@
 //! Shared helpers for the integration verifiers: a scripted local HTTP
 //! server that records every request head (headers included) and answers
 //! from a queue of raw responses. Nothing leaves loopback.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+// test code: a failed step should fail the test loudly
 
 // Different test binaries consume different subsets of the helpers.
 #![allow(dead_code)]

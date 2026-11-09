@@ -182,7 +182,13 @@ pub fn thought_label(streamed: bool, elapsed: Duration) -> String {
 
 /// Raised-cosine pulse dwell between [`PULSE_MIN_MS`] and [`PULSE_MAX_MS`]
 /// over the 8-frame cycle (chat.md §3.1).
+// Frame counts and dwell bounds are tiny; f64 precision loss is irrelevant.
 #[must_use]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn pulse_dwell_ms(frame: usize) -> u64 {
     let t = (frame % STARBURST_FRAMES.len()) as f64 / STARBURST_FRAMES.len() as f64;
     let mid = 0.5 - 0.5 * (2.0 * std::f64::consts::PI * t).cos();

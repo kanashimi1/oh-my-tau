@@ -93,13 +93,13 @@ struct Slot {
     judge: Option<Arc<dyn StatsJudge>>,
 }
 
-static SLOT: Mutex<Slot> = Mutex::new(Slot {
+static SLOT: parking_lot::Mutex<Slot> = parking_lot::Mutex::new(Slot {
     provider: None,
     judge: None,
 });
 
-fn lock_slot() -> MutexGuard<'static, Slot> {
-    SLOT.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock_slot() -> parking_lot::MutexGuard<'static, Slot> {
+    SLOT.lock()
 }
 
 /// Register (or replace) the host judge; `None` removes it.
@@ -281,6 +281,8 @@ impl Drop for Starting {
 }
 
 /// The private runtime judge runs execute on; the HTTP handlers are synchronous.
+// invariant: the judge runtime is built lazily; construction only fails on resource exhaustion, where failing fast is intended.
+#[allow(clippy::expect_used)]
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)

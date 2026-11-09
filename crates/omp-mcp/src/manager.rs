@@ -20,6 +20,7 @@ use crate::client::{call_tool, connect_to_server, list_tools, Connection};
 use crate::config::{load_configs, McpServerConfig};
 use crate::errors::McpError;
 use crate::names::create_tool_name;
+use crate::transport::McpProgress;
 use crate::{ToolCallResult, ToolDefinition};
 
 /// One tool discovered on a server, with its omp registry name pre-minted.
@@ -97,6 +98,15 @@ impl McpManager {
         Self::new(Arc::new(cwd.to_path_buf()), load_configs(cwd))
     }
 
+    /// [`Self::from_default_configs`] for a run restricted to `requested_tools`
+    /// (see [`crate::config::load_configs_for`]).
+    pub fn from_configs_for(cwd: &std::path::Path, requested_tools: &[String]) -> Self {
+        Self::new(
+            Arc::new(cwd.to_path_buf()),
+            crate::config::load_configs_for(cwd, requested_tools),
+        )
+    }
+
     /// Configured server names.
     pub async fn server_names(&self) -> Vec<String> {
         self.servers.lock().await.keys().cloned().collect()
@@ -125,6 +135,8 @@ impl McpManager {
     /// Ensure `name` is resolved (connected with tools cached, or failed).
     /// Failures are recorded and returned, never panicking nor affecting
     /// other servers.
+    // invariant: the server entry is inserted (as NotConnected) before connecting begins, so it cannot vanish.
+    #[allow(clippy::expect_used)]
     async fn resolve(&self, name: &str) -> Result<(), McpError> {
         let config: Option<McpServerConfig> = {
             let mut guard = self.servers.lock().await;
@@ -213,14 +225,44 @@ impl McpManager {
         tool: &str,
         args: Value,
     ) -> Result<ToolCallResult, McpError> {
+        self.call_inner(server, tool, args, None).await
+    }
+
+    /// [`Self::call`] plus server→client progress: every
+    /// `notifications/progress` the server sends while the call is in flight
+    /// is forwarded to `on_progress` (match `McpProgress::token` against the
+    /// call's request id when several calls share a connection).
+    pub async fn call_with_progress<F>(
+        &self,
+        server: &str,
+        tool: &str,
+        args: Value,
+        on_progress: F,
+    ) -> Result<ToolCallResult, McpError>
+    where
+        F: Fn(McpProgress) + Send + Sync + 'static,
+    {
+        self.call_inner(server, tool, args, Some(Box::new(on_progress)))
+            .await
+    }
+
+    // invariant: resolve() above guarantees the entry exists and is Connected here.
+    #[allow(clippy::expect_used)]
+    async fn call_inner(
+        &self,
+        server: &str,
+        tool: &str,
+        args: Value,
+        on_progress: Option<Box<dyn Fn(McpProgress) + Send + Sync>>,
+    ) -> Result<ToolCallResult, McpError> {
         self.resolve(server).await?;
         let first = {
             let mut guard = self.servers.lock().await;
             let entry = guard.get_mut(server).expect("resolved server vanished");
             match &mut entry.state {
-                ServerState::Connected(connection) => {
-                    Some(call_tool(connection, tool, args.clone()).await)
-                }
+                ServerState::Connected(connection) => Some(
+                    call_with_updates(connection, tool, args.clone(), on_progress.as_deref()).await,
+                ),
                 _ => None,
             }
         };
@@ -248,7 +290,9 @@ impl McpManager {
                 let mut guard = self.servers.lock().await;
                 let entry = guard.get_mut(server).expect("resolved server vanished");
                 match &mut entry.state {
-                    ServerState::Connected(connection) => call_tool(connection, tool, args).await,
+                    ServerState::Connected(connection) => {
+                        call_with_updates(connection, tool, args, on_progress.as_deref()).await
+                    }
                     _ => Err(McpError::Config(format!(
                         "MCP server \"{server}\" is not connected"
                     ))),
@@ -259,28 +303,65 @@ impl McpManager {
     }
 }
 
-/// Port of `isRetriableConnectionError`: network-level and stale-session
-/// errors warrant a reconnect + single retry.
-fn is_retriable(error: &McpError) -> bool {
-    let message = error.to_string().to_lowercase();
-    if message.starts_with("http 404:")
-        || message.starts_with("http 502:")
-        || message.starts_with("http 503:")
-    {
-        return true;
+/// Run one `tools/call`, racing it against the connection's progress
+/// broadcast so server→client `notifications/progress` updates are delivered
+/// while the call is still in flight.
+async fn call_with_updates(
+    connection: &mut Connection,
+    tool: &str,
+    args: Value,
+    on_progress: Option<&(dyn Fn(McpProgress) + Send + Sync)>,
+) -> Result<ToolCallResult, McpError> {
+    let mut rx = Some(connection.progress.subscribe());
+    let call = call_tool(connection, tool, args);
+    tokio::pin!(call);
+    loop {
+        let progress = async {
+            match rx.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => {
+                    std::future::pending::<
+                        Result<McpProgress, tokio::sync::broadcast::error::RecvError>,
+                    >()
+                    .await
+                }
+            }
+        };
+        tokio::select! {
+            result = &mut call => {
+                // The read loop publishes a server's progress before it
+                // resolves the response that follows it, but `select!` may
+                // still pick the finished call first: deliver what is
+                // already buffered so no update is lost.
+                if let (Some(rx), Some(f)) = (rx.as_mut(), on_progress) {
+                    while let Ok(update) = rx.try_recv() {
+                        f(update);
+                    }
+                }
+                return result;
+            }
+            event = progress => match event {
+                Ok(update) => {
+                    if let Some(f) = on_progress {
+                        f(update);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => rx = None,
+            },
+        }
     }
-    [
-        "econnrefused",
-        "econnreset",
-        "epipe",
-        "enetunreach",
-        "ehostunreach",
-        "fetch failed",
-        "transport not connected",
-        "transport closed",
-        "network error",
-        "closed stdout",
-    ]
-    .iter()
-    .any(|pattern| message.contains(pattern))
+}
+
+/// Whether a failed call may be retried after a reconnect. Retriability is
+/// carried by the error itself: once a request frame reached the server the
+/// transports downgrade their errors to non-retryable ("may have already
+/// run"), so replaying would execute the tool twice (upstream
+/// `mcp-retry-double-run`).
+fn is_retriable(error: &McpError) -> bool {
+    match error {
+        McpError::Transport(e) => e.retryable,
+        McpError::Timeout(_) => true,
+        McpError::JsonRpc(_) | McpError::Config(_) => false,
+    }
 }

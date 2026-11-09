@@ -215,14 +215,15 @@ impl Identity {
     }
 }
 
-type EnvFn = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
+/// Environment lookup used by the flows (`fn(&str) -> Option<String>`).
+type EnvLookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// Everything a flow reaches out to; tests plug in scripted transports and mock hosts.
 pub struct Services {
     pub http: Box<dyn ProviderHttp>,
     pub codex_http: Box<dyn CodexHttp>,
     pub hosts: Hosts,
-    pub env: EnvFn,
+    pub env: EnvLookup,
 }
 
 impl Services {

@@ -350,7 +350,10 @@ impl AgentInner {
 
 impl AgentInner {
     fn current_signal(&self) -> Option<AbortSignal> {
-        let run = self.run.lock().unwrap();
+        let run = self
+            .run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         run.as_ref().map(|run| run.controller.signal())
     }
 
@@ -427,13 +430,13 @@ impl AgentInner {
             let model = self
                 .run
                 .lock()
-                .unwrap()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .as_ref()
                 .map(|run| run.model.clone())
                 .or_else(|| {
                     self.model_override
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_ref()
                         .map(|routed| routed.model.clone())
                 })
@@ -527,11 +530,20 @@ impl AgentInner {
                 let skip_poll = Arc::clone(&skip_poll);
                 let inner = Arc::clone(&steering_inner);
                 Box::pin(async move {
-                    if *skip_poll.lock().unwrap() {
-                        *skip_poll.lock().unwrap() = false;
+                    if *skip_poll
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    {
+                        *skip_poll
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
                         return Ok(Vec::new());
                     }
-                    Ok(inner.steering_queue.lock().unwrap().drain())
+                    Ok(inner
+                        .steering_queue
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .drain())
                 }) as crate::BoxFut<'static, anyhow::Result<Vec<AgentMessage>>>
             }) as PollMessagesFn
         };
@@ -539,11 +551,20 @@ impl AgentInner {
         let follow_up = {
             Arc::new(move || {
                 let inner = Arc::clone(&follow_up_inner);
-                Box::pin(async move { Ok(inner.follow_up_queue.lock().unwrap().drain()) })
-                    as crate::BoxFut<'static, anyhow::Result<Vec<AgentMessage>>>
+                Box::pin(async move {
+                    Ok(inner
+                        .follow_up_queue
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .drain())
+                }) as crate::BoxFut<'static, anyhow::Result<Vec<AgentMessage>>>
             }) as PollMessagesFn
         };
-        let continuation = self.get_continuation_messages.lock().unwrap().clone();
+        let continuation = self
+            .get_continuation_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let should_stop_after_turn = self.should_stop_after_turn.clone();
 
         let (model, reasoning) = match model_override {
@@ -556,7 +577,10 @@ impl AgentInner {
         config.max_tokens = None;
         config.reasoning = reasoning;
         config.session_id.clone_from(&self.session_id);
-        config.credential_id = *self.credential_id.lock().unwrap();
+        config.credential_id = *self
+            .credential_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         config.compaction_epoch = self
             .compaction_epoch
             .load(std::sync::atomic::Ordering::SeqCst);
@@ -572,6 +596,13 @@ impl AgentInner {
         config.tool_execution = self.tool_execution;
         config.before_tool_call.clone_from(&self.before_tool_call);
         config.after_tool_call.clone_from(&self.after_tool_call);
+        let tools = shared.state.tools.clone();
+        config.is_tool_read_only = Some(Arc::new(move |name| {
+            tools
+                .iter()
+                .find(|tool| tool.name() == name)
+                .is_some_and(|tool| tool.is_read_only())
+        }));
         config
     }
 
@@ -585,7 +616,11 @@ impl AgentInner {
         // The run's model-override snapshot, read once: a concurrent
         // `set_model_override` cannot split the run's model from its request fields.
         // Read before the run lock: the shared lock awaits, a std guard must never ride it.
-        let run_override: Option<AgentModelOverride> = self.model_override.lock().unwrap().clone();
+        let run_override: Option<AgentModelOverride> = self
+            .model_override
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         let run_model = {
             let shared = self.shared.lock().await;
             run_override
@@ -593,7 +628,10 @@ impl AgentInner {
                 .map_or_else(|| shared.state.model.clone(), |routed| routed.model.clone())
         };
         {
-            let mut run = self.run.lock().unwrap();
+            let mut run = self
+                .run
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if run.is_some() {
                 anyhow::bail!("Agent is already processing.");
             }
@@ -627,7 +665,10 @@ impl AgentInner {
             shared.state.pending_tool_calls.clear();
         }
         {
-            let mut run = self.run.lock().unwrap();
+            let mut run = self
+                .run
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(active) = run.take() {
                 let _ = active.idle_tx.send(true);
             }
@@ -722,13 +763,21 @@ impl AgentInner {
         self: &Arc<Self>,
         started: Option<tokio::sync::oneshot::Sender<()>>,
     ) -> anyhow::Result<bool> {
-        let queued_steering = self.steering_queue.lock().unwrap().drain();
+        let queued_steering = self
+            .steering_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain();
         if !queued_steering.is_empty() {
             self.run_prompt_messages_with_start_signal(queued_steering, true, started)
                 .await?;
             return Ok(true);
         }
-        let queued_follow_ups = self.follow_up_queue.lock().unwrap().drain();
+        let queued_follow_ups = self
+            .follow_up_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain();
         if !queued_follow_ups.is_empty() {
             self.run_prompt_messages_with_start_signal(queued_follow_ups, false, started)
                 .await?;
@@ -810,8 +859,14 @@ impl Agent {
     }
 
     /// Stored credential row id stamped onto assistant messages as `credentialId`.
+    ///
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn set_credential_id(&self, id: Option<i64>) {
-        *self.inner.credential_id.lock().unwrap() = id;
+        *self
+            .inner
+            .credential_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = id;
     }
 
     /// Current epoch recorded in assistant `contextSnapshot`s.
@@ -1017,100 +1072,108 @@ impl Agent {
         );
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `steering_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn steering_mode(&self) -> QueueMode {
-        self.inner.steering_queue.lock().unwrap().mode
+        self.inner
+            .steering_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mode
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `steering_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn set_steering_mode(&self, mode: QueueMode) {
-        self.inner.steering_queue.lock().unwrap().mode = mode;
+        self.inner
+            .steering_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mode = mode;
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `follow_up_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn follow_up_mode(&self) -> QueueMode {
-        self.inner.follow_up_queue.lock().unwrap().mode
+        self.inner
+            .follow_up_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mode
     }
 
     /// Install or replace the natural-turn-end continuation hook: the embedding that owns the
     /// goal/autonomous continuation policy wires it after the agent exists. `None` uninstalls the
     /// hook.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `get_continuation_messages` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn set_continuation_hook(&self, hook: Option<GetContinuationMessagesFn>) {
-        *self.inner.get_continuation_messages.lock().unwrap() = hook;
+        *self
+            .inner
+            .get_continuation_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = hook;
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `follow_up_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn set_follow_up_mode(&self, mode: QueueMode) {
-        self.inner.follow_up_queue.lock().unwrap().mode = mode;
+        self.inner
+            .follow_up_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .mode = mode;
     }
 
     /// Queue a message batch to be injected after the current assistant turn finishes.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `steering_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn steer(&self, message: impl Into<AgentMessageBatch>) {
         self.inner
             .steering_queue
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .enqueue(message.into());
     }
 
     /// Queue a message batch to run only after the agent would otherwise stop.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `follow_up_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn follow_up(&self, message: impl Into<AgentMessageBatch>) {
         self.inner
             .follow_up_queue
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .enqueue(message.into());
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `steering_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn clear_steering_queue(&self) {
-        self.inner.steering_queue.lock().unwrap().clear();
+        self.inner
+            .steering_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `follow_up_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn clear_follow_up_queue(&self) {
-        self.inner.follow_up_queue.lock().unwrap().clear();
+        self.inner
+            .follow_up_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// Previews of the queued steering batches (TS
     /// `getSteeringMessagePreviews`): one text preview per queued batch,
     /// in queue order.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `steering_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn steering_previews(&self) -> Vec<String> {
         self.inner
             .steering_queue
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .batches
             .iter()
             .map(|batch| batch_preview(batch))
@@ -1119,47 +1182,58 @@ impl Agent {
 
     /// Previews of the queued follow-up batches: one text preview per queued batch, in queue order.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `follow_up_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn follow_up_previews(&self) -> Vec<String> {
         self.inner
             .follow_up_queue
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .batches
             .iter()
             .map(|batch| batch_preview(batch))
             .collect()
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `steering_queue` or `follow_up_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn remove_queued_messages(
         &self,
         predicate: impl Fn(&AgentMessage) -> bool,
     ) -> Vec<AgentMessage> {
         let mut removed = Vec::new();
         {
-            let mut queue = self.inner.steering_queue.lock().unwrap();
+            let mut queue = self
+                .inner
+                .steering_queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             removed.extend(queue.remove_where(&predicate));
         }
         {
-            let mut queue = self.inner.follow_up_queue.lock().unwrap();
+            let mut queue = self
+                .inner
+                .follow_up_queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             removed.extend(queue.remove_where(&predicate));
         }
         removed
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `steering_queue` or `follow_up_queue` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     #[must_use]
     pub fn has_queued_messages(&self) -> bool {
-        self.inner.steering_queue.lock().unwrap().has_items()
-            || self.inner.follow_up_queue.lock().unwrap().has_items()
+        self.inner
+            .steering_queue
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .has_items()
+            || self
+                .inner
+                .follow_up_queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .has_items()
     }
 
     /// The loop's provider stream function (the side-thread clone passes the
@@ -1174,23 +1248,29 @@ impl Agent {
         self.inner.current_signal()
     }
 
-    /// # Panics
-    ///
-    /// Panics if the `run` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub fn abort(&self) {
-        if let Some(run) = self.inner.run.lock().unwrap().as_ref() {
+        if let Some(run) = self
+            .inner
+            .run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             run.controller.abort();
         }
     }
 
     /// Resolve when the current run and all awaited event listeners have finished.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `run` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub async fn wait_for_idle(&self) {
         let idle_rx = {
-            let run = self.inner.run.lock().unwrap();
+            let run = self
+                .inner
+                .run
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             run.as_ref().map(|run| run.idle_tx.subscribe())
         };
         let Some(mut idle_rx) = idle_rx else {
@@ -1227,11 +1307,15 @@ impl Agent {
     ///
     /// Errors when a run is already active, or with the started run's failure.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `run` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub async fn prompt(&self, input: impl Into<AgentPromptInput>) -> anyhow::Result<()> {
-        if self.inner.run.lock().unwrap().is_some() {
+        if self
+            .inner
+            .run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
             anyhow::bail!(
                 "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion."
             );
@@ -1247,14 +1331,18 @@ impl Agent {
     ///
     /// Errors when a run is already active, or the run refuses to start after admission.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `run` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub async fn prompt_until_accepted(
         &self,
         input: impl Into<AgentPromptInput>,
     ) -> anyhow::Result<()> {
-        if self.inner.run.lock().unwrap().is_some() {
+        if self
+            .inner
+            .run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
             anyhow::bail!(
                 "Agent is already processing a prompt. Use steer() or followUp() to queue messages, or wait for completion."
             );
@@ -1276,9 +1364,9 @@ impl Agent {
         if started_rx.await.is_ok() {
             return Ok(());
         }
-        Err(failed_rx
-            .await
-            .expect("a dropped start signal answers with the refusal"))
+        Err(failed_rx.await.unwrap_or_else(|_| {
+            anyhow::anyhow!("run refused to start without reporting a failure")
+        }))
     }
 
     /// [`Self::continue_run`] that returns once the queued-message run has
@@ -1333,11 +1421,15 @@ impl Agent {
     /// Returns an [`AgentContinueError`] in `anyhow::Error`: `Busy` or
     /// `NothingToContinue`; queued-message errors propagate too.
     ///
-    /// # Panics
-    ///
-    /// Panics if the `run` mutex is poisoned.
+    /// Locks recover from poisoning by reusing the guarded data.
     pub async fn continue_run(&self) -> anyhow::Result<()> {
-        if self.inner.run.lock().unwrap().is_some() {
+        if self
+            .inner
+            .run
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+        {
             return Err(anyhow::Error::new(AgentContinueError::new(
                 AgentContinueErrorCode::Busy,
                 "Agent is already processing. Wait for completion before continuing.",
@@ -1437,6 +1529,8 @@ mod tests {
     }
 
     #[tokio::test]
+    // grew past clippy's line budget when the poisoned-lock fallback was added to the mock.
+    #[allow(clippy::too_many_lines)]
     async fn model_override_serves_the_run_and_keeps_the_session_model() {
         use std::sync::Mutex as StdMutex;
 
@@ -1467,7 +1561,7 @@ mod tests {
                       options: crate::stream::StreamRequestOptions| {
                     stream_requested
                         .lock()
-                        .unwrap()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push((requested.id.clone(), options.reasoning));
                     let message = crate::types::AssistantMessage {
                         content: vec![crate::types::AssistantContent::Text(
@@ -1524,7 +1618,10 @@ mod tests {
             .expect("run");
         agent.wait_for_idle().await;
 
-        let calls = stream_requested.lock().unwrap().clone();
+        let calls = stream_requested
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(
             calls,
             vec![("image-model".to_string(), crate::types::ThinkingLevel::High)]
@@ -1538,7 +1635,10 @@ mod tests {
             .await
             .expect("run");
         agent.wait_for_idle().await;
-        let calls = stream_requested.lock().unwrap().clone();
+        let calls = stream_requested
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1].0, "session-model");
         assert_eq!(calls[1].1, crate::types::ThinkingLevel::Off);

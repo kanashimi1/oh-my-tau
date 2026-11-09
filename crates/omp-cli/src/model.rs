@@ -472,6 +472,7 @@ pub fn clamp_level(model: &pa_types::ai::Model, level: ThinkingLevel) -> Thinkin
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 
@@ -536,7 +537,10 @@ mod tests {
             .await
             .expect("chain resolves");
         assert_eq!(selected.model.id, "glm");
-        assert_eq!(selected.fallbacks, vec!["local/keyless".to_string(), "smol:high".to_string()]);
+        assert_eq!(
+            selected.fallbacks,
+            vec!["local/keyless".to_string(), "smol:high".to_string()]
+        );
         // No credentialed entry: the first resolvable entry is kept so
         // keyless-by-design local providers stay selectable.
         let selected = select_chain_with("local/keyless, nope/model", resolve)
@@ -580,7 +584,7 @@ mod tests {
 
     /// Reference: untyped `Value` parse of the catalog (the pre-fix implementation),
     /// reduced to the `CATALOG_EXTRA_KEYS` fields. Must cover every provider/id of the
-    /// real 5618-model `models.json`, and the typed [`Catalog`] must agree exactly.
+    /// installed `models.json` (its size changes with every catalog sync), and the typed [`Catalog`] must agree exactly.
     #[test]
     fn catalog_matches_value_reference_parse() {
         let Some(path) = catalog_path().filter(|p| p.is_file()) else {
@@ -619,7 +623,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(models, 5618, "expected the full 5618-model catalog");
+        assert!(models > 0, "the installed catalog lists no models");
         assert!(catalog().is_some(), "typed catalog must be installed");
     }
 }

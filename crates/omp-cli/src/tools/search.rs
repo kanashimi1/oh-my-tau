@@ -153,6 +153,7 @@ fn with_details(text: String, details: serde_json::Value) -> AgentToolResult {
     result
 }
 
+#[allow(clippy::too_many_lines)] // one glob pipeline: args, walk, clamp notice, render; steps share locals
 pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     let mut patterns = path_list(args.get("path").and_then(serde_json::Value::as_str));
     if patterns.is_empty() {
@@ -160,6 +161,7 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     }
     let hidden = bool_arg(args, "hidden").unwrap_or(true);
     let gitignore = bool_arg(args, "gitignore").unwrap_or(true);
+    #[allow(clippy::cast_precision_loss)] // const limit, exact in f64
     let requested = args
         .get("limit")
         .and_then(serde_json::Value::as_f64)
@@ -169,6 +171,7 @@ pub fn glob(env: &Env, args: &serde_json::Value) -> Result<AgentToolResult> {
     }
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let limit = (requested.floor() as usize).clamp(1, GLOB_MAX_LIMIT);
+    #[allow(clippy::cast_precision_loss)] // const limit, exact in f64
     let clamp_notice = (requested > GLOB_MAX_LIMIT as f64)
         .then(|| format!("Requested limit {requested} clamped to the max of {GLOB_MAX_LIMIT}"));
 
@@ -629,10 +632,11 @@ pub fn grep_with_cancel(
             if cancelled(cancel) {
                 return Err(pa_agent::abort::aborted_error());
             }
-            let slots: Vec<OnceLock<Option<(Vec<Match>, usize, bool)>>> =
-                std::iter::repeat_with(OnceLock::new)
-                    .take(chunk.len())
-                    .collect();
+            #[allow(clippy::items_after_statements)] // alias is local to the chunk loop
+            type ChunkSlot = OnceLock<Option<(Vec<Match>, usize, bool)>>;
+            let slots: Vec<ChunkSlot> = std::iter::repeat_with(OnceLock::new)
+                .take(chunk.len())
+                .collect();
             let indices: Vec<usize> = (0..chunk.len()).collect();
             let searched = pi_walker::parallel_for_each_init(
                 &indices,
@@ -816,9 +820,10 @@ pub fn grep_with_cancel(
     let mut model: Vec<String> = Vec::new();
     let mut display: Vec<String> = Vec::new();
     if is_multi_scope {
+        type Rendered = (Vec<String>, Vec<String>, Option<String>);
         let entries: Vec<(String, bool)> =
             window.iter().map(|h| (h.shown.clone(), false)).collect();
-        let rendered: HashMap<usize, (Vec<String>, Vec<String>, Option<String>)> = window
+        let rendered: HashMap<usize, Rendered> = window
             .iter()
             .enumerate()
             .map(|(i, h)| (i, render(h)))

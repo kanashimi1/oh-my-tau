@@ -259,6 +259,8 @@
   OMP.dialogs = {
     modal, pick, promptText, confirmBox, pickFolder,
     afterClose() {},
+    /** An agent dialog is open or queued (the user is being asked something). */
+    isOpen() { return !!active || queue.length > 0; },
     /** Queue an agent dialog; `answer(id, payload)` sends the response. */
     request(frame, answer) {
       answerFn = answer;

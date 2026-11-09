@@ -118,6 +118,24 @@ impl From<McpTransportError> for McpError {
     }
 }
 
+/// Downgrade a retryable transport error to non-retryable because the
+/// request frame was already written to the server when the failure hit:
+/// replaying it would run the tool a second time (upstream
+/// `mcp-retry-double-run`). The diagnostic tells the manager (and the
+/// user) the call may have already run.
+pub fn may_have_run(mut error: McpError) -> McpError {
+    if let McpError::Transport(transport) = &mut error {
+        transport.retryable = false;
+        if !transport.message.contains("may have already run") {
+            transport.message = format!(
+                "{}; the request may have already run on the server",
+                transport.message
+            );
+        }
+    }
+    error
+}
+
 impl From<JsonRpcError> for McpError {
     fn from(e: JsonRpcError) -> Self {
         Self::JsonRpc(e)

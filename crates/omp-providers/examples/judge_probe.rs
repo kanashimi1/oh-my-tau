@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 //! `cargo run -p omp-providers --example judge_probe -- ["<state text>"]`
 //! One live System One judgment through the resolved `judge` chain (keys are never printed).
 use omp_providers::{AgentDir, JudgeRequest};

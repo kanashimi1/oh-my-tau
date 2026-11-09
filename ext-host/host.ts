@@ -675,25 +675,48 @@ async function emit(p: Json) {
     result = !modified ? (c === undefined ? undefined : { additionalContext: c }) : { content: cur.content, details: cur.details, isError: cur.isError, ...(c ? { additionalContext: c } : {}) };
   } else if (type === "context") {
     let messages = event.messages as unknown[];
-    // Only a handler replacement travels back: the core keeps its own list otherwise.
+    // A handler may return a replacement list, or (Pi semantics: handlers get a clone of the
+    // conversation) edit that clone in place — SoL-Pi ObservationPack sets `message.content`
+    // and returns nothing. Both travel back; an untouched list does not (the core keeps its own).
+    const shape = (ms: unknown[]) => ms.map((m) => {
+      const c = (m as { content?: unknown } | null)?.content;
+      return [m, c, Array.isArray(c) ? c.length : -1, Array.isArray(c) ? c.map((b) => b) : null] as const;
+    });
+    const before = shape(messages);
     let modified = false;
     for (const e of exts)
       for (const h of handlersFor(e)) {
         const hr = (await runHandler(e, h, { type, messages }, timeoutMs, rec)).value as Json | undefined;
         if (hr && Array.isArray(hr.messages)) ((messages = hr.messages), (modified = true));
       }
+    if (!modified) {
+      modified = messages.length !== before.length || messages.some((m, i) => {
+        const [m0, c0, n0, blocks0] = before[i];
+        const c = (m as { content?: unknown } | null)?.content;
+        if (m !== m0 || c !== c0) return true;
+        if (!Array.isArray(c)) return false;
+        return c.length !== n0 || c.some((b, j) => b !== blocks0?.[j]);
+      });
+    }
     result = modified ? { messages } : undefined;
   } else if (type === "before_agent_start") {
+    // Handlers run concurrently: every one gates the prompt, and several of them
+    // are network round-trips (recall, planning hints), so a serial chain made
+    // the prompt wait for their sum. Each handler sees the system prompt as of
+    // the emit; results fold in registration order (messages in order, the last
+    // `systemPrompt` replacement wins), as in the serial TS runner unless two
+    // handlers both rewrite the system prompt.
     const messages: unknown[] = [];
-    let sp = event.systemPrompt as string[];
+    const sp0 = event.systemPrompt as string[];
+    let sp = sp0;
     let spMod = false;
-    for (const e of exts)
-      for (const h of handlersFor(e)) {
-        const hr = (await runHandler(e, h, { ...event, systemPrompt: sp }, timeoutMs, rec)).value as Json | undefined;
-        if (!hr) continue;
-        if (hr.message) messages.push(hr.message);
-        if (hr.systemPrompt !== undefined) ((sp = typeof hr.systemPrompt === "string" ? [hr.systemPrompt] : (hr.systemPrompt as string[])), (spMod = true));
-      }
+    const runs = exts.flatMap((e) => handlersFor(e).map((h) => runHandler(e, h, { ...event, systemPrompt: sp0 }, timeoutMs, rec)));
+    for (const r of await Promise.all(runs)) {
+      const hr = r.value as Json | undefined;
+      if (!hr) continue;
+      if (hr.message) messages.push(hr.message);
+      if (hr.systemPrompt !== undefined) ((sp = typeof hr.systemPrompt === "string" ? [hr.systemPrompt] : (hr.systemPrompt as string[])), (spMod = true));
+    }
     if (messages.length || spMod) result = { messages: messages.length ? messages : undefined, systemPrompt: spMod ? sp : undefined };
   } else if (type === "input") {
     let text = String(event.text);

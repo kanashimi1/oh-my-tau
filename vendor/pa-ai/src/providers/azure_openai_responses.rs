@@ -255,8 +255,7 @@ async fn run_stream(
         &Flavor::Azure {
             deployment: deployment_name.clone(),
         },
-    )
-    .map_err(ProviderError::Message)?;
+    );
     if let Some(on_payload) = &options.responses.base.on_payload {
         if let Some(next) = on_payload(params.clone(), model) {
             params = next;
@@ -282,8 +281,8 @@ async fn run_stream(
     let body = params.to_string();
     // TS `rawRequestDump` (`finalizeErrorMessage` on a 400/413 rejection).
     let request_dump = RawHttpRequestDump {
-        provider: model.provider.to_string(),
-        api: model.api.to_string(),
+        provider: model.provider.clone(),
+        api: model.api.clone(),
         model: model.id.clone(),
         method: "POST".to_owned(),
         url: url.clone(),

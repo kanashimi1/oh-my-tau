@@ -56,7 +56,7 @@ pub enum AgentStatus {
 impl AgentStatus {
     /// Parse a status string; unknown values map to [`AgentStatus::Pending`].
     #[must_use]
-    pub fn from_str(status: &str) -> Self {
+    pub fn parse_status(status: &str) -> Self {
         match status {
             "running" | "started" | "active" => Self::Running,
             "completed" | "done" => Self::Completed,
@@ -152,7 +152,7 @@ pub struct AgentProgress {
     pub recent_tools: Vec<RecentTool>,
     /// Cumulative tool-call count.
     pub tool_count: u64,
-    /// Assistant requests (message_end events) across the run.
+    /// Assistant requests (`message_end` events) across the run.
     pub requests: u64,
     /// Cumulative input+output+cacheWrite tokens.
     pub tokens: u64,
@@ -186,12 +186,16 @@ fn get_string(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
 }
 
+// Wire numbers are small counts/durations; u64<->f64 rounding is irrelevant
+// and `as` keeps the TS parity of dropping fractional parts.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn get_u64(v: &Value, key: &str) -> Option<u64> {
     v.get(key)
         .and_then(Value::as_u64)
         .or_else(|| v.get(key).and_then(Value::as_f64).map(|f| f as u64))
 }
 
+#[allow(clippy::cast_precision_loss)]
 fn get_f64(v: &Value, key: &str) -> Option<f64> {
     v.get(key)
         .and_then(Value::as_f64)
@@ -204,7 +208,8 @@ fn get_bool(v: &Value, key: &str) -> bool {
 
 impl AgentProgress {
     /// Parse one progress snapshot from a wire value; `None` for non-objects.
-    #[must_use]
+    // One field-per-line extraction keeps the wire shape in one place.
+    #[allow(clippy::too_many_lines)]
     pub fn from_value(v: &Value) -> Option<Self> {
         let obj = v.as_object()?;
         // Lifecycle payloads nest under `progress`; accept both shapes.
@@ -220,8 +225,7 @@ impl AgentProgress {
             status: src
                 .get("status")
                 .and_then(Value::as_str)
-                .map(AgentStatus::from_str)
-                .unwrap_or(AgentStatus::Pending),
+                .map_or(AgentStatus::Pending, AgentStatus::parse_status),
             task: get_string(src, "task")
                 .or_else(|| get_string(v, "task"))
                 .unwrap_or_default(),
@@ -339,6 +343,12 @@ fn truncate_to_width(s: &str, max: usize, suffix: &str) -> String {
 
 /// Compact duration (TS `formatDuration` in `pi-utils/format.ts`).
 #[must_use]
+// Durations are small; f64 mantissa loss is irrelevant to a display string.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 pub fn format_duration(ms: u64) -> String {
     const SEC: u64 = 1_000;
     const MIN: u64 = 60 * SEC;
@@ -383,10 +393,19 @@ pub fn format_number(n: u64) -> String {
     const UNITS: [(u64, &str); 3] = [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")];
     for (div, suffix) in UNITS {
         if n >= div {
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss
+            )]
             let v = n as f64 / div as f64;
             let rounded = (v * 10.0).round() / 10.0;
             return if (rounded.fract() - rounded.trunc()).abs() < f64::EPSILON {
-                format!("{}{}", rounded as u64, suffix)
+                // Rounded to a whole unit, well inside u64.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                {
+                    format!("{}{}", rounded as u64, suffix)
+                }
             } else {
                 format!("{rounded:.1}{suffix}")
             };
@@ -396,6 +415,7 @@ pub fn format_number(n: u64) -> String {
 }
 
 /// Display cap for a normalized one-line label (roster line, header).
+#[must_use]
 pub const fn label_max() -> usize {
     LABEL_MAX
 }
@@ -565,11 +585,7 @@ fn render_task_call_lines(args: Option<&Value>, theme: &Theme) -> Vec<Vec<Span<'
     let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
     let view = TaskParamsView::from_value(args);
     let name = view.name.as_deref().unwrap_or("").trim();
-    let brief = view
-        .task
-        .as_ref()
-        .map(|v| task_first_line(v))
-        .unwrap_or_default();
+    let brief = view.task.as_ref().map(task_first_line).unwrap_or_default();
     if !name.is_empty() || !brief.is_empty() {
         let mut spans = vec![bullet.clone()];
         spans.push(Span::styled(
@@ -607,19 +623,14 @@ fn render_task_call_lines(args: Option<&Value>, theme: &Theme) -> Vec<Vec<Span<'
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| format!("#{}", i + 1));
+                .map_or_else(|| format!("#{}", i + 1), ToOwned::to_owned);
             spans.push(Span::styled(
                 id_label,
                 Style::default()
                     .fg(theme.color("accent"))
                     .add_modifier(Modifier::BOLD),
             ));
-            let brief = item
-                .task
-                .as_ref()
-                .map(|v| task_first_line(v))
-                .unwrap_or_default();
+            let brief = item.task.as_ref().map(task_first_line).unwrap_or_default();
             if !brief.is_empty() {
                 spans.push(Span::raw(": "));
                 spans.push(Span::styled(
@@ -775,8 +786,10 @@ fn status_icon_spans(
 }
 
 /// Render the agent row, reserving the id and required status badges first
-/// (TS `renderAgentTreeRow` for `presentation: "task"`).
+/// (TS `renderAgentTreeRow` for `presentation: "task"`). One pass over the
+/// badge/text segments, mirroring the TS renderer's ordering rules.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn render_agent_tree_row(row: &AgentTreeRow, theme: &Theme) -> AgentRowRender {
     let live = row.status.is_live();
     let failed = row.status.is_failed();
@@ -1374,15 +1387,14 @@ fn render_agent_progress_lines(
                 .clone()
                 .or_else(|| progress.current_tool_args.clone());
             if let Some(d) = detail.filter(|d| !d.is_empty()) {
-                text.push_str(&format!(
-                    ": {}",
-                    truncate_to_width(&one_line_label(&d, usize::MAX), 40, "…")
-                ));
+                text.push_str(": ");
+                text.push_str(&truncate_to_width(&one_line_label(&d, usize::MAX), 40, "…"));
             }
             if let Some(start) = progress.current_tool_start_ms {
                 let elapsed = ctx.now_ms.saturating_sub(start);
                 if elapsed > TOOL_ELAPSED_WARN_MS {
-                    text.push_str(&format!(" ·{}", format_duration(elapsed)));
+                    text.push_str(" ·");
+                    text.push_str(&format_duration(elapsed));
                 }
             }
             hook_line(continue_prefix, text, "text_muted", theme, out);
@@ -1393,10 +1405,8 @@ fn render_agent_progress_lines(
                 .clone()
                 .or_else(|| (!recent.args.is_empty()).then(|| recent.args.clone()));
             if let Some(d) = detail.filter(|d| !d.is_empty()) {
-                text.push_str(&format!(
-                    ": {}",
-                    truncate_to_width(&one_line_label(&d, usize::MAX), 40, "…")
-                ));
+                text.push_str(": ");
+                text.push_str(&truncate_to_width(&one_line_label(&d, usize::MAX), 40, "…"));
             }
             hook_line(continue_prefix, text, "text_muted", theme, out);
         }
@@ -1482,10 +1492,10 @@ fn render_nested_task_tree(
             );
             continue;
         }
-        if !details.results.is_empty() {
-            render_nested_results(&details.results, ctx, theme, depth, out);
-        } else {
+        if details.results.is_empty() {
             render_nested_progress(&details.progress, ctx, theme, depth, out);
+        } else {
+            render_nested_results(&details.results, ctx, theme, depth, out);
         }
     }
 }
@@ -1870,8 +1880,7 @@ pub fn card_lines(call: &Value, theme: &Theme, ctx: &RenderCtx) -> Vec<Line<'sta
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Renderer for subagent spawns (`tool.task`).
@@ -1884,7 +1893,7 @@ impl ToolRenderer for Task {
         let brief = params
             .task
             .as_ref()
-            .map(|v| task_first_line(v))
+            .map(task_first_line)
             .or_else(|| params.context.clone())
             .unwrap_or_default();
         let header = format_agent_header_label(args.filter(|a| a.is_object()))
@@ -2325,7 +2334,7 @@ pub mod repair {
                     if matches!(next, b'"' | b'\\' | b'/')
                         || (next == b'u'
                             && i + 5 < bytes.len()
-                            && bytes[i + 2..=i + 5].iter().all(|b| b.is_ascii_hexdigit()))
+                            && bytes[i + 2..=i + 5].iter().all(u8::is_ascii_hexdigit))
                     {
                         return true;
                     }

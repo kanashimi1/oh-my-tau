@@ -873,7 +873,7 @@ mod tests {
         let args = ReadRenderArgs::from_call(&frame);
         let result = parse_result(&frame);
         let lines = result_lines(&args, &result, false, &theme);
-        let flat: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let flat: Vec<String> = lines.iter().map(std::string::ToString::to_string).collect();
         assert!(flat[0].contains("Read"), "{flat:?}");
         assert!(flat[1].contains("file not found"));
     }
@@ -888,7 +888,7 @@ mod tests {
         let args = ReadRenderArgs::from_call(&frame);
         let result = parse_result(&frame);
         let lines = result_lines(&args, &result, false, &theme);
-        let flat: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let flat: Vec<String> = lines.iter().map(std::string::ToString::to_string).collect();
         assert_eq!(flat[1], "  file not found", "{flat:?}");
         assert!(lines[1]
             .spans
@@ -901,7 +901,10 @@ mod tests {
         let theme = theme();
         let mut body = String::from("[a.txt#0abc]\n");
         for i in 1..=30 {
-            body.push_str(&format!("{i}:line {i}\n"));
+            body.push_str(&i.to_string());
+            body.push_str(":line ");
+            body.push_str(&i.to_string());
+            body.push('\n');
         }
         let frame = end_frame(body.trim_end());
         let args = ReadRenderArgs::from_call(&frame);
@@ -944,12 +947,16 @@ mod tests {
         let args = ReadRenderArgs::from_call(&frame);
         let result = parse_result(&frame);
         let lines = result_lines(&args, &result, false, &theme);
+        // Test backends are small; the row count fits u16.
+        #[allow(clippy::cast_possible_truncation)]
         let backend = ratatui::backend::TestBackend::new(40, (lines.len() as u16) + 1);
         let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
         terminal
             .draw(|f| {
                 let area = f.area();
                 for (i, line) in lines.iter().enumerate() {
+                    // Bounded by the u16 buffer height.
+                    #[allow(clippy::cast_possible_truncation)]
                     let y = area.y + i as u16;
                     if y < area.height {
                         f.buffer_mut()[(area.x, y)].set_symbol(&line.to_string());
@@ -962,6 +969,8 @@ mod tests {
             (size.width, size.height)
         };
         let buf = terminal.backend().buffer().clone();
+        // Test fixture snapshot; a helper dep is not warranted.
+        #[allow(clippy::format_collect)]
         let output: String = (0..h)
             .map(|y| {
                 let mut row = String::new();

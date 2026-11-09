@@ -137,6 +137,8 @@ pub enum DisableReason {
 }
 
 /// TS `OpenAICompatPolicy.reasoning`.
+// Mirrors the TS compat-policy boolean fields.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug)]
 pub struct ReasoningPolicy {
     pub model_supported: bool,
@@ -473,6 +475,7 @@ mod tests {
     };
     use serde_json::json;
 
+    #[allow(clippy::needless_pass_by_value)] // test helper mirroring the Model constructor shape
     fn model(
         provider: &str,
         id: &str,
@@ -492,6 +495,7 @@ mod tests {
         m
     }
 
+    #[allow(clippy::needless_pass_by_value)] // test helper mirroring the request-entry shape
     fn body(model: &Model, options: OpenAICompletionsOptions, system: Option<&str>) -> Value {
         let context = Context {
             system_prompt: system.map(str::to_string),

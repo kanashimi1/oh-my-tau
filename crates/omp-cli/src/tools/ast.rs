@@ -161,6 +161,9 @@ pub fn ast_grep(env: &Env, args: &Value) -> Result<AgentToolResult> {
     ast_grep_with_cancel(env, args, &CancelFlag::default())
 }
 
+/// One scanned file: (relative path, absolute path, matches, parse error).
+type ScannedFile = (String, PathBuf, Vec<AstMatch>, Option<String>);
+
 /// [`ast_grep`] with a cooperative cancel flag; per-file read/parse/match
 /// work runs on the `rayon` pool inside the registry's `spawn_blocking`
 /// section, collected in path order so output stays byte-identical.
@@ -198,10 +201,10 @@ pub fn ast_grep_with_cancel(
     // read/parsed/matched in parallel on the rayon pool; `collect` keeps
     // input order and short-circuits on the first invalid pattern, matching
     // the previous serial `?` semantics.
-    let scanned: Vec<Option<(String, PathBuf, Vec<AstMatch>, Option<String>)>> = files
+    let scanned: Vec<Option<ScannedFile>> = files
         .par_iter()
         .map(
-            |file| -> Result<Option<(String, PathBuf, Vec<AstMatch>, Option<String>)>> {
+            |file| -> Result<Option<ScannedFile>> {
                 if cancelled(cancel) {
                     return Err(pa_agent::abort::aborted_error());
                 }

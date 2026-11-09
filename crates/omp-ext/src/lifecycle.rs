@@ -313,6 +313,8 @@ impl LifecycleEvent {
     /// # Panics
     /// Never in practice: every field serializes to JSON.
     #[must_use]
+    // invariant: LifecycleEvent is a plain enum whose fields always serialize to JSON.
+    #[allow(clippy::expect_used)]
     pub fn to_value(&self) -> Value {
         serde_json::to_value(self).expect("lifecycle events are plain JSON")
     }

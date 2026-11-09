@@ -40,6 +40,9 @@ pub struct Axes {
     pub api_records: std::collections::HashMap<String, Vec<String>>,
 }
 
+// invariant: the embedded rules.json is fixed data verified by parity tests.
+#[allow(clippy::expect_used)]
+#[allow(clippy::missing_panics_doc)]
 pub fn rules() -> &'static Rules {
     static RULES: OnceLock<Rules> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -48,6 +51,11 @@ pub fn rules() -> &'static Rules {
     })
 }
 
+/// # Panics
+/// If the embedded `axes.json` fails to parse (checked by parity tests).
+// invariant: the embedded axes.json is fixed data verified by parity tests.
+#[allow(clippy::expect_used)]
+#[allow(clippy::missing_panics_doc)]
 pub fn axes() -> &'static Axes {
     static AXES: OnceLock<Axes> = OnceLock::new();
     AXES.get_or_init(|| {

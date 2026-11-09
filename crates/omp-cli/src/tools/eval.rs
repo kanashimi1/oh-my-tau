@@ -13,9 +13,10 @@
 //! `artifact://<id>` (TS `OutputSink` recovery pointer). Kernel loss is
 //! journaled per session (`eval_journal`) so `%replay` can restore setup.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use anyhow::{bail, Result};
@@ -33,6 +34,7 @@ use super::util::{notice_with_artifact, save_artifact, sink_window, spill_window
 use super::Env;
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 #[path = "eval_tests.rs"]
 mod eval_tests;
 
@@ -50,7 +52,9 @@ Python (IPython): top-level `await` works, `asyncio.run` fails. JS (Bun): top-le
 On error, names (re)bound by the failed cell roll back (side effects and in-place mutations stay): re-run the whole fixed cell.
 Prelude (py: sync, kwargs; js: async, one trailing options object): `display(v)` `print` `log(msg)` `phase(title)` `read(path, offset?, limit?)` `write(path, content)` `env(key?, value?)` `output(*ids, format?, query?, offset?, limit?)` `await tool.<name>(args)` `wait(handles, timeout?, raise_errors?=True)` (ordered results).
 Read the doc before first use: `judge`/`judge_batch`/`completion` → `xd://eval/judge`; `%load`/`%pip`/`%bun add`/`budget`/`@tool` → `xd://eval/helpers`; `agent`/`workpool` (2+ independent items) → `xd://eval/agents`.
-Never repeat successful setup; after a kernel-loss notice, reload it.";
+Never repeat successful setup; after a kernel-loss notice, reload it.
+Multi-step mechanical work belongs in ONE cell: when a change needs read → decide → patch → validate, write one cell that does every step (read the file, check the condition, apply the patch, run the validator) and return ONLY the final diff + pass/fail status.
+NEVER burn model turns on chains of single tool calls (read A → grep → edit B → bash validator) when a single eval cell can complete the transaction; spilled output goes to `artifact://<id>` automatically.";
 
 /// Wire schema, byte-matching the TS `evalSchema` (`py` + `js` language
 /// union, `language` + `code` required).
@@ -84,7 +88,7 @@ impl EvalTool {
 }
 
 impl AgentTool for EvalTool {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "eval"
     }
     fn description(&self) -> &str {
@@ -93,6 +97,14 @@ impl AgentTool for EvalTool {
     fn parameters(&self) -> &Value {
         static SCHEMA: LazyLock<Value> = LazyLock::new(schema);
         &SCHEMA
+    }
+    fn set_a2a_owner(&self, owner: &Arc<str>) {
+        // eval cells (`agent()`, `workpool()`) spawn children through this
+        // Env's owner.
+        self.env.set_a2a_owner(owner.clone());
+    }
+    fn a2a_owner(&self) -> Option<Arc<str>> {
+        self.env.a2a_owner()
     }
     fn execute(
         self: Arc<Self>,
@@ -138,7 +150,7 @@ static SLOTS: LazyLock<Mutex<HashMap<PathBuf, Arc<AsyncMutex<KernelState>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn slot(cwd: &std::path::Path) -> Arc<AsyncMutex<KernelState>> {
-    let mut slots = SLOTS.lock().expect("kernel registry");
+    let mut slots = SLOTS.lock();
     Arc::clone(
         slots
             .entry(cwd.to_path_buf())
@@ -263,6 +275,10 @@ fn cell_is_error(result: &CellResult) -> bool {
 }
 
 /// Execute one `eval` cell (the tool entry point).
+#[allow(clippy::too_many_lines)]
+// cell loop: language select, kernel start/reuse, run, journal, reply
+// invariant: the execution loop above always pushes at least one cell result.
+#[allow(clippy::expect_used)]
 pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolResult> {
     use std::fmt::Write as _;
     // omp's schema requires `language`; a missing one fails TS input
@@ -336,9 +352,9 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
         });
     }
 
-    // The bridge drives async tool work through the ambient runtime from the
-    // kernel's blocking thread; fresh per cell, like omp's per-request ctx.
-    let rt = tokio::runtime::Handle::current();
+    // The bridge drives async tool work through the ambient runtime (via
+    // `crate::sync_bridge`) from the kernel's blocking thread; fresh per
+    // cell, like omp's per-request ctx.
     let make_bridge = || {
         EvalBridge::new(
             Arc::clone(&env),
@@ -348,7 +364,6 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
                 on_update: ctx.on_update.clone(),
                 tool_call_id: ctx.tool_call_id.clone(),
             },
-            rt.clone(),
         )
     };
 
@@ -412,7 +427,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
                 break;
             }
         }
-    };
+    }
 
     let result = results.last().expect("at least one cell result");
     let mut text = String::new();
@@ -425,7 +440,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
     if replayed {
         let _ = write!(
             text,
-            "Replayed {} setup cell{}.\n",
+            "Replayed {} setup cell{}.",
             results.len(),
             if results.len() == 1 { "" } else { "s" }
         );
@@ -465,7 +480,7 @@ pub async fn eval(env: Arc<Env>, args: Value, ctx: CallCtx) -> Result<AgentToolR
 pub(crate) fn shutdown_slot(cwd: &std::path::Path) {
     // Dropping the slot drops KernelState, whose kernel Arcs run Drop and
     // settle the runner children.
-    SLOTS.lock().expect("kernel registry").remove(cwd);
+    SLOTS.lock().remove(cwd);
 }
 
 /// `details` payload: execution counter plus timeout annotations, omp-style.

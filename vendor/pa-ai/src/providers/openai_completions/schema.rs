@@ -63,10 +63,11 @@ fn has_unrepresentable_strict_object_map(schema: &Map<String, Value>) -> bool {
     {
         return true;
     }
-    match schema.get("additionalProperties") {
-        Some(Value::Bool(true)) => return true,
-        Some(Value::Object(_)) => return true,
-        _ => {}
+    if matches!(
+        schema.get("additionalProperties"),
+        Some(Value::Bool(true) | Value::Object(_))
+    ) {
+        return true;
     }
     let check = |v: &Value| {
         is_unrepresentable_branch(v)
@@ -88,10 +89,8 @@ fn has_unrepresentable_strict_object_map(schema: &Map<String, Value>) -> bool {
                     return true;
                 }
             }
-            Value::Array(a) => {
-                if a.iter().any(check) {
-                    return true;
-                }
+            Value::Array(a) if a.iter().any(check) => {
+                return true;
             }
             _ => {}
         }
@@ -204,6 +203,7 @@ fn sanitize_array(v: &[Value], root: &Map<String, Value>) -> Value {
 }
 
 /// First pass of strict-mode preparation (TS `sanitizeSchemaForStrictMode`).
+#[allow(clippy::too_many_lines)] // one branch per JSON-schema keyword, mirroring the TS pass
 fn sanitize(schema: &Map<String, Value>, root: &Map<String, Value>) -> Map<String, Value> {
     // `$ref` with siblings: inline the resolved definition (siblings win).
     if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
@@ -397,6 +397,7 @@ fn enforce_value(v: &Value) -> Result<Value, NotRepresentable> {
 }
 
 /// TS `enforceStrictSchema`: closed objects, every property required, optional ones nullable.
+#[allow(clippy::too_many_lines)] // one branch per JSON-schema keyword, mirroring the TS pass
 fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotRepresentable> {
     let mut result = schema.clone();
     if result.get("type").and_then(Value::as_str) == Some("object") {
@@ -504,13 +505,14 @@ fn enforce(schema: &Map<String, Value>) -> Result<Map<String, Value>, NotReprese
                     flattened.push(branch);
                     continue;
                 }
-                let b = branch.as_object().expect("pure anyOf node is an object");
-                if let Some(Value::Array(inner)) = b.get("anyOf") {
-                    flattened.extend(inner.iter().cloned());
-                }
-                if let Some(d) = b.get("description").filter(|d| d.is_string()) {
-                    if !result.contains_key("description") {
-                        result.insert("description".into(), d.clone());
+                if let Some(b) = branch.as_object() {
+                    if let Some(Value::Array(inner)) = b.get("anyOf") {
+                        flattened.extend(inner.iter().cloned());
+                    }
+                    if let Some(d) = b.get("description").filter(|d| d.is_string()) {
+                        if !result.contains_key("description") {
+                            result.insert("description".into(), d.clone());
+                        }
                     }
                 }
             }
@@ -973,15 +975,15 @@ fn classify_schema_child(key: &str, value: &Value, inside_map: bool) -> Option<C
     }
 }
 
-fn infer_json_schema_type(v: &Value) -> Option<&'static str> {
-    Some(match v {
+fn infer_json_schema_type(v: &Value) -> &'static str {
+    match v {
         Value::Null => "null",
         Value::Array(_) => "array",
         Value::String(_) => "string",
         Value::Number(_) => "number",
         Value::Bool(_) => "boolean",
         Value::Object(_) => "object",
-    })
+    }
 }
 
 fn push_enum_value(values: &mut Vec<Value>, v: &Value) {
@@ -1116,6 +1118,8 @@ fn moonshot_child(key: &str, entry: &Value, inside_map: bool) -> Value {
     }
 }
 
+// One branch per Moonshot schema quirk, mirroring the TS transformer.
+#[allow(clippy::too_many_lines)]
 fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, Value> {
     let obj = if inside_map {
         value.clone()
@@ -1147,7 +1151,7 @@ fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, 
         if explicit.len() == variants.len() && explicit.iter().all(|t| *t == explicit[0]) {
             result.insert("type".into(), json!(explicit[0]));
         } else {
-            let inferred: Vec<&str> = deduped.iter().filter_map(infer_json_schema_type).collect();
+            let inferred: Vec<&str> = deduped.iter().map(|v| infer_json_schema_type(v)).collect();
             let distinct: std::collections::BTreeSet<&str> = inferred.iter().copied().collect();
             if distinct.len() == 1 {
                 result.insert("type".into(), json!(inferred[0]));
@@ -1225,34 +1229,31 @@ fn moonshot_object(value: &Map<String, Value>, inside_map: bool) -> Map<String, 
             .unwrap_or_default();
         push_enum_value(&mut existing, &c);
         result.insert("enum".into(), Value::Array(existing));
-        if !result
+        if result
             .get("type")
-            .is_some_and(|t| t.as_str().is_some_and(|s| !s.is_empty()))
+            .is_none_or(|t| t.as_str().is_none_or(str::is_empty))
         {
-            if let Some(t) = infer_json_schema_type(&c) {
-                result.insert("type".into(), json!(t));
-            }
+            let t = infer_json_schema_type(&c);
+            result.insert("type".into(), json!(t));
         }
     }
-    let type_missing = !result
+    let type_missing = result
         .get("type")
-        .is_some_and(|t| t.as_str().is_some_and(|s| !s.is_empty()));
+        .is_none_or(|t| t.as_str().is_none_or(str::is_empty));
     if type_missing
         && !result.get("anyOf").is_some_and(Value::is_array)
         && !result.get("oneOf").is_some_and(Value::is_array)
     {
         if let Some(Value::Array(e)) = result.get("enum") {
             if !e.is_empty() {
-                let types: Vec<Option<&str>> = e.iter().map(infer_json_schema_type).collect();
-                if types.iter().all(Option::is_some)
-                    && types
-                        .iter()
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .len()
-                        == 1
+                let types: Vec<&str> = e.iter().map(|v| infer_json_schema_type(v)).collect();
+                if types
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == 1
                 {
-                    let t = types[0].expect("checked");
-                    result.insert("type".into(), json!(t));
+                    result.insert("type".into(), json!(types[0]));
                 }
             }
         }
@@ -1276,6 +1277,8 @@ fn open_subschema_widening() -> Value {
     ] })
 }
 
+// invariant: the `as_object` below is guarded by `child.is_object()`.
+#[allow(clippy::expect_used)]
 fn grammar_node(value: &Value, is_subschema: bool) -> Value {
     match value {
         Value::Bool(true) if is_subschema => open_subschema_widening(),
@@ -1289,12 +1292,14 @@ fn grammar_node(value: &Value, is_subschema: bool) -> Value {
                     | "$defs" | "definitions"
                         if child.is_object() =>
                     {
-                        let m = child.as_object().expect("checked");
-                        Value::Object(
-                            m.iter()
-                                .map(|(k, v)| (k.clone(), grammar_node(v, true)))
-                                .collect(),
-                        )
+                        match child.as_object() {
+                            Some(m) => Value::Object(
+                                m.iter()
+                                    .map(|(k, v)| (k.clone(), grammar_node(v, true)))
+                                    .collect(),
+                            ),
+                            None => child.clone(),
+                        }
                     }
                     "anyOf" | "oneOf" | "allOf" | "prefixItems" if child.is_array() => {
                         grammar_node(child, true)

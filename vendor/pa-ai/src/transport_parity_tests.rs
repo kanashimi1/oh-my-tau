@@ -19,7 +19,10 @@ fn oracle_file(name: &str) -> Option<std::path::PathBuf> {
     std::env::var_os("OMP_COMPAT_ORACLE_DIR")
         .map(std::path::PathBuf::from)
         .into_iter()
-        .chain([repo.join("target/compat-oracle"), repo.join("runs/omp-rust/compat-oracle")])
+        .chain([
+            repo.join("target/compat-oracle"),
+            repo.join("runs/omp-rust/compat-oracle"),
+        ])
         .map(|dir| dir.join(name))
         .find(|path| path.is_file())
 }
@@ -120,6 +123,8 @@ fn rust_transport_matches_ts_stream_simple_for_every_case() {
     let mut total = 0usize;
     let mut failures: Vec<String> = Vec::new();
     let mut apis = std::collections::BTreeMap::<String, usize>::new();
+    let uuid_re = regex::Regex::new("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+        .expect("regex");
     for line in text.lines().filter(|l| !l.is_empty()) {
         let case: Value = serde_json::from_str(line).expect("case parses");
         if case.get("error").is_some_and(|e| !e.is_null()) {
@@ -151,12 +156,8 @@ fn rust_transport_matches_ts_stream_simple_for_every_case() {
             Ok(mut p) => {
                 let mut want = want.clone();
                 if case["options"].get("sessionId").is_none() {
-                    let re = regex::Regex::new(
-                        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-                    )
-                    .expect("regex");
-                    mask_uuids(&mut p.body, &re);
-                    mask_uuids(&mut want, &re);
+                    mask_uuids(&mut p.body, &uuid_re);
+                    mask_uuids(&mut want, &uuid_re);
                 }
                 if p.api != want_api {
                     failures.push(format!("{name}: api rust={} ts={want_api}", p.api));

@@ -7,7 +7,7 @@
 //! entry on the branch ending at the current leaf. Selecting one asks the
 //! host to branch the session to that entry (`Runtime` `branch` rpc, omp
 //! `AgentSession.branch`) — the selection is exposed via [`TreeNavigator::take_selection`]
-//! because `Action` has no rewind variant yet (asked TuiArchitect for
+//! because `Action` has no rewind variant yet (asked `TuiArchitect` for
 //! `Action::Rewind { entry_id }`).
 
 use omp_session::tree::{
@@ -371,8 +371,10 @@ mod tests {
 
     #[test]
     fn render_snapshot() {
-        let mut nav = TreeNavigator::default();
-        nav.title = "rewind".into();
+        let mut nav = TreeNavigator {
+            title: "rewind".into(),
+            ..TreeNavigator::default()
+        };
         nav.set_entries(&user_entries(), TreeMode::Rewind);
         let theme = Theme::default();
         let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();

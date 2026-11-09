@@ -8,7 +8,8 @@
 //!
 //! Wire formats are byte-identical to the TS source.
 
-use std::sync::{Arc, Mutex as StdMutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -25,7 +26,7 @@ use crate::registry::{
 };
 use crate::relay_client::{connect_relay, CollabRole, RelayEvent, RelayHandle, RelayOptions};
 use crate::replication::{
-    oversized_entry_notice, serialize_replicated_event, snapshot_chunks,
+    oversized_entry_notice, serialize_replicated_event, snapshot_chunks, SnapshotChunk,
     COLLAB_ENTRY_OMITTED_CUSTOM_TYPE,
 };
 
@@ -80,9 +81,13 @@ pub trait CollabHostBackend: Send + Sync {
     fn snapshot_entries(&self) -> Vec<String> {
         Vec::new()
     }
+    /// # Errors
+    /// Always: the default backend has no session to inject into.
     fn inject_guest_prompt(&self, _text: &str, _images: Vec<Value>) -> Result<()> {
         Err(anyhow!("guest prompts not supported"))
     }
+    /// # Errors
+    /// Always: the default backend has no turn to abort.
     fn abort_turn(&self) -> Result<()> {
         Err(anyhow!("guest abort not supported"))
     }
@@ -123,19 +128,19 @@ struct HostInner {
     guest_actions_ready: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
     on_ended: Option<Arc<dyn Fn() + Send + Sync>>,
     session_id: String,
-    handle: StdMutex<Option<RelayHandle>>,
-    peers: StdMutex<std::collections::HashMap<u32, Peer>>,
-    last_state_json: StdMutex<Option<String>>,
-    publication: StdMutex<Option<CollabHostPublication>>,
-    full_link: StdMutex<Option<String>>,
-    web_link: StdMutex<Option<String>>,
-    view_link: StdMutex<Option<String>>,
-    web_view_link: StdMutex<Option<String>>,
+    handle: Mutex<Option<RelayHandle>>,
+    peers: Mutex<std::collections::HashMap<u32, Peer>>,
+    last_state_json: Mutex<Option<String>>,
+    publication: Mutex<Option<CollabHostPublication>>,
+    full_link: Mutex<Option<String>>,
+    web_link: Mutex<Option<String>>,
+    view_link: Mutex<Option<String>>,
+    web_view_link: Mutex<Option<String>>,
     relay_connected: std::sync::atomic::AtomicBool,
     stopped: std::sync::atomic::AtomicBool,
     stopping: std::sync::atomic::AtomicBool,
-    abort_start: StdMutex<Option<mpsc::Sender<()>>>,
-    stop_done: StdMutex<Option<mpsc::Receiver<()>>>,
+    abort_start: Mutex<Option<mpsc::Sender<()>>>,
+    stop_done: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
 /// The host peer for one collab room.
@@ -144,6 +149,8 @@ pub struct CollabHost {
 }
 
 impl CollabHost {
+    /// # Panics
+    /// When `options.instance_id` is empty.
     pub fn new(backend: Arc<dyn CollabHostBackend>, options: CollabHostOptions) -> Self {
         assert!(
             !options.instance_id.is_empty(),
@@ -158,19 +165,19 @@ impl CollabHost {
             guest_actions_ready: options.guest_actions_ready,
             on_ended: options.on_ended,
             session_id,
-            handle: StdMutex::new(None),
-            peers: StdMutex::new(std::collections::HashMap::new()),
-            last_state_json: StdMutex::new(None),
-            publication: StdMutex::new(None),
-            full_link: StdMutex::new(None),
-            web_link: StdMutex::new(None),
-            view_link: StdMutex::new(None),
-            web_view_link: StdMutex::new(None),
+            handle: Mutex::new(None),
+            peers: Mutex::new(std::collections::HashMap::new()),
+            last_state_json: Mutex::new(None),
+            publication: Mutex::new(None),
+            full_link: Mutex::new(None),
+            web_link: Mutex::new(None),
+            view_link: Mutex::new(None),
+            web_view_link: Mutex::new(None),
             relay_connected: std::sync::atomic::AtomicBool::new(false),
             stopping: std::sync::atomic::AtomicBool::new(false),
             stopped: std::sync::atomic::AtomicBool::new(false),
-            abort_start: StdMutex::new(None),
-            stop_done: StdMutex::new(None),
+            abort_start: Mutex::new(None),
+            stop_done: Mutex::new(None),
         });
         Self { inner }
     }
@@ -210,28 +217,32 @@ impl CollabHost {
     }
     #[must_use]
     pub fn participant_count(&self) -> usize {
-        self.inner.peers.lock().unwrap().len()
+        self.inner.peers.lock().len()
     }
 
     /// Live links for the current (or last) room — `None` before start / after stop.
     #[must_use]
     pub fn full_link(&self) -> Option<String> {
-        self.inner.full_link.lock().unwrap().clone()
+        self.inner.full_link.lock().clone()
     }
     #[must_use]
     pub fn web_link(&self) -> Option<String> {
-        self.inner.web_link.lock().unwrap().clone()
+        self.inner.web_link.lock().clone()
     }
     #[must_use]
     pub fn view_link(&self) -> Option<String> {
-        self.inner.view_link.lock().unwrap().clone()
+        self.inner.view_link.lock().clone()
     }
     #[must_use]
     pub fn web_view_link(&self) -> Option<String> {
-        self.inner.web_view_link.lock().unwrap().clone()
+        self.inner.web_view_link.lock().clone()
     }
 
     /// Open the room on `relay_url` and publish to the local registry.
+    ///
+    /// # Errors
+    /// When the host already ended, the relay is unreachable, or the room
+    /// cannot be published.
     pub async fn start(&self, relay_url: &str, web_url: &str) -> Result<()> {
         if self.ending() {
             return Err(anyhow!("collab host already stopped"));
@@ -259,7 +270,7 @@ impl CollabHost {
         let parsed = parse_collab_link(&full_link).map_err(|e| anyhow!(e))?;
 
         let (open_tx, mut open_rx) = mpsc::channel(1);
-        *inner.abort_start.lock().unwrap() = Some(open_tx.clone());
+        *inner.abort_start.lock() = Some(open_tx.clone());
 
         let cipher = CollabCipher::new(&parsed.key);
         let (handle, mut events) = connect_relay(
@@ -269,7 +280,7 @@ impl CollabHost {
             &RelayOptions::default(),
         )
         .await?;
-        *inner.handle.lock().unwrap() = Some(handle.clone());
+        *inner.handle.lock() = Some(handle.clone());
 
         let opened = tokio::time::timeout(Duration::from_millis(CONNECT_TIMEOUT_MS), async {
             loop {
@@ -297,7 +308,7 @@ impl CollabHost {
         inner
             .relay_connected
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        (*inner.abort_start.lock().unwrap()) = None;
+        (*inner.abort_start.lock()) = None;
 
         // Publish to the local registry after the relay connection succeeded.
         let source = Arc::new(HostRegistrySource {
@@ -320,23 +331,23 @@ impl CollabHost {
             }
             return Err(anyhow!("collab host stopped during startup"));
         }
-        *inner.publication.lock().unwrap() = publication;
+        *inner.publication.lock() = publication;
 
         // Publish the live links (controller/cli read them via the getters).
-        *inner.full_link.lock().unwrap() = Some(full_link.clone());
-        *inner.web_link.lock().unwrap() = Some(web_link.clone());
-        *inner.view_link.lock().unwrap() = Some(view_link.clone());
-        *inner.web_view_link.lock().unwrap() = Some(web_view_link.clone());
+        *inner.full_link.lock() = Some(full_link.clone());
+        *inner.web_link.lock() = Some(web_link.clone());
+        *inner.view_link.lock() = Some(view_link.clone());
+        *inner.web_view_link.lock() = Some(web_view_link.clone());
 
         // Install the cipher for outbound sealing, then drive the event loop.
-        *CIPHER_CELL.lock().unwrap() = Some(cipher);
+        *CIPHER_CELL.lock() = Some(cipher);
         self.run_event_loop(events, full_link, web_link, view_link, web_view_link)
             .await;
-        *inner.full_link.lock().unwrap() = None;
-        *inner.web_link.lock().unwrap() = None;
-        *inner.view_link.lock().unwrap() = None;
-        *inner.web_view_link.lock().unwrap() = None;
-        *CIPHER_CELL.lock().unwrap() = None;
+        *inner.full_link.lock() = None;
+        *inner.web_link.lock() = None;
+        *inner.view_link.lock() = None;
+        *inner.web_view_link.lock() = None;
+        *CIPHER_CELL.lock() = None;
         Ok(())
     }
 
@@ -347,7 +358,7 @@ impl CollabHost {
             return;
         }
         {
-            let mut done = inner.stop_done.lock().unwrap();
+            let mut done = inner.stop_done.lock();
             if done.is_some() {
                 return;
             }
@@ -358,7 +369,9 @@ impl CollabHost {
         inner
             .stopping
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some(tx) = inner.abort_start.lock().unwrap().take() {
+        // Take first: a guard in the `if let` scrutinee would live across the await.
+        let abort_start = inner.abort_start.lock().take();
+        if let Some(tx) = abort_start {
             let _ = tx.send(()).await;
         }
         self.send_frame(&json!({ "t": "bye", "reason": reason }), 0);
@@ -367,11 +380,11 @@ impl CollabHost {
         // tears the room down (close 4001) as soon as the host socket closes, so closing right
         // behind the goodbye would lose it and leave guests reconnecting instead of ended. The
         // TS host gets this gap for free from awaiting the registry shutdown before closing.
-        if !inner.peers.lock().unwrap().is_empty() {
+        if !inner.peers.lock().is_empty() {
             tokio::time::sleep(BYE_DRAIN).await;
         }
         self.teardown().await;
-        let _ = inner.stop_done.lock().unwrap().take();
+        let _ = inner.stop_done.lock().take();
         let _ = std::thread::current();
     }
 
@@ -383,11 +396,13 @@ impl CollabHost {
         {
             return;
         }
-        if let Some(pub_) = inner.publication.lock().unwrap().take() {
+        // Take first: a guard in the `if let` scrutinee would live across the await.
+        let publication = inner.publication.lock().take();
+        if let Some(pub_) = publication {
             pub_.close().await;
         }
-        inner.peers.lock().unwrap().clear();
-        let handle = inner.handle.lock().unwrap().take();
+        inner.peers.lock().clear();
+        let handle = inner.handle.lock().take();
         if let Some(handle) = handle {
             handle.close();
             // Queued frames (the goodbye) are flushed by the session task ahead of the close
@@ -401,11 +416,11 @@ impl CollabHost {
     }
 
     /// Mirror one session entry to all guests (host.ts:477-489).
-    pub fn broadcast_entry(&self, entry_json: String) {
+    pub fn broadcast_entry(&self, entry_json: &str) {
         if !self.broadcast_allowed() {
             return;
         }
-        if let Ok(entry) = serde_json::from_str::<Value>(&entry_json) {
+        if let Ok(entry) = serde_json::from_str::<Value>(entry_json) {
             if entry.get("type").and_then(Value::as_str) == Some("custom_message")
                 && entry.get("customType").and_then(Value::as_str)
                     == Some(COLLAB_ENTRY_OMITTED_CUSTOM_TYPE)
@@ -415,16 +430,16 @@ impl CollabHost {
                 self.send_frame(&json!({ "t": "event", "event": event_json }), 0);
             }
         }
-        self.send_raw(format!(r#"{{"t":"entry","entry":{entry_json}}}"#), 0);
+        self.send_raw(&format!(r#"{{"t":"entry","entry":{entry_json}}}"#), 0);
     }
 
     /// Mirror one session event to all guests (host.ts:696-700).
-    pub fn broadcast_event(&self, event_json: String) {
+    pub fn broadcast_event(&self, event_json: &str) {
         if !self.broadcast_allowed() {
             return;
         }
-        self.send_raw(format!(r#"{{"t":"event","event":{event_json}}}"#), 0);
-        if let Ok(event) = serde_json::from_str::<Value>(&event_json) {
+        self.send_raw(&format!(r#"{{"t":"event","event":{event_json}}}"#), 0);
+        if let Ok(event) = serde_json::from_str::<Value>(event_json) {
             let kind = event.get("type").and_then(Value::as_str);
             if kind.is_some_and(|k| STATE_TRIGGER_EVENTS.contains(&k)) {
                 self.schedule_state_broadcast();
@@ -439,23 +454,24 @@ impl CollabHost {
         }
         let state = self.build_state();
         let json = serde_json::to_string(&state).unwrap_or_default();
-        let mut last = self.inner.last_state_json.lock().unwrap();
+        let mut last = self.inner.last_state_json.lock();
         if last.as_deref() == Some(json.as_str()) {
             return;
         }
-        *last = Some(json.clone());
+        *last = Some(json);
         drop(last);
         self.send_frame(&json!({ "t": "state", "state": state }), 0);
     }
 
     fn broadcast_allowed(&self) -> bool {
-        !self.ending() && self.inner.peers.lock().unwrap().len() > 0 && self.session_still_current()
+        !self.ending() && !self.inner.peers.lock().is_empty() && self.session_still_current()
     }
 
     fn session_still_current(&self) -> bool {
         self.inner.backend.session_id() == self.inner.session_id
     }
 
+    #[allow(clippy::cast_precision_loss)] // token counters are far below f64's 2^53 exact range
     fn build_state(&self) -> Value {
         let backend = &self.inner.backend;
         let (tokens, window) = backend.context_usage();
@@ -468,7 +484,7 @@ impl CollabHost {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "anonymous".to_string());
         let mut participants = vec![json!({ "name": display_name, "role": "host" })];
-        for (_, p) in self.inner.peers.lock().unwrap().iter() {
+        for (_, p) in self.inner.peers.lock().iter() {
             let mut pj = json!({ "name": p.name, "role": "guest" });
             if !p.can_write {
                 pj["readOnly"] = Value::Bool(true);
@@ -492,11 +508,11 @@ impl CollabHost {
         })
     }
 
-    fn snapshot_chunks(&self, entries: Vec<String>) -> Vec<String> {
-        let bytes: Vec<usize> = entries.iter().map(|e| e.len()).collect();
-        snapshot_chunks(&entries, &bytes)
+    fn snapshot_chunk_jsons(entries: &[String]) -> Vec<String> {
+        let bytes: Vec<usize> = entries.iter().map(std::string::String::len).collect();
+        snapshot_chunks(entries, &bytes)
             .into_iter()
-            .map(|chunk| {
+            .map(|chunk: SnapshotChunk| {
                 let json = chunk.entries.join(",");
                 format!(
                     r#"{{"t":"snapshot-chunk","entries":[{json}],"final":{}}}"#,
@@ -506,10 +522,10 @@ impl CollabHost {
             .collect()
     }
 
-    fn handle_frame(&self, frame: Value, from_peer: u32) {
+    fn handle_frame(&self, frame: &Value, from_peer: u32) {
         let t = frame.get("t").and_then(Value::as_str).unwrap_or("");
         {
-            let peers = self.inner.peers.lock().unwrap();
+            let peers = self.inner.peers.lock();
             // `hello` is the frame that registers a peer (host.ts #handleHello), so it
             // must be admitted from unknown senders; everything else still requires it.
             if !peers.contains_key(&from_peer) && t != "ui-response" && t != "hello" {
@@ -527,10 +543,10 @@ impl CollabHost {
             return;
         }
         match t {
-            "hello" => self.handle_hello(&frame, from_peer),
-            "prompt" => self.handle_prompt(&frame, from_peer),
+            "hello" => self.handle_hello(frame, from_peer),
+            "prompt" => self.handle_prompt(frame, from_peer),
             "abort" => self.handle_abort(from_peer),
-            "fetch-transcript" => self.handle_fetch_transcript(&frame, from_peer),
+            "fetch-transcript" => self.handle_fetch_transcript(frame, from_peer),
             _ => {}
         }
     }
@@ -556,11 +572,11 @@ impl CollabHost {
         };
         let write_token = frame.get("writeToken").and_then(Value::as_str);
         let can_write = write_token.is_some();
-        let first_peer = self.inner.peers.lock().unwrap().is_empty();
-        self.inner.peers.lock().unwrap().insert(
+        let first_peer = self.inner.peers.lock().is_empty();
+        self.inner.peers.lock().insert(
             from_peer,
             Peer {
-                name: clean_name.clone(),
+                name: clean_name,
                 can_write,
             },
         );
@@ -568,7 +584,7 @@ impl CollabHost {
         let header = self.inner.backend.snapshot_header();
         let state = self.build_state();
         if first_peer {
-            *self.inner.last_state_json.lock().unwrap() =
+            *self.inner.last_state_json.lock() =
                 Some(serde_json::to_string(&state).unwrap_or_default());
         }
         let entries = self.inner.backend.snapshot_entries();
@@ -585,8 +601,8 @@ impl CollabHost {
             welcome["readOnly"] = Value::Bool(true);
         }
         self.send_frame(&welcome, from_peer);
-        for chunk in self.snapshot_chunks(entries) {
-            self.send_raw(chunk, from_peer);
+        for chunk in Self::snapshot_chunk_jsons(&entries) {
+            self.send_raw(&chunk, from_peer);
         }
         self.schedule_state_broadcast();
     }
@@ -599,10 +615,8 @@ impl CollabHost {
             .inner
             .peers
             .lock()
-            .unwrap()
             .get(&from_peer)
-            .map(|p| p.can_write)
-            .unwrap_or(false);
+            .is_some_and(|p| p.can_write);
         if !can_write {
             self.reject_read_only("prompting", from_peer);
             return;
@@ -633,10 +647,8 @@ impl CollabHost {
             .inner
             .peers
             .lock()
-            .unwrap()
             .get(&from_peer)
-            .map(|p| p.can_write)
-            .unwrap_or(false);
+            .is_some_and(|p| p.can_write);
         if !can_write {
             self.reject_read_only("interrupting", from_peer);
             return;
@@ -662,12 +674,7 @@ impl CollabHost {
     }
 
     fn reject_while_starting(&self, action: &str, from_peer: u32) -> bool {
-        let ready = self
-            .inner
-            .guest_actions_ready
-            .as_ref()
-            .map(|f| f())
-            .unwrap_or(true);
+        let ready = self.inner.guest_actions_ready.as_ref().is_none_or(|f| f());
         if ready {
             return false;
         }
@@ -684,13 +691,13 @@ impl CollabHost {
 
     fn send_frame(&self, frame: &Value, to_peer: u32) {
         let json = serde_json::to_string(frame).unwrap_or_default();
-        self.send_raw(json, to_peer);
+        self.send_raw(&json, to_peer);
     }
 
-    fn send_raw(&self, json: String, to_peer: u32) {
-        let handle = self.inner.handle.lock().unwrap().clone();
+    fn send_raw(&self, json: &str, to_peer: u32) {
+        let handle = self.inner.handle.lock().clone();
         let Some(handle) = handle else { return };
-        let cell = CIPHER_CELL.lock().unwrap();
+        let cell = CIPHER_CELL.lock();
         if let Some(cipher) = cell.as_ref() {
             let sealed = cipher.seal(json.as_bytes());
             let env = pack_envelope(to_peer, &sealed);
@@ -714,14 +721,14 @@ impl CollabHost {
                         continue;
                     };
                     let plain = {
-                        let cell = CIPHER_CELL.lock().unwrap();
+                        let cell = CIPHER_CELL.lock();
                         cell.as_ref().and_then(|c| c.open(&envelope.payload))
                     };
                     let Some(plain) = plain else { continue };
                     if let Ok(frame) =
                         serde_json::from_str::<Value>(&String::from_utf8_lossy(&plain))
                     {
-                        self.handle_frame(frame, envelope.peer_id);
+                        self.handle_frame(&frame, envelope.peer_id);
                     }
                 }
                 RelayEvent::Text(text) => {
@@ -729,7 +736,10 @@ impl CollabHost {
                         if msg.get("t").and_then(Value::as_str) == Some("peer-left") {
                             if let Some(peer) = msg.get("peer").and_then(Value::as_u64) {
                                 if self.guest_traffic_allowed() {
-                                    self.inner.peers.lock().unwrap().remove(&(peer as u32));
+                                    self.inner
+                                        .peers
+                                        .lock()
+                                        .remove(&(u32::try_from(peer).unwrap_or(u32::MAX)));
                                     self.schedule_state_broadcast();
                                 }
                             }
@@ -742,7 +752,7 @@ impl CollabHost {
                     will_reconnect,
                 } => {
                     if will_reconnect {
-                        self.inner.peers.lock().unwrap().clear();
+                        self.inner.peers.lock().clear();
                         self.schedule_state_broadcast();
                     } else {
                         if !self.ending() {
@@ -760,8 +770,8 @@ impl CollabHost {
     }
 }
 
-static CIPHER_CELL: std::sync::LazyLock<StdMutex<Option<CollabCipher>>> =
-    std::sync::LazyLock::new(|| StdMutex::new(None));
+static CIPHER_CELL: std::sync::LazyLock<Mutex<Option<CollabCipher>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
 
 /// Registry source backed by a live host.
 struct HostRegistrySource {
@@ -769,22 +779,26 @@ struct HostRegistrySource {
 }
 
 impl CollabHostRegistrySource for HostRegistrySource {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )] // peer count and unix millis fit i64 by construction
     fn snapshot(&self) -> Result<CollabHostSnapshot> {
         let host = &self.host;
         let model = host.backend.model();
-        let participants = host.peers.lock().unwrap().len() as i64 + 1;
+        let participants = host.peers.lock().len() as i64 + 1;
         Ok(CollabHostSnapshot {
             instance_id: host.instance_id.clone(),
             generation: host.generation,
-            pid: std::process::id() as i64,
+            pid: i64::from(std::process::id()),
             session_id: host.session_id.clone(),
             session_name: host.backend.session_name(),
             cwd: host.backend.cwd(),
             model: model.map(|(provider, id)| CollabHostModel { provider, id }),
             started_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0),
+                .map_or(0, |d| d.as_millis() as i64),
             participants,
             relay_connected: host
                 .relay_connected

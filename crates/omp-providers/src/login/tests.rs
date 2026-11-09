@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_methods)] // tests/entry points: throwaway runtimes drive async code
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::pin::Pin;
@@ -11,8 +12,6 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 
 use super::*;
-type HttpReply = Box<dyn Fn(&ProviderHttpRequest) -> (u16, String) + Send + Sync>;
-type RawRow = (i64, String, String, String, Option<String>, Option<String>);
 
 /// Scripted UI: answers prompts from a queue and records what it was shown.
 #[derive(Default)]
@@ -55,10 +54,13 @@ impl OAuthLoginUi for ScriptedUi {
     }
 }
 
+/// Scripted HTTP reply closure.
+type ReplyFn = Box<dyn Fn(&ProviderHttpRequest) -> (u16, String) + Send + Sync>;
+
 /// Records requests, answers from a closure.
 struct ScriptedHttp {
     seen: Mutex<Vec<ProviderHttpRequest>>,
-    reply: HttpReply,
+    reply: ReplyFn,
 }
 
 impl ProviderHttp for ScriptedHttp {
@@ -105,6 +107,9 @@ fn temp_target() -> (tempfile::TempDir, Target) {
     let target = Target::Local(dir.path().join("agent").join("agent.db"));
     (dir, target)
 }
+
+/// One stored credential row: `(id, kind, provider, label, api_key, metadata)`.
+type RawRow = (i64, String, String, String, Option<String>, Option<String>);
 
 fn raw_rows(target: &Target) -> Vec<RawRow> {
     let Target::Local(db) = target else {

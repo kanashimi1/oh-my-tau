@@ -235,6 +235,7 @@ fn run_opts(opts: Options) -> Result<i32> {
     }
 }
 
+#[allow(clippy::disallowed_methods)] // entry point: serves on the entered runtime or a dedicated one
 fn run_daemon(socket: &Path, pidfile: &Path) -> Result<i32> {
     if read_pid(pidfile).is_some_and(process_alive) {
         bail!(

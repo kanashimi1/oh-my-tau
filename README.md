@@ -17,13 +17,38 @@ The release binary is `omt`. Highlights:
 - **RPC mode** — `omt --mode rpc`: newline-delimited JSON-RPC on stdio (each
   browser session below runs as one of these).
 - **Browser UI** — `omt web` serves a local web UI (default
-  http://127.0.0.1:7467) with themes, wallpapers and per-session agents.
+  http://127.0.0.1:7467) with themes, wallpapers, per-session agents, a session
+  explorer with tmux-style panes, a file preview panel (HTML, images, video,
+  PDF, Office, Markdown), a review queue, worktree spawn, and dictation.
+- **Desktop app (Tau)** — a Tauri 2 Windows shell around the web UI with tray,
+  notifications, a global capture shortcut and push-to-talk dictation
+  (`desktop/`). `omt attach` opens the same live session in a terminal.
 - **Extensions** — runs unmodified omp `ExtensionAPI` extensions through a
   Bun-based extension host (`ext-host/`).
 - **MCP** — Model Context Protocol client (stdio and Streamable-HTTP/SSE).
 - **LSP** — language-server integration with diagnostics and workspace edits.
 - **Sessions** — omp session JSONL (format v3) read/write; `-c`, `-r` and
   `--fork` work on the same sessions omp writes.
+- **WASM plugins** — sandboxed `.wasm` tools and slash commands run by a
+  pure-Rust interpreter (`wasmi`), no Bun needed; see
+  [`docs/wasm-plugins.md`](docs/wasm-plugins.md).
+- **Fleet / a2a hub** — `omt hub` is a durable message hub for several agents
+  (envelope store, claims, stdio MCP server); task children run in git
+  worktrees with a merge review (`omt agent-merge`); `omt daemon` spawns an
+  RPC agent per socket connection.
+- **Context policy and Laya judge (opt-in)** — `OMP_CONTEXT_POLICY` /
+  `context.policy` decide per user turn whether a context-maintenance step runs
+  (`always`, `rule`, `laya`, `schedule`). The `laya` kind uses a judge model
+  (one shared `omt laya-serve` daemon per model); its ONNX weights are **not**
+  shipped in this repository, and without them everything else works as before.
+- **More providers** — `omt login` covers the omp flows plus gitlab-duo,
+  cloudflare-ai-gateway, cursor, xiaomi, perplexity, google-gemini-cli,
+  google-antigravity, openai-codex-device, devin and others; quota 429s switch
+  to a configured fallback model immediately.
+- **Feature commands** — `/plan`, `/wt`, `/btw`, `/loop`, `/shake`, `/restart`,
+  `/skills`, `/marketplace`, `/plugins`, `/share`, `/ssh`, `/browser`,
+  `/budget`, and `/sandbox` (Landlock + seccomp confinement of tool
+  subprocesses on Linux). See [CHANGELOG.md](CHANGELOG.md).
 
 It is fast: a one-shot `omt -p` run finishes in about 22 ms of harness time and
 uses ~20x less CPU than Pi on Node ([Benchmarks](#benchmarks), provisional).
@@ -38,16 +63,21 @@ The `omt web` browser UI:
 
 ## Install
 
-Linux x86_64, prebuilt binary (verifies the release's sha256, installs to
-`~/.local/bin/omt`; set `OMT_INSTALL_DIR` to change it):
+Linux (x86_64, aarch64) and macOS (x86_64, arm64), prebuilt binary — the
+script picks the release asset for your platform, verifies its sha256 and
+installs to `~/.local/bin/omt` (set `OMT_INSTALL_DIR` to change it, `OMT_VERSION`
+to pick a tag):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kanashimi1/oh-my-tau/main/install.sh | sh
 ```
 
-Or download `omt-linux-x64` from the
-[releases](https://github.com/kanashimi1/oh-my-tau/releases), check it against
-`SHA256SUMS.txt` and put it on `PATH` as `omt`. Other platforms: build from source.
+Or download an asset from the
+[releases](https://github.com/kanashimi1/oh-my-tau/releases) — `omt-linux-x64`,
+`omt-linux-arm64` (glibc >= 2.38; the installer falls back to the static build on
+older systems), `omt-linux-x64-musl`, `omt-linux-arm64-musl` (static),
+`omt-macos-x64`, `omt-macos-arm64` or `omt-windows-x64.exe` — check it against
+`SHA256SUMS.txt` and put it on `PATH` as `omt`. Anything else: build from source.
 
 ## Build from source
 
@@ -63,7 +93,13 @@ Requirements:
 cargo build --release -p omp-cli
 ```
 
-The binary lands at `target/release/omt`.
+The binary lands at `target/release/omt`. The Laya judge heads use the
+prebuilt ONNX Runtime through the default `onnx` Cargo feature; build with
+`--no-default-features` where there is none (`scripts/build-musl.sh` does this
+for the static musl binaries).
+For a distributable binary without debug line tables (~107 MB instead of
+~310 MB) build the `dist` profile: `cargo build --profile dist -p omp-cli`
+(lands at `target/dist/omt`).
 
 ## Quick start
 
@@ -106,7 +142,7 @@ omt web                  # browser UI on http://127.0.0.1:7467
 
 Useful subcommands (see `omt <sub> --help`): `models`, `stats`, `config`,
 `gc`, `export`, `judge-sessions`, `login`/`logout`, `collab`, `serve-collab`,
-`web`.
+`web`, `attach`, `hub`, `agent-merge`, `daemon`, `laya-serve`.
 
 ## Key features
 
@@ -142,7 +178,7 @@ benchmark for Pi-family coding agents, against **Pi on Node** (`pi-node`,
 > server, so this measures **harness overhead only**, not model quality or task
 > success. This is **not** an official Buffon leaderboard entry yet (the `omt` arm
 > is submitted upstream). Absolute milliseconds depend on the host; the ratios are
-> the meaningful part.
+> the meaningful part. The numbers below were **not** re-measured for 0.13.0.
 
 Overhead workloads, `openai-completions` endpoint, medians:
 
@@ -185,8 +221,9 @@ observable outcome with Pi's. omt passes `http-429-retry`, `http-500-retry`,
 `keepalive-only`, `kill-mid-tool` and `sigterm-midstream` on both wire APIs. In the
 `disconnect-before` / `disconnect-midstream` samples that ran, omt's outcome equals
 Pi's; the cells are not scored because the host was too busy for the reference run.
-One real difference: when every request is rate-limited, omt retries 10 times (omp's
-`retry.maxRetries` default) where Pi gives up after 3, then exits with an error.
+One real difference: when every request is rate-limited, omt retried 10 times (omp's
+`retry.maxRetries` default at the time) where Pi gives up after 3, then exited with an
+error; the default is now 4 and a 429 with a fallback chain switches model immediately.
 
 Buffon's Pi Harness Score for the families measured (overhead and streaming, 2 of 9)
 is 94 (A) for omt against 70 for the reference (provisional; Pi-faithfulness not

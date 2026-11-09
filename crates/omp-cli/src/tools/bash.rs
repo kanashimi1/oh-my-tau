@@ -11,8 +11,9 @@
 //! `read proc://<name>`, and the child is killed when the session's job
 //! registry is dropped (omp stops owned services at session end).
 
+use parking_lot::Mutex;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -128,6 +129,7 @@ fn detached_bash() -> tokio::process::Command {
 
 /// util-linux `setsid` when installed (shared by [`detached_bash`] and
 /// [`local_bash_argv`]).
+#[allow(clippy::ref_option)] // returns the LazyLock's static slot by reference
 fn setsid_path() -> &'static Option<std::path::PathBuf> {
     static SETSID: std::sync::LazyLock<Option<std::path::PathBuf>> =
         std::sync::LazyLock::new(|| {
@@ -137,6 +139,22 @@ fn setsid_path() -> &'static Option<std::path::PathBuf> {
                 .find(|p| p.is_file())
         });
     &SETSID
+}
+
+/// Local launcher for `script`: through the sandbox helper when the sandbox is
+/// on, else `detached_bash`.
+fn local_command(cwd: &std::path::Path, script: &str) -> tokio::process::Command {
+    if let Some((launcher, argv)) =
+        crate::features::sandbox::wrap_inner(cwd, &local_bash_argv(script))
+    {
+        let mut c = tokio::process::Command::new(launcher);
+        c.args(argv);
+        c
+    } else {
+        let mut c = detached_bash();
+        c.arg("-c").arg(script);
+        c
+    }
 }
 
 /// The tool command's local argv for `script`: `setsid --wait bash -c` when
@@ -165,6 +183,10 @@ async fn run(
     signal: &AbortSignal,
     tap: Option<Arc<Mutex<String>>>,
 ) -> Result<(String, Option<i32>, Duration, Option<&'static str>)> {
+    // System-1 kill guard (see tools/kill_guard.rs): refuse before spawn.
+    if let Some(reason) = super::kill_guard::check(command) {
+        bail!("{reason}");
+    }
     let script = format!("exec 2>&1\n{command}");
     let started = Instant::now();
     // `/ssh <host>` (features/ssh.rs): run the script remotely via
@@ -180,18 +202,7 @@ async fn run(
         }
         c
     } else {
-        match crate::features::sandbox::wrap_inner(cwd, &local_bash_argv(&script)) {
-            Some((launcher, argv)) => {
-                let mut c = tokio::process::Command::new(launcher);
-                c.args(argv);
-                c
-            }
-            None => {
-                let mut c = detached_bash();
-                c.arg("-c").arg(script);
-                c
-            }
-        }
+        local_command(cwd, &script)
     };
     let mut child = cmd
         .current_dir(cwd)
@@ -218,7 +229,7 @@ async fn run(
                 let n = n.context("reading command output")?;
                 if n == 0 { break; }
                 if let Some(tap) = &tap {
-                    let mut t = tap.lock().expect("job output tap poisoned");
+                    let mut t = tap.lock();
                     t.push_str(&String::from_utf8_lossy(&chunk[..n]));
                     // Bound the tap: proc reads only need the recent window.
                     if t.len() > RETAIN_BYTES {
@@ -269,6 +280,73 @@ pub struct Executed {
 ///
 /// # Errors
 /// Spawn or read failures.
+/// `OMT_BASH_DIGEST` (default on, `0` disables): shrink verbose builder output before it enters the
+/// transcript (every byte is re-read as cache input on later turns). Strips
+/// ANSI escapes everywhere; for cargo/rustc-style output drops progress lines
+/// and elides `warning:` detail past the first few, keeping errors intact.
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
+fn digest_output(raw: &str) -> String {
+    use std::fmt::Write as _;
+    let strip_ansi = |s: &str| {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                if chars.next() == Some('[') {
+                    for c2 in chars.by_ref() {
+                        if c2.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+    let clean = strip_ansi(raw);
+    let mut out = String::with_capacity(clean.len());
+    let mut warnings = 0usize;
+    let mut elided = 0usize;
+    for line in clean.lines() {
+        let t = line.trim_start();
+        if t.starts_with("warning:") {
+            warnings += 1;
+            if warnings <= 3 {
+                out.push_str(line);
+                out.push('\n');
+            } else {
+                elided += 1;
+            }
+            continue;
+        }
+        if matches!(
+            t.split_whitespace().next().unwrap_or(""),
+            "Compiling"
+                | "Checking"
+                | "Finished"
+                | "Downloading"
+                | "Downloaded"
+                | "Blocking"
+                | "Waiting"
+                | "Doc-tests"
+                | "Fresh"
+                | "Updating"
+        ) {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if elided > 0 {
+        writeln!(out, "… {elided} more warning(s) elided")
+            .expect("writing to a String is infallible");
+    }
+    out
+}
+
 pub async fn execute(
     cwd: &std::path::Path,
     command: &str,
@@ -492,6 +570,11 @@ pub async fn bash(
         ));
     }
     let (output, code, elapsed, outcome) = run(&dir, &command, timeout, &signal, None).await?;
+    let output = if std::env::var("OMT_BASH_DIGEST").map_or(true, |v| v != "0") {
+        digest_output(&output)
+    } else {
+        output
+    };
     let mut text = finished_text(&output, elapsed, outcome, timeout, code, &spill, &query);
     if !notices.is_empty() {
         text = format!("{}\n{text}", notices.join("\n"));
@@ -564,7 +647,10 @@ const SUPERVISOR_TICK: Duration = Duration::from_millis(100);
 ///
 /// # Errors
 /// Spawn failure, or abort while waiting.
-#[allow(clippy::too_many_lines)] // one supervisor task: spawn + readiness poll + liveness loop; mirrors omp's service supervisor
+#[allow(clippy::too_many_lines)]
+// one supervisor task: spawn + readiness poll + liveness loop; mirrors omp's service supervisor
+// invariant: the readiness regex is validated before this fn runs; the service entry is registered above before the select.
+#[allow(clippy::expect_used)]
 async fn start_service(
     registry: &JobRegistry,
     name: &str,
@@ -574,19 +660,12 @@ async fn start_service(
     timeout_secs: f64,
     signal: &AbortSignal,
 ) -> Result<ServiceOutcome> {
+    // System-1 kill guard (see tools/kill_guard.rs): refuse before spawn.
+    if let Some(reason) = super::kill_guard::check(command) {
+        bail!("{reason}");
+    }
     let script = format!("exec 2>&1\n{command}");
-    let mut cmd = match crate::features::sandbox::wrap_inner(dir, &local_bash_argv(&script)) {
-        Some((launcher, argv)) => {
-            let mut c = tokio::process::Command::new(launcher);
-            c.args(argv);
-            c
-        }
-        None => {
-            let mut c = detached_bash();
-            c.arg("-c").arg(&script);
-            c
-        }
-    };
+    let mut cmd = local_command(dir, &script);
     let mut child = cmd
         .current_dir(dir)
         .stdin(Stdio::null())
@@ -625,7 +704,7 @@ async fn start_service(
     };
     let service = registry.insert_service(service);
     let inner = registry.inner.clone();
-    let registry_liveness: std::sync::Weak<std::sync::Mutex<super::jobs::JobsInner>> =
+    let registry_liveness: std::sync::Weak<parking_lot::Mutex<super::jobs::JobsInner>> =
         Arc::downgrade(&inner);
 
     // Supervisor: drains output (log capture + readiness buffer), polls the
@@ -648,8 +727,8 @@ async fn start_service(
                         Ok(n) => {
                             let text = String::from_utf8_lossy(&chunk[..n]).into_owned();
                             {
-                                let svc = service.lock().expect("service poisoned");
-                                let mut out = svc.output.lock().expect("service output poisoned");
+                                let svc = service.lock();
+                                let mut out = svc.output.lock();
                                 out.push_str(&text);
                                 if out.len() > RETAIN_BYTES {
                                     let cut = out.len() - RETAIN_BYTES / 2;
@@ -670,7 +749,7 @@ async fn start_service(
                 }
                 _ = tick.tick() => {
                     {
-                        let svc = service.lock().expect("service poisoned");
+                        let svc = service.lock();
                         if svc.kill_requested || registry_liveness.upgrade().is_none() {
                             let _ = child.start_kill();
                         }
@@ -686,7 +765,7 @@ async fn start_service(
             }
             let ready_now = log_ready && port_ready;
             if ready_now {
-                let mut svc = service.lock().expect("service poisoned");
+                let mut svc = service.lock();
                 if svc.state == ServiceState::Starting {
                     svc.state = ServiceState::Ready;
                     svc.ready_at = Some(Instant::now());
@@ -698,7 +777,7 @@ async fn start_service(
         }
         // EOF or a fatal read error: settle from the child's exit status.
         let status = child.wait().await;
-        let mut svc = service.lock().expect("service poisoned");
+        let mut svc = service.lock();
         svc.exited_at = Some(Instant::now());
         svc.pid = None;
         match status {
@@ -733,13 +812,13 @@ async fn start_service(
         () = tokio::time::sleep(Duration::from_secs_f64(timeout_secs)) => true,
         () = signal.aborted() => {
             if let Some(svc) = registry.service(name) {
-                svc.lock().expect("service poisoned").kill_requested = true;
+                svc.lock().kill_requested = true;
             }
             bail!("Command aborted");
         }
     };
     let svc_arc = registry.service(name).expect("service registered");
-    let svc = svc_arc.lock().expect("service poisoned");
+    let svc = svc_arc.lock();
     Ok(ServiceOutcome {
         state: svc.state,
         pid: svc.pid,
@@ -818,6 +897,7 @@ fn start_background(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 
@@ -1055,11 +1135,8 @@ mod tests {
         );
         // The service keeps running after the timeout (omp returns readyTimedOut).
         let svc = env.jobs.service("svc-slow").unwrap();
-        assert_eq!(
-            svc.lock().unwrap().state,
-            super::super::jobs::ServiceState::Starting
-        );
-        assert!(svc.lock().unwrap().pid.is_some());
+        assert_eq!(svc.lock().state, super::super::jobs::ServiceState::Starting);
+        assert!(svc.lock().pid.is_some());
     }
 
     #[tokio::test]
@@ -1193,14 +1270,7 @@ mod tests {
             )
             .await
             .unwrap();
-            pid = env
-                .jobs
-                .service("svc-drop")
-                .unwrap()
-                .lock()
-                .unwrap()
-                .pid
-                .unwrap();
+            pid = env.jobs.service("svc-drop").unwrap().lock().pid.unwrap();
             assert!(std::path::Path::new(&format!("/proc/{pid}")).exists());
         } // registry dropped: the supervisor must kill the child.
         let mut gone = false;

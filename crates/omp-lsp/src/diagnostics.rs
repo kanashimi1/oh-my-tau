@@ -82,12 +82,19 @@ pub fn is_only_queried_declaration(locations: &[Location], uri: &str, position: 
 /// Panics if `result` is an array but its `as_array` view is unavailable
 /// (impossible for JSON arrays).
 #[must_use]
+// invariant: as_array() expect guarded by is_array() check (see below).
+#[allow(clippy::expect_used)]
 pub fn normalize_location_result(result: &Value) -> Vec<Location> {
     if result.is_null() {
         return Vec::new();
     }
     let raw: Vec<&Value> = if result.is_array() {
-        result.as_array().unwrap().iter().collect()
+        // invariant: is_array() checked above, JSON arrays always have an as_array view.
+        result
+            .as_array()
+            .expect("checked is_array")
+            .iter()
+            .collect()
     } else {
         vec![result]
     };

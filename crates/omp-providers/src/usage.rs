@@ -139,7 +139,7 @@ fn parse_iso_ms(s: &str) -> Option<i64> {
         date.get(8..10)?.parse().ok()?,
     );
     let time_end = s[11..]
-        .find(|c: char| c == '+' || c == 'Z' || c == '-')
+        .find(['+', 'Z', '-'])
         .map(|i| 11 + i)
         .unwrap_or(s.len());
     let time = s.get(11..time_end)?;
@@ -163,6 +163,8 @@ fn client() -> Result<reqwest::Client> {
         .context("usage http client")
 }
 
+// invariant: callers pass static header names and freshly built String values.
+#[allow(clippy::expect_used)]
 fn header_map(pairs: &[(&'static str, String)]) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     for (name, value) in pairs {
@@ -667,6 +669,8 @@ pub async fn consume_anthropic_reset_credit(
 
 /// Shared mutation path: anthropic hits `/api/organizations/{org}/reset_rate_limits`,
 /// codex hits `/wham/rate-limit-reset-credits/consume` with no org in the path.
+// invariant: the content type is a fixed valid MIME literal.
+#[allow(clippy::expect_used)]
 async fn consume_program_reset(
     token: &str,
     base_url: Option<&str>,
@@ -782,6 +786,8 @@ async fn consume_program_reset(
 // Kimi (TS usage/kimi.ts)
 // ---------------------------------------------------------------------------
 
+// invariant: pa_ai::kimi_common_headers() yields static well-formed name/value pairs.
+#[allow(clippy::expect_used)]
 async fn fetch_kimi_usage(
     cred: &UsageCredential<'_>,
     base_url: Option<&str>,
@@ -809,10 +815,10 @@ async fn fetch_kimi_usage(
             value.parse().expect("kimi header value"),
         );
     }
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        format!("Bearer {token}").parse().expect("bearer"),
-    );
+    let auth: reqwest::header::HeaderValue = format!("Bearer {token}")
+        .parse()
+        .context("kimi authorization header")?;
+    headers.insert(reqwest::header::AUTHORIZATION, auth);
     let payload = get_json(&client, &format!("{base}/usages"), headers).await?;
     let report = parse_kimi_report(&payload);
     if report.lines.is_empty() {
@@ -1446,11 +1452,13 @@ fn parse_quota_summary(payload: &Value) -> Option<UsageReport> {
         })
     });
     if has_groups {
-        for group in groups.unwrap() {
-            let gname = group.get("displayName").and_then(Value::as_str);
-            if let Some(buckets) = group.get("buckets").and_then(Value::as_array) {
-                for bucket in buckets {
-                    push_bucket(bucket, gname);
+        if let Some(groups) = groups {
+            for group in groups {
+                let gname = group.get("displayName").and_then(Value::as_str);
+                if let Some(buckets) = group.get("buckets").and_then(Value::as_array) {
+                    for bucket in buckets {
+                        push_bucket(bucket, gname);
+                    }
                 }
             }
         }
@@ -1628,7 +1636,7 @@ mod tests {
             "cedar_ember": {
                 "grants": [
                     {"id": "ce_abc123", "remaining_count": 2, "clears": ["anthropic:5h"],
-                     "ends_at": "2026-11-01T00:00:00+00:00"}
+                     "ends_at": "2099-11-01T00:00:00+00:00"}
                 ],
                 "next_grant_id": "ce_abc123"
             }

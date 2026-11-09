@@ -1,0 +1,153 @@
+/* sidebar slice: Kimi-style grouped session list with per-row actions */
+
+/* ── White Tau marks ────────────────────────────────────────────────────────
+   CSS beats SVG presentation attributes, so no !important is needed. Kept at
+   class specificity so agent.css can override .ap-sub-tau per role later. */
+.tau-brand .tau-mark { fill: #fff; }
+.tau-brand .tau-aura { fill: #fff; opacity: .16; }
+.tau-brand svg.tau-sprite { --tau-glow: rgba(255, 255, 255, .5); }
+.tau-brand .tau-body path[stroke] { stroke: rgba(255, 255, 255, .35); }
+/* Subagent marks are white in both the left and right activity surfaces. */
+.ap-sub-tau .tau-mark { fill: #fff; }
+.ap-sub-tau .tau-aura { fill: #fff; opacity: .16; }
+.ap-sub-tau svg.tau-sprite { --tau-glow: transparent; }
+.ap-sub-tau .tau-body path[stroke] { stroke: rgba(255, 255, 255, .35); }
+/* The welcome-screen hero carries the same white mark (its drop-shadow halo
+   reads --tau-glow, which mount() sets inline, so that one needs !important). */
+.tau-hero .tau-mark { fill: #fff; }
+.tau-hero .tau-aura { fill: #fff; opacity: .16; }
+.tau-hero svg.tau-sprite { --tau-glow: rgba(255, 255, 255, .5); }
+.tau-hero .tau-body path[stroke] { stroke: rgba(255, 255, 255, .35); }
+.tau-hero { --tau-glow: rgba(255, 255, 255, .5) !important; }
+
+#sidebar { padding-bottom: 8px; }
+#new-session { flex: none; background: var(--fg); color: var(--bg); border-color: transparent; }
+#new-session:hover { filter: brightness(1.08); }
+#new-session:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#new-session.compact { padding: 7px 12px; font-weight: 600; }
+.agent-dock {
+  flex: none;
+  max-height: min(44vh, 430px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+  scrollbar-gutter: stable;
+}
+
+.sess-sub, .ap-progress, .ap-status, .statusbar { font-variant-numeric: tabular-nums; }
+.group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: var(--fg-faint);
+  padding: 12px 8px 4px;
+}
+.group-head .count { font-size: 10px; color: var(--fg-faint); }
+
+.session-row { position: relative; }
+.session-row .main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.session-row .sess-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-row .sess-sub {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-row .needs-input {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 6px;
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  flex: none;
+}
+.session-row .muted-run { font-size: 11px; color: var(--fg-faint); flex: none; }
+
+.sess-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KPGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTIuNSIgZmlsbD0iIzI2MjYyNiIvPgo8Y2lyY2xlIGN4PSIxNiIgY3k9IjE2IiByPSIxMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2EzYTNhIiBzdHJva2Utd2lkdGg9IjEiLz4KCgo8L3N2Zz4=") center/contain no-repeat;
+  flex: none;
+  display: inline-block;
+}
+.sess-dot.live { background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KPGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTIuNSIgZmlsbD0iIzJlMmUyZSIvPgo8Y2lyY2xlIGN4PSIxNiIgY3k9IjE2IiByPSIxMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGE0YTRhIiBzdHJva2Utd2lkdGg9IjEiLz4KPGVsbGlwc2UgY3g9IjEyLjQiIGN5PSI5LjIiIHJ4PSI0LjYiIHJ5PSIyLjYiIGZpbGw9IiNmZmZmZmYiIG9wYWNpdHk9Ii4xMiIgdHJhbnNmb3JtPSJyb3RhdGUoLTI0IDEyLjQgOS4yKSIvPgo8ZyBmaWxsPSIjZWFlYWVhIj4KIDxyZWN0IHg9IjExLjIiIHk9IjEyLjYiIHdpZHRoPSIyLjIiIGhlaWdodD0iMy40IiByeD0iMS4xIi8+CiA8cmVjdCB4PSIxOC42IiB5PSIxMi42IiB3aWR0aD0iMi4yIiBoZWlnaHQ9IjMuNCIgcng9IjEuMSIvPgo8L2c+Cjwvc3ZnPg=="); }
+.sess-dot.busy { background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KPGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTIuNSIgZmlsbD0iIzJlMmUyZSIvPgo8Y2lyY2xlIGN4PSIxNiIgY3k9IjE2IiByPSIxMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNmI2YjZiIiBzdHJva2Utd2lkdGg9IjEuMiIvPgo8ZWxsaXBzZSBjeD0iMTIuNCIgY3k9IjkuMiIgcng9IjQuNiIgcnk9IjIuNiIgZmlsbD0iI2ZmZmZmZiIgb3BhY2l0eT0iLjEyIiB0cmFuc2Zvcm09InJvdGF0ZSgtMjQgMTIuNCA5LjIpIi8+CjxnIGZpbGw9IiNmMmYyZjIiPgogPHJlY3QgeD0iMTIuNCIgeT0iMTEuNiIgd2lkdGg9IjIuMiIgaGVpZ2h0PSI1LjIiIHJ4PSIxLjEiLz4KIDxyZWN0IHg9IjE5LjgiIHk9IjExLjYiIHdpZHRoPSIyLjIiIGhlaWdodD0iNS4yIiByeD0iMS4xIi8+CjwvZz4KPC9zdmc+"); }
+.sess-dot.dead { background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KPGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTIuNSIgZmlsbD0iIzI0MjQyNCIvPgo8Y2lyY2xlIGN4PSIxNiIgY3k9IjE2IiByPSIxMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM2QzZDNkIiBzdHJva2Utd2lkdGg9IjEiLz4KCjxnIHN0cm9rZT0iI2JkYmRiZCIgc3Ryb2tlLXdpZHRoPSIxLjkiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgZmlsbD0ibm9uZSI+CiA8cGF0aCBkPSJNMTAuOCAxMy42IHExLjUgMS44IDMgMCIvPgogPHBhdGggZD0iTTE4LjIgMTMuNiBxMS41IDEuOCAzIDAiLz4KPC9nPgo8L3N2Zz4="); }
+/* rows whose agent waits for input: amber-eyed orb (the row carries .needs-input) */
+.session-row:has(.needs-input) .sess-dot { background-image: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiIgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIj4KPGNpcmNsZSBjeD0iMTYiIGN5PSIxNiIgcj0iMTIuNSIgZmlsbD0iIzJlMmUyZSIvPgo8Y2lyY2xlIGN4PSIxNiIgY3k9IjE2IiByPSIxMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjOGE2ZDJmIiBzdHJva2Utd2lkdGg9IjEuNCIvPgo8ZWxsaXBzZSBjeD0iMTIuNCIgY3k9IjkuMiIgcng9IjQuNiIgcnk9IjIuNiIgZmlsbD0iI2ZmZmZmZiIgb3BhY2l0eT0iLjEyIiB0cmFuc2Zvcm09InJvdGF0ZSgtMjQgMTIuNCA5LjIpIi8+CjxnIGZpbGw9IiNmZmQ5OGEiPgogPHJlY3QgeD0iMTAuOSIgeT0iMTAuNiIgd2lkdGg9IjIuNCIgaGVpZ2h0PSI2IiByeD0iMS4yIi8+CiA8cmVjdCB4PSIxOC43IiB5PSIxMC42IiB3aWR0aD0iMi40IiBoZWlnaHQ9IjYiIHJ4PSIxLjIiLz4KPC9nPgo8L3N2Zz4="); }
+
+.sess-actions {
+  display: none;
+  gap: 2px;
+  align-items: center;
+  flex: none;
+}
+.session-row:hover .sess-actions { display: flex; }
+.row-action {
+  background: none;
+  border: 0;
+  color: var(--fg-faint);
+  padding: 3px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.row-action:hover { color: var(--fg); background: var(--bg-hover); }
+.row-action.pinned { color: var(--warn); }
+.row-action svg { width: 13px; height: 13px; display: block; }
+
+.sess-empty { padding: 8px; }
+.sess-more {
+  display: block; width: calc(100% - 16px); margin: 4px 8px 6px; padding: 6px 8px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--fg-faint);
+  font: inherit; font-size: 11px; text-align: center; cursor: pointer;
+}
+.sess-more:hover { color: var(--fg); background: var(--bg-hover); }
+.pin-badge { font-size: 10px; padding: 0 5px; border-radius: 6px; border: 1px solid var(--border-strong); color: var(--fg-faint); flex: none; }
+.session-row .needs-input.stuck { cursor: pointer; }
+.session-row .muted-run[title] { cursor: pointer; }
+
+/* ── Session explorer ──────────────────────────────────────────────────────
+   Cross-project list: pulsing "Running now" dots, per-project grouping
+   toggle, collapsible "Archived" group. */
+.side-title-btns { display: flex; align-items: center; gap: 10px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .sess-dot.pulse { animation: sess-pulse 2.2s ease-out infinite; }
+  .sess-dot.pulse.busy { animation-duration: 1.1s; }
+}
+@keyframes sess-pulse {
+  0% { box-shadow: 0 0 0 0 var(--accent-muted); }
+  70% { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* The archived group head is a button styled like a group head; buttons need
+   their UA font/color reset spelled out (see .link-btn in app.css). */
+button.group-head.arch-head {
+  background: none; border: 0; width: 100%; text-align: left; cursor: pointer;
+  font-family: inherit;
+}
+button.group-head.arch-head:hover { color: var(--fg-muted); }
+button.group-head.arch-head .count { font-size: 10px; color: var(--fg-faint); }

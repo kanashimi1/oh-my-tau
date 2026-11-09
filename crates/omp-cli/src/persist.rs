@@ -1,8 +1,9 @@
 //! Session persistence (omp session JSONL v3) via `omp-session`.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::Result;
 use omp_session::{OmpMessage, SessionWriter};
@@ -33,6 +34,8 @@ pub fn now_iso() -> String {
 
 /// UUID v7 string (48-bit ms timestamp + random).
 #[must_use]
+// invariant: write!/writeln! to a String is infallible.
+#[allow(clippy::expect_used)]
 pub fn uuid_v7() -> String {
     use rand::RngCore;
     let mut b = [0u8; 16];
@@ -83,6 +86,9 @@ pub fn ts_sessions_dir(cwd: &Path) -> Option<PathBuf> {
 /// An *ephemeral* session (`--no-session`) writes to a scratch directory that
 /// is removed on drop and reports no `sessionFile`, like omp's in-memory
 /// `SessionManager`.
+/// Shareable sink for non-message entries; see [`Persistence::entry_sink`].
+pub type EntrySink = std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+
 pub struct Persistence {
     writer: Arc<Mutex<SessionWriter>>,
     session_id: Mutex<String>,
@@ -92,6 +98,7 @@ pub struct Persistence {
     /// the same information in its private `leaf` and exposes no getter, so the
     /// compaction guard reads this mirror instead; every append (which advances
     /// the writer onto the new entry) clears it.
+    #[allow(clippy::option_option)] // tri-state `/tree` move, documented on `leaf_divergence`
     nav_leaf: Arc<Mutex<Option<Option<String>>>>,
     ephemeral: bool,
     scratch: Option<PathBuf>,
@@ -116,13 +123,13 @@ impl Drop for Persistence {
 impl Persistence {
     #[must_use]
     pub fn session_id(&self) -> String {
-        self.session_id.lock().unwrap().clone()
+        self.session_id.lock().clone()
     }
 
     /// Path of the live session file (a scratch path when ephemeral).
     #[must_use]
     pub fn path(&self) -> PathBuf {
-        self.writer.lock().unwrap().path().to_path_buf()
+        self.writer.lock().path().to_path_buf()
     }
 
     /// The session file omp would report (`sessionFile`); `None` for `--no-session`.
@@ -139,27 +146,23 @@ impl Persistence {
     pub fn append_entry(&self, kind: &str, payload: serde_json::Value) -> Result<()> {
         self.writer
             .lock()
-            .unwrap()
             .append_entry(kind, payload, &now_iso())
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// A shareable sink appending non-message entries (`model_usage`, …) to
     /// this session, for subsystems that only see a process-global hook (RLM
     /// sub-call accounting). Writes are best-effort.
     #[must_use]
-    pub fn entry_sink(&self) -> std::sync::Arc<dyn Fn(&str, serde_json::Value) + Send + Sync> {
+    pub fn entry_sink(&self) -> EntrySink {
         let writer = std::sync::Arc::clone(&self.writer);
         let nav_leaf = Arc::clone(&self.nav_leaf);
         std::sync::Arc::new(move |kind, payload| {
             let nav_leaf = Arc::clone(&nav_leaf);
-            let _ = writer
-                .lock()
-                .unwrap()
-                .append_entry(kind, payload, &now_iso());
+            let _ = writer.lock().append_entry(kind, payload, &now_iso());
             // An append advances the writer onto the new entry.
-            nav_leaf.lock().unwrap().take();
+            nav_leaf.lock().take();
         })
     }
 
@@ -175,10 +178,9 @@ impl Persistence {
     ) -> Result<()> {
         self.writer
             .lock()
-            .unwrap()
             .append_model_change(model, role, resolved_model_is_fallback, &now_iso())
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// `thinking_level_change {thinkingLevel, configured}` (`appendThinkingLevelChange`),
@@ -194,7 +196,7 @@ impl Persistence {
         configured: Option<&str>,
         ultra: Option<&str>,
     ) -> Result<()> {
-        let mut w = self.writer.lock().unwrap();
+        let mut w = self.writer.lock();
         match ultra {
             None => w.append_thinking_level_change(level, configured, &now_iso()),
             Some(u) => w.append_entry(
@@ -204,7 +206,7 @@ impl Persistence {
             ),
         }
         .map(|_| ())
-        .inspect(|_| self.clear_nav())
+        .inspect(|()| self.clear_nav())
     }
 
     /// `title_change` audit entry.
@@ -219,10 +221,9 @@ impl Persistence {
     ) -> Result<()> {
         self.writer
             .lock()
-            .unwrap()
             .append_title_change(title, source, previous, None, &now_iso())
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// Append a finished conversation message.
@@ -236,10 +237,9 @@ impl Persistence {
     ) -> Result<()> {
         self.writer
             .lock()
-            .unwrap()
             .append_message(message, &iso_from_ms(timestamp_ms))
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// Append a `message` entry whose shape `pa_types` cannot model (e.g. a
@@ -251,10 +251,9 @@ impl Persistence {
     pub fn append_raw_message(&self, message: Map<String, Value>, timestamp_ms: i64) -> Result<()> {
         self.writer
             .lock()
-            .unwrap()
             .append_omp_message(OmpMessage::Agent(message), &iso_from_ms(timestamp_ms))
             .map(|_| ())
-            .inspect(|_| self.clear_nav())
+            .inspect(|()| self.clear_nav())
     }
 
     /// Run `f` on the live session writer (compaction entries need the writer's id chain).
@@ -263,7 +262,7 @@ impl Persistence {
     /// invisible to the navigation mirror. Leaf moves go through
     /// [`Self::branch_to`]; the compaction/seed appends have wrappers below.
     pub fn with_writer<R>(&self, f: impl FnOnce(&mut SessionWriter) -> R) -> R {
-        f(&mut self.writer.lock().unwrap())
+        f(&mut self.writer.lock())
     }
 
     /// Move the append point to an earlier entry (`/tree` navigation, omp
@@ -274,20 +273,21 @@ impl Persistence {
     /// # Errors
     /// `id` is not an entry of this session file.
     pub fn branch_to(&self, id: Option<String>) -> Result<()> {
-        self.writer.lock().unwrap().branch_to(id.clone())?;
-        *self.nav_leaf.lock().unwrap() = Some(id);
+        self.writer.lock().branch_to(id.clone())?;
+        *self.nav_leaf.lock() = Some(id);
         Ok(())
     }
 
     /// The pending [`Self::branch_to`] move: `Some(target)` / `Some(None)` /
     /// `None` (no move pending — the append point is the last journaled entry).
     #[must_use]
+    #[allow(clippy::option_option)] // tri-state: no move / jump to root / leaf id
     pub fn leaf_divergence(&self) -> Option<Option<String>> {
-        self.nav_leaf.lock().unwrap().clone()
+        self.nav_leaf.lock().clone()
     }
 
     fn clear_nav(&self) {
-        self.nav_leaf.lock().unwrap().take();
+        self.nav_leaf.lock().take();
     }
 
     /// Mirror of an append done through the raw [`Self::with_writer`] escape
@@ -374,7 +374,7 @@ impl Persistence {
     /// The retry saga gave up: persist the held failed turn (`persistTerminalEmptyErrorTurn`),
     /// optionally with a rewritten `errorMessage`.
     pub fn flush_deferred_error(&self, error_message: Option<&str>) {
-        let held = self.deferred.lock().unwrap().take();
+        let held = self.deferred.lock().take();
         let Some((m, ts)) = held else { return };
         let m = match error_message {
             Some(e) => serde_json::to_value(&m)
@@ -394,7 +394,7 @@ impl Persistence {
 
     /// The failed turn was retried: it never reaches the session file.
     pub fn drop_deferred_error(&self) {
-        self.deferred.lock().unwrap().take();
+        self.deferred.lock().take();
     }
 
     /// Switch to a brand-new session file in `dir` (default: the cwd slot).
@@ -414,11 +414,11 @@ impl Persistence {
             if let Some(e) = crate::context::session_entry() {
                 let _ = fresh.append_entry("custom", e, &now_iso());
             }
-            *self.writer.lock().unwrap() = fresh;
+            *self.writer.lock() = fresh;
         }
-        *self.session_id.lock().unwrap() = id;
-        self.nav_leaf.lock().unwrap().take();
-        self.deferred.lock().unwrap().take();
+        *self.session_id.lock() = id;
+        self.nav_leaf.lock().take();
+        self.deferred.lock().take();
         Ok(())
     }
 
@@ -438,12 +438,12 @@ impl Persistence {
     ) -> Result<()> {
         let old = self.path();
         let opened = SessionWriter::open(path, leaf)?;
-        *self.writer.lock().unwrap() = opened;
+        *self.writer.lock() = opened;
         if let Some(id) = session_id {
-            *self.session_id.lock().unwrap() = id.to_owned();
+            id.clone_into(&mut self.session_id.lock());
         }
-        self.nav_leaf.lock().unwrap().take();
-        self.deferred.lock().unwrap().take();
+        self.nav_leaf.lock().take();
+        self.deferred.lock().take();
         if old != path {
             discard_if_preamble_only(&old);
         }
@@ -574,14 +574,14 @@ pub(crate) async fn attach_in(
                                 );
                             }
                             if held {
-                                *deferred.lock().unwrap() = Some((m, message.timestamp()));
+                                *deferred.lock() = Some((m, message.timestamp()));
                             } else {
                                 let ts = iso_from_ms(message.timestamp());
-                                if let Err(e) = writer.lock().unwrap().append_message(&m, &ts) {
+                                if let Err(e) = writer.lock().append_message(&m, &ts) {
                                     eprintln!("omt: session write failed: {e:#}");
                                 } else {
                                     // An append advances the writer onto the new entry.
-                                    nav_leaf.lock().unwrap().take();
+                                    nav_leaf.lock().take();
                                 }
                             }
                         }
@@ -594,12 +594,12 @@ pub(crate) async fn attach_in(
                                     let omp = OmpMessage::Agent(map);
                                     let ts = iso_from_ms(message.timestamp());
                                     if let Err(e2) =
-                                        writer.lock().unwrap().append_omp_message(omp, &ts)
+                                        writer.lock().append_omp_message(omp, &ts)
                                     {
                                         eprintln!("omt: session write failed: {e2:#}");
                                     } else {
                                         // An append advances the writer onto the new entry.
-                                        nav_leaf.lock().unwrap().take();
+                                        nav_leaf.lock().take();
                                     }
                                 }
                                 _ => eprintln!(

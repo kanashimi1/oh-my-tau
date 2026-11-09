@@ -27,6 +27,7 @@ omp-session = { path = "../omp-session" }
 omp-ext = { path = "../omp-ext" }
 omp-compact = { path = "../omp-compact" }
 omp-task = { path = "../omp-task" }
+omp-hub = { path = "../omp-hub" }
 omp-eval = { path = "../omp-eval" }
 omp-wasm = { path = "../omp-wasm" }
 omp-mcp = { path = "../omp-mcp" }
@@ -52,6 +53,7 @@ omp-settings = { path = "../omp-settings" }
 omp-tui = { path = "../omp-tui" }
 omp-stats = { path = "../omp-stats" }
 omp-collab = { path = "../omp-collab" }
+omp-sandbox = { path = "../omp-sandbox" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 base64 = "0.22"
 flate2 = "1"
@@ -72,14 +74,12 @@ onnx = ["omp-judge/onnx"]
 # Off by default: the existing pure-Rust dedup path is used unless enabled.
 goose = ["dep:omp-goose"]
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# Landlock + seccomp confinement for tool subprocesses (`/sandbox`,
-# features/sandbox.rs); omt re-executes itself as the confinement launcher.
-omp-sandbox = { path = "../omp-sandbox" }
-
 [dev-dependencies]
 tempfile = "3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", default-features = false, features = ["signal", "inotify"] }

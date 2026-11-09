@@ -16,6 +16,9 @@
 //! (`version: 2`, `plugins: {id: [entry…]}`) under `~/.omp/plugins/` (user scope)
 //! or `<cwd>/.omp/plugins/` (project scope).
 
+// Ported from the omt lineage: registry helpers unused until marketplace sources are configured.
+#![allow(dead_code)]
+
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -634,6 +637,11 @@ fn store_skill_version(
 /// Slash-command entry point.
 pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
     let (verb, rest) = split_sub(args);
+    // UI surfaces get a selector menu for the bare command (TS two-surface
+    // pattern: headless prints usage, interactive picks); subcommands unchanged.
+    if (verb.is_empty() || verb == "help") && crate::slash_extra::dialog::has_ui() {
+        return menu(rt).await;
+    }
     let result: Result<String, String> = match verb.as_str() {
         "" | "help" => Ok(USAGE.to_string()),
         "search" if !rest.is_empty() => search(rt, &rest).await,
@@ -655,6 +663,40 @@ pub async fn command(rt: &Arc<Runtime>, args: &str) -> Outcome {
             Err(e) => Err(e),
         },
         other => Err(format!("Unknown /skills subcommand: {other}\n\n{USAGE}")),
+    };
+    match result {
+        Ok(text) => output(rt, &text),
+        Err(e) => output(rt, &format!("Skills: {e}")),
+    }
+    handled()
+}
+
+/// Bare `/skills` with a UI: selector menu over the common actions.
+async fn menu(rt: &Arc<Runtime>) -> Outcome {
+    use crate::slash_extra::dialog::{input, select_with, Choice, SelectStyle};
+    let choices = vec![
+        Choice::with("Installed skills", "list skills active in this project"),
+        Choice::with("Search marketplace…", "query the skill registry"),
+        Choice::with("Update all", "refresh installed registry skills"),
+        Choice::with("Usage", "print the full /skills reference"),
+    ];
+    let Some(index) = select_with(rt, "Skills", &choices, SelectStyle::default()).await else {
+        return handled();
+    };
+    let result = match index {
+        0 => Ok(list_installed(rt)),
+        1 => {
+            let Some(query) = input(rt, "Search skills", Some("query")).await else {
+                return handled();
+            };
+            let query = query.trim();
+            if query.is_empty() {
+                return handled();
+            }
+            search(rt, query).await
+        }
+        2 => install(rt, &[], false).await,
+        _ => Ok(USAGE.to_string()),
     };
     match result {
         Ok(text) => output(rt, &text),

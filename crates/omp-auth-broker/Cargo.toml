@@ -20,6 +20,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 regex = "1"
+parking_lot = "0.12"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
@@ -27,3 +28,10 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 tempfile = "3"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+# Lock convention: see the workspace root manifest.
+await_holding_lock = "deny"
+await_holding_refcell_ref = "deny"

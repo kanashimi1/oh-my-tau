@@ -20,6 +20,8 @@ const BYTES_PER_TOKEN_ESTIMATE: i64 = 4;
 const DAY_MS: i64 = 86_400_000;
 
 /// Paths that carry no dashboard signal — temp/internal locations.
+// invariant: fixed regex literal always compiles.
+#[allow(clippy::expect_used)]
 static TEMP_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r#"(?:^|/)(?:T|tmp|pi-bash-exec|omp-bash-exec|pi-bash-detach)(?:/|$)|^/var/folders(?:/|$)"#,
@@ -52,6 +54,8 @@ pub(crate) fn is_same_or_sub_path(candidate: &str, parent: &str) -> bool {
 ///
 /// Returns `None` to drop temp/internal paths entirely.
 #[must_use]
+// invariant: WORKTREE_PATTERNS holds fixed regex literals that always compile.
+#[allow(clippy::expect_used)]
 pub fn normalize_project_path(p: &str) -> Option<String> {
     let clean = canonical_project_path(p);
     if TEMP_PATH_RE.is_match(&clean) {

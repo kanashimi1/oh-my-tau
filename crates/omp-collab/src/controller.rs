@@ -1,4 +1,4 @@
-//! CollabController — owns collaboration hosting for one interactive process.
+//! `CollabController` — owns collaboration hosting for one interactive process.
 //!
 //! Rust port of `vendor-src/oh-my-pi/packages/coding-agent/src/collab/controller.ts`
 //! (357 lines). The controller owns the host lifecycle for a live session:
@@ -20,8 +20,9 @@
 //! relay room — the link does not admit to the host's actual room. Wiring the
 //! host's real creds into these getters is the follow-up.
 
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
@@ -63,7 +64,7 @@ pub struct CollabLinks {
 }
 
 /// Handle to the dedicated host thread: the room's start/event-loop future is
-/// not `Send` (host.rs holds std MutexGuards across awaits), so it — and every
+/// not `Send` (host.rs holds `MutexGuard`s across awaits), so it — and every
 /// `CollabHost::stop` — must run on that thread, not on the caller's runtime.
 struct HostTask {
     /// Signal the thread to run `CollabHost::stop` and end (tokio channel so
@@ -80,9 +81,9 @@ pub struct CollabController {
     get: SettingsGetter,
     relay_default: String,
     generation: AtomicU64,
-    host: StdMutex<Option<Arc<CollabHost>>>,
-    host_task: StdMutex<Option<HostTask>>,
-    links: StdMutex<Option<CollabLinks>>,
+    host: Mutex<Option<Arc<CollabHost>>>,
+    host_task: Mutex<Option<HostTask>>,
+    links: Mutex<Option<CollabLinks>>,
     shutdown: AtomicBool,
 }
 
@@ -97,9 +98,9 @@ impl CollabController {
             get,
             relay_default: DEFAULT_RELAY_URL.to_string(),
             generation: AtomicU64::new(0),
-            host: StdMutex::new(None),
-            host_task: StdMutex::new(None),
-            links: StdMutex::new(None),
+            host: Mutex::new(None),
+            host_task: Mutex::new(None),
+            links: Mutex::new(None),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -132,7 +133,7 @@ impl CollabController {
     /// absent (controller.ts `host` getter).
     #[must_use]
     pub fn current_host(&self) -> Option<Arc<CollabHost>> {
-        let host = self.host.lock().unwrap().clone()?;
+        let host = self.host.lock().clone()?;
         if host.ending() {
             return None;
         }
@@ -145,7 +146,7 @@ impl CollabController {
     /// The live room's links, if a room is currently hosted.
     #[must_use]
     pub fn links(&self) -> Option<CollabLinks> {
-        self.links.lock().unwrap().clone()
+        self.links.lock().clone()
     }
 
     /// Full control link (`<relay>/r/<room>.<key+token>`), when hosted.
@@ -179,6 +180,12 @@ impl CollabController {
     /// # Errors
     /// When the controller is shut down, the relay is unconfigured, or the
     /// host fails to start.
+    // Kept `async` so callers can `.await` uniformly as the controller gains async steps.
+    #[allow(
+        clippy::disallowed_methods, // dedicated thread with its own scratch runtime (pre-existing pattern)
+        clippy::too_many_lines,     // start/reuse/replace room dispatch; splitting hurts readability
+        clippy::unused_async
+    )]
     pub async fn start_host(&self, options: CollabStartOptions) -> Result<Arc<CollabHost>> {
         if self.shutdown.load(Ordering::SeqCst) {
             return Err(anyhow!("collab controller shut down"));
@@ -193,7 +200,7 @@ impl CollabController {
         // Stop any non-current or lower-access room before starting the new
         // one; strict sequencing also keeps the process-wide cipher and the
         // registry publication consistent (TS stops the old room first too).
-        self.teardown_task("session switched").await;
+        self.teardown_task("session switched");
 
         let relay_url = self.resolve_relay_url(options.relay.as_deref())?;
         let web_url = self.resolve_web_url();
@@ -242,7 +249,7 @@ impl CollabController {
         // CollabHost::start owns the relay event loop and returns only when the
         // room ends (host.rs `run_event_loop`); the TS host is callback-driven,
         // which is why controller.ts can `await host.start()`. Its future — and
-        // `CollabHost::stop` — are not `Send` (host.rs holds std MutexGuards
+        // `CollabHost::stop` — are not `Send` (host.rs holds MutexGuards
         // across awaits), so start AND stop run on a dedicated single-thread
         // runtime thread: one OS thread per hosted room, ending with the room.
         // The controller signals stop through `stop_tx` and reaps the thread
@@ -250,8 +257,8 @@ impl CollabController {
         let (stop_tx, mut stop_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let start_host = Arc::clone(&host);
-        let relay_for_start = relay_url.clone();
-        let web_for_start = web_url.clone().unwrap_or_default();
+        let relay_for_start = relay_url;
+        let web_for_start = web_url.unwrap_or_default();
         std::thread::Builder::new()
             .name("collab-host".to_string())
             .spawn(move || {
@@ -285,15 +292,14 @@ impl CollabController {
 
         // Register the task before waiting so a stop arriving during the
         // connect window still reaches the thread.
-        *self.host.lock().unwrap() = Some(Arc::clone(&host));
-        *self.host_task.lock().unwrap() = Some(HostTask {
-            stop_tx: stop_tx.clone(),
+        *self.host.lock() = Some(Arc::clone(&host));
+        *self.host_task.lock() = Some(HostTask {
+            stop_tx,
             done_rx: Some(done_rx),
         });
         let done_rx = self
             .host_task
             .lock()
-            .unwrap()
             .as_mut()
             .and_then(|t| t.done_rx.take());
 
@@ -325,13 +331,13 @@ impl CollabController {
                     // (now dead) task registered so a later stop is a no-op.
                 }
                 Err(err) => {
-                    *self.host.lock().unwrap() = None;
-                    *self.host_task.lock().unwrap() = None;
+                    *self.host.lock() = None;
+                    *self.host_task.lock() = None;
                     return Err(err);
                 }
             }
         }
-        if let Some(task) = self.host_task.lock().unwrap().as_mut() {
+        if let Some(task) = self.host_task.lock().as_mut() {
             task.done_rx = done_rx;
         }
         // Prefer the host's real room creds now that host.rs exposes them;
@@ -342,7 +348,7 @@ impl CollabController {
             web_link: host.web_link().unwrap_or(links.web_link),
             web_view_link: host.web_view_link().unwrap_or(links.web_view_link),
         };
-        *self.links.lock().unwrap() = Some(links);
+        *self.links.lock() = Some(links);
         Ok(host)
     }
 
@@ -350,16 +356,18 @@ impl CollabController {
     /// relaunch launches to cancel). Runs on the host thread and is reaped
     /// bounded — a wedged teardown gives up waiting and lets the thread finish
     /// in the background.
+    // Kept `async` so callers can `.await` uniformly as teardown gains async steps.
+    #[allow(clippy::unused_async)]
     pub async fn stop_host(&self, reason: &str) {
-        self.teardown_task(reason).await;
+        self.teardown_task(reason);
     }
 
     /// Signal the host thread to stop and wait (bounded) for it to finish.
-    async fn teardown_task(&self, reason: &str) {
-        // Take out of the lock first: a std MutexGuard must not live across
+    fn teardown_task(&self, reason: &str) {
+        // Take out of the lock first: a MutexGuard must not live across
         // the waits (the dispatch chain runs inside `tokio::spawn`).
-        let task = self.host_task.lock().unwrap().take();
-        *self.host.lock().unwrap() = None;
+        let task = self.host_task.lock().take();
+        *self.host.lock() = None;
         let Some(task) = task else { return };
         let _ = task.stop_tx.send(reason.to_string());
         let Some(done_rx) = task.done_rx else {
@@ -439,6 +447,7 @@ fn random_instance_id() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
     use crate::link::parse_collab_link;

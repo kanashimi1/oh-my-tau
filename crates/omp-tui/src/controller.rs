@@ -30,13 +30,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{Event, EventStream};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
+use ratatui::backend::Backend;
 use ratatui::text::Line;
 use tokio::time::{sleep, Sleep};
 
 use crate::app::App;
 use crate::port::RuntimePort;
-use crate::render::{ResizeAction, Shell};
+use crate::render::{RawOut, ResizeAction, Shell};
 use crate::RunConfig;
 
 /// Height of the live region (chat viewport + editor + status line) in rows.
@@ -76,8 +77,6 @@ fn advance_frame_timer(
     Some(if next > now { next } else { now + interval })
 }
 
-type StdShell = Shell<crate::render::ShellBackend, io::Stdout>;
-
 /// Entry point invoked by [`crate::run`]. Owns terminal lifecycle.
 ///
 /// # Errors
@@ -86,14 +85,33 @@ type StdShell = Shell<crate::render::ShellBackend, io::Stdout>;
 pub async fn run(cfg: RunConfig, port: impl RuntimePort) -> Result<()> {
     install_panic_hook();
     let mut shell = Shell::enter(LIVE_HEIGHT).context("initialize terminal")?;
-    let result = drive(cfg, port, &mut shell).await;
+    let result = drive(cfg, port, &mut shell, EventStream::new()).await;
     let restore = shell.leave().context("restore terminal");
     result.and(restore)
 }
 
+/// Headless entry point for integration tests: drives the same event pump
+/// over a caller-supplied [`Shell`] (e.g. ratatui's `TestBackend`) and a
+/// synthetic event stream, skipping tty/terminal ownership entirely.
+///
+/// # Errors
+/// Forwards [`drive`]'s errors (event pump, port or render failures).
+pub async fn run_headless<B: Backend, R: RawOut, E: Stream<Item = io::Result<Event>> + Unpin>(
+    cfg: RunConfig,
+    port: impl RuntimePort,
+    shell: &mut Shell<B, R>,
+    keys: E,
+) -> Result<()> {
+    drive(cfg, port, shell, keys).await
+}
+
 /// Run the loop; terminal cleanup happens in the caller.
-async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> Result<()> {
-    let mut keys = EventStream::new();
+async fn drive<B: Backend, R: RawOut, E: Stream<Item = io::Result<Event>> + Unpin>(
+    cfg: RunConfig,
+    port: impl RuntimePort,
+    shell: &mut Shell<B, R>,
+    mut keys: E,
+) -> Result<()> {
     let mut frames = cfg.frames;
     let mut app = App::new(cfg.model, &cfg.cwd);
 
@@ -174,6 +192,11 @@ async fn drive(cfg: RunConfig, port: impl RuntimePort, shell: &mut StdShell) -> 
             }
             maybe_frame = frames.recv() => {
                 let Some(frame) = maybe_frame else { continue };
+                // Host-requested exit (`/desktop` handoff): leave through the
+                // normal teardown, like Action::Quit.
+                if frame.get("type").and_then(serde_json::Value::as_str) == Some("ui_exit") {
+                    break;
+                }
                 app.push_frame_owned(frame, Instant::now());
                 if app.pump_events(Instant::now()) {
                     commit_retired(&mut app, shell).context("commit scrollback")?;
@@ -242,7 +265,7 @@ fn restore_raw_mode_if_lost() -> bool {
 /// (the terminal restores the inline transcript + live region), apply any
 /// deferred resize, commit rows that retired meanwhile and repaint the live
 /// region. Mouse reporting follows [`App::wants_mouse`] either way.
-fn paint(app: &mut App, shell: &mut StdShell) -> Result<()> {
+fn paint<B: Backend, R: RawOut>(app: &mut App, shell: &mut Shell<B, R>) -> Result<()> {
     if app.has_fullscreen_overlay() {
         let entering = !shell.is_alt();
         shell
@@ -347,7 +370,7 @@ fn take_scrollback(app: &mut App, width: u16, rebuild: Rebuild) -> Vec<Line<'sta
 /// overlay holds the alternate screen (inserting there would scroll the
 /// rows into the alt buffer and lose them; the watermark keeps them until
 /// the overlay closes).
-fn commit_retired(app: &mut App, shell: &mut StdShell) -> Result<()> {
+fn commit_retired<B: Backend, R: RawOut>(app: &mut App, shell: &mut Shell<B, R>) -> Result<()> {
     if shell.is_alt() {
         return Ok(());
     }

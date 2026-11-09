@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tau</title>
+<style>
+  :root { color-scheme: dark; --bg:#181818; --fg:#d6d6d6; --mut:#9a9a9a; --acc:#1a88ff; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; margin:0; background:var(--bg); color:var(--fg);
+    font: 14px/1.5 system-ui, "Segoe UI", sans-serif; }
+  body { display:flex; align-items:center; justify-content:center; }
+  #box { text-align:center; max-width:420px; padding:24px; }
+  .tau { width:92px; height:92px; display:block; margin:0 auto 18px;
+    filter:drop-shadow(0 0 18px rgba(37,135,255,.3)); }
+  h1 { margin:0 0 8px; font-weight:600; letter-spacing:.08em; }
+  p { margin:0; color:var(--mut); }
+  .spin { width:26px; height:26px; margin:0 auto 20px; border:3px solid #2a2a2a;
+    border-top-color:var(--acc); border-radius:50%; animation:sp 1s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+  <div id="box">
+    <div class="spin" id="spinner"></div>
+    <svg class="tau" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" aria-label="OMT">
+      <defs>
+        <radialGradient id="orb-body" cx="31%" cy="23%" r="79%">
+          <stop offset="0" stop-color="#79bdff"/><stop offset=".32" stop-color="#3b91f5"/>
+          <stop offset=".7" stop-color="#1764cf"/><stop offset="1" stop-color="#0b347e"/>
+        </radialGradient>
+        <linearGradient id="orb-shine" x1="0" y1="0" x2="0" y2="1">
+          <stop stop-color="#d9efff" stop-opacity=".48"/><stop offset="1" stop-color="#a7d6ff" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <circle cx="16" cy="16" r="11.7" fill="url(#orb-body)"/>
+      <circle cx="16" cy="16" r="11.45" fill="none" stroke="#8ac8ff" stroke-opacity=".3" stroke-width=".35"/>
+      <ellipse cx="12.6" cy="9.1" rx="6.1" ry="4.1" fill="url(#orb-shine)" transform="rotate(-25 12.6 9.1)"/>
+      <g fill="#f8fcff"><rect x="11.15" y="11.45" width="2.15" height="5" rx="1.075"/><rect x="18.7" y="11.45" width="2.15" height="5" rx="1.075"/></g>
+    </svg>
+    <h1>OMT</h1>
+    <p id="status">Connecting to the local omt service…</p>
+  </div>
+  <script>
+    window.showInitError = function (msg) {
+      document.getElementById("spinner").style.display = "none";
+      document.getElementById("status").textContent =
+        msg || "Could not reach the omt service. Start `systemctl --user start omp-rs-web` and reopen.";
+      document.getElementById("status").style.color = "#e07878";
+    };
+  </script>
+</body>
+</html>

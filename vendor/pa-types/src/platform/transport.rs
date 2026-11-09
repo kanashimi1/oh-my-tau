@@ -361,6 +361,7 @@ pub fn connect_blocking(path: &Path) -> std::io::Result<Box<dyn BlockingTranspor
     Ok(Box::new(client))
 }
 
+#[allow(clippy::unwrap_used, clippy::expect_used)] // test helpers (cfg(all(test, …)) is not seen as test code)
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;

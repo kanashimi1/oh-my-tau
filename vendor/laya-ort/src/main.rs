@@ -16,7 +16,9 @@ use laya_ort::{Judge, LayaTokenizer};
 use serde_json::{json, Value};
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 /// `$OMP_JUDGE_CKPT`, else `$HOME/.omp-rs/judge/tj/ckpt`.
@@ -45,12 +47,21 @@ fn main() -> Result<()> {
             format!("{home}/.omp-rs/judge/laya_judge.onnx")
         })
         .into();
-    let max_len: usize = arg_value(&args, "--max-len").map(|s| s.parse().unwrap()).unwrap_or(1024);
-    let threads: usize = arg_value(&args, "--threads").map(|s| s.parse().unwrap()).unwrap_or(1);
+    let max_len: usize = arg_value(&args, "--max-len")
+        .map(|s| s.parse().context("--max-len must be a number"))
+        .transpose()?
+        .unwrap_or(1024);
+    let threads: usize = arg_value(&args, "--threads")
+        .map(|s| s.parse().context("--threads must be a number"))
+        .transpose()?
+        .unwrap_or(1);
     let dump_tokens = arg_value(&args, "--dump-tokens").map(PathBuf::from);
 
     if threads > 1 {
-        rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().ok();
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .ok();
     }
     // Limit ONNX Runtime intra-op threads to `threads`.
     std::env::set_var("OMP_NUM_THREADS", threads.to_string());
@@ -62,7 +73,9 @@ fn main() -> Result<()> {
 
     if let Some(dump) = dump_tokens {
         // Token-id parity mode: dump built sequences without running the model.
-        let cfg: Value = serde_json::from_str(&std::fs::read_to_string(model_dir.join("rl_agent_config.json"))?)?;
+        let cfg: Value = serde_json::from_str(&std::fs::read_to_string(
+            model_dir.join("rl_agent_config.json"),
+        )?)?;
         let head_max_len = cfg["head_max_len"].as_u64().unwrap_or(192) as usize;
         let tok = LayaTokenizer::from_dir(&model_dir.join("tokenizer"))?;
         let mut w = BufWriter::new(std::fs::File::create(&dump)?);
@@ -82,7 +95,9 @@ fn main() -> Result<()> {
                 });
                 let seq = tok.build_sequence(state, &internal, max_len, head_max_len, false);
                 w.write_all(
-                    json!({"id": r["id"], "qid": qid, "ids": seq.ids, "markers": seq.markers}).to_string().as_bytes(),
+                    json!({"id": r["id"], "qid": qid, "ids": seq.ids, "markers": seq.markers})
+                        .to_string()
+                        .as_bytes(),
                 )?;
                 w.write_all(b"\n")?;
                 n += 1;
@@ -116,6 +131,10 @@ fn main() -> Result<()> {
     }
     w.flush()?;
     let dt = t0.elapsed().as_secs_f64();
-    eprintln!("{n} questions, {:.1} ms/q -> {}", 1000.0 * dt / n.max(1) as f64, dst);
+    eprintln!(
+        "{n} questions, {:.1} ms/q -> {}",
+        1000.0 * dt / n.max(1) as f64,
+        dst
+    );
     Ok(())
 }

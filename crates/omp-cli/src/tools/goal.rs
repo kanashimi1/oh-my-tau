@@ -192,6 +192,8 @@ impl GoalRuntime {
     }
 
     /// omp `GoalRuntime.resumeGoal`.
+    // invariant: the goal is Some whenever this point is reachable (checked via as_mut above).
+    #[allow(clippy::expect_used)]
     pub fn resume_goal(&mut self) -> Result<Goal> {
         match self.goal.as_ref() {
             None => anyhow::bail!("No paused goal."),
@@ -264,7 +266,7 @@ impl GoalRuntime {
 /// The `goal` tool.
 pub struct GoalTool {
     schema: Value,
-    runtime: Option<Arc<std::sync::Mutex<GoalRuntime>>>,
+    runtime: Option<Arc<parking_lot::Mutex<GoalRuntime>>>,
 }
 
 /// The hidden `goal` tool (omp `HIDDEN_TOOLS.goal`) without a goal runtime:
@@ -276,7 +278,7 @@ pub fn tool() -> Arc<dyn AgentTool> {
 
 /// The hidden `goal` tool wired to a live goal-mode runtime.
 #[must_use]
-pub fn runtime_tool(runtime: Option<Arc<std::sync::Mutex<GoalRuntime>>>) -> Arc<dyn AgentTool> {
+pub fn runtime_tool(runtime: Option<Arc<parking_lot::Mutex<GoalRuntime>>>) -> Arc<dyn AgentTool> {
     Arc::new(GoalTool {
         schema: schema(),
         runtime,
@@ -284,6 +286,8 @@ pub fn runtime_tool(runtime: Option<Arc<std::sync::Mutex<GoalRuntime>>>) -> Arc<
 }
 
 /// omp `buildGoalToolResponse`.
+// invariant: goal is Some inside the is_some_and guard above.
+#[allow(clippy::expect_used)]
 fn build_response(
     goal: Option<&Goal>,
     include_completion_report: bool,
@@ -354,7 +358,7 @@ impl AgentTool for GoalTool {
                 .and_then(Value::as_str)
                 .unwrap_or("undefined")
                 .to_string();
-            let mut runtime = runtime.lock().expect("goal runtime poisoned");
+            let mut runtime = runtime.lock();
             let goal: Option<Goal> = match op.as_str() {
                 "create" => {
                     let objective = params

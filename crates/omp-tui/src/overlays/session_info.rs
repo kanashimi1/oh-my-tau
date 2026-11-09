@@ -129,7 +129,7 @@ impl SessionInfoLine {
             }
             Self::Head(text) => push(text, Style::default().add_modifier(Modifier::BOLD)),
             Self::Text { text, dim: is_dim } => {
-                push(text, if *is_dim { dim } else { Style::default() })
+                push(text, if *is_dim { dim } else { Style::default() });
             }
         }
         out
@@ -255,7 +255,7 @@ impl SessionInfoOverlay {
 
     /// Set the panel title (`None` = "Session Info").
     pub fn set_title(&mut self, title: Option<&str>) {
-        self.title = title.unwrap_or_default().to_owned();
+        title.unwrap_or_default().clone_into(&mut self.title);
     }
 
     /// The report lines.
@@ -285,6 +285,8 @@ impl SessionInfoOverlay {
 }
 
 impl Component for SessionInfoOverlay {
+    // One render pass over the panel chrome, rows and scroll window.
+    #[allow(clippy::too_many_lines)]
     fn render(&self, frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         if area.width < 4 || area.height < PANEL_CHROME_ROWS + 1 {
             return;
@@ -319,8 +321,8 @@ impl Component for SessionInfoOverlay {
                 self.title.as_str()
             }
         );
-        let title_w: usize = title.chars().map(char_width).sum();
-        let fill = (width - 2).saturating_sub(1 + title_w);
+        let title_width: usize = title.chars().map(char_width).sum();
+        let pad = (width - 2).saturating_sub(1 + title_width);
         out.push(Line::from(vec![
             Span::styled(format!("{}{horizontal}", sym("boxRound.topLeft")), border),
             Span::styled(
@@ -330,7 +332,7 @@ impl Component for SessionInfoOverlay {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("{}{}", horizontal.repeat(fill), sym("boxRound.topRight")),
+                format!("{}{}", horizontal.repeat(pad), sym("boxRound.topRight")),
                 border,
             ),
         ]));

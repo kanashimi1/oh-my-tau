@@ -365,6 +365,18 @@ pub async fn spawn_all_with_rubrics(
     let (specs, rubrics): (Vec<_>, Vec<_>) = items.into_iter().unzip();
     let prompts: Vec<String> = specs.iter().map(|s| s.prompt.clone()).collect();
     let outputs = runner.spawn_all(specs).await;
+    score_outputs(&prompts, &rubrics, outputs, scorer).await
+}
+
+/// Score already-settled children: `prompts`/`rubrics` are parallel to
+/// `outputs` (input order); each rubric-bearing child is scored, the rest
+/// pass through with no record.
+pub async fn score_outputs(
+    prompts: &[String],
+    rubrics: &[Option<FrozenRubric>],
+    outputs: Vec<RunOutput>,
+    scorer: &dyn RubricScorer,
+) -> Vec<(RunOutput, Option<Result<RubricRecord, String>>)> {
     let mut scored = Vec::with_capacity(outputs.len());
     for (i, out) in outputs.into_iter().enumerate() {
         let rec = match rubrics.get(i).and_then(Option::as_ref) {
@@ -379,6 +391,7 @@ pub async fn spawn_all_with_rubrics(
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods)] // tests: throwaway runtimes drive async code
 mod tests {
     use super::*;
 
@@ -509,6 +522,9 @@ mod tests {
         static LOG_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
         let _guard = LOG_LOCK.lock().await;
         let dir = std::env::temp_dir().join(format!("omp-rubric-{}", std::process::id()));
+        // Pids are reused: clear a stale log from a previous process so the
+        // file holds exactly this run's record.
+        let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
         let log = dir.join("r.jsonl");
         let _ = std::fs::remove_file(&log);
@@ -523,10 +539,10 @@ mod tests {
         .unwrap();
         std::env::remove_var(LOG_ENV);
         assert!((rec.score - 0.75).abs() < 1e-12);
-        // Take the last *complete* line: a concurrent writer could have
-        // appended a partial record at the tail when we read.
-        let text = std::fs::read_to_string(&log).unwrap();
-        let line = text
+        // LOG_ENV is process-wide: another rubric test may log concurrently
+        // into the same pid-keyed file. Find THIS scoring's record by id.
+        let content = std::fs::read_to_string(&log).unwrap();
+        let line = content
             .lines()
             .rev()
             .find(|l| {

@@ -207,6 +207,8 @@ fn empty_result(from_offset: i64) -> ParseSessionResult {
 /// # Errors
 /// Propagates I/O errors other than ENOENT (which yields an empty result at
 /// the same offset, like TS).
+// invariant: is_assistant_message returned true, which requires a message object with role assistant.
+#[allow(clippy::expect_used)]
 pub fn parse_session_file(
     session_path: &str,
     from_offset: i64,

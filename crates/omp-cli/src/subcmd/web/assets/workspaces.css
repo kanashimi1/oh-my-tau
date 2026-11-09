@@ -1,0 +1,75 @@
+/* Project workspaces: topbar button + switcher dialog (feature: workspaces). */
+
+.ws-btn.saved::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-2, #50dcff);
+}
+
+.ws-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 52vh;
+  overflow-y: auto;
+  min-width: 420px;
+}
+
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg, inherit);
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+.ws-row:hover, .ws-row:focus-visible {
+  background: var(--bg-hover, rgba(128, 128, 128, .12));
+  border-color: var(--bg-hover, transparent);
+  outline: none;
+}
+.ws-row.current { border-color: var(--accent-muted, currentColor); }
+.ws-row .ws-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ws-row .ws-name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.ws-row .ws-sub {
+  color: var(--fg-muted, inherit);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ws-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-muted, rgba(128, 128, 128, .2));
+  color: var(--accent, inherit);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.ws-meta { color: var(--fg-faint, inherit); font-size: 11px; white-space: nowrap; }
+.ws-row .ws-actions { display: flex; gap: 2px; opacity: 0; }
+.ws-row:hover .ws-actions, .ws-row:focus-within .ws-actions { opacity: 1; }
+
+.ws-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bg-hover, rgba(128, 128, 128, .15));
+}
+.ws-foot .ws-hint { color: var(--fg-faint, inherit); font-size: 11px; }
+.ws-foot .ws-buttons { display: flex; gap: 6px; }

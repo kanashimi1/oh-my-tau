@@ -213,7 +213,8 @@ pub fn mask_non_prose(text: &str) -> String {
     out
 }
 
-/// `^( {0,3})([`~]{3,})` → (indent, marker).
+/// Matches up to three spaces of indent, then a fence marker of three or
+/// more backticks or tildes; returns `(indent, marker)`.
 fn fence_open(line: &str) -> Option<(usize, &str)> {
     let indent = line.bytes().take_while(|c| *c == b' ').count();
     if indent > 3 {

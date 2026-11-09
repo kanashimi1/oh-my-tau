@@ -37,6 +37,8 @@ fn broker_config() -> Result<BrokerConfig> {
 }
 
 /// Private runtime for the broker HTTP calls.
+// invariant: the single-worker broker runtime only fails to build on resource exhaustion, where failing fast is intended.
+#[allow(clippy::expect_used)]
 static RUNTIME: LazyLock<tokio::runtime::Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)

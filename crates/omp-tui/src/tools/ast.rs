@@ -149,13 +149,14 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|c| c.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect();
         assert!(text.contains("No matches found"));
     }
 
     #[test]
     fn collapsed_results_cap_with_more_line() {
+        #[allow(clippy::format_collect)] // test fixture; a bytecount-style dep is not warranted
         let text: String = (0..10).map(|i| format!("src/f{i}.rs:1: match\n")).collect();
         let call = json!({"name": "ast_grep", "arguments": {"pat": "x"},
             "result": {"content": [{"type": "text", "text": text}]}});
@@ -166,7 +167,11 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         let shown: usize = buf.content().iter().filter(|c| c.symbol() == "f").count();
-        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let text: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(text.contains("4 more matches"));
         assert!(shown <= 6);
     }

@@ -133,11 +133,11 @@ pub struct BlockUnitCounter {
 impl BlockUnitCounter {
     /// Append stream text; recounts only the uncounted tail.
     pub fn push_str(&mut self, s: &str) {
-        self.tail.push_str(s);
         // A grapheme cluster never spans more than a handful of chars; keep a
         // small safety tail so combining marks / emoji ZWJ sequences at the
         // boundary are counted exactly once, in order.
         const SAFETY: usize = 16;
+        self.tail.push_str(s);
         let char_count = self.tail.chars().count();
         if char_count > SAFETY {
             let boundary = self
@@ -269,8 +269,7 @@ impl StreamingRevealController {
                 Some(old) if old.total > 0 => units_from(text, old.total - 1, old.last_start),
                 _ => units_from(text, 0, 0),
             });
-            if self.cursor.block == idx
-                && !grown.is_some_and(|old| self.cursor.byte <= old.last_start)
+            if self.cursor.block == idx && grown.is_none_or(|old| self.cursor.byte > old.last_start)
             {
                 self.cursor = RevealCursor {
                     block: idx,
@@ -408,7 +407,7 @@ impl ToolArgsRevealController {
     /// `updateArgs`: the cumulative raw args JSON snapshot for one call.
     pub fn update_args(&mut self, call_id: &str, args: &str) {
         let e = self.entries.entry(call_id.to_owned()).or_default();
-        e.target = args.to_owned();
+        args.clone_into(&mut e.target);
         // Keep the offset monotone within bounds.
         if e.revealed > e.target.len() {
             e.revealed = e.target.len();
@@ -445,7 +444,7 @@ impl ToolArgsRevealController {
             }
             let display = e.target[..end].to_owned();
             if display != e.last_display {
-                e.last_display = display.clone();
+                e.last_display.clone_from(&display);
                 changed.push((id.clone(), display));
             }
         }
@@ -554,6 +553,8 @@ mod tests {
             "x\u{20e3}",
         ];
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        // Test RNG: `n` is a small bound (≤ 5).
+        #[allow(clippy::cast_possible_truncation)]
         let mut rand = |n: usize| {
             seed ^= seed << 13;
             seed ^= seed >> 7;
@@ -567,7 +568,7 @@ mod tests {
             for _ in 0..40 {
                 // Grow a random block (earlier ones too, as thinking can).
                 let k = rand(texts.len());
-                for _ in 0..1 + rand(4) {
+                for _ in 0..=rand(4) {
                     texts[k].push_str(PIECES[rand(PIECES.len())]);
                 }
                 let blocks: Vec<RevealBlock> = texts
