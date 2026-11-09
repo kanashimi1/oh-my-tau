@@ -145,6 +145,10 @@
     // A dead agent gets no row by default, so its file must fall back to the
     // stored list — otherwise a finished session vanishes with its agent.
     const aliveOpen = new Set(s.agents.filter((a) => a.alive !== false).map((a) => a.sessionFile).filter(Boolean));
+    // Stored titles by file: resumed agents often have no sessionName, and
+    // their cwd fallback (e.g. tmp from desktop spawns) makes fleet rows
+    // read as identical duplicates. Prefer the stored session title.
+    const storedTitle = new Map(s.sessions.map((r) => [r.path, r.title || r.preview || ""]).filter(([, t]) => t));
 
     // Explorer buckets: the live fleet on top, then pinned, then the stored
     // history (date or project groups), then soft-hidden archived rows.
@@ -156,7 +160,7 @@
       const key = "a:" + a.id;
       if (archived.has(key)) continue;
       if (a.alive === false && !q) continue;
-      const title = a.sessionName || basename(a.cwd);
+      const title = a.sessionName || storedTitle.get(a.sessionFile) || basename(a.cwd);
       // Worktree agents run in a fresh git worktree; the slug after the
       // last `-wt-` names the `omt/<slug>` branch to merge back.
       const wtSlug = a.worktree ? String(a.worktree).split("/").pop().replace(/^.*-wt-/, "") : null;
@@ -674,6 +678,7 @@
     try { s.groupByProject = localStorage.getItem("omp-web-group-by") === "project"; } catch { /* storage unavailable */ }
     try { s.archivedOpen = localStorage.getItem("omp-archived-open") === "true"; } catch { /* storage unavailable */ }
     $("#appearance-btn").onclick = () => OMP.appearance.open();
+    $("#glyph-appearance-btn").onclick = () => OMP.appearance.open();
     const appEl = $("#app");
     const sidebarButton = $("#sidebar-toggle");
     const hideButton = $("#sidebar-hide");

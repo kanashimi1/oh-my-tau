@@ -369,6 +369,7 @@
       this.live = new Map(); // messageId -> {node, parts, msg}
       this.cards = new Map(); // toolCallId -> ToolCard
       this.pendingUpdates = new Map(); // messageId -> newest streaming message
+      this.turnStartedAt = null; // timestamp of the latest user prompt (total response time)
       this.pendingOlder = [];
       this.loadingOlder = false;
       this.batchTarget = null;
@@ -532,7 +533,9 @@
     renderMessage(msg, messageId) {
       if (!msg || typeof msg !== "object") return;
       switch (msg.role) {
-        case "user": return this.renderUser(msg);
+        case "user":
+          if (typeof msg.timestamp === "number") this.turnStartedAt = msg.timestamp;
+          return this.renderUser(msg);
         case "assistant": {
           const entry = this.assistantEntry(messageId);
           this.updateAssistant(entry, msg, false);
@@ -727,8 +730,28 @@
             ? el("span", { text: `${this.fmtElapsed(perf.durMs)}${perf.tps ? ` · ${perf.tps.toFixed(1)} t/s` : ""}`,
                 title: `this response: ${this.fmtElapsed(perf.durMs)}${perf.tps ? ` · ${perf.tps.toFixed(1)} t/s` : ""} · finished ${new Date(perf.endedAt).toTimeString().slice(0, 5)}` })
             : null;
-          const meta = el("div.meta", null,
+          // Total response time: from the user's prompt to this final answer,
+          // including every tool round-trip (the per-call figure below is
+          // only the last model call). Computed once per entry so re-renders
+          // of the same message keep it.
+          if (entry.totalMs == null && this.turnStartedAt != null) {
+            const endedAt = msg.completedAt || Date.now();
+            if (this.turnStartedAt <= endedAt) entry.totalMs = endedAt - this.turnStartedAt;
+            this.turnStartedAt = null;
+          }
+          const totalSpan = entry.totalMs > 0
+            ? el("span.msg-total", { text: `⏱ ${this.fmtElapsed(entry.totalMs)}`, title: `total response time: ${this.fmtElapsed(entry.totalMs)}` })
+            : null;
+          // Wall-clock time the answer was finished (local, HH:MM). History
+          // replay uses the stamped completedAt; a live turn uses now.
+ doneAt = new Date(msg.completedAt || (perf && perf.endedAt) || Date.now());
+           clockSpan = el("span.msg-clock", {
+            text: doneAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+            title: `answered ${doneAt.toLocaleString()}` });
+           meta = el("div.meta", null,
+            clockSpan,
             el("span", { text: modelName(msg.model), title: msg.model || "" }),
+            totalSpan,
             perfSpan,
             el("span", { text: `↑${OMP.fmtTokens((u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0))} ↓${OMP.fmtTokens(u.output)}` }),
             u.cost && u.cost.total ? el("span", { text: OMP.fmtCost(u.cost.total) }) : null);
